@@ -551,10 +551,23 @@ type RequestReady struct {
 
 // RequestSuspend stops the claim's process and keeps its session. Reason is why, for the line the
 // suspension logs; By is who asks, which the suspended claim records (Claim.SuspendedBy) and every
-// suspension must name. For a daemon suspension, Deadline, when set, stops a hold at that moment
-// when its turn has not ended (holdSuspension); without one, the hold waits for the turn's end. A
-// suspension that holds (By.Holds: the operator's or the controller's) always uses the stop
-// timeout from its arrival, whatever Deadline says.
+// suspension must name. For a daemon suspension or the work hold's (SuspendedByHold), Deadline,
+// when set, stops a hold at that moment when its turn has not ended (holdSuspension); without
+// one, the hold waits for the turn's end. The work hold sets one 2 minutes after its close message
+// reached the claim, or 2 minutes after the close for a stop the close writes at once, which no
+// message reaches. That time is stored in the outbox row that posts the stop, so the row posted
+// again after a restart names the same moment. A suspension that holds (By.Holds: the operator's
+// or the controller's) always uses the stop timeout from its arrival, whatever Deadline says.
+//
+// TurnAfter, when set, is when the message that asks the agent to end its turn reached the claim
+// (the work hold's close message), and it makes the stop of a claim with no turn and no launch in
+// flight — ready or idle — wait for that message's turn rather than stop the process at once: a
+// claim whose last turn ended after TurnAfter has had that turn and is stopped now, and any other
+// is held as a turn's suspension is (holdSuspension), stopped when its next turn ends or at
+// Deadline, and handed nothing meanwhile (sendPending). A TurnAfter with no Deadline is refused
+// (suspendRequest): a stop that waits for a turn no message starts would never be made. It changes
+// nothing for a claim in a turn or a compaction, whose end the stop waits for anyway, nor for a
+// launch, which is stopped at its ready before any task (holdSuspendUntilReady).
 //
 // NeverHold is a suspension that may not be held: one a caller posts only because it read the
 // claim in no turn, and whose refusal it reports to its own caller as nothing having happened. A
@@ -573,26 +586,36 @@ type RequestReady struct {
 // the plain claim write (Deps.PauseStopped, suspendedFor), and a hold of one is the pause's: kept
 // across a start while its pause is open (StartedBy), and dropped at the start of the claim's next
 // decision once that pause has ended (dropEndedPauseHold), the resume's event (ResumePause) among
-// them. A request of the operator or the controller that takes a pause's hold over clears its
-// Pause (holdSuspension).
+// them. A request of the operator, the controller or the work hold that takes a pause's hold over
+// clears its Pause (holdSuspension).
+//
+// HoldVersion is the version of the gated document that closed the gate, on the work hold's stop
+// alone (record.SuperviseRequest.HoldVersion, which the outbox's stop row hands on), and 0 on every
+// other suspension. A held stop keeps it (Machine.held). After the hold's stop is written, the
+// machine reads the tree's work hold row again, and where the opening has deleted the row, it
+// hands this version to the daemon (holdReadAfterStop, Deps.WorkHoldEndedUnderStop).
 type RequestSuspend struct {
-	Claim     claim.Token
-	Reason    string
-	By        SuspendSource
-	Deadline  time.Time
-	NeverHold bool
-	Pause     int64
+	Claim       claim.Token
+	Reason      string
+	By          SuspendSource
+	Deadline    time.Time
+	TurnAfter   time.Time
+	NeverHold   bool
+	Pause       int64
+	HoldVersion int
 }
 
 // RequestResume starts a suspended agent again in the session its claim records. By is who asks,
 // and every resume names it (askedBy): SuspendedByOperator for the operator, through its own
 // resume and its fresh session (api's resumeEvent, freshSession), whose resume lifts every
-// suspension, whoever placed it; and SuspendedByController for the project's controller, through
-// its own `legion` tool (api's resumeAgent), whose resume lifts every suspension but the
-// operator's own and is refused that one (Claim.HeldAgainst: ErrOperatorHolds), since the
-// controller does not undo a decision of the operator's. The wake pacing reads it too: the
-// operator's resume is one a person waits on and is let through unpaced, and the controller's
-// takes its turn in it (exemptWake).
+// suspension, whoever placed it, the work hold's included (ownerDoor); and SuspendedByController
+// for the project's controller, through its own `legion` tool (api's resumeAgent), whose resume
+// lifts every suspension but the operator's own and is refused that one (Claim.HeldAgainst:
+// ErrOperatorHolds), since the controller does not undo a decision of the operator's. The
+// controller's resume waits on a claim the work hold holds, as a rule's request does (ruleDoor,
+// askedDoor), and on a phase worker of a tree whose work hold stands (Machine.WorkHoldRefusal).
+// The wake pacing reads it too: the operator's resume is one a person waits on and is let
+// through unpaced, and the controller's takes its turn in it (exemptWake).
 type RequestResume struct {
 	Claim claim.Token
 	By    SuspendSource
@@ -618,7 +641,8 @@ type ResumePause struct {
 
 // RequestRuleResume is the daemon's own resume, by rule: it relaunches a suspended claim's session
 // unless an operator or the controller suspended its agent (Claim.RuleMayResume): that suspension
-// holds until a resume lifts it. The daemon asks it of
+// holds until a resume lifts it. A claim the work hold suspended answers it ErrHeldByWorkHold
+// (Machine.fence). The daemon asks it of
 // a claim that owns its issue's current phase (the outbox's start of that phase, the boot's
 // included) and of its own controller. It resumes nothing that is not suspended — a failed claim's
 // launch budget is spent, and only the workflow's retry relaunches it — so it is asked again as
@@ -802,6 +826,12 @@ type RequestDeliver struct {
 	// startNews.roundNamed). An operator's task and the controller's carry none
 	// (Delivery.RoundNamed).
 	RoundNamed bool
+	// Opening is the work hold's opening sentences Task begins with (OpeningTask), on the one task
+	// the hold's opening gives a claim it stopped (Machine.EndHold), and empty on every other task.
+	// It is carried onto the delivery and persisted with it (Delivery.Opening), so a later opening
+	// that starts the claim over this task again puts its own sentences in front of the task's work
+	// alone (openingTask).
+	Opening string
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
@@ -899,46 +929,64 @@ type CompactEnded struct {
 	Compacted  bool
 }
 
-func (RuntimeObservation) isEvent()   {}
-func (StreamHello) isEvent()          {}
-func (StreamTurnStart) isEvent()      {}
-func (StreamTurnEnd) isEvent()        {}
-func (IssueTurnEnded) isEvent()       {}
-func (StreamToolStep) isEvent()       {}
-func (StreamAnswered) isEvent()       {}
-func (StreamPromptResult) isEvent()   {}
-func (StreamClosed) isEvent()         {}
-func (StreamLateRefusal) isEvent()    {}
-func (PromptAcked) isEvent()          {}
-func (PromptRefused) isEvent()        {}
-func (Timer) isEvent()                {}
-func (StalePlugin) isEvent()          {}
-func (RecordedDeath) isEvent()        {}
-func (StallBackstop) isEvent()        {}
-func (TurnPastBound) isEvent()        {}
-func (PodUpdateOpen) isEvent()        {}
-func (PodUpdateEnded) isEvent()       {}
-func (PodUpdateSignalled) isEvent()   {}
-func (RequestSpawn) isEvent()         {}
-func (RequestRegister) isEvent()      {}
-func (RequestReady) isEvent()         {}
-func (RequestSuspend) isEvent()       {}
-func (RequestResume) isEvent()        {}
-func (RequestRuleResume) isEvent()    {}
-func (RequestStop) isEvent()          {}
-func (RequestTreeClose) isEvent()     {}
-func (RequestIssueClose) isEvent()    {}
-func (RequestOperatorClose) isEvent() {}
-func (RequestRetry) isEvent()         {}
-func (RequestAskedRetry) isEvent()    {}
-func (RequestForgetSession) isEvent() {}
-func (RequestDeliver) isEvent()       {}
-func (RequestExit) isEvent()          {}
-func (RequestTurnOutcome) isEvent()   {}
-func (RequestCompact) isEvent()       {}
-func (CompactEnded) isEvent()         {}
-func (ResumePause) isEvent()          {}
-func (MessageMarked) isEvent()        {}
+// Each event's door (Event.door, turnDoor). An event that reports what a process or a turn did, a
+// timer, and a request that stops, closes, registers or records starts no turn. The requests that
+// can bring a claim's agent into a turn are the daemon's own rules' and every caller's but the
+// operator acting on the claim (ruleDoor) — the boot's relaunch of a recorded death and the
+// controller's resume and retry among them — and the operator's own resume and retry (ownerDoor),
+// which the asker of a resume or a retry decides (askedDoor).
+func (RuntimeObservation) door() turnDoor   { return noDoor }
+func (StreamHello) door() turnDoor          { return noDoor }
+func (StreamTurnStart) door() turnDoor      { return noDoor }
+func (StreamTurnEnd) door() turnDoor        { return noDoor }
+func (IssueTurnEnded) door() turnDoor       { return noDoor }
+func (StreamToolStep) door() turnDoor       { return noDoor }
+func (StreamAnswered) door() turnDoor       { return noDoor }
+func (StreamPromptResult) door() turnDoor   { return noDoor }
+func (StreamClosed) door() turnDoor         { return noDoor }
+func (StreamLateRefusal) door() turnDoor    { return noDoor }
+func (PromptAcked) door() turnDoor          { return noDoor }
+func (PromptRefused) door() turnDoor        { return noDoor }
+func (Timer) door() turnDoor                { return noDoor }
+func (StalePlugin) door() turnDoor          { return noDoor }
+func (RecordedDeath) door() turnDoor        { return ruleDoor }
+func (StallBackstop) door() turnDoor        { return noDoor }
+func (TurnPastBound) door() turnDoor        { return noDoor }
+func (PodUpdateOpen) door() turnDoor        { return noDoor }
+func (PodUpdateEnded) door() turnDoor       { return noDoor }
+func (PodUpdateSignalled) door() turnDoor   { return noDoor }
+func (RequestSpawn) door() turnDoor         { return ruleDoor }
+func (RequestRegister) door() turnDoor      { return noDoor }
+func (RequestReady) door() turnDoor         { return ruleDoor }
+func (RequestSuspend) door() turnDoor       { return noDoor }
+func (r RequestResume) door() turnDoor      { return askedDoor(r.By) }
+func (RequestRuleResume) door() turnDoor    { return ruleDoor }
+func (RequestStop) door() turnDoor          { return noDoor }
+func (RequestTreeClose) door() turnDoor     { return noDoor }
+func (RequestIssueClose) door() turnDoor    { return noDoor }
+func (RequestOperatorClose) door() turnDoor { return noDoor }
+func (RequestRetry) door() turnDoor         { return ruleDoor }
+func (r RequestAskedRetry) door() turnDoor  { return askedDoor(r.By) }
+func (RequestForgetSession) door() turnDoor { return noDoor }
+func (RequestDeliver) door() turnDoor       { return ruleDoor }
+func (RequestExit) door() turnDoor          { return noDoor }
+func (RequestTurnOutcome) door() turnDoor   { return noDoor }
+func (RequestCompact) door() turnDoor       { return ruleDoor }
+func (CompactEnded) door() turnDoor         { return noDoor }
+func (ResumePause) door() turnDoor          { return ruleDoor }
+func (MessageMarked) door() turnDoor        { return noDoor }
+
+// askedDoor is the door of a resume or a retry a caller asks (RequestResume.By,
+// RequestAskedRetry.By): the operator's own is ownerDoor, since an operator's act on a claim
+// overrides the work hold, and every other asker's, the project's controller's included, is
+// ruleDoor, which waits on a claim the hold holds (decision 16 and I2 of dispatch://INFRA-4528's
+// plan: the controller is no operator).
+func askedDoor(by SuspendSource) turnDoor {
+	if by == SuspendedByOperator {
+		return ownerDoor
+	}
+	return ruleDoor
+}
 
 // eventKind is what the table is keyed on beside the state: an event's type, with a Timer split
 // by its kind, because each wait means a different thing.
@@ -1135,13 +1183,29 @@ type key struct {
 
 // rule is one cell of the table: a row — what the event does in that state, named, with the states
 // it may leave the claim in besides the one it found — or an ignore, with the reason the event
-// means nothing there. Handle refuses a request that meets an ignore, and holds every row to its
-// destinations.
+// means nothing there. A row may also carry a guard (rowWhere), for a cell whose claims the row
+// decides only some of: the guard reads the claim and answers "" where the row decides it and,
+// for every other claim of that state, the reason the event means nothing there, so the cell is
+// that named ignore for it (rule.of). Handle refuses a request that meets an ignore, and holds
+// every row to its destinations.
 type rule struct {
 	name   string
 	to     []ClaimState
 	act    func(m *Machine, ctx context.Context, ev Event) error
 	ignore string
+	guard  func(m *Machine) string
+}
+
+// of is the cell as it decides m's claim: the rule itself, or, for a row whose guard names a
+// reason for this claim, the named ignore of that reason. Handle reads every cell through it right
+// after the table's lookup, and runParkedLaunchNow reads it the same way.
+func (r rule) of(m *Machine) rule {
+	if r.guard != nil {
+		if reason := r.guard(m); reason != "" {
+			return rule{ignore: reason}
+		}
+	}
+	return r
 }
 
 var (
@@ -1199,11 +1263,13 @@ func Unregistered(state ClaimState) bool { return slices.Contains(unregistered, 
 // TakesCompaction is whether the machine takes a compaction of a claim in this state, read off
 // the table's own onCompact rows rather than from a second list of them: the api's refusals
 // name the states a compaction reaches, and this is what their test holds those words to
-// (api's compactOp, the onCompact rows below). An ignore is no take, so a state the table
-// names a reason for reads false here, as does a state the table does not cover at all.
+// (api's compactOp, the onCompact rows below). An ignore is no take, and nor is a guarded row
+// (rowWhere), which takes only the claims of the state its guard admits, so a state the table
+// names a reason for, for any claim of it, reads false here, as does a state the table does not
+// cover at all.
 func TakesCompaction(state ClaimState) bool {
 	r, ok := table[key{state, onCompact}]
-	return ok && r.act != nil
+	return ok && r.act != nil && r.guard == nil
 }
 
 const (
@@ -1515,7 +1581,14 @@ func fillTable(t *builder) {
 	t.ignore(onAskedRetry, "an agent whose claim is queued is spawned, not retried", StateQueued)
 	t.ignore(onAskedRetry, "the previous launch's pane is still uncertain", StateLaunchUncertain)
 	t.ignore(onAskedRetry, "the claim has not failed", live...)
-	t.ignore(onAskedRetry, "a suspended agent is resumed, not retried", StateSuspended)
+	// The work hold's stop is the one suspension the operator's retry ends, since an operator's
+	// act on a claim overrides the hold (operatorRetryHeld); the controller's retry of such a claim
+	// waits at the fence before any row (askedDoor). Every other suspended agent is resumed, not
+	// retried: the row's guard (retriesOnlyAWorkHeldClaim) makes the cell that ignore for it, so
+	// Handle decides it as it did before the hold existed, a launch the pacing parked over the
+	// claim run for the retry first (runDroppedLaunchForRetry).
+	t.rowWhere(retriesOnlyAWorkHeldClaim, onAskedRetry, "the operator's retry of a claim the work hold stopped: fresh budgets, and the same session relaunched unless the retry asked for a new one, the provider refused it out of the launch budget, or no store holds it", operatorRetryHeld,
+		[]ClaimState{StateLaunching, StateFailed}, StateSuspended)
 
 	t.row(onForgetSession, "drop the session so the next launch is fresh", forgetSession, nil,
 		StateQueued, StateSuspended, StateFailed, StateRetired)
@@ -1599,8 +1672,16 @@ func (b *builder) put(k key, r rule) {
 }
 
 func (b *builder) row(kind eventKind, name string, act func(*Machine, context.Context, Event) error, to []ClaimState, states ...ClaimState) {
+	b.rowWhere(nil, kind, name, act, to, states...)
+}
+
+// rowWhere is row for the claims of these states that guard admits: guard answers "" for a claim
+// the row decides and, for every other claim of the states, the reason the event means nothing
+// there, which Handle then answers as the named ignore of that reason (rule.of). A nil guard
+// admits every claim, which is row.
+func (b *builder) rowWhere(guard func(*Machine) string, kind eventKind, name string, act func(*Machine, context.Context, Event) error, to []ClaimState, states ...ClaimState) {
 	for _, state := range states {
-		b.put(key{state, kind}, rule{name: name, to: to, act: act})
+		b.put(key{state, kind}, rule{name: name, to: to, act: act, guard: guard})
 	}
 }
 
@@ -2551,8 +2632,9 @@ func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	if m.held != nil && !m.stopWaitsForResult() {
 		if err := m.suspendHeldAtEnd(ctx, StateIdle); err != nil {
 			if m.held == nil {
-				// The stop landed and let the process go; only its write failed, and the claim is
-				// suspended in memory (suspended).
+				// The stop landed and let the process go; only its write, or the read of the work
+				// hold's row after it (holdReadAfterStop), failed, and the claim is suspended in
+				// memory (suspended).
 				return err
 			}
 			m.claim.State = StateIdle
@@ -3366,6 +3448,27 @@ func askedRetry(m *Machine, ctx context.Context, ev Event) error {
 	return retry(m, ctx, ev)
 }
 
+// retriesOnlyAWorkHeldClaim is the guard of the operator's retry of a suspended claim (rowWhere):
+// the row decides a claim the work hold stopped, and every other suspended claim meets the ignore
+// the row of that state was before the hold existed, since such a claim is resumed, not retried.
+func retriesOnlyAWorkHeldClaim(m *Machine) string {
+	if m.claim.SuspendedBy == SuspendedByHold {
+		return ""
+	}
+	return "a suspended agent is resumed, not retried"
+}
+
+// operatorRetryHeld is the operator's retry of a claim the work hold stopped, the one suspension
+// that retry ends (its row's guard, retriesOnlyAWorkHeldClaim, leaves every other suspended claim
+// to the named ignore): an operator's own act on a claim overrides the hold, so the claim is
+// retried as a stopped one is (askedRetry), with the task it kept: its session is relaunched
+// unless the retry asks for a new one, the provider refused it out of the launch budget, or no
+// store holds it.
+func operatorRetryHeld(m *Machine, ctx context.Context, ev Event) error {
+	m.log.Info("supervise: the operator's retry starts a claim the work hold stopped")
+	return askedRetry(m, ctx, ev)
+}
+
 // stop ends one claim: the runtime releases it, and it retires, recording what the released
 // process ended under the stop's own cause (endStopped, retire), so a retry that keeps the session,
 // each of which endStopped's comment names, tells its next process the turn the stop cut off and
@@ -3438,15 +3541,20 @@ func issueClose(m *Machine, ctx context.Context, _ Event) error {
 // comparison runs under the machine lock, so a decision that changed the claim since an operator
 // saw it cannot clear a later session, and so does the read of a hold the asker may not lift,
 // which refuses the forget with the session kept (RequestForgetSession.By, askedBy,
-// Claim.HeldAgainst). A session the claim records but does not hold is cleared only once the
-// Envoy listener no longer names it as the claim's role holder (mayForget). The log line and the
-// reason the claim records name who asked (forgottenBy).
+// Claim.HeldAgainst), and of the tree's work hold, which refuses the controller's forget of a phase
+// worker of a held tree with the session kept, since the fresh session it is half of starts no such
+// worker while the hold stands (workHoldRefuses). A session the claim records but does not hold is
+// cleared only once the Envoy listener no longer names it as the claim's role holder (mayForget).
+// The log line and the reason the claim records name who asked (forgottenBy).
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 	request := ev.(RequestForgetSession)
 	if err := askedBy(m, "forget-session", request.By); err != nil {
 		return err
 	}
 	if err := m.current().HeldAgainst(request.By); err != nil {
+		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: err}
+	}
+	if err := m.workHoldRefuses(ctx, m.current(), request.By); err != nil {
 		return &RefusedError{State: m.claim.State, Request: "forget-session", Err: err}
 	}
 	if !m.claim.HoldsSession(request.Session) {
@@ -3671,13 +3779,14 @@ func exit(m *Machine, ctx context.Context, ev Event) error {
 // the outbox marks the claim asked once that publish reached a session (Machine.PublishUpdateAsk):
 // an ask that reached none marks nothing, so a later sweep asks again. A suspended claim is not
 // revived for the ask, and its machine records the round all the same. A suspension by the daemon
-// itself (Claim.PassedOverByRound) takes the claim out of the round's ask and out of its wait: the
-// sweep asks it nothing and the round does not wait for its answer (internal/daemon's roundAsks,
-// dispatch://INFRA-4109 R1). The one exception is a claim a project's pause stopped, while the
-// daemon's podHolds.owes in internal/daemon holds (internal/daemon's roundClock.passesOver). A
-// suspension that holds (the operator's or the controller's, Claim.RuleHolds) keeps its agent in
-// both: if no ask has reached it, the sweep asks it once its agent is ready again, and the round
-// stays open whatever its bound until a resume lifts that suspension (dispatch://INFRA-2981 R5).
+// itself, the work hold's included (Claim.PassedOverByRound), takes the claim out of the round's
+// ask and out of its wait: the sweep asks it nothing and the round does not wait for its answer
+// (internal/daemon's roundAsks, dispatch://INFRA-4109 R1). The one exception is a claim a
+// project's pause stopped, while the daemon's podHolds.owes in internal/daemon holds
+// (internal/daemon's roundClock.passesOver). A suspension that holds (the operator's or the
+// controller's, Claim.RuleHolds) keeps its agent in both: if no ask has reached it, the sweep asks
+// it once its agent is ready again, and the round stays open whatever its bound until a resume
+// lifts that suspension (dispatch://INFRA-2981 R5).
 //
 // A round replaces another the moment the daemon opens it, whatever the claim's worker is doing.
 // The answer the worker gives carries the round its own ask named (PodUpdateSignalled), so an
@@ -3924,6 +4033,7 @@ func (m *Machine) clearUpdate() {
 	m.claim.UpdateRepository = ghrepo.Repository{}
 	m.claim.UpdateOpenedAt, m.claim.UpdateTaskedAt = nil, nil
 	m.claim.UpdateSignalledAt, m.claim.UpdateToldAt = nil, nil
+	m.claim.UpdateHoldToldAt, m.claim.UpdateAskedAgainAt = nil, nil
 	m.claim.UpdateLeftRound = ""
 }
 

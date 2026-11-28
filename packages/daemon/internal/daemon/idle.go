@@ -343,8 +343,10 @@ func (w *workflowRuntime) releaseUnownedPods(ctx context.Context) {
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold), as the idle pass records its own: that is a pod release would have taken and
-// something else stopped. Five of this rule's eleven holds are such a hold, and recordableHold is
-// what says which. The release itself is recorded where it completes (outbox.releaseIssue).
+// something else stopped. Seven of this rule's thirteen holds of its own are such a hold, the work
+// hold's IdleHoldUnownedWorkHeld among them, and so is IdleHoldPaused, which the idle rule answers
+// too; recordableHold is what says which. The release itself is recorded where it completes
+// (outbox.releaseIssue).
 func (w *workflowRuntime) releaseUnownedPod(ctx context.Context, issue string) (workflow.IdleHold, bool) {
 	now := w.clockNow().UTC()
 	if _, present := w.idleRuntime.IssueSandbox(issue); !present {
@@ -581,14 +583,17 @@ func (w *workflowRuntime) runningPod(issue string) string {
 // stop or a Sandbox suspension of the issue still queued — so a deployment that sees it every tick
 // past a linger's end or a look's bound is seeing a close that is stuck.
 //
-// The second rule's other three — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds
-// and IdleHoldUnownedDelivery — are recorded for the same reason, and it is the sharpest one
-// here: each names a pod that stands, past the quiet period, with no live claim in it, and such
-// a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long as it stands. A
-// deployment that sees one of the three every tick is reading capacity held by something that is
-// not work. IdleHoldUnownedUnpushedWork is recorded too: its pod stands with no live claim
-// because its disk holds work origin does not hold, and the record is where an operator finds
-// the pod whose roles must come back to push it.
+// The second rule's other four — IdleHoldUnownedClaimProcess, IdleHoldUnownedSuspensionHolds,
+// IdleHoldUnownedWorkHeld and IdleHoldUnownedDelivery — are recorded for the same reason, and it
+// is the sharpest one here: each names a pod that stands, past the quiet period, with no live
+// claim in it, and such a pod holds its reservation (2 CPU and 8 GiB at the defaults) for as long
+// as it stands. A deployment that sees one of the four every tick is reading capacity held by
+// something that is not work: a suspension that holds (an operator's or the controller's), or the
+// work hold of a tree whose standing design gate stays closed, keeps the pod for its claim's
+// session and unpushed work, which a release would take with the disk.
+// IdleHoldUnownedUnpushedWork is recorded too: its pod stands with no live claim because its disk
+// holds work origin does not hold, and the record is where an operator finds the pod whose roles
+// must come back to push it.
 //
 // A project's pause's three holds are recorded too (IdleHoldPaused, IdleHoldPauseHeld,
 // IdleHoldUnownedPauseHeld, decision 12 of dispatch://INFRA-3759): each is a pod release would

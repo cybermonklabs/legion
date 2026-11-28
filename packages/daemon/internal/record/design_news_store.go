@@ -169,7 +169,7 @@ func (s *Postgres) FillTold(ctx context.Context, tx pgx.Tx, issue string, audien
 // member's pull request has merged, read from the pull request's own state whatever phase the
 // member stands in, in one read for the whole tree (Store.PullRequestsOf). Every reader of a tree's
 // owed news reads its facts here, so the opening, a phase move, the reconcile, a start, the
-// merger's hold, the sweep and the root architect's summary weigh one rule over one read.
+// merger's wait for its news, the sweep and the root architect's summary weigh one rule over one read.
 func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignStep, tree string) (NewsFacts, error) {
 	gates, err := store.GatesOf(ctx, tx, tree)
 	if err != nil {

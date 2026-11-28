@@ -3,13 +3,16 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -77,6 +80,191 @@ func TestCloseFencesADelayedRootClaimUntilAFreshAdmission(t *testing.T) {
 	bound, err := store.AdmitClaim(ctx, root)
 	if err != nil || bound.TreeEpoch != 2 {
 		t.Fatalf("root claim after confirmed cleanup = %+v, err %v", bound, err)
+	}
+}
+
+// The work hold's row as a claim's decision reads it (supervise.Store.WorkHoldStands): a tree's
+// hold stands while its work_holds row exists, from the close that writes the row to the opening
+// that deletes it, and a tree with no row has no hold.
+func TestWorkHoldStandsWhileTheTreesRowExists(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	stands := func(tree string) bool {
+		t.Helper()
+		held, err := store.WorkHoldStands(ctx, tree)
+		if err != nil {
+			t.Fatalf("read the work hold of %s: %v", tree, err)
+		}
+		return held
+	}
+	if stands(rootIssue) {
+		t.Fatalf("the work hold of %s stands before its close, want none", rootIssue)
+	}
+	closeWorkHold(t, store, records)
+	if !stands(rootIssue) {
+		t.Fatalf("the work hold of %s does not stand after its close, want it standing", rootIssue)
+	}
+	if stands(childIssue) {
+		t.Fatalf("the work hold of %s stands, want none: no close wrote its row", childIssue)
+	}
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error { return records.DeleteWorkHold(ctx, tx, rootIssue) }); err != nil {
+		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
+	}
+	if stands(rootIssue) {
+		t.Fatalf("the work hold of %s stands after its opening, want none", rootIssue)
+	}
+}
+
+// The opening deletes the tree's work_holds row and keeps the hold, with what ended it, as the
+// record of the tree's last opening (record.Store.OpenWorkHold). The read a claim's decision
+// makes (supervise.Store.WorkHoldStands) reads that hold as ended: it answers that the hold does
+// not stand, as for a tree with no hold. The record of the opening still names the hold. A close
+// after the opening makes the hold stand again.
+func TestWorkHoldStandsReadsAnOpenedHoldAsEnded(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	opened := closeWorkHold(t, store, records)
+	opened.OpenedAt, opened.Opening = time.Date(2026, 11, 22, 2, 34, 21, 0, time.UTC), "The design gate of LEGION-208 opened."
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := records.LockWorkHold(ctx, tx, rootIssue); err != nil {
+			return err
+		}
+		return records.OpenWorkHold(ctx, tx, rootIssue, opened.OpenedAt, opened.Opening)
+	}); err != nil {
+		t.Fatalf("open the work hold of %s: %v", rootIssue, err)
+	}
+
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || stands {
+		t.Fatalf("the read of the opened hold = stands %t, %v; want a hold that does not stand", stands, err)
+	}
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		read, err := records.TreeWorkHold(ctx, tx, rootIssue)
+		if err == nil && (read == nil || read.Standing() || !reflect.DeepEqual(*read, opened)) {
+			t.Fatalf("the tree's record after the opening is %+v, want the opened hold %+v", read, opened)
+		}
+		return err
+	}); err != nil {
+		t.Fatalf("read the record of the work hold of %s: %v", rootIssue, err)
+	}
+
+	closeWorkHold(t, store, records)
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || !stands {
+		t.Fatalf("the read after a close that follows the opening = stands %t, %v; want the hold to stand again", stands, err)
+	}
+}
+
+// closeWorkHold writes the root's issue and the work hold of its tree, closed at version 4, as the
+// workflow's close writes the hold, and answers the hold.
+func closeWorkHold(t *testing.T, store *Store, records record.Store) record.WorkHold {
+	t.Helper()
+	ctx := context.Background()
+	root := record.Issue{Key: rootIssue, Tree: rootIssue, Project: "LEGION", Title: "root", Phase: "implementing", Generation: 4,
+		Status: "in_progress", Rank: "U", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	hold := record.WorkHold{Project: "LEGION", Tree: rootIssue, RootGeneration: 4, Step: record.DesignStepSpec,
+		ArtifactID: "artifact-208", Version: 4, ClosedAt: time.Date(2026, 11, 21, 0, 2, 54, 0, time.UTC)}
+	if err := Transact(ctx, store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, root); err != nil {
+			return err
+		}
+		return records.PutWorkHold(ctx, tx, hold)
+	}); err != nil {
+		t.Fatalf("close the work hold of %s: %v", rootIssue, err)
+	}
+	return hold
+}
+
+// waitingOnALock is whether a backend of the store's database other than the caller's waits for
+// a lock another transaction holds, read from pg_locks (lockwaittest.Waiting, whose package
+// comment says why not from pg_stat_activity's wait event).
+func waitingOnALock(t *testing.T, store *Store) bool {
+	t.Helper()
+	var waiting bool
+	if err := store.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid() and `+lockwaittest.Waiting+`)`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity: %v", err)
+	}
+	return waiting
+}
+
+// The opening's lock on its tree's work hold row (record.Store.LockWorkHold, for update) and the
+// read a claim's decision makes of it (supervise.Store.WorkHoldStands, for share) serialize on
+// that row. A read asked for while the opening holds the row waits for the opening's commit, and
+// once the opening has deleted the row and committed, it reads no row. A read holds nothing once
+// it answers, so an opening after it takes the row at once. A read whose deadline passes while the
+// opening holds the row answers an error.
+func TestWorkHoldStandsWaitsForTheOpeningAndReadsNoRowAfterIt(t *testing.T) {
+	t.Parallel()
+	store := migratedStore(t)
+	ctx := context.Background()
+	records := record.NewStore()
+	hold := closeWorkHold(t, store, records)
+	type read struct {
+		stands bool
+		err    error
+	}
+
+	opening, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = opening.Rollback(ctx) }()
+	closing, err := records.LockWorkHold(ctx, opening, rootIssue)
+	if err != nil || closing == nil || closing.Tree != hold.Tree || closing.Version != hold.Version {
+		t.Fatalf("the opening's lock of the work hold of %s = %+v, %v; want the hold %+v", rootIssue, closing, err, hold)
+	}
+	if err := records.DeleteWorkHold(ctx, opening, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	reads := make(chan read, 1)
+	go func() {
+		stands, err := store.WorkHoldStands(ctx, rootIssue)
+		reads <- read{stands, err}
+	}()
+	testwait.Eventually(t, "the read to wait for the opening's lock of the row", func() bool { return waitingOnALock(t, store) })
+	select {
+	case got := <-reads:
+		t.Fatalf("the read answered %+v while the opening held the row, want it to wait for the opening's commit", got)
+	default:
+	}
+	if err := opening.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-reads; got.err != nil || got.stands {
+		t.Fatalf("the read after the opening committed = stands %t, %v; want no row", got.stands, got.err)
+	}
+
+	closeWorkHold(t, store, records)
+	if stands, err := store.WorkHoldStands(ctx, rootIssue); err != nil || !stands {
+		t.Fatalf("the read of the closed hold = stands %t, %v; want the row", stands, err)
+	}
+	quick, cancelQuick := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelQuick()
+	if err := Transact(quick, store.Pool(), func(_ context.Context, tx pgx.Tx) error {
+		if _, err := records.LockWorkHold(quick, tx, rootIssue); err != nil {
+			return err
+		}
+		return records.DeleteWorkHold(quick, tx, rootIssue)
+	}); err != nil {
+		t.Fatalf("the opening after the read: %v; want it to take the row at once, since the read holds nothing once it answers", err)
+	}
+
+	closeWorkHold(t, store, records)
+	held, err := store.Pool().BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = held.Rollback(ctx) }()
+	if _, err := records.LockWorkHold(ctx, held, rootIssue); err != nil {
+		t.Fatal(err)
+	}
+	bounded, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+	if stands, err := store.WorkHoldStands(bounded, rootIssue); err == nil {
+		t.Fatalf("the read past its deadline = stands %t, no error; want an error", stands)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -26,7 +27,7 @@ import (
 // backoff, and a run of three, with about three seconds of backoff between the first and the last
 // (record.RetryBackoff), is no longer a moment's fault. Recording it is what lets the news go,
 // naming why the change list, or the version the holder last took, could not be read, and what
-// releases a merger held for it (mergerWaitsForTheDesignGate). An unread history is still asked
+// releases a merger held for it (mergerWaitsForItsNews). An unread history is still asked
 // again by every later reconcile, since a read that failed says nothing about the document, and
 // nothing is told from it while such a reconcile is pending (readNewsRecorded).
 const designChangesAttempts = 3
@@ -82,7 +83,7 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //     before: the news says the version could not be read, and why (workflow.RenderNews), and the
 //     next reconcile asks the history again, nothing being told from the unread row while that
 //     one is pending (readNewsRecorded). So every read this row makes ends within its bounded
-//     attempts, and a merger held for the news is released then (mergerWaitsForTheDesignGate).
+//     attempts, and a merger held for the news is released then (mergerWaitsForItsNews).
 //  4. In one transaction under the fact lock (intake.SerializeFacts), it settles each owed member
 //     (settleNews).
 //  5. In that same transaction, it settles the tree root's architect row, and queues the root
@@ -619,7 +620,10 @@ type startNews struct {
 // (record.DeliveryNewsItem.HistoryUnread), so every later send of the task tells it as attached,
 // whatever a reconcile does before then (carriedChange). The task is the start's own text
 // (record.DeliveryNews.Task), a blank line, then the news; a start that carries nothing delivers
-// its own text.
+// its own text. A start of the work hold's opening (record.SuperviseRequest.Opening) carries its
+// work apart from the opening's sentences: the news's Task is the work alone
+// (supervise.OpeningWork), and the render puts the sentences in front (renderNews), as each send
+// of the task does again.
 //
 // A start of the reviewer queued for news alone carries no task, so the workflow's queue named
 // no round on it. Where it carries news, its task is named here, in the same read: the daemon's
@@ -628,7 +632,7 @@ type startNews struct {
 // named, so the claim's send adds no second pair (supervise's Delivery.message). A record that
 // holds no reviewed commit or no entry's task names `none` for it, as the queue does.
 func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload record.SuperviseRequest, token claim.Token) (startNews, error) {
-	carried := record.DeliveryNews{Task: payload.Task}
+	carried := record.DeliveryNews{Task: supervise.OpeningWork(payload.Task, payload.Opening)}
 	sent := renderedNews{task: payload.Task}
 	roundNamed := payload.RoundNamed
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
@@ -648,7 +652,7 @@ func (r *outbox) newsForStart(ctx context.Context, issue record.Issue, payload r
 			}
 			roundNamed = true
 		}
-		sent, err = renderNews(ctx, tx, r.records, r.gatedSteps, token, carried, nil, roundNamed, r.now)
+		sent, err = renderNews(ctx, tx, r.records, r.gatedSteps, token, carried, nil, roundNamed, payload.Opening, r.now)
 		return err
 	}); err != nil {
 		return startNews{}, fmt.Errorf("read the news the start of %s's %s carries: %w", issue.Key, payload.Role, err)
@@ -719,7 +723,7 @@ func (r *outbox) owedToClaim(ctx context.Context, tx pgx.Tx, facts record.NewsFa
 // the record and its review history has no unread row that stands: none is recorded, or a
 // reconcile of the tree is pending, which reads that history again (readNewsRecorded). A merger
 // released without it could merge before it reads what changed, or be told a failure the pending
-// reconcile would replace, so its start waits (mergerWaitsForTheDesignGate). The wait ends within
+// reconcile would replace, so its start waits (mergerWaitsForItsNews). The wait ends within
 // the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
 // unavailable, and a review history it cannot read is recorded unread (designChangesAttempts).
 func (r *outbox) mergerNewsUnrecorded(ctx context.Context, issue record.Issue) (bool, error) {

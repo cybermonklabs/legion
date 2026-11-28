@@ -273,10 +273,14 @@ const BreakingDrift = "[breaks the pod] "
 // further on says nothing.
 func Breaks(reason string) bool { return strings.HasPrefix(reason, BreakingDrift) }
 
+// roundReasonsSeparator is what RoundReasons joins a round's reasons with, and where AccountDrift
+// cuts the configured account from the reason after it.
+const roundReasonsSeparator = ", "
+
 // RoundReasons is the one string an update round records of the reasons PodDrift gave for its pod
 // (supervise.Claim.UpdateReasons): each reason of a drift that breaks the pod (Breaks) first, then
-// every other, each group in the order given, joined with ", ". The string opens on BreakingDrift
-// exactly where a reason does (Breaks).
+// every other, each group in the order given, joined with roundReasonsSeparator. The string opens
+// on BreakingDrift exactly where a reason does (Breaks).
 func RoundReasons(reasons []string) string {
 	ordered := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
@@ -289,7 +293,43 @@ func RoundReasons(reasons []string) string {
 			ordered = append(ordered, reason)
 		}
 	}
-	return strings.Join(ordered, ", ")
+	return strings.Join(ordered, roundReasonsSeparator)
+}
+
+// The words of the account drift's reason around its two accounts (AccountDriftReason,
+// AccountDrift): the reason is BreakingDrift, accountDriftLead, the account the pod runs as,
+// accountDriftNow and the configured account.
+const (
+	accountDriftLead = "account "
+	accountDriftNow  = ", now "
+)
+
+// AccountDriftReason is the reason PodDrift gives for a pod that runs as another Kubernetes
+// service account than the configured one: old is the account the pod runs as, and next the
+// configured account. It opens on BreakingDrift, since no role can keep working in a pod on an
+// account the operator replaced (spec v23). The Sandbox runtime writes it where it decides the
+// drift (sandbox's PodDrift), and AccountDrift reads it back out of a round's recorded reasons.
+// An operator reads the text in a round's log lines and notices, so its words stay as they are.
+func AccountDriftReason(old, next string) string {
+	return BreakingDrift + accountDriftLead + old + accountDriftNow + next
+}
+
+// AccountDrift reads the account drift out of reasons, a round's recorded reasons
+// (RoundReasons): the account the pod runs as (old), the configured account (next), and whether
+// the reasons hold an account drift at all (AccountDriftReason wrote it). RoundReasons joins its
+// reasons with roundReasonsSeparator, and no Kubernetes service account name holds a comma, so the
+// configured account ends where the next reason begins.
+func AccountDrift(reasons string) (old, next string, ok bool) {
+	_, account, ok := strings.Cut(reasons, BreakingDrift+accountDriftLead)
+	if !ok {
+		return "", "", false
+	}
+	old, next, ok = strings.Cut(account, accountDriftNow)
+	if !ok {
+		return "", "", false
+	}
+	next, _, _ = strings.Cut(next, roundReasonsSeparator)
+	return old, next, true
 }
 
 // TakenPod is what a launch's own replacement of an issue pod takes (R7 of #5285):

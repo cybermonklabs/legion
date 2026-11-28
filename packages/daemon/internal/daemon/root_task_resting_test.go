@@ -22,7 +22,8 @@ import (
 func TestARootTaskNarrowedOfEveryDecisionStillNamesTheRootsRestingOnIt(t *testing.T) {
 	t.Parallel()
 	const resting = "LEGION-320"
-	restingTask := "These roots rest on the approval of LEGION-310 and are still in the workflow: LEGION-320 (its spec step, in implementing). " +
+	restingTask := "These roots rest on LEGION-310 and are still in the workflow: " +
+		"LEGION-320, in implementing, its spec step on the primary document of LEGION-310 (dispatch://LEGION-310/spec). " +
 		"The daemon refuses the sign-off and the close of LEGION-310, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 		"Each root's own architect, or a person, moves it."
 	approval := record.KeptApproval{Step: record.DesignStepSpec, Approved: 2, Latest: 4}

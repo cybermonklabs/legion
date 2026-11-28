@@ -2294,6 +2294,11 @@ func (s *supervisedSandboxStore) AdmitClaim(_ context.Context, c supervise.Claim
 
 func (*supervisedSandboxStore) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+// WorkHoldStands answers that every tree's work hold stands: no test of this fake opens one.
+func (*supervisedSandboxStore) WorkHoldStands(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (s *supervisedSandboxStore) PutClaim(_ context.Context, c supervise.Claim) error {
 	s.claim = c
 	return nil

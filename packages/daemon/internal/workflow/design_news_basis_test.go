@@ -52,7 +52,7 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
 		Steps: newsSteps, Gates: basisGates(), OpeningOwed: true, Items: []NewsChange{specChanges(4)}})
 	t.Logf("the holder's news:\n%s", holder)
-	for _, want := range []string{basis, noPerson, "every step the deployment gates now stands open. A merge the closed gate held is released. " + basis} {
+	for _, want := range []string{basis, noPerson, "every step the deployment gates now stands open. " + basis} {
 		if !strings.Contains(holder, want) {
 			t.Errorf("the holder's news of a version open on a basis does not say %q:\n%s", want, holder)
 		}

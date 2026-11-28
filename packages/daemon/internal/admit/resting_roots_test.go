@@ -70,7 +70,8 @@ func TestAnAncestorsStartTaskAtItsAdmissionNamesTheRootsRestingOnIt(t *testing.T
 					started = append(started, start)
 				}
 			}
-			restingText := "These roots rest on the approval of LEGION-ROOT and are still in the workflow: LEGION-RESTS (its spec step, in implementing). " +
+			restingText := "These roots rest on LEGION-ROOT and are still in the workflow: " +
+				"LEGION-RESTS, in implementing, its spec step on the primary document of LEGION-ROOT (dispatch://LEGION-ROOT/spec). " +
 				"The daemon refuses the sign-off and the close of LEGION-ROOT, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 				"Each root's own architect, or a person, moves it."
 			if len(started) != 1 || started[0].Kept != nil {

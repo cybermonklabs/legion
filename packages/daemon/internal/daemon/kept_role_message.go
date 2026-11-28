@@ -169,8 +169,9 @@ func (r *outbox) keptRoleMessageEnded(ctx context.Context, row record.OutboxRow,
 // every other failure; deliverNotice, an architect's notice, holds the row for
 // a topic with no holder while the owning architect can hold its role again (noticeAnswered);
 // roleMessage ends the row for a topic with no holder, waits for a holder the listener calls
-// unresponsive (notify.ErrHolderUnresponsive), and ends the row for a holder that refuses the
-// delivery mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
+// unresponsive (notify.ErrHolderUnresponsive) but ends there the work hold's close message that
+// carries a stop, and ends the row for a holder that refuses the delivery
+// mode (notify.ErrRefusedByHolder) or a forward the listener's own NATS grant denies
 // (notify.ErrPublishDenied); mergeQueueRemoval and mergeHoldsChanged, the merger's message of a
 // removal from the merge queue and of a change of the merge holds, hold the row for a topic with
 // no holder and for an unresponsive holder while the merger's claim has neither failed nor
@@ -194,7 +195,7 @@ func (r *outbox) publishKeptToRole(ctx context.Context, row record.OutboxRow, to
 	if ended, err := r.keptRoleMessageEnded(ctx, row, wake, m); err != nil || ended != nil {
 		return ended, err
 	}
-	if waits, turn, err := r.deliveryWake(ctx, token, wake, m.subject, row.HeldByPause); err != nil {
+	if waits, turn, err := r.deliveryWake(ctx, token, wake, m.subject, row.HeldByPause, false); err != nil {
 		return nil, err
 	} else if !turn.IsZero() {
 		return nil, r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",

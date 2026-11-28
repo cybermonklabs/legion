@@ -48,6 +48,16 @@ type ClaimRequest struct {
 // stands, which name the operator's resume as what starts it (refuseHeldSuspension,
 // refuseState, holdSentences).
 //
+// startsTheAgent is whether the action starts the agent: the resume, the retry and the fresh
+// session. Each is refused at this door while the work hold of the agent's tree stands, for a
+// phase worker, whatever suspended it (supervise.Machine.WorkHoldRefusal, refuseHold:
+// HELD_BY_WORK_HOLD), before the action asks anything, so a refused fresh session keeps the
+// session and the task its claim records and a refused retry writes no start row. The machine
+// reads the same rule where the request lands, so a close between this read and that one refuses
+// it there too. Of the three, the resume alone is a single event to the claim's machine, and that
+// event is answered once its start is under way, never once it ended (agentEventAction,
+// startUnderWay, dispatch://INFRA-5649 R4), as the operator's resume is answered.
+//
 // cutsTheTurn is what the refusal of an agent whose claim is stored working says the action would
 // do to that agent's running turn (refuseInATurn), and reaches is the states the action does
 // reach, which every refusal of a claim's state that ends in askAgainLater gives as a
@@ -71,10 +81,6 @@ type ClaimRequest struct {
 // recoveries in the paths they share with the operator's door (freshSession, compact). No agent
 // action undoes the pause, which the project's resume alone lifts. The stop and the suspension
 // start nothing and are let through, as the operator's are.
-//
-// startsTheAgent is whether the action's event starts the agent's session, the resume's alone:
-// its answer is given once the start is under way, never once it ended (agentEventAction,
-// startUnderWay, dispatch://INFRA-5649 R4), as the operator's resume is answered.
 type agentAction struct {
 	name                 string
 	invalidRole          string
@@ -167,6 +173,12 @@ func (s *server) agentDoor(w http.ResponseWriter, r *http.Request, op agentActio
 	}
 	if !op.controllerPassesHold {
 		if err := m.View().HeldAgainst(by); err != nil {
+			s.refuseHold(w, r, token, op, by, err, nothingChanged)
+			return claimTarget{}, false
+		}
+	}
+	if op.startsTheAgent {
+		if err := m.WorkHoldRefusal(r.Context(), by); err != nil {
 			s.refuseHold(w, r, token, op, by, err, nothingChanged)
 			return claimTarget{}, false
 		}

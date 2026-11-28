@@ -117,7 +117,8 @@ func (m *Machine) startCutShort() bool {
 // machine — one another daemon made — is met by the claim's next decision. Its pause has ended
 // when it is not the open pause, a later pause's included: a later pause's own request writes its
 // id on the hold (holdSuspension), so a hold that still names an earlier one was taken over by no
-// pause.
+// pause. Beside it, Handle drops the work hold's stop whose hold the opening ended, which the
+// decision's read of the tree's work hold row finds gone (readHoldForStop).
 func (m *Machine) dropEndedPauseHold() {
 	if m.held == nil || m.held.Pause == 0 || m.pauseOpen(m.held.Pause) {
 		return

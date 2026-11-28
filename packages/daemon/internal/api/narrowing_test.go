@@ -94,8 +94,8 @@ func contractServed(t *testing.T, body []byte) (mark map[string]any, carried boo
 // `paused` as the same record serves it ten seconds into a pause (pausedState). The golden itself
 // stands none of these values, so without them the strips of the waiting line's `kind`, of
 // `holdReason`, of the held words and of the pause would find nothing to take and write no line,
-// and the rows below could not say that every strip writes its own. Each entry's band finds its
-// keys there too, written by the entry's own test rows (entryTestRows.carry).
+// and the rows below could not say that every strip writes its own. Each entry supplies its own
+// keys or values through entryTestRows.carry.
 func narrowingState(t *testing.T) State {
 	t.Helper()
 	state := carriedState(t)
@@ -150,15 +150,17 @@ func droppedAt(t *testing.T, contract int) string {
 // (tookOff), the one place their conditions are written, in the order of their table. The
 // fixture carries a retired stranded entry, no wait answered by a value younger than the floor,
 // and the repository-cache-room row of the source `caches`, and narrowingState adds a member of
-// the kind `waiting_on_issue` and an issue held for `task-stopped` with its held row under
-// `task_stopped`. So a caller below 56 is expected the stranded entries' line, a caller from
-// whyAndLineFieldsContract up to below waitingOnIssueContract the line of the waiting line's
-// `kind`, and no caller both: below whyAndLineFieldsContract the band of that contract takes
-// `kind` first, and the strip finds nothing left to take. Every caller a pod places is below
-// cachesSourceContract, so each is expected the caches source's line as well. Every caller below
-// OwnerPlanContract is expected the line of `holdReason`, and one from heldContract up the line
-// of the held words: below heldContract the band of that contract takes `admission.held` whole
-// first.
+// the kind `waiting_on_issue`, an issue whose `why` is `held` and an issue held for
+// `task-stopped` with its held row under `task_stopped`. So a caller below 56 is expected the
+// stranded entries' line, a caller from whyAndLineFieldsContract up to below
+// waitingOnIssueContract the line of the waiting line's `kind`, a caller from
+// whyAndLineFieldsContract up to below workHoldContract the line of the held issue's `why`, and no
+// caller below whyAndLineFieldsContract either of those two: the band of that contract takes
+// `kind` and `why` first, and the strips find nothing left to take. Every caller a pod places is
+// below cachesSourceContract, so each is expected the caches source's line as well. Every caller
+// below OwnerPlanContract is expected the line of `holdReason`, and one from heldContract up the
+// line of the held words: below heldContract the band of that contract takes `admission.held`
+// whole first.
 func narrowingsExpected(state State, contract int) []string {
 	restore, strip := restoreContract(contract), stripContract(contract)
 	var dropped []string
@@ -613,13 +615,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// stateNarrowings is served one line per row that finds something of its own, each naming its
 	// own keys, and three more for the value strips that took the retired entries out of its body,
 	// LEGION-230's `holdReason` and the `caches` source off the repository-cache-room row; a caller
-	// at quietTimeContract is served the line of every row above it, the line of the value strip
-	// that took LEGION-213's `kind`, the `waiting_on_issue` the first caller's body no longer
-	// carries, since a band below it has taken `kind` already, the lines of the strips of
-	// `holdReason` and of the held words, the second of which the first caller's body no longer
-	// carries either, since the band of heldContract took `admission.held` whole, and the `caches`
-	// source's line again; and a caller at assignmentsContract is served the line of
-	// assignmentPlanContract's band, which no assignment is left for below that contract.
+	// at quietTimeContract is served the line of every row above it, the lines of the value strips
+	// that took LEGION-213's `kind`, the `waiting_on_issue`, and LEGION-214's `why`, the `held`,
+	// which the first caller's body no longer carries, since a band below it has taken `kind` and
+	// `why` already, the lines of the strips of `holdReason` and of the held words, the second of
+	// which the first caller's body no longer carries either, since the band of heldContract took
+	// `admission.held` whole, and the `caches` source's line again; and a caller at
+	// assignmentsContract is served the line of assignmentPlanContract's band, which no assignment
+	// is left for below that contract.
 	// One line for all of them, or a line that named the contract and nothing else, would leave a
 	// reader of the log to find out elsewhere what left the body.
 	// Three checks share the work. The table check guards the table: no two rows of
@@ -677,7 +680,7 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 				t.Errorf("no caller was told the row of contract %d dropped %q", narrowing.contract, narrowing.dropped)
 			}
 		}
-		for _, value := range []string{droppedStrandedState, droppedLineKind, droppedCapabilitySource, droppedHoldReason, droppedHeldWord} {
+		for _, value := range []string{droppedStrandedState, droppedLineKind, droppedCapabilitySource, droppedHoldReason, droppedHeldWord, droppedWhy} {
 			if !told[value] {
 				t.Errorf("no caller was told the value strip dropped %q", value)
 			}

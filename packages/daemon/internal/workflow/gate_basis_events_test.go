@@ -178,8 +178,9 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 		t.Fatalf("Dispatch messages = %q, want the one that records the basis of version 4", bodies)
 	}
 	resting := noticesOfKind(t, pool, basisAncestor, "resting-root")
-	if len(resting) != 2 || !strings.Contains(resting[1].Reason, "An ancestor's approval opened the spec step of LEGION-208") {
-		t.Fatalf("resting-root notices = %#v, want the pending registration's and the opening's", resting)
+	if len(resting) != 2 || !strings.Contains(resting[1].Reason, "LEGION-208 registered its spec step on version 4 of the primary document of LEGION-100") ||
+		!strings.Contains(resting[1].Reason, "the step stands open on that version") || strings.Contains(strings.ToLower(resting[1].Reason), "approv") {
+		t.Fatalf("resting-root notices = %#v, want the pending registration's and the opening's, which names no approval", resting)
 	}
 	if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindGateSeed); got != 2 {
 		t.Fatalf("gate seeds = %d, want the registration's and the opening's", got)

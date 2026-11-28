@@ -192,8 +192,8 @@ const (
 // naming the step approved last, and, where a gated step stands open on an ancestor's approval,
 // each such step with the approval it stands on (gateOpenedMessage); and the closed sentence,
 // naming the version that closed it, once a later version has (gateClosedSentence). tellGateMoved
-// writes both through the same two functions, so a merger's release reads the words its prompt
-// quotes, and news sent after the gate closed again says so.
+// writes both through the same two functions, so the gate sentence of a news task is the role
+// message's own words, and news sent after the gate closed again says so.
 //
 // To a holder it then names, for each step, the version pair as the version its phase last took,
 // the sections and the typed blocks that changed (requirements and the other non-check blocks for
@@ -235,7 +235,7 @@ func RenderNews(news News) string {
 
 // gateAtSend is the gate sentence of tree as gates stand now. The standing gate is closed when a
 // step the tree is gated on holds a row that is not open (classify.StandingGate, the predicate the
-// merger's hold reads too), and the sentence names that row's latest version, the one with its
+// work hold reads too), and the sentence names that row's latest version, the one with its
 // reviewer. Otherwise it is open, and the sentence is the opened message of the approval that
 // opened it: the row whose approval Dispatch recorded last (record.EventMark.After), the later
 // step in the tree's order where the marks cannot tell, with each step that stands open on an

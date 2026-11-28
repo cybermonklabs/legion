@@ -66,6 +66,11 @@ import (
 // that read holds, before any start. The read writes nothing, and the repair writes none of the
 // pull requests, claims and queued starts the read takes beside the issues, so the read answers
 // what it would answer after the repair.
+//
+// A claim the work hold stopped is none of the resume's: the hold's source is no ByRule source,
+// so the boot starts no held claim. The work hold's own reconcile runs last (workHoldBooted): it
+// closes a running tree that holds work and has no record of the hold, and ends the hold of one
+// that no longer holds work.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
 		return intake.Result{}, err
@@ -98,7 +103,7 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", owner.role,
 			"phase", issue.Phase, "suspendedBy", held.SuspendedBy)
 	}
-	return intake.Result{}, nil
+	return intake.Result{}, e.workHoldBooted(ctx, tx, owners)
 }
 
 // suspendedOwner is a claim that owns its issue's unfinished phase in a running tree and stands
@@ -116,11 +121,13 @@ type suspendedOwner struct {
 
 // phaseOwners is what suspendedPhaseOwners reads: every issue the store holds, which the daemon's
 // store holds of the project alone (internal/daemon's projectRecords); the roots of the project's
-// trees that run (record.RunningRoots); and the suspended owners of the project's unfinished
-// phases in those trees, in the order the store lists the issues.
+// trees that run (record.RunningRoots); the design gate of each tree root, from the same read
+// (record.LineFacts.Gates); and the suspended owners of the project's unfinished phases in those
+// trees, in the order the store lists the issues.
 type phaseOwners struct {
 	issues    []record.Issue
 	running   map[string]struct{}
+	gates     map[string]record.TreeGate
 	suspended []suspendedOwner
 }
 
@@ -170,7 +177,7 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 	if err != nil {
 		return phaseOwners{}, err
 	}
-	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts)}
+	owners := phaseOwners{issues: issues, running: record.RunningRoots(issues, facts), gates: facts.Gates}
 	for _, issue := range issues {
 		role := phase.RoleFor(issue.Phase)
 		if role == "" || role == claim.RoleArchitect || record.OutOfWorkflow(issue.Status) {

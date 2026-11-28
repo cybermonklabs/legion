@@ -1,0 +1,11 @@
+kind: Changed
+custom:
+  Issue: pr4661
+body: |-
+  The daemon API mirror (`src/legion-api.ts`) and its fixtures cover entry `20261126175637`: the approval
+  route's request and answer (`LegionClaimApprovalRequest`, `LegionClaimApprovalResponse`, and the
+  fixtures `claim-approval.json` and `claim-approval-none.json`), `hold` among the suspension
+  sources (`legionSuspendedBy`, which the controller's agent actions' answer reads too), and `held`
+  in an issue's `why.state` (`state-work-hold.json`). A plugin below that entry is served the agent
+  actions' answer without a `suspendedBy` or `suspensionHeldBy` that names `hold`, since its
+  `legionSuspendedBy` lacks the word.

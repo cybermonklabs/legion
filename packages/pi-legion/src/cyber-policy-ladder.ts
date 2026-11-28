@@ -211,11 +211,9 @@ export interface CyberPolicyLadder<Context extends CyberPolicyLadderContext> {
   ) => Promise<SessionStopEventResult | undefined>;
   /** `context`: one provider request is about to be built. Starts the compacted rung's compaction
    * when it is due, and answers the request's messages without the ladder's own messages and
-   * without the refused replies, or undefined when it carries none of them. */
-  readonly request: (
-    messages: readonly unknown[],
-    ctx: Context
-  ) => Promise<readonly unknown[] | undefined>;
+   * without the refused replies, or undefined when it carries none of them. The answer is a new
+   * array, the caller's to edit, as the `context` handler's later steps do. */
+  readonly request: (messages: readonly unknown[], ctx: Context) => Promise<unknown[] | undefined>;
   /** `turn_end`: a reply the provider gave ends the pass, so the next refusal starts a new one,
    * and so does an abort. The ladder's own compaction aborts its turn with the agent disconnected
    * (`session/session-maintenance.ts:1398-1399`), so that abort sends no `turn_end`. */

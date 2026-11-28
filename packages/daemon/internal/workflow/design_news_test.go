@@ -271,7 +271,7 @@ func newsLine(t *testing.T, text, opening string) string {
 // A holder owed the opening reads the gate sentence first: the opened sentence
 // (gateOpenedMessage) of the approval that opened the gate, the spec's version 5, which Dispatch
 // recorded last. A holder that was told the opening already reads no gate sentence.
-func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) {
+func TestNewsOwedTheOpeningLeadsWithTheOpenedMessage(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)

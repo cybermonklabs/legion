@@ -53,9 +53,9 @@ var idleWaitingKinds = []string{"supervise", "notice", "phase_ended", "hook_prom
 //   - A start queued for news of the approved design alone (record.SuperviseRequest.News, which
 //     its payload writes as `"news": true`). Such a start reaches only a claim already given its
 //     phase's entry, and the claim an idle release suspended is one, so the role comes back with
-//     its news. A merger's waits for its tree's design gate for the whole time the gate stays
-//     closed (the daemon's mergerWaitsForTheDesignGate), and any one waits behind a task its claim
-//     has not finished (supervise's queue).
+//     its news. A merger's waits only while its news is not recorded (the daemon's
+//     mergerWaitsForItsNews), and any one waits behind a task its claim has not finished
+//     (supervise's queue).
 //   - A worker start that waits for its issue's admission slot while no slot of the issue stands
 //     (slotWaitingStart). Its issue gave its slot back or had its work come back, and it waits in
 //     the admission line for as long as its blocker stays open or the line is ahead of it. Once

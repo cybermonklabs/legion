@@ -360,6 +360,19 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if strip < entryNumber(claimStartContract) {
 			action.PhaseNotRestarted = ""
 		}
+		// `hold` arrived at workHoldContract, and a reader below it parses both sources with a
+		// strict enumeration that lacks it, so it is served the answer without the source it
+		// cannot name, as the state serves it an issue without a `why` it cannot read. `hold` is
+		// a value of two keys, so the strip follows restore, as every value strip does, and not
+		// strip, which a key follows (followsRestore).
+		if restore < entryNumber(workHoldContract) {
+			if action.SuspendedBy == string(supervise.SuspendedByHold) {
+				action.SuspendedBy = ""
+			}
+			if action.SuspensionHeldBy == string(supervise.SuspendedByHold) {
+				action.SuspensionHeldBy = ""
+			}
+		}
 		return action, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
@@ -1930,6 +1943,32 @@ func withoutUnadmittedHeldWords(state State, restore int) (State, bool) {
 	return state, true
 }
 
+// withoutUnadmittedWhy is the issue with no `why` where that answer's `state` is a word
+// restore's reader does not admit. It reads the field's registered arrivals and takes any word
+// the table holds back from restore (fieldArrivals.heldBack), including the work hold's `held`.
+//
+// The answer goes whole and the issue stays, which is where this parts company with
+// withoutWaitingOnIssue. A reader from whyAndLineFieldsContract up to the contract before
+// shapedAnswersContract requires `state` and `reason` together, so a `why` with no `state` is
+// refused by that reader as surely as the word is, and `why` itself is optional at every contract
+// that knows it (`legionWhyView` in packages/contracts/src/legion-api.ts). No older word stands
+// for the one taken, so none is written in its place: the issue reads as one the projection gave
+// no rendered answer, a shape every reader already parses.
+//
+// The four words of whyAndLineFieldsContract arrived with the field, so they are no strip's: they
+// ride the band of that contract (withoutWhyAndLineFields), which takes `why` whole from a caller
+// whose strip is below 85, so this finds nothing to take there and writes no line.
+//
+// The issue is a value of its own, so the state the source answered is left as it was. It reports
+// whether it took the answer, which is what the log line of this strip is written from (tookOff).
+func withoutUnadmittedWhy(issue Issue, restore int) (Issue, bool) {
+	if issue.Why == nil || !arrivalsAt(issueKeyPath+"why.state").heldBack(string(issue.Why.State), restore) {
+		return issue, false
+	}
+	issue.Why = nil
+	return issue, true
+}
+
 // fieldArrivals is one enumerated field of the declared table as a value strip reads it: the
 // contract the field itself arrived at, and the contract each of its values did (arrivalsOf).
 type fieldArrivals struct {
@@ -2387,9 +2426,10 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // by the claims of its pod: true for the release records, for a refusal whose body is a
 // PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that carries
 // `replaces`, for the controller's registration that carries `watchedWorkflows`, and for an agent
-// action's answer that carries `phaseNotRestarted`, and false for every other answer. Those
-// answers' shapes moved at pauseContract, at OwnerPlanContract, at the replaces entry, at the
-// claim start entry and at the watched-workflows entry, and their writers answer from no
+// action's answer that carries `phaseNotRestarted` or names the work hold (`hold`) as a source,
+// and false for every other answer. Those answers' shapes moved at pauseContract, at
+// OwnerPlanContract, at the replaces entry, at the claim start entry, at workHoldContract and at
+// the watched-workflows entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
 // that carries no such key is the same body at every contract, so it reads none. Every other
 // answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
@@ -2416,7 +2456,8 @@ func placedByPod(id AnswerID, body any) bool {
 		return isRegistration && (registration.Replaces != "" || len(registration.WatchedWorkflows) > 0)
 	case AnswerAgentAction:
 		action, isAction := body.(AgentActionResponse)
-		return isAction && action.PhaseNotRestarted != ""
+		return isAction && (action.PhaseNotRestarted != "" || action.SuspendedBy == string(supervise.SuspendedByHold) ||
+			action.SuspensionHeldBy == string(supervise.SuspendedByHold))
 	default:
 		return false
 	}

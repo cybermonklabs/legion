@@ -306,13 +306,16 @@ type EnumeratedValue struct {
 // `waitingLine.kind`, which gained `waiting_on_issue` at 132, `capabilities.*.source`, which
 // gained `caches` at dispatch://INFRA-4036's contract (cachesSourceContract), `holdReason`, which
 // gained `task-stopped` and `children` at OwnerPlanContract, and `admission.held.*.reason`, which
-// gained `children_before_retro` and `task_stopped` there, so every other list is recorded whole
-// at its own field's arrival. An entry writes each value it adds to an older field in its own
-// file (contracts.go's enumeratedValues): the gate-basis entry adds `awaiting_children` to a held
-// row's `reason` and to an issue's `phase`, `heldFrom` and `pendingTask.phase`, and
-// `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`. (`suspendedBy` gained
-// `released` at 48 and is no row here: the operator claim answers carry it and no plugin parses
-// them.)
+// gained `children_before_retro` and `task_stopped` there. An entry writes each value it adds to
+// an older field in its own file (contracts.go's enumeratedValues): the gate-basis entry adds
+// `awaiting_children` to a held row's `reason` and to an issue's `phase`, `heldFrom` and
+// `pendingTask.phase`, and `open_on_basis` and `pending_on_basis` to `gatedSteps[].status`, and
+// the approval route's entry adds `held` to an issue's `why.state`. (`suspendedBy` gained
+// `released` at 48, and `hold` in the approval route's entry; the operator claim answers carry
+// both, and no plugin parses them. That entry also adds `hold` to two rows of the agent actions'
+// answer (AnswerAgentAction), `suspendedBy` and `suspensionHeldBy`, which pi-legion's `tools.ts`
+// parses (`LegionAgentActionResponse`), and shapeAnswer serves a caller below the entry that
+// answer without the source that names `hold`.)
 func EnumeratedFields() []EnumeratedField { return registry().enumeratedFields }
 
 // enumeratedFields is every row the numbered entries wrote: the state's own, the record's taken
@@ -469,8 +472,8 @@ var stateEnumeratedFields = []EnumeratedField{
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.part", Values: lineParts},
 	{Answer: AnswerState, KeyPath: "issues.*.waitingLine.kind", Values: lineKinds},
 	// `state` of the one rendered answer an issue that is not working now carries, which of the
-	// four facts holds it (api.WhyView.State). It arrived beside the line's own fields and is
-	// served down with them.
+	// four facts originally held it (api.WhyView.State). It arrived beside the line's own fields
+	// and is served down with them.
 	{Answer: AnswerState, KeyPath: "issues.*.why.state", Values: whyStates},
 	// All three words of `architectStalls` arrived with the key at 146, riding its band: no strip.
 	{Answer: AnswerState, KeyPath: "issues.*.architectStalls.*", Values: valuesFrom(entryTimesContract, record.ArchitectTookNothing, record.ArchitectClaimUnreachable, record.ArchitectSlowBeforeGate)},
@@ -609,10 +612,9 @@ var failureCauses = valuesFrom(recordFieldsContract,
 	supervise.CauseUnrecorded)
 
 // lineParts is every part of the admission's waiting line a member can stand in, and whyStates
-// every fact that holds an issue that is not working now. Both arrived at
-// whyAndLineFieldsContract, so each list is recorded there. lineParts stays literal:
-// record.LinePart is a numbered constant (`int`) whose words come from its String method, so no
-// string constant of the tree spells them.
+// holds the four words that arrived with why.state. Both lists arrived at whyAndLineFieldsContract.
+// lineParts stays literal: record.LinePart is a numbered constant (`int`) whose words come from
+// its String method, so no string constant of the tree spells them.
 var lineParts = valuesFrom(whyAndLineFieldsContract, "returned", "starting")
 var whyStates = valuesFrom(whyAndLineFieldsContract, WhyClaimStopped, WhyWaiting, WhyBlocked, WhyUnlisted)
 

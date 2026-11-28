@@ -62,7 +62,13 @@ type Config struct {
 	// Steps are the design-gate steps the deployment gates (config.Gates.Steps), in the order a
 	// root's architect takes them. Every hold the gate puts on a tree's work reads the whole list
 	// (classify.DesignGatesOpen), and the empty list gates no step, which is `gates.design: off`.
-	Steps          []record.DesignStep
+	Steps []record.DesignStep
+	// Hold is what a closed standing gate holds of its tree (`gates.hold`, config.Gates.Holds):
+	// config.HoldStart, the first phase of each member that has not started; or config.HoldWork,
+	// the tree's running work but the merge as well, which the close stops and the opening starts
+	// again (work_hold.go). No word holds the merge. Every word but HoldWork holds what HoldStart
+	// holds, the empty word of an engine built without it among them (holdIsWork).
+	Hold           config.Hold
 	ReviewRoundCap int
 	Linger         time.Duration
 	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
@@ -398,6 +404,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.listenerWake(ctx, tx, fact)
 	case intake.PodBackstopDue:
 		return e.podBackstopDue(ctx, tx, fact)
+	case intake.WorkHoldOpened:
+		return e.workHoldOpened(ctx, tx, fact)
 	case intake.VolumeNearFull:
 		return e.volumeNearFull(ctx, tx, fact)
 	case intake.WorkerSilent:

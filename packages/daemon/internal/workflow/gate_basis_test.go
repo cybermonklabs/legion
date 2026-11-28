@@ -157,10 +157,16 @@ func TestARegistrationOnAnApprovedBasisOpensTheStepAndRecordsIt(t *testing.T) {
 	if len(resting) != 1 || resting[0].Ref != "dispatch://LEGION-100/spec" || resting[0].Version != 3 {
 		t.Fatalf("resting-root notices = %#v, want one keyed by %s naming its document at version 3", resting, basisAncestor)
 	}
-	for _, part := range []string{gatedRoot, "spec step", "dispatch://LEGION-100/spec#b-r1@v3", "dispatch://LEGION-100/spec#b-r2@v3"} {
+	for _, part := range []string{gatedRoot, "spec step", "version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec)",
+		"dispatch://LEGION-100/spec#b-r1@v3", "dispatch://LEGION-100/spec#b-r2@v3"} {
 		if !strings.Contains(resting[0].Reason, part) {
 			t.Fatalf("the resting-root reason %q names no %q", resting[0].Reason, part)
 		}
+	}
+	// The notice reports the root's rest, never an approval of the ancestor's document, which the
+	// ancestor's own spec row may not hold yet (dispatch://INFRA-4528/comment/32e70706-fea7-4ac8-b92f-0314f34567a0).
+	if strings.Contains(strings.ToLower(resting[0].Reason), "approv") {
+		t.Fatalf("the resting-root reason %q speaks of an approval, want only the version of the ancestor's document the step rests on", resting[0].Reason)
 	}
 	if got := outboxKindCount(t, pool, gatedRoot, record.OutboxKindGateSeed); got != 1 {
 		t.Fatalf("gate seeds = %d, want the registration's one", got)

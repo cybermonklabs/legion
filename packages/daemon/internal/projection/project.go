@@ -520,8 +520,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	// records and the facts this pass already holds, so the reading costs no query, and they
 	// are read from the same facts as the live trees of the block (record.LiveRoots) — live is
 	// wider than running, and a parked root's tree is neither.
+	// The trees the work hold holds (`gates.hold: work`), each read from the record the hold keeps
+	// (record.WorkHold), so `why` names the version that closed the gate and says nothing of a
+	// tree whose close was never applied or whose hold has ended. A record of an older generation
+	// of its root holds nothing of the run that stands now.
+	holds, err := in.Store.WorkHolds(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
 	running := record.RunningRoots(own, facts)
-	whyStates(&projected, own, running, in.Stranded, rows, facts)
+	whyStates(&projected, own, running, heldTrees(own, holds), in.Stranded, rows, facts)
 	// Every root of this project's own records carries whether its tree runs (`treeRuns`), read
 	// from the same running roots, so the state serves the daemon's own rule (record.TreeRuns)
 	// rather than leaving a reader to rebuild it from the fields beside it, which decide it in no

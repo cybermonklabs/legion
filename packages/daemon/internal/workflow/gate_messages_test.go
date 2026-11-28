@@ -253,7 +253,7 @@ func TestAGateEventThatMovesNothingTellsNobody(t *testing.T) {
 
 // Under more than one gated step, the message is of the standing of every step the deployment
 // gates, not of the one row the event names. The merger merges on it, and the merger's own start
-// is held while any required step is closed (the outbox's designGateClosed over
+// is held while any required step is closed (the outbox's treeGate over
 // classify.StandingGate), so an "opened" message sent while another document is still under
 // review would merge a head whose design nobody has approved (dispatch://INFRA-714/spec R5,
 // under the steps INFRA-1272 gates). The opening is told at the spec's own approval and at no
@@ -295,8 +295,8 @@ func TestTheGateMessageIsOfEveryGatedStepAndNotTheOneTheEventNames(t *testing.T)
 	assertOpeningsOwed(t, pool, gatedRoot, gatedRoot+"/architect", gatedRoot+"/holder")
 }
 
-// The message and the merger's start hold ask one question, so they read one predicate
-// (classify.StandingGate, the outbox's designGateClosed). A step the deployment gates that
+// The message and the work hold ask one question, so they read one predicate
+// (classify.StandingGate, the outbox's treeGate). A step the deployment gates that
 // nothing has registered names no document, so the hold passes it over; a message decided over a
 // predicate that let such a step hold the work would say nothing at all while the hold moved,
 // which is what a step list that grew left behind (dispatch://INFRA-714/spec R5).
@@ -305,7 +305,7 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	// The criteria step is gated and registered by nothing; the spec step is approved, so the
-	// merger's hold lets it go and the tree's work stands released.
+	// tree's work stands released.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 3, ApprovedVersion: new(3)})
 	seedTreeLifecycle(t, pool, gatedRoot)
@@ -323,8 +323,9 @@ func TestAnUnregisteredGatedStepLeavesTheMessageAndTheHoldAgreed(t *testing.T) {
 
 // A registration writes a gate row as much as an artifact event does, and under more than one
 // gated step it can close the standing gate by itself: the architect registers its spec anew at a
-// version nobody has approved. The merger merges on the message, so a registration that told
-// nobody left it merging under a document that is with its reviewer.
+// version nobody has approved. Every phase holder is told of the close, the merger among them,
+// whose merge goes on: a registration that told nobody would leave it merging under a document
+// that is with its reviewer without its knowing.
 func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -347,18 +348,18 @@ func TestARegistrationThatClosesTheStandingGateTellsTheMerger(t *testing.T) {
 }
 
 // The other half of the same hole: a registration whose read of Dispatch carries the person's
-// approval opens the standing gate, and a merger told the gate closed waits for the message that
-// says it opened again. Without it that merger waits for a message no event will send, since the
-// approval the registration carries moves no gate afterwards. The merger and the architect took the
-// version the registration finds approved (a changes request had closed the gate on it), so each
-// is owed no news, and each is sent the opened message with the words that nothing changed since.
+// approval opens the standing gate, and a merger told the gate closed is told that it opened
+// again. Without it that merger would hear of no opening, since the approval the registration
+// carries moves no gate afterwards. The merger and the architect took the version the
+// registration finds approved (a changes request had closed the gate on it), so each is owed no
+// news, and each is sent the opened message with the words that nothing changed since.
 func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	seedMergingRoot(t, pool)
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
 		LatestVersion: 1, ApprovedVersion: new(1)})
-	// The spec step stands at a version with its reviewer, so the merger's hold holds it.
+	// The spec step stands at a version with its reviewer, so the standing gate is closed.
 	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
 		LatestVersion: 4})
 	seedTreeLifecycle(t, pool, gatedRoot)
@@ -379,9 +380,9 @@ func TestARegistrationThatOpensTheStandingGateTellsTheMerger(t *testing.T) {
 	assertOpeningsOwed(t, pool, gatedRoot)
 }
 
-// seedMergingRoot records the gated tree's root in merging, where its merger holds the phase the
-// design gate holds: the one phase a gate that moves under a running worker can let merge a head
-// whose design nobody approved.
+// seedMergingRoot records the gated tree's root in merging, where its merger holds the phase: the
+// phase whose worker merges a head while a new version of the design is with its reviewer, since no
+// value of the hold holds the merge.
 func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	seedIssue(t, pool, record.Issue{Key: gatedRoot, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
@@ -391,14 +392,19 @@ func seedMergingRoot(t *testing.T, pool *pgxpool.Pool) {
 // gateMovedBody is the whole message a role is sent for one move of LEGION-208's design gate
 // (workflow's tellGateMoved).
 func gateMovedBody(step record.DesignStep, document string, version int, open bool) string {
+	return gateMovedBodyOf("LEGION-208", step, document, version, open)
+}
+
+// gateMovedBodyOf is gateMovedBody for the design gate of tree: today's open message, which says
+// nothing of a merge, and the close message under `start`, which says the phase goes on.
+func gateMovedBodyOf(tree string, step record.DesignStep, document string, version int, open bool) string {
 	if open {
-		return fmt.Sprintf("The design gate of LEGION-208 opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", version, step, document)
+		return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
+			"and every step the deployment gates now stands open, so the design you are working to is the approved one.",
+			tree, version, step, document)
 	}
-	return fmt.Sprintf("The design gate of LEGION-208 closed: version %d of its %s document (%s) is with its reviewer, "+
-		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-		"stands open again.", version, step, document)
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
+		"so the design you are working to may change. Your phase goes on.", tree, version, step, document)
 }
 
 // treeRoleToken is the Envoy role token of one issue's role, the address a role message carries.

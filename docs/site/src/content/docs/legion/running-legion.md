@@ -837,8 +837,8 @@ What each part is for:
   finds each App's installations itself; `installations` (owner to installation id) is optional.
 - **`gates.design`**: the design gate steps, a list naming `decisions` (the root issue's decisions
   document), `criteria` (its Verification document) and `spec` (its primary document), in the
-  order a person approves them. No phase of the tree starts, no released child starts and no
-  merger merges until a person has approved the document of every step listed. A list that names
+  order a person approves them. No phase of the tree starts and no released child starts until a
+  person has approved the document of every step listed. A list that names
   `spec` and not `criteria` lets a root's architect also register the root's Verification document
   as `criteria`, and that tree then waits for that document too. The default is `[spec]`, which
   the word `root-issues` also means; the empty list `[]` skips the
@@ -847,6 +847,23 @@ What each part is for:
   resolved list at `settings.gates.design`, and the daemon publishes it onto the project's row in
   Dispatch, which `GET /api/v1/projects` answers as
   `gated_steps`.
+- **`gates.hold`**: what a new version of an approved document of a gated step holds until a person
+  approves that version, until Dispatch carries the approval after an exact undo, or until the step
+  opens on an ancestor's approval.
+  No value holds the merge: an issue in `merging` goes on, and its merger merges.
+  `start`, the default, holds the first phase of each issue that has not started, and every running phase goes on.
+  `work` also holds the tree's running work: no phase but `merging` starts.
+  The daemon stops each phase worker of the tree but the merger when its turn ends or 2 minutes after the close message reached it.
+  A stopped worker keeps its session, its phase and its task, the daemon keeps its pod,
+  and `legion claims list` shows it as `suspended:hold`. The architects go on. When the gate opens,
+  the daemon starts each worker it stopped.
+  The daemon wakes no merger for the close message under either word.
+  Any other value is refused at load:
+  `gates.hold must be start or work (got "<value>")`. A daemon release before this key refuses it
+  as an unknown key of `gates`, so set it only once the daemon carries it. `legion state --json`
+  answers the word at `settings.gates.hold`, and `legion config check` prints it as
+  `design-gate-hold=<word>`. [The design gate](/legion/legion/concepts/#the-design-gate) says what
+  each hold does.
 - **`instructions`** (optional) names a Markdown file of your standing rules (required checks,
   deploy and smoke commands, scope) that is appended to every agent's system prompt. It must hold no
   secret. The daemon reads it at boot, and again before every launch, so an edit reaches the next
@@ -1320,6 +1337,30 @@ To change a role's model later, edit its line under `modelRoles` in your `overla
 same `apply.sh` command. Pods started after that use it; a running pod keeps its files until it is
 relaunched.
 
+A root architect's approval message ([The design gate](/legion/legion/concepts/#the-design-gate))
+reaches the model as a `system` message inside the conversation only where the model takes one.
+Oh My Pi's model catalogue gives that to Opus 4.8 and later, Fable 5 and later, Mythos 5 and later,
+Sonnet 5.5 and later, and Haiku 5.5, on the `anthropic` provider whatever its base URL, and on the
+`google-vertex` and `cloudflare-ai-gateway` providers.
+On any other model, after a fallback for example, pi-legion puts the message at the end of the request's top-level system prompt, and no message of the conversation holds it.
+On an Anthropic request, that is a new last text block of `system`.
+On a chat completion, it is the end of the last leading `system` or `developer` message.
+On a Responses request, it is the end of `instructions`, or of the last leading `developer` item.
+
+Each request of the architect's own session to such a model carries the message, the requests of a side turn and of a compaction in the session included.
+A compaction on the provider's server sends no text of pi-legion, and the next request of the conversation carries the message again.
+When such a model's answer to the first request that carried the message of a version is saved, the session records the entry `legion-approval-top-level`.
+The entry names the version, the model and the key of that answer, and the session holds one such entry for each version and model.
+pi-legion logs no line for such a model.
+When the conversation returns to a model that takes a `system` message, each copy placed before goes back to its place, with the same bytes.
+
+Oh My Pi adds a date reminder at the end of a request when the date or the working directory
+changed since the conversation's last request. On the request that places a new approval message,
+the reminder would follow that message and make it a user message. On that one request, pi-legion
+moves the reminder to where Oh My Pi puts it on the next request: right after the last message the
+session holds, before the messages added for that request alone. So the approval message stays last
+and `system`, and the next request repeats the same messages before the model's answer.
+
 ## Check and start the daemon
 
 Validate the file first. `legion config check` makes every refusal boot would make from the
@@ -1328,7 +1369,7 @@ command or writing a file:
 
 ```sh
 legion config check --config legion.yaml
-# Config OK: project=WIDGETS design-gate-steps=spec
+# Config OK: project=WIDGETS design-gate-steps=spec design-gate-hold=start
 ```
 
 Then start it:
@@ -1544,14 +1585,15 @@ Closing the terminal leaves the project without one, and the daemon logs
    workflow, when a claim moves to another tree, or for a production check after the issue is done.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself suspended, but never an agent the
-   operator or the project's controller suspended: a start for an agent either of them holds waits instead, until a resume lifts the hold. The operator's resume lifts either, and the controller's only its own. A notice for a root's
+   operator or the project's controller suspended, nor a claim the work hold stopped: a start for an agent either of them holds waits instead, until a resume lifts the hold, and a start for a claim the work hold stopped waits until its tree's design gate opens or the operator resumes or retries it.
+   The operator's resume lifts either suspension, and the controller's only its own.
+   A notice for a root's
    architect that the operator or the controller suspended waits until a resume lifts that suspension. A notice for a child whose
    own architect is suspended, whoever suspended it, goes to the architect above that child, unless the daemon only released that architect's idle pod, which the notice wakes. A drain therefore
    ends with the operator resuming every agent they suspended, one `legion claims resume` each;
-   `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, or
+   `legion claims list --json` names each one's `suspendedBy` (`operator`, `controller`, `daemon`, `exit`, `released` for one whose idle pod the daemon released, `hold` for one the work hold stopped, or
    `unknown` for one suspended before this release). A daemon suspension of a claim whose issue
-   left the workflow waits for its current turn to finish, with no stop timeout: a child parked
-   in Dispatch (`backlog` or `icebox`) stops its worker only once the worker's current turn ends,
+   left the workflow waits for its current turn to finish, with no stop timeout: a child out of the workflow (`backlog`, `icebox` or `triage`) stops its worker only once the worker's current turn ends,
    and a lingering tree's claims stay suspended until the tree is re-admitted.
 
    **After the first upgrade to a release that records `suspendedBy`,** every claim already
@@ -1867,12 +1909,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
   Dispatch ranks that placed a `starting` issue and the key of its tree root; and `reason`, the
   sentence the block above prints. Beside them, on every issue that is not working now,
-  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `waiting`, the
-  line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
-  holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
-  issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
-  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose
-  worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
+  `why`, one answer with a `state` — `claim_stopped`, a claim nothing will wake; `held`, an issue
+  whose phase worker the work hold holds, whose `reason` names the version that closed the gate;
+  `waiting`, the line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue
+  the record holds in the workflow that stands in none of the three lists — and a `reason`
+  sentence; an issue holding an admission slot carries no `why` unless it also stands in
+  `admission.waiting` or `admission.blocked`, a stranded claim names it or the work hold holds it: an answered root reads `waiting`, and an issue at work whose
+  worker runs, one whose phase is `held` and a root whose ask a person has not answered yet, which `waitingOn`
   answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its
   `place` and its `length` alone, and no `partPlace`. Then, for a closed

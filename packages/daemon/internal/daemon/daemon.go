@@ -619,6 +619,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		st.PublishRoleHolders(workflow.wakeRoleHolders)
 		st.ReleaseLeftSessionClaims(workflow.wakeClaimRelease)
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
+		plan.workHoldEndedUnderStop = workflow.workHoldEndedUnderStop
 		// The project's pause (dispatch://INFRA-3759) runs its stops on this runtime's outbox, so
 		// it is built with the workflow, before supervision: the machines are handed its flag, its
 		// stop transaction and its let-out stamp (openSupervision), and the boot loads its flag
@@ -1331,6 +1332,10 @@ type plan struct {
 	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
 	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
+	// workHoldEndedUnderStop starts a claim the work hold stopped whose hold its machine found
+	// ended under the stop (workflowRuntime.workHoldEndedUnderStop); nil without a workflow,
+	// where no tree holds work.
+	workHoldEndedUnderStop func(c supervise.Claim, version int)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -2034,6 +2039,38 @@ type supervision struct {
 	// runs on a launching machine's goroutine beside the sweep.
 	podUpdateLaunchMu       sync.Mutex
 	podUpdateLaunchReplaced map[string]*launchRound
+	// podUpdateWaitsMu guards podUpdateWaitsTold, what the update-round sweep keeps between ticks
+	// of the launches that wait on a pod the work hold keeps (tellWaitingLaunches): by claim, the
+	// start of the wait the operator's side was last told of (supervise.Claim.AwaitsPodSince), so
+	// each wait is told once, and not at each sweep or at each minute's retry of the launch. The
+	// sweep and the launch hook share this record. A restart forgets both this entry and the
+	// start of the wait (supervise's startWaitsForPodRound). The next refusal begins a new wait.
+	podUpdateWaitsMu   sync.Mutex
+	podUpdateWaitsTold map[claim.Token]time.Time
+	// podUpdateHeldWorkMu guards podUpdateHeldWork, what the update-round sweep keeps between
+	// ticks of the breaking-drift rounds whose pod the work hold keeps: by issue, the round whose
+	// last replacement attempt found work or failed to read the workspace (heldWorkKeepsPod).
+	// While the hold still stops a claim of that round, the walk lifts the hold of an answer given
+	// since on its claim's tasks at each sweep (liftAnswerHolds), and does not wait for the round
+	// to reach its replacement again.
+	//
+	// The walk reads the keep from the store where the store holds it: the marks of the answers
+	// the keep lifted (supervise.Claim.UpdateHoldToldAt). It is kept here for the one case the
+	// store cannot say: a keep that lifted no answer yet. The store holds the claims the hold
+	// stopped, but not what the read found. The replacement attempt reads the workspace through a
+	// role or through the pod's launcher (readPodWorkspace). A round whose pod had no role process
+	// at its keep is the case: a claim that answered before it was released and is woken into the
+	// kept pod holds its task behind its answer, and its process has sent no report yet, which
+	// holds the round from its replacement, and so from the read, until the bound. The entry goes
+	// once the round has asked its claims again and stored every stamp of that ask (askRoundAgain),
+	// where the sweep ends the round (endPodUpdates), and where the sweep finds the issue in another
+	// round or in none (forgetHeldWorks). A restart forgets it, and the walk reads the keep from the
+	// stored marks alone then: a round whose keep lifted an answer is read kept from them, a claim
+	// the hold's opening started is read from the opening's task it holds (openedSinceAsk), and a
+	// round that has neither is kept again at its next replacement attempt, which writes the entry
+	// again. The sweep and the launch hook share this record.
+	podUpdateHeldWorkMu sync.Mutex
+	podUpdateHeldWork   map[string]string
 	// reportStore persists each report as it arrives (store.Store), so a restart renders the
 	// sessions it re-adopts without waiting for them to report again.
 	reportStore capabilityReportStore
@@ -2279,6 +2316,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
+		WorkHoldEndedUnderStop:  p.workHoldEndedUnderStop,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,

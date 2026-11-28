@@ -1260,7 +1260,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	_, message := r.openedOnBasis(approved.root, approved.parent, 1, approved.basisVersion)
 	r.openedOnBasis(approved.sibling.root, approved.parent, 1, approved.basisVersion)
 	for _, root := range []string{approved.root.Key, approved.sibling.root.Key} {
-		opened := fmt.Sprintf("An ancestor's approval opened the spec step of %s.", root)
+		opened := fmt.Sprintf("%s registered its spec step on version %d of the primary document of %s (dispatch://%s/spec), the version its registration read from Dispatch, and the step stands open on that version.",
+			root, approved.basisVersion, approved.parent.Key, approved.parent.Key)
 		if resting := writtenNotices(t, r.pool, approved.parent.Key, "resting-root"); !slices.ContainsFunc(resting, func(n record.Notice) bool { return strings.Contains(n.Reason, opened) }) {
 			t.Fatalf("the resting-root notices written for %s name no opening of %s: %+v", approved.parent.Key, root, resting)
 		}
@@ -1436,7 +1437,8 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 	r.approve(onBacklog.parent.PrimaryArtifactID)
 	r.openedOnBasis(onBacklog.root, onBacklog.parent, 1, onBacklog.basisVersion)
 	started := r.launchedArchitect(onBacklog.parent.Key)
-	restingTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", onBacklog.parent.Key, onBacklog.root.Key)
+	restingTask := fmt.Sprintf("These roots rest on %s and are still in the workflow: %s, in planning, its spec step on the primary document of %s (dispatch://%s/spec).",
+		onBacklog.parent.Key, onBacklog.root.Key, onBacklog.parent.Key, onBacklog.parent.Key)
 	if started.Pending == nil || !strings.Contains(started.Pending.Task, restingTask) {
 		t.Fatalf("the start task of %s, which the person's approval re-admitted, = %+v, want it naming %q", onBacklog.parent.Key, started.Pending, restingTask)
 	}

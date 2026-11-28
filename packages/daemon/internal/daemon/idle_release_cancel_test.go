@@ -56,7 +56,7 @@ func (r *idleRig) queueRoleMessageWake(t *testing.T, role claim.Role) string {
 func (r *idleRig) startsOf(t *testing.T, role claim.Role) []string {
 	t.Helper()
 	var tasks []string
-	for _, start := range startRequestsOf(t, r.pool, r.issue.Key) {
+	for _, start := range startRequestsOf(t, r.pool, r.issue.Key, "start") {
 		if start.Role == role {
 			tasks = append(tasks, start.Task)
 		}
@@ -312,7 +312,7 @@ func TestACancelAfterASettlementWakeTellsTheRoleTheSettlement(t *testing.T) {
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key, "start")
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."
@@ -378,7 +378,7 @@ func TestACancelWhileThePausedProjectTellsTheKeptWakeThatThePauseStoppedTheRole(
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key, "start")
 	want := workflow.WakeTask(pods.WakeChecks, detail, workflow.StoppedByPause)
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].Task != want ||
 		starts[0].WakeKind != pods.WakeChecks || starts[0].Pause != pause {
@@ -434,7 +434,7 @@ func TestACancelAfterASettlementWakeKeepsACheckLookQueuedForTheRole(t *testing.T
 		t.Fatal("the teardown left the release marked, want it cancelled")
 	}
 
-	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key, "start")
 	const cancelled = "An idle release of your issue's pod stopped your role, and that release did not finish, so your role goes on in the same pod. " +
 		"Your session, your workspace and any work you had not pushed are as you left them. "
 	const settled = "The wake is a CI settlement on your pull request's head: head1 failed build. Read the checks before you decide anything."

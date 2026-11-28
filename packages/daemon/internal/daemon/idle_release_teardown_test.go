@@ -581,7 +581,7 @@ func TestARoleAPauseStoppedBeforeAReleaseThatGaveUpIsToldTheReleasesWords(t *tes
 		rig.issue.Key).Scan(&fired); err != nil || fired != 1 {
 		t.Fatalf("the implementer's fired backstops = %d (%v), want the one the teardown armed", fired, err)
 	}
-	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key, "start")
 	if len(starts) != 1 || starts[0].Role != claim.RoleImplementer || starts[0].WakeKind != pods.WakeBackstop {
 		t.Fatalf("queued starts = %+v, want the backstop's one start of the implementer", starts)
 	}
@@ -669,7 +669,7 @@ func TestAWakeAfterAReleaseThatGaveUpClosesTheResumeItLeftOpenAndTakesItsOwn(t *
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("apply the listener's report = %#v, %v", result, err)
 	}
-	starts := startRequestsOf(t, rig.pool, rig.issue.Key)
+	starts := startRequestsOf(t, rig.pool, rig.issue.Key, "start")
 	if len(starts) != 1 || starts[0].Role != claim.RoleArchitect || starts[0].WakeKind != pods.WakeRoleMessage {
 		t.Fatalf("queued starts = %+v, want the listener wake's one start of the architect: the release that gave up took the pod the open resume waited for",
 			starts)

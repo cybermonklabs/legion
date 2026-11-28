@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -100,6 +101,56 @@ func (s *Store) CheckLaunch(ctx context.Context, c supervise.Claim) error {
 		}
 		return nil
 	})
+}
+
+// WorkHoldStands is whether the work hold of tree stands (supervise.Store.WorkHoldStands): whether
+// tree's work_holds row exists. The workflow writes the row at the hold's close, and the opening
+// takes it for update and deletes it in its own transaction (record.Store.PutWorkHold,
+// LockWorkHold, OpenWorkHold). The opening keeps the hold as the record of the tree's last
+// opening, in work_hold_openings, which this read does not read: a hold an opening ended does not
+// stand. The read takes the row for share in a transaction of its own (Transact: PostgreSQL
+// refuses a row lock in a read-only transaction), which writes no row. So a read asked while an
+// opening holds the row waits for the opening's commit and then reads no row, and no decision of
+// a claim holds the row across another store call or a call of the runtime. A read asked while the
+// caller holds a connection is refused (ErrNestedAcquire): it does not join the caller's
+// transaction, since its lock_timeout would then bound that transaction.
+//
+// The wait for the row ends at ctx's deadline, laid twice as the state route lays its bound
+// (internal/api's projectState): the context ends the Go side's wait, and the same bound is the
+// transaction's lock_timeout, which ends a lock wait inside the server. Transact ends the
+// transaction on a context apart from ctx (commitContext), so a read asked at the deadline still
+// ends its transaction.
+func (s *Store) WorkHoldStands(ctx context.Context, tree string) (bool, error) {
+	if err := s.pool.guard(ctx); err != nil {
+		return false, err
+	}
+	var bound time.Duration
+	if deadline, ok := ctx.Deadline(); ok {
+		if bound = time.Until(deadline); bound <= 0 {
+			return false, fmt.Errorf("read the work hold of %s: %w", tree, context.DeadlineExceeded)
+		}
+	}
+	var stands bool
+	err := Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
+		if bound > 0 {
+			if _, err := tx.Exec(ctx, "set local lock_timeout = "+strconv.FormatInt(max(bound.Milliseconds(), 1), 10)); err != nil {
+				return fmt.Errorf("bound the wait for the row: %w", err)
+			}
+		}
+		var one int
+		switch err := tx.QueryRow(ctx, `select 1 from work_holds where tree = $1 for share`, tree).Scan(&one); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil
+		case err != nil:
+			return err
+		}
+		stands = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("read the work hold of %s: %w", tree, err)
+	}
+	return stands, nil
 }
 
 // ReserveWorkflowTreeCleanup records the workflow close before any resource snapshot. A retry of an

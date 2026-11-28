@@ -4,15 +4,19 @@ import {
   type SessionAnswersRead,
   sessionAnswersChanged,
 } from "@legion/envoy-client/session-answers";
-import { leadingText, userTextMessage } from "./context-message";
-import { customEntries } from "./custom-entries";
-
-/** The first line of Oh My Pi's side-turn notice (`side-channel-no-tools.md`): the `developer`
- *  message `AgentSession.runEphemeralTurn` puts after the conversation, before the side prompt. */
-const SIDE_TURN_NOTICE = "Ephemeral side-channel turn; reuses current conversation context.";
-
-/** How Oh My Pi's handoff prompt (`handoff-document.md`) begins. */
-const HANDOFF_PROMPT = "<critical>\nWrite a handoff document for another instance of yourself.";
+import { splitTrailingApproval } from "@legion/pi-shared/approval-message";
+import {
+  type Conversion,
+  isAddedAnswersMessage,
+  isHandoffPrompt,
+  isSessionAnswersMessage,
+  isSideTurn,
+  leadingText,
+  messageKey,
+  nextConversion,
+} from "@legion/pi-shared/context-request";
+import { customEntries } from "@legion/pi-shared/custom-entry";
+import { userTextMessage } from "./context-message";
 
 /** The requests a copy of this extension already decided the list for: the messages array the
  *  host hands each `context` handler of one request in turn, which a handler that returns nothing
@@ -24,181 +28,23 @@ const processGlobal = globalThis as typeof globalThis & { [DECIDED_KEY]?: WeakSe
 const decided = processGlobal[DECIDED_KEY] ?? new WeakSet<object>();
 processGlobal[DECIDED_KEY] = decided;
 
-/** The text of `message` when the host wrote it (`attribution: "agent"`) with `role`. */
-function hostText(message: unknown, role: string): string | undefined {
-  return typeof message === "object" &&
-    message !== null &&
-    "attribution" in message &&
-    message.attribution === "agent"
-    ? leadingText(message, role)
-    : undefined;
-}
-
 /**
  * Whether the request's last message is the list of people's answers as an older copy of this
  * extension appends it, after the last message on every request: a user message whose first text
- * block starts with the list's marker or the failure line's. Only that one position is checked,
- * as `withDispatchFirst` checks only its own: a tool result, delivered message or reply quoting
- * the marker earlier in the conversation is conversation, which must not switch the list off. A
- * copy of this version records the array it returns in `decided` instead, wherever its list sits.
+ * block starts with the list's marker or the failure line's (`isSessionAnswersMessage`). It does
+ * not read the stamp: `placedLegacy` reads it (`isAddedAnswersMessage`), and leaves a person's own
+ * message that quotes the marker as it is. Only that one position is checked, as
+ * `withDispatchFirst` checks only its own: a tool result, delivered message or reply quoting the
+ * marker earlier in the conversation is conversation, which must not switch the list off. A copy
+ * of this version records the array it returns in `decided` instead, wherever its list sits.
  */
 function endsWithSessionAnswers(messages: readonly unknown[]): boolean {
-  const text = leadingText(messages.at(-1), "user");
-  return text !== undefined && isSessionAnswersText(text);
+  return isSessionAnswersMessage(messages.at(-1));
 }
 
-/** A context message as matching reads it: its role and timestamp, and a tool result's call id,
- *  since the tool results of one round can share a timestamp. */
-function messageKey(message: unknown): string {
-  if (typeof message !== "object" || message === null) return "";
-  const role = "role" in message ? String(message.role) : "";
-  const timestamp = "timestamp" in message ? String(message.timestamp) : "";
-  const call = "toolCallId" in message ? `#${String(message.toolCallId)}` : "";
-  return `${role}@${timestamp}${call}`;
-}
-
-/**
- * Whether the request is a side turn: Oh My Pi's `runEphemeralTurn` (a Dispatch BTW, the stop-time
- * self-check, `/btw`, the idle recap) converts `[...conversation, notice, ...history, prompt]`,
- * where the notice is a host `developer` message, the history `/btw`'s earlier questions and
- * answers, and the prompt a host user message.
- */
-function isSideTurn(messages: readonly unknown[]): boolean {
-  if (hostText(messages.at(-1), "user") === undefined) return false;
-  for (let index = messages.length - 2; index >= 0; index -= 1) {
-    const message = messages[index];
-    const role =
-      typeof message === "object" && message !== null && "role" in message
-        ? message.role
-        : undefined;
-    if (role !== "user" && role !== "assistant") {
-      return hostText(message, "developer")?.includes(SIDE_TURN_NOTICE) === true;
-    }
-  }
-  return false;
-}
-
-/**
- * The context message a branch entry becomes, as far as matching reads it, or undefined for an
- * entry that becomes none. Oh My Pi builds a compaction's messages from the branch with
- * `getMessageFromEntry` (`packages/agent/src/compaction/messages.ts:302-320` at the pinned tag;
- * 18.12.2's bundle named it `MI`, and the two constructors `yu` and `hm`):
- *   if (entry.type === "message") return entry.message;
- *   if (entry.type === "custom_message") return createCustomMessage(entry.customType, entry.content,
- *     entry.display, entry.details, entry.timestamp, entry.attribution);
- *   if (entry.type === "branch_summary") return createBranchSummaryMessage(entry.summary,
- *     entry.fromId, entry.timestamp);
- * where `createCustomMessage` returns `{role: "custom", ..., timestamp: new Date(timestamp).getTime()}`
- * and `createBranchSummaryMessage` `{role: "branchSummary", ..., timestamp: new Date(timestamp).getTime()}`.
- * A `compaction` entry becomes no message there: the earlier summary heads the conversion, so no cut
- * ends on it.
- */
-function entryMessage(entry: unknown):
-  | {
-      readonly role?: unknown;
-      readonly timestamp?: unknown;
-      readonly stopReason?: unknown;
-      readonly content?: unknown;
-      readonly toolCallId?: unknown;
-    }
-  | undefined {
-  if (typeof entry !== "object" || entry === null || !("type" in entry)) return undefined;
-  if (entry.type === "message") {
-    return "message" in entry && typeof entry.message === "object" && entry.message !== null
-      ? entry.message
-      : undefined;
-  }
-  const role =
-    entry.type === "custom_message"
-      ? "custom"
-      : entry.type === "branch_summary"
-        ? "branchSummary"
-        : undefined;
-  if (role === undefined) return undefined;
-  const timestamp =
-    "timestamp" in entry && typeof entry.timestamp === "string"
-      ? new Date(entry.timestamp).getTime()
-      : undefined;
-  return { role, timestamp };
-}
-
-/** Where a request ends on the session's branch: at a message with a later one after it, at the
- *  branch's last message (`tip`, the id of the branch's last entry that becomes a message), or at
- *  a message the branch does not hold. */
-type BranchPosition =
-  | { readonly at: "before" }
-  | { readonly at: "last"; readonly tip: string }
-  | { readonly at: "absent" };
-
-/** The tool call ids of `message` when it is an assistant reply that failed or was aborted. */
-function failedCalls(message: {
-  readonly role?: unknown;
-  readonly stopReason?: unknown;
-  readonly content?: unknown;
-}): string[] {
-  if (
-    message.role !== "assistant" ||
-    (message.stopReason !== "error" && message.stopReason !== "aborted")
-  ) {
-    return [];
-  }
-  return (Array.isArray(message.content) ? message.content : []).flatMap((block: unknown) =>
-    typeof block === "object" &&
-    block !== null &&
-    "type" in block &&
-    block.type === "toolCall" &&
-    "id" in block
-      ? [String(block.id)]
-      : []
-  );
-}
-
-/**
- * Where the request's last message sits on the session's branch, matched by role and timestamp.
- * Oh My Pi's Anthropic remote compaction (`buildLiveProviderContext`) converts the conversation up
- * to its cut alone, counts the result, and keeps that many messages of the whole conversation's
- * conversion: a list on the first would make it keep one message past the cut. A main-loop request
- * ends at a message not yet written, or at the branch's last. A failed or aborted reply, and the
- * results the host wrote for its tool calls, which a retry drops from the context but not from the
- * branch (`turn-recovery`), do not count as later.
- */
-function branchPosition(messages: readonly unknown[], entries: readonly unknown[]): BranchPosition {
-  const last = messages.at(-1);
-  if (typeof last !== "object" || last === null || !("timestamp" in last) || !("role" in last)) {
-    return { at: "absent" };
-  }
-  const dropped = new Set(
-    entries.flatMap((entry) => {
-      const message = entryMessage(entry);
-      return message === undefined ? [] : failedCalls(message);
-    })
-  );
-  let later = false;
-  let tip: string | undefined;
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index];
-    const message = entryMessage(entry);
-    if (message === undefined) continue;
-    tip ??= typeof entry === "object" && entry !== null && "id" in entry ? String(entry.id) : "";
-    if (message.role === last.role && message.timestamp === last.timestamp) {
-      return later ? { at: "before" } : { at: "last", tip };
-    }
-    const failed =
-      (message.role === "assistant" &&
-        (message.stopReason === "error" || message.stopReason === "aborted")) ||
-      (message.role === "toolResult" && dropped.has(String(message.toolCallId)));
-    if (!failed) later = true;
-  }
-  return { at: "absent" };
-}
-
-/** A session's last decided conversion: a remote compaction's cut (`"cut"`), or a request with its
- *  key (undefined unless it ended at the branch's last message) and whether it came right after a
- *  cut. */
-type Conversion = "cut" | { readonly key: string | undefined; readonly afterCut: boolean };
-
-/** Each session's last decided conversion, by the session's `sessionManager`. It lives on
- *  `globalThis` as `decided` does, since only the copy that decides a request records it. */
+/** Each session's last decided conversion (`nextConversion`), by the session's `sessionManager`.
+ *  It lives on `globalThis` as `decided` does, since only the copy that decides a request records
+ *  it. */
 const CONVERSIONS_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers-conversions.v1");
 const conversionsGlobal = globalThis as typeof globalThis & {
   [CONVERSIONS_KEY]?: WeakMap<object, Conversion>;
@@ -278,12 +124,13 @@ export const ANSWERS_SENT_ENTRY = "envoy-answers-sent";
 
 /** One answers message a request sent, as the session records it (`ANSWERS_SENT_ENTRY`'s data):
  *  `after`, the `messageKey` of the request's last message before the answers message was added,
- *  which every later request that still holds that message carries it right after; `blocks`, the
- *  exact text of each of its text blocks in order, of which there is at least one, which it is
- *  rebuilt from with no constant read again, so a later release that rewords the sentence still
- *  rebuilds the old bytes; and `words`, the read's words when the read gave them
- *  (`CarriedAnswers.words`). Its kind is its first block's: a list, the "no item" list included,
- *  starts with `SESSION_ANSWERS_MARKER`, and the failure line with its own marker. */
+ *  never a trailing approval message (`withSessionAnswers`), which every later request that still
+ *  holds that message carries it right after; `blocks`, the exact text of each of its text blocks
+ *  in order, of which there is at least one, which it is rebuilt from with no constant read again,
+ *  so a later release that rewords the sentence still rebuilds the old bytes; and `words`, the
+ *  read's words when the read gave them (`CarriedAnswers.words`). Its kind is its first block's: a
+ *  list, the "no item" list included, starts with `SESSION_ANSWERS_MARKER`, and the failure line
+ *  with its own marker. */
 export interface AnswersSent {
   readonly after: string;
   readonly blocks: readonly [string, ...string[]];
@@ -704,6 +551,15 @@ export interface SessionAnswersRequest {
  * `context` handler adds as per-call, and its Anthropic placement puts no cache anchor on a
  * per-call message, so every byte before the message a change appends, the messages sent before
  * it included, is the cached prefix of the request before it.
+ *
+ * A request that ends with a run of approval messages (`splitTrailingApproval`: the message
+ * pi-legion places while a person's approval of the spec stands) is decided as the request up to
+ * the message before that run (`withAnswers`), and the run goes back after what that gives, so the
+ * approval message stays the request's last message whichever plugin's `context` handler runs
+ * first. The message before the run is where the request ends on the branch (`branchPosition`),
+ * the last message every check above reads, and the anchor an answers message appended is
+ * recorded after: an approval message is no session message, and a later request holds it only
+ * where pi-legion rebuilds it, so no answers message anchors on one.
  */
 export async function withSessionAnswers(
   messages: readonly unknown[],
@@ -711,36 +567,31 @@ export async function withSessionAnswers(
 ): Promise<unknown[] | undefined> {
   if (decided.has(messages)) return undefined;
   decided.add(messages);
+  const { head, tail } = splitTrailingApproval(messages);
+  const answered = await withAnswers(head, request);
+  if (answered === undefined || tail.length === 0) return answered;
+  const withApproval = [...answered, ...tail];
+  decided.add(withApproval);
+  return withApproval;
+}
+
+/**
+ * `withSessionAnswers`'s rule for `messages`, a request without its trailing approval messages.
+ * It awaits nothing, so a request that reads takes its place among the session's requests
+ * (`deciding`) as it begins, in the order the requests began.
+ */
+function withAnswers(
+  messages: readonly unknown[],
+  request: SessionAnswersRequest
+): Promise<unknown[] | undefined> | unknown[] | undefined {
   if (endsWithSessionAnswers(messages)) return placedLegacy(messages, request);
-  if (
-    isSideTurn(messages) ||
-    hostText(messages.at(-1), "user")?.startsWith(HANDOFF_PROMPT) === true
-  ) {
-    return undefined;
-  }
+  if (isSideTurn(messages) || isHandoffPrompt(messages)) return undefined;
   const entries = request.branch() ?? [];
-  const position = branchPosition(messages, entries);
-  const previous = conversions.get(request.session);
-  if (position.at === "before") {
-    conversions.set(request.session, "cut");
-    return undefined;
-  }
-  // What the request converted, for telling a repeat of it apart: the branch's last message and
-  // each message's role and timestamp.
-  const key =
-    position.at === "last" ? [position.tip, ...messages.map(messageKey)].join("\n") : undefined;
-  conversions.set(request.session, { key, afterCut: previous === "cut" });
-  if (
-    key !== undefined &&
-    typeof previous === "object" &&
-    previous.key === key &&
-    !previous.afterCut &&
-    request.compacting()
-  ) {
-    return undefined;
-  }
+  const { conversion, kind } = nextConversion(conversions.get(request.session), messages, entries);
+  conversions.set(request.session, conversion);
+  if (kind === "cut" || (kind === "repeat" && request.compacting())) return undefined;
   const earlier = deciding.get(request.session);
-  const decision = decidedInTurn(messages, entries, earlier, previous, request);
+  const decision = decidedInTurn(messages, entries, earlier, kind === "afterCut", request);
   deciding.set(
     request.session,
     decision.then(
@@ -758,19 +609,19 @@ export async function withSessionAnswers(
  * read again then; with `entries`, the branch as the request began, when the second read gives
  * undefined because the host is on another session. A read that throws still waits on `earlier`
  * before this decision fails with its error, so the request after it never decides ahead of the
- * one before it. `previous` is the session's conversion before this request (`conversions`):
- * right after a remote compaction's cut, the request goes through the compaction path.
+ * one before it. `afterCut` says the request came right after a remote compaction's cut
+ * (`nextConversion`): it goes through the compaction path.
  */
 async function decidedInTurn(
   messages: readonly unknown[],
   entries: readonly unknown[],
   earlier: Promise<void> | undefined,
-  previous: Conversion | undefined,
+  afterCut: boolean,
   request: SessionAnswersRequest
 ): Promise<unknown[] | undefined> {
   const [read] = await Promise.allSettled([request.read(), earlier]);
   if (read.status === "rejected") throw read.reason;
-  const compacting = previous === "cut" || request.compacting();
+  const compacting = afterCut || request.compacting();
   return decide(messages, () => request.branch() ?? entries, read.value, request, compacting);
 }
 
@@ -800,11 +651,9 @@ function placedLegacy(
 ): unknown[] | undefined {
   const last = messages.at(-1);
   const text = leadingText(last, "user");
-  // The list a copy adds is stamped 0 (`userTextMessage`); a person's own message quoting the
-  // marker is theirs, never moved.
-  const added =
-    typeof last === "object" && last !== null && "timestamp" in last && last.timestamp === 0;
-  if (text === undefined || !added) return undefined;
+  // The list a copy adds carries `ADDED_MESSAGE_TIMESTAMP` (`isAddedAnswersMessage`). A person's
+  // own message that quotes the marker is theirs, never moved.
+  if (text === undefined || !isAddedAnswersMessage(last)) return undefined;
   const recorded = conversions.get(request.session);
   const compacting = (typeof recorded === "object" && recorded.afterCut) || request.compacting();
   const reason = readLineFailure(text);

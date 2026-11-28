@@ -88,11 +88,12 @@ func States() []ClaimState {
 
 // SuspendSource is who suspended a claim. The daemon resumes a suspended claim by rule on the
 // triggers main had — its phase's start, a workflow delivery, the controller keeper
-// (RequestRuleResume) — unless an operator or the project's controller suspended its agent: that
-// suspension holds until a resume lifts it (SuspendSource.Holds).
-// The boot's resume by rule, which main did not have, acts only on a source ByRule names, so it
-// never overrides a drain recorded before the source existed, and it leaves a released claim to
-// the wake that brings its pod back.
+// (RequestRuleResume) — unless an operator or the project's controller suspended its agent, or the
+// work hold did: an operator's or the controller's suspension holds until a resume lifts it
+// (SuspendSource.Holds), and the work hold's until the hold ends (Machine.EndHold) or an
+// operator acts on the claim. The boot's resume by rule, which main did not have, acts only on a
+// source ByRule names, so it never overrides a drain recorded before the source existed, and it
+// leaves a released claim to the wake that brings its pod back.
 type SuspendSource string
 
 const (
@@ -126,6 +127,17 @@ const (
 	// its pod back, the stranded report once a wake has run out with no turn, and that cutover
 	// repair.
 	SuspendedByReleased SuspendSource = "released"
+	// SuspendedByHold: the work hold stopped the claim (`gates.hold: work`): its tree's standing
+	// design gate closed, so no phase of the tree may run, and the daemon
+	// stopped this phase worker when its turn ended or at the deadline its stop named, its session
+	// kept. The claim keeps its phase and its pending task, as an operator's suspension does. No
+	// rule resumes it — no start row, task delivery, notice, wake, CI settlement, Envoy message, the
+	// boot's resume by rule, admission's slot repair nor a pause's resume (Machine.fence, turnDoor):
+	// only the hold's end starts it, with one task (Machine.EndHold), or an operator's own resume or
+	// retry; the controller's resume or retry waits (turnDoor). An operator's suspension, the
+	// controller's and the daemon's own (a close, a linger, a move out of the workflow) take it
+	// over, and it takes over a released claim and a pause's stop (suspensionRank).
+	SuspendedByHold SuspendSource = "hold"
 )
 
 // allSuspendSources is every SuspendSource, in the order the constants above declare them.
@@ -133,14 +145,14 @@ const (
 // package, so a source added above and left out here fails that test.
 var allSuspendSources = []SuspendSource{
 	SuspendedByUnknown, SuspendedByOperator, SuspendedByController,
-	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased,
+	SuspendedByDaemon, SuspendedByExit, SuspendedByReleased, SuspendedByHold,
 }
 
 // SuspendSources is every source a suspended claim can record, in the order they are declared:
 // the one list a test outside this package walks to cover each source. They are the values the
 // store's check constraint allows beside the empty source of a claim that is not suspended
-// (internal/store/migrations/20261115060739_claim_suspended_by_controller.up.sql). It is a copy,
-// so no caller changes the package's own list.
+// (internal/store/migrations/20261120224328_claim_suspended_by_hold.up.sql). It is a copy, so
+// no caller changes the package's own list.
 func SuspendSources() []SuspendSource {
 	return slices.Clone(allSuspendSources)
 }
@@ -150,7 +162,8 @@ func SuspendSources() []SuspendSource {
 // suspended phase workers the stranded report leaves out. A release is not one of them. It is a
 // stop the daemon recorded too, but no rule here acts on it: the boot's resume by rule leaves it to
 // its role's wake (workflow's booted), and the stranded report holds it to R6's one fact
-// (workflow's stranded).
+// (workflow's stranded). Nor is the work hold's stop: the boot resumes no claim it holds, which
+// only the hold's end starts (Machine.EndHold).
 func (s SuspendSource) ByRule() bool {
 	return s == SuspendedByDaemon || s == SuspendedByExit
 }
@@ -164,15 +177,26 @@ func (s SuspendSource) Holds() bool {
 	return s == SuspendedByOperator || s == SuspendedByController
 }
 
+// RuleMayLift is whether a daemon rule may lift a suspension by this source: every source but one
+// that holds (Holds), which only a resume lifts, and the work hold's (SuspendedByHold), which only
+// the hold's end (Machine.EndHold) or an operator's own resume or retry lifts. It is the one
+// statement of that chain, and three packages read it of a suspended claim: Claim.RuleMayResume,
+// admit's repair of a slotted worker that holds no task, and internal/daemon's news over a claim
+// as the record holds it (recordedClaimTakesNews).
+func (s SuspendSource) RuleMayLift() bool {
+	return !s.Holds() && s != SuspendedByHold
+}
+
 // RetiresPhaseTask is whether a suspension by this source ends the claim's phase, so a task queued
 // for that phase goes with it (settle): a suspension of the daemon's own does — the workflow's (a
 // park, a linger, a close), a root's exit, and one recorded before sources existed (unknown, or
 // none). Every other source does not — the two that hold (Holds), an operator's and the
-// controller's, and a release. Each of those has this same agent resumed in the same phase — the
-// first two by their holder's resume, a released agent at its role's next wake — so the pending
-// task waits through the suspension and is sent on that resume.
+// controller's, a release and the work hold. Each of those has this same agent resumed in the
+// same phase — the first two by their holder's resume, a released agent at its role's next wake,
+// the hold's at its end — so the pending task waits through the suspension and is sent on that
+// resume.
 func (s SuspendSource) RetiresPhaseTask() bool {
-	return !s.Holds() && s != SuspendedByReleased
+	return !s.Holds() && s != SuspendedByReleased && s != SuspendedByHold
 }
 
 // SessionLoss is why a launch forgot the session its claim recorded and started a fresh agent
@@ -558,6 +582,12 @@ type Claim struct {
 	// process there. Three functions of internal/daemon read it: podLocator, awaitsRoundPod and
 	// podProcess. The doc of awaitsRoundPod says what the round does with such a claim.
 	AwaitsPod *runtime.Locator
+	// AwaitsPodSince is when the wait for that pod began: the refusal that began it, not a retry
+	// of it (startWaitsForPodRound), and the zero time where AwaitsPod is nil. It is memory only,
+	// as AwaitsPod is, and Machine.Claim and View report it beside AwaitsPod. The daemon's update
+	// round reads it to tell the operator's side once of each wait that begins on a pod the work
+	// hold keeps (internal/daemon's tellWaitingLaunches), and not at each minute's retry.
+	AwaitsPodSince time.Time
 	// RegisteredPods is the set of pods, by uid, in which an agent of this claim registered a
 	// session, as its machine knows it: each registration adds the pod of the process that
 	// registered (register), and a process in no pod (a tmux pane, a locator with no pod) adds
@@ -634,6 +664,25 @@ type Claim struct {
 	// UpdateToldAt is when this round was last told to the controller, so one round is not told
 	// again at every sweep that finds it open.
 	UpdateToldAt *time.Time
+	// UpdateHoldToldAt is when the daemon told this claim's role that its round waits for the
+	// tree's work hold, and nil until it did (Machine.PodUpdateHoldTold, internal/daemon's
+	// liftAnswerHolds): the round's read of the workspace kept the pod for the work of a claim the
+	// work hold stopped, so the round cannot end before the hold's opening or a read that finds
+	// that work pushed. While it is set, this claim's answer holds none of its tasks
+	// (answeredOpenRound), and the answer still counts for the round, so the round does not ask
+	// the claim again at each sweep. The round's ask again clears it (Machine.PodUpdateAskedAgain),
+	// and so does the round's end.
+	UpdateHoldToldAt *time.Time
+	// UpdateAskedAgainAt is when the round asked this claim again, and nil while it has not: the
+	// work hold kept the round's pod, and the replacement can be made again, at the hold's opening,
+	// once a read finds the held work pushed, or once an operator acted on a claim the hold stopped
+	// (internal/daemon's askRoundAgain, Machine.PodUpdateAskedAgain). The round asks again each
+	// claim whose answer the hold lifted (UpdateHoldToldAt), each claim the opening started and
+	// each other claim it asks. The round's new bound starts at the latest such stamp of its
+	// claims and not at the opening (internal/daemon's roundStartedAt, roundBound), so every role
+	// the round asks gets the round's whole grace once more. A later ask again moves it on, and the
+	// round's end clears it.
+	UpdateAskedAgainAt *time.Time
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
 	// (launchAfter).
@@ -888,21 +937,31 @@ func (c Claim) MessageMarked() bool {
 	return !c.MessageMarkAt.IsZero() && c.MessageMarkAt.After(c.LastTurnStart)
 }
 
-// RuleMayResume says whether the rule may resume this suspended claim: every suspension but one
-// that holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for
-// the controller's suspension the controller's (HeldAgainst).
+// RuleMayResume says whether the rule may resume this suspended claim: a suspension by a source
+// whose suspension a rule may lift (SuspendSource.RuleMayLift), so every suspension but one that
+// holds (SuspendSource.Holds), which holds until a resume lifts it — the operator's, or for the
+// controller's suspension the controller's (HeldAgainst) — and the work hold's, which holds until
+// the hold ends (WorkHeld, Machine.EndHold).
 func (c Claim) RuleMayResume() bool {
-	return c.State == StateSuspended && !c.SuspendedBy.Holds()
+	return c.State == StateSuspended && c.SuspendedBy.RuleMayLift()
 }
 
 // PassedOverByRound is whether a pod update round passes over this claim by R1's rule, read of
 // the claim alone. The round does not ask such a claim, does not wait for it, and does not wake or
-// resume it (dispatch://INFRA-4109 R1). It is every suspension the rule may resume
-// (RuleMayResume): a suspension by the daemon, by a root's exit, by an idle release, or by an
-// unknown source. Such a claim runs no process and no turn in the pod, so an ask reaches no
-// session. A wake or a resume for the ask would override the reason the daemon stopped the claim.
-// For a released claim that reason is the approved decision of dispatch://INFRA-2981: an
-// idle-released pod is not woken to be asked, because it holds no turn to interrupt.
+// resume it (dispatch://INFRA-4109 R1). It is every suspension but one that holds: a suspension by
+// the daemon, by a root's exit, by an idle release, by the work hold, or by an unknown source.
+// Such a claim runs no process and no turn in the pod, so an ask reaches no session. A wake or a
+// resume for the ask would override the reason the daemon stopped the claim. For a released claim
+// that reason is the approved decision of dispatch://INFRA-2981: an idle-released pod is not woken
+// to be asked, because it holds no turn to interrupt. For a claim the work hold stopped it is the
+// closed design gate of its tree: only the hold's end (Machine.EndHold) or an operator's own resume
+// or retry starts it.
+//
+// So it is wider than RuleMayResume, which leaves the work hold's suspension out: no rule resumes
+// a held claim, and the round has nothing to ask it either. It reads the stored suspension alone.
+// A work hold's stop that is still held for the agent's turn (WorkHeld with SuspensionHeld) leaves
+// the claim in the state of that turn: its agent still runs in the pod and can answer, so the
+// round asks it and waits for it.
 //
 // The round makes one exception that the claim does not carry: a claim a project's pause stopped
 // is suspended released too, and the round asks it once its agent is ready and waits for it while
@@ -921,7 +980,7 @@ func (c Claim) RuleMayResume() bool {
 // internal/daemon's roundAsks (through roundClock.passesOver) and PublishUpdateAsk both read this
 // method, so the ask, the wait and the publish state R1's rule once.
 func (c Claim) PassedOverByRound() bool {
-	return c.RuleMayResume()
+	return c.State == StateSuspended && !c.SuspendedBy.Holds()
 }
 
 // Released is whether the claim is the one suspension a wake brings back: the daemon released its
@@ -984,6 +1043,44 @@ func (c Claim) RuleHoldError() error {
 	}
 }
 
+// WorkHeld is whether the work hold holds the claim (SuspendedByHold): the hold suspended it
+// (StoppedByHold), or the hold's stop is held for its agent's turn, its compaction or its launch's
+// ready. It is RuleHolds's twin for the hold rather than an arm of it, because RuleHolds reads "a
+// person holds this claim" (the pod update round's wait, the stranded report), which the hold is
+// not. A start of the claim waits while it holds (StartedBy), and so does every request a rule
+// makes that could start a turn of a claim the hold suspended (Machine.fence), the project's
+// controller's resume and retry among them. Only the hold's end lifts it (Machine.EndHold), or an
+// operator's own resume or retry; an operator's suspension, the controller's and the daemon's own
+// take it over.
+func (c Claim) WorkHeld() bool {
+	if c.SuspensionHeld {
+		return c.SuspensionHeldBy == SuspendedByHold
+	}
+	return c.StoppedByHold()
+}
+
+// StoppedByHold is whether the work hold stopped the claim: it stands suspended by the hold
+// (SuspendedByHold), not a stop of it held for the agent's turn, which the hold's end drops rather
+// than starts (Machine.EndHold). It reads the claim's two columns through HoldStopped.
+func (c Claim) StoppedByHold() bool {
+	return HoldStopped(c.State, c.SuspendedBy)
+}
+
+// HoldStopped is whether a claim in state, suspended by by, stands stopped by the work hold. It is
+// the one statement of "stopped by the hold": Claim.StoppedByHold reads it, and through it WorkHeld
+// and internal/daemon's outbox of a claim its start or its news reaches, and so does
+// internal/pods' view of a claim, which carries the two columns and not a Claim (IdleClaim.WorkHeld).
+func HoldStopped(state ClaimState, by SuspendSource) bool {
+	return state == StateSuspended && by == SuspendedByHold
+}
+
+// WorkHoldError says why a start or a request waits: the work hold, which only the hold's end or
+// an operator's own resume or retry lifts.
+func (c Claim) WorkHoldError() error {
+	return fmt.Errorf("the claim is held by the work hold (%s); it waits for its tree's standing design gate to open: %w",
+		SuspendedByHold, ErrHeldByWorkHold)
+}
+
 // ClaimView is a claim as its machine last published it (Machine.View), with what only the decision
 // in flight knows.
 type ClaimView struct {
@@ -1022,8 +1119,31 @@ func (c Claim) treeRoot() bool { return claim.IsTreeArchitect(c.Role, c.Issue, c
 // StreamTurnEnd, IssueTurnEnded, StreamPromptResult, StreamClosed, StreamLateRefusal,
 // PromptAcked, PromptRefused, Timer, StalePlugin, PodUpdateOpen, PodUpdateEnded,
 // PodUpdateSignalled, ResumePause, and the requests. The transition table has a row or a named
-// ignore for every one in every state.
-type Event interface{ isEvent() }
+// ignore for every one in every state. Its one method seals the set and makes each type declare
+// whether it can start or resume a turn of the claim's agent, and whose act it is when it can
+// (turnDoor): a type added later declares its door or does not compile.
+type Event interface{ door() turnDoor }
+
+// turnDoor is whether an event can start or resume a turn of its claim's agent, and whose act it
+// is when it can (Event.door). It is the one list of those doors, which the work hold reads to
+// hold a claim it stopped (Machine.fence).
+type turnDoor int
+
+const (
+	// noDoor is an event that starts no turn: it reports one, or what a process did, or it stops,
+	// closes or records something of the claim.
+	noDoor turnDoor = iota
+	// ruleDoor is a request that can start or resume a turn, made by a rule of the daemon's or by
+	// anyone but the operator acting on this claim: the outbox's start and its tasks, a wake, the
+	// controller keeper, the boot's relaunch, a pause's resume, the operator's own task and its
+	// spawn, the project's controller's resume and retry, its fresh session's among them (askedDoor),
+	// a compaction, the agent's ready. The work hold holds each of these.
+	ruleDoor
+	// ownerDoor is the operator's own resume or retry of this claim (RequestResume and
+	// RequestAskedRetry whose By is the operator: the operator route's, and its fresh session's):
+	// an operator's act on a claim overrides the work hold, so it starts a claim the hold stopped.
+	ownerDoor
+)
 
 // Store is the persistence a machine writes through. A claim and its pending delivery are
 // written separately: the delivery changes on every send, the claim far less often.
@@ -1066,6 +1186,16 @@ type Store interface {
 	// frees nothing, so the claim's record of which abandoned session a release freed never
 	// disagrees with the names the store still holds for it.
 	ReleaseHolds(ctx context.Context, c Claim, holds []Hold) ([]Hold, error)
+	// WorkHoldStands is whether the work hold of tree stands: whether the tree's work_holds row
+	// exists. The workflow writes that row at the hold's close. The opening takes it for update
+	// before it reads the tree's claims, and deletes it in that same transaction (workflow's
+	// tellAndEndWorkHold). The read takes the row for share in a transaction of its own, apart from
+	// the claim writes, which writes nothing and ends before the read returns. So a read asked while
+	// an opening holds the row waits for the opening's commit and then reads no row, and no read
+	// holds an opening back once it returns. The wait ends at ctx's deadline. A decision that may
+	// make the hold's stop reads it before it decides (Machine.readHoldForStop), and once the
+	// hold's stop is written, the machine reads it again (Machine.holdReadAfterStop).
+	WorkHoldStands(ctx context.Context, tree string) (bool, error)
 }
 
 // Specs builds the part of a launch the claim does not carry — the pane's environment, its
@@ -1390,6 +1520,18 @@ type Deps struct {
 	// tells nobody, as it does for TaskConfirmed above. It is called inside the machine's
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
+	// WorkHoldEndedUnderStop is told of a claim the work hold stopped once the machine finds the
+	// hold of the claim's tree ended under that stop: the read of the tree's work hold row after
+	// the stop's write found the row gone (holdReadAfterStop), or the hold's stop asked again of
+	// the claim it already stopped, whose stop write is in the store, found it gone
+	// (readHoldForStop). The opening may have read the claim before the stop's write and started
+	// nothing of it. version is the version of the gated document that closed the gate, as the
+	// hold's stop named it (RequestSuspend.HoldVersion). The daemon applies the fact of the hold's
+	// end at once (intake.WorkHoldOpened), which starts each claim the hold stopped that no
+	// opening start covers. nil tells nobody: a daemon with no workflow keeps no hold. It is
+	// called inside the machine's decision, which holds no lock on the row, and the fact it
+	// applies waits there for the lock every fact takes.
+	WorkHoldEndedUnderStop func(c Claim, version int)
 	// Paused is the daemon's project pause flag (decision 18 of dispatch://INFRA-3759's plan):
 	// the id of the open pause and true while the project is paused, 0 and false while it runs.
 	// The daemon hands the pause service's method value (internal/pause's Service.Paused), which
@@ -1623,6 +1765,26 @@ var ErrHeldByController = wait.New("the suspension holds until the controller or
 // nothing of the claim changes. The refusal is no wait: nothing the daemon does ends it, and the
 // controller asks the operator instead.
 var ErrOperatorHolds = errors.New("the operator's suspension holds the agent, and only the operator's resume lifts it")
+
+// ErrHeldByWorkHold is a start, or a request that could start a turn, meeting a claim the work
+// hold holds (Claim.WorkHeld, Machine.fence): a wait, not a fault — the hold's end starts the
+// claim with one task (Machine.EndHold), and an operator's own resume or retry starts it before
+// that. WorkHoldError wraps it for a start; the fence answers it inside a RefusedError naming the
+// request. The daemon logs it as the wait it is, never as a failed decision.
+var ErrHeldByWorkHold = wait.New("the work hold holds the claim until its tree's standing design gate opens")
+
+// ErrWorkHoldEnded is the work hold's stop (RequestSuspend, By SuspendedByHold) meeting a tree
+// whose hold the opening has ended: the decision read the tree's work hold row
+// (Store.WorkHoldStands) and found no row. The stop is not made. Where the stop's row posts the
+// stop again while that stop is held over the claim, the held stop is dropped, as every decision
+// that reads no row drops it (readHoldForStop), and the task it held back is sent. Where the claim
+// already stands stopped by the hold, the daemon is told that the hold has ended under the stop
+// (Deps.WorkHoldEndedUnderStop), so it starts the claim. Where that claim's stop write is still
+// owed, the decision answers an error that wraps errClaimWriteOwed instead and tells nobody, so
+// the row asks again. The decision answers it before the fence and the row. The outbox's stop row
+// reads it as the stop not made and finishes (internal/daemon's holdStop); where the claim
+// stands stopped by the hold, its line says the stop was made and the opening starts the claim.
+var ErrWorkHoldEnded = errors.New("the work hold of the claim's tree has ended, so its stop is not made")
 
 // ErrNoSuchDelivery is the store's refusal of a retirement of a delivery the claim's row no
 // longer holds. It is named here, rather than matched as a string where the refusal is read,
@@ -2016,6 +2178,10 @@ type Machine struct {
 	// the launch, so a sweep that reads the claim while that try runs still finds the pod; that
 	// try's outcome then settles it (launchTries). Memory only, as podRoundWaiting is.
 	awaitsPod *runtime.Locator
+	// awaitsPodSince is when the wait awaitsPod is for began: the refusal that began it, which
+	// startWaitsForPodRound stamps, and not a retry of it. It is what Claim.AwaitsPodSince reports
+	// while awaitsPod is set (current). Memory only, as awaitsPod is.
+	awaitsPodSince time.Time
 	// registeredPods is the set of pods an agent of the claim registered a session in: what
 	// Claim.RegisteredPods reports (current). NewMachine reads it off the claim it is built over
 	// (bootRegisteredPods), and register adds to it; nothing else writes it, so neither letGo nor a
@@ -2277,14 +2443,15 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // the claim's state does not allow is refused with a RefusedError; a fenced request is refused
 // with the claim refusal it violates (claim.StaleGeneration, claim.SameAgentRefusal). Any other
 // event that is stale is logged once and dropped. A suspension of a claim whose agent is in a turn
-// answers ErrSuspendHeld (holdSuspension). A request the wake pacing never makes wait, reaching a
-// claim a paced wake parked with no process, drops that wake before the lookup and is then
-// decided against the state the gate found (dropWakeFor); an operator's retry no row of that state
-// decides — queued, suspended, or launching for a try the pause held after its write or a start
-// whose pod grant the pause met — runs the dropped launch itself (runDroppedLaunchForRetry); an
-// operator's task the claim can take, over a launch parked above a process the claim still records,
-// runs that launch first, so the row that queues the task is the row of the claim that launch
-// leaves (runParkedLaunchNow).
+// answers ErrSuspendHeld (holdSuspension). A row whose guard names a reason for this claim is
+// that named ignore here (rule.of, rowWhere). A request the wake pacing never makes wait,
+// reaching a claim a paced wake parked with no process, drops that wake before the lookup and is
+// then decided against the state the gate found (dropWakeFor); an operator's retry no row of that
+// state decides for the claim — queued, suspended by anything but the work hold, or launching for
+// a try the pause held after its write or a start whose pod grant the pause met — runs the
+// dropped launch itself (runDroppedLaunchForRetry); an operator's task the claim can take, over a
+// launch parked above a process the claim still records, runs that launch first, so the row that
+// queues the task is the row of the claim that launch leaves (runParkedLaunchNow).
 //
 // Handle returns when the decision is made, which includes the runtime call it makes: a stop
 // waits out its grace, a resume waits out the previous incarnation. A caller feeding many claims
@@ -2299,7 +2466,18 @@ func NewMachine(ctx context.Context, deps Deps, c Claim) (*Machine, error) {
 // has charged nothing, and the row this suspension then runs finds a claim launching with no
 // process to stop (holdSuspendUntilReady). A project pause's stop whose pause has ended cancels
 // nothing, since it stops nothing (pauseStopEnded, ErrPauseEnded): the start it would cut short
-// may be the very launch the resume let out.
+// may be the very launch the resume let out. Nor does the work hold's stop cancel anything: the
+// read of the tree's work hold row its decision makes may find the hold ended, and then it stops
+// nothing (readHoldForStop, ErrWorkHoldEnded). It waits for the start's decision, and a launch it
+// meets is held until its ready.
+//
+// A decision that may make the work hold's stop reads the tree's work hold row for share before
+// the fence and lets the lock go at once (readHoldForStop). So no decision holds the row across
+// its act, its writes, its send or a call of the runtime, and the hold's opening, which waits for
+// the row under the lock every fact takes, waits for no decision. The opening can then read the
+// claims after a decision's read and before its stop's write. Each write of the hold's stop is
+// followed by a read of the row in a transaction of its own (holdReadAfterStop), and where the
+// opening has deleted the row, the daemon starts the claim.
 //
 // The controller's suspension that its row refuses — the operator's suspension holds the agent
 // (suspendRequest, Claim.HeldAgainst) — cancels nothing, and a refusal changes nothing of the
@@ -2372,14 +2550,15 @@ func (m *Machine) HandleStart(ctx context.Context, ev Event) (launched <-chan st
 // handle is Handle, and calls read, when it is given, at the end of the decision with the lock
 // still held, whatever the decision returned. launched is the channel a HandleStart caller waits
 // on for the launch written, nil for every other caller.
-func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched chan struct{}) error {
+func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched chan struct{}) (err error) {
 	// An event is a far side's or an agent's words — a session id, a task, an update round's id
 	// and reasons, a worker's head — and the claim keeps each text as the store keeps it, so the
 	// claim in memory, the store and a restart agree. So the event is given through the store's
 	// rule once, here, before anything reads it, as intake.ApplyFact gives every fact. Strings
 	// returns ev itself when nothing in it changes, and leaves its bytes as they are.
 	ev = storetext.Strings(ev)
-	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && m.View().HeldAgainst(request.By) == nil {
+	if request, suspending := ev.(RequestSuspend); suspending && !m.pauseStopEnded(request) && request.By != SuspendedByHold &&
+		m.View().HeldAgainst(request.By) == nil {
 		m.stopStart("a suspension of the claim is waiting for its start")
 	}
 	m.mu.Lock()
@@ -2413,6 +2592,20 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	// A project pause's hold whose pause has ended goes before anything of the decision reads the
 	// hold, so the fence, the row, the send and every place a hold fires read only one that stands.
 	m.dropEndedPauseHold()
+	// The work hold's row is read where the decision may make the hold's stop, and the lock ends
+	// at that read (readHoldForStop). A stop whose hold the opening ended goes here, before
+	// anything of the decision reads the hold, as the pause's does above; the hold's stop asked
+	// now is answered ErrWorkHoldEnded.
+	stopDropped, err := m.readHoldForStop(ctx, ev)
+	if stopDropped {
+		// The work hold's stop may have held a task back (sendPending hands nothing while a stop is
+		// held), so the task is sent once the decision has run, whatever its row or the fence made
+		// of the event: the hold's own deadline timer, disarmed by the drop, is refused at the fence.
+		defer func() { err = errors.Join(err, m.sendPending(ctx)) }()
+	}
+	if err != nil {
+		return err
+	}
 	// Settle first, so the fence judges the task the row will find: a settle after the fence could
 	// retire the very task it let the event through for.
 	if err := m.settle(ctx); err != nil {
@@ -2441,6 +2634,7 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	if !ok {
 		return fmt.Errorf("supervise: no row for %s in %s", k.kind, k.state)
 	}
+	r = r.of(m)
 	if r.act == nil {
 		if ran, err := m.runDroppedLaunchForRetry(ctx, ev, dropped); ran {
 			return err
@@ -2457,7 +2651,7 @@ func (m *Machine) handle(ctx context.Context, ev Event, read func(), launched ch
 	// A row ends only in a state it names, except that a held suspension may end in suspended from
 	// whichever row the end comes through (holdSuspension); a claim that holds none may not.
 	from, held := m.claim.State, m.held != nil
-	err := errors.Join(r.act(m, ctx, ev), m.settle(ctx))
+	err = errors.Join(r.act(m, ctx, ev), m.settle(ctx))
 	if to := m.claim.State; to != from && !slices.Contains(r.to, to) && (!held || to != StateSuspended) {
 		err = errors.Join(err, fmt.Errorf("supervise: row %q moved %s from %s to %s, outside %v",
 			r.name, m.claim.Token, from, to, r.to))
@@ -2504,6 +2698,86 @@ func (m *Machine) ReleaseUncertainLaunch(ctx context.Context) (bool, error) {
 // it makes then.
 func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error) {
 	return m.markRound(ctx, round, &m.claim.UpdateToldAt)
+}
+
+// PodUpdateHoldTold lifts the hold this claim's answer to round puts on its tasks, because the
+// tree's work hold keeps the round's pod (internal/daemon's liftAnswerHolds): the round's read of
+// the workspace found work of a claim the hold stopped that origin does not hold, failed, or could
+// not be made, so the round cannot end before the hold's opening or a read that finds that work
+// pushed, and the answer would hold the claim's every task until then. tell queues the message
+// that tells the claim's role so, on the outbox; it must not call into this machine, whose lock
+// it runs under. Once tell has queued it, the mark is stamped (Claim.UpdateHoldToldAt), and the
+// task the answer was holding is sent (sendPending). The answer itself stands: the round still
+// counts it, and asks the claim nothing more until it asks the claim again once the replacement
+// can be made (PodUpdateAskedAgain).
+//
+// It does nothing and reports false where the claim is not in round, has not answered it, left
+// it (Claim.LeftPodRound), was told already, or has no agent that said it is ready (SaidReady): a
+// message to a role no live session holds raises a wake of that role, and the answer of a claim
+// with no process holds nothing that runs. A write the store refuses takes the stamp back and is
+// returned with false, so the next sweep tells the role again: one message more, never a hold
+// left on a task. It is no event, as PodUpdateTold is none: the sweep decides that the hold keeps
+// the pod, and the mark is bookkeeping of that decision.
+func (m *Machine) PodUpdateHoldTold(ctx context.Context, round string, tell func(context.Context) error) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	c := m.claim
+	if c.UpdateRound != round || c.UpdateSignalledAt == nil || c.UpdateHoldToldAt != nil || c.LeftPodRound(round) || !SaidReady(c.State) {
+		return false, nil
+	}
+	if err := tell(ctx); err != nil {
+		return false, err
+	}
+	if err := m.stampMark(ctx, &m.claim.UpdateHoldToldAt); err != nil {
+		return false, err
+	}
+	return true, m.sendPending(ctx)
+}
+
+// PodUpdateAskedAgain is the round asking this claim again, at at, once the work hold no longer
+// keeps its pod (internal/daemon's askRoundAgain): the hold's opening, a read that finds the held
+// work pushed, or an operator's act on a claim the hold stopped. The round asks again each claim
+// it asks, each claim the hold's opening started, and each claim whose answer's hold on its tasks
+// the work hold lifted (UpdateHoldToldAt): a claim the hold lifted went on with its work, a claim
+// the opening started goes on with the work the hold stopped, so the answer of either says nothing
+// of the work it did since, and the ask every other claim holds names the round's old bound. After
+// the opening or an operator's act the round asks again whether or not the hold lifted any answer;
+// after a read that finds the held work pushed while the hold still stops a claim, it asks again
+// only where the hold lifted an answer (internal/daemon's heldWork.owesAsk). Its answer, its ask
+// mark and its mark of the hold's message go (UpdateSignalledAt, UpdateTaskedAt, UpdateHoldToldAt),
+// so the sweep asks it again, and at is stamped as the start of the round's new bound
+// (UpdateAskedAgainAt). The round's notice mark stays (UpdateToldAt): one round is told late once.
+// A claim that left the round since keeps its answer and its ask, and only its mark of the hold's
+// message goes: the round asks it nothing, and what it had answered when it left is what the
+// round's end reads of it (Claim.LeftPodRound).
+//
+// It does nothing and reports false where the claim is not in round, and, for a claim that carries
+// no mark of the hold's message, where it left the round or the round asked it again at at or
+// later: so a second call for the same ask clears no answer given to it, whichever claim it is
+// of, and a claim the hold lifted is asked again whatever it was asked before. A write the store
+// refuses puts every field back and is returned with false, and the sweep asks again at the next
+// tick (askRoundAgain says what it reads to know that it must). The task the answer was holding is
+// sent, as at any end of an answer (openPodUpdate).
+func (m *Machine) PodUpdateAskedAgain(ctx context.Context, round string, at time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	before := m.claim
+	if before.UpdateRound != round {
+		return false, nil
+	}
+	if before.UpdateHoldToldAt == nil && (before.LeftPodRound(round) || (before.UpdateAskedAgainAt != nil && !before.UpdateAskedAgainAt.Before(at))) {
+		return false, nil
+	}
+	m.claim.UpdateHoldToldAt = nil
+	if !m.claim.LeftPodRound(round) {
+		m.claim.UpdateAskedAgainAt = &at
+		m.claim.UpdateTaskedAt, m.claim.UpdateSignalledAt, m.claim.UpdateHead = nil, nil, ""
+	}
+	if err := m.putClaim(ctx); err != nil {
+		m.claim = before
+		return false, err
+	}
+	return true, m.sendPending(ctx)
 }
 
 // ErrMachineBusy is PublishUpdateAsk finding the machine's lock held — a decision in flight, or
@@ -2638,13 +2912,23 @@ func (m *Machine) markRound(ctx context.Context, round string, mark **time.Time)
 	if m.claim.UpdateRound != round || *mark != nil {
 		return false, nil
 	}
+	if err := m.stampMark(ctx, mark); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// stampMark stamps mark, one of this claim's own update-round marks, at the clock and writes the
+// claim (putClaim), under the machine's lock, which its caller holds (markRound,
+// PodUpdateHoldTold). A write the store refuses takes the stamp back and is returned.
+func (m *Machine) stampMark(ctx context.Context, mark **time.Time) error {
 	at := m.deps.Clock.Now()
 	*mark = &at
 	if err := m.putClaim(ctx); err != nil {
 		*mark = nil
-		return false, err
+		return err
 	}
-	return true, nil
+	return nil
 }
 
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released
@@ -2661,8 +2945,12 @@ func (c Claim) ReleasedLaunch() bool {
 // includes a held suspension (holdSuspension), which the start drops — unless it is one that
 // holds: the claim of an agent the operator's or the controller's suspension holds records no
 // start and answers that holder's wait (RuleHoldError), so the start waits for a resume to lift
-// it. A project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the
-// start is recorded beside it: a start leased before the pause began must not let the role it
+// it. A claim the work hold holds, suspended by it or with its stop held, records no start either
+// and answers ErrHeldByWorkHold (Claim.WorkHeld): the start waits for the hold's end, which its
+// caller asks of the claim first (EndHold), so no start drops the hold's stop or runs a claim it
+// stopped. A project pause's hold whose pause is the open pause (Deps.Paused) is kept too, and the
+// start is recorded beside it (decision 5 of dispatch://INFRA-3759's plan): a start leased before
+// the pause began must not let the role it
 // starts run past the pause's stop, which the outbox's pause rule would otherwise have held back
 // (record's outboxPauseFree). Its task waits as every task does while the project is paused
 // (sendPending). A pause's hold whose pause has ended is gone before the start reads the hold, as
@@ -2689,8 +2977,10 @@ func (m *Machine) StartedBy(ctx context.Context, row int64, task *RequestDeliver
 	m.mu.Lock()
 	defer m.unlock()
 	m.dropEndedPauseHold()
-	if m.current().RuleHolds() {
-		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, m.current().RuleHoldError())
+	if held := m.current(); held.RuleHolds() {
+		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, held.RuleHoldError())
+	} else if held.WorkHeld() {
+		return fmt.Errorf("start row %d of %s: %w", row, m.claim.Token, held.WorkHoldError())
 	}
 	if row <= m.claim.LastStartRow {
 		return m.releaseHeld(ctx, row, task)
@@ -2975,6 +3265,9 @@ func (m *Machine) current() Claim {
 	c.Compacting = m.compacting != nil
 	c.ProcessGone = m.processGone
 	c.AwaitsPod = cloneLocator(m.awaitsPod)
+	if m.awaitsPod != nil {
+		c.AwaitsPodSince = m.awaitsPodSince
+	}
 	c.RegisteredPods = m.registeredPods.clone()
 	return c
 }
@@ -2983,10 +3276,11 @@ func (m *Machine) current() Claim {
 // its own, and the store holds none of the fields current overlays on the claim the machine
 // reports: a suspension held for its turn (SuspensionHeld, SuspensionHeldBy), a compaction in
 // flight (Compacting), a process the runtime reported gone (ProcessGone), the pod a launch waits
-// on (AwaitsPod) and the pods an agent of the claim registered in (RegisteredPods). Only the
-// machine holds them, in memory, and internal/store writes none of them, so the one statement
-// below clears every one, and no stored claim, nor a claim compared with one, carries any of
-// them. A field that current comes to overlay belongs in that statement too.
+// on and when that wait began (AwaitsPod, AwaitsPodSince) and the pods an agent of the claim
+// registered in (RegisteredPods). Only the machine holds them, in memory, and internal/store
+// writes none of them, so the one statement below clears every one, and no stored claim, nor a
+// claim compared with one, carries any of them. A field that current comes to overlay belongs in
+// that statement too.
 //
 // No caller needs one of them on the claim it hands the store: the machine's own writes hand it
 // the claim the machine holds, which carries none of them (stored); the boot's repair hands it a
@@ -2994,8 +3288,8 @@ func (m *Machine) current() Claim {
 // hands it the claim one of those writes built (internal/daemon's projectPause.stopTx). Call
 // NormalizeClaim before this when c will also construct a machine.
 func StoredClaim(c Claim) Claim {
-	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.RegisteredPods =
-		nil, false, "", false, false, nil, RegisteredPods{}
+	c.Pending, c.SuspensionHeld, c.SuspensionHeldBy, c.Compacting, c.ProcessGone, c.AwaitsPod, c.AwaitsPodSince, c.RegisteredPods =
+		nil, false, "", false, false, nil, time.Time{}, RegisteredPods{}
 	return c
 }
 
@@ -3209,7 +3503,15 @@ func (m *Machine) Wait() {
 // no claim records, or it is the process a relaunch waiting at the probe interval let go
 // (relaunchLater) or a wake waiting its turn in the pacing let go (reserveWake), which that
 // relaunch and that wake each wait out.
+//
+// A request that could start or resume a turn (Event.door) meets the work hold here first: on a
+// claim the hold suspended, every such request but the operator's own resume or retry waits, and
+// the project's controller's resume or retry of a phase worker is refused while the tree's work
+// hold stands (workHoldWaits), whatever its row would have made of it.
 func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
+	if err := m.workHoldWaits(ctx, ev); err != nil {
+		return false, err
+	}
 	pending := m.claim.Pending
 	switch ev := ev.(type) {
 	case RuntimeObservation:
@@ -3967,12 +4269,16 @@ const podRoundWaitLine = "supervise: this start waits for its pod's update round
 // The claim records no process while it waits, and it may be its issue's only claim, so it keeps
 // the pod the refusal names (awaitsPod, Claim.AwaitsPod): that is what the daemon's update round
 // opens over and replaces the pod through, where no claim records a process in it. Without it no
-// round would come, and this wait would never end. The write below publishes it, before the
-// retry is due.
+// round would come, and this wait would never end. The refusal that begins the wait stamps when it
+// began (awaitsPodSince, Claim.AwaitsPodSince), and a retry keeps that stamp, so the daemon tells
+// the operator's side once of each wait on a pod the work hold keeps, not at each retry
+// (internal/daemon's tellWaitingLaunches). The write below publishes both, before the retry is
+// due.
 func (m *Machine) startWaitsForPodRound(ctx context.Context, cause error, charged, exempt, waiting bool) error {
 	err := errors.Join(cause, m.stopPrevious(ctx))
 	if !waiting {
 		m.log.Warn(podRoundWaitLine, "generation", m.claim.Generation, "retry", podRoundRetry, "error", err)
+		m.awaitsPodSince = m.deps.Clock.Now()
 	}
 	m.relaunchLater(podRoundRetry, WakeLaunch, func(ctx context.Context) error {
 		return m.launchAfter(ctx, charged, exempt, false, nil, noEnd)
@@ -5474,8 +5780,10 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // it takes only once the store has taken it, beside a claim whose telling that take-back moved
 // (moveTelling), so its saved mark is takeBackPending's own; interrupted, whose delivery is the
 // task taken back under the id it takes only once the store has taken it, beside a claim whose
-// telling a let-go took back (untellInFlight); and putClaimAndPending, which passes memory's own
-// claim with memory's own pending delivery and is the call that settles both.
+// telling a let-go took back (untellInFlight); providerErrorClears, whose delivery is the pending
+// one counting one more send, beside memory's claim, and whose saved mark is its own; and
+// putClaimAndPending, which passes memory's own claim with memory's own pending delivery and is
+// the call that settles both.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
 }
@@ -5683,15 +5991,17 @@ func HoldsCapability(state ClaimState) bool {
 // HoldsRole is whether a claim the store records in state, suspended by by, holds its role: this
 // daemon supervises it (state is not ""), it has not failed or retired, and it is not suspended,
 // unless the suspension is the idle release's (Claim's Released), which a project pause's stop
-// makes too. A claim the outbox has not created yet has no state and holds none: a new child's
-// architect is such a claim until the outbox runs the start its child's first phase start queued,
-// and holds its role from that run on, queued or launching. A released claim keeps its session,
-// its phase and its task, and the next wake for its role resumes the same session, so what it
-// owns is still its own; any other suspension stops the agent until a rule or a resume starts it
-// again, and one the operator or the controller holds (SuspendSource.Holds) until that holder's
+// makes too, or the work hold's (SuspendedByHold). A claim the outbox has not created yet has no
+// state and holds none: a new child's architect is such a claim until the outbox runs the start
+// its child's first phase start queued, and holds its role from that run on, queued or launching.
+// A released claim keeps its session, its phase and its task, and the next wake for its role
+// resumes the same session, so what it owns is still its own. So does a claim the work hold
+// stopped: it keeps its session, its phase and its task, and the hold's opening starts the same
+// session (Machine.EndHold). Any other suspension stops the agent until a rule or a resume starts
+// it again, and one the operator or the controller holds (SuspendSource.Holds) until that holder's
 // resume, or one that outranks it, lifts it. A claim launched again over the session it kept, a
-// released one's resume among them, holds its role through the launch, so the resume of a release
-// moves no holder.
+// released one's resume and a held one's opening among them, holds its role through the launch,
+// so neither moves a holder.
 //
 // It is the one rule for whether a claim holds its role, which HoldsCapability (a running process)
 // is not: the owner walk reads it (record.ArchitectRuns, and the daemon's holdsRole over the
@@ -5699,13 +6009,14 @@ func HoldsCapability(state ClaimState) bool {
 // it (internal/store's roleHolder) and the set it sends (record.Postgres.RoleHolders). Were a
 // released architect to lose its role here, a notice for it would walk up to the architect above
 // it, which owns neither the issue nor the answer, and Dispatch would name no architect of its
-// issue until the next wake.
+// issue until the next wake. The work hold stops phase workers alone, never an architect, so its
+// arm moves only what the publication sends.
 func HoldsRole(state ClaimState, by SuspendSource) bool {
 	switch state {
 	case "", StateFailed, StateRetired:
 		return false
 	case StateSuspended:
-		return Claim{State: state, SuspendedBy: by}.Released()
+		return Claim{State: state, SuspendedBy: by}.Released() || by == SuspendedByHold
 	}
 	return true
 }

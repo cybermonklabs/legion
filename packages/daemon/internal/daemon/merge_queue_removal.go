@@ -128,12 +128,14 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 //
 // Each attempt first finishes the row undelivered, with one log line naming why, once the issue
 // has left merging at the row's head (mergingAt, the read row's own rule); what follows - a claim
-// that failed or retired, the design gate and the news the merger is owed, the wake and the
+// that failed or retired, the news the merger is owed, the wake and the
 // publish - is deliverHeld's.
 //
-// A merger the design gate holds may not know the gate closed, and woken by this message it could
-// enqueue the pull request again against the gate, which holds the merge; a merger woken before
-// what changed is recorded could enqueue it again before it reads that change.
+// No value of the hold holds the merge, so the design gate holds nothing of this row: a released
+// merger is woken for it while the gate is closed, and the merger merges. A merger woken before
+// what changed in the approved design is recorded could enqueue the pull request again before it
+// reads that change, so the row waits as the merger's start waits (mergerWaitsForItsNews, which
+// startWaitsForTheHold reads).
 func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, payload record.MergeQueueRemoval) error {
 	if r.notices == nil {
 		return errors.New("merge-queue removal executor has no Envoy publisher")
@@ -189,27 +191,31 @@ type heldMessage struct {
 // the row until a session of that role takes it: the delivery a merge-queue removal, a merge holds
 // change and a merge-forward message share (mergeQueueRemoval, mergeHoldsChanged,
 // mergeForwardMessage), once each has read what ends its row on its own terms. It stops nothing it
-// reaches, as a hook prompt stops nothing. A released role is woken (wakeForDelivery), and the row
-// waits on its backoff until the woken session holds the role, or, while the wake pacing holds that
-// resume, for its turn, reading the claim again at most parkedWakeBound apart (parkedWait), as it
-// waits while the listener answers that nobody holds the role (notify.ErrNoHolder) or that its
-// holder is unresponsive (notify.ErrHolderUnresponsive). A role with no claim yet, its start still
-// owed, or with a claim no launch has reached, is no end either: the row waits for the claim's
-// first launch to register its session, whatever the listener would answer, since a publish before
-// it reaches no session of the claim and a listener that takes it names no launch told.
+// reaches, as a hook prompt stops nothing. A released role is woken (wakeForDelivery, whose fence
+// holds a role whose start waits for the hold: startWaitsForTheHold), and the row waits on its
+// backoff until the woken session holds the role, or, while the wake pacing holds that resume, for
+// its turn, reading the claim again at most parkedWakeBound apart (parkedWait), as it waits while
+// the listener answers that nobody holds the role (notify.ErrNoHolder) or that its holder is
+// unresponsive (notify.ErrHolderUnresponsive). A role with no claim yet, its start still owed, or
+// with a claim no launch has reached, is no end either: the row waits for the claim's first launch
+// to register its session, whatever the listener would answer, since a publish before it reaches no
+// session of the claim and a listener that takes it names no launch told.
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
-// role again. A released merger is held by the rule that holds its start
-// (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
-// and a released role of another kind while the root's design gate is closed (designGateClosed):
-// such a role is neither woken nor told, and the row waits, since a role the gate holds may not
-// know the gate closed, and woken by this message it would work against the gate. A role whose
-// session holds it is told at once, gate or none, and m.delivered is logged. The three other
-// answers of the confirmed publish route keep the ordinary retry, as they do for a hook prompt: a
-// holder that did not confirm in time (notify.ErrNotDelivered), one that does not advertise the
-// delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS grant denies
-// (notify.ErrPublishDenied).
+// role again. A released merger is held by the rule that holds its start (mergerWaitsForItsNews:
+// the news of the approved design it is owed), and a released role of another kind while the
+// root's standing design gate is closed (record.TreeGate.Standing, the one predicate the hold's
+// fence reads, treeGate): such a role is neither woken nor told, and the row waits, since a role
+// the gate holds may not know the gate closed, and woken by this message it would work against the
+// gate. Both are read before the wake (wakeReleasedFor), which skips the hold's fence for a role
+// read here. Nor is a role the work hold holds (supervise.Claim.WorkHeld) woken: the row waits for
+// the hold's opening, which starts the role (wakeReleasedFor). A role whose session holds it, and
+// that the work hold does not hold, is told at once, gate or none, and m.delivered is logged. The
+// three other answers of the confirmed publish route keep the ordinary retry, as they do for a
+// hook prompt: a holder that did not confirm in time (notify.ErrNotDelivered), one that does not
+// advertise the delivery mode (notify.ErrRefusedByHolder), and a forward the listener's own NATS
+// grant denies (notify.ErrPublishDenied).
 //
 // Each message is for the session of the role's current launch, and the listener's word is the one
 // evidence of who took it: its 200 names the session it stored the message for
@@ -242,20 +248,21 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 	}
 	if held.Released() {
 		if m.role == claim.RoleMerger {
-			if err := r.mergerWaitsForTheDesignGate(ctx, m.issue, m.role); err != nil {
+			if err := r.mergerWaitsForItsNews(ctx, m.issue, m.role); err != nil {
 				return err
 			}
-		} else if closed, err := r.designGateClosed(ctx, m.issue); err != nil {
+		} else if gate, err := r.treeGate(ctx, m.issue.Tree); err != nil {
 			return err
-		} else if closed {
+		} else if _, closed := gate.Standing(); closed {
 			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released
 	// role on every attempt and wait for a session nothing brings back. A launch the wake pacing
 	// holds is waited for until it runs, the claim read again at its turn or parkedWakeBound on,
-	// whichever comes first (parkedWait).
-	if waits, turn, err := r.wakeForDelivery(ctx, m.token, m.what, row.HeldByPause); err != nil {
+	// whichever comes first (parkedWait). A released role's wake skips the hold's fence where its
+	// reads were made above in this attempt (wakeReleasedFor).
+	if waits, turn, err := r.wakeReleasedFor(ctx, m.token, m.what, row.HeldByPause, held.Released()); err != nil {
 		return err
 	} else if !turn.IsZero() {
 		return r.parkedWait(turn, fmt.Sprintf("%s waits for its %s's launch, which the wake pacing holds until %s",

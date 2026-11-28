@@ -292,6 +292,17 @@ type memStore struct {
 	// holds is the claim each name of a session is held for, as the store's claim_sessions table
 	// keeps it (HoldSessions); every claim of a harness is of one project.
 	holds map[Hold]claim.Token
+	// closed is each tree whose work hold a close wrote (closeHold, which the hold's stop the test
+	// posts writes first: holdStop, directHoldStop), and opened each tree whose work hold an
+	// opening ended (openHold): its work_holds row is gone. A tree's hold stands from its close
+	// until its opening, so no decision drops the hold stop of a tree the test did not open
+	// (readHoldForStop), and no request of the controller's is refused by the hold of a tree no
+	// close reached (workHoldRefuses).
+	closed map[string]bool
+	opened map[string]bool
+	// holdReads counts the reads of a tree's work hold row the store answered (WorkHoldStands), so
+	// a test sees which decisions read the row (holdReadCount).
+	holdReads int
 }
 
 func newMemStore() *memStore {
@@ -300,6 +311,8 @@ func newMemStore() *memStore {
 		deliveries: map[claim.Token]Delivery{},
 		failures:   map[string]error{},
 		holds:      map[Hold]claim.Token{},
+		closed:     map[string]bool{},
+		opened:     map[string]bool{},
 	}
 }
 
@@ -457,6 +470,42 @@ func (s *memStore) AdmitClaim(ctx context.Context, c Claim) (Claim, error) {
 }
 
 func (s *memStore) CheckLaunch(context.Context, Claim) error { return nil }
+
+// WorkHoldStands is the store's read of the tree's work hold row: the hold stands once the test
+// closed the tree (closeHold) and until it opened it (openHold), and a read the test fails
+// (fail("WorkHoldStands")) answers its error. Each read answered is counted (holdReadCount).
+func (s *memStore) WorkHoldStands(_ context.Context, tree string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.failures["WorkHoldStands"]; err != nil {
+		return false, err
+	}
+	s.holdReads++
+	return s.closed[tree] && !s.opened[tree], nil
+}
+
+// closeHold is the work hold's close of tree as the store keeps it: the tree's work_holds row is
+// written.
+func (s *memStore) closeHold(tree string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed[tree] = true
+}
+
+// holdReadCount is how many reads of a tree's work hold row the store answered.
+func (s *memStore) holdReadCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.holdReads
+}
+
+// openHold is the work hold's opening of tree as the store keeps it: the tree's work_holds row is
+// deleted, under the store's lock so it may run while a machine does.
+func (s *memStore) openHold(tree string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opened[tree] = true
+}
 
 func (s *memStore) PutDelivery(_ context.Context, token claim.Token, d Delivery) error {
 	s.mu.Lock()

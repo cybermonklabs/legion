@@ -490,9 +490,12 @@ export interface StandinProvider {
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
-  /** The models also take images, which makes snapcompact a compaction method they can run; text
-   * only by default. */
-  readonly images?: boolean;
+  /** What each of the models takes as input; text alone by default. Oh My Pi runs snapcompact
+   * only on a model that takes images. */
+  readonly input?: readonly ("text" | "image")[];
+  /** The `compat` flags each of the models sets in models.yml, which Oh My Pi merges over the
+   * catalog's own for that model id; none by default. */
+  readonly compat?: Readonly<Record<string, boolean>>;
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -533,7 +536,7 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models, images }) => [
+      ...providers.flatMap(({ provider, models, input = ["text"], compat }) => [
         `  ${provider}:`,
         `    baseUrl: ${base}/anthropic`,
         "    auth: apiKey",
@@ -544,10 +547,17 @@ export async function writeStandinProfile(
           `      - id: ${id}`,
           `        name: Stand-in ${id}`,
           "        reasoning: false",
-          `        input: ${images === true ? "[text, image]" : "[text]"}`,
+          `        input: [${input.join(", ")}]`,
           "        contextWindow: 200000",
           "        maxTokens: 8000",
           "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
+          ...(compat === undefined
+            ? []
+            : [
+                `        compat: {${Object.entries(compat)
+                  .map(([flag, value]) => `${flag}: ${value}`)
+                  .join(", ")}}`,
+              ]),
         ]),
       ]),
       "",
@@ -590,6 +600,16 @@ export interface Rpc {
   /** The process id of the omp it started: the one process whose own steps a timer record a
    *  case hands it through the environment is read for. */
   readonly pid: number;
+}
+
+/** Whether an RPC frame ends a run: its terminal `agent_end`. A continuation the host scheduled
+ *  (the follow-up) ends its turn with an `agent_end` that is not terminal, under the same run. */
+export function isTerminalEnd(frame: object): boolean {
+  return (
+    "type" in frame &&
+    frame.type === "agent_end" &&
+    !("isTerminal" in frame && frame.isTerminal === false)
+  );
 }
 
 /**
@@ -1158,6 +1178,13 @@ export function ompNatsGuard(): OmpNatsGuard {
   };
 }
 
+/** This checkout's two plugin entries, which a Legion pane loads, the Envoy entry first, unless a
+ *  case names others (`LegionPaneOptions.plugins`). */
+export const CHECKOUT_PLUGINS = {
+  envoy: path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
+  legion: path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+} as const;
+
 /** Which Legion pane `runLegionPane` runs, and what its stand-in answers beyond the runner's routes. */
 export interface LegionPaneOptions {
   /**
@@ -1200,12 +1227,31 @@ export interface LegionPaneOptions {
   /** The providers and models the pane's profile offers (`writeStandinProfile`); the single
    * `standin/standin-model` by default. */
   readonly providers?: readonly StandinProvider[];
-  /** Tried first for every request the stand-in serves; `undefined` falls through to the runner's
-   * own routes (the gateway, the daemon's claim and grant routes, the Envoy listener). An answer
-   * may be a promise, which the stand-in awaits before it replies. */
+  /**
+   * Writes the profile's models.yml and config.yml into `agent` (`<home>/.omp/agent`) in place of
+   * the stand-in's (`writeStandinProfile`, which `config` and `providers` then do not reach): a
+   * case whose turns go to another model route than the stand-in, or through the stand-in at
+   * `base` to another (`answer` forwards them).
+   */
+  readonly profile?: (agent: string, base: string) => Promise<void>;
+  /** The plugin entries the pane loads, in order, as absolute paths: `CHECKOUT_PLUGINS`' Envoy
+   * entry, then its Legion entry, by default, the sandbox launch's order. A case runs other builds
+   * of the two plugins, or the other order, here. */
+  readonly plugins?: readonly string[];
+  /** Extensions the pane loads after the Envoy and Legion entries, in order, as absolute paths:
+   * a case's own recorder of what those two hand the host. None by default. */
+  readonly extensions?: readonly string[];
+  /** Arguments on omp's command line in every life, after the runner's own flags and before a
+   * resume's: the model a case runs (`--model`), a system prompt it appends. None by default. */
+  readonly args?: readonly string[];
+  /** Tried first for every request the stand-in serves, with the request's headers for a case
+   * that records or forwards what the host sent beside the body; `undefined` falls through to the
+   * runner's own routes (the gateway, the daemon's claim and grant routes, the Envoy listener). An
+   * answer may be a promise, which the stand-in awaits before it replies. */
   readonly answer?: (
     url: URL,
-    body: Record<string, unknown>
+    body: Record<string, unknown>,
+    headers: Headers
   ) => Response | Promise<Response> | undefined;
   /** Runs once the scratch root, `bin` (first on the pane's PATH) and `state` exist, before the
    * profile is written and omp is spawned: what the pane's workspace must hold. */
@@ -1322,18 +1368,26 @@ export interface LegionPane {
    * root and against the same stand-in, and settles it as the first life settled: what the
    * daemon does when it relaunches a worker whose process is gone. `replies` are appended to the
    * script the first life left, and `prompt` is the assignment — or assignments — the second
-   * life is given.
+   * life is given: none, for a life a card starts. `whileUp` runs in that life once those
+   * assignments' runs have settled, as the first life's does.
    */
-  readonly resume: (replies: readonly Reply[], prompt: string | readonly string[]) => Promise<void>;
+  readonly resume: (
+    replies: readonly Reply[],
+    prompt: string | readonly string[],
+    whileUp?: (rpc: Rpc) => Promise<void>
+  ) => Promise<void>;
   /** The pane's issue workspace. */
   readonly workspace: string;
+  /** The pane's transcript directory, which a case edits between two lives. */
+  readonly sessions: string;
 }
 
 /**
  * Runs one Legion pane on the real Oh My Pi until its run settles: the Legion and Envoy
- * extensions from this checkout, booted against a stand-in for the daemon's claim and grant
- * routes and the Envoy listener, and the NATS server `options.nats` names, with a stand-in model
- * gateway that answers the pane's turns from `replies`. The server is real: a session's only
+ * extensions from this checkout (or the builds `options.plugins` names), booted against a
+ * stand-in for the daemon's claim and grant routes and the Envoy listener, and the NATS server
+ * `options.nats` names, with a stand-in model gateway that answers the pane's turns from
+ * `replies` (or the route `options.profile` writes). The server is real: a session's only
  * inbound is the consumer the listener builds for it, which it is relayed on its own relay
  * subject, so a pane with no NATS server holds no relay subject, every registration of its fails
  * saying so, and its Legion claim fails with it (INFRA-771). The daemon's assignment arrives as
@@ -1376,12 +1430,12 @@ export async function runLegionPane(
    * gateway itself still has to settle on the gateway falling silent (`quietMs`). */
   let served = 0;
   let lastAnsweredAt = 0;
-  const { requests, base } = serveStandin(cleanup, (url, body) => {
+  const { requests, base } = serveStandin(cleanup, (url, body, incoming) => {
     if (url.pathname === "/anthropic/v1/messages") {
       served += 1;
       lastAnsweredAt = Date.now();
     }
-    const own = options.answer?.(url, body);
+    const own = options.answer?.(url, body, incoming.headers);
     if (own !== undefined) return own;
     if (url.pathname === "/anthropic/v1/messages") {
       const request: Request = { path: url.pathname, body };
@@ -1465,7 +1519,11 @@ export async function runLegionPane(
     turns: turnRequests,
     selfChecks: selfCheckRequests,
   };
-  await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
+  if (options.profile === undefined) {
+    await writeStandinProfile(home, base, options.config ?? [], { providers: options.providers });
+  } else {
+    await options.profile(path.join(home, ".omp", "agent"), base);
+  }
 
   /**
    * One life of the pane: omp started with `args` on its command line, given each prompt of
@@ -1490,14 +1548,14 @@ export async function runLegionPane(
         extensions: [
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
-          path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),
-          path.resolve(import.meta.dir, "../../pi-legion/extensions/legion.ts"),
+          ...(options.plugins ?? [CHECKOUT_PLUGINS.envoy, CHECKOUT_PLUGINS.legion]),
+          ...(options.extensions ?? []),
         ],
         home,
         workspace,
         sessions,
         bin,
-        args,
+        args: [...(options.args ?? []), ...args],
         env: {
           ENVOY_URL: base,
           ENVOY_NATS_URL: options.nats,
@@ -1518,11 +1576,7 @@ export async function runLegionPane(
         },
         onFrame: (frame) => {
           options.onFrame?.(frame);
-          if (
-            "type" in frame &&
-            frame.type === "agent_end" &&
-            !("isTerminal" in frame && frame.isTerminal === false)
-          ) {
+          if (isTerminalEnd(frame)) {
             endedAtTurns = turnRequests().length;
             runEnded.resolve();
           }
@@ -1625,13 +1679,15 @@ export async function runLegionPane(
       }
       throw new Error(`no transcript entry of ${customType} under ${sessions}`);
     },
-    resume: async (more, prompt) => {
+    resume: async (more, prompt, whileUp) => {
       scripted.push(...more);
-      await live(typeof prompt === "string" ? [prompt] : prompt, [
-        "--resume",
-        await resumeId(sessions),
-      ]);
+      await live(
+        typeof prompt === "string" ? [prompt] : prompt,
+        ["--resume", await resumeId(sessions)],
+        whileUp
+      );
     },
     workspace,
+    sessions,
   };
 }

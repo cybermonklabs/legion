@@ -332,12 +332,29 @@ func (w *workflowRuntime) stampPodResume(ctx context.Context, issue string, role
 // machine holds its lock through the runtime call its decision makes, so a read that waited
 // would hold the notice and the hook prompt behind a Sandbox relaunch waiting on the
 // cluster, which is the defect LEGION-650 fixed in the routing beside this read.
+//
+// The work hold holds the wake: a claim the hold holds (supervise.Claim.WorkHeld) — stopped by
+// it, or with its stop held for its agent's turn — is woken by nothing and told nothing, and the
+// row waits, a routine wait the hold's opening ends; the opening starts the claim, and the row's
+// next attempt after that start publishes. A released claim whose start the hold's fence holds
+// (startWaitsForTheHold) — under `work` every phase worker but the merger of a tree whose standing
+// gate is closed, released before the hold's stop took it over, and a merger whose news of the
+// approved design is not recorded yet — is not woken either, and the row waits. No value of the
+// hold holds a merger's wake for the gate: a CI settlement, a hook prompt or a merge-queue message
+// wakes a released merger while the gate is closed, and it merges.
 func (r *outbox) wakeForDelivery(ctx context.Context, token claim.Token, detail string, mark int64) (waits bool, turn time.Time, err error) {
+	return r.wakeReleasedFor(ctx, token, detail, mark, false)
+}
+
+// wakeReleasedFor is wakeForDelivery, with the hold's fence (startWaitsForTheHold) left out where
+// fenced is set: a delivery that waited on that fence's reads itself in this attempt before it
+// asked for the wake (deliverHeld), so they are read once per attempt.
+func (r *outbox) wakeReleasedFor(ctx context.Context, token claim.Token, detail string, mark int64, fenced bool) (waits bool, turn time.Time, err error) {
 	wake, err := r.claimWakeOf(ctx, token)
 	if err != nil {
 		return false, time.Time{}, err
 	}
-	return r.deliveryWake(ctx, token, wake, detail, mark)
+	return r.deliveryWake(ctx, token, wake, detail, mark, fenced)
 }
 
 // claimWake is the one read of a claim a delivery row's attempt makes, and what it decides about a
@@ -392,9 +409,37 @@ func (r *outbox) claimWakeOf(ctx context.Context, token claim.Token) (claimWake,
 // as any role starts, so the hour holds for both: without it, a row of an issue moved out of the
 // workflow would be tried about once a minute for as long as the issue stayed out, and its end
 // would never come.
+//
+// A claim the work hold holds (supervise.Claim.WorkHeld) is coming as well: no wake reaches it,
+// but the hold's opening starts it (supervise.Machine.EndHold), and the row's message is owed to
+// that start, as the hold keeps every message of its role until the opening (deliveryWake). So is a
+// claim the opening has started whose first turn has not taken its first task yet, whichever task
+// that is: the opening's own (the pending task carries the opening's sentences,
+// supervise.Delivery.Opening, and is unconfirmed), or an operator's task the claim kept, which the
+// opening gives it first (supervise.KeptOperatorTask), while the role's start of the opening that
+// ended the hold stands, its own task queued behind that one (openingStartStands, the read and
+// the rule the start that waits for it asks). Only a claim whose pending task is an operator's
+// that no turn has taken pays for that read, and for the read of the issue whose generation it
+// reads the role's rows at. The hold kept the row past its hour, and the session it kept is on
+// its way back. So the hour does not end such a row while the hold stands or its opening's start
+// is under way, and runs again from the role's next ready.
 func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (bool, error) {
-	if wake.resume || wake.parked {
+	if wake.resume || wake.parked || wake.view.WorkHeld() {
 		return true, nil
+	}
+	if p := wake.view.Pending; p != nil && p.Opening != "" && p.ConfirmedAt.IsZero() {
+		return true, nil
+	}
+	if supervise.KeptOperatorTask(wake.view.Pending) {
+		recorded, err := r.issue(ctx, issue)
+		if err != nil {
+			return false, err
+		}
+		// The role's queued rows are read at the issue's generation, which the opening's start
+		// carries (workflow's openHeldClaims).
+		if stands, err := r.openingStartStands(ctx, wake.view.Role, recorded.Generation, recorded, wake.view.Claim); err != nil || stands {
+			return stands, err
+		}
 	}
 	if wake.view.State != supervise.StateLaunching {
 		return false, nil
@@ -403,8 +448,15 @@ func (r *outbox) wakeComing(ctx context.Context, issue string, wake claimWake) (
 	return open, err
 }
 
-// deliveryWake is wakeForDelivery on the claim's one read of this attempt (claimWakeOf).
-func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claimWake, detail string, mark int64) (waits bool, turn time.Time, err error) {
+// deliveryWake is wakeReleasedFor on the claim's one read of this attempt (claimWakeOf). A claim
+// the work hold holds is woken by nothing and its row waits, routinely, for the hold's opening,
+// as wakeForDelivery says; fenced leaves out the hold's fence on a released claim
+// (startWaitsForTheHold), as wakeReleasedFor says.
+func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claimWake, detail string, mark int64, fenced bool) (waits bool, turn time.Time, err error) {
+	if wake.view.WorkHeld() {
+		return false, time.Time{}, routineWaiting{err: wait.Errorf("%s waits for the work hold of the %s's tree to end: the hold holds the role, and its opening starts it",
+			detail, wake.view.Role)}
+	}
 	if wake.parked {
 		return true, wake.turn, nil
 	}
@@ -412,6 +464,11 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 		return false, time.Time{}, nil
 	}
 	machine, issue, held := wake.machine, wake.issue, wake.view
+	if !fenced {
+		if err := r.startWaitsForTheHold(ctx, issue, held.Role, 0); err != nil {
+			return false, time.Time{}, fmt.Errorf("%s does not wake the released %s: %w", detail, held.Role, err)
+		}
+	}
 	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
 	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
 	// meets the open resume the take recorded and resumes the claim (the refused branch below).

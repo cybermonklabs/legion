@@ -232,6 +232,43 @@ func TestTheNewsATaskCarriesIsWhatTheRecordSaysAtItsSend(t *testing.T) {
 	}
 }
 
+// The one task the work hold's opening gives a claim it stopped carries the opening's sentences
+// apart (supervise.Delivery.Opening), and the news it carries holds the work without them
+// (record.DeliveryNews.Task). Each send renders the news again from the record and puts the
+// sentences in front once (renderNews), so the task the claim is sent still begins with them, then
+// the work and the news: no send drops them or says them twice, and the news the delivery goes on
+// carrying still holds the work alone.
+func TestWorkHoldOpeningSentencesSurviveEachSendOfTheNews(t *testing.T) {
+	t.Parallel()
+	r := newNewsRig(t)
+	const opening = "The work hold stopped your turn. The design gate of LEGION-500 opened. " +
+		"Check what your turn already did: a tool call may not have finished."
+	const work = "Implement the plan. Issue: LEGION-500. Phase: implementing."
+	standing := newsItem(newsRoot, record.AudienceHolder, record.DesignStepSpec, "artifact-spec", 3, 5)
+	encoded, err := json.Marshal(record.DeliveryNews{Task: work, Items: []record.DeliveryNewsItem{standing}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := supervise.Claim{Token: mustClaimToken(t, newsRoot, claim.RoleImplementer), Project: "legion", Tree: newsRoot, Issue: newsRoot,
+		Role: claim.RoleImplementer}
+	d := supervise.Delivery{ID: "outbox:9", Task: supervise.OpeningTask(opening, work), News: encoded, Opening: opening}
+	for send := 1; send <= 2; send++ {
+		task, carried, err := r.runtime.designNews(r.ctx, c, d)
+		if err != nil {
+			t.Fatalf("send %d of the opening's task: %v", send, err)
+		}
+		if !strings.HasPrefix(task, opening+"\n\n"+work+"\n\n") || strings.Count(task, opening) != 1 ||
+			!strings.Contains(task, "version 5, since version 3, which your phase last took") {
+			t.Fatalf("send %d of the opening's task = %q, want the opening's sentences once, the work, then the news of the spec from 3 to 5", send, task)
+		}
+		var news record.DeliveryNews
+		if err := json.Unmarshal(carried, &news); err != nil || news.Task != work {
+			t.Fatalf("send %d of the opening's task carries %s (%v), want news whose task is the work alone", send, carried, err)
+		}
+		d.Task, d.News = task, carried
+	}
+}
+
 // An item whose told row knows no version of its step carries no earlier version. At its send, an
 // item that carries no unread review history either (record.DeliveryNewsItem.HistoryUnread) is read
 // as a start reads the record: it is dropped, as one whose change set is not recorded is, until the

@@ -178,6 +178,22 @@ export interface SessionContext {
    * caller decides what it can do without. */
   readonly modelRegistry?: HostModelRegistry;
   /**
+   * The host's `ctx.model` (`Model | undefined`, `extensibility/extensions/types.ts:825` at the
+   * pinned tag), as far as this package reads it: in a `context` handler the session's current
+   * model, and in a `before_provider_request` handler the model of that provider request, which a
+   * fallback can have made another than the one the request's `context` handler saw
+   * (`extensibility/extensions/runner.ts:2533`, `:2598-2605`).
+   * `compat.supportsMidConversationSystem` says whether the model takes a `system` message inside
+   * the conversation: where it is not set, Oh My Pi sends an extension's custom message as a user
+   * message (`ai/src/providers/anthropic.ts:6255`, `openai-completions.ts:2536-2590`,
+   * `openai-shared.ts:2325-2374`). `api` is the wire API the model speaks (`Model.api`), which says
+   * what shape the request body has. Undefined where the session has no model.
+   */
+  readonly model?: HostModel & {
+    readonly api?: string;
+    readonly compat?: { readonly supportsMidConversationSystem?: boolean };
+  };
+  /**
    * The host's `ctx.getAsyncJobSnapshot()`: this session's async-job manager as it stands now, or
    * null when no session owns the context (upstream `docs/extensions.md`, "Handler context"). Read
    * live from a context kept since `session_start`. Absent on a host that predates it.
@@ -517,9 +533,77 @@ export interface ResourcesDiscoverResult {
   readonly skillPaths?: readonly string[];
 }
 
-/** The messages one provider request is about to carry: a copy made for that request alone. */
+/** The messages one provider request is about to carry: a copy made for that request alone
+ *  (`structuredClone`, `extensibility/extensions/runner.ts:2536-2543` at the pinned tag), which a
+ *  handler may edit in place and return, so a later handler that keys on the array it was handed
+ *  still finds it. */
 export interface ContextEvent {
+  readonly messages: unknown[];
+}
+
+/**
+ * A provider request about to be sent (`BeforeProviderRequestEvent`,
+ * `extensibility/extensions/types.ts:1205-1209` at the pinned tag): `payload` is the wire body the
+ * provider built, after Oh My Pi's own conversion, its date reminder and its `cache_control`
+ * marks. Handlers run in load order, each on the body the one before returned, and any result
+ * other than undefined replaces the body (`extensibility/extensions/runner.ts:2599-2632`). The
+ * host runs it again each time the provider rebuilds the body for a retry.
+ */
+export interface BeforeProviderRequestEvent {
+  readonly payload: unknown;
+}
+
+/** A text block of an Anthropic request's `system`. */
+export interface AnthropicSystemBlock {
+  readonly type: "text";
+  readonly text: string;
+  readonly cache_control?: unknown;
+}
+
+/** The wire body of a request on `anthropic-messages`, as far as a `before_provider_request`
+ *  handler reads it: the top-level system prompt as the text blocks of `system`, and the
+ *  conversation as `messages` (`buildParams`, `ai/src/providers/anthropic.ts:5513` at the pinned
+ *  tag). */
+export interface AnthropicRequestBody {
+  readonly system?: readonly unknown[];
   readonly messages: readonly unknown[];
+  readonly [field: string]: unknown;
+}
+
+/** One message of a chat completion: the system prompt's as a string, a conversation message's as
+ *  a string or a list of parts. */
+export interface ChatCompletionMessage {
+  readonly role: string;
+  readonly content: unknown;
+  readonly [field: string]: unknown;
+}
+
+/** The wire body of a request on `openai-completions`: the top-level system prompt is its leading
+ *  `system` or `developer` messages, one for each part of it, or one that joins them where the
+ *  model takes no second system message (`ai/src/providers/openai-completions.ts:2500-2516` at the
+ *  pinned tag); the conversation follows. */
+export interface ChatCompletionRequestBody {
+  readonly messages: readonly ChatCompletionMessage[];
+  readonly [field: string]: unknown;
+}
+
+/** One item of a Responses request's `input`: a message has a `role`, and its content is a string
+ *  (a system prompt's `developer` item) or a list of parts. */
+export interface ResponsesInputItem {
+  readonly type?: string;
+  readonly role?: string;
+  readonly content?: unknown;
+  readonly [field: string]: unknown;
+}
+
+/** The wire body of a request on `openai-responses`: the top-level system prompt is
+ *  `instructions`, or, for a reasoning model whose `compat.supportsDeveloperRole` is set, the
+ *  leading `developer` items of `input`, one for each part of it
+ *  (`ai/src/providers/openai-responses.ts:1887-1916` at the pinned tag). */
+export interface ResponsesRequestBody {
+  readonly instructions?: string | null;
+  readonly input: readonly ResponsesInputItem[];
+  readonly [field: string]: unknown;
 }
 
 /** Replacement messages for that one request; Oh My Pi stores none of them in the session. */
@@ -598,6 +682,15 @@ export interface PiEventContract {
   readonly auto_retry_end: { readonly event: AutoRetryEndEvent; readonly result: undefined };
   /** Every provider request the session's agent loop sends, each turn and each tool round. */
   readonly context: { readonly event: ContextEvent; readonly result: ContextEventResult };
+  /** Every provider request's wire body, the main loop's, a side turn's, the handoff's and a
+   *  summary request's. A result is the body sent in its place. The host takes any value but
+   *  undefined (`BeforeProviderRequestEventResult` is `unknown`); a wire body is an object, and an
+   *  `unknown` result here widens what `on` infers for every other event's handler (pi-legion's
+   *  `session_stop` handler's `continue: true` reads as a `boolean` and is refused). */
+  readonly before_provider_request: {
+    readonly event: BeforeProviderRequestEvent;
+    readonly result: object;
+  };
   /** A compaction is about to summarize; a handler may change what it summarizes and keeps. */
   readonly session_before_compact: {
     readonly event: SessionBeforeCompactEvent;

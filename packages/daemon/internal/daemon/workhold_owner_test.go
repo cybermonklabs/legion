@@ -1,0 +1,794 @@
+package daemon
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	planwords "github.com/sjawhar/legion/daemon/internal/plan"
+	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
+)
+
+// The hold over an owner's plan: a plan whose first step is not planning (H37), the starts a move
+// back and a restart of a stopped task write (H38), what the owner's acceptance starts (H43), and
+// the architect's own acceptance, which no notice and no catch-up asks for while the hold stands
+// (H45, decision 21). Each runs the daemon's engine, admission and outbox over the work-hold rig
+// (newWorkHoldRig).
+
+// ownersChild is the child of LEGION-208 the rows that need one stand it in.
+const ownersChild = "LEGION-209"
+
+// acceptanceAsked is the clause of a catch-up's reason that asks its architect to accept
+// LEGION-208, waiting in accepting. It is written out here, never read from the code under test.
+const acceptanceAsked = "; in accepting, waiting for your acceptance, which no worker gives: LEGION-208 " +
+	"(read the evidence, then sign_off or request_backward_move)"
+
+// tokenOf is the token of key's role in the rig's project.
+func (r *workHoldRig) tokenOf(key string, role claim.Role) claim.Token {
+	r.t.Helper()
+	token, err := claim.NewToken(r.tokenProject, key, role)
+	if err != nil {
+		r.t.Fatalf("the %s token of %s: %v", role, key, err)
+	}
+	return token
+}
+
+// branchMade takes key's branch as made: the rig serves no GitHub, so the issue_branch row a
+// child's first phase queues, which its roles' starts wait behind, is finished by hand, as its
+// executor finishes it once GitHub holds the branch.
+func (r *workHoldRig) branchMade(key string) {
+	r.t.Helper()
+	if _, err := r.pool.Exec(r.ctx, `delete from outbox where issue = $1 and kind = $2`, key, string(record.OutboxKindIssueBranch)); err != nil {
+		r.t.Fatalf("finish the branch row of %s: %v", key, err)
+	}
+}
+
+// planned writes key's plan at generation 1, as a walk leaves it: version 2 of plan-artifact, given
+// by the tree's architect, with one task a whose steps are words (`role` or `role:key`), standing
+// in state at place (a task waiting stands at no act).
+func (r *workHoldRig) planned(key string, place record.TaskPlace, state record.TaskState, words ...string) {
+	r.t.Helper()
+	roles := planwords.BuiltinRoles()
+	steps := make([]record.PlanStep, len(words))
+	for i, word := range words {
+		role, agent, _ := strings.Cut(word, ":")
+		steps[i] = record.PlanStep{Issue: key, Generation: 1, Task: "a", Position: i + 1, Role: role, Type: roles[role].Type, AgentKey: agent}
+	}
+	version := record.PlanVersion{Issue: key, Generation: 1, Version: 2, ArtifactID: "plan-artifact", Source: record.PlanSourceOwner,
+		GivenBy: r.token(claim.RoleArchitect), GivenAt: r.clock.Now()}
+	task := record.PlanTask{Issue: key, Generation: 1, Task: "a", PlanVersion: 2, BlockText: "Build the widget.", Merges: true, State: record.TaskWaiting}
+	r.inTx(func(tx pgx.Tx) error {
+		if err := r.records.PutPlan(r.ctx, tx, version, []record.PlanTask{task}, steps); err != nil || state == record.TaskWaiting {
+			return err
+		}
+		return r.records.MoveTask(r.ctx, tx, key, 1, "a", place, state)
+	})
+}
+
+// laterPlan is version 3 of the root's plan, which changes task a's block and keeps its steps,
+// given by the tree's architect.
+func (r *workHoldRig) laterPlan(words ...string) intake.PlanGiven {
+	steps := make([]planwords.Step, len(words))
+	for i, word := range words {
+		role, agent, _ := strings.Cut(word, ":")
+		steps[i] = planwords.Step{Role: role, Key: agent}
+	}
+	return intake.PlanGiven{Issue: r.tree.key, Generation: 1, GivenBy: r.token(claim.RoleArchitect), Plan: planwords.Plan{
+		ArtifactID: "plan-artifact", Version: 3,
+		Tasks: []planwords.Task{{ID: "a", Merges: true, Steps: steps, Text: "Build the widget, and cover the empty list."}}}}
+}
+
+// stopTask is the owner's stop_task of the root's task a, the fact its route applies.
+func (r *workHoldRig) stopTask() {
+	r.t.Helper()
+	r.apply("stop-task", intake.TaskStopped{Issue: r.tree.key, Task: "a", By: r.token(claim.RoleArchitect), Generation: 1})
+	if held := r.issue(); held.Hold == nil || held.Hold.Reason != record.HoldTaskStopped {
+		r.t.Fatalf("the root after its owner's stop is %s with hold %+v, want it held for the stopped task", held.Phase, held.Hold)
+	}
+}
+
+// architectsCall is the owner's request from accepting that request builds from the root's
+// architect and its run of accepting, as the route reads them (api's signOff and phaseBackward),
+// applied as the route applies it: recorded, never refused.
+func (r *workHoldRig) architectsCall(name string, request func(by claim.Token, entry record.StepEntry) intake.Fact) {
+	r.t.Helper()
+	var entry record.StepEntry
+	r.inTx(func(tx pgx.Tx) error {
+		var err error
+		entry, err = r.records.OpenStep(r.ctx, tx, r.tree.key)
+		return err
+	})
+	r.apply(name, request(r.token(claim.RoleArchitect), entry))
+}
+
+// signOff is the architect's sign_off of the root standing in accepting.
+func (r *workHoldRig) signOff() {
+	r.t.Helper()
+	r.architectsCall("sign-off", func(by claim.Token, entry record.StepEntry) intake.Fact {
+		return intake.SignOff{Issue: r.tree.key, By: by, Generation: 1, Entry: entry}
+	})
+}
+
+// reviewApproved leaves the root's review round approved and its head ready to settle it: the
+// reviewer's decision approves head1, which GitHub reads clean with its checks concluded, so the
+// reviewer's completion (reviewerCompletes) moves the root on, as the review's approval moves it.
+func (r *workHoldRig) reviewApproved() {
+	r.t.Helper()
+	r.inTx(func(tx pgx.Tx) error {
+		if err := r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: r.tree.key, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + r.tree.key, HeadSHA: "head1", CheckedHead: "head1", MergeState: record.MergeStateClean,
+			Failing: []string{}}); err != nil {
+			return err
+		}
+		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleReviewer, Claim: r.token(claim.RoleReviewer),
+			Decision: &record.ReviewDecision{State: "approved", Head: "head1"}})
+	})
+}
+
+// reviewerCompletes is the reviewer's handoff of its approved round, which lands as its route
+// applies it.
+func (r *workHoldRig) reviewerCompletes() {
+	r.t.Helper()
+	r.apply("review-handoff", intake.HandoffComplete{Issue: r.tree.key, Role: claim.RoleReviewer, Claim: r.token(claim.RoleReviewer),
+		Generation: 1, Summary: "approved", Commit: "head1", HandoffRecord: "review-1", HandoffVersion: 1})
+}
+
+// architectReady is the ready of the root architect's launch, whose fact queues its catch-up.
+func (r *workHoldRig) architectReady() {
+	r.t.Helper()
+	r.apply("ready", intake.ClaimReady{Issue: r.tree.key, Role: claim.RoleArchitect, Launch: r.machine(claim.RoleArchitect).Claim().Generation})
+}
+
+// architectRestarts stops the root's architect, as the daemon stops it, and launches it again
+// while the gate stays closed, its agent ready once more: the hold holds no start of an architect.
+// Its ready's catch-up is what a relaunched architect reads of its tree (claimReady).
+func (r *workHoldRig) architectRestarts() {
+	r.t.Helper()
+	token := r.token(claim.RoleArchitect)
+	r.handle(claim.RoleArchitect, supervise.RequestSuspend{Claim: token, By: supervise.SuspendedByDaemon,
+		Reason: "the root's architect is taken down for the test"})
+	launched := r.launches(claim.RoleArchitect)
+	r.enqueue(record.SuperviseRequest{Op: "start", Tree: r.tree.key, Role: claim.RoleArchitect, Generation: 1, Task: "Resume the tree."})
+	r.drain()
+	if got := r.launches(claim.RoleArchitect); got != launched+1 {
+		r.t.Fatalf("the architect's start launched it %d times with the gate closed, want once", got-launched)
+	}
+	readyClaimAs(r.t, r.sup, token, claim.RoleArchitect, "ses-architect")
+}
+
+// noticesTo is every notice the outbox published to role's topic, in order.
+func (r *workHoldRig) noticesTo(role claim.Role) []record.Notice {
+	r.t.Helper()
+	topic := notify.RoleTopicPrefix + string(r.token(role))
+	_, delivered := r.publisher.snapshot()
+	var notices []record.Notice
+	for _, publish := range delivered {
+		if notice, ok := publish.payload.(record.Notice); ok && publish.topic == topic {
+			notices = append(notices, notice)
+		}
+	}
+	return notices
+}
+
+// noticesAmong is the notices of kind among notices.
+func noticesAmong(notices []record.Notice, kind record.NoticeKind) []record.Notice {
+	var of []record.Notice
+	for _, notice := range notices {
+		if notice.Kind == kind {
+			of = append(of, notice)
+		}
+	}
+	return of
+}
+
+// noticeRowsOf is how many notices of kind the outbox holds for the root (noticesOfKind).
+func (r *workHoldRig) noticeRowsOf(kind record.NoticeKind) int {
+	r.t.Helper()
+	return len(noticesOfKind(r.t, r.pool, r.tree.key, kind))
+}
+
+// builtCatchUps is every catch-up the outbox holds for the root, as it was composed
+// (noticesOfKind).
+func (r *workHoldRig) builtCatchUps() []record.Notice {
+	r.t.Helper()
+	return noticesOfKind(r.t, r.pool, r.tree.key, "catch-up")
+}
+
+// wantNoAcceptanceAsked fails t where notice, in its text or in any field of it, asks its
+// architect to start its own acceptance: the reason's words for it, and the tools that end it.
+func wantNoAcceptanceAsked(t *testing.T, what string, notice record.Notice) {
+	t.Helper()
+	whole, err := json.Marshal(notice)
+	if err != nil {
+		t.Fatalf("encode %s: %v", what, err)
+	}
+	for _, asked := range []string{"waiting for your acceptance", "sign_off", "request_backward_move"} {
+		if strings.Contains(notice.Reason, asked) || strings.Contains(string(whole), asked) {
+			t.Fatalf("%s asks for the architect's acceptance (%q) while the work hold stands:\n%s", what, asked, whole)
+		}
+	}
+}
+
+// wantTheTreeListed fails t where catch-up, the ordinary catch-up of the root, does not state the
+// root standing in accepting.
+func wantTheTreeListed(t *testing.T, what string, catchUp record.Notice) {
+	t.Helper()
+	if catchUp.CatchUp == nil || len(catchUp.CatchUp.Issues) != 1 || catchUp.CatchUp.Issues[0].Key != "LEGION-208" ||
+		catchUp.CatchUp.Issues[0].Phase != phase.Accepting {
+		t.Fatalf("%s states %+v, want the tree with LEGION-208 in accepting, as every catch-up states it", what, catchUp.CatchUp)
+	}
+}
+
+// H37: a member whose plan is `implementer reviewer`, released and not started, stands at admitted
+// under its tree's closed gate. Admission's pass offers it no slot, so its first step does not
+// start, under `start` (record.Waiting) and under `work`; the gate's opening offers it one, and its
+// implementer starts once.
+func firstStepStartsOnlyAtTheOpening(t *testing.T, hold config.Hold) {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Implementing, hold))
+	r.live(claim.RoleArchitect)
+	parent := r.tree.key
+	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: ownersChild, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: r.tree.project, Tree: r.tree.key, Parent: &parent, Title: "a released child", Phase: phase.Admitted, Generation: 1,
+		Status: "todo", Rank: "V", LastDispatchSeq: 1})
+	r.planned(ownersChild, record.TaskPlace{}, record.TaskWaiting, "implementer", "reviewer")
+	implementer := r.tokenOf(ownersChild, claim.RoleImplementer)
+
+	r.close(4)
+	r.apply("tick", intake.ControllerTick{})
+	r.drain()
+	if child := readIssue(t, r.pool, ownersChild); child.Phase != phase.Admitted {
+		t.Fatalf("%s stands in %s after admission's pass with the gate closed, want admitted: its first step does not start", ownersChild, child.Phase)
+	}
+	if starts := startRequestsOf(t, r.pool, ownersChild, "start"); len(starts) != 0 {
+		t.Fatalf("admission's pass with the gate closed queued the starts %+v of %s, want none", starts, ownersChild)
+	}
+	if got := len(launchesOf(r.rt, implementer)); got != 0 {
+		t.Fatalf("the runtime started %s's implementer %d times with the gate closed, want none", ownersChild, got)
+	}
+
+	r.approve(4, 12)
+	r.apply("tick", intake.ControllerTick{})
+	r.branchMade(ownersChild)
+	r.drain()
+	if child := readIssue(t, r.pool, ownersChild); child.Phase != phase.Implementing {
+		t.Fatalf("%s stands in %s once the gate opened, want implementing, its plan's first step", ownersChild, child.Phase)
+	}
+	if got := len(launchesOf(r.rt, implementer)); got != 1 {
+		t.Fatalf("the runtime started %s's implementer %d times once the gate opened, want once", ownersChild, got)
+	}
+	for _, start := range startRequestsOf(t, r.pool, ownersChild, "start") {
+		if start.Role == claim.RoleImplementer {
+			t.Fatalf("%s's implementer's start %+v still waits once the gate opened, want it run", ownersChild, start)
+		}
+	}
+}
+
+func TestStartHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
+	t.Parallel()
+	firstStepStartsOnlyAtTheOpening(t, config.HoldStart)
+}
+
+func TestWorkHoldStartsAFirstStepThatIsNotPlanningOnlyAtTheOpening(t *testing.T) {
+	t.Parallel()
+	firstStepStartsOnlyAtTheOpening(t, config.HoldWork)
+}
+
+// wantTheImplementerWaits fails t where the root's implementer has started while the gate is
+// closed, or where the start the root's move wrote for it is not waiting; after the move, the root
+// stands in at.
+func (r *workHoldRig) wantTheImplementerWaits(at phase.Phase, move string) {
+	r.t.Helper()
+	if got := r.issue(); got.Phase != at {
+		r.t.Fatalf("the root after %s stands in %s, want %s: the move is recorded", move, got.Phase, at)
+	}
+	if got := r.launches(claim.RoleImplementer); got != 0 {
+		r.t.Fatalf("the runtime started the implementer %d times after %s with the gate closed, want none", got, move)
+	}
+	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleImplementer); got != 1 {
+		r.t.Fatalf("the outbox holds %d starts of the implementer after %s with the gate closed, want the one it wrote, waiting", got, move)
+	}
+}
+
+// wantTheImplementerStarted fails t where the root's implementer did not start once since the gate
+// opened with the task of the start that waited, which names says.
+func (r *workHoldRig) wantTheImplementerStarted(says string) {
+	r.t.Helper()
+	if got := r.launches(claim.RoleImplementer); got != 1 {
+		r.t.Fatalf("the runtime started the implementer %d times once the gate opened, want once", got)
+	}
+	if got := r.rows(record.OutboxKindSupervise, "start", claim.RoleImplementer); got != 0 {
+		r.t.Fatalf("%d starts of the implementer still wait once the gate opened, want each run", got)
+	}
+	if c := r.machine(claim.RoleImplementer).Claim(); c.Pending == nil || !strings.Contains(c.Pending.Task, says) {
+		r.t.Fatalf("the started implementer holds %+v, want the task of its start, naming %q", c.Pending, says)
+	}
+}
+
+// H38: a running member under `work`. Its tester, at work when the gate closes, moves the root
+// back to implementing in that turn; and, in the other case, a later version of the owner's plan
+// restarts the task its owner stopped, at its first step. Each writes the implementer's start,
+// which waits while the gate is closed and runs once it opens.
+func TestWorkHoldHoldsTheStartsOfAMoveBackAndARestartUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	t.Run("a move back", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
+		r.live(claim.RoleArchitect)
+		r.inTx(func(tx pgx.Tx) error {
+			return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: r.tree.key, Role: claim.RoleTester, Claim: r.token(claim.RoleTester), Entry: 1})
+		})
+		r.working(claim.RoleTester)
+		r.close(4)
+		r.drain()
+		r.apply("back", intake.BackwardMove{Issue: r.tree.key, Requester: claim.RoleTester, To: phase.Implementing,
+			Reason: "the empty list is not covered"})
+		endTurn(r.ctx, t, r.machine(claim.RoleTester), r.token(claim.RoleTester))
+		r.drain()
+		r.wantHeld(claim.RoleTester, 1, "after its turn")
+		r.wantTheImplementerWaits(phase.Implementing, "the tester's move back")
+
+		r.approve(4, 12)
+		r.drain()
+		r.wantTheImplementerStarted("the empty list is not covered")
+	})
+
+	t.Run("a restart of a stopped step", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Testing, config.HoldWork))
+		r.live(claim.RoleArchitect)
+		r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning, "implementer", "tester")
+		r.stopTask()
+		r.close(4)
+		r.drain()
+		r.apply("plan-3", r.laterPlan("implementer", "tester"))
+		r.drain()
+		r.wantTheImplementerWaits(phase.Implementing, "the later version of the plan")
+
+		r.approve(4, 12)
+		r.drain()
+		r.wantTheImplementerStarted("the owner gave version 3 of the plan while task a was stopped")
+	})
+}
+
+// H43: the owner's acceptance, its task's step `acceptance:owner`, under `work`. Once the gate
+// closes, the architect's sign-off of a pass, and in the other case its move back of a fail to
+// implementing, is recorded as ever: the root moves. What the move starts, the retro's implementer
+// or the implementer's next round, waits while the gate is closed and runs once it opens.
+func TestWorkHoldHoldsWhatTheOwnersAcceptanceStartsUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		report func(r *workHoldRig)
+		at     phase.Phase
+		says   string
+	}{
+		{name: "a pass: the sign-off", report: (*workHoldRig).signOff, at: phase.Retro, says: "LEGION-208"},
+		{name: "a fail: the move back to implementing", report: func(r *workHoldRig) {
+			r.architectsCall("back", func(by claim.Token, entry record.StepEntry) intake.Fact {
+				return intake.BackwardMove{Issue: r.tree.key, Requester: claim.RoleArchitect, To: phase.Implementing,
+					Reason: "the acceptance found the empty list uncovered", By: by, Generation: 1, Entry: entry}
+			})
+		}, at: phase.Implementing, says: "the acceptance found the empty list uncovered"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+			r.live(claim.RoleArchitect)
+			r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceStep, Position: 3}, record.TaskRunning, "implementer", "reviewer", "acceptance:owner")
+			r.close(4)
+			r.drain()
+			tc.report(r)
+			r.drain()
+			r.wantTheImplementerWaits(tc.at, tc.name)
+
+			r.approve(4, 12)
+			r.drain()
+			r.wantTheImplementerStarted(tc.says)
+		})
+	}
+}
+
+// ownersPlaceCases are the two owner's places H45 moves an issue into: the accepting of today's
+// line, which an issue with no plan rows walks, and a plan's step `acceptance:owner`.
+var ownersPlaceCases = []struct {
+	name  string
+	steps []string
+}{
+	{name: "an issue with no plan rows"},
+	{name: "an issue whose plan has acceptance:owner", steps: []string{"implementer", "reviewer", "acceptance:owner"}},
+}
+
+// inReviewOfAnOwnersPlan is a root standing in reviewing under hold, before its owner's place
+// (steps nil walks today's line), its architect at work and its review round approved, which the
+// reviewer's completion settles (reviewApproved).
+func inReviewOfAnOwnersPlan(t *testing.T, hold config.Hold, steps []string) *workHoldRig {
+	t.Helper()
+	r := newWorkHoldRig(t, legionTree(phase.Reviewing, hold))
+	r.live(claim.RoleArchitect)
+	if steps != nil {
+		r.planned(r.tree.key, record.TaskPlace{Kind: record.PlaceStep, Position: 2}, record.TaskRunning, steps...)
+	}
+	r.reviewApproved()
+	return r
+}
+
+// H45 and decision 21: the reviewer's approval moves the root into its owner's place, and its
+// handoff lands while the gate is closed under `work`, during the close's drain. The architect
+// gets no phase-finished notice of its own acceptance and nothing that asks for that acceptance,
+// while its other notices arrive: here a child-status written after the phase-finished. At the
+// opening the notice goes, the root still standing in accepting, and the architect accepts: its
+// sign-off moves the root into its retro, whose implementer starts.
+func TestWorkHoldTellsNoArchitectOfItsOwnAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	for _, tc := range ownersPlaceCases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := inReviewOfAnOwnersPlan(t, config.HoldWork, tc.steps)
+			r.close(4)
+			r.runOnce()
+			r.reviewerCompletes()
+			if got := r.issue(); got.Phase != phase.Accepting {
+				t.Fatalf("the root after the reviewer's handoff stands in %s, want accepting: the approval is recorded", got.Phase)
+			}
+			r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is todo; it runs again under LEGION-208"})
+			r.drain()
+			told := r.noticesTo(claim.RoleArchitect)
+			if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+				t.Fatalf("the architect was told %+v with the gate closed, want no phase-finished notice of its own acceptance", got)
+			}
+			if got := noticesAmong(told, "child-status"); len(got) != 1 {
+				t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
+			}
+			for _, notice := range told {
+				wantNoAcceptanceAsked(t, "the "+string(notice.Kind)+" notice the architect was told with the gate closed", notice)
+			}
+			if got := r.noticeRowsOf("phase-finished"); got != 1 {
+				t.Fatalf("the outbox holds %d phase-finished notices with the gate closed, want the one of the approval, waiting", got)
+			}
+
+			r.approve(4, 12)
+			r.drain()
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer ||
+				got[0].Phase != phase.Reviewing {
+				t.Fatalf("the architect was told the phase-finished notices %+v once the gate opened, want the reviewer's, once", got)
+			}
+			if got := r.noticeRowsOf("phase-finished"); got != 0 {
+				t.Fatalf("the outbox holds %d phase-finished notices once the gate opened, want none", got)
+			}
+			r.signOff()
+			r.drain()
+			if got := r.issue(); got.Phase != phase.Retro {
+				t.Fatalf("the root after the architect's sign-off stands in %s, want retro", got.Phase)
+			}
+			if got := r.launches(claim.RoleImplementer); got != 1 {
+				t.Fatalf("the runtime started the retro's implementer %d times once the architect accepted, want once", got)
+			}
+		})
+	}
+}
+
+// Decision 21 at the opening: the architect was told the phase-finished notice of its own
+// acceptance before the gate closed, and was launched again during the hold, its ready's catch-up
+// naming no acceptance: the catch-up is all a fresh agent whose session was lost reads of its tree,
+// and the rest of the catch-up's words are the same. At the opening it is told again that the
+// acceptance is its own, by the phase-finished notice of the step before it, and it accepts.
+func TestWorkHoldTellsTheArchitectOfItsOwnAcceptanceAtTheOpening(t *testing.T) {
+	t.Parallel()
+	for _, tc := range ownersPlaceCases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := inReviewOfAnOwnersPlan(t, config.HoldWork, tc.steps)
+			r.reviewerCompletes()
+			r.drain()
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 {
+				t.Fatalf("the architect was told %d phase-finished notices with the gate open, want the reviewer's", len(got))
+			}
+			r.close(4)
+			r.drain()
+			r.architectRestarts()
+			r.architectReady()
+			r.drain()
+			catchUps := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+			if len(catchUps) != 1 {
+				t.Fatalf("the restarted architect was told %d catch-ups, want the one its ready queued", len(catchUps))
+			}
+			wantNoAcceptanceAsked(t, "the catch-up the restarted architect was told", catchUps[0])
+
+			r.approve(4, 12)
+			r.drain()
+			told := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished")
+			if len(told) != 2 || told[1].Role != claim.RoleReviewer || told[1].Phase != phase.Reviewing {
+				t.Fatalf("the architect was told the phase-finished notices %+v, want the reviewer's again once the gate opened", told)
+			}
+			r.signOff()
+			r.drain()
+			if got := r.issue(); got.Phase != phase.Retro {
+				t.Fatalf("the root after the architect's sign-off stands in %s, want retro", got.Phase)
+			}
+		})
+	}
+}
+
+// H45 beside #4065's merge holds: the root stands in accepting, its owner's place, and the gate
+// closes under `work`. A change of the project's merge holds document then queues its architect a
+// merge-holds-changed notice (workflow's mergeHoldsChanged), whose text says to sign off where no
+// line holds the sign-off (record.MergeHoldsChangedReason), so it is a notice of the architect's
+// own acceptance (workflow.TellsOwnersAcceptance). While the gate is closed it waits, and a later
+// notice of the architect passes it. At the opening it goes, once, and the opening tells the
+// architect of its acceptance no second time: no phase-finished notice follows it (workflow's
+// tellOwnersAcceptance).
+func TestWorkHoldHoldsAMergeHoldsChangeOfTheOwnersAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.close(4)
+	r.drain()
+	r.apply("merge-holds", intake.MergeHoldsChanged{Project: r.tree.project, Event: "dispatch-71"})
+	if got := r.noticeRowsOf("merge-holds-changed"); got != 1 {
+		t.Fatalf("the merge holds change queued %d merge-holds-changed notices, want one for the architect of the root in accepting", got)
+	}
+	r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is todo; it runs again under LEGION-208"})
+	r.drain()
+	told := r.noticesTo(claim.RoleArchitect)
+	if got := noticesAmong(told, "merge-holds-changed"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v with the gate closed, want the merge-holds-changed notice waiting: it asks for the architect's own acceptance", got)
+	}
+	if got := noticesAmong(told, "child-status"); len(got) != 1 {
+		t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
+	}
+	for _, notice := range told {
+		wantNoAcceptanceAsked(t, "the "+string(notice.Kind)+" notice the architect was told with the gate closed", notice)
+	}
+	if got := r.noticeRowsOf("merge-holds-changed"); got != 1 {
+		t.Fatalf("the outbox holds %d merge-holds-changed notices with the gate closed, want the one of the change, waiting", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	told = r.noticesTo(claim.RoleArchitect)
+	if got := noticesAmong(told, "merge-holds-changed"); len(got) != 1 || got[0].Phase != phase.Accepting ||
+		got[0].Reason != record.MergeHoldsChangedReason(r.tree.project) {
+		t.Fatalf("the architect was told the merge-holds-changed notices %+v once the gate opened, want the change's, once", got)
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v once the gate opened, want no phase-finished notice: the merge-holds-changed notice told the acceptance", got)
+	}
+	if got := r.noticeRowsOf("merge-holds-changed") + r.noticeRowsOf("phase-finished"); got != 0 {
+		t.Fatalf("the outbox holds %d notices of the acceptance once the gate opened, want none", got)
+	}
+}
+
+// Decision 28 beside H45: under `start` nothing of this changes. The reviewer's handoff that moves
+// the root into its owner's place with the gate closed tells the architect at once.
+func TestStartHoldTellsTheArchitectOfItsOwnAcceptanceAtOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range ownersPlaceCases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := inReviewOfAnOwnersPlan(t, config.HoldStart, tc.steps)
+			r.close(4)
+			r.runOnce()
+			r.reviewerCompletes()
+			r.drain()
+			if got := noticesAmong(r.noticesTo(claim.RoleArchitect), "phase-finished"); len(got) != 1 || got[0].Role != claim.RoleReviewer {
+				t.Fatalf("under start the architect was told the phase-finished notices %+v with the gate closed, want the reviewer's, once", got)
+			}
+		})
+	}
+}
+
+// specStated is the spec step as catch-up states it in its tree (record.CatchUpTree.Gates).
+func specStated(t *testing.T, what string, catchUp record.Notice) record.CatchUpGate {
+	t.Helper()
+	if catchUp.CatchUp != nil {
+		for _, gate := range catchUp.CatchUp.Gates {
+			if gate.Step == record.DesignStepSpec {
+				return gate
+			}
+		}
+	}
+	t.Fatalf("%s states no spec step: %+v", what, catchUp.CatchUp)
+	return record.CatchUpGate{}
+}
+
+// Decision 21: the ordinary catch-up still arrives while the work hold stands, and asks for no
+// acceptance of the architect's own, in its text or in any field: built at the architect's ready
+// while the hold stands; built with the gate open and delivered after the gate closed; and
+// delivered while the gate stands closed under `work` before the boot has written the hold's
+// record. It still states the root in accepting.
+//
+// The delivery composes the catch-up again from the record (readNoticeTree, workflow.TreeCatchUp)
+// by one rule: it leaves the clause out while the hold's record stands (workHoldStands) or while
+// the live standing gate, which the delivery reads in the same transaction, stands closed under
+// `work` (TreeCatchUp's gateHoldsWork, treeSnapshot.holdsWork). The two reads part only where the
+// gate stands closed under `work` with no hold record yet, which the third case builds: there the
+// live gate alone holds the clause back.
+func TestWorkHoldCatchUpAsksNoAcceptanceWhileTheHoldStands(t *testing.T) {
+	t.Parallel()
+	t.Run("built at the architect's ready while the hold stands", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+		r.live(claim.RoleArchitect)
+		r.close(4)
+		r.drain()
+		r.architectReady()
+		built := r.builtCatchUps()
+		if len(built) != 1 {
+			t.Fatalf("the ready queued %d catch-ups, want one", len(built))
+		}
+		wantNoAcceptanceAsked(t, "the catch-up the ready built", built[0])
+		r.drain()
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+		if len(published) != 1 {
+			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
+		}
+		wantNoAcceptanceAsked(t, "the catch-up the architect was told", published[0])
+		wantTheTreeListed(t, "the catch-up the architect was told", published[0])
+	})
+
+	// The catch-up is queued with the gate open at version 3 and delivered after version 4 closed
+	// it: the architect is told the spec as the record holds it at the delivery, version 4 and
+	// closed, so what it reads is the delivery's composition and not the queued text.
+	t.Run("built with the gate open and delivered after the gate closed", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+		r.live(claim.RoleArchitect)
+		r.architectReady()
+		built := r.builtCatchUps()
+		if len(built) != 1 || !strings.HasSuffix(built[0].Reason, acceptanceAsked) {
+			t.Fatalf("the ready with the gate open queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
+		}
+		if spec := specStated(t, "the catch-up the ready built", built[0]); spec.Version != 3 || !spec.Open {
+			t.Fatalf("the ready with the gate open built the spec step %+v, want version 3 and open: the case's own premise", spec)
+		}
+		r.close(4)
+		r.drain()
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+		if len(published) != 1 {
+			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
+		}
+		if spec := specStated(t, "the catch-up the architect was told", published[0]); spec.Version != 4 || spec.Open {
+			t.Fatalf("the architect was told the spec step %+v, want version 4 and closed, as the record holds it at the delivery", spec)
+		}
+		wantNoAcceptanceAsked(t, "the catch-up the architect was told once the gate closed", published[0])
+		wantTheTreeListed(t, "the catch-up the architect was told once the gate closed", published[0])
+	})
+
+	// A deployment moves from `start` to `work` while the root's gate stands closed. The close
+	// under `start` wrote no work hold row, and the boot's fact, which writes it
+	// (workflow.workHoldBooted), is applied beside the outbox, so a row can run before it
+	// (restartBeforeTheBoot). The catch-up queued under `start` asks for the acceptance, and its
+	// delivery under `work` before the boot composes it again with the gate it reads: the record's
+	// hold does not stand, and the live gate, closed under `work`, is what leaves the clause out.
+	t.Run("delivered while the gate stands closed and the boot has not yet applied the hold", func(t *testing.T) {
+		r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldStart))
+		r.live(claim.RoleArchitect)
+		r.close(4)
+		r.drain()
+		r.architectReady()
+		built := r.builtCatchUps()
+		if len(built) != 1 || !strings.HasSuffix(built[0].Reason, acceptanceAsked) {
+			t.Fatalf("the ready under start queued the catch-ups %+v, want one asking for the acceptance: %q", built, acceptanceAsked)
+		}
+		r.restartBeforeTheBoot()
+		r.deploy(config.HoldWork)
+		r.drain()
+		var holds int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from work_holds where tree = $1`, r.tree.key).Scan(&holds); err != nil {
+			t.Fatalf("read the work holds: %v", err)
+		}
+		if holds != 0 {
+			t.Fatalf("the record holds %d work holds of %s at the delivery, want none: the case's own premise", holds, r.tree.key)
+		}
+		published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+		if len(published) != 1 {
+			t.Fatalf("the architect was told %d catch-ups, want the one its ready queued", len(published))
+		}
+		wantNoAcceptanceAsked(t, "the catch-up the architect was told under work before the boot", published[0])
+		wantTheTreeListed(t, "the catch-up the architect was told under work before the boot", published[0])
+	})
+}
+
+// Decision 21's twin under `start`: nothing of this changes, and the catch-up the architect's ready
+// builds with the gate closed asks for its acceptance as ever.
+func TestStartHoldCatchUpAsksForTheAcceptanceAsEver(t *testing.T) {
+	t.Parallel()
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldStart))
+	r.live(claim.RoleArchitect)
+	r.close(4)
+	r.drain()
+	r.architectReady()
+	r.drain()
+	published := noticesAmong(r.noticesTo(claim.RoleArchitect), "catch-up")
+	if len(published) != 1 || !strings.HasSuffix(published[0].Reason, acceptanceAsked) {
+		t.Fatalf("under start the architect was told the catch-ups %+v, want one asking for the acceptance: %q", published, acceptanceAsked)
+	}
+}
+
+// returnSignOff is the sentence of the notice of a return out of awaiting_children into accepting
+// that asks the architect for its sign_off (workflow.Engine.ReturnFromChildren). It is written out
+// here, never read from the code under test.
+const returnSignOff = "It waits on your sign_off, as an issue in accepting does."
+
+// Decision 21 beside #4592's return out of awaiting_children. The root stands in accepting, its
+// owner's place, and the gate closes under `work`. An open child then holds it, and the admission
+// pass's stop moves it into awaiting_children (workflow.Engine.StopForChildren): its architect is
+// told that move at once, as ever, since that notice asks for no acceptance. Once no child is open,
+// its pull request having merged during the wait, the pass's return takes it back to the accepting
+// it held (workflow.Engine.ReturnFromChildren), and the return's notice tells the architect that it
+// waits on its sign_off. While the gate is closed that notice waits, as the phase-finished notice
+// of an owner's acceptance waits, and a later notice of the architect passes it. At the opening it
+// goes, once, and the opening tells the architect of its acceptance no second time.
+func TestWorkHoldHoldsTheReturnFromChildrenIntoTheOwnersAcceptanceUntilTheOpening(t *testing.T) {
+	t.Parallel()
+	r := newWorkHoldRig(t, legionTree(phase.Accepting, config.HoldWork))
+	r.live(claim.RoleArchitect)
+	r.close(4)
+	r.drain()
+
+	accepting := r.issue()
+	r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
+		moved, err := r.engine.StopForChildren(ctx, tx, accepting, []record.OpenChild{{Key: ownersChild, Status: "todo"}}, nil)
+		if err == nil && !moved {
+			err = fmt.Errorf("the admission pass's stop left %s in %s, want it moved into awaiting_children", accepting.Key, accepting.Phase)
+		}
+		return err
+	})
+	r.drain()
+	entered := noticesAmong(r.noticesTo(claim.RoleArchitect), workflow.AwaitingChildrenNoticeKind)
+	if len(entered) != 1 || entered[0].Phase != phase.Accepting ||
+		!strings.Contains(entered[0].Reason, "LEGION-208 is in awaiting_children, holding the start of accepting") {
+		t.Fatalf("the architect was told the awaiting-children notices %+v with the gate closed, want the one of the move into the wait, from accepting", entered)
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind); got != 0 {
+		t.Fatalf("the outbox holds %d awaiting-children notices after the move into the wait, want none: the gate's close holds no such notice", got)
+	}
+
+	r.inTx(func(tx pgx.Tx) error {
+		return r.records.PutPullRequest(r.ctx, tx, record.PullRequest{State: record.PullRequestMerged, Issue: r.tree.key, Repo: "acme/widgets",
+			Number: 42, Branch: "legion/" + r.tree.key, HeadSHA: "head1", Failing: []string{}})
+	})
+	waiting := r.issue()
+	r.asAFact(func(ctx context.Context, tx pgx.Tx) error {
+		return r.engine.ReturnFromChildren(ctx, tx, waiting)
+	})
+	if got := r.issue(); got.Phase != phase.Accepting || got.ChildrenWait != nil {
+		t.Fatalf("the root after the return stands in %s holding %+v, want it back in accepting: its pull request merged during the wait", got.Phase, got.ChildrenWait)
+	}
+	r.enqueue(record.Notice{Kind: "child-status", Role: claim.RoleArchitect, Reason: ownersChild + " is done"})
+	r.drain()
+	told := r.noticesTo(claim.RoleArchitect)
+	for _, notice := range told {
+		if strings.Contains(notice.Reason, returnSignOff) {
+			t.Fatalf("the architect was told %+v with the gate closed, want no notice that asks for its sign_off", notice)
+		}
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v with the gate closed, want no phase-finished notice of its own acceptance", got)
+	}
+	if got := noticesAmong(told, "child-status"); len(got) != 1 {
+		t.Fatalf("the architect was told %d child-status notices with the gate closed, want the later notice delivered", len(got))
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind); got != 1 {
+		t.Fatalf("the outbox holds %d awaiting-children notices after the return with the gate closed, want the return's, waiting", got)
+	}
+
+	r.approve(4, 12)
+	r.drain()
+	told = r.noticesTo(claim.RoleArchitect)
+	returned := noticesAmong(told, workflow.AwaitingChildrenNoticeKind)
+	if len(returned) != 2 || returned[1].Phase != phase.AwaitingChildren || !strings.HasSuffix(returned[1].Reason, returnSignOff) {
+		t.Fatalf("the architect was told the awaiting-children notices %+v once the gate opened, want the return's after the move's, asking for the sign_off: %q",
+			returned, returnSignOff)
+	}
+	if got := noticesAmong(told, "phase-finished"); len(got) != 0 {
+		t.Fatalf("the architect was told %+v once the gate opened, want no phase-finished notice: the return's notice told the acceptance", got)
+	}
+	if got := r.noticeRowsOf(workflow.AwaitingChildrenNoticeKind) + r.noticeRowsOf("phase-finished"); got != 0 {
+		t.Fatalf("the outbox holds %d notices of the acceptance once the gate opened, want none", got)
+	}
+}

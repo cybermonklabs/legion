@@ -62,8 +62,8 @@ func (g DesignGate) openedAt() time.Time {
 
 // OpenOnBasis opens the step on basis, an ancestor's approval, at the version of the issue's own
 // document the gate holds as its latest, which is the version the root registered: ApprovedVersion
-// becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open, EverOpened and the
-// merger's start read the step open as after a person's approval. A person's approval of an
+// becomes that version with no ApprovedMark, so GateOpen, TreeGate.Open and EverOpened read the
+// step open as after a person's approval. A person's approval of an
 // earlier version the step held moves into KeptPerson; a basis that already stood keeps the
 // approval it kept. The step rests on basis's ancestor for the generation from then on, beside
 // each ancestor an earlier basis opened it on (RestsOn). A step a person's approval holds open at

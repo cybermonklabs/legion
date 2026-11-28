@@ -1,0 +1,33 @@
+-- 20261122085244_pending_delivery_opening.up.sql — the work hold's opening sentences that a claim's
+-- pending task begins with (supervise.Delivery.Opening), on the one task the hold's opening gives a
+-- claim it stopped. They mark the task as an opening's task. A later close can stop the claim
+-- before a turn takes that task, and the claim keeps it. The next opening then puts its own
+-- sentences in front of the task's work alone (supervise's openingTask, Delivery.Work), not in front
+-- of the earlier sentences. Each delivery the table already holds takes the default, the empty
+-- string: a task that carries no sentences apart, which an opening reads as its whole text, as the
+-- release before read it.
+--
+-- The release before names each column of pending_task_deliveries it reads and writes (store's
+-- claimSelect and putDelivery). It reads the rows this migration leaves. Its upsert names no
+-- opening, so a delivery it writes over a row keeps that row's opening, and a delivery it inserts
+-- takes the default. Such a task does not begin with the sentences the column keeps, and this
+-- release reads it as its whole text (supervise's Delivery.Work).
+--
+-- There is no down file. This directory keeps none, so the way back is the one transaction that
+-- closes this header, its last paragraph (migrations.WayBack), run with this release's daemon
+-- stopped and before the release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1.
+-- Run it before the way back of 20261122072401_cleared_spec_approval_latest_version, as the newest
+-- way back of the release goes first. No other way back touches this column.
+--
+-- The way back drops the column and deletes this migration's row, which makes the version the
+-- store reports (store.SchemaVersionTx) that release's own again. At the roll-forward store.apply
+-- finds no row of this version and runs this file again, and each delivery takes the empty string.
+-- What it costs is the mark of each opening's task a claim still keeps: an opening after the
+-- roll-forward that starts such a claim again puts its sentences in front of the earlier
+-- opening's.
+--
+-- begin;
+-- alter table if exists pending_task_deliveries drop column if exists opening;
+-- delete from schema_version where version = 20261122085244;
+-- commit;
+alter table pending_task_deliveries add column opening text not null default '';

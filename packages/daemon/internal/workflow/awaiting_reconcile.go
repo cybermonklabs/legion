@@ -163,6 +163,8 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record
 			return answered, err
 		}
 		if waitGateOpen(e.cfg.Steps, gates, root.Awaiting.Artifact) {
+			// A wait on a question names no document, so its answer names the version of the gate
+			// the resume speaks of (stepInQuestion), never the wait's own GateVersion, which is 0.
 			version, reviewed := root.Awaiting.GateVersion, 0
 			var step record.DesignStep
 			gate := gateOfDocument(gates, root.Awaiting.Artifact)
@@ -177,6 +179,9 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, issues []record
 			// the root's version, and the resume asks no person's word of it (answeredDecision).
 			if gate == nil || !gate.OnBasis() {
 				reviewed = version
+			}
+			if gate != nil {
+				version = gate.LatestVersion
 			}
 			e.logOnCommit(ctx, "workflow: the design gate of a root waiting on a person is open, which answers its wait", "issue", root.Key,
 				"version", version, "ask", root.Awaiting.Ask)

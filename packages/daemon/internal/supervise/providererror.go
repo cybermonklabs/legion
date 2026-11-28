@@ -360,13 +360,15 @@ func classifyProviderError(status int, code string) providerErrorClass {
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
 // the delivery counts one more send, carries the sentence the re-sent prompt is given
 // (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns in
-// one transaction. Its timer's firing is what sends it (promptRetryDue); until then sendPending
-// holds it, and a newer task queued meanwhile replaces it rather than waiting behind it (queue).
+// one transaction, under the claim-write deadline as every claim and delivery write of a decision
+// is (putClaimAndDelivery). Its timer's firing is what sends it (promptRetryDue); until then
+// sendPending holds it, and a newer task queued meanwhile replaces it rather than waiting behind
+// it (queue).
 func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
+	if err := m.saved(m.putClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
 		return err
 	}
 	after := promptRetryDelay(p.ProviderErrorRetries)

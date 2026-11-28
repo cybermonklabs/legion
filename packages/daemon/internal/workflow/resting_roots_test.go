@@ -142,9 +142,12 @@ func lastCatchUpReason(t *testing.T, pool *pgxpool.Pool) string {
 	return reason
 }
 
-// restingNamed is how R is named by the refusals, the start task and the catch-up while it
-// implements.
+// restingNamed is how R is named by the refusals while it implements.
 const restingNamed = "LEGION-208 (its spec step, in implementing)"
+
+// restingOnP is how R is named by P's start task and catch-up while it implements: the document of
+// P its step rests on, with no word of an approval of it (restingRootsOn).
+const restingOnP = "LEGION-208, in implementing, its spec step on the primary document of LEGION-100 (dispatch://LEGION-100/spec)"
 
 // The refusal of P's sign-off and close while R is in the workflow names R and says who moves it.
 const restingMover = "Each is a tree of its own: its own architect, or a person, moves it."
@@ -369,7 +372,8 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 					t.Fatalf("the resting-root notice = %#v, want it to name P's spec at version 3 to its architect", notice)
 				}
 			}
-			want := tc.said + " Its spec step rests on the approval of LEGION-100. The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
+			want := tc.said + " Its spec step rests on version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec). " +
+				"The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if resting[1].Reason != want {
 				t.Fatalf("the leave's resting-root reason = %q, want %q", resting[1].Reason, want)
@@ -379,20 +383,22 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 
 	// Two steps of R rest on P: the leave's notice names both, in the plural, and each requirement
 	// their bases serve once; the document of P it names and the version are one step's, the
-	// first whose basis names P now.
+	// first whose basis names P now, which the notice says that step rests on (on).
 	for _, tc := range []struct {
 		name     string
 		criteria record.DesignGate
 		ref      string
 		version  int
+		on       string
 	}{
 		{"both steps open on P's approval", record.OpenOnBasis(record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria,
 			ArtifactID: criteriaDoc, LatestVersion: 2}, record.GateBasis{Issue: basisAncestor, ArtifactID: "artifact-100-verification", Version: 2,
 			Approval: record.EventMark{Seq: 41, At: basisApprovedAt}, Approver: "user:alice", Serves: restingBasis().Serves, RegisteredAt: basisEngineNow}),
-			"dispatch://LEGION-100/artifact/verification-md", 2},
+			"dispatch://LEGION-100/artifact/verification-md", 2,
+			"its criteria step on version 2 of the Verification document of LEGION-100 (dispatch://LEGION-100/artifact/verification-md)"},
 		{"the criteria step resting on P after its basis ended", record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria,
 			ArtifactID: criteriaDoc, LatestVersion: 3, EverOpened: true, RestsOn: []string{basisAncestor}},
-			"dispatch://LEGION-100/spec", 3},
+			"dispatch://LEGION-100/spec", 3, "its spec step on version 3 of the primary document of LEGION-100 (dispatch://LEGION-100/spec)"},
 	} {
 		t.Run("two steps that rest on the ancestor, "+tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -406,7 +412,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 			if len(resting) != 2 {
 				t.Fatalf("resting-root notices keyed by P = %#v, want the registration's and the close's", resting)
 			}
-			want := "LEGION-208 is done. Its criteria and spec steps rest on the approval of LEGION-100. " +
+			want := "LEGION-208 is done. Its criteria and spec steps rest on LEGION-100, " + tc.on + ". " +
 				"The sign-off and the close of LEGION-100, and its retro where its task has no acceptance step, no longer wait for LEGION-208. " +
 				"The checks of LEGION-208 serve these requirements of LEGION-100: dispatch://LEGION-100/spec#b-p2@v3."
 			if closed := resting[1]; closed.Reason != want || closed.Ref != tc.ref || closed.Version != tc.version {
@@ -454,7 +460,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		seedIssue(t, pool, ancestor)
 		seedRecord(t, pool, func(tx pgx.Tx) error { return engine.StartArchitect(t.Context(), tx, ancestor) })
 		start := architectStartOf(t, pool, basisAncestor)
-		resting := "These roots rest on the approval of LEGION-100 and are still in the workflow: " + restingNamed + ". " +
+		resting := "These roots rest on LEGION-100 and are still in the workflow: " + restingOnP + ". " +
 			"The daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is in the workflow (SIGNOFF_RESTING_ROOT_IN_WORKFLOW). " +
 			"Each root's own architect, or a person, moves it."
 		fresh := ArchitectStartTask(ArchitectStart{Root: ancestor, Gate: record.TreeGate{Steps: engine.GatedSteps()}})
@@ -488,7 +494,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 1)
 		want := "the tree of LEGION-100 at generation 1 as the daemon records it now; start or resume it as your role says" +
-			"; resting on the approval of LEGION-100 and still in the workflow: " + restingNamed +
+			"; resting on LEGION-100 and still in the workflow: " + restingOnP +
 			" (the daemon refuses the sign-off and the close of LEGION-100, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)"
 		if got := lastCatchUpReason(t, pool); got != want {
 			t.Fatalf("P's catch-up reason = %q, want %q", got, want)
@@ -496,7 +502,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 
 		closeIssue(t, pool, engine, gatedRoot, "", "done", 20)
 		claimReady(t, pool, engine, basisAncestor, claim.RoleArchitect, 2)
-		if got := lastCatchUpReason(t, pool); strings.Contains(got, "resting on the approval") {
+		if got := lastCatchUpReason(t, pool); strings.Contains(got, "resting on LEGION-100") {
 			t.Fatalf("P's catch-up reason once R is done = %q, want no resting root named", got)
 		}
 	})

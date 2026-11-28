@@ -77,7 +77,8 @@ import (
 //     member where it stood, record.OwedNews owes such a tree nothing, and nothing goes to it.
 //
 // The task text is the start's own text (record.DeliveryNews.Task), a blank line, and the news,
-// rendered by the one render every task of news goes through (renderNews). A phase start whose
+// rendered by the one render every task of news goes through (renderNews), behind the work hold's
+// opening sentences where the task is an opening's (supervise.Delivery.Opening). A phase start whose
 // news is all dropped is sent as its own text alone, carrying no news; a task queued for its news
 // alone (supervise.Delivery.NewsOnly) with nothing left to say — no item standing, and no opening
 // owed while the gate stands open — answers "", which the machine retires rather than sends. A task
@@ -111,7 +112,7 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 	var sent renderedNews
 	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, d.RoundNamed, time.Now)
+		sent, err = renderNews(ctx, tx, w.records, w.gatedSteps, c.Token, carried, d.News, d.RoundNamed, d.Opening, time.Now)
 		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read what the news the task held for %s carries says now: %w", c.Token, err)
@@ -167,8 +168,14 @@ type renderedNews struct {
 // prompt reads them: the text is carried's Task cut before them (reviewround.Split), a blank line,
 // the news, and then the two sentences. A task that does not end with them as Sentences writes
 // them is rendered whole, as any other.
+//
+// The one task the work hold's opening gives a claim it stopped begins with the opening's
+// sentences (opening: record.SuperviseRequest.Opening at a start, supervise.Delivery.Opening at a
+// send), and carried's Task is its work alone, without them (supervise.OpeningWork). So every
+// render puts them in front of the work and its news once (supervise.OpeningTask), and a send never
+// drops them or repeats them. A task of no opening ("") is rendered as it stands.
 func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []record.DesignStep, reader claim.Token,
-	carried record.DeliveryNews, encoded []byte, roundNamed bool, now func() time.Time) (renderedNews, error) {
+	carried record.DeliveryNews, encoded []byte, roundNamed bool, opening string, now func() time.Time) (renderedNews, error) {
 	sent, err := readNewsAtSend(ctx, tx, records, steps, reader, carried, now)
 	if err != nil {
 		return renderedNews{}, err
@@ -180,6 +187,9 @@ func renderNews(ctx context.Context, tx pgx.Tx, records record.Store, steps []re
 		}
 	}
 	rendered := renderedNews{task: paragraphs(body, sent.text) + round, says: sent.says, dropped: sent.dropped}
+	if opening != "" {
+		rendered.task = supervise.OpeningTask(opening, rendered.task)
+	}
 	switch {
 	case sent.kept.Empty():
 	case encoded != nil && !sent.rewritten && len(sent.kept.Items) == len(carried.Items) &&

@@ -109,7 +109,7 @@ const (
 	versionNewsA3  = "a3-a-checks-change-reaches-accepting-and-implementing"
 	versionNewsA5  = "a5-the-tester-passes-and-the-reviewer-is-told"
 	versionNewsA6  = "a6-a-merged-root-is-told-nothing"
-	versionNewsA7  = "a7-the-merger-waits-then-reads-the-opening"
+	versionNewsA7  = "a7-the-merger-starts-then-reads-the-opening"
 	versionNewsR6  = "r6-only-the-root-is-told-of-its-checks"
 	versionNewsOff = "off-the-daemon-sends-nothing"
 )

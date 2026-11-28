@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -40,10 +39,11 @@ type roundShape struct {
 // (waitingClaims), so a claim is in both sets or in neither (dispatch://INFRA-4109 R2). A claim
 // in the wait set and not in the ask set holds the pod until the round's bound for an answer
 // nobody asked for: that is how a claim the daemon suspended held BET-1182's, OSSV-300's and
-// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, unknown)
-// is in neither set, because it runs no process and no turn in the pod (R1). A suspension that
-// holds (the operator's or the controller's) is in both, as dispatch://INFRA-2981 R5 made the
-// operator's.
+// OSSV-313's pods to their bounds. A claim the daemon suspended (daemon, exit, released, hold,
+// unknown) is in neither set, because it runs no process and no turn in the pod (R1). A
+// suspension that holds (the operator's or the controller's) is in both, as dispatch://INFRA-2981
+// R5 made the operator's. A work hold's stop that is still held for the agent's turn is in both
+// too: the agent still runs in the pod and can answer.
 //
 // A claim a project's pause stopped is suspended released, and it is the pause's, not R1's,
 // while the pause still owes its role a launch: the pause kept the pod for the work on its disk
@@ -132,6 +132,7 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 		{name: "suspended by exit", claim: suspendedBy(supervise.SuspendedByExit), want: inNeither},
 		{name: "suspended by released", claim: suspendedBy(supervise.SuspendedByReleased), want: inNeither},
 		{name: "suspended by unknown", claim: suspendedBy(supervise.SuspendedByUnknown), want: inNeither},
+		{name: "suspended by hold", claim: suspendedBy(supervise.SuspendedByHold), want: inNeither},
 		// The pause's stop takes a held wake of each role it stops (store.PodRecords.TakePodWake,
 		// pods.WakePause), so while its hold stands the stopped role has an open resume of that
 		// pause, whose clock is the moment of the stop.
@@ -153,11 +154,23 @@ func TestEveryClaimShapeIsInBothRoundSetsOrNeither(t *testing.T) {
 			}, owingTheClaim), want: inNeither},
 		{name: "suspended by daemon under a pause hold that stands", claim: suspendedBy(supervise.SuspendedByDaemon),
 			holds: pauseHold(owingTheClaim), want: inNeither},
+		// The work hold takes a pause's stop over (supervise's suspensionRank). The claim it holds
+		// is not released, so it is not the pause's, whatever the pause still owes its role.
+		{name: "suspended by hold under an ended pause hold that still owes its role a launch", claim: suspendedBy(supervise.SuspendedByHold),
+			holds: pauseHold(resumed, owingTheClaim), want: inNeither},
 		{name: "an operator suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByOperator
 		}), want: inBoth},
 		{name: "a daemon suspension held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
 			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByDaemon
+		}), want: inBoth},
+		{name: "a work hold's stop held over a running turn", claim: member(supervise.StateWorking, func(c *supervise.Claim) {
+			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByHold
+		}), want: inBoth},
+		// The work hold's stop of a ready claim waits for the turn its close message starts
+		// (supervise.RequestSuspend.TurnAfter).
+		{name: "a work hold's stop held for the turn its message starts", claim: member(supervise.StateReady, func(c *supervise.Claim) {
+			c.SuspensionHeld, c.SuspensionHeldBy = true, supervise.SuspendedByHold
 		}), want: inBoth},
 		{name: "no session", claim: member(supervise.StateQueued, func(c *supervise.Claim) { c.Session = "" }), want: inNeither},
 		{name: "left the round's pod", claim: member(supervise.StateReady, func(c *supervise.Claim) { c.UpdateLeftRound = round }), want: inNeither},
@@ -283,8 +296,9 @@ type owedLaunchState struct {
 // waits for it or the pause keeps the pod for it. An answered claim keeps nothing and is in no
 // wait.
 //
-// The keep is read from the reason that each reading answers (a project's pause owes the
-// implementer a launch), because a suspension that holds holds the pod for a reason of its own.
+// The keep is read from the hold each reading answers (podKeep): a reading keeps the pod for the
+// pause where it answers keptForOwedLaunch. A suspension that holds answers keptByOperator, since
+// it holds the pod for its holder, never for the pause.
 //
 // The last check walks supervise.States() and supervise.SuspendSources(). A state or a source
 // added to supervise without a row here fails it.
@@ -320,6 +334,9 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByExit},
 		{state: supervise.StateSuspended, by: supervise.SuspendedByUnknown},
+		// The work hold takes a pause's stop over (supervise's suspensionRank): the claim it holds
+		// is not released, so the pause keeps nothing for it.
+		{state: supervise.StateSuspended, by: supervise.SuspendedByHold},
 		// A suspension that holds (the operator's or the controller's) holds the pod for its
 		// holder, never for the pause.
 		{state: supervise.StateSuspended, by: supervise.SuspendedByOperator, sets: true, answeredAsked: true},
@@ -328,9 +345,10 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 		{state: supervise.StateRetired},
 	}
 
-	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch.
-	keepsForThePause := func(ends bool, why string) bool {
-		return !ends && strings.Contains(why, fmt.Sprintf("owes the %s a launch", claim.RoleImplementer))
+	// keepsForThePause is whether a reading of the pod keeps it for the claim's owed launch. The
+	// claim is the one role the pause owes a launch, so the typed hold names it.
+	keepsForThePause := func(keep podKeep) bool {
+		return keep == keptForOwedLaunch
 	}
 	isClaim := func(of supervise.Claim) bool { return of.Token == token }
 	for _, row := range rows {
@@ -363,10 +381,12 @@ func TestEveryClaimShapeOfARoleThePauseOwesALaunchIsReadByOneRule(t *testing.T) 
 							keep = row.located
 						}
 						keep = keep && !answered
-						if got := keepsForThePause(roundPodEnds(group, round, clock)); got != keep {
+						swept, _ := roundPodEnds(group, round, clock)
+						if got := keepsForThePause(swept); got != keep {
 							t.Errorf("the sweep's reading keeps the pod for the claim's owed launch: %t, want %t", got, keep)
 						}
-						if got := keepsForThePause(launchRoundPodEnds(group, c, round, clock)); got != keep {
+						launched, _ := launchRoundPodEnds(group, c, round, clock)
+						if got := keepsForThePause(launched); got != keep {
 							t.Errorf("the reading at the claim's own launch keeps the pod for its owed launch: %t, want %t", got, keep)
 						}
 						wantAsks, wantWaits := session && row.sets, session && row.sets

@@ -336,9 +336,11 @@ type valueStripCase struct {
 	stays func(t *testing.T, whole, mixed []byte)
 	// beforeField is a contract below the arrival of the row's field, and withField the values a
 	// served body carries that arrived with that field, each under the issue that carries it. A
-	// case gives both where its row's field arrived above the floor. Where the field is older
-	// than the floor it gives neither: no contract this daemon serves is below such a field's
-	// arrival, so no pod records one beside a contract that reads the field.
+	// case gives both where its row's field arrived above the floor, unless the value the row
+	// takes arrived from shapedAnswersContract on, where no claim recording it is in a pod's
+	// reckoning (droppedWhy's case says what that leaves). Where the field is older than the
+	// floor it gives neither: no contract this daemon serves is below such a field's arrival, so
+	// no pod records one beside a contract that reads the field.
 	beforeField int
 	withField   func(t *testing.T, body []byte) map[string]string
 	// undeclaredState and undeclaredIssue carry undeclaredValue in the field the row strips: the
@@ -354,7 +356,7 @@ func valueStripCases() map[string]valueStripCase {
 	declined := string(record.AnsweredByDecline)
 	waitingOnIssue := strconv.Quote(waitingOnIssueKind)
 	answeredAt := time.Date(2026, 9, 22, 8, 45, 0, 0, time.UTC)
-	return map[string]valueStripCase{
+	cases := map[string]valueStripCase{
 		// A pod recording 51 and 59 is served the report of claims nothing will wake without its
 		// retired entries, since the pod's 51 process parses `strandedClaims[].state` with an
 		// enum of `suspended` and `failed` and refuses the whole body for the `retired` of
@@ -722,6 +724,12 @@ func valueStripCases() map[string]valueStripCase {
 			}},
 		},
 	}
+	for _, rows := range entriesTestRows() {
+		if rows.valueStrips != nil {
+			maps.Copy(cases, rows.valueStrips(entryNumber(rows.entry)))
+		}
+	}
+	return cases
 }
 
 // failureCausesServed is every failure cause and pending cause a served body's claim views carry,

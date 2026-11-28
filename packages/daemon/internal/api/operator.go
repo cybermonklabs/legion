@@ -235,7 +235,9 @@ func (s *server) startedStatus(w http.ResponseWriter, r *http.Request, m *superv
 // claimEvent posts one request of by's to a claim's machine (postClaimEvent), as every operator
 // request on an agent does (claimRequest): it answers the caller itself when the daemon is
 // stopping or the machine refuses, and reports whether the machine held the request for the
-// agent's turn (supervise.ErrSuspendHeld), which is no refusal.
+// agent's turn (supervise.ErrSuspendHeld), which is no refusal. The retry posts its own request
+// (machineRetry, startUnderWay), since it is answered once its start is under way, and answers the
+// work hold's refusal in the hold's code.
 func (s *server) claimEvent(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
 	by supervise.SuspendSource, request string, ev supervise.Event) (held, ok bool) {
 	posted, err := s.postClaimEvent(w, r, m, token, request, ev)
@@ -480,7 +482,7 @@ func (s *server) retryClaim(w http.ResponseWriter, r *http.Request) {
 	} else if s.refusedWhilePaused(w, r, "retry", m.View().Claim) {
 		return
 	} else {
-		status, notRestarted, _, ok = s.retryStart(w, r, m, token, false, "", supervise.SuspendedByOperator)
+		status, notRestarted, _, ok = s.retryStart(w, r, m, token, false, "", supervise.SuspendedByOperator, retryOp, nothingChanged)
 	}
 	if !ok {
 		return

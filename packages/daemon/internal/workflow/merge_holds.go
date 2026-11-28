@@ -12,11 +12,20 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
+// mergeHoldsChangedNoticeKind is the kind of the notice that tells an architect in accepting that
+// the project's merge holds document changed (mergeHoldsChanged), which TellsOwnersAcceptance
+// takes for a notice of the architect's own acceptance. record/outbox.go spells the same kind
+// itself, since record cannot import this package.
+const mergeHoldsChangedNoticeKind record.NoticeKind = "merge-holds-changed"
+
 // mergeHoldsChanged tells each role that a line of the project's merge holds document can hold
 // that the document changed (intake.MergeHoldsChanged). The architect that owns each issue in
 // accepting, whose sign_off a line can hold, gets a merge-holds-changed notice. The merger of each
 // issue in merging, whose merge a line can hold, gets a row of its own (record.MergeHoldsChanged),
 // since a notice reaches only an architect. Both carry one text (record.MergeHoldsChangedReason).
+// The architect's notice tells it to sign off where no line holds its sign-off, so it is a notice
+// of its own acceptance (TellsOwnersAcceptance): under `work` it waits while the tree's standing
+// gate is closed, as the phase-finished notice of that acceptance waits, and goes at the opening.
 //
 // A role that a hold stopped ends its turn with a WAITING line and subscribes to nothing: under
 // `runtime: kubernetes` a Dispatch document event does not wake a released pod, and an outbox
@@ -82,7 +91,7 @@ func (e *Engine) mergeHoldsChanged(ctx context.Context, tx pgx.Tx, fact intake.M
 			continue
 		}
 		if issue.Phase == phase.Accepting {
-			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "merge-holds-changed", Role: claim.RoleArchitect,
+			if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: mergeHoldsChangedNoticeKind, Role: claim.RoleArchitect,
 				Phase: phase.Accepting, Reason: reason}); err != nil {
 				return intake.Result{}, err
 			}

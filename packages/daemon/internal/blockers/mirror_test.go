@@ -101,8 +101,8 @@ func TestOnlyAReadingOfDispatchWritesTheCopy(t *testing.T) {
 		intake.CatchUpApplied{}, intake.LingerExpired{}, intake.LingerDeadline{}, intake.DaemonBooted{},
 		intake.CutoverMergerRepair{}, intake.CheckReport{}, intake.CheckWakeDue{}, intake.CheckLookEnded{},
 		intake.CheckBound{}, intake.ListenerWake{}, intake.PodBackstopDue{},
-		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.PendingBasisRead{}, intake.BasisChangesRead{},
-		intake.ReparentRead{},
+		intake.WorkerSilent{}, intake.WorkerBackgroundStalled{}, intake.WorkHoldOpened{}, intake.PendingBasisRead{},
+		intake.BasisChangesRead{}, intake.ReparentRead{},
 	} {
 		rows = append(rows, row{fact: fact})
 	}

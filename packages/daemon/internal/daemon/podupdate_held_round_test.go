@@ -18,10 +18,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// heldRoundRig is a round over the rig's issue, a tree root, whose implementer suspendedBy holds
+// suspensionHeldRoundRig is a round over the rig's issue, a tree root, whose implementer suspendedBy holds
 // suspended, beside a tester that answers and the issue's own architect, ready. The round is
 // carried to its bound and swept there once.
-func heldRoundRig(t *testing.T, suspendedBy supervise.SuspendSource) *podUpdateRig {
+func suspensionHeldRoundRig(t *testing.T, suspendedBy supervise.SuspendSource) *podUpdateRig {
 	t.Helper()
 	rig := newPodUpdateRig(t,
 		podUpdateRole{role: claim.RoleArchitect, state: supervise.StateReady, session: true, inPod: true,
@@ -102,7 +102,7 @@ func TestPodUpdateTellsTheControllerAloneOfItsOwnOrTheOperatorsHold(t *testing.T
 		{by: supervise.SuspendedByController, words: "The controller suspended implementer (suspended). The controller can resume it."},
 	} {
 		t.Run(string(tc.by), func(t *testing.T) {
-			rig := heldRoundRig(t, tc.by)
+			rig := suspensionHeldRoundRig(t, tc.by)
 
 			if rows := rig.rows(record.OutboxKindNotice); len(rows) != 0 {
 				t.Fatalf("the sweep wrote %d architect notices, want none: the round's one hold is the %s's", len(rows), tc.by)

@@ -141,9 +141,10 @@ func sameBasis(a, b *record.GateBasis) bool {
 	return a.Issue == b.Issue && a.ArtifactID == b.ArtifactID && a.Version == b.Version
 }
 
-// ancestorOpenedStep is the opening of each text that tells a step an ancestor's approval opened, a
-// format of the step and the root: the design-approved notice's reason (tellOpened) and the
-// resting-root notice of the opening (tellRegisteredBasis).
+// ancestorOpenedStep is the opening of the design-approved notice's reason for a step an
+// ancestor's approval opened (tellOpened), a format of the step and the root. The resting-root
+// notice of such an opening says no such thing (tellRegisteredBasis): it reports which version of
+// the ancestor's document the root's step rests on, not an approval.
 const ancestorOpenedStep = "An ancestor's approval opened the %s step of %s."
 
 // tellOpened queues the design-approved notice of a registration, or of the opening of a step that
@@ -200,6 +201,15 @@ func (e *Engine) tellOpened(ctx context.Context, tx pgx.Tx, root string, gate re
 // A root out of the workflow, or whose tree lingers, takes no basis (gateRegistered), and its
 // leave told each ancestor's architect that it left, so the end of such a wait on it is told to
 // nobody, as at the leave (endPendingUntold), and only logged.
+//
+// Each resting-root notice reports the root's rest: the root, its step, and the version of the
+// ancestor's document for the step (documentOf) that the root's registration read from Dispatch.
+// It never says that a person approved the ancestor's document, or that an approval of it stands
+// on the daemon's record. register_gate reads the ancestor's approval from Dispatch (api's
+// gate_basis.go) before the
+// daemon applies that approval's own event to the ancestor's spec row, so a notice that restated
+// the approval could reach the ancestor's architect while the approval route still answers none.
+// That architect hears of its own approval on its own path (the design-approved notice).
 func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record.Issue, before *record.DesignGate, gate record.DesignGate, stood bool) error {
 	step := gate.Step.OrSpec()
 	if before != nil && before.PendingOnBasis() && (gate.Basis == nil || gate.Basis.Issue != before.Basis.Issue) {
@@ -207,8 +217,8 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		if record.Stopped(root) {
 			e.logEndedUntold(ctx, root.Key, step, ended)
 		} else {
-			what := fmt.Sprintf("%s registered its %s step again with no basis on %s. The step no longer waits on approval request %s of version %d of the %s of %s.",
-				root.Key, step, ended.Issue, ended.Pending.Ask, ended.Version, step.Document(), ended.Issue)
+			what := fmt.Sprintf("%s registered its %s step again with no basis on %s. The step no longer waits on approval request %s of version %d of %s.",
+				root.Key, step, ended.Issue, ended.Pending.Ask, ended.Version, documentOf(ended.Issue, step))
 			if err := e.queueRestingRoot(ctx, tx, root, step, ended, restingEnded(ended.Pending.Ask), what); err != nil {
 				return err
 			}
@@ -234,8 +244,8 @@ func (e *Engine) tellRegisteredBasis(ctx context.Context, tx pgx.Tx, root record
 		}
 		e.logOnCommit(ctx, "workflow: a design gate step opened on an ancestor's approval", "issue", root.Key, "step", step,
 			"version", gate.LatestVersion, "ancestor", basis.Issue, "basis", basis.ArtifactID, "basis_version", basis.Version, "recorded_before", stood)
-		what := fmt.Sprintf(ancestorOpenedStep+" A person approved version %d of %s. %s rests on this approval.",
-			step, root.Key, basis.Version, documentOf(basis.Issue, step), root.Key)
+		what := fmt.Sprintf("%s registered its %s step on version %d of %s, the version its registration read from Dispatch, and the step stands open on that version. %s rests on %s.",
+			root.Key, step, basis.Version, documentOf(basis.Issue, step), root.Key, basis.Issue)
 		return e.queueRestingRoot(ctx, tx, root, step, basis, restingOpened, what)
 	}
 	return nil
@@ -317,11 +327,12 @@ const (
 )
 
 // queueRestingRoot tells the architect that owns the ancestor basis names that root's step rests
-// on, or waits on, that ancestor's approval: a resting-root notice keyed by the ancestor's issue,
-// so it reaches that architect as any notice keyed by an issue does (the outbox's
-// owningArchitect). It names the ancestor's document for the step as its reference and the
-// version the step rests or waits on, and its reason is what (what happened, naming the root and
-// its step) and the ancestor's requirements the root's checks serve (basis.Serves). A
+// on, or waits on, that ancestor's document at the version basis names: a resting-root notice
+// keyed by the ancestor's issue, so it reaches that architect as any notice keyed by an issue does
+// (the outbox's owningArchitect). It names the ancestor's document for the step as its reference
+// and the version the step rests or waits on, and its reason is what (what happened, naming the
+// root and its step) and the ancestor's requirements the root's checks serve (basis.Serves). No
+// reason says that a person approved the ancestor's document (tellRegisteredBasis). A
 // registration (tellRegisteredBasis), the end of a pending wait, and a resting root's close or its
 // leaving the workflow each call it with the event it tells; the end of a pending wait that the
 // pending-basis seed's read made calls it through queueRestingEnded, the one caller that tells an
@@ -463,12 +474,13 @@ func (e *Engine) leaveBases(ctx context.Context, tx pgx.Tx, root record.Issue, s
 // notice goes to each such ancestor, once per root, generation, ancestor and event
 // (queueRestingRoot), naming each step that rests there and the requirements the root's checks
 // serve, each once. The document and the version the notice names are one step's: the ancestor's
-// document for the first step whose basis names the ancestor now, and the version that basis
-// names. A step whose basis a new version of the root's own document ended, or a later
+// document for the first step whose basis names the ancestor now (documentOf), and the version
+// that basis names. A step whose basis a new version of the root's own document ended, or a later
 // registration moved to another ancestor, keeps only the rest, so where no step's basis names the
 // ancestor the notice names the ancestor's document for the first step that rests there, no
-// version and no requirement. Each ancestor is named to the fact's settle too, which starts the
-// retro of one held before it that nothing holds any longer (restEnded).
+// version and no requirement. Like every resting-root notice it says which document the root's
+// step rests on, never that a person approved it. Each ancestor is named to the fact's settle too,
+// which starts the retro of one held before it that nothing holds any longer (restEnded).
 func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Issue, gates map[record.DesignStep]record.DesignGate, status string) error {
 	type rest struct {
 		steps []record.DesignStep
@@ -521,12 +533,16 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 		if status == "done" {
 			event, what = restingClosed, fmt.Sprintf("%s is done.", root.Key)
 		}
-		verb := "rests"
-		if len(at.steps) > 1 {
-			verb = "rest"
+		on := documentOf(ancestor, at.step)
+		if at.basis.Version != 0 {
+			on = fmt.Sprintf("version %d of %s", at.basis.Version, on)
 		}
-		what += fmt.Sprintf(" Its %s %s on the approval of %s. The sign-off and the close of %s, and its retro where its task has no acceptance step, no longer wait for %s.",
-			stepsPhrase(at.steps), verb, ancestor, ancestor, root.Key)
+		rests := fmt.Sprintf(" Its %s step rests on %s.", at.step, on)
+		if len(at.steps) > 1 {
+			rests = fmt.Sprintf(" Its %s rest on %s, its %s step on %s.", stepsPhrase(at.steps), ancestor, at.step, on)
+		}
+		what += rests + fmt.Sprintf(" The sign-off and the close of %s, and its retro where its task has no acceptance step, no longer wait for %s.",
+			ancestor, root.Key)
 		if err := e.queueRestingRoot(ctx, tx, root, at.step, at.basis, event, what); err != nil {
 			return err
 		}
@@ -534,32 +550,50 @@ func (e *Engine) tellRestingLeft(ctx context.Context, tx pgx.Tx, root record.Iss
 	return nil
 }
 
-// restingRootsTask is what the architect of ancestor is told of the roots that rest on its
-// approval and are still in the workflow (record.RestingRoots), "" for none: each one, and that
-// the daemon refuses the ancestor's sign-off and close, and holds its retro where its task has no
-// acceptance step (workflow's retroHeld), while any of them is in the workflow, since the checks
-// of the issues under the ancestor prove its requirements together (R8). Its one reader is
-// ArchitectStartOf (ArchitectStart.Resting).
+// restingRootsTask is what the architect of ancestor is told of the roots that rest on it and are
+// still in the workflow (record.RestingRoots), "" for none: each one, with the document of ancestor
+// each of its steps rests on (restingRootsOn), and that the daemon refuses the ancestor's sign-off
+// and close, and holds its retro where its task has no acceptance step (workflow's retroHeld),
+// while any of them is in the workflow, since the checks of the issues under the ancestor prove its
+// requirements together (R8). It names no version, since the record of a resting root keeps none,
+// and says nothing of an approval of the ancestor's document, which the architect hears of on its
+// own path. Its one reader is ArchitectStartOf (ArchitectStart.Resting).
 func restingRootsTask(ctx context.Context, tx pgx.Tx, store record.Store, ancestor string) (string, error) {
 	roots, err := record.RestingRoots(ctx, tx, store, ancestor)
 	if err != nil || len(roots) == 0 {
 		return "", err
 	}
-	return fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s. "+
+	return fmt.Sprintf("These roots rest on %s and are still in the workflow: %s. "+
 		"The daemon refuses the sign-off and the close of %s, and holds its retro where its task has no acceptance step, while any of them is in the workflow (%s). "+
-		"Each root's own architect, or a person, moves it.", ancestor, restingNames(roots), ancestor, signOffRestingRoot), nil
+		"Each root's own architect, or a person, moves it.", ancestor, restingRootsOn(ancestor, roots), ancestor, signOffRestingRoot), nil
 }
 
 // restingClause is the clause of a catch-up's reason that names roots, the roots that rest on
-// ancestor's approval and are still in the workflow, to the architect of ancestor's tree
-// (QueueCatchUp).
+// ancestor and are still in the workflow, to the architect of ancestor's tree (QueueCatchUp), in
+// the words of the start task (restingRootsTask).
 func restingClause(ancestor string, roots []record.RestingRoot) string {
-	return fmt.Sprintf("; resting on the approval of %s and still in the workflow: %s (the daemon refuses the sign-off and the close of %s, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)",
-		ancestor, restingNames(roots), ancestor)
+	return fmt.Sprintf("; resting on %s and still in the workflow: %s (the daemon refuses the sign-off and the close of %s, and holds its retro where its task has no acceptance step, while any of them is; each root's own architect, or a person, moves it)",
+		ancestor, restingRootsOn(ancestor, roots), ancestor)
+}
+
+// restingRootsOn names each of roots, roots that rest on ancestor, as the start task and the
+// catch-up name them: the root, the phase it stands in, and each of its steps that rest with the
+// document of ancestor a basis of that step is on (documentOf), as in "LEGION-300, in
+// implementing, its spec step on the primary document of LEGION-208 (dispatch://LEGION-208/spec)".
+func restingRootsOn(ancestor string, roots []record.RestingRoot) string {
+	names := make([]string, len(roots))
+	for i, root := range roots {
+		steps := make([]string, len(root.Steps))
+		for j, step := range root.Steps {
+			steps[j] = fmt.Sprintf("its %s step on %s", step, documentOf(ancestor, step))
+		}
+		names[i] = fmt.Sprintf("%s, in %s, %s", root.Key, root.Phase, strings.Join(steps, " and "))
+	}
+	return strings.Join(names, "; ")
 }
 
 // restingNames names each of roots with its steps that rest and the phase it stands in, as the
-// refusals, the start task and the catch-up name them.
+// refusals of the ancestor's sign-off and close name them (acceptanceHeld).
 func restingNames(roots []record.RestingRoot) string {
 	names := make([]string, len(roots))
 	for i, root := range roots {

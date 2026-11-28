@@ -1096,10 +1096,11 @@ type entryTestRows struct {
 	// state and of the issue record are taken from, which carries a key the entry adds to the
 	// state.
 	states func(t *testing.T) []State
-	// carry writes into narrowing_test.go's narrowingState the keys the entry adds to the state,
-	// so a band the entry adds finds something to take there and writes its own line, as every
-	// frozen band does (TestANarrowedBodySaysSo); nil for an entry that adds no band.
+	// carry writes the entry's new keys or values into narrowingState so its shaping rows
+	// have something to take and write their log lines (TestANarrowedBodySaysSo).
 	carry func(State) State
+	// valueStrips provides the entry's value strip cases by their dropped text.
+	valueStrips func(number int) map[string]valueStripCase
 }
 
 // testRowsByEntry is every entry's test rows, by the entry's id.

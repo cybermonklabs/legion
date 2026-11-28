@@ -2,15 +2,14 @@ package daemon
 
 // A claim the daemon suspended holds no pod update round (dispatch://INFRA-4109 R1, R3,
 // verification's c-suspended-asked). Such a claim, suspended by the daemon's own rule, by a
-// root's exit, by an idle release or by an unknown source (supervise's Claim.PassedOverByRound),
-// runs no process and no turn in the pod. So the round does not ask it, wait for it, wake it or
-// resume it. What it left unpushed is on the pod's disk, which the replacement reads first,
-// through a role whose process runs in the pod (R7 of #5285): the replacement
-// names on its line each claim it did not wait for and what the read found. A read that finds
-// work, or that fails, keeps the pod over a drift its roles can keep working under
-// (round_unread_disk_test.go holds that); over a drift that breaks the pod the replacement is
-// made, and the issue's architect is told what it took. An operator's suspension still holds the
-// round past its bound.
+// root's exit, by an idle release, by the work hold or by an unknown source (supervise's
+// Claim.PassedOverByRound), runs no process and no turn in the pod. The round does not ask it,
+// wait for its answer, wake it or resume it. Before replacing the pod, the daemon reads the
+// workspace through a role process or the pod's launcher (R6 and R7 of #5285). A read that finds
+// work or fails keeps the pod and ends a non-breaking round. A breaking-drift round replaces the
+// pod and tells the architect what it took, unless the work hold stopped a claim that can have
+// work on the pod's disk. That hold can keep a breaking round open past its bound, as an
+// operator's suspension can.
 //
 // These cases drive the pod-update rig of podupdate_test.go. The suspended claims are seeded in
 // the store and restored as a boot restores them (newPodUpdateRig's sup.restore).
@@ -28,8 +27,10 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -191,6 +192,389 @@ func TestAnUpdateRoundDoesNotWaitForAClaimTheDaemonSuspended(t *testing.T) {
 	}
 	if messages, told := rig.messages(), rig.architectNotices(record.WorkspaceTakenNotice); len(messages) != 0 || len(told) != 0 {
 		t.Fatalf("the issue was written %q and the architect told %+v, want nothing: the read found no work", messages, told)
+	}
+}
+
+// A work hold stop does not make the round wait for an answer (dispatch://INFRA-4109 R1). A claim the
+// hold stopped (supervise.SuspendedByHold) runs no process and no turn in the pod, and only the
+// hold's end or an operator starts it (supervise's Machine.EndHold). So the round passes it over
+// as it passes over a claim the daemon suspended (supervise's Claim.PassedOverByRound): it does
+// not ask it, wait for it, wake it or resume it. Once the claims the round asks have answered and
+// no turn runs, a clean read lets the breaking-drift round replace the pod before the bound.
+// The read goes through a worker in the pod, and the replacement's line names the held claim
+// as the one it did not wait for. Once the round is over, the claim is still the hold's.
+//
+// The control is a worker whose work hold stop still waits for the turn that its close message
+// starts (supervise.RequestSuspend.TurnAfter). Its agent runs in the pod and can answer, so the
+// round asks it and does not replace the pod before it answers. The tree's record of the hold
+// stands, as the close wrote it, so no decision of the round drops that stop.
+func TestWorkHoldAnUpdateRoundPassesOverAClaimTheHoldStopped(t *testing.T) {
+	t.Parallel()
+	const held, stopping = claim.RolePlanner, claim.RoleTester
+	workers := []claim.Role{claim.RoleImplementer, stopping}
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer), readyWorker(stopping),
+		suspendedRole(held, supervise.SuspendedByHold),
+	)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the restored %s is %s, suspended by %q; want it held by the work hold", held, c.State, c.SuspendedBy)
+	}
+	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
+	// stop and each decision of the tester while the stop waits for the turn read its row for
+	// share, and a decision that finds no row makes no stop (supervise's readHoldForStop).
+	if err := store.Transact(rig.ctx, rig.pool, func(_ context.Context, tx pgx.Tx) error {
+		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
+			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
+	}); err != nil {
+		t.Fatalf("record the work hold of %s: %v", podUpdateIssue, err)
+	}
+	// The tester's stop as the outbox posts it: the close message reached the tester now, and the
+	// stop waits for the turn that message starts, up to its deadline 2 minutes later.
+	messageAt := rig.clock.Now()
+	m, _ := rig.sup.Machine(rig.tokens[stopping])
+	stop := supervise.RequestSuspend{Claim: rig.tokens[stopping], By: supervise.SuspendedByHold,
+		Reason: "the design gate of LEGION-208 closed", TurnAfter: messageAt, Deadline: messageAt.Add(2 * time.Minute)}
+	if err := m.Handle(rig.ctx, stop); !errors.Is(err, supervise.ErrSuspendHeld) {
+		t.Fatalf("the work hold's stop of the ready %s answered %v, want it held for the turn its message starts", stopping, err)
+	}
+	if c := rig.claimOf(stopping); c.State != supervise.StateReady || !c.WorkHeld() || c.PassedOverByRound() {
+		t.Fatalf("the %s is %s, WorkHeld %v, PassedOverByRound %v; want it ready, its hold stop held for its turn and not passed over",
+			stopping, c.State, c.WorkHeld(), c.PassedOverByRound())
+	}
+	clocks := rig.replacementClocks()
+	rig.drifts(roundBreakingDrift)
+
+	rig.tick()
+	for _, role := range workers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	if c := rig.claimOf(stopping); !c.WorkHeld() {
+		t.Fatalf("after the round asked it the %s is %s, suspended by %q, with no hold stop; want its hold stop still held for its turn",
+			stopping, c.State, c.SuspendedBy)
+	}
+	rig.awaitRound(held, podUpdateRound)
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.sweepSettled()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s, whose hold stop waits for its turn, answered", len(calls), stopping)
+	}
+	rig.signal(stopping, "a1b2c3d")
+	rig.settleAll()
+	replaced := rig.awaitReplacement(1, "once both workers answered")
+
+	for _, when := range clocks() {
+		if !when.Equal(podUpdateStart) {
+			t.Fatalf("the replacement was asked at %s, want %s, when the round opened: the bound %s holds nothing", when, podUpdateStart, podUpdateBound)
+		}
+	}
+	var order []string
+	for _, call := range rig.rt.Calls() {
+		switch call.Method {
+		case "WorkspaceWork", "ReplacePod", "ReplacePodNotDue", "ReplacePodNoPod":
+			order = append(order, call.Method)
+		}
+	}
+	if !slices.Equal(order, []string{"WorkspaceWork", "ReplacePod"}) {
+		t.Fatalf("the runtime was asked %v, want one read of the workspace and then the replacement it stood in front of", order)
+	}
+	through, _ := replaced[0].Pod.Claim.Role()
+	if reads := rig.rt.CallsOf("WorkspaceWork"); reads[0].Role != through || !slices.Contains(workers, through) {
+		t.Fatalf("the workspace was read as %+v, want it read through the %s, whose process the pod is replaced through", reads[0], through)
+	}
+
+	c := rig.awaitClaim(held, "its round to end with the replacement", func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	if c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
+		t.Errorf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
+	}
+	if n := rig.askedOf(held); n != 0 {
+		t.Errorf("the round wrote %d update-ask rows for the %s, want none: the work hold stopped it", n, held)
+	}
+	if n := rig.deliveredTo(held); n != 0 {
+		t.Errorf("the %s's topic was published %d asks, want none: a publish to a role no session holds wakes it", held, n)
+	}
+	if resumes := rig.rt.CallsOf("Resume"); len(resumes) != 0 {
+		t.Errorf("the round resumed %d processes, want none", len(resumes))
+	}
+
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 {
+		t.Fatalf("the replacement was logged %d times, want once: %+v", len(lines), lines)
+	}
+	line := lines[0]
+	if line["atTheBound"] != false {
+		t.Errorf("the replacement's line says atTheBound=%v, want false: both workers answered long before the bound", line["atTheBound"])
+	}
+	wantField(t, line, "notWaitedFor", held)
+	if line["workspaceReadBy"] != string(through) || line["workspaceRead"] != "found no work" {
+		t.Errorf("the replacement's line names the read %+v, want one by the %s that found no work", line, through)
+	}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q, want nothing: the read found no work", messages)
+	}
+}
+
+// heldWorkKeepsLine is the line of a replacement that a claim the work hold stopped holds back
+// while the issue workspace can hold its unpushed work (heldWorkKeepsPod).
+const heldWorkKeepsLine = "supervise: the work hold stopped a claim of this update round, and the issue workspace can hold its unpushed work; nothing was replaced and the round stays open"
+
+// A breaking-drift round that passed over a claim the work hold stopped. The stopped worker
+// cannot push, and the daemon keeps no copy of its work. The round reads through the role the pod is
+// replaced through, as an idle release's check does, and where the read finds work that origin
+// does not hold it does not replace the pod: a line names the issue, the held claim and what the
+// read found, and the round stays open. Each worker that answered is told once, on its role's
+// topic, that the round waits for the hold, and its answer holds none of its tasks from then on.
+// The next sweep reads again, and once a read finds nothing unpushed the round asks each such
+// worker again, since its earlier answer says nothing of the work it did since, and replaces the
+// pod only once each has answered again.
+func TestWorkHoldAnUpdateRoundKeepsThePodWhileTheWorkspaceHoldsTheHeldWork(t *testing.T) {
+	t.Parallel()
+	const held = claim.RolePlanner
+	workers := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	rig := newPodUpdateRig(t,
+		readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester),
+		suspendedRole(held, supervise.SuspendedByHold),
+	)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead, Commits: []string{passedOverCommit}, Count: 1})
+	rig.drifts(roundBreakingDrift)
+
+	rig.tick()
+	for _, role := range workers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.awaitRound(held, podUpdateRound)
+	for _, role := range workers {
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+
+	testwait.Eventually(t, "a sweep to reach the replacement and keep the pod for the held claim's work", func() bool {
+		rig.tick()
+		return len(loggedLines(t, rig.logs.String(), heldWorkKeepsLine)) > 0
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times though the workspace holds the held claim's work, want none", len(calls))
+	}
+	kept := loggedLines(t, rig.logs.String(), heldWorkKeepsLine)[0]
+	if kept["issue"] != podUpdateIssue || kept["workspaceRead"] != "found work" {
+		t.Fatalf("the kept replacement logged %+v, want a line naming %s and the read that found work", kept, podUpdateIssue)
+	}
+	wantField(t, kept, "held", held)
+	if c := rig.claimOf(held); c.UpdateRound != podUpdateRound {
+		t.Fatalf("after the kept replacement the %s is in round %q, want the round still open", held, c.UpdateRound)
+	}
+
+	var told []string
+	for _, row := range rig.rows(record.OutboxKindRoleMessage) {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			t.Fatalf("decode role message %d: %v", row.ID, err)
+		}
+		if message := payload.(record.RoleMessage); message.Body == heldRoundWaits {
+			told = append(told, message.Role)
+		}
+	}
+	if want := []string{string(rig.tokens[workers[0]]), string(rig.tokens[workers[1]])}; !slices.Equal(slices.Sorted(slices.Values(told)), slices.Sorted(slices.Values(want))) {
+		t.Fatalf("the round told %v that it waits for the hold, want each worker that answered once: %v", told, want)
+	}
+
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	for _, role := range workers {
+		rig.awaitSwept(role, "its answer taken back once a read found the held claim's work pushed", func(c supervise.Claim) bool {
+			return c.UpdateRound == podUpdateRound && c.UpdateSignalledAt == nil
+		})
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the workers answered the round again, want none", len(calls))
+	}
+	for _, role := range workers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.signal(workers[0], "a1b2c3d")
+	rig.sweepSettled()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s answered the round again, want none", len(calls), workers[1])
+	}
+	rig.signal(workers[1], "a1b2c3d")
+	replaced := rig.awaitReplacement(1, "once a read found the held claim's work pushed and each worker answered again")
+	through, _ := replaced[0].Pod.Claim.Role()
+	if !slices.Contains(workers, through) {
+		t.Fatalf("the pod was replaced through %+v, want a worker's process", replaced[0].Pod)
+	}
+	lines := loggedLines(t, rig.logs.String(), podUpdateReplacedLine)
+	if len(lines) != 1 || lines[0]["workspaceRead"] != "found no work" {
+		t.Fatalf("the replacement was logged %+v, want one line naming a read that found no work", lines)
+	}
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
+		t.Fatalf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
+	}
+}
+
+// A non-breaking round uses the R7 decline even if the work hold stopped a worker.
+// Ending the round releases every answered role's task without a hold notice or a re-ask.
+func TestWorkHoldANonBreakingUpdateRoundKeepsThePodAndEnds(t *testing.T) {
+	t.Parallel()
+	const held = claim.RolePlanner
+	roles := []claim.Role{claim.RoleArchitect, claim.RoleReviewer}
+	rig := newPodUpdateRig(t, readyWorker(roles[0]), readyWorker(roles[1]),
+		suspendedRole(held, supervise.SuspendedByHold))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, roundUnpushed)
+	rig.answerRound(podUpdateDrift, roles...)
+	rig.awaitRound(held, podUpdateRound)
+	for _, role := range roles {
+		rig.handle(role, supervise.RequestDeliver{Claim: rig.tokens[role], ID: roundHeldTask, Task: "Continue your work.", Generation: 1})
+		rig.settle(role)
+		if len(promptsOf(rig.workers[role], roundHeldTask)) != 0 {
+			t.Fatalf("the %s received its task before the round ended", role)
+		}
+	}
+
+	rig.roundEndsKept("over the held claim's unpushed commit", append(roles, held)...)
+	if reason, pod := rig.keptReason(); reason != pods.DeclineUnpushedWork || pod != podUpdatePod {
+		t.Fatalf("the decline records %q for pod %q, want unpushed_work for %s", reason, pod, podUpdatePod)
+	}
+	for _, role := range roles {
+		rig.settle(role)
+		if len(promptsOf(rig.workers[role], roundHeldTask)) == 0 {
+			t.Fatalf("the %s did not receive the task that the round held", role)
+		}
+		if slices.Contains(rig.roleMessagesTo(role), heldRoundWaits) || rig.askedOf(role) != 1 {
+			t.Fatalf("the %s received a work-hold message or another ask in a non-breaking round", role)
+		}
+	}
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the stopped claim is %s by %q, want it still stopped by the work hold", c.State, c.SuspendedBy)
+	}
+	if lines := loggedLines(t, rig.logs.String(), heldWorkKeepsLine); len(lines) != 0 {
+		t.Fatalf("the daemon used the breaking-drift keep: %+v", lines)
+	}
+}
+
+// The launcher reads a processless pod both before a replacement by issue and at a launch.
+// An unread workspace keeps this breaking-drift round open for the held claim, even past the
+// bound. Once the tester runs in the kept pod, a clean read lets the sweep re-ask it under
+// a new bound and replace the pod after its new answer.
+func TestWorkHoldAnUpdateRoundKeepsAPodWithNoProcessToReadTheHeldWork(t *testing.T) {
+	t.Parallel()
+	const held, worker = claim.RolePlanner, claim.RoleTester
+	stopped := podlessMember(held, supervise.StateSuspended, supervise.SuspendedByHold, false)
+	tester := answeredThenSuspended(worker)
+	stopped.reasons, tester.reasons = roundBreakingDrift, roundBreakingDrift
+	rig := newPodUpdateRig(t, stopped, tester)
+	rig.rt.FailWorkspaceWork(podUpdateIssue, errPassedOverRead)
+	rig.drifts(roundBreakingDrift)
+	rig.rt.ScriptIssuePod(podUpdateIssue, podUpdatePod)
+
+	rig.wantPodKept("the launcher can read the held claim's work")
+	kept := loggedLines(t, rig.logs.String(), heldWorkKeepsLine)
+	if len(kept) == 0 || kept[0]["issue"] != podUpdateIssue ||
+		kept[0]["workspaceRead"] != "failed" || kept[0]["workspaceReadBy"] != "launcher" {
+		t.Fatalf("the kept replacement logged %+v, want a failed launcher read of %s", kept, podUpdateIssue)
+	}
+	wantField(t, kept[0], "held", held)
+	if n := rig.askedOf(held); n != 0 {
+		t.Fatalf("the round wrote %d update-ask rows for the %s, want none: the work hold stopped it", n, held)
+	}
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("the operator's side was told %+v before the round's bound, want nothing", notices)
+	}
+
+	rig.clockAt(podUpdateBound)
+	rig.wantPodKept("the launcher can read the workspace, whatever the round's bound")
+	if notices := rig.notices(); len(notices) != 1 || !strings.Contains(notices[0].Reason, "The work hold stopped") ||
+		!strings.Contains(notices[0].Reason, errPassedOverRead.Error()) {
+		t.Fatalf("past the bound the operator's side was told %+v, want one notice naming the held work", notices)
+	}
+
+	launcherReadsBefore := len(rig.rt.CallsOf("PodWorkspaceWork"))
+	rig.intoRoundPod(worker)
+	rig.handle(worker, supervise.RequestResume{Claim: rig.tokens[worker], By: supervise.SuspendedByOperator})
+	rig.registerInto(worker, podUpdatePod)
+	if replaced := rig.rt.CallsOf("ReplaceRoundPodAtLaunch"); len(replaced) != 0 {
+		t.Fatalf("the tester's launch replaced the round's pod %+v, want the pod kept for the held work", replaced)
+	}
+	if got := len(rig.rt.CallsOf("PodWorkspaceWork")); got != launcherReadsBefore+1 {
+		t.Fatalf("the launcher read %d times before the launch and %d after it, want a fresh read at launch", launcherReadsBefore, got)
+	}
+	rig.rt.FailWorkspaceWork(podUpdateIssue, nil)
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	rig.signal(worker, "a1b2c3d")
+	rig.settleAll()
+	rig.awaitSwept(worker, "its answer taken back once the read through it found nothing unpushed", func(c supervise.Claim) bool {
+		return c.UpdateRound == podUpdateRound && c.UpdateSignalledAt == nil
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times before the %s answered the round again, want none", len(calls), worker)
+	}
+	rig.awaitAsked(worker, podUpdateRound)
+	asks := rig.asks()
+	if want := "The round ends at " + podUpdateBound.Add(podUpdateGrace).UTC().Format(time.RFC3339); len(asks) == 0 ||
+		asks[len(asks)-1].Role != worker || !strings.Contains(asks[len(asks)-1].Text, want) {
+		t.Fatalf("the round's asks are %+v, want the last one the %s's, saying %q: a bound of the round's own length from the ask again", asks, worker, want)
+	}
+	rig.signal(worker, "a1b2c3d")
+	rig.settleAll()
+	rig.awaitReplacement(1, "once a role process runs in the pod to read the held work and the tester answered again")
+	if reads := rig.rt.CallsOf("WorkspaceWork"); len(reads) == 0 || reads[len(reads)-1].Role != worker {
+		t.Fatalf("the workspace was read %+v, want a read through the %s before the replacement", reads, worker)
+	}
+	if asked := rig.byIssueAsks(); len(asked) != 0 {
+		t.Fatalf("the runtime was asked to replace the pod by issue %+v, want none", asked)
+	}
+	if c := rig.claimOf(held); c.State != supervise.StateSuspended || c.SuspendedBy != supervise.SuspendedByHold {
+		t.Fatalf("the %s is %s, suspended by %q, after the round; want it still held by the work hold", held, c.State, c.SuspendedBy)
+	}
+}
+
+// A breaking-drift round must reject a replacement if the work hold stops a claim after the
+// workspace read (replacementDue). The claim can leave work on disk that the read did not see.
+// The next sweep reads the workspace again and replaces the pod only over a clean read.
+//
+// Here the tester has not answered when the round's bound comes, so the bound lets the
+// replacement through, and the hold stops the tester while the runtime waits for the launch turn.
+func TestWorkHoldAnUpdateRoundReadsAgainForAClaimTheHoldStopsBeforeTheLastWord(t *testing.T) {
+	t.Parallel()
+	const stopped = claim.RoleTester
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(stopped))
+	rig.rt.ScriptWorkspaceWork(podUpdateIssue, runtime.WorkspaceWork{Head: passedOverHead})
+	// The tree's record of the hold, as the close writes it (workflow's workHoldClose). The hold's
+	// stop reads it, and a stop that finds no record makes no stop (supervise's readHoldForStop).
+	if err := store.Transact(rig.ctx, rig.pool, func(_ context.Context, tx pgx.Tx) error {
+		return rig.records.PutWorkHold(rig.ctx, tx, record.WorkHold{Project: "LEGION", Tree: podUpdateIssue, RootGeneration: 1,
+			Step: record.DesignStepSpec, ArtifactID: "artifact-484", Version: 2, ClosedAt: rig.clock.Now()})
+	}); err != nil {
+		t.Fatalf("record the work hold of %s: %v", podUpdateIssue, err)
+	}
+	rig.drifts(roundBreakingDrift)
+
+	rig.tick()
+	for _, role := range passedOverWorkers {
+		rig.awaitAsked(role, podUpdateRound)
+	}
+	rig.signal(claim.RoleImplementer, "a1b2c3d")
+	rig.settleAll()
+	rig.clockAt(podUpdateBound)
+	rig.rt.HoldReplacePod(func() {
+		rig.rt.HoldReplacePod(nil)
+		rig.handle(stopped, supervise.RequestSuspend{Claim: rig.tokens[stopped], By: supervise.SuspendedByHold,
+			Reason: "the design gate of LEGION-208 closed", Deadline: rig.clock.Now().Add(2 * time.Minute)})
+	})
+	testwait.Eventually(t, "a sweep past the bound to reach the replacement", func() bool {
+		rig.tick()
+		return len(rig.notDue())+len(rig.replacements()) > 0
+	})
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times with no read made for the %s, which the hold stopped after the sweep's read", len(calls), stopped)
+	}
+	if c := rig.claimOf(stopped); c.State != supervise.StateSuspended || !c.WorkHeld() {
+		t.Fatalf("the %s is %s, suspended by %q; want it stopped by the work hold", stopped, c.State, c.SuspendedBy)
+	}
+	readsBefore := len(rig.rt.CallsOf("WorkspaceWork"))
+
+	rig.awaitReplacement(1, "once a read made with the stopped claim held found nothing unpushed")
+	if reads := len(rig.rt.CallsOf("WorkspaceWork")); reads <= readsBefore {
+		t.Fatalf("the workspace was read %d times by the replacement, %d before the refusal; want a read made after the hold stopped the %s",
+			reads, readsBefore, stopped)
 	}
 }
 

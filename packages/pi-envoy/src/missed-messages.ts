@@ -11,7 +11,7 @@ import {
   LedgerStateSchema,
 } from "@legion/envoy-client/delivery-ledger";
 import { rememberedTopics } from "@legion/envoy-client/stream-topics";
-import { customEntries } from "./custom-entries";
+import { customEntries } from "@legion/pi-shared/custom-entry";
 
 /** The custom type of every card the extension shows the session. */
 const ENVOY_MESSAGE = "envoy-message";

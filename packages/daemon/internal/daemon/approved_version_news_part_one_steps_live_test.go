@@ -452,11 +452,11 @@ func (r *versionNewsLive) processed(source, eventID string) bool {
 }
 
 // Step A7. A checks-only version closes one tree's gate while its retro runs, and the implementer
-// of that tree and of a second, whose gate stands open, each complete retro at once. The open
-// tree's merger is launched, and in that same window the closed tree's merger is not. The person's
-// approval then releases it: the merger is launched with a start task that holds the start's own
-// text, a blank line, and then the news, which opens with the gate's opening and names what
-// changed.
+// of that tree and of a second, whose gate stands open, each complete retro at once. No value of
+// gates.hold holds the merge, so the closed tree's merger is launched while its gate is closed, as
+// the open tree's merger is. That merger took version 1 of the Verification document, the approved
+// one, so its start is owed no news. The person's approval of version 2 then sends it a news task,
+// which opens with the gate's opening and names what changed.
 func (r *versionNewsLive) a7() {
 	closed, open := r.trees["a7"], r.trees["a7-open"]
 	implementers := []*versionNewsClaimant{r.claimant(closed.root(), claim.RoleImplementer), r.claimant(open.root(), claim.RoleImplementer)}
@@ -464,7 +464,7 @@ func (r *versionNewsLive) a7() {
 	r.openTree(open)
 	r.newVersion(closed, record.DesignStepCriteria, versionNewsCheck, versionNewsCheckAgain, 2)
 	r.held("version 2 of %s's Verification document closed its gate", closed.root().key)
-	held, released := r.token(closed.root().key, claim.RoleMerger), r.token(open.root().key, claim.RoleMerger)
+	released := r.token(open.root().key, claim.RoleMerger)
 	before := r.rt.Calls()
 	mark := time.Now()
 	// The completion that ends a retro rates the plan the issue ran (api.PlanRatingContract, main's
@@ -479,27 +479,26 @@ func (r *versionNewsLive) a7() {
 	r.awaitPhase(closed.root().key, phase.Merging)
 	r.awaitPhase(open.root().key, phase.Merging)
 	r.held("both retros completed, and %s and %s are in merging", closed.root().key, open.root().key)
-	var launchedAt time.Time
 	r.await("the launch of "+string(released)+", whose gate is open", versionNewsWait, func() (bool, string) {
 		count := r.launches(released, r.rt.Calls())
-		launchedAt = time.Now()
 		return count > r.launches(released, before), fmt.Sprintf("%d launches", count)
 	})
 	r.held("the merger of %s, whose gate is open, was launched", open.root().key)
-	time.Sleep(time.Until(launchedAt.Add(liveSettle)))
-	if count := r.launches(held, r.rt.Calls()); count != r.launches(held, before) {
-		r.fail("the merger of %s was launched while its gate was closed", closed.root().key)
-	}
-	r.held("in the window %s's merger was launched in, the merger of %s, its gate closed, was not", open.root().key, closed.root().key)
-	r.approve(closed.verification, 2)
 	merger := r.connect(closed.root(), claim.RoleMerger, before)
-	task := merger.awaitPrompt("the merger's start task", mark)
+	r.held("the merger of %s was launched while its gate was closed, and brought to ready", closed.root().key)
+	// The step waits for the start task before the approval, so the first prompt after approved is
+	// the news task and not the start task.
+	start := merger.awaitPrompt("the merger's start task", mark)
+	r.note("%s was prompted:\n%s", merger.name(), start.message)
+	approved := time.Now()
+	r.approve(closed.verification, 2)
+	task := merger.awaitPrompt("the news task", approved)
 	r.note("%s was prompted:\n%s", merger.name(), task.message)
 	opening := "The design gate of " + closed.root().key + " opened"
-	if strings.Index(task.message, "\n\n"+opening) <= 0 || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
-		r.fail("%s's start task names %s, want the start's own text, a blank line, then %q and the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
+	if !strings.HasPrefix(task.message, opening) || !versionNewsNamesCheck(task.message, closed.check) || !versionNewsNamesVersion(task.message, 2) || !versionNewsNamesVersion(task.message, 1) {
+		r.fail("%s's news task names %s, want it to open with %q and name the changed check %s with versions 2 and 1: %q", merger.name(), versionNewsFirstLine(task.message), opening, closed.check, task.message)
 	}
-	r.held("the approval launched %s, whose start task holds its own text, a blank line, then %q, and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
+	r.held("the approval sent %s a news task that opens with %q and names the changed check %s and versions 1 and 2", merger.name(), opening, closed.check)
 }
 
 // Step R6. In a tree with children, an approved checks-only version of the root's Verification

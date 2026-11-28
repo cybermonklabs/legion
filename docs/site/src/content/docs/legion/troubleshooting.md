@@ -349,12 +349,14 @@ The daemon answers this itself for every issue that is not working now, in `why`
 legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingLine}'
 ```
 
-`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below),
+`why.state` is `claim_stopped` for a claim nothing will wake (the stranded claims below), `held`
+for an issue whose phase worker the work hold holds
+([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)),
 `waiting` for an issue of the admission line, `blocked` for one a Dispatch link or an open
 child below it holds, and `unlisted` for one the record holds in the workflow that stands in
 none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
-slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
-stranded claim names it: an answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root
+slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, a
+stranded claim names it or the work hold holds it: an answered root reads `waiting`, and an issue at work whose worker runs, one whose phase is `held` and a root
 whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
 does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
 `triage`). The daemon serves
@@ -514,14 +516,12 @@ A root waiting on its gate at a daemon's deploy
 is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
 spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
 until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start and its
-merger's start, and work already in flight goes on. `gatedSteps` carries one entry for each step
-that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and
-`status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or
-`pending_on_basis`): one per step `gates.design` lists, then `criteria` where the deployment's list
-names `spec` and not `criteria` and the root registered its Verification document. The tree waits
-until every entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec`
-step's record alone.
+earlier version does not count: the spec changed since.
+Before the tree starts, the gate holds its start.
+After the start, a new version of an approved document closes the gate again: it then holds the first phase of each issue that has not started, and under `gates.hold: work` every phase worker of the tree but the merger as well ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)).
+No value of `gates.hold` holds the merge.
+`gatedSteps` carries one entry for each step that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or `pending_on_basis`): one per step `gates.design` lists, then `criteria` where the deployment's list names `spec` and not `criteria` and the root registered its Verification document.
+The tree waits until every entry reads `approved` or `open_on_basis`, and `designGate` beside it is the `spec` step's record alone.
 
 A root whose architect wrote its spec as a view on an ancestor can register the step on that
 ancestor's approval. Then the step reads `open_on_basis`: it is open, and no person approved the
@@ -532,6 +532,73 @@ version that `basis` names; `basis.askId` is the open approval request, so read 
 ancestor, not an approval request on the root. On a root, `treeRuns` says whether its tree runs:
 `false` on a root that lingers, or that waits in the line for its tree to open after a
 re-admission, whatever its architect's claim reads.
+
+## A tree's work stopped after its spec changed
+
+Under `gates.hold: work`, a new version of an approved document of a gated step stops the tree's
+phase workers but the merger until a person approves that version. Each live phase worker but the
+merger got the close message, which ends `End your turn now.`, and the daemon stopped it when its
+turn ended, or 2 minutes after the message reached it.
+The 2 minutes count from the delivery of the message that the daemon confirmed.
+A daemon restart or a late confirmation can make the stop later, by the length of the restart or of a retry's backoff, but never earlier.
+A project pause can release a worker before its close message runs.
+The pause's resume then relaunches the worker, the worker gets the close message, and the daemon stops it 2 minutes later at most.
+A released worker that is not a merger got no message: the hold took it over at once.
+No value of `gates.hold` holds the merge: a live merger got the close message that ends `Your phase goes on.`, and the daemon does not stop it.
+The architects go on, and their close message ends
+`Your own work goes on, and a step that you report starts nothing until every gated step stands open again.`
+
+While the gate is closed, the daemon tells no architect to start its own acceptance.
+The notice that an issue waits in `accepting` for that acceptance waits, and a catch-up names no such issue.
+That includes the `awaiting-children` notice of an issue that comes back to `accepting` once no child under it is open, which asks for the architect's `sign_off`.
+A `merge-holds-changed` notice of an issue in `accepting` waits too, and when the gate opens it counts as the notice of that issue's acceptance.
+Every other notice to the architect goes, the `awaiting-children` notice of a move into the wait among them.
+The daemon records an architect's sign-off or move back, and the start that it makes waits for the opening.
+
+- `legion state --json` shows `why.state` `held` on each issue at a phase worker's phase but
+  `merging`, and `why.reason` names the version that closed the gate: `Its phase is <phase>, and the
+  work hold holds the work of its tree <root> until every gated step stands open again: version <n>
+  of its <step> document (<id>) closed the design gate.`
+- `legion claims list` shows each stopped claim as `suspended:hold`. The claim keeps its session, its
+  phase and its task, and the daemon keeps its pod.
+- The stranded claims never name a claim the work hold stopped, because the gate's opening starts it.
+- The daemon logs each stop and each start of the hold with the issue, the role and the version.
+
+The daemon reads the workspace through a role in the pod or through the pod's launcher.
+If the drift does not break the pod and the read finds unpushed work or fails, the daemon keeps the pod and ends the round.
+Roles that answered get the tasks that the round held.
+
+If the drift breaks the pod, a stopped worker that can have work on the disk keeps the round open until a clean read or the end of the work hold.
+The daemon tells a role that answered once that it can continue its work.
+The daemon asks that role again before it replaces the pod.
+
+For service-account drift, the architect and a merger that starts in that pod use the old account while the work hold keeps the round open.
+The late-round notice names both accounts and the stopped claims.
+An operator can resume or retry a stopped claim without opening the whole tree's work hold.
+
+With `dispatch_token_broker: true` and no `dispatch_token_transition_file`, the runtime refuses launches into a pod without the exchange identity.
+While the work hold keeps that round open, the daemon tells the controller once for each launch that waits.
+Set `dispatch_token_transition_file` to permit launches into the old pod, or end the work hold to let the round proceed.
+See [The disk dies with its pod](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#the-disk-dies-with-its-pod).
+
+The work starts again when every gated step stands open again: when a person approves that version,
+when Dispatch carries the approval after an exact undo, or when the last closed step opens on an
+ancestor's approval. A registration of the step on an approved ancestor opens it that way, and so
+does a person's approval of the ancestor's version that a pending step waits on. The daemon then
+starts each claim it stopped with one task. The task names the version that closed the gate,
+carries the open message, and tells the worker to check what its turn already did, since a tool
+call may not have finished. For a step that opened on an ancestor's approval, the open message names
+that approval and says that no person approved the root's own version. An exact undo opens the gate
+only when the undo is written, so the edit stops the work until then.
+The task also carries the news of the approved version that the worker is owed, after its work.
+Each architect then gets the notice of each issue that waits in `accepting` for its acceptance.
+Under either value of `gates.hold`, a merger's start waits until the daemon records what changed in the approved version, which can take a few attempts to read Dispatch.
+
+An operator's own `legion claims resume` or `legion claims retry` of a stopped claim starts it,
+because an operator's act on a claim overrides the hold. `legion claims deliver` does not: the
+daemon refuses it with 409 while the hold stands. To end every hold of the project, set
+`gates.hold: start` and restart the daemon: the boot ends the hold of each tree, tells its holders
+so, and starts each claim the hold stopped.
 
 ## A parked tree did not come back after a decision
 
@@ -1292,6 +1359,8 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
   legion claims retry --config legion.yaml --operator-token-file operator-token --claim legion-widgets-widgets-14-architect
   ```
 
+  While the tree's design gate is closed under `gates.hold: work`, the catch-up names none of those issues: the daemon sends their notices when the gate opens ([A tree's work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)).
+
   When a tree's architect and its workers failed together, retry the architect first: the held
   workers are its to retry once it runs.
 
@@ -1311,8 +1380,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 The list names only claims of trees that run — the trees `admission.trees` names, whether or not
 an issue of them holds a slot — and leaves out claims that
 something will still start: a worker whose phase is not its own is started again when its phase
-comes, a parked tree's claims wait for its re-admission, and an issue whose start waits for a free
-slot has that start queued already. A root in
+comes, the claims of a tree whose root is out of the workflow (`backlog`, `icebox` or `triage`)
+wait for its re-admission, an issue whose start waits for a free slot has that start queued
+already, and a claim the work hold stopped waits for its tree's design gate to open ([A tree's
+work stopped after its spec changed](#a-trees-work-stopped-after-its-spec-changed)). A root in
 `awaiting_person` is different: its architect stays live while it waits for the person's answer,
 and the answer's task is delivered on the pass that reads the answer, which takes no slot for it. Never resume or retry by hand a
 claim of a lingering tree or of an issue parked out of the workflow; re-admission or the issue's
@@ -1343,6 +1414,8 @@ The notice says what the daemon wrote, which is that start row, so the worker is
 A suspension the operator or the controller holds over the agent is the one thing that refuses the start when the outbox runs it, and the notice says so as well.
 Resume the agent, or have the architect message the role and the controller start its session again with `fresh_session`.
 Under your own suspension, the daemon refuses the controller's `fresh_session` with `409 SUSPENDED_BY_OPERATOR`, so lift that hold first with your own `legion claims resume`.
+Under `gates.hold: work`, while the tree's standing design gate is closed, the daemon refuses the controller's `resume_agent`, `retry` and `fresh_session` of the tree's phase workers but the merger with `409 HELD_BY_WORK_HOLD`, whatever suspended the worker: the gate's opening starts each worker the hold stopped, and your own `legion claims resume` or `legion claims retry` starts one before that.
+Where the gate closes after a `fresh_session` has already left the worker's session behind, the answer is `200` with the hold's words in `phaseNotRestarted`, and nothing starts.
 
 The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
 

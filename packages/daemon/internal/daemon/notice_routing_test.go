@@ -521,15 +521,17 @@ func TestNoNoticeWaitsOnASuspendedSubArchitect(t *testing.T) {
 // architect is suspended until re-admission, which starts it with the tree's record rather than
 // the notices of its close. Such a row finishes without delivery, with one log line naming the
 // notice kind and the issue. A resting-root notice (dispatch://INFRA-3320, R8) is keyed by the
-// ancestor whose approval a root rests on, here LEGION-1, the root of its own tree: with that
-// tree's architect claim absent, retired or failed, it finishes the same way, and the ancestor's
-// next catch-up names the root instead (workflow's TestRestingRootsHoldTheAncestorSignOff).
+// ancestor a root rests on, here LEGION-1, the root of its own tree: with that tree's architect
+// claim absent, retired or failed, it finishes the same way, and the ancestor's next catch-up names
+// the root instead (workflow's TestRestingRootsHoldTheAncestorSignOff). Its reason is the one a
+// registration on LEGION-1's version 3 writes (workflow's tellRegisteredBasis).
 func TestANoticeForAnEndedArchitectFinishesWithoutDelivery(t *testing.T) {
 	t.Parallel()
 	childClosed := record.Notice{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-2 is done"}
 	restingRoot := record.Notice{Kind: "resting-root", Role: claim.RoleArchitect, Version: 3, Ref: "dispatch://LEGION-1/spec",
-		Reason: "An ancestor's approval opened the spec step of LEGION-208. A person approved version 3 of the primary document of LEGION-1. " +
-			"LEGION-208 rests on this approval. The checks of LEGION-208 serve these requirements of LEGION-1: dispatch://LEGION-1/spec#b-p2@v3."}
+		Reason: "LEGION-208 registered its spec step on version 3 of the primary document of LEGION-1 (dispatch://LEGION-1/spec), " +
+			"the version its registration read from Dispatch, and the step stands open on that version. LEGION-208 rests on LEGION-1. " +
+			"The checks of LEGION-208 serve these requirements of LEGION-1: dispatch://LEGION-1/spec#b-p2@v3."}
 	for _, tc := range []struct {
 		name string
 		// state is the state of LEGION-1's architect claim, "" for no claim at all.

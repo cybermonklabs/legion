@@ -995,8 +995,8 @@ func TakesStep(deployment []DesignStep, step DesignStep) bool {
 // registered none). The gate is a list of steps and the work waits on all of them, so a rule
 // that used to read one row reads this instead and no reader can answer from one step where the
 // deployment gates three. The steps the work waits on are the ones the tree is gated on
-// (TreeSteps over Steps and Rows), which Open, EverOpened and OpenedAt all read in the one form
-// (Required).
+// (TreeSteps over Steps and Rows), which Open, Standing, EverOpened and OpenedAt all read in the
+// one form (Required).
 //
 // The zero value is the gate of a root with nothing registered, which is the answer a reader
 // wants for a tree the pass holds no gate row for: it is open at no step and has opened at none.
@@ -1035,6 +1035,38 @@ func (g TreeGate) Open() bool {
 		}
 	}
 	return true
+}
+
+// Standing is the gate a person is being asked about: the row of the first required step
+// (Required), in the configured order with a registered criteria row after the deployment's
+// steps, that is closed and has a row. That is a different question from which step holds the
+// tree's work (classify.FirstClosedStep), which a step nobody has registered also holds: such a
+// step names no document, so nobody can be asked about it, and the wait it raised would be a wait
+// on nothing. So the standing gate skips it and names the first registered unapproved step after
+// it, while the work stays held. ok is false when no required step holds a closed row, which is
+// every required step open or every closed one unregistered. So a criteria row a person has not
+// approved holds the tree under the work hold too, as a spec row does.
+//
+// A deployment that gates no step asks no person about anything, so the empty list stands on no
+// gate: ok is false whatever rows the root holds. The empty list still holds the tree's work until
+// the spec step is registered, which is classify.FirstClosedStep's answer, not this one.
+//
+// It is the one rule every reader of the standing gate asks, through classify.StandingGate or
+// this method: the root's wait and its resume, the gate's messages and the work hold. The work
+// hold (`gates.hold: work`) holds the tree's work but the merge while this gate stands closed,
+// and each of its readers asks it under that word alone (the workflow's and the outbox's
+// holdIsWork), so the close, the opening, the boot and the outbox's fences hold the tree by the
+// same row.
+func (g TreeGate) Standing() (DesignGate, bool) {
+	if len(g.Steps) == 0 {
+		return DesignGate{}, false
+	}
+	for _, step := range g.Required() {
+		if row, registered := g.Rows[step]; registered && !GateOpen(row) {
+			return row, true
+		}
+	}
+	return DesignGate{}, false
 }
 
 // EverOpened is whether every required step's gate has stood open at some point

@@ -29,12 +29,13 @@ import (
 // reasons is, do not open on runtime.BreakingDrift: runtime.Breaks). A kept volume that the issue's
 // next pod mounts is no exception: R7 keeps such a pod as it keeps any other, since a replacement
 // would stop the turn that runs at the bound and its subagents although the volume keeps the files.
-// A round over a drift that breaks the pod (today a drift of the pod's service account, or one of
-// its exchange identity where a launch into the pod is refused until its round replaces it, which
-// the Sandbox runtime's PodDrift marks where it decides it, spec v23 and v26, or a pod built from
-// a repository the issue's record has left, which the daemon marks, repositoryReason, R3 of #3712) is replaced whatever
-// the read found, since no role can keep working in that pod, and the issue's architect is told
-// what the replacement took (roundReplaced). A round is read by the reasons it recorded at its
+// A round over a drift that breaks the pod does not take this R7 keep path. Today such a drift
+// is a change of the pod's service account, an exchange identity change that prevents launches
+// into the pod, or a pod built from a repository the issue's record has left, which the daemon
+// marks (repositoryReason, R3 of #3712). The round may replace the pod even if the read finds work
+// or fails, unless the work hold keeps the round open (replaceForRound, roundPodEndsAtLaunch). The
+// architect is told what a replacement took (roundReplaced). A round is read by the reasons it
+// recorded at its
 // open: a drift that breaks the pod and comes while a round is open is the next round's, which the
 // keep of this round's read holds back no more than any other (podKeptForWork).
 func roundKeeps(reasons string, read workspaceRead) bool {
@@ -158,10 +159,9 @@ func openPhaseWorker(group []supervise.Claim, round string, issuePhase phase.Pha
 // (runtime.RoundReasons). A drift that breaks the pod (runtime.Breaks: today a drift of the pod's
 // service account, one of its exchange identity where a launch into the pod is refused until its
 // round replaces it, or a pod built from a repository the issue's record has left,
-// repositoryReason) is held back by no keep (spec v23 and v26, and R3 of #3712): the round over it
-// opens, and replaces the pod after the read, as any round over such a drift does. A store that
-// cannot be read keeps the pod for this sweep: a reading nobody took may not open a round that
-// deletes a disk.
+// repositoryReason) is held back by no earlier decline (spec v23 and v26, and R3 of #3712): the
+// round over it can open and make its own decision after a new read. A store that cannot be read
+// keeps the pod for this sweep: a reading nobody took may not open a round that deletes a disk.
 //
 // The keep holds back the walk alone. The project's controller's request (requestPodUpdate) reads
 // no keep and still opens a round over the pod, and that round's own read before its replacement

@@ -45,9 +45,11 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // reads it counts only a queued start newer than it: StartFor, asking what a re-admitted tree's
 // promotion must start, OwedEntry, asking whether a role is owed its entry's work,
 // unpromptedPhaseWorker, asking whether nothing will prompt a live claim, ArchitectRelaunchOf,
-// asking whether a start is a root architect's next move, and catch_up.go's queuedRowCovers,
-// asking whether a queued row covers a ready claim. One body is what keeps them from reading the
-// same rows differently.
+// asking whether a start is a root architect's next move, catch_up.go's queuedRowCovers, asking
+// whether a queued row covers a ready claim, OpeningStartStands, asking whether a queued start of
+// the work hold's opening stands, and startUnderWay, asking whether a start may still launch a
+// claim that a close of the design gate reads as not live. One body is what keeps them from reading
+// the same rows differently.
 func actingStop(run record.RoleRun, root record.Issue) int64 {
 	lastStart := lastStartRow(run)
 	var stop int64
@@ -145,6 +147,63 @@ func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) b
 // entry its row names while the news waits behind a turn of the architect's own.
 func startsWork(request record.SuperviseRequest) bool {
 	return request.Op == "start" && !request.News
+}
+
+// OpeningStartStands is the rule "a queued opening start stands", and the one body the workflow and
+// the outbox read it with: whether run holds a queued start of the work hold's opening that a start
+// for current gives way to, so that a claim the hold stopped is given one task. Such a start
+// carries the opening's sentences (record.SuperviseRequest.Opening), and it is newer than any stop
+// that still acts (actingStop), since that stop undoes every start older than it, and newer than
+// after. It does not stand where it carries no phase work and current names a phase: then the start
+// for current is the role's one task, and its work is the phase's. root is the issue's tree root as
+// recorded, which StopActs reads for a tree close.
+//
+// after is the id of the start for current where that start carries the opening's sentences
+// itself, and 0 for every other start: a start of the opening gives way only to a newer one.
+//
+// The opening asks it before it writes the start of a claim the hold stopped (openHeldClaims),
+// with current the phase that start carries, "" for a claim that holds no phase. The outbox asks
+// it of each start that reaches a claim the hold holds, with the start's own phase
+// (internal/daemon's startOfAHeldClaim). It asks it twice more with current "", while the claim's
+// own start of the opening goes first behind an operator's task: with after 0 while the hold has
+// stopped the claim, for a start that waits for it (internal/daemon's openingGoesFirst), and with
+// after the claim's last start less one once that start has ended the hold (internal/daemon's
+// openingStartStands), for a start that waits for it (waitForOpeningInFlight) and for a kept role
+// message whose row that start holds past its hour (wakeComing).
+func OpeningStartStands(run record.RoleRun, root record.Issue, current phase.Phase, after int64) bool {
+	floor := max(actingStop(run, root), after)
+	for _, queued := range run.Queued {
+		start := queued.Request
+		if start.Op == "start" && start.Opening != "" && queued.ID > floor && (start.Phase != "" || current == "") {
+			return true
+		}
+	}
+	return false
+}
+
+// startUnderWay is whether a queued start may still launch run's claim: a start of the role newer
+// than any stop that still acts (actingStop), and no production check's look, whose issue has
+// left the workflow. root is the issue's tree root as recorded, which StopActs reads for a tree
+// close.
+//
+// The outbox reads the gate once before a start acts (internal/daemon's startWaitsForTheHold), and
+// then provisions, creates and launches the claim with no second read. A close that commits in
+// that time can read no claim yet, a claim the daemon suspended, or a claim the hold stopped that
+// an opening start revives: none of them is live or released. RoleRuns reads the queued rows
+// before the claims, and the outbox writes a claim before it deletes the start row, so such a close
+// reads the start row or the claim the start wrote. A start in that time is one a lane runs. A
+// start that no lane runs reads the closed gate at its next attempt, and waits. The work hold's
+// close stops the claim of any start under way of a role the hold holds: the stop holds the launch
+// the start makes until the agent's ready, and makes nothing where no launch comes
+// (workHoldClose).
+func startUnderWay(run record.RoleRun, root record.Issue) bool {
+	stop := actingStop(run, root)
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" && queued.Request.CheckLook == 0 && queued.ID > stop {
+			return true
+		}
+	}
+	return false
 }
 
 // OwedEntry is whether a role is owed the work the entry its phases row names stands for: entry

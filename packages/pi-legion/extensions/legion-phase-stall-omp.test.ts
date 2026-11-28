@@ -300,8 +300,8 @@ async function stallPane(
           }),
         });
       },
-      answer: (url, body) => {
-        const own = options.answer?.(url, body);
+      answer: (url, body, headers) => {
+        const own = options.answer?.(url, body, headers);
         if (own !== undefined) return own;
         // `handoff_complete` reads one issue's record (dispatch://INFRA-2694), and the reminder
         // asks what the claim owes; nothing of this pane asks for the whole project body.

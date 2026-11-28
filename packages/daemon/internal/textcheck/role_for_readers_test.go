@@ -85,8 +85,10 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/daemon/daemon.go", fn: "serve"}:                                  {calls: 1, test: "TestAnOperatorRetryOfAStoppedArchitectRelaunchesItThroughItsMachine"},
 	{file: "internal/daemon/outbox.go", fn: "outbox.heldStartRefused"}:                {calls: 1, test: "TestAStartRowLaunchesTheAgentOfAHeldClaimAgainOnlyWhenSomeoneDecidedIt"},
 	{file: "internal/daemon/design_news_holders.go", fn: "phaseHolder"}:               {calls: 1, test: "TestOnlyAPhaseWorkerHoldsAMembersPhase"},
+	{file: "internal/daemon/outbox.go", fn: "outbox.settleHeldOpening"}:               {calls: 1, test: "TestWorkHoldOpeningStartsRetryTellsTheOpeningOnceToAHolderOfANewPhase"},
 	{file: "internal/phase/phase.go", fn: "Of"}:                                       {calls: 1, test: "TestArchitectUnchangedByItsCompletionAtAdmitted"},
 	{file: "internal/projection/project.go", fn: "Project"}:                           {calls: 1, test: "TestProjectShowsARootsArchitectHandshake"},
+	{file: "internal/projection/why.go", fn: "workHeld"}:                              {calls: 1, test: "TestWorkHoldShowsWhyInTheState"},
 	{file: "internal/record/design_news.go", fn: "untold"}:                            {calls: 1, test: "TestOwedNewsOwesEachHolderTheVersionsItHasNotTaken"},
 	{file: "internal/record/plan.go", fn: "StoredPlan.Running"}:                       {calls: 1, test: "TestALaterVersionChangesTheTextOfARunningTaskAlone"},
 	{file: "internal/record/outbox.go", fn: "MergeForwardWorker"}:                     {calls: 1, test: "TestAHoldOrALandedGoesToTheWorkerOfThePhaseItNames"},
@@ -123,6 +125,8 @@ var roleForReaders = map[roleForSite]roleForReader{
 	{file: "internal/workflow/steps.go", fn: "endOfTransition"}:                       {calls: 1, test: "TestAnIssueAtAdmittedRunsNoStep"},
 	{file: "internal/workflow/stranded.go", fn: "Stranded"}:                           {calls: 1, test: "TestStrandedNamesTheClaimsNothingWillWake"},
 	{file: "internal/workflow/wake.go", fn: "OpenPhaseRole"}:                          {calls: 1, test: "TestAnArchitectGetsNoBackstop"},
+	{file: "internal/workflow/work_hold.go", fn: "Engine.heldOpeningMessage"}:         {calls: 1, test: "TestWorkHoldMakesNoStopAfterTheGateOpens"},
+	{file: "internal/workflow/work_hold.go", fn: "Engine.openHeldClaims"}:             {calls: 1, test: "TestWorkHoldOpensAWorkerOfAnIssueAtAdmittedWithNoPhase"},
 }
 
 // R2: the reader list is complete and nothing reads RoleFor that this test does not hold. The

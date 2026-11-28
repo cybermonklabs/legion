@@ -142,6 +142,11 @@ func (s *memoryClaims) AdmitClaim(ctx context.Context, c supervise.Claim) (super
 
 func (s *memoryClaims) CheckLaunch(context.Context, supervise.Claim) error { return nil }
 
+// WorkHoldStands answers that every tree's work hold stands: no test of this fake opens one.
+func (s *memoryClaims) WorkHoldStands(context.Context, string) (bool, error) {
+	return true, nil
+}
+
 func (s *memoryClaims) PutDelivery(context.Context, legionclaim.Token, supervise.Delivery) error {
 	return nil
 }
@@ -1188,15 +1193,15 @@ func TestClaimsForgetSessionRequiresTheRecordedSession(t *testing.T) {
 }
 
 // INFRA-945 R6: the one line a claim prints as says when the claim's idle pod was released, so an
-// operator reading `legion claims list` does not read it as a suspension someone must lift. A
-// claim of an agent the project's controller suspended says so too (#4065), so the operator
-// tells that suspension from its own: the controller's resume_agent lifts the controller's
-// suspension, where the operator's own is the operator's alone to lift. Every other claim prints
-// the state it is in, suspended by an operator among them. None of the four is in an update
-// round, in a tool call or refused by the leak check, so each line ends in the round, head, call
-// and leak-check cause columns' `-`, and none carries a failure record — the failed one is a
-// claim served by a
-// daemon older than that record — so each prints `-` for the cause beside its state as well
+// operator reading `legion claims list` does not read it as a suspension someone must lift, and
+// so does a claim the work hold stopped, which its tree's gate opening starts again. A claim of
+// an agent the project's controller suspended says so too (#4065), so the operator tells that
+// suspension from its own: the controller's resume_agent lifts the controller's suspension, where
+// the operator's own is the operator's alone to lift. Every other claim prints the state it is in,
+// suspended by an operator among them. None of the five is in an update round, in a tool call or
+// refused by the leak check, so each line ends in the round, head, call and leak-check cause
+// columns' `-`, and none carries a failure record — the failed one is a claim served by a daemon
+// older than that record — so each prints `-` for the cause beside its state as well
 // (TestTheClaimsListPrintsTheCause reads a line that carries one).
 func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing.T) {
 	t.Parallel()
@@ -1210,6 +1215,12 @@ func TestClaimLineNamesAReleasedClaimApartFromASuspendedAndAFailedOne(t *testing
 			claim: api.OperatorClaim{Token: "legion-legion-legion-208-implementer", Role: "implementer", Issue: "LEGION-208",
 				State: "suspended", SuspendedBy: "released", Generation: 3, PluginContract: api.DaemonAPIVersion()},
 			want: "legion-legion-legion-208-implementer implementer LEGION-208 suspended:released - 3 " + thisBinarysContract + " - - - -\n",
+		},
+		{
+			name: "held by the work hold",
+			claim: api.OperatorClaim{Token: "legion-legion-legion-211-merger", Role: "merger", Issue: "LEGION-211",
+				State: "suspended", SuspendedBy: "hold", Generation: 4, PluginContract: api.DaemonAPIVersion()},
+			want: "legion-legion-legion-211-merger merger LEGION-211 suspended:hold - 4 " + thisBinarysContract + " - - - -\n",
 		},
 		{
 			name: "suspended by the operator",

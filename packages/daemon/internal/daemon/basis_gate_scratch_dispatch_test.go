@@ -446,7 +446,8 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 			t.Fatalf("the daemon queued resting-root notices %+v on %s, which it records in no live tree; want none", resting, parent.Key)
 		}
 		parentGrant := r.admit(parent.Key)
-		startTask := fmt.Sprintf("These roots rest on the approval of %s and are still in the workflow: %s (its spec step, in planning).", parent.Key, root.Key)
+		startTask := fmt.Sprintf("These roots rest on %s and are still in the workflow: %s, in planning, its spec step on the primary document of %s (dispatch://%s/spec).",
+			parent.Key, root.Key, parent.Key, parent.Key)
 		started := r.d.claim(r.architectToken(parent.Key))
 		if started.Pending == nil || !strings.Contains(started.Pending.Task, startTask) {
 			t.Fatalf("the start task of %s's architect at its admission = %+v, want it naming %q", parent.Key, started.Pending, startTask)
@@ -456,7 +457,8 @@ func (r *personHandoverRig) readAncestorOpening(c ancestorOpening) {
 		r.registerApprovedGate(parent.Key, parent.PrimaryArtifactID, c.approval.Version, parentGrant)
 	}
 	r.ready(parent.Key)
-	restingClause := fmt.Sprintf("resting on the approval of %s and still in the workflow: %s (its spec step, in planning)", parent.Key, root.Key)
+	restingClause := fmt.Sprintf("resting on %s and still in the workflow: %s, in planning, its spec step on the primary document of %s (dispatch://%s/spec)",
+		parent.Key, root.Key, parent.Key, parent.Key)
 	if notice := r.latestCatchUp(parent.Key); !strings.Contains(notice.Reason, restingClause) {
 		t.Fatalf("the catch-up of %s's architect = %q, want it naming %q", parent.Key, notice.Reason, restingClause)
 	}

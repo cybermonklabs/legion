@@ -1,6 +1,6 @@
 import { inboundTimestamp } from "@legion/envoy-client/delivery";
+import { customEntries } from "@legion/pi-shared/custom-entry";
 import { encode } from "@toon-format/toon";
-import { customEntries } from "./custom-entries";
 import { REPLAY_DELIVERED_ENTRY, writtenCardIdentity } from "./missed-messages";
 
 /**

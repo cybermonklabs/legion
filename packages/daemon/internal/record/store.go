@@ -1632,6 +1632,51 @@ func (s *Postgres) DropReadmittedApproval(ctx context.Context, tx pgx.Tx, root s
 	return nil
 }
 
+// PutClearedSpecApproval writes the record a mark places, so a record with no mark, which would
+// name an approval Dispatch never placed, is refused here and by the table's check. So is a record
+// whose latest version stands below the version it approved, which no row holds.
+func (s *Postgres) PutClearedSpecApproval(ctx context.Context, tx pgx.Tx, approval ClearedSpecApproval) error {
+	if approval.Mark.IsZero() {
+		return fmt.Errorf("record the spec approval cleared from %s: the approval of version %d carries no mark", approval.Issue, approval.Version)
+	}
+	if approval.LatestVersion < approval.Version {
+		return fmt.Errorf("record the spec approval cleared from %s: its latest version %d stands below the approved version %d",
+			approval.Issue, approval.LatestVersion, approval.Version)
+	}
+	seq, at := markValues(approval.Mark)
+	if _, err := tx.Exec(ctx, `insert into cleared_spec_approvals (issue, artifact_id, approved_version, latest_version, approved_seq, approved_at)
+		values ($1, $2, $3, $4, $5, $6)
+		on conflict (issue) do update set artifact_id = excluded.artifact_id, approved_version = excluded.approved_version,
+		latest_version = excluded.latest_version, approved_seq = excluded.approved_seq, approved_at = excluded.approved_at`,
+		approval.Issue, approval.ArtifactID, approval.Version, approval.LatestVersion, seq, at); err != nil {
+		return fmt.Errorf("record the spec approval cleared from %s at version %d: %w", approval.Issue, approval.Version, err)
+	}
+	return nil
+}
+
+func (s *Postgres) ClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) (*ClearedSpecApproval, error) {
+	approval := ClearedSpecApproval{Issue: root}
+	var seq *int64
+	var at *time.Time
+	err := tx.QueryRow(ctx, `select artifact_id, approved_version, latest_version, approved_seq, approved_at from cleared_spec_approvals where issue = $1`, root).Scan(
+		&approval.ArtifactID, &approval.Version, &approval.LatestVersion, &seq, &at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read the spec approval cleared from %s: %w", root, err)
+	}
+	approval.Mark = scannedMark(seq, at)
+	return &approval, nil
+}
+
+func (s *Postgres) DeleteClearedSpecApproval(ctx context.Context, tx pgx.Tx, root string) error {
+	if _, err := tx.Exec(ctx, "delete from cleared_spec_approvals where issue = $1", root); err != nil {
+		return fmt.Errorf("delete the spec approval cleared from %s: %w", root, err)
+	}
+	return nil
+}
+
 // TellChildrenFirst records that the architect that owns issue has been told, for the run
 // generation of tree, that the issue waits for its own Dispatch children, and reports whether
 // this call is the telling: a second call for the same tree and generation changes nothing and
@@ -1991,13 +2036,23 @@ func (s *Postgres) ClearGeneration(ctx context.Context, tx pgx.Tx, issue Issue, 
 
 // ClearTreeGeneration empties them for every issue of the tree. A root set back to todo starts a
 // new generation of the whole tree, and its children carried the old one's pull request, gate and
-// handoffs into it — a child re-entered at the new generation read a handoff of the last.
+// handoffs into it — a child re-entered at the new generation read a handoff of the last. The work
+// hold of the generation that ended goes with its gate rows (WorkHold), and so does the record of
+// its last opening, so neither holds the newer one or names its version to the newer one: the gate
+// the next generation registers closes and opens a hold of its own.
 func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error) {
 	describe := fmt.Sprintf("clear the generation of tree %s", tree)
 	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
 		return nil, err
 	}
-	return s.clearGeneration(ctx, tx, clearedTree, tree, describe)
+	emptied, err := s.clearGeneration(ctx, tx, clearedTree, tree, describe)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.DeleteWorkHold(ctx, tx, tree); err != nil {
+		return nil, err
+	}
+	return emptied, nil
 }
 
 // The issues a clear covers, as the where clause of a statement over a table keyed by issue, with
@@ -3427,8 +3482,9 @@ func (s *Postgres) EnqueueDesignGates(ctx context.Context, tx pgx.Tx, publish De
 // package declares, which are every value the claims table's checks allow, so no statement spells
 // the rule again and a state or a source added there is read here with nothing added. So a claim
 // the idle release or a pause's stop suspended (supervise.SuspendedByReleased) holds its role, and
-// so does one launched again over the session it kept; a failed or a retired claim holds none, and
-// neither does one any other source suspended.
+// so does one the work hold suspended (supervise.SuspendedByHold) and one launched again over the
+// session it kept; a failed or a retired claim holds none, and neither does one any other source
+// suspended.
 var roleHoldingStates, roleHoldingSources = roleHoldingPairs()
 
 func roleHoldingPairs() (states, sources []string) {
@@ -3760,6 +3816,17 @@ const pendingPhaseStart = `issue = $1 and kind = 'supervise'
 // and the error it last recorded — so a row backing off keeps its backoff and carries the later
 // task into it.
 //
+// So does the work hold's opening the replaced row carries (keepOpening). A start of the opening
+// (SuperviseRequest.Opening, workflow's openHeldClaims) is the one task that tells a claim the hold
+// stopped that the hold stopped its turn and that the gate opened, and the opening settles the
+// holder's told row as told when it writes that start, so nothing else tells the opening again. A
+// later start of the same role, written before that start's first attempt or while it waits
+// behind an operator's task the claim kept, takes its place, and is written carrying its
+// sentences, so the role keeps one start and one task, and that task tells the opening once. Left
+// beside the later start instead, the opening's start would be a second start of the role, and a
+// second task, whose entry or phase the later start can have passed, so the outbox's fences would
+// finish it, sentences and all.
+//
 // A partial unique index on the pending start would be the other way to keep one row, and is not
 // available: Enqueue allows one `on conflict` target per statement and already spends it on
 // ready_merge (readyMergeConflict).
@@ -3771,20 +3838,78 @@ func (s *Postgres) EnqueueStart(ctx context.Context, tx pgx.Tx, row OutboxRow) e
 	// caller hands over rather than asked of the caller again: a payload that names no mark
 	// carries the mark's zero (SuperviseRequest.NeedsSlot is omitempty), which is a start that
 	// waits for no slot.
-	if _, err := tx.Exec(ctx, `with owed as (
+	var written int64
+	var taken *int64
+	var takenPayload []byte
+	if err := tx.QueryRow(ctx, `with owed as (
 			delete from outbox where id = (select id from outbox
 				where `+pendingPhaseStart+`
 					and coalesce(payload->>'needsSlot', 'false') = coalesce(($2::jsonb)->>'needsSlot', 'false')
 					and (lease_until is null or lease_until <= $3)
 				order by created_at, id limit 1)
 				and (lease_until is null or lease_until <= $3)
-			returning attempts, next_at, last_error, created_at)
-		insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
-		select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
-			coalesce(owed.created_at, now()), '', null
-		from (values (1)) as caller(one) left join owed on true`,
-		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError); err != nil {
+			returning id, payload, attempts, next_at, last_error, created_at),
+		written as (
+			insert into outbox (kind, issue, payload, attempts, next_at, last_error, created_at, lease_token, lease_until)
+			select 'supervise', $1, $2, coalesce(owed.attempts, $4), coalesce(owed.next_at, $3), coalesce(owed.last_error, $5),
+				coalesce(owed.created_at, now()), '', null
+			from (values (1)) as caller(one) left join owed on true
+			returning id)
+		select written.id, owed.id, owed.payload from written left join owed on true`,
+		row.Issue, string(row.Payload), row.NextAt, row.Attempts, row.LastError).Scan(&written, &taken, &takenPayload); err != nil {
 		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
+	}
+	if taken == nil {
+		return nil
+	}
+	if err := s.keepOpening(ctx, tx, row, written, *taken, takenPayload); err != nil {
+		return fmt.Errorf("enqueue the start of %s: %w", row.Issue, err)
+	}
+	return nil
+}
+
+// keepOpening writes the start row, the one EnqueueStart wrote as written, carrying the work
+// hold's opening that row taken, the start it took out, carried in takenPayload
+// (SuperviseRequest.Opening): its Opening is taken's, and its task is those sentences in front of
+// its own (supervise.OpeningTask), as every start of the opening is (validateWorkHoldRequest). The
+// outbox builds the sentences again from the tree's record when the start runs (internal/daemon's
+// startOfAHeldClaim), and a start of the opening that took the place of one that had ended the hold
+// already goes on as that start's retry would (internal/daemon's continuesTheOpening). It carries
+// nothing where taken carries no opening, where row already carries an opening of its own, which
+// is the newer, where taken is a start of another role, which the opening did not stop (the issue
+// moved to a phase of another role, and that role's start must not meet a claim of its own as the
+// opening's), or where the role's claim was given taken's task already (the claim's delivered
+// rows), since the claim heard the opening from it. Both payloads are the record's own encoding of
+// a start (NewOutboxRow), and the row it writes is validated as every row is.
+func (s *Postgres) keepOpening(ctx context.Context, tx pgx.Tx, row OutboxRow, written, taken int64, takenPayload []byte) error {
+	var opening, start SuperviseRequest
+	if err := json.Unmarshal(takenPayload, &opening); err != nil {
+		return fmt.Errorf("decode start row %d: %w", taken, err)
+	}
+	if opening.Opening == "" {
+		return nil
+	}
+	if err := json.Unmarshal(row.Payload, &start); err != nil {
+		return fmt.Errorf("decode the start written in place of row %d: %w", taken, err)
+	}
+	if start.Opening != "" || start.Role != opening.Role {
+		return nil
+	}
+	var given bool
+	if err := tx.QueryRow(ctx, `select exists (select 1 from claims where issue = $1 and role = $2 and $3 = any(delivered_rows))`,
+		row.Issue, string(start.Role), taken).Scan(&given); err != nil {
+		return fmt.Errorf("read whether the claim was given the task of start row %d: %w", taken, err)
+	}
+	if given {
+		return nil
+	}
+	start.Opening, start.Task = opening.Opening, supervise.OpeningTask(opening.Opening, start.Task)
+	kept, err := NewOutboxRow(row.Issue, start, row.NextAt)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `update outbox set payload = $2 where id = $1`, written, string(kept.Payload)); err != nil {
+		return fmt.Errorf("keep the opening of start row %d on start row %d: %w", taken, written, err)
 	}
 	return nil
 }

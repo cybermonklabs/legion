@@ -21,6 +21,8 @@ import {
   LegionAgentActionResponse,
   LegionCapabilityReport,
   LegionChildRequest,
+  LegionClaimApprovalRequest,
+  LegionClaimApprovalResponse,
   LegionClaimRequest,
   LegionCompactResponse,
   LegionControllerCredentialResponse,
@@ -202,6 +204,9 @@ const schemas: Record<string, z.ZodType> = {
   // state state.json holds, the body of `GET /legion/v1/state?view=observed` (entry
   // 20261125174131 state-seq).
   "observed-state.json": LegionObservedStateResponse,
+  // Written by internal/api's TestStateWorkHoldGolden: the state of an issue the work hold holds
+  // (`gates.hold: work`), whose `why` is `held` (entry `20261126175637`).
+  "state-work-hold.json": LegionStateResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).
@@ -215,6 +220,11 @@ const schemas: Record<string, z.ZodType> = {
   // What a pod reads of its deployment's idle release: every release, resume and hold of the
   // window it named (`api.ReleaseRecordsResponse`).
   "release-records.json": LegionReleaseRecordsResponse,
+  // `api.ClaimApprovalResponse` (entry `20261126175637`): the standing approval for a root
+  // architect's claim, or the answer where none stands, whose `approval` is null. Each is
+  // written from what the route builds (internal/api's TestApprovalRoute…Golden).
+  "claim-approval.json": LegionClaimApprovalResponse,
+  "claim-approval-none.json": LegionClaimApprovalResponse,
   // What a session reads at the end of its turn of what its claim owes now (`api.OwedResponse`):
   // the reminder renders the `work` phrase and names no work of its own.
   "owed.json": LegionOwedResponse,
@@ -614,6 +624,7 @@ const RECORD_SCHEMAS: Record<string, readonly z.ZodType[]> = {
   "plan-register": [LegionPlanRegisterResponse],
   "intake-discard": [LegionIntakeDiscardResponse],
   "p0-bound": [LegionP0BoundResponse],
+  "claim-approval": [LegionClaimApprovalResponse],
   "pod-update": [LegionPodUpdateResponse],
   owed: [LegionOwedResponse],
 };
@@ -2490,6 +2501,17 @@ test("every request the plugin sends parses and names its required fields", () =
         since: "2026-11-01T12:00:00Z",
       },
     ],
+    // The read a root architect's session makes before a model call of its own conversation
+    // (entry `20261126175637`), authenticated by the claim as the activity report is.
+    [
+      "claim approval",
+      LegionClaimApprovalRequest,
+      {
+        claimToken: "legion-acme-2694-architect",
+        sessionId: "ses_architect_2694",
+        secret: CLAIM_SECRET,
+      },
+    ],
   ];
 
   for (const [name, schema, request] of requests) {
@@ -4107,6 +4129,50 @@ test("the state goldens carry the pause that stands and the last pause, and both
   }
 });
 
+// Entry `20261126175637` adds `why.state: held` and a reason naming the version that closed the
+// design gate. The daemon omits that `why` for an earlier caller whose enum rejects `held`.
+test("the enum before the work hold entry refuses held, but the current enum accepts it", () => {
+  const state = LegionStateResponse.parse(fixture("state-work-hold.json"));
+  expect(state.issues["LEGION-214"]?.why).toEqual({
+    state: "held",
+    reason:
+      "Its phase is implementing, and the work hold holds the work of its tree LEGION-208 until every gated step " +
+      "stands open again: version 4 of its spec document (artifact-208) closed the design gate.",
+  });
+
+  const whyBeforeWorkHold = z.strictObject({
+    state: z.enum(["claim_stopped", "waiting", "blocked", "unlisted"]),
+    reason: z.string().min(1),
+  });
+  const refused = whyBeforeWorkHold.safeParse(state.issues["LEGION-214"]?.why);
+  expect(refused.success).toBeFalse();
+  expect(refused.error?.issues[0]?.path).toEqual(["state"]);
+
+  // Every other word still parses at this contract, and the reason is never empty.
+  const { issues, ...rest } = fixtureBody("state-work-hold.json");
+  if (!isJsonObject(issues)) {
+    throw new Error("state-work-hold fixture lacks its issues");
+  }
+  const held = issues["LEGION-214"];
+  if (!isJsonObject(held)) {
+    throw new Error("state-work-hold fixture lacks its held issue");
+  }
+  const reason = state.issues["LEGION-214"]?.why?.reason ?? "";
+  for (const word of ["claim_stopped", "waiting", "blocked", "unlisted"]) {
+    const parsed = LegionStateResponse.safeParse({
+      ...rest,
+      issues: { "LEGION-214": { ...held, why: { state: word, reason } } },
+    });
+    expect(parsed.error?.issues ?? [], word).toEqual([]);
+  }
+  expect(
+    LegionStateResponse.safeParse({
+      ...rest,
+      issues: { "LEGION-214": { ...held, why: { state: "held", reason: "" } } },
+    }).success
+  ).toBeFalse();
+});
+
 // What the pause routes answer (contract 178). A pause answers the pause it began, which names
 // no end. A resume answers the pause it ended, with who ended it, and how many held rows it let
 // out. No plugin code reads either answer: the controller hands each to its agent whole, so the
@@ -4465,6 +4531,28 @@ test("a claim state is one the supervisor has", () => {
   mutated.state = "running";
 
   expect(LegionOperatorClaimResponse.safeParse(mutated).success).toBeFalse();
+});
+
+// The operator claim routes name who suspended a claim, and who a held suspension is held for, by
+// the daemon's own sources (`supervise.SuspendSource`): the work hold's `hold` among them, which
+// the operator reads apart from an operator's own suspension and a release. A word the daemon
+// has no source for is refused in either field.
+test("a suspension's source is one the daemon records, the work hold's among them", () => {
+  for (const by of ["unknown", "operator", "daemon", "exit", "released", "hold"]) {
+    const suspended = fixture("operator-claim.json") as Record<string, unknown>;
+    suspended.state = "suspended";
+    suspended.suspendedBy = by;
+    expect(LegionOperatorClaimResponse.safeParse(suspended).error?.issues ?? [], by).toEqual([]);
+
+    const held = fixture("operator-claim.json") as Record<string, unknown>;
+    held.suspensionHeldBy = by;
+    expect(LegionOperatorClaimResponse.safeParse(held).error?.issues ?? [], by).toEqual([]);
+  }
+  for (const field of ["suspendedBy", "suspensionHeldBy"]) {
+    const mutated = fixture("operator-claim.json") as Record<string, unknown>;
+    mutated[field] = "someone";
+    expect(LegionOperatorClaimResponse.safeParse(mutated).success, field).toBeFalse();
+  }
 });
 
 test("a register response without its secret is refused", () => {

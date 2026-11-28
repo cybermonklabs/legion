@@ -1516,7 +1516,8 @@
     "gates": {
       "design": [
         "spec"
-      ]
+      ],
+      "hold": "start"
     },
     "github_apps": {
       "implement": {

@@ -251,14 +251,15 @@ func openCallWord(step *api.StepView) string {
 // claimStateWord is the claim's state as the line prints it: `suspended:released` for a claim whose
 // agent the idle release suspended, `suspended:controller` for one whose agent the project's
 // controller suspended through its own tool, a suspension its `resume_agent` lifts as well as the
-// operator's, and the state itself for every other claim, whose suspendedBy the operator reads
-// with --json. A plain `suspended` is therefore the operator's own suspension, or the daemon's.
+// operator's, `suspended:hold` for one the work hold stopped, which its tree's gate opening starts
+// again, and the state itself for every other claim, whose suspendedBy the operator reads with
+// --json. A plain `suspended` is therefore the operator's own suspension, or the daemon's.
 func claimStateWord(c api.OperatorClaim) string {
 	if c.State != string(supervise.StateSuspended) {
 		return c.State
 	}
 	switch supervise.SuspendSource(c.SuspendedBy) {
-	case supervise.SuspendedByReleased, supervise.SuspendedByController:
+	case supervise.SuspendedByReleased, supervise.SuspendedByController, supervise.SuspendedByHold:
 		return c.State + ":" + c.SuspendedBy
 	}
 	return c.State

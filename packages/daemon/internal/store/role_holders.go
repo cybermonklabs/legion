@@ -15,16 +15,16 @@ import (
 // The publication of an issue's role sessions to Dispatch is an outbox row the daemon's board lane
 // runs (record.RoleHoldersPublish, PUT /api/v1/issues/{key}/role-holders), and it reads from the
 // claims when it runs the set of sessions whose claims hold their roles (supervise.HoldsRole): a
-// claim the idle release suspended is in it. Once the daemon has turned the publication on
-// (PublishRoleHolders), the claim write that changes the session holding a role queues it in that
-// write's own transaction (putClaim), where every write of a claim's state and session converges,
-// so the change and the obligation to publish it commit together or not at all: no change of a
-// holder stands that nothing owes a publication, and a write the store refused leaves neither. An
-// end whose own write failed with an error the machine owes is published when the repair that
-// makes it good lands, whichever decision makes it. An end whose failed write is not owed is
-// written again only when a later decision retires a task the claim still holds, which writes the
-// claim with it; until then the store, and so Dispatch's set, keeps the claim holding its role
-// (dispatch://INFRA-4099).
+// claim the idle release or the work hold suspended is in it. Once the daemon has turned the
+// publication on (PublishRoleHolders), the claim write that changes the session holding a role
+// queues it in that write's own transaction (putClaim), where every write of a claim's state and
+// session converges, so the change and the obligation to publish it commit together or not at
+// all: no change of a holder stands that nothing owes a publication, and a write the store refused
+// leaves neither. An end whose own write failed with an error the machine owes is published when
+// the repair that makes it good lands, whichever decision makes it. An end whose failed write is
+// not owed is written again only when a later decision retires a task the claim still holds, which
+// writes the claim with it; until then the store, and so Dispatch's set, keeps the claim holding
+// its role (dispatch://INFRA-4099).
 //
 // The row is keyed by the issue, so it is queued only for an issue of the claim's own project
 // (claim.KeyOfProject): a claim of another project's issue, which the operator's spawn makes under
@@ -52,7 +52,8 @@ func holdsIssueRole(c supervise.Claim) bool {
 // state and suspension source hold the role (supervise.HoldsRole), "" otherwise. It is the row's
 // part of what a publication sends (record.Postgres.RoleHolders, which reads the same rule), so a
 // write that moves the claim between two states that both hold the role, such as the idle
-// release's suspension and the launch that resumes its session, changes no holder.
+// release's suspension or the work hold's and the launch that resumes its session, changes no
+// holder.
 func roleHolder(state supervise.ClaimState, by supervise.SuspendSource, session string) string {
 	if !supervise.HoldsRole(state, by) {
 		return ""

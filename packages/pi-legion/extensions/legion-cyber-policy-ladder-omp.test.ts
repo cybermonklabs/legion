@@ -136,7 +136,10 @@ async function ladderPane(options: {
       issue: "LADDER-1",
       nats,
       prompt: [...warmUps, TASK],
-      providers: PROVIDERS.map((provider) => ({ ...provider, images: options.images === true })),
+      providers: PROVIDERS.map((provider) => ({
+        ...provider,
+        input: options.images === true ? ["text", "image"] : ["text"],
+      })),
       config: [
         "retry:",
         "  modelFallback: true",

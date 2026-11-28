@@ -1,0 +1,2 @@
+catch-up on ACME-950
+{"kind":"catch-up","role":"architect","reason":"the tree of ACME-950 at generation 2 as the daemon records it now; start or resume it as your role says","catch_up":{"generation":2,"launch":1,"handed_over":true,"carried":true,"gates":[{"step":"spec","gated":true,"artifact":"5b0f3c2e-7d14-4a9b-8e61-2c9a7f4d1b03","version":12,"approved":12,"open":true}],"issues":[{"key":"ACME-950","parent":"ACME-900","title":"ACME-950","phase":"implementing","status":"in_progress"}]}}

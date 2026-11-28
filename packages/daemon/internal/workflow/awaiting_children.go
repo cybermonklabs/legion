@@ -574,9 +574,12 @@ func acceptedEntry(row record.PhaseRow) bool {
 //     under the architect that owns the issue, so the sign_off ends its run. Its architect learns
 //     of an issue entering accepting from the notice of the move that took it there, which the
 //     wait's own notice replaced, so the return tells it once, under the wait's kind
-//     (AwaitingChildrenNoticeKind), that the issue waits on its sign_off. A held accepting on a
-//     walk with no step between the implementer's and the owner's acceptance comes back to
-//     accepting whatever its pull request did, and is told the same way.
+//     (AwaitingChildrenNoticeKind), that the issue waits on its sign_off. That notice stands for
+//     the phase-finished notice of the owner's acceptance, so under `work` it waits as that notice
+//     does while the tree's standing gate is closed (TellsOwnersAcceptance), and the hold's end
+//     queues no second telling of the acceptance beside it (tellOwnersAcceptance). A held
+//     accepting on a walk with no step between the implementer's and the owner's acceptance comes
+//     back to accepting whatever its pull request did, and is told the same way.
 //   - The start raises a new phase entry (enter, through start), not a resend of the entry the
 //     wait stopped (restart), and marks it as a move back's out of awaiting_children
 //     (record.PhaseRow.EntryMovedBack, record.PhaseRow.EntryFrom): the return asks for the
