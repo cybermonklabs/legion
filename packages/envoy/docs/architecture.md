@@ -94,10 +94,11 @@ requires a bearer checks no `Host`.
 | `/v1/registry/{session_id}` | GET | The authoritative answer for one session — reads through the cache to the session bucket, so a session the cache has not read yet is still found, and returns the same body a `/v1/sessions` row carries, roles from the claims included, with the session's `state`, `last_seen` and `client_instance_id`, the client process that wrote the registration, left out where the entry carries none as `/v1/roles/{role}` leaves its own out. It takes the list's selector: a session whose state is `unresponsive` is a 200 asked with `include=unresponsive`, and without it the 404 below, which names that session's `state` and `last_seen` all the same, so a caller reads `state` rather than the status code to decide whether the session ended. A live session with no interest record is a 200 with `topics` as `[]`, as the list shows it, and so is one whose id only the interest bucket refuses as a key and that the listener's interest copy holds no record for, logged at WARN naming it: Dispatch's envoy client reads a 413 or 400 here as a session that cannot exist. It refuses with 413 or 400 for an id the session bucket will not take as a key, `404 {"error":"no live session <id>", "state":…, "last_seen":…}` for a key the bucket does not hold, which is `gone`, and for an `unresponsive` session the caller did not ask for, the unreadable-interest-record 500 `/v1/interests/{session_id}` gives, and 503 with `Retry-After: 1` for a read that did not answer, the session's, its interest record's or the claims view's, all within a 3.5 s budget. `view=registration` asks instead for the stored registration alone (`listenerwire.SessionRegistration`: `session_id`, `state`, `last_seen`, `updated_at`, `client_instance_id`), read from the session bucket itself and never from this listener's cache, with no interest record and no role claims joined to it, so it answers whenever that bucket answers, and no state filter applies to it: every entry the bucket holds is a 200 carrying its record's own state, `gone` included, and the 404 is the bucket holding no record. It is what the Legion daemon's clean stop of a role whose process ended (a probe judged it gone, or a suspension's own stop ended it) reads before it deletes — the full answer's two extra reads are none of the stop's business, and either refusing would leave a dead session's claims standing to the gone horizon. Any other value of `view` is a 400 naming the selector |
 | `/v1/sessions/{session_id}` | DELETE | Remove a session's registration; the session is `gone` from that moment, with no live window to wait out. A caller that must not remove a registration another process wrote names a condition, and the registration is removed only while the stored entry meets it, answered `200 {"deleted":true}` for one that is gone and `200 {"deleted":false,"reason":…}` for one that stayed. With `client_instance_id` it is removed only while it carries that id or carries none, so a departing client instance never removes the registration a later instance made under the same session id; with `if_not_registered_after` (unix milliseconds, and a value that is not a positive whole number of them is a 400) only while it was last written at or before that moment. The entry is kept when **either** condition refuses it (`session.DeleteConditions.keeps`), so naming both narrows what a delete takes and widens nothing. The Legion daemon's clean stop of a role's session, sent when its probe judged the role's process gone or when a suspension's own stop ended that process, names both at once (dispatch://INFRA-2064). Its moment is the one its own probe judged the process gone, or the one that suspension's stop returned, with nothing subtracted: on clocks that agree this listener stamped the ended process's last heartbeat before that moment, so the moment deletes it, where a stop dated earlier would read the same heartbeat as a registration written since and refuse the stop that was owed. Its instance id, read from `/v1/registry/{session_id}?view=registration` a moment before, is what makes carrying that moment undated safe: where the read answered the dead process's own entry, a relaunch's registration is refused by its own identity whatever the two clocks say, and where the read was answered after the relaunch had registered, the id names that successor and the moment keeps the registration instead. A write route |
 | `/v1/sessions/{session_id}/successors` | GET | `{"session_id":…,"principal":…,"successors":[…]}`: the sessions that replaced that session, sorted and each once, `[]` when none (`handoverSuccessors`): each session the stream's handover records name as its successor (`bus.Client.HandoverSuccessors`), and each that replaced one of those in turn, however long the chain, since a message handed to a session replaced before it read it is handed on with its delivery unchanged. Successors are named only between sessions of one principal: a session is named only while its last registration names the principal the asked-about session last registered as, read from the known-session bucket's leader, so a session that registered as another principal since its claim is named no more, nor is any session only it leads to; a session whose principal no registration of this build recorded has none. `principal` is that principal, which each named session last registered as too (in the form that names the credential's kind and scope, `internal/ciphertoken/principal.go`), shown only to the caller whose verified identity is the listener's `ENVOY_DISPATCH_PRINCIPAL`, and only beside a named session: every other caller (a session's broker token, the shared token, another identity, an open `/v1`, and every caller of a listener that sets no `ENVOY_DISPATCH_PRINCIPAL`) reads `""`, and so does an answer whose `successors` is empty. A listener whose known-session bucket is not open names none, `200` with `[]`, as it hands nothing over, until its store opens the bucket. Dispatch accepts a successor's reply on a broker token only where the token acts for that principal. The records are those the claim route writes for a claim that names the session it replaces (see "Role delivery and exceptions" below), read by their subjects alone, one `STREAM.INFO` for each form a role takes in a subject; a finished record still names its successor while the stream keeps it. Dispatch reads it before a reply's transaction, so the session that replaced the one a `session:` attempt names may answer that attempt, a copy of which the listener handed it. A read of the stream or the bucket that did not answer within 3.5 s, the whole chain's included, is the bus-unavailable 503 with `Retry-After: 1`, never a list naming part of the chain. A broker token is not narrowed to its own session here, as the registry read is not. An edge listener reads the shared listeners' records, which its grant's `STREAM.INFO` allows, and names a successor only where the token's projects show that session, confirmed by its stored record as a row of `/v1/sessions` is |
-| `/v1/legion/agents/sessions/{session_id}` | GET/PUT | One Legion session's registry entry. GET adds `live` (the session's own state in the session registry, true only while it reads `live`; an `unresponsive` session reads false and has not ended, see “Session state”) and `replaced_by`/`replaced_at` (the next session of its role token by `started_at`), both derived at the read, or answers `404 {"error":"unknown legion agent <id>"}`; PUT records the daemon's entry for the session, and a write moving a recorded session to another issue or role is a 409, concurrent writes included: a write claims `session.<id>` by compare-and-swap before it writes the index keys. All three registry routes answer 503 naming the missing grant on a listener whose NATS user lacks the `legion_agents` grant; every other route serves |
-| `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…]}`: a role token's sessions, newest first (the first is the current holder), `[]` when none |
-| `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 4 MiB, the `/v1` body limit, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer. Every read comes from the bucket itself, never a cache |
-| `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, and a session the store holds no entry within the gone horizon for is looked up in the known-session store (every session that registered in the last 30 days): `200` with `state` `connected`, `no_receiver` or `stopped` stores the message, a `409` refuses a stopped target the request asked `connected_only` of, and a 404 means neither store knows the session; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). An optional `role`, the role a Dispatch message for a `role:` route is sent for, goes on the envelope; it is taken only from the principal `ENVOY_DISPATCH_PRINCIPAL` names, as `apiAuth` verified it, and refused `403` naming `role` from every other caller. When the role's claim names another session than the target, or none, the message is kept on the role's kept lane and answered `202` with `kept` and `kept_until`. |
+| `/v1/legion/agents/sessions/{session_id}` | GET/PUT | One Legion session's registry entry. GET adds `live` (the session's own state in the session registry, true only while it reads `live`; an `unresponsive` session reads false and has not ended, see “Session state”), `answering` (the flag the entry's project last stated in its answering record, `project.<legion_project>`, false while the project has stated none) and `replaced_by`/`replaced_at` (the next session of its role token by `started_at`), all derived at the read, or answers `404 {"error":"unknown legion agent <id>"}`; PUT records the daemon's entry for the session, and a write moving a recorded session to another issue or role is a 409, concurrent writes included: a write claims `session.<id>` by compare-and-swap before it writes the index keys. A secrets-broker access token is refused the PUT with the 403 the project route below names, written out there. All four registry routes answer 503 naming the missing grant on a listener whose NATS user lacks the `legion_agents` grant; every other route serves. A read or write the bucket did not answer is a 503 with `Retry-After: 1`. A record the bucket holds that does not decode (`legionagents.ErrMalformedRecord`: a session's entry, an index key's, or a project's answering record) is a 500 (`listenerwire.FaultStatus`) with no `Retry-After` and `code: "malformed_record"` (`listenerwire.CodeMalformedRecord`), `envoy: the legion agent registry holds a record it cannot decode: …` naming the session, the key or the project, since asking again reads the same record: on every read that meets it, and on both entry PUTs, which read the session's stored entry before they write. The project PUT reads nothing first, so the next PUT of the project replaces an answering record that does not decode |
+| `/v1/legion/agents/roles/{role_token}` | GET | `{"entries":[…],"answering":<bool>}`: a role token's sessions, newest first (the first is the current holder), `[]` when none, and `answering`, the flag the role token's own project last stated in its answering record (`project.<legion_project>`), false while the project has stated none, written out whether there are entries or not; an edge listener answers it only for a role whose issue is of one of its token's projects, and `false` for any other |
+| `/v1/legion/agents` | GET/PUT | GET `?issue={KEY}`: an issue's sessions by role in workflow order, then newest first, `[]` when none. PUT: a batch of at most 256 entries and 4 MiB, the `/v1` body limit, every entry validated before the first write (400 naming the bad entry's index); a batch that fails after that names how many were written (`written`) with the failed entry's own status, a 503 to retry for a write the bucket did not answer, a 500 with no `Retry-After` and `code: "malformed_record"` for a session whose stored entry does not decode; a secrets-broker access token is refused the PUT with the 403 the project route below names, before its body is read. Every read comes from the bucket itself, never a cache |
+| `/v1/legion/projects/{legion_project}` | PUT | A Legion project's answering record, `{"answering":<bool>,"updated_at":"<RFC 3339 UTC>"}`, stored as `project.<legion_project>` in the `legion_agents` bucket and answered as stored. While the flag the record last stated is true, whatever the record's age, the listener hands the messages of the project's stopped agents to `notifications.legion.<legion_project>.agents.<session>` (`handOffToLegion`). No Legion daemon writes the record yet, so until one does the listener hands nothing off. A secrets-broker access token is refused `403 {"error":"this access token acts as session <id>, and a secrets-broker access token may not write the Legion agent registry"}`, as on the two PUTs above, since such a token always names a session. A credential that names no session, such as the shared token or an identity token, is not refused. A path that is no Legion project token, a body without `answering` and an `updated_at` that is no RFC 3339 UTC time are a 400, a method other than PUT a 405, and no refusal writes anything |
+| `/v1/messages/send` | POST | Send a direct agent-to-agent message. The target is read from the session store itself, and a session the store holds no entry within the gone horizon for is looked up in the known-session store (every session that registered in the last 30 days): `200` with `state` `connected`, `no_receiver` or `stopped` stores the message, a `409` refuses a stopped target the request asked `connected_only` of, and a 404 means neither store knows the session; a store read or a publish the bus did not answer is a 503 with `Retry-After: 1` (see “Send and publish answers” below). An optional `role`, the role a Dispatch message for a `role:` route is sent for, goes on the envelope; it is taken only from the principal `ENVOY_DISPATCH_PRINCIPAL` names, as `apiAuth` verified it, and refused `403` naming `role` from every other caller. When the role's claim names another session than the target, or none, and no session holds the role live, the listener hands the role's message to the daemon of the role's newest Legion session (`handOffOrKeepRoleSend`), whether the role's issue has left the workflow or not, under the conditions a role publish's hand-off has. It then answers `200` with that session as `recipient` and reports no wake. The listener keeps every other such message on the role's kept lane and answers `202` with `kept` and `kept_until`: a message for a role the registry holds no entry for, for a role whose project does not answer, and for any role while another session holds it live, such as a session that took it over. |
 | `/v1/messages/publish` | POST | Publish an event. Required `message` becomes the human `payload_summary`; optional `payload` is distinct machine data in `payload`. A topic the stream captures is answered once JetStream stored it, bounded to five seconds; `notifications.team.<name>` is such a topic, and each session that follows it reads the stored copy from its own consumer. That answer carries `recipients`, the sessions other than the sender whose interest row or known-session record follows the topic through a topic the filter built from its stored row holds ("Session consumers" above), and `recipients_connected`, how many of those are live; a topic no session follows that way answers `recipients` 0. Counting a controller notice lane reads that role's claim record from the role bucket stream's leader, within 500 ms, and a read that did not answer leaves both counts out. A role topic is forwarded to its live holder's agent subject and answered once the stream stored that forward, or with a 504 after four seconds (see "Role delivery and exceptions"). Any other `notifications.` topic that neither the deployed stream nor this build captures is refused `400` by name, since no session would receive it. A topic this build stores that the deployed stream does not capture, as during a hub move's quiesce, is sent nowhere and answered the 503 below that says the message was not sent, with `Retry-After: 1` (`bus.ErrSubjectNotDeployed`): the caller may send it again later. A topic under `notifications.dispatch.` or `notifications.github.` is refused `400` with an error that names the lane, and nothing is published; an edge listener refuses every topic but its projects' role subjects before that, with `403` `topic_not_published` (`edgePublishRefusal`), so a session at the edge gets that answer for these lanes: Dispatch and the listener that receives GitHub's webhook publish those lanes straight to NATS, and no grant refuses a caller of this route on the listener whose own user holds the lane. An agent topic (`notifications.agent.`) is refused `400` too, since a direct message goes through `/v1/messages/send`; so are `notifications.legion.wake`, which only the listener publishes, and the listener's own lanes (`notifications.envoy.kept.`, `notifications.envoy.resume.` and `notifications.envoy.takeover.`), each by name. A publish of a captured topic the bus did not serve, and a role-holder read at a role send's first resolution that did not answer, are both the 503 below rather than a 500. |
 | `/healthz` | GET | Health check (always available, even during startup); its bus checks answer within 3 s, except that the reads after its flush (`SubOK`, `Connected`, `CoreSubOK` and the durable's `ConsumerInfo`) can wait out a reconnect's handshake that begins after the flush, and a rebuild of the KV watches that has not succeeded for a minute after a reconnect is `200 degraded` naming the `KV watch rebuild` - not a refusal, which would take the probes' only listener out and replace it with one that rebuilds into the same failure on empty caches, so the state pages through the `<N>-reconnect-hooks-stalled` alarm instead - while a rebuild that fails and is run again under that minute leaves the answer it had (see “Webhook and health check bounds” below). The healthy answer, and every degraded one that keeps its fields, carries `role_claim_repair`: `completed_at` (RFC 3339, UTC) and `age_seconds` of the role claim watcher's last whole read of the role bucket, both `null` before one completes, `bound_seconds` (120, `store.RoleClaimRepairBound`), and `put_back` and `took_out`, the claims that read put back into the copy and took out of it. A read older than the bound is `200 degraded` naming `role claim repair unavailable`, never `503`, and `GET /v1/sessions` still answers `200` from the copy then |
 
@@ -288,7 +289,11 @@ line's reason is `rate_limited`.
 
 A counted message costs its sender one where the route stores it, may have stored it or reports
 a wake for it, whatever it answers (`senderCharge`). So a send to a target with no entry costs
-one once the route reports its wake. A role send's `504` costs one whether or not a forward went
+one once the route reports its wake. A message the route hands to a stopped Legion agent's daemon
+(`handOffToLegion`) reports no wake and costs what the hand-off's own publish stored, by the rule a
+send's publish is charged by (`senderCharge.published`): one for a new copy, one for a publish
+that may have stored one, and nothing for a repeat the stream already held under the hand-off's
+message id. A role send's `504` costs one whether or not a forward went
 out, also when the window ended before the first forward (`roleSend.timedOut`), and so does its
 `503` for a window that ended with its forward in process (`roleSend.maybeStored`). A role send
 costs one for a forward the stream confirmed, also one it answered as a duplicate. The listener does
@@ -535,12 +540,23 @@ gone horizon, `gone` past it) and its `last_seen`. Such a claim stands: the publ
 forwarded to its holder, nothing releases the claim, and an `unresponsive` holder is not dead, so
 the sender starts no replacement for it. It answers `404` with `reason` `unclaimed` or
 `holder_lapsed` when no live session holds the role and nothing was kept: the sender asked for
-that with `keep: false`, the publish names no `source_session`, or the keep was refused or
-failed. A publish that names no `source_session` is never kept, because the dead letter of a
-copy that expires goes to that session and there is none: its 404's `error` names the role and
-says that nothing was kept and why, and the listener reads that the role has no live holder from
-the role bucket stream's leader and the holder's registration from the session bucket stream's
-leader, never from a copy (`roleSend.resolve`). A `holder_lapsed` 404 names the same
+that with `keep: false`, the publish names no `source_session` and no Dispatch post, or the keep
+was refused or failed. A publish that names no `source_session` is not kept, because the dead
+letter of a copy that expires goes to that session and there is none: its 404's `error` names the
+role and says that nothing was kept and why, and the listener reads that the role has no live
+holder from the role bucket stream's leader and the holder's registration from the session bucket
+stream's leader, never from a copy (`roleSend.resolve`). The one exception is a role publish that
+names a Dispatch post (`dispatch_post`, `{"kind":"comment"|"message","id":"<uuid>"}`,
+`listenerwire.DispatchPost`). The route takes that field from Dispatch's own verified principal
+alone (`ENVOY_DISPATCH_PRINCIPAL`), as it takes a send's `role` (`refuseDispatchPost`). It
+answers `403` naming the field to every other caller that carries it, and to every caller of a
+listener that names no Dispatch principal. It answers `400` naming the field to a publish that
+carries it to a topic that is not a role's, from a `source` other than `dispatch`, with a
+`source_session`, or with no valid post. When no live session holds the role and the listener
+does not hand the publish off (`handOffToLegion`, below), the route keeps such a publish and
+answers `202`. Its copy carries `source_event_id` `dispatch-post:<kind>:<id>`
+(`bus.DispatchPostEventID`), which no other writer of the route produces. At the end of that
+copy, the walk stores an expiry notice for Dispatch (below). A `holder_lapsed` 404 names the same
 holder fields and `claim_released: false`. Also the 503 or 500 `GET /v1/roles/<role>` gives when
 its first resolution of
 the holder, within 3.5 s of the request's arrival, fails (see "Send and publish answers"); `403`
@@ -606,10 +622,10 @@ Each copy is kept for one hour from the time the stream stored it. No walk forwa
 hour ended: the first walk that reads it drops it, whether or not any session holds the role, and
 counts it on `envoy_role_kept_expired_total`. When the listener kept that copy and its publish
 named a sender session, the walk sends that session a dead letter; the publish route keeps no copy
-for a publish that names none. The walk also sends that
-session a dead letter for such a copy inside its hour whose live holder does not take the copy's
-delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is a stored
-envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's
+for a publish that names none, except a role publish that names a Dispatch post (above). The walk
+also sends that session a dead letter for such a copy inside its hour whose live holder does not
+take the copy's delivery mode, and `envoy_role_dead_letters_total` counts both. The dead letter is
+a stored envelope from source `envoy` on the sender's agent subject, and it names the role, the copy's
 event id, its first line, why Envoy dropped it, and when Envoy kept it and dropped it. The summary
 of a copy from source `dispatch` is the head of a Dispatch comment's or message's body, which its
 author can edit or delete before the copy's hour ends, so that copy's dead letter quotes none of
@@ -619,10 +635,13 @@ copy's payload holds, or by the copy's event id alone where that event names no 
 holds one dead letter for each copy, however many walks send it. A copy whose hour ended more
 than an hour before the walk, and that no walk has claimed, is dropped as stale with no dead
 letter. A copy Dispatch's outbox kept gets no dead letter at all: whatever its age, the walk tells
-Dispatch with an expiry notice instead (below). While a lane holds a copy the listener kept with
-at least twenty minutes of its hour left, and no live session holds the role, each sweep raises
-the role's wake report again, at most once for a role in each five-minute interval across every
-listener. `GET /v1/roles/<role>`
+Dispatch with an expiry notice instead (below). Nor does a copy of a role publish that names a
+Dispatch post and that the publish route kept. Whatever its age, and inside its hour when the
+role's live holder does not take its delivery mode, the walk stores the same expiry notice for
+Dispatch, naming the post. An expired one counts under `kept_by="listener"`. While a lane holds a
+copy the listener kept with at least twenty minutes of its hour left, and no live session holds
+the role, each sweep raises the role's wake report again, at most once for a role in each
+five-minute interval across every listener. `GET /v1/roles/<role>`
 still answers 404 for an unheld or lapsed role: only the publish route gained the kept answer, and
 the send route's for a send Dispatch marks with its role, whose role moved before it arrived. A
 sender that keeps a queue of its own and redelivers from it asks not to be kept (`keep: false` in
@@ -648,13 +667,17 @@ is forwarded to its agent subject, not kept. Past the live window the holder rea
 the gone horizon in a bucket this listener creates, or at its 5-minute age in a bucket an older
 build created, about when the live window ends. The role claim reaper releases the claim at its
 first pass after that, and a message to the role is kept as `unclaimed` from then. Each keep
-raises the role's wake report. When the role comes back, its session registers again or claims
-the role, and either one hands it each copy kept for the role whose hour has not ended, as an
-Envoy card that carries `kept_at` (a registration that makes the session live again starts that
-handover, in `subscribeHandler`). The card can arrive before the task the daemon gives the woken
-role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but the
-inbox is the memory of the running process, so in a new pod it starts empty and holds only what
-that process received.
+raises the role's wake report. While the answering record of the role's project says it answers,
+the listener does not keep a message to the role whose newest session in the Legion agent
+registry is gone (no record, or one past the gone horizon). It hands the message to
+`notifications.legion.<project>.agents.<session>` (`handOffToLegion`) and reports no wake. When
+the role comes back, its session registers again or claims the role, and either one hands it
+each copy kept for the role whose hour has not ended, as
+an Envoy card that carries `kept_at` (a registration that makes the session live again starts
+that handover, in `subscribeHandler`). The card can arrive before the task the daemon gives the
+woken role (`WakeTask`, `packages/daemon/internal/workflow/wake.go`). `envoy_inbox` lists it, but
+the inbox is the memory of the running process, so in a new pod it starts empty and holds only
+what that process received.
 To check one message, read the session's transcript for the card with that event id and `kept_at`.
 The listener's log holds the forward of that event id, `listener role forwarded` with `kept_at`, or
 the drop line `listener dropped a kept role message older than the keep window`. The sender's
@@ -973,9 +996,30 @@ role's kept lane for one hour for the holder that claims it next, as the listene
 are, and the `gone` holder's claim is left where it is for the role claim reaper. When an outbox
 copy's hour ends with no session taking it, the walk that drops it sends no dead letter: it stores
 an expiry notice on `notifications.envoy.kept.expired.<role>` instead (`bus.KeptCopyExpiry`: the
-event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, and when
-it was kept and dropped), one per copy under the message id `envoy.kept-expired.<role>.<sequence>`,
-counted on `envoy_role_kept_expiry_notices_total`. The subject lies under the listener's own kept
+event id, the role, the attempt the copy was kept for, its dedupe key, its stream sequence, when it
+was kept and dropped, and `forward_unconfirmed`, set when a walk claimed the copy to forward it and
+no walk confirmed that forward, so the copy may have reached the session that held the role), one
+per copy under the message id `envoy.kept-expired.<role>.<sequence>`, counted on
+`envoy_role_kept_expiry_notices_total`. The walk stores the same notice for a copy of a role
+publish that names a Dispatch post (`dispatch_post`, above) and that the publish route kept: at
+the end of its hour, and when the role's live holder does not take its delivery mode. Its source
+event id is `dispatch-post:<kind>:<id>`, which names the post and not an outbox event. The walk
+judges the kind of each copy once, by `bus.ClassifyKeptCopy`, and the listener's keep and its
+wake scan use the same rule. There are four kinds: an outbox copy (source `dispatch`, no role
+mark, a key that does not begin with `publish.` and no post in its source event id), a copy of a
+Dispatch post (the same, under a `publish.` key and with a post in its source event id), a copy
+owed a dead letter (every other copy that names a source session), and a copy no one hears of. A
+copy whose key is the outbox's and whose source event id names a post is neither of the first
+two. The claim a walk writes for a notice names the end it is for, as a dead
+letter's claim does: `expired` or `delivery_mode`, and `_unconfirmed` after it for a forward that
+may have reached the holder, so the walk that takes the claim over stores the same notice, with
+the same `forward_unconfirmed`, and a delivery mode refusal is never reported as an expired copy.
+A walk whose forward of a copy fails gives its claim up so the next walk reads the copy at once,
+and where it had taken over another walk's forward claim or its own forward may have been
+stored, the cursor it writes names the copy as one whose forward may have reached the holder
+(`forward_unconfirmed` on the drain cursor, `bus.KeptRoleCursor`), which the next walk reads as
+a forward's claim, so the notice still says so.
+The subject lies under the listener's own kept
 lane. So only a NATS user whose grant publishes every notification topic writes it: `Listener`,
 `Dispatch` (its envoy-listener runs beside envoy-dispatch), and the legacy `ListenerHost` and
 `Host` sets built on the listener's (`natsgrant/natsgrant.go`). Dispatch reads it with the
@@ -1080,26 +1124,36 @@ exception payload preserves the original delivery fields:
 
 A message on a session's agent subject raises no exception. The session's own consumer delivers
 every such message, so the listener's durable delivers it to nobody, retries no delivery and gives
-no message up: it decides only whether the session needs a wake report. A message to a session
-with a record, `live` or `unresponsive`, is acknowledged and counted `skipped`, whatever the
-session's consumer holds: that consumer delivers it, or the consumer of the session's next
-registration does. A message whose session's interest row names another listener is that
-listener's to decide, and this one acknowledges it. A message to a session with no record, or
-with a record past the gone horizon, waits once. Its first delivery is sent back for
-`ENVOY_UNPLACEABLE_RETRY_WINDOW` (default 60 s), counted from that delivery and not from the
-message's age in the stream, so a session that is only restarting registers again and gets the
-message from its consumer with no wake. When the session still has no record at the next
-delivery, the listener publishes one wake report on `notifications.legion.wake` and waits up to
-2 s for the stream to store it. A stored report logs INFO `listener agent wake reported`, counts
-`wake_reported`, and the message is acknowledged. A report the stream did not store sends the
-message back for the same wait, and at the stream's 20th and last delivery the listener logs WARN
-`listener agent wake not stored` and acknowledges the message. A read of the record that does not
-answer is neither a record nor the lack of one: the message is sent back for the wait, the
-listener logs WARN `listener agent record unread` once for that message, and at the last delivery
-it reports the wake as for no record. A message to a session with no record reports at once under
-a wait at or below zero, on a core delivery, and on a durable delivery whose metadata does not
-parse. A read that did not answer reports at once only on the last two; under a wait at or below
-zero its message comes back with no delay until the last delivery.
+no message up: it decides only whether the message goes to a stopped Legion agent's daemon and
+whether the session needs a wake report. A message to a session with a record, `live` or
+`unresponsive`, is acknowledged and counted `skipped`, whatever the session's consumer holds: that
+consumer delivers it, or the consumer of the session's next registration does. A message whose
+session's interest row names another listener is that listener's to decide, and this one
+acknowledges it. A message to a session with no record, or with a record past the gone horizon,
+waits once. Its first delivery is sent back for `ENVOY_UNPLACEABLE_RETRY_WINDOW` (default 60 s),
+counted from that delivery and not from the message's age in the stream, so a session that is
+only restarting registers again and gets the message from its consumer with no wake. When the
+session still has no record at the next delivery, the listener decides the message
+(`decideNoRecordAgentMessage`) and first offers it to the session's Legion daemon
+(`offerAgentDeliveryToLegion`, under the rules of `handOffToLegion`: the Legion agent registry
+names the session, its project last said it answers, and the session bucket's leader holds no
+record of the session within the gone horizon). The offer publishes a hand-off
+(`listenerwire.LegionHandoff`) on `notifications.legion.<project>.agents.<session>`. A message
+handed off logs INFO `listener agent handed off to its legion daemon`, counts `handed_off`,
+reports no wake, and is
+acknowledged. A hand-off whose publish failed logs ERROR `listener legion hand-off failed`,
+counts `failed`, and is sent back to be decided again. A message no daemon took gets one wake
+report on `notifications.legion.wake`, and the listener waits up to 2 s for the stream to store
+it. A stored report logs INFO `listener agent wake reported`, counts `wake_reported`, and the
+message is acknowledged. A report the stream did not store sends the message back for the same
+wait, and at the stream's 20th and last delivery the listener logs WARN `listener agent wake not
+stored` and acknowledges the message. A read of the record that does not answer is neither a
+record nor the lack of one: the message is sent back for the wait, the listener logs WARN
+`listener agent record unread` once for that message, and at the last delivery it decides the
+message as for no record, the offer to the daemon first. A message to a session with no record is
+decided at once under a wait at or below zero, on a core delivery, and on a durable delivery whose
+metadata does not parse. A read that did not answer is decided at once only on the last two; under
+a wait at or below zero its message comes back with no delay until the last delivery.
 
 At most 64 first deliveries wait at once — a quarter of the durable's 256 ack-pending slots, one
 of which a waiting message holds for its whole wait — and a first delivery that finds that cap
