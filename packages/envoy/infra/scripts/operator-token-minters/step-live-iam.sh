@@ -29,13 +29,41 @@ account_minters() {
   live_iam "$1"
 }
 # pool_member PRINCIPAL RESOURCE: whether PRINCIPAL is a Workload Identity member of the operator's
-# pool (serviceAccount:<pool>.svc.id.goog[<ns>/<name>]) and RESOURCE a Google service account; sets
-# POOL_MEMBER to <ns>:<name> and POOL_ACCOUNT to the account's email.
+# pool and RESOURCE a Google service account; sets POOL_ACCOUNT to the account's email, POOL_MEMBERS
+# to the member keys follow_members (reviews.sh) follows it by, and POOL_UNREAD to why there are none.
+# A name member, serviceAccount:<pool>.svc.id.goog[<ns>/<name>], names that pair on every cluster of
+# the pool: the key <ns>:<name>. A member by UID (UID_MEMBER_FORM, principals.sh) of the pool and of
+# the pool project's number (POOL_NUMBER) names the one ServiceAccount whose metadata.uid it holds:
+# for each line of the UID map (uid_map) that holds its UID, the key <resource>|<ns>:<name>, scoped
+# to that line's cluster. The broker's member by UID takes this rule too, its UID being in the
+# operator's cluster's list. POOL_UNREAD names a member by UID of the pool that no ServiceAccount the
+# run listed holds, or whose number cannot be compared since the pool project's is not read
+# (POOL_NUMBER_ERROR). A member of another pool, or by UID of another number, returns 1.
 pool_member() {
-  [[ "$1" =~ ^serviceAccount:([^[]+)\.svc\.id\.goog\[([^/]+)/([^]]+)\]$ ]] || return 1
-  [ "${BASH_REMATCH[1]}" = "$POOL_PROJECT" ] || return 1
+  local uid
+  POOL_MEMBERS=() POOL_UNREAD=""
   [[ "$2" == //iam.googleapis.com/projects/*/serviceAccounts/* ]] || return 1
-  POOL_MEMBER="${BASH_REMATCH[2]}:${BASH_REMATCH[3]}" POOL_ACCOUNT="${2##*/}"
+  POOL_ACCOUNT="${2##*/}"
+  if [[ "$1" =~ ^serviceAccount:([^[]+)\.svc\.id\.goog\[([^/]+)/([^]]+)\]$ ]]; then
+    [ "${BASH_REMATCH[1]}" = "$POOL_PROJECT" ] || return 1
+    POOL_MEMBERS=("${BASH_REMATCH[2]}:${BASH_REMATCH[3]}")
+    return 0
+  fi
+  [[ "$1" =~ $UID_MEMBER_FORM ]] && [ "${BASH_REMATCH[2]}" = "$POOL_PROJECT.svc.id.goog" ] || return 1
+  if [ -z "$POOL_NUMBER" ]; then
+    POOL_UNREAD="$POOL_NUMBER_ERROR"
+    return 0
+  fi
+  [ "${BASH_REMATCH[1]}" = "$POOL_NUMBER" ] || return 1
+  uid="${BASH_REMATCH[3]}"
+  mapfile -t POOL_MEMBERS < <(POOL_UID="$uid" awk -F'\t' '$1 == ENVIRON["POOL_UID"] { print $2 "|" $3 ":" $4 }' "$WORK/uids.tsv")
+  [ "${#POOL_MEMBERS[@]}" -gt 0 ] || POOL_UNREAD="no ServiceAccount that the run listed on the clusters of the pool holds UID $uid"
+}
+# pool_unknown CHECK PRINCIPAL: the UNKNOWN on CHECK's step that PRINCIPAL, a member by UID whose
+# ServiceAccount pool_member could not tell (POOL_UNREAD), can act as POOL_ACCOUNT, and that who can
+# become that ServiceAccount is not followed. unknown prints it once, though each pass reads it.
+pool_unknown() {
+  unknown "${CHECK_STEP[$1]}" "$2 can act as $POOL_ACCOUNT through Workload Identity, and who can become the ServiceAccount it names is not followed: $POOL_UNREAD"
 }
 # cluster_account PRINCIPAL RESOURCE: whether a record's PRINCIPAL is a Google service account and
 # its RESOURCE a cluster or a fleet member (the renders' too); sets CLUSTER_ACCOUNT to its email.
@@ -49,16 +77,22 @@ cluster_account() {
 # reported. Each Google service account whose credited grant reaches the broker's pod fence's
 # residual (an ALLOWANCE, broker-fence.sh) and which no finding names has its minters read the same
 # way, each an ALLOWANCE naming the chain and the residual. Each Workload Identity member of the
-# operator's pool such a check lists acts as the account on every cluster of the pool, so who can run
-# as it there (a pod in its namespace, a token of it) is followed again from it (follow_members):
-# a chain to a found account's member is a finding, and one to a residual account's member an
-# ALLOWANCE. A follow can name further Google accounts, by a finding or by an ALLOWANCE, so the
-# checks run until a pass adds none: each pass reads FINDINGS and RESIDUALS afresh, judges each
-# account a finding names that is not yet judged as found, follows each new member of a found
-# account, and only once no found account is new judges each new residual account and follows its
-# new members. An account found after it was read for the residual is judged again as found, and a
-# member followed as found is never followed for the residual. A residual check's holders and its
-# members' chains are ALLOWANCEs, never findings, so the found accounts settle first.
+# operator's pool such a check lists acts as the account, so who can run as the ServiceAccount it
+# names (a pod in its namespace, a token of it) is followed again from it (follow_members): a name
+# member's on every cluster of the pool, each of which can hold that namespace and name, and a member
+# by UID's on the one cluster whose listed ServiceAccount holds that UID (pool_member), since a UID
+# names one object. A member by UID whose ServiceAccount cannot be told (no listed ServiceAccount
+# holds its UID, or the pool project's number is not read) is UNKNOWN on the account's step, and
+# nothing is followed from it. A chain to a found account's member is a finding, and one to a
+# residual account's member an ALLOWANCE. A follow can name further Google accounts, by a finding or
+# by an ALLOWANCE, so the checks run until a pass adds none: each pass reads FINDINGS and RESIDUALS
+# afresh, judges each account a finding names that is not yet judged as found, follows each new
+# member of a found account, and only once no found account is new judges each new residual account
+# and follows its new members. An account found after it was read for the residual is judged again
+# as found, and a member followed as found is never followed for the residual; a member here is its
+# key (MEMBER_FOLLOWED), so a member by UID's scoped key and a name member's are each followed once.
+# A residual check's holders and its members' chains are ALLOWANCEs, never findings, so the found
+# accounts settle first.
 declare -A FOUND_CHECKED=() RESIDUAL_CHECKED=() MEMBER_FOLLOWED=() accounts=()
 while :; do
   new=false accounts=()
@@ -75,9 +109,13 @@ while :; do
   for entry in ${FINDINGS[@]+"${FINDINGS[@]}"}; do
     IFS=$'\t' read -r principal _ _ resource _ <<<"$entry"
     pool_member "$principal" "$resource" || continue
-    [ -n "${FOUND_CHECKED[$POOL_ACCOUNT]:-}" ] && [ "${MEMBER_FOLLOWED[$POOL_MEMBER]:-}" != found ] || continue
-    MEMBER_FOLLOWED[$POOL_MEMBER]=found
-    members="$(jq -c --arg k "$POOL_MEMBER" --arg v "act as $POOL_ACCOUNT through Workload Identity" '. + {($k): $v}' <<<"$members")"
+    [ -n "${FOUND_CHECKED[$POOL_ACCOUNT]:-}" ] || continue
+    [ -z "$POOL_UNREAD" ] || pool_unknown "rbac-account:$POOL_ACCOUNT" "$principal"
+    for key in ${POOL_MEMBERS[@]+"${POOL_MEMBERS[@]}"}; do
+      [ "${MEMBER_FOLLOWED[$key]:-}" != found ] || continue
+      MEMBER_FOLLOWED[$key]=found
+      members="$(jq -c --arg k "$key" --arg v "act as $POOL_ACCOUNT through Workload Identity" '. + {($k): $v}' <<<"$members")"
+    done
   done
   if [ "$members" != '{}' ]; then
     follow_members "$members" '{}'
@@ -102,10 +140,13 @@ while :; do
     IFS=$'\t' read -r principal _ resource _ <<<"$entry"
     pool_member "$principal" "$resource" || continue
     [ -n "${RESIDUAL_CHECKED[$POOL_ACCOUNT]:-}" ] && [ -z "${FOUND_CHECKED[$POOL_ACCOUNT]:-}" ] || continue
-    [ -z "${MEMBER_FOLLOWED[$POOL_MEMBER]:-}" ] || continue
-    MEMBER_FOLLOWED[$POOL_MEMBER]=residual
-    members="$(jq -c --arg k "$POOL_MEMBER" --arg v "act as $POOL_ACCOUNT (which can ${RESIDUAL_CHECKED[$POOL_ACCOUNT]}) through Workload Identity" \
-      '. + {($k): $v}' <<<"$members")"
+    [ -z "$POOL_UNREAD" ] || pool_unknown "residual-account:$POOL_ACCOUNT" "$principal"
+    for key in ${POOL_MEMBERS[@]+"${POOL_MEMBERS[@]}"}; do
+      [ -z "${MEMBER_FOLLOWED[$key]:-}" ] || continue
+      MEMBER_FOLLOWED[$key]=residual
+      members="$(jq -c --arg k "$key" --arg v "act as $POOL_ACCOUNT (which can ${RESIDUAL_CHECKED[$POOL_ACCOUNT]}) through Workload Identity" \
+        '. + {($k): $v}' <<<"$members")"
+    done
   done
   if [ "$members" != '{}' ]; then
     follow_members '{}' "$members"

@@ -95,10 +95,26 @@
 #        member by UID;
 #   (ut) with --pool-project example-pool, the member by UID of the pool's project and number passes
 #        and is named in the broker step's PASS, and one of --project's number or pool is a finding;
+#        a member by UID of ci/runner on relay@'s account is followed by the pool's number, and one
+#        by --project's number is not;
 #   (um) on every IAM check the member by the broker's UID is judged as the name member: their
 #        findings as holders on the organization are twins, their chains through the broker are
 #        designed, the ALLOWANCE of a credited grant's account has a twin, code: IAM's findings are
-#        twins, and the steps a clean run passes are the checks the row lists.
+#        twins, and the steps a clean run passes are the checks the row lists;
+#   (un) the broker's member by UID on grade-ci's account, an RBAC finding's, is followed on the
+#        operator's cluster as its name member is: legion/worker, which may create pods in
+#        secrets-broker, can become the broker's ServiceAccount and so act as grade-ci;
+#   (va) ci/runner's member by UID on grade-ci's account is followed as its name member is: the
+#        finding that legion/worker can become ci/runner and so act as grade-ci, and the same other
+#        lines, but those of the clusters that do not hold the UID;
+#   (vc) ci/runner on two clusters under two UIDs: each member by UID is followed on the cluster
+#        that holds its UID alone, and the name member on both;
+#   (vd) a member by a UID no listed ServiceAccount holds reads UNKNOWN on grade-ci's minters step,
+#        naming the member and the UID, and nothing is followed from it;
+#   (ve) with the pool project's number unread, ci/runner's member by UID reads UNKNOWN naming
+#        that, and nothing is followed from it;
+#   (vf) a member by UID of another pool, or of another project number, is not followed, as another
+#        pool's name member is not.
 
 # --- (d) A project-level container.admin held by a CI account, and by an agent's Google service
 # account (the GKE IAM step's control). ---
@@ -885,10 +901,12 @@ fi
 # --pool-project example-pool (number 333333333333, no cluster of its own), the operator's and the
 # broker's accounts bound to the pool's name members, and relay@ (a User) able to create pods in
 # envoy-operator, so its minters are read too. The pool's other steps read UNKNOWN (its fleet is not
-# listed, as row r shows), so each item holds the lines that name its member and the broker step's. ---
+# listed, as row r shows), so each item holds the lines that name its member, the broker step's and,
+# for items 4 and 5, the follow's. ---
 uid_np="serviceAccount:example-pool.svc.id.goog[secrets-broker/secrets-broker]"
 uid_pool_row() {
-  local member
+  local member become up
+  up="$(uid_member "$broker_uid" example-pool.svc.id.goog 333333333333)"
   uid_world
   mkdir -p "$world/numbers" "$world/pool-clusters"
   echo 333333333333 >"$world/numbers/example-pool"
@@ -896,14 +914,25 @@ uid_pool_row() {
   unbind "$gsa_res" roles/iam.workloadIdentityUser
   iam "$gsa_res" roles/iam.workloadIdentityUser "serviceAccount:example-pool.svc.id.goog[envoy-operator/envoy-operator]"
   subject_grant operator-cluster "$(user_subject "$relay")" create "" pods "" envoy-operator ""
-  # Items 4 and 5, a member by UID of another ServiceAccount on relay@'s account by the pool's number
-  # and by --project's, are the follow's.
   case "$1" in
-    pool) member="$(uid_member "$broker_uid" example-pool.svc.id.goog 333333333333)" ;;
+    pool) member="$up" ;;
     project-number) member="$(uid_member "$broker_uid" example-pool.svc.id.goog "$number")" ;;
     project-pool) member="$uid_U" ;;
+    # Items 4 and 5, the follow's: ci/runner (its UID planted), which legion/worker may create pods
+    # to become, named by UID on relay@'s account by the pool's number and by --project's.
+    follow-pool) member="$(uid_member "$ci_uid" example-pool.svc.id.goog 333333333333)" ;;
+    follow-project) member="$(uid_member "$ci_uid" example-pool.svc.id.goog "$number")" ;;
   esac
-  uid_workload "$uid_np" "$member"
+  case "$1" in
+    follow-*)
+      add_sa operator-cluster ci runner
+      sa_uid operator-cluster ci runner "$ci_uid"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" ci ""
+      iam "$relay_res" roles/iam.workloadIdentityUser "$member"
+      uid_workload "$uid_np"
+      ;;
+    *) uid_workload "$uid_np" "$member" ;;
+  esac
   run --pool-project example-pool
   want_status 1 "the pool's member by UID ($1)"
   case "$1" in
@@ -911,16 +940,28 @@ uid_pool_row() {
       uid_pass "$uid_broker_step" "$uid_pair_note $uid_np and, by its UID on cluster operator-cluster, as $member" "the pool's member by UID"
       [ -z "$(uid_lines_with "$member")" ] || fail "the pool's member by UID: a line names it: $(uid_lines_with "$member")"
       ;;
-    *)
+    project-*)
       mapfile -t want < <(uid_bgk "$member")
       uid_naming "a member by UID of --project's ${1#project-}" "$member" "${want[@]}"
       ! has_prefix "PASS $uid_broker_step: " || fail "a member by UID of --project's ${1#project-}: the broker step passed"
       ;;
+    follow-*)
+      uid_pass "$uid_broker_step" "$uid_pair_note $uid_np and, by its UID on cluster operator-cluster, as $up" "ci/runner's member by UID on relay@'s account ($1)"
+      uid_naming "ci/runner's member by UID on relay@'s account ($1)" "$member" \
+        "FINDING $member: iam.serviceAccounts.getAccessToken, iam.serviceAccounts.getOpenIdToken on $relay_res through roles/iam.workloadIdentityUser, granted at $relay_res"
+      # The follow's lines, which become ci/runner and so act as relay@: legion/worker's by the
+      # pool's number, none by --project's.
+      become=""
+      [ "$1" != follow-pool ] ||
+        become="FINDING system:serviceaccount:legion:worker: create pods in ci, so it can become system:serviceaccount:ci:runner, which can act as $relay through Workload Identity"
+      [ "$(uid_lines_with ", so it can become system:serviceaccount:ci:runner, which can act as $relay through Workload Identity")" = "$become" ] ||
+        fail "ci/runner's member by UID on relay@'s account ($1): the lines that follow it are not '${become:-none}', but: $(uid_lines_with ", so it can become system:serviceaccount:ci:runner, which can act as $relay")"
+      ;;
   esac
 }
 if row ut; then
-  each uid_pool_row pool project-number project-pool
-  passed "(ut) with --pool-project example-pool, the broker's member by UID of the pool's project and number passes, named in the broker step's PASS, and one of --project's number or pool is a finding"
+  each uid_pool_row pool project-number project-pool follow-pool follow-project
+  passed "(ut) with --pool-project example-pool, the broker's member by UID of the pool's project and number passes, named in the broker step's PASS, and one of --project's number or pool is a finding; a member by UID of ci/runner is followed by the pool's number and not by --project's"
 fi
 
 # --- (um) The inventory of every IAM check: the member by the broker's UID is judged as the name
@@ -1035,4 +1076,233 @@ uid_inventory_row() {
 if row um; then
   each uid_inventory_row direct chain residual completeness code
   passed "(um) on every IAM check the broker's member by UID is judged as its name member: twin findings as holders, designed chains through the broker, a twin ALLOWANCE on a credited grant's account, twin code findings, and a clean run passes the checks listed"
+fi
+
+# --- (un), (va) and (vc) to (vf): the follow of a ServiceAccount of the pool named by its UID. Each
+# item runs in W1 (uid_follow_world: row cd's world with ci/runner's UID, ci_uid, planted on the
+# operator's cluster) or, for (un), in that world with the broker's ServiceAccount in ci/runner's
+# place, with a member M holding roles/iam.workloadIdentityUser on grade-ci's account, an RBAC
+# finding's. uid_follow_run keeps each item's run; the row then holds each item, and an item by UID
+# against its control, the same world with a member by name as M (uid_twin). ---
+uid_follow_world() {
+  base_world
+  grade_member
+  cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+  add_sa operator-cluster ci runner
+  sa_uid operator-cluster ci runner "$ci_uid"
+  subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" ci ""
+}
+uid_ci_name="serviceAccount:$project.svc.id.goog[ci/runner]"
+uid_grade_cluster="example-grade/us-east1/grade-cluster"
+uid_other_cluster="$project/us-east1/other-cluster"
+# uid_become NAMESPACE:NAME [CLUSTER]: how a line of the follow ends that becomes that ServiceAccount,
+# and so acts as grade-ci, on CLUSTER (as a finding names a cluster; the operator's when empty, whose
+# lines name none).
+uid_become() { printf '%s\n' ", so it can become system:serviceaccount:$1, which can act as $grade_ci through Workload Identity${2:+ on cluster $2}"; }
+# The name member's follow lines in W1, as row cd prints them: legion/worker's on the operator's
+# cluster (Wf) and, once other-cluster holds ci/runner, apps/deployer's there (Df).
+uid_wf="FINDING system:serviceaccount:legion:worker: create pods in ci$(uid_become ci:runner)"
+uid_df="FINDING system:serviceaccount:apps:deployer: create pods in ci$(uid_become ci:runner "$uid_other_cluster")"
+# uid_follow_unknown MEMBER REASON: the UNKNOWN grade-ci's minters step prints for MEMBER, a member by
+# UID whose ServiceAccount the run cannot tell, so who can become it is not followed.
+uid_follow_unknown() {
+  printf '%s\n' "UNKNOWN live: minters of $grade_ci, which an RBAC finding names: $1 can act as $grade_ci through Workload Identity, and who can become the ServiceAccount it names is not followed: $2"
+}
+# uid_follow_member ITEM: the member M of an item of uid_follow_run.
+uid_follow_member() {
+  case "$1" in
+    va-name | vc-name | vd-name | ve-name) printf '%s\n' "$uid_ci_name" ;;
+    va-uid | vc-uid | ve-uid) uid_member "$ci_uid" ;;
+    vc-uid2) uid_member "$ci_uid2" ;;
+    vd-uid) uid_member "$unlisted_uid" ;;
+    vf-pool) uid_member "$ci_uid" other-project.svc.id.goog ;;
+    vf-number) uid_member "$ci_uid" "" 999999999999 ;;
+    vf-name) printf '%s\n' "serviceAccount:other-project.svc.id.goog[ci/runner]" ;;
+    un-name) printf '%s\n' "$uid_N" ;;
+    un-uid) printf '%s\n' "$uid_U" ;;
+  esac
+}
+# uid_follow_run ITEM: the run of ITEM, <row>-<its member>, in its world, kept for uid_follow_load in
+# $temporary_dir/uid-follow-ITEM.out and .status. (vc) adds other-cluster, whose ci/runner holds
+# ci_uid2 and which apps/deployer may create pods in ci on; (ve) refuses the project's number, and
+# unbinds GKE's service agent, whose project number is then unread too.
+uid_follow_run() {
+  case "$1" in
+    un-*)
+      uid_world
+      grade_member
+      cluster_admin grade-cluster "$(user_subject "$grade_ci")"
+      subject_grant operator-cluster "$(sa_subject legion worker)" create "" pods "" secrets-broker ""
+      ;;
+    *) uid_follow_world ;;
+  esac
+  case "$1" in
+    vc-*)
+      add_cluster other-cluster us-east1
+      add_sa other-cluster ci runner
+      sa_uid other-cluster ci runner "$ci_uid2"
+      subject_grant other-cluster "$(sa_subject apps deployer)" create "" pods "" ci ""
+      ;;
+    ve-*)
+      : >"$world/refuse-project-describe"
+      unbind "$project_res" roles/container.serviceAgent
+      ;;
+  esac
+  iam "$uid_grade_ci_res" roles/iam.workloadIdentityUser "$(uid_follow_member "$1")"
+  run
+  printf '%s\n' "$status" >"$temporary_dir/uid-follow-$1.status"
+  printf '%s\n' "$output" >"$temporary_dir/uid-follow-$1.out"
+}
+uid_follow_load() { status="$(<"$temporary_dir/uid-follow-$1.status")" output="$(<"$temporary_dir/uid-follow-$1.out")"; }
+# uid_ending END: the run's FINDING, UNKNOWN and ALLOWANCE lines that end with END.
+uid_ending() {
+  awk -v e="$1" '/^(FINDING|UNKNOWN|ALLOWANCE) / && length($0) >= length(e) && substr($0, length($0) - length(e) + 1) == e' <<<"$output"
+}
+# uid_twin CONTROL A B [END...]: sets UID_TWIN to the FINDING, UNKNOWN and ALLOWANCE lines of the
+# item CONTROL's run with A replaced by B wherever it is in them, less each line that ends with an END,
+# which an item by UID wants beside what its row adds; fails when CONTROL printed no line ending with
+# an END, so each END leaves out lines that are there.
+uid_twin() {
+  local control="$1" a="$2" b="$3" line end
+  local -A ended=()
+  shift 3
+  UID_TWIN=()
+  while IFS= read -r line; do
+    for end in "$@"; do
+      if [[ "$line" == *"$end" ]]; then
+        ended[$end]=1
+        continue 2
+      fi
+    done
+    UID_TWIN+=("${line//"$a"/"$b"}")
+  done < <(grep -E '^(FINDING|UNKNOWN|ALLOWANCE) ' "$temporary_dir/uid-follow-$control.out" || true)
+  for end in "$@"; do
+    [ -n "${ended[$end]:-}" ] || fail "the control $control printed no line ending '$end'"
+  done
+}
+
+# --- (un) The broker's ServiceAccount named by its UID on grade-ci's account is followed on the
+# operator's cluster, which holds its UID, as its name member is: legion/worker, which may create pods
+# in secrets-broker, can become it. The name member's run holds more lines, since a name member is
+# followed on every remembered cluster: those that become the broker's ServiceAccount on
+# grade-cluster, where grade-ci is cluster-admin, which the member by UID's leaves out alone. ---
+uid_un_wf="FINDING system:serviceaccount:legion:worker: create pods in secrets-broker$(uid_become secrets-broker:secrets-broker)"
+if row un; then
+  each uid_follow_run un-name un-uid
+  for item in un-name un-uid; do
+    uid_follow_load "$item"
+    want_status 1 "the broker's ${item#un-} member on grade-ci's account"
+    [ "$(uid_ending "$(uid_become secrets-broker:secrets-broker)")" = "$uid_un_wf" ] ||
+      fail "the broker's ${item#un-} member on grade-ci's account: its follow lines on the operator's cluster are not '$uid_un_wf', but: $(uid_ending "$(uid_become secrets-broker:secrets-broker)")"
+  done
+  uid_follow_load un-name
+  want_lines "the broker's name member on grade-ci's account" UNKNOWN
+  uid_follow_load un-uid
+  uid_twin un-name "$uid_N" "$uid_U" "$(uid_become secrets-broker:secrets-broker "$uid_grade_cluster")"
+  want_lines "the broker's member by UID on grade-ci's account" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}"
+  passed "(un) the broker's member by UID on grade-ci's account is followed as its name member is, on the operator's cluster, which holds its UID: legion/worker can become the broker's ServiceAccount and so act as grade-ci"
+fi
+
+# --- (va) ci/runner named by its UID on grade-ci's account is followed as its name member is, on the
+# operator's cluster, which holds the UID. The name member's run holds more lines, since a name member
+# is followed on every remembered cluster: those that become ci/runner on grade-cluster, where
+# grade-ci is cluster-admin, which the member by UID's leaves out alone. ---
+if row va; then
+  each uid_follow_run va-name va-uid
+  uid_follow_load va-name
+  want_status 1 "ci/runner's name member on grade-ci's account"
+  want_line "$uid_wf" "ci/runner's name member on grade-ci's account"
+  want_lines "ci/runner's name member on grade-ci's account" UNKNOWN
+  uid_follow_load va-uid
+  want_status 1 "ci/runner's member by UID on grade-ci's account"
+  want_line "$uid_wf" "ci/runner's member by UID on grade-ci's account"
+  uid_twin va-name "$uid_ci_name" "$(uid_follow_member va-uid)" "$(uid_become ci:runner "$uid_grade_cluster")"
+  want_lines "ci/runner's member by UID on grade-ci's account" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}"
+  passed "(va) ci/runner's member by UID on grade-ci's account is followed as its name member is, on the cluster that holds its UID: legion/worker can become ci/runner and so act as grade-ci"
+fi
+
+# --- (vc) ci/runner on two clusters under two UIDs, ci_uid on the operator's and ci_uid2 on
+# other-cluster: each member by UID is followed on the cluster that holds its UID alone. The name
+# member's run holds more lines, since a name member is followed on every remembered cluster: those
+# that become ci/runner on the clusters that do not hold the UID (grade-cluster's, and the other
+# cluster's of the two, whose lines on the operator's cluster name no cluster), which each member by
+# UID's leaves out alone. ---
+if row vc; then
+  each uid_follow_run vc-uid2 vc-uid vc-name
+  uid_follow_load vc-name
+  uid_what="ci/runner's name member, ci/runner on two clusters"
+  want_status 1 "$uid_what"
+  want_line "$uid_wf" "$uid_what"
+  want_line "$uid_df" "$uid_what"
+  want_lines "$uid_what" UNKNOWN
+  uid_follow_load vc-uid2
+  uid_what="ci/runner's member by other-cluster's UID"
+  want_status 1 "$uid_what"
+  want_line "$uid_df" "$uid_what"
+  ! has_line "$uid_wf" || fail "$uid_what: it is followed on the operator's cluster"
+  uid_twin vc-name "$uid_ci_name" "$(uid_follow_member vc-uid2)" "$(uid_become ci:runner)" "$(uid_become ci:runner "$uid_grade_cluster")"
+  want_lines "$uid_what" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}"
+  uid_follow_load vc-uid
+  uid_what="ci/runner's member by the operator's cluster's UID"
+  want_status 1 "$uid_what"
+  want_line "$uid_wf" "$uid_what"
+  ! has_line "$uid_df" || fail "$uid_what: it is followed on other-cluster"
+  uid_twin vc-name "$uid_ci_name" "$(uid_follow_member vc-uid)" "$(uid_become ci:runner "$uid_other_cluster")" "$(uid_become ci:runner "$uid_grade_cluster")"
+  want_lines "$uid_what" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}"
+  passed "(vc) ci/runner on two clusters under two UIDs: each member by UID is followed on the cluster that holds its UID alone, the name member on both"
+fi
+
+# --- (vd) A member by a UID that no ServiceAccount the run listed holds: UNKNOWN on grade-ci's minters
+# step naming the member and the UID, and nothing followed. Its control is ci/runner's name member:
+# the item by UID holds the control's lines with M swapped, less every line that becomes ci/runner
+# (on the operator's cluster and on grade-cluster), and the UNKNOWN. ---
+if row vd; then
+  each uid_follow_run vd-name vd-uid
+  uid_follow_load vd-name
+  want_status 1 "ci/runner's name member on grade-ci's account"
+  want_line "$uid_wf" "ci/runner's name member on grade-ci's account"
+  want_lines "ci/runner's name member on grade-ci's account" UNKNOWN
+  uid_follow_load vd-uid
+  want_status 1 "a member by a UID no listed ServiceAccount holds"
+  ! has_line "$uid_wf" || fail "a member by a UID no listed ServiceAccount holds: ci/runner is followed"
+  uid_twin vd-name "$uid_ci_name" "$(uid_follow_member vd-uid)" "$(uid_become ci:runner)" "$(uid_become ci:runner "$uid_grade_cluster")"
+  want_lines "a member by a UID no listed ServiceAccount holds" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}" \
+    "$(uid_follow_unknown "$(uid_follow_member vd-uid)" "no ServiceAccount that the run listed on the clusters of the pool holds UID $unlisted_uid")"
+  passed "(vd) a member by a UID no listed ServiceAccount holds reads UNKNOWN on grade-ci's minters step, naming it and the UID, and nothing is followed from it"
+fi
+
+# --- (ve) The pool project's number unread: ci/runner's member by UID reads UNKNOWN naming that, and
+# nothing is followed; beside it the signing key's own UNKNOWN. Its control is the name member in the
+# same world, as in (vd). ---
+if row ve; then
+  each uid_follow_run ve-name ve-uid
+  uid_follow_load ve-name
+  want_status 1 "ci/runner's name member, the pool project's number unread"
+  want_line "$uid_wf" "ci/runner's name member, the pool project's number unread"
+  want_lines "ci/runner's name member, the pool project's number unread" UNKNOWN "$uid_signing_unknown"
+  uid_follow_load ve-uid
+  want_status 1 "ci/runner's member by UID, the pool project's number unread"
+  ! has_line "$uid_wf" || fail "ci/runner's member by UID, the pool project's number unread: ci/runner is followed"
+  uid_twin ve-name "$uid_ci_name" "$(uid_follow_member ve-uid)" "$(uid_become ci:runner)" "$(uid_become ci:runner "$uid_grade_cluster")"
+  want_lines "ci/runner's member by UID, the pool project's number unread" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}" \
+    "$(uid_follow_unknown "$(uid_follow_member ve-uid)" "$uid_number_reason")"
+  passed "(ve) with the pool project's number unread, ci/runner's member by UID reads UNKNOWN naming that, and nothing is followed from it"
+fi
+
+# --- (vf) A member by UID of another pool, or of another project number, is not followed, as another
+# pool's name member (the control) is not: the three runs' lines are twins. ---
+if row vf; then
+  each uid_follow_run vf-pool vf-number vf-name
+  uid_follow_load vf-name
+  want_status 1 "another pool's name member of ci/runner"
+  ! has_prefix "$(uid_become ci:runner)" || fail "another pool's name member of ci/runner: ci/runner is followed"
+  want_lines "another pool's name member of ci/runner" UNKNOWN
+  for item in vf-pool vf-number; do
+    uid_follow_load "$item"
+    want_status 1 "a member by UID of another ${item#vf-}"
+    ! has_line "$uid_wf" || fail "a member by UID of another ${item#vf-}: ci/runner is followed"
+    uid_twin vf-name "$(uid_follow_member vf-name)" "$(uid_follow_member "$item")"
+    want_lines "a member by UID of another ${item#vf-}" "FINDING UNKNOWN ALLOWANCE" "${UID_TWIN[@]}"
+  done
+  passed "(vf) a member by UID of another pool, or of another project number, is not followed, as another pool's name member is not"
 fi

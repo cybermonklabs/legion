@@ -55,6 +55,8 @@
 #        by an ALLOWANCE;
 #   (fn) a chain to an account found partway through a round is a finding by the found right,
 #        never one by the residual's;
+#   (vb) (fm)'s chain with runner-w named by its UID on comment-delivery's account is followed as
+#        through runner-w's name member: the same ALLOWANCE lines, g3@'s and minter5@'s among them;
 #   (fs) each of the five binding specs broker-fence.json holds decides: widened in the contract and
 #        on the cluster alike, the fence is credited; in the contract alone, it is not;
 #   (fp) review-answer.jq gives an allowed credited right the policy and the flag `residual`, never
@@ -65,12 +67,12 @@
 #        whose connect policy lacks port forward, or names no prefix, fails that column.
 #
 # Each control is the row's own other half: (fa) against (fb), (fc), (fd), (ff), (fg), (fh), (fj),
-# (fk), (fl) and (fm) the same world with one fault, one grant more or the reviewed digests, (fd),
-# (fe) and (fs) a half without it, and (fr) a contract with one rule or one prefix taken out. The
-# check as at b14c08df3df is the other control of (fd), (fj), (fk), (fs), (fp) and (fq), as at
-# 9d08e087406 of (fl), (fm), (fn) and fb's webhook-unguarded, and as at 01c4044b4e5 of fb's
-# webhook-malformed (it prints the NO CREDIT with no UNKNOWN above naming jq's error), which each
-# fails.
+# (fk), (fl) and (fm) the same world with one fault, one grant more or the reviewed digests, (vb)'s
+# item by UID the same world with runner-w's name member, (fd), (fe) and (fs) a half without it,
+# and (fr) a contract with one rule or one prefix taken out. The check as at b14c08df3df is the
+# other control of (fd), (fj), (fk), (fs), (fp) and (fq), as at 9d08e087406 of (fl), (fm), (fn) and
+# fb's webhook-unguarded, and as at 01c4044b4e5 of fb's webhook-malformed (it prints the NO CREDIT
+# with no UNKNOWN above naming jq's error), which each fails.
 
 # The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
 # is not credited. A credit's sentence names the use the policy refuses; the allowance's, the
@@ -456,6 +458,41 @@ if row fn; then
   ! has_line "FINDING system:serviceaccount:agent-sessions:runner-y: $become_measure create pods/exec in dispatch" ||
     fail "a target found partway through a round: a FINDING names the chain to the residual alone"
   passed "(fn) a chain to an account found partway through a round is a finding by the found right, never by the residual's"
+fi
+# (vb) (fm)'s chain with runner-w named by its UID (runner_uid, planted) on comment-delivery's account
+# in place of its name member: g3@ can still become runner-w, and minter5@ g3@, each an ALLOWANCE,
+# and the run's lines are the name member's with the member swapped. fixed_point_uid_run ITEM runs
+# (fm)'s world with runner-w's name member or its member by UID.
+runner_w_member="serviceAccount:$project.svc.id.goog[agent-sessions/runner-w]"
+runner_w_uid_member="$(uid_member "$runner_uid")"
+fixed_point_uid_run() {
+  local what="runner-w's name member on comment-delivery's account"
+  fixed_point_world
+  if [ "$1" = name ]; then
+    iam "$comment_delivery_res" roles/iam.workloadIdentityUser "$runner_w_member"
+  else
+    what="runner-w's member by UID on comment-delivery's account"
+    sa_uid operator-cluster agent-sessions runner-w "$runner_uid"
+    iam "$comment_delivery_res" roles/iam.workloadIdentityUser "$runner_w_uid_member"
+  fi
+  subject_grant operator-cluster "$(user_subject "g3@$project.iam.gserviceaccount.com")" create "" serviceaccounts token agent-sessions runner-w
+  iam "$(gsa_res g3)" roles/iam.serviceAccountTokenCreator "serviceAccount:minter5@$project.iam.gserviceaccount.com"
+  fence_run
+  want_status 0 "$what"
+  want_lines "$what" "FINDING UNKNOWN"
+  want_line "$(allowance_line "serviceAccount:g3@$project.iam.gserviceaccount.com" "create serviceaccounts/token runner-w in agent-sessions, so it can become system:serviceaccount:agent-sessions:runner-w, which can act as $comment_delivery (which can create pods/exec in dispatch) through Workload Identity")" \
+    "$what"
+  want_text "ALLOWANCE serviceAccount:minter5@$project.iam.gserviceaccount.com: iam.serviceAccounts.getAccessToken" "$what"
+}
+if row vb; then
+  fixed_point_uid_run name
+  vb_twins=()
+  while IFS= read -r vb_line; do
+    vb_twins+=("${vb_line//"$runner_w_member"/"$runner_w_uid_member"}")
+  done < <(grep -E '^(FINDING|UNKNOWN|ALLOWANCE) ' <<<"$output" || true)
+  fixed_point_uid_run uid
+  want_lines "runner-w's member by UID on comment-delivery's account" "FINDING UNKNOWN ALLOWANCE" "${vb_twins[@]}"
+  passed "(vb) (fm)'s chain with runner-w named by its UID on comment-delivery's account names the same ALLOWANCEs as through its name member, g3@'s and minter5@'s among them"
 fi
 
 # --- (fk) A change of a pod in dispatch is no credit: broker-pod-update admits a change of any
