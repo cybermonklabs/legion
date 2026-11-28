@@ -80,9 +80,31 @@ copying the unpacked toolchain into the runner's tool cache, which no later job 
 reads (the script's header). Its checkout starts from main's objects, which a push to main leaves
 in the cache (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores), and fetches
 only what the run's commit adds to them. The generation starts its TypeScript listings
-(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table: tsc's listing of the
-dashboard's program is 9 s of the generation's 16 s, and it then runs beside the load and the go
-commands rather than after the load.
+(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table, and each run's
+`go list -deps` as the table declares the run (`.github/scripts/ci_filter_coverage.py#start_early`),
+both on threads at nice 10 (`.github/scripts/ci_filter_coverage.py#background_priority`), so they
+run beside the load, which is one interpreter thread, rather than after it; the `go env GOROOT` of
+`.github/scripts/ci_filter_coverage.py#toolchain`, once per module directory, runs on the table's
+thread during the load, and the generation's other go commands run when the walk asks them. It
+lists the programs with tsgo, TypeScript's native compiler, pinned in the root package.json
+(`.github/scripts/ci_ts_listing.py#COMPILER`); the lint job's check-ts-filters.sh lists them again
+with tsc, the typecheck's own compiler, and holds every listed block to what tsc lists, so a file
+tsgo resolves differently fails that pull request's lint job by name. A bump of the pinned tsgo
+that changes a listing fails the same way, on the pull request that bumps it. The listing runs
+`bunx --no-install` (`.github/scripts/ci_ts_listing.py#BUNX`), so a checkout whose node_modules
+lacks the pin lists with a tsgo on PATH where there is one, and otherwise fails the listing,
+naming the cause; either way it fetches no package.
+
+On a 4-processor runner the generation spends about 7 s in the table's thread, 14 s of
+processor time in go list and, with tsc, 11 s listing the dashboard's and the proof editor's
+programs. Each piece alone gained nothing (3 runs each, run 45885103288 and earlier, every
+output the same): the go list commands begun during the load slowed the load from 4.3 to 7.3 s
+until their threads were lowered to nice 10, which left the step at 13.8 s against 14.3 s; tsgo
+without the early listings left it at 13.8 to 14.7 s, the listings then waiting for the load as
+before. Together the listing's processor time falls from 11 s to under 4 s, and the go list
+commands take what the load leaves. On main's a36aa52d, whose table loads in about 7.5 s, the
+step took 17.5 to 18.0 s with tsc and no early listings, and 14.3 to 15.5 s with both, five runs
+of each in one window, every output the same (run 46108073231).
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:

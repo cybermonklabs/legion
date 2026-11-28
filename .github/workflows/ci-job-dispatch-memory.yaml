@@ -57,7 +57,6 @@ jobs:
         image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
         env:
           POSTGRES_PASSWORD: ci
-        ports: ["5432:5432"]
         # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
         command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
@@ -70,7 +69,6 @@ jobs:
           --health-retries 5
     env:
       JOB_TIMEOUT_MINUTES: 75 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
-      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -98,7 +96,13 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       - name: Check the service allows this lane's Dispatch processes
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
+      # Why the tests reach the service at its own address: .github/scripts/postgres-service-address.sh's header.
+      - id: service-address
+        name: Read the service's own address
+        run: .github/scripts/postgres-service-address.sh "${{ job.services.postgres.id }}" >>"$GITHUB_OUTPUT"
       - name: Memory tests of the Dispatch server
+        env:
+          DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@${{ steps.service-address.outputs.address }}:5432/postgres?sslmode=disable
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
           go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch

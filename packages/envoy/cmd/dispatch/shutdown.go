@@ -54,11 +54,13 @@ const silentProbes = 3
 const drainPollInterval = 250 * time.Millisecond
 
 // outboxStopBudget is how long after shutdown starts it waits, at most, for the events outbox to
-// stop before it closes the pool: until the document service's budget would end, 5 s inside
-// stopGrace. The outbox stops with the process context, which is cancelled before shutdown
-// starts, once it has recorded its batch in flight and released the publisher hold, each a
-// statement bounded by the outbox's own record timeout, so it is done well inside the budget
-// unless its database has stopped answering.
+// stop before it closes the pool: until the latest the document service's budget can end, 5 s
+// inside stopGrace, since the drain before that budget is never longer than
+// httpDrainBeforeDocuments (resolveBootConfig refuses a longer DISPATCH_TEST_HTTP_DRAIN). The
+// outbox stops with the process context, which is cancelled before shutdown starts, once it has
+// recorded its batch in flight and released the publisher hold, each a statement bounded by the
+// outbox's own record timeout, so it is done well inside the budget unless its database has
+// stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
 // agentShutdown is the server's end of its agent process (api.AgentListener), which shutdown
@@ -70,9 +72,10 @@ type agentShutdown interface {
 	Close(by time.Time)
 }
 
-// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown), deregistering
-// it once HTTP has drained. It logs the address listener is bound to, whether main bound it or
-// inherited it (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
+// serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
+// httpDrain as its drain before the document service), deregistering it once HTTP has drained. It
+// logs the address listener is bound to, whether main bound it or inherited it
+// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -81,7 +84,7 @@ type agentShutdown interface {
 // the registry's row is deleted.
 func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *http.Server, listener net.Listener,
 	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{},
-	agent agentShutdown) error {
+	httpDrain time.Duration, agent agentShutdown) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("dispatch: listening", "addr", listener.Addr().String())
@@ -99,7 +102,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, agent)
+	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain, agent)
 	select {
 	case err := <-serveErr:
 		return err
@@ -115,33 +118,35 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // input closes, so it exits. That is its stop also when the signal went to the server's whole
 // process group, which the agent takes and does nothing with (runAgent), so the drain runs before
 // it either way. The document service settles the documents owed within
-// documentShutdownTimeout once those requests are done, or httpDrainBeforeDocuments after the
-// signal with some still running. The agent's calls in flight are waited for until
-// outboxStopBudget after shutdown began, the latest the document service's budget ends, 5 s inside
-// stopGrace, and the agent's socket closes; a call still running then has committed with its
-// landing or not, so the next agent makes it once. The record of the agent's exit, the write that
-// frees the runs it held, runs from the exit beside the document service and is waited for
-// agentExitRecordWait at most once the agent has exited (agentSupervisor.Close): a database that
-// does not answer holds it, so it is cancelled then, so that it delays the idle wait below by no
-// more than that, and those runs' leases run out. waitBackground then waits for
-// the delivery hub, every live socket and the subscriptions they ran to finish their
-// Lifetime-driven shutdown, and waitIntakes for the intakes to finish their stop (the GitHub
-// intakes' delivery.StartIntakes stop and the Legion state intake's legion.StartIntake stop, both
-// held durables), which began at the signal beside the HTTP drain and document shutdown. A
-// message in its handler
-// finishes and is acknowledged, or is given up and handed back to NATS, delivery's
-// intakeStopBudget (15 s) after the signal at the latest. A hand-back still pending then is settled
-// when waitIntakes closes each intake's NATS client through its durable, sent in its close flush or
-// dropped with the connection; waitIntakes then waits for its finalizer to release the hold through
-// the pool. That wait normally ends 10 s inside the latest the document service's budget ends
-// (stopGrace less its 5 s reserve, 25 s after the signal). One exception can outlive that bound,
-// by a span no fixed time bounds: Client.Close waits behind the writes on nats.go's connection
-// lock, as delivery's IntakeWriteDeadline accounts for them, and then a finalizer can spend up
-// to intakeHoldRenew (5 s) releasing its hold. The kubelet's kill is safe in that case: it
-// closes the connection and the renewal, and the hold lapses. It comes before the pool closes because nothing else keeps the pool open for a handler:
-// one waiting on GitHub holds no connection, so waitUntilIdle finds the pool idle and its writes
-// would fail on the closed pool once GitHub answered, with its message acknowledged all the same.
-// A hold's finalizer has already released its hold before waitIntakes returns.
+// documentShutdownTimeout once those requests are done, or httpDrain after the signal with some
+// still running: httpDrainBeforeDocuments in a deployment, and no longer in a test process
+// (bootConfig.HTTPDrain, which resolveBootConfig refuses past httpDrainBeforeDocuments). The
+// agent's calls in flight are waited for until outboxStopBudget after shutdown began, the latest
+// the document service's budget can end, 5 s inside stopGrace, and the agent's socket closes; a
+// call still running then has committed with its landing or not, so the next agent makes it once.
+// The record of the agent's exit, the write that frees the runs it held, runs from the exit beside
+// the document service and is waited for agentExitRecordWait at most once the agent has exited
+// (agentSupervisor.Close): a database that does not answer holds it, so it is cancelled then, so
+// that it delays the idle wait below by no more than that, and those runs' leases run out.
+// waitBackground then waits for the delivery hub, every live socket and the subscriptions they ran
+// to finish their Lifetime-driven shutdown, and waitIntakes for the intakes to finish their stop
+// (the GitHub intakes' delivery.StartIntakes stop and the Legion state intake's
+// legion.StartIntake stop, both held durables), which began at the signal beside the HTTP drain
+// and document shutdown. A message in its handler finishes and is acknowledged, or is given up and
+// handed back to NATS, delivery's intakeStopBudget (15 s) after the signal at the latest. A
+// hand-back still pending then is settled when waitIntakes closes each intake's NATS client
+// through its durable, sent in its close flush or dropped with the connection; waitIntakes then
+// waits for its finalizer to release the hold through the pool. That wait normally ends 10 s
+// inside the latest the document service's budget ends (stopGrace less its 5 s reserve, 25 s
+// after the signal). One exception can outlive that bound, by a span no fixed time bounds:
+// Client.Close waits behind the writes on nats.go's connection lock, as delivery's
+// IntakeWriteDeadline accounts for them, and then a finalizer can spend up to intakeHoldRenew
+// (5 s) releasing its hold. The kubelet's kill is safe in that case: it closes the connection and
+// the renewal, and the hold lapses. It comes before the pool closes because nothing else keeps the
+// pool open for a handler: one waiting on GitHub holds no connection, so waitUntilIdle finds the
+// pool idle and its writes would fail on the closed pool once GitHub answered, with its message
+// acknowledged all the same. A hold's finalizer has already released its hold before waitIntakes
+// returns.
 // The database pool closes once every request has answered and no connection of the shared,
 // document-rooms or room-appends pool is in use, and once the events outbox has stopped
 // (outboxStopped closes when its Run returns; nil is a process with no outbox), which it waits for
@@ -158,7 +163,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // since the delete would wait on that database too, and its row's heartbeat stops with the process
 // instead.
 func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(),
-	outboxStopped <-chan struct{}, agent agentShutdown) {
+	outboxStopped <-chan struct{}, httpDrain time.Duration, agent agentShutdown) {
 	started := time.Now()
 	drained := make(chan struct{})
 	go func() {
@@ -169,7 +174,7 @@ func shutdown(server *http.Server, documentService *docs.Service, pool *store.Po
 	}()
 	select {
 	case <-drained:
-	case <-time.After(httpDrainBeforeDocuments):
+	case <-time.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
 	if agent != nil {
