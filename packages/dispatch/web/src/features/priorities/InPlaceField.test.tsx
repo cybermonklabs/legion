@@ -11,6 +11,7 @@ import {
 import { jump, onFakeClock, realClock, settle } from "../../__tests__/fake-clock";
 import { userOnFakeClock } from "../../__tests__/user";
 import { createApiClient, priorityPatchRequest } from "../../api/client";
+import type { WriteAnswer } from "./field-arrival";
 import { InPlaceField, SAVE_AFTER_MS } from "./InPlaceField";
 
 /**
@@ -116,12 +117,12 @@ test("a text changed after the typing rested is written when the field is left",
 /** The field as a page holds it while another person's write lands: every write the field sends
  *  is kept in `writes`, in `froms`, where given, the server's text the field last took in, which a
  *  priority's page names to Dispatch (`expected`), and in `madeOn`, where given, the text each
- *  write's edit was made on (`onSave`'s `on`). Where `answers` is given, the page answers each
- *  write with whether it landed, as a title's page does, once the test calls that write's answer
- *  there; else it answers none, as the owner's page does. The field is drawn with `start`, and
- *  `land.write` stands for the server's answer moving `value` under the field, as a refresh of the
- *  row does, without taking the focus from it; `step`, where given, runs in the commit that draws
- *  it, after the field's render and before its effects (`BeforeEffects`). */
+ *  write's edit was made on (`onSave`'s `on`). Where `answers` is given, the page answers how
+ *  each write ended (`WriteAnswer`), as a title's page does, once the test calls that write's
+ *  answer there; else it answers none, as the owner's page does. The field is drawn with
+ *  `start`, and `land.write` stands for the server's answer moving `value` under the field, as a
+ *  refresh of the row does, without taking the focus from it; `step`, where given, runs in the
+ *  commit that draws it, after the field's render and before its effects (`BeforeEffects`). */
 function HeldField({
   answers,
   froms,
@@ -132,7 +133,7 @@ function HeldField({
   step,
   writes,
 }: {
-  answers?: ((landed: boolean) => void)[];
+  answers?: ((answer: WriteAnswer) => void)[];
   froms?: string[];
   land: { write?: (text: string) => void };
   madeOn?: string[];
@@ -152,7 +153,7 @@ function HeldField({
           froms?.push(from);
           madeOn?.push(on);
           if (answers === undefined) return;
-          const answer = Promise.withResolvers<boolean>();
+          const answer = Promise.withResolvers<WriteAnswer>();
           answers.push(answer.resolve);
           return answer.promise;
         }}
@@ -165,14 +166,14 @@ function HeldField({
 }
 
 /** The page's answer to the `at`th write `HeldField` sent, of those whose answers it keeps in
- *  `answers`: landed or not, in an act that lets the field follow it. */
+ *  `answers`: how it ended (`WriteAnswer`), in an act that lets the field follow it. */
 function answerAt(
-  answers: readonly ((landed: boolean) => void)[],
+  answers: readonly ((answer: WriteAnswer) => void)[],
   at: number,
-  landed: boolean
+  answer: WriteAnswer
 ): Promise<void> {
   return act(async () => {
-    answers[at]?.(landed);
+    answers[at]?.(answer);
     await settle();
   });
 }
@@ -639,7 +640,7 @@ test("a write made once the page drew another person's title, and before the fie
 test("the answer to an earlier write of the same text leaves Use my text's write out, and that write's landing is the reader's own", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
-  const answers: ((landed: boolean) => void)[] = [];
+  const answers: ((answer: WriteAnswer) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const view = render(<HeldField answers={answers} land={land} writes={writes} />);
   const page = within(view.container);
@@ -658,7 +659,7 @@ test("the answer to an earlier write of the same text leaves Use my text's write
     await jump(SAVE_AFTER_MS);
   });
   expect(writes).toEqual(["Old name, mine", "Old name, mine", "Old name, mine, more"]);
-  await answerAt(answers, 0, false);
+  await answerAt(answers, 0, "refused");
   act(() => land.write?.("Old name, mine"));
   expect(notice()).toBeNull();
   expect(field.value).toBe("Old name, mine, more");
@@ -706,7 +707,7 @@ test("Use my text where the field's own write of that text is still out sends no
 test("a write that ended without landing is not written again once a read shows the write before it", async () => {
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
-  const answers: ((landed: boolean) => void)[] = [];
+  const answers: ((answer: WriteAnswer) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const view = render(<HeldField answers={answers} land={land} start="Old" writes={writes} />);
   const page = within(view.container);
@@ -719,8 +720,8 @@ test("a write that ended without landing is not written again once a read shows 
     await jump(SAVE_AFTER_MS);
   });
   expect(writes).toEqual(["A", "AB"]);
-  await answerAt(answers, 1, false);
-  await answerAt(answers, 0, true);
+  await answerAt(answers, 1, "refused");
+  await answerAt(answers, 0, "landed");
   act(() => land.write?.("A"));
   await user.tab();
   expect(writes).toEqual(["A", "AB"]);
@@ -740,7 +741,7 @@ test("each write hands on the text the field held as its edit began, and a field
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
   const madeOn: string[] = [];
-  const answers: ((landed: boolean) => void)[] = [];
+  const answers: ((answer: WriteAnswer) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const held = (
     <HeldField answers={answers} land={land} madeOn={madeOn} start="Old" writes={writes} />
@@ -752,13 +753,13 @@ test("each write hands on the text the field held as its edit began, and a field
     await user.type(field(), "A");
     await jump(SAVE_AFTER_MS);
   });
-  // "A" is stopped: the page answers it did not land, and the reader writes on from it.
-  await answerAt(answers, 0, false);
+  // "A" is refused: the page answers it never lands, and the reader writes on from it.
+  await answerAt(answers, 0, "refused");
   await onFakeClock(async () => {
     await user.type(field(), "B");
     await jump(SAVE_AFTER_MS);
   });
-  await answerAt(answers, 1, false);
+  await answerAt(answers, 1, "refused");
   // Another person's "Bob" arrives with nothing of hers out: the field takes it in.
   act(() => land.write?.("Bob"));
   await onFakeClock(async () => {
@@ -813,7 +814,7 @@ test("a read that answers an earlier write while the reader's typing waits leave
   const user = userEvent.setup({ delay: null });
   const writes: string[] = [];
   const madeOn: string[] = [];
-  const answers: ((landed: boolean) => void)[] = [];
+  const answers: ((answer: WriteAnswer) => void)[] = [];
   const land: { write?: (text: string) => void } = {};
   const view = render(
     <HeldField answers={answers} land={land} madeOn={madeOn} start="Old" writes={writes} />
@@ -824,12 +825,12 @@ test("a read that answers an earlier write while the reader's typing waits leave
     await user.type(field, "A");
     await jump(SAVE_AFTER_MS);
   });
-  await answerAt(answers, 0, true);
+  await answerAt(answers, 0, "landed");
   await onFakeClock(async () => {
     await user.type(field, "B");
     await jump(SAVE_AFTER_MS);
   });
-  await answerAt(answers, 1, false);
+  await answerAt(answers, 1, "refused");
   await onFakeClock(async () => {
     await user.type(field, "C");
     act(() => land.write?.("A"));
@@ -987,7 +988,7 @@ test("a text written before the value moved is written again when the reader wri
  */
 function heldServer() {
   const saves: string[] = [];
-  const out: { readonly answer: (landed: boolean) => void; readonly text: string }[] = [];
+  const out: { readonly answer: (answer: WriteAnswer) => void; readonly text: string }[] = [];
   let read: (text: string) => void = () => {
     throw new Error("the field has not rendered");
   };
@@ -999,7 +1000,7 @@ function heldServer() {
         label="Title"
         onSave={(next) => {
           saves.push(next);
-          const write = Promise.withResolvers<boolean>();
+          const write = Promise.withResolvers<WriteAnswer>();
           out.push({ answer: write.resolve, text: next });
           return write.promise;
         }}
@@ -1015,7 +1016,7 @@ function heldServer() {
         const at = out.map((write) => write.text).indexOf(text);
         const [write] = at === -1 ? [] : out.splice(at, 1);
         if (write === undefined) throw new Error(`no write of ${text} is out`);
-        write.answer(true);
+        write.answer("landed");
       }),
     field: within(view.container).getByRole<HTMLInputElement>("textbox", { name: "Title" }),
     lands: (text: string) => act(() => read(text)),
@@ -1025,7 +1026,7 @@ function heldServer() {
         const at = out.map((write) => write.text).lastIndexOf(text);
         const [write] = at === -1 ? [] : out.splice(at, 1);
         if (write === undefined) throw new Error(`no write of ${text} is out`);
-        write.answer(false);
+        write.answer("refused");
       }),
     saves,
     view,

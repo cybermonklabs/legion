@@ -58,6 +58,11 @@ export type WriteState =
 export interface WriteBase<D = unknown> {
   readonly id: number;
   readonly key: string;
+  /** The key it went under at its press, or at a Retry that made it again under a new key:
+   *  `key`, but for a write its kind made in its place (`WriteKind.fallback`), which goes under a
+   *  key of its own and keeps this one. What a surface that holds its press knows it by
+   *  (`useKeyedWrite`). */
+  readonly pressedKey: string;
   readonly kind: string;
   readonly login: string | undefined;
   /** Whether the request it makes goes under its key (`goesUnderKey`): a `POST` or a `PATCH`,
@@ -109,7 +114,7 @@ export function isLive(write: Write): boolean {
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
   const { detail, id, issue, joined, key, keyed, kind, label, login, presentation } = write;
-  const { pressedAt, retried, sent, signingOutElsewhere, target, uploaded } = write;
+  const { pressedAt, pressedKey, retried, sent, signingOutElsewhere, target, uploaded } = write;
   return {
     detail,
     id,
@@ -122,6 +127,7 @@ function baseOf<D>(write: Write<D>): WriteBase<D> {
     login,
     presentation,
     pressedAt,
+    pressedKey,
     retried,
     sent,
     signingOutElsewhere,
@@ -150,6 +156,22 @@ export interface WriteKind<D, K = D> {
    *  last went out as; left out, that request verbatim. `undefined` has nothing to make, and the
    *  write is let go. */
   readonly resume?: (detail: D, request: WriteRequest | null) => Attempt<unknown> | undefined;
+  /** The write to make in place of one of this kind Dispatch refused `refusal`, from its record
+   *  (`detail`): its record and the request it makes, the same change put the way a build of
+   *  Dispatch that cannot read the refused request takes it. The store asks before it reads the
+   *  refusal as a verdict or not, whatever answered the write's attempts before, so a press, a
+   *  Retry and a reload's take-up alike go on as that write: in the write's own place in its
+   *  line, and under a new key, since Dispatch answers every attempt under the old one with the
+   *  refusal it kept. A write the reader stopped meanwhile ends stopped as that write instead,
+   *  nothing of it sent, for a Retry to send. The shell's line and a reload hold that write from
+   *  then on, and each of its refusals is asked about too, so a kind answers `undefined` for a
+   *  write it made this way. Only for a kind whose writes are made from their request alone
+   *  (`WriteSpec.request`, no `resume`), with no file. Left out, or `undefined`, the refusal
+   *  stands. */
+  readonly fallback?: (
+    detail: D,
+    refusal: Error
+  ) => { readonly detail: D; readonly request: WriteRequest } | undefined;
   /** What a write of this kind that landed refreshes, whether or not a surface awaits it:
    *  `answer` is Dispatch's, `null` for a landing it had no answer to give for, and `awaited`
    *  says whether the surface that made it is still waiting for it. Left out, every query is read
@@ -224,7 +246,7 @@ export function defineWriteKind<D, K = D>(kind: WriteKind<D, K>): WriteKind<D, K
 }
 
 /** `write` as a write of `kind`, with its record typed, or `undefined` for another kind's. A
- *  write's record is only ever made by its own kind (`run`, `resume`). */
+ *  write's record is only ever made by its own kind (`run`, `resume`, `WriteKind.fallback`). */
 export function ofKind<D, K>(write: Write, kind: WriteKind<D, K>): Write<D> | undefined {
   return write.kind === kind.name ? (write as Write<D>) : undefined;
 }
@@ -368,10 +390,11 @@ interface Keeping {
 
 /** What the store holds of a write beside it: how to make it, the request its press named or it
  *  last went out as, what stops its trying, its file, the press that awaits it, and how its turn
- *  starts. */
+ *  starts. A write its kind makes in place of a refused one (`WriteKind.fallback`) is made from
+ *  its own request from then on. */
 interface Entry {
   write: Write;
-  readonly attempt: Attempt<unknown>;
+  attempt: Attempt<unknown>;
   request: WriteRequest | null;
   stop: AbortController;
   readonly file: File | undefined;
@@ -438,12 +461,14 @@ let watcher: ((store: Writes) => void) | undefined;
  * out carries it too (`WriteKind.supersedes`). A refused write that ended with no verdict, and
  * that a newer write made on its change carries as that one lands (`WriteKind.outdates`), is
  * kept no longer, and its Retry sends nothing. A conflict (`isConflict`) refuses the same body
- * every time, so no Retry makes it again. A write belongs to the person who pressed it: a session
- * that lapses (whoami answers 401, or the write itself is answered 401) stops every write's trying
- * and starts none, but keeps them all, in memory and in storage, until someone signs in - the same
- * person's sign-in takes them up again, and anyone else's drops every write of another login
- * (`signedIn`). Dispatch refuses one that reaches it under another session first
- * (`Dispatch-Login`, `409 LOGIN_CHANGED`).
+ * every time, so no Retry makes it again. A refusal its kind meets with the same change put the
+ * way an older build of Dispatch takes it (`WriteKind.fallback`) is no refusal: that write goes on
+ * in its place. A write belongs to the person who pressed it: a session that lapses (whoami
+ * answers 401, or the write itself is answered 401) stops every write's trying and starts none,
+ * but keeps them all, in memory and in storage, until someone signs in - the same person's sign-in
+ * takes them up again, and anyone else's drops every write of another login (`signedIn`).
+ * Dispatch refuses one that reaches it under another session first (`Dispatch-Login`,
+ * `409 LOGIN_CHANGED`).
  */
 export class Writes {
   /** The method of the request each of this page's send keys has already carried. A write's key
@@ -610,6 +635,7 @@ export class Writes {
         login,
         presentation: spec.presentation,
         pressedAt: Date.now(),
+        pressedKey: key,
         retried: false,
         sent: false,
         signingOutElsewhere: login !== undefined && this.#signingOutElsewhere.has(login),
@@ -686,7 +712,8 @@ export class Writes {
   }
 
   /** Puts the refused `entry` back in its target's line under `key`, at the back, to be made
-   *  again: `sent` says whether something has already gone out under that key. */
+   *  again: `sent` says whether something has already gone out under that key. A Retry under its
+   *  own key keeps the key it was pressed under (`Write.pressedKey`). */
   #retryUnder(entry: Entry, key: string, sent: boolean): void {
     entry.stop = new AbortController();
     entry.write = {
@@ -694,6 +721,7 @@ export class Writes {
       joined: this.#nextJoin(),
       key,
       pressedAt: Date.now(),
+      pressedKey: key === entry.write.key ? entry.write.pressedKey : key,
       retried: false,
       sent,
       status: "queued",
@@ -793,6 +821,7 @@ export class Writes {
       );
     }
     const login = signedInLogin(this.#client);
+    const key = newSendKey();
     const entry: Entry = {
       attempt: (bounds) => api.send(request, bounds),
       endsWithSession: false,
@@ -815,13 +844,14 @@ export class Writes {
         // Never sent, so it never goes out and its issue's listeners are not told (`onIssueWrite`).
         issue: issueOfPath(request.path),
         joined: this.#nextJoin(),
-        key: newSendKey(),
+        key,
         keyed: goesUnderKey(request.method),
         kind: spec.kind.name,
         label: spec.label,
         login,
         presentation: "indicator",
         pressedAt: Date.now(),
+        pressedKey: key,
         refusal,
         retried: false,
         sent: false,
@@ -1118,6 +1148,7 @@ export class Writes {
         login: kept.login,
         presentation: kept.presentation,
         pressedAt: kept.pressedAt,
+        pressedKey: kept.key,
         retried: false,
         sent: kept.sent,
         signingOutElsewhere: this.#signingOutElsewhere.has(kept.login),
@@ -1237,7 +1268,11 @@ export class Writes {
     });
   }
 
-  /** Tries `entry` under its key until Dispatch decides it, within the deadline this starts. */
+  /** Tries `entry` under its key until Dispatch decides it, within the deadline this starts. A
+   *  refusal its kind meets with a write to make in its place (`WriteKind.fallback`) decides
+   *  nothing: that write is tried on in the same turn and within the same deadline, under its own
+   *  key (`#fallBack`); where a lapse held the write meanwhile, it goes back in its line, and
+   *  where the reader stopped it, it ends stopped with nothing of it sent. */
   #send(entry: Entry, turn: Turn, stop: AbortController, current: () => boolean): void {
     const deadline =
       turn.from === "sending"
@@ -1247,66 +1282,95 @@ export class Writes {
             }
           }, SEND_DEADLINE_MS)
         : undefined;
-    writeUnderKey(entry.attempt, entry.write.key, {
-      carried: this.#carried.get(entry.write.key) ?? null,
-      login: entry.write.login,
-      planned: entry.request ?? undefined,
-      sent: (request) => {
-        // The request is going out under this key now, whatever becomes of this entry.
-        this.#carried.set(entry.write.key, request.method);
-        if (!current()) return;
-        entry.request = request;
-        const issue = entry.write.issue ?? issueOfPath(request.path);
-        if (entry.write.sent && issue === entry.write.issue) this.#keep(entry);
-        else this.#update(entry, { ...entry.write, issue, sent: true });
-        this.#goOut(entry);
-      },
-      uploading: (loaded, total) => {
-        if (!current() || total <= 0) return;
-        const uploaded = Math.min(100, Math.floor((loaded * 100) / total));
-        if (uploaded !== entry.write.uploaded) this.#show(entry, { ...entry.write, uploaded });
-      },
-      failed: () => {
-        if (current()) this.#show(entry, { ...entry.write, retried: true, uploaded: undefined });
-      },
-      signal: stop.signal,
-      // The person's session may have lapsed under the write: the page reads who is signed in
-      // again, and a lapse holds every write until the sign-in that follows (`signedIn`). The
-      // answer says whether the check, read afresh, still names the person who pressed it, which
-      // makes a repeated 401 Dispatch's refusal (`writeUnderKey`). The answer read is the newest
-      // check's, once it is in (`askSignInAgain`): another ask made meanwhile starts a check of
-      // its own, and a check paused offline has not answered yet.
-      unauthorized: async () => {
-        await askSignInAgain(this.#client);
-        const state = this.#client.getQueryState<AuthenticatedUser>(["whoami"]);
-        return (
-          state?.status === "success" &&
-          !state.isInvalidated &&
-          state.data?.login === entry.write.login
-        );
-      },
-    })
-      .then(
+    const decided = (): Promise<void> =>
+      writeUnderKey(entry.attempt, entry.write.key, {
+        carried: this.#carried.get(entry.write.key) ?? null,
+        login: entry.write.login,
+        planned: entry.request ?? undefined,
+        sent: (request) => {
+          // The request is going out under this key now, whatever becomes of this entry.
+          this.#carried.set(entry.write.key, request.method);
+          if (!current()) return;
+          entry.request = request;
+          const issue = entry.write.issue ?? issueOfPath(request.path);
+          if (entry.write.sent && issue === entry.write.issue) this.#keep(entry);
+          else this.#update(entry, { ...entry.write, issue, sent: true });
+          this.#goOut(entry);
+        },
+        uploading: (loaded, total) => {
+          if (!current() || total <= 0) return;
+          const uploaded = Math.min(100, Math.floor((loaded * 100) / total));
+          if (uploaded !== entry.write.uploaded) this.#show(entry, { ...entry.write, uploaded });
+        },
+        failed: () => {
+          if (current()) this.#show(entry, { ...entry.write, retried: true, uploaded: undefined });
+        },
+        signal: stop.signal,
+        // The person's session may have lapsed under the write: the page reads who is signed in
+        // again, and a lapse holds every write until the sign-in that follows (`signedIn`). The
+        // answer says whether the check, read afresh, still names the person who pressed it,
+        // which makes a repeated 401 Dispatch's refusal (`writeUnderKey`). The answer read is
+        // the newest check's, once it is in (`askSignInAgain`): another ask made meanwhile starts
+        // a check of its own, and a check paused offline has not answered yet.
+        unauthorized: async () => {
+          await askSignInAgain(this.#client);
+          const state = this.#client.getQueryState<AuthenticatedUser>(["whoami"]);
+          return (
+            state?.status === "success" &&
+            !state.isInvalidated &&
+            state.data?.login === entry.write.login
+          );
+        },
+      }).then(
         (answer) => {
           entry.held = false;
           if (current()) this.#landed(entry, answer);
           turn.settled.resolve(answer);
         },
         (error: unknown) => {
-          const refusal = error instanceof Error ? error : new Error(String(error));
+          let refusal = error instanceof Error ? error : new Error(String(error));
           const held = entry.held;
           entry.held = false;
           if (current()) {
+            // Asked before the refusal is read as a verdict or not: the write its kind makes in
+            // its place goes on as this one.
+            const fellBack = this.#fallBack(entry, refusal);
+            if (fellBack && !held) {
+              if (!stop.signal.aborted) return decided();
+              // The reader pressed Stop trying before the answer came: the write made in its
+              // place ends as they asked, stopped, with no verdict and nothing of it sent, as a
+              // write does whose answer after its Stop is none, and its Retry sends it under its
+              // own key.
+              refusal = new SendStoppedError();
+            }
             // A write a lapse held goes back in its line, to be made again under its key once
-            // its person signs in; one whose key Dispatch has forgotten meanwhile has no key to
-            // go under, so it is refused for the reader to Retry as a new write.
-            if (held && retriesUnderItsKey(refusal)) this.#rejoin(entry);
+            // its person signs in, the new key of the write made in its place included; one
+            // whose key Dispatch has forgotten meanwhile has no key to go under, so it is refused
+            // for the reader to Retry as a new write.
+            if (held && (fellBack || retriesUnderItsKey(refusal))) this.#rejoin(entry);
             else this.#refused(entry, refusal);
           }
           turn.settled.reject(refusal);
         }
-      )
-      .finally(() => clearTimeout(deadline));
+      );
+    void decided().finally(() => clearTimeout(deadline));
+  }
+
+  /** Puts in the place of `entry`'s write the one its kind makes after `refusal`
+   *  (`WriteKind.fallback`), and says whether there was one: its record, made from its own
+   *  request, under a new key nothing has gone out under, kept under that key in place of the old
+   *  one. It keeps its place in its line, where it stands, its press and its turn, and the key it
+   *  was pressed under (`Write.pressedKey`). */
+  #fallBack(entry: Entry, refusal: Error): boolean {
+    const made = kinds.get(entry.write.kind)?.fallback?.(entry.write.detail, refusal);
+    if (made === undefined) return false;
+    const { detail, request } = made;
+    this.#kept.forget(entry.write.key);
+    entry.attempt = (bounds) => api.send(request, bounds);
+    entry.request = request;
+    const key = newSendKey();
+    this.#update(entry, { ...entry.write, detail, key, retried: false, sent: false });
+    return true;
   }
 
   /** Stops `entry`'s trying for a lapsed session: one out ends after the attempt in flight, whose

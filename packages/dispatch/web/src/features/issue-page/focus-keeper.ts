@@ -133,8 +133,9 @@ function firstHolder(fallbacks: readonly FocusFallback[], loss: FocusLoss): HTML
 
 /**
  * Hears the reader's pointer presses on `page`, and returns what ends the hearing. It is the one
- * reader of presses on the page: the keeper's watches and the header's title row read presses
- * through it, so a press is over for each of them on the same events. `begin` is told of each
+ * reader of presses on the page: the keeper's watches, the header's title row and a panel's
+ * scroll gate (`AnchoredPanel`) read presses through it, so a press is over for each of them on
+ * the same events. `begin` is told of each
  * press as its pointer goes down; once the press is over, `done` is told where the focus was as
  * the press began and what `begin` answered. A press is over at the first of these:
  * - Its pointerup, where it has moved the focus by then or is of a button other than the primary

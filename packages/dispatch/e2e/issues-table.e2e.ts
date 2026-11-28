@@ -19,7 +19,7 @@ import {
   patchIssue,
   seedAgentStreamConversations,
 } from "./api";
-import { filterPicker } from "./filters";
+import { filterPicker, listTrigger } from "./filters";
 import {
   discardPending,
   dismissBanner,
@@ -742,7 +742,7 @@ test("no two of the broadcast composer, Pending changes and the update banner me
         },
         {
           name: "Delivery mode",
-          control: broadcast.getByRole("combobox", { name: "Delivery mode" }),
+          control: listTrigger(broadcast, "Delivery mode"),
         },
         ...namedButtons(broadcast, ["Send to 3"]),
         {

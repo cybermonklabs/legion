@@ -85,6 +85,7 @@ export function MentionField({
   disabled = false,
   fieldClassName,
   fieldRef,
+  held = false,
   inline = false,
   issueKey,
   label,
@@ -131,6 +132,10 @@ export function MentionField({
   /** How the host reaches this field (`MentionFieldHandle`): a ref it holds, or, for a host
    *  with a field per row, a callback that files the handle under its row. */
   readonly fieldRef?: Ref<MentionFieldHandle | null>;
+  /** Held while a write that holds the form this box is part of is out: `aria-disabled` and
+   *  read-only (`heldField`), never disabled, so the box the reader submitted from keeps the
+   *  focus. The picker is shut with it. */
+  readonly held?: boolean;
   /** A one-line field that grows with what is typed, as a reply's does. */
   readonly inline?: boolean;
   /** The issue this box writes on, where it has one: the picker offers that issue's people. A
@@ -218,7 +223,7 @@ export function MentionField({
   const picker = useRefPicker({
     caret,
     delivers: delivered,
-    enabled: !disabled && !readOnly && focused,
+    enabled: !disabled && !readOnly && !held && focused,
     issueKey,
     project,
     text: body,
@@ -352,6 +357,7 @@ export function MentionField({
               " "
             ) || undefined
           }
+          aria-disabled={held || undefined}
           aria-label={label}
           className={
             look === undefined
@@ -390,7 +396,7 @@ export function MentionField({
             setCaret(event.currentTarget.selectionStart)
           }
           placeholder={placeholder}
-          readOnly={readOnly}
+          readOnly={readOnly || held}
           ref={bodyFieldRef}
           rows={rows}
           value={body}

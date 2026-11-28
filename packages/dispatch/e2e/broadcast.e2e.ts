@@ -19,6 +19,8 @@ import {
   listBroadcasts,
   replyToMessageDelivery,
 } from "./api";
+import { listTrigger, pickFromList } from "./filters";
+import { distinctKeys } from "./keyed-writes";
 import { navigateInApp } from "./sends";
 import { sessionIds } from "./session-ids";
 import { expect, type Locator, type Page, test } from "./test";
@@ -85,7 +87,7 @@ test("a broadcast lists recipient cards in the non-alphabetical order the sender
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     // The Reviewer advertises `aside` only. It stays visible and is left out; no other mode is
     // substituted for it.
     await expect(composer.getByText("Excluded: Reviewer (does not advertise Send)")).toBeVisible();
@@ -175,7 +177,7 @@ test("a broadcast written as a numbered list renders as a list on the broadcast 
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("steer");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "Send");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill(body);
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
@@ -321,7 +323,7 @@ test("a session that goes away before the send is excluded by the server and nam
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("btw");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "BTW");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
     const send = composer.getByRole("button", { name: "Send to 3" });
     await expect(send).toBeEnabled();
@@ -376,7 +378,7 @@ test("a broadcast reaches sessions the listener's list has dropped while their r
       await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
     }
     const composer = page.getByRole("region", { name: "Broadcast" });
-    await composer.getByRole("combobox", { name: "Delivery mode" }).selectOption("btw");
+    await pickFromList(listTrigger(composer, "Delivery mode"), "BTW");
     await composer.getByRole("textbox", { name: "Broadcast message" }).fill("Report status.");
     const send = composer.getByRole("button", { name: "Send to 2" });
     await expect(send).toBeEnabled();
@@ -425,7 +427,8 @@ test("a second identical send of one composition is answered the original broadc
     await composer.getByRole("button", { name: "Send to 2" }).click();
     await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
     const first = page.url().split("/").at(-1);
-    expect(posted).toHaveLength(1);
+    // One write for the press, counted by key: a request sent again under its key is that write.
+    expect(distinctKeys(posted)).toEqual([expect.any(String)]);
     const [request] = posted;
     if (request === undefined) throw new Error("the press sent nothing");
     expect(request.key).toEqual(expect.any(String));
@@ -499,10 +502,14 @@ test("a session that leaves between a refused send and its restore is still in t
     ).toBeVisible();
     await composer.getByRole("button", { name: "Send to 2" }).click();
     await page.waitForURL(/\/agents\/broadcasts\/[0-9a-f-]+$/);
-    expect(posted).toHaveLength(2);
-    // Word for word, under a key of its own: Dispatch would answer the refused key its refusal.
-    expect(posted[1]).toEqual({ input: posted[0]?.input, key: expect.any(String) });
-    expect(posted[1]?.key).not.toBe(posted[0]?.key);
+    // Two writes, counted by key: a request sent again under its key is the same write. The second
+    // is word for word, under a key of its own: Dispatch would answer the refused key its refusal.
+    const keys = distinctKeys(posted);
+    expect(keys).toHaveLength(2);
+    expect(posted.find((write) => write.key === keys[1])).toEqual({
+      input: posted[0]?.input,
+      key: expect.any(String),
+    });
 
     const view = page.getByRole("region", { name: "Broadcast" });
     await expect(

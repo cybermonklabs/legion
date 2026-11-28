@@ -311,10 +311,11 @@ const parallelProjects = [
   // `@webkit` tag, so each row it runs carries that tag and a comment naming the clause below it
   // exercises. Every clause here names one engine behaviour and the rows that exercise it.
   // Where a caret lands beside a collaborator's own caret: `collab-cursor`'s three rows.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard.
   // A send held open across two in-app navigations, with the row's draft, its picker and its
   // Reply held until the server answers: `keyboard-agents-picker`'s row back after the reader
   // left mid-send, which carries `@webkit` alone because each of its six measured failures was
@@ -342,6 +343,13 @@ const parallelProjects = [
   // its measured failures were in WebKit.
   // The reload line a read-only admission names: `doc-reload-line`'s one row, which reads the
   // socket the engine reconnects and the paint after it.
+  // A focused control taken away, itself or with a parent, which the HTML spec's focus fixup
+  // does with no `focusout`: `table-controls`'s row that a date the reader gives the search bar's
+  // Updated since is their press, whose box the date takes away, its row that Unpin on a pinned
+  // agent keeps the keyboard focus on a control in sight, whose row the unpin moves to its new
+  // place, and its row that a references Retry on the Artifacts tab keeps the keyboard focus, a
+  // control held under the reader's press, which a native `disabled` takes the focus from.
+  // Measured in WebKit as well as Firefox: neither fires a `focusout` for it.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -392,10 +400,11 @@ const parallelProjects = [
   // `code-line-replace`'s two rows.
   // The engine's focus rule for a click on a link inside the editor, where Firefox focuses the
   // editing host rather than the link: `picture-link-click`'s one row.
-  // A closed select's `change` dispatched inside the key's own task, which the Agents issue
-  // picker's and the live header pickers' keyboard-step rule rests on: the six rows of
-  // `keyboard-agents-picker` that step a select from the keyboard or leave one without Enter,
-  // and all five of `keyboard-session-pickers`.
+  // A closed select's `change` dispatched inside the key's own task, which the live header
+  // pickers' keyboard-step rule rests on: all five rows of `keyboard-session-pickers`.
+  // The keys a text box takes, and how the engine takes the focus out of one on Tab, which the
+  // Agents composer's Issue list is driven by: the five rows of `keyboard-agents-picker` that
+  // drive that list from the keyboard.
   // The engine's cancellation of a chunk the navigation away from it left downloading, and the
   // margin hold's frame and scroll order: seven `deep-links` rows - the held chunk's, the press
   // raced against the landing's own frames, the two hidden-editor rows that run with the page's
@@ -419,6 +428,10 @@ const parallelProjects = [
   // ask before a tab unloads: eight `keyed-writes` rows and two `keyed-send` rows, whose upload
   // row carries the kept-file question with it.
   // The reload line a read-only admission names: `doc-reload-line`'s one row.
+  // A focused control taken away, itself or with a parent, for which this engine fires no
+  // `focusout`, as measured above `webkit`: every `table-controls` row the `webkit` clause names
+  // for it. Each of those rows carries `@firefox` as well as `@webkit`, and its own comment names
+  // this clause.
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
@@ -559,6 +572,22 @@ const aloneProjects = [
 ] satisfies Project[];
 
 /**
+ * `--disable-partial-raster`, on both visual projects: Chromium then draws every tile it redraws
+ * whole, rather than only the part of it a later paint invalidated. A tile drawn once and then
+ * partly redrawn differs at the edges of what was redrawn from the same tile drawn whole, so with
+ * partial raster on, one page at one layout came out in more than one rendering, depending on the
+ * order its paints came in. The Inbox, shot 20 times in the visual image with its own fonts, came
+ * out in two renderings in light, 7 and 13 times, and with the DevTools LayerTree domain on in the
+ * one the committed baseline refused, 20 times of 20. Every difference was at x 832 or right of
+ * it, which is the main column's left edge plus one 512 px tile, and main's build of that page
+ * varied the same way on the other side of that edge. With the flag the same 20 shots gave one
+ * rendering in light and one in dark, and the same two with LayerTree on (dispatch://INFRA-3135).
+ * The flag changes what is captured, not what is compared: the spec's comparison and its
+ * tolerance are as before.
+ */
+const VISUAL_CAPTURE = { args: ["--disable-partial-raster"] };
+
+/**
  * The containerised visual review: one row per page of `e2e/review-routes.ts`'s shot set, each
  * comparing that page against a committed baseline in light and in dark, and the pages a phone
  * width rearranges once more in that viewport (e2e/visual.e2e.ts).
@@ -607,7 +636,11 @@ const visualProjects = [
     // would say the same thing on every file and in the name of each the route and the scheme
     // are what a reader is looking for.
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["Desktop Chrome"], viewport: { height: 800, width: 1280 } },
+    use: {
+      ...devices["Desktop Chrome"],
+      launchOptions: VISUAL_CAPTURE,
+      viewport: { height: 800, width: 1280 },
+    },
     workers: 1,
     retries: 0,
   },
@@ -616,7 +649,11 @@ const visualProjects = [
     testMatch: visualSpecs,
     grep: phoneRowTagged,
     snapshotPathTemplate: "{testDir}/__screenshots__/{projectName}/{arg}{ext}",
-    use: { ...devices["iPhone 13"], browserName: "chromium" as const },
+    use: {
+      ...devices["iPhone 13"],
+      browserName: "chromium" as const,
+      launchOptions: VISUAL_CAPTURE,
+    },
     workers: 1,
     retries: 0,
   },

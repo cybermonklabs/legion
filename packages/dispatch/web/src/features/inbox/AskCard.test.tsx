@@ -161,16 +161,17 @@ test("a read of the thread asked before a changed answer landed does not put bac
     // The read answers as Dispatch held the thread when it was asked: the first answer alone.
     await act(async () => {
       reads[0]?.resolve(thread(before));
-      await asked;
     });
     expect(history()).toBe("Show 1 earlier answer");
 
     // The change's read again, then its own refresh, which waits for that read: both asked after
-    // the change, so both answer the thread as it stands now.
+    // the change, so both answer the thread as it stands now. The refresh asked before the change
+    // waits for the read asked again too, as the change gave its read up (`DispatchQueryClient`).
     const now = thread(after, [firstAnswer, secondAnswer]);
     await waitFor(() => expect(reads).toHaveLength(2));
     await act(async () => {
       reads[1]?.resolve(now);
+      await asked;
     });
     await waitFor(() => expect(reads).toHaveLength(3));
     await act(async () => {

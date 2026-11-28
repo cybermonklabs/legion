@@ -82,6 +82,17 @@ export const PRIORITY_ID_MAX = 200;
 export const PROJECT_NAME_MAX = 80;
 
 /**
+ * The most bytes of a request's JSON body Dispatch reads, on every route but the three whose body
+ * has a limit of its own (a handoff write and the two markdown round trips). The server reads a
+ * body through a `MaxBytesReader` of this many bytes before it decodes it, and answers one past it
+ * `413 REQUEST_TOO_LARGE`, whatever it holds; `GET /api/v1/limits` answers it as `request_bytes`.
+ * Generated into Go as `contracts.JSONRequestMaxBytes`, which is the server's
+ * `maxJSONRequestBytes`. The dashboard holds a write of a priority's text within it: the write
+ * names only as many of the texts it may go over as its body has room for.
+ */
+export const JSON_REQUEST_MAX_BYTES = 1 << 20;
+
+/**
  * The most bytes of markdown one document may hold, counted in UTF-8 as the server counts a body:
  * what one upload of a markdown document may send, and what a write may grow a stored document's
  * rendering to. An upload past it is `413 CAP_EXCEEDED` with MARKDOWN_DOCUMENT_TOO_LARGE, up to the

@@ -6,7 +6,7 @@ import {
 
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
 import { REF_PICKER_WORDS } from "../web/src/features/refs/ref-picker";
-import { agentRow } from "./agents";
+import { agentRow, issueOption } from "./agents";
 import {
   answerAsk,
   createIssueArtifact,
@@ -199,7 +199,9 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       // lists everyone who has signed in.
       await expectRow(page, field, "agents-row-composer", "agent-message");
       await row.getByRole("button", { name: "Choose issue" }).click();
-      await row.getByRole("combobox", { name: "Issue" }).selectOption(world.host);
+      // The issue pick is the shared list (`components/MultiSelect.tsx`): its options read as the
+      // issue's key and title, and a click on one picks it (`issueOption`).
+      await issueOption(row, world.host).click();
       await expectRow(page, field, "agents-row-composer", "comment", () =>
         composerSend(page, "Comment", row).click()
       );

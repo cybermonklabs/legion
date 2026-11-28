@@ -1,12 +1,14 @@
 /** What the unit rows of an issue's picks share (`issue-field-writes.test.tsx`,
  *  `assignee-repo-picks.test.tsx`): the issue picked and its detail, the page's query client
- *  signed in, what each save Dispatch received carried, and the repository box's suggestions
- *  and picks. */
+ *  signed in, what each save Dispatch received carried, the repository box's suggestions and
+ *  picks, and a pick from the shared list's single pick. */
 import type { QueryKey } from "@tanstack/react-query";
+import { within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
 
 import { DispatchQueryClient } from "../api/query-client";
 import type { Issue, IssueDetails } from "../api/types";
+import { panelOf } from "./list-picks";
 
 /** CORE-1, the issue every row picks a field of, as Dispatch answers a save of it. */
 export const issue: Issue = {
@@ -80,6 +82,18 @@ export function bodies(patchIssue: { mock: { calls: unknown[][] } }): unknown[] 
 /** The repositories `box` suggests: its `<datalist>`'s option values, in the box's order. */
 export function repoSuggestions(box: HTMLInputElement): string[] {
   return Array.from(box.list?.options ?? [], (option) => option.value);
+}
+
+/** Picks the row named `name` of the single pick `trigger` opens, which writes it, opening its
+ *  list unless it stands open. The list is portalled out of the control's container, so the row
+ *  is found in the panel the trigger names. */
+export async function pickIn(
+  user: UserEvent,
+  trigger: () => HTMLElement,
+  name: string
+): Promise<void> {
+  if (trigger().getAttribute("aria-expanded") !== "true") await user.click(trigger());
+  await user.click(await within(panelOf(trigger())).findByRole("option", { name }));
 }
 
 /** Empties `box`, types `repo` and presses Enter, which writes it; `""` is an Inherit pick. */

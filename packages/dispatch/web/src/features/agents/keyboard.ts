@@ -6,6 +6,7 @@
  */
 import type { RefObject } from "react";
 
+import type { ListMarks } from "../../components/MultiSelect";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { closestMatching, focusedMatching } from "../shell/roving";
 
@@ -14,13 +15,27 @@ import { closestMatching, focusedMatching } from "../shell/roving";
 const AGENT_ROW_ATTRIBUTE = "data-agent-row";
 export const AGENT_ROW_SELECTOR = `[${AGENT_ROW_ATTRIBUTE}]`;
 const AGENT_COMPOSER_SELECTOR = "[data-agent-composer]";
-export const ISSUE_PICKER_SELECTOR = "[data-agent-issue-picker]";
-const ISSUE_SELECT_SELECTOR = "[data-agent-issue-select]";
+const ISSUE_PICKER_ATTRIBUTE = "data-agent-issue-picker";
+export const ISSUE_PICKER_SELECTOR = `[${ISSUE_PICKER_ATTRIBUTE}]`;
+const ISSUE_SEARCH_ATTRIBUTE = "data-agent-issue-search";
+/** The composer's Issue list writes these on its trigger - the toggle - and its text box. */
+export const ISSUE_LIST_MARKS: ListMarks = {
+  search: { [ISSUE_SEARCH_ATTRIBUTE]: "" },
+  trigger: { [ISSUE_PICKER_ATTRIBUTE]: "" },
+};
 const AGENT_FOLD_ATTRIBUTE = "data-agent-fold";
 /** A fold's toggle: the one item of the list that is not a row, sitting between the rows. */
 const AGENT_FOLD_SELECTOR = `[${AGENT_FOLD_ATTRIBUTE}]`;
 /** The windowed list itself, which holds every drawn row and every fold toggle. */
 const AGENT_LIST_SELECTOR = "[data-agents-list]";
+
+/** The text box of the Issue list `toggle` opened, or `null` while it is shut. The list is
+ *  portalled out of the row, so it is found through the panel the toggle names in
+ *  `aria-controls`. */
+export function issueSearchOf(toggle: Element): HTMLElement | null {
+  const panel = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+  return panel?.querySelector<HTMLElement>(`[${ISSUE_SEARCH_ATTRIBUTE}]`) ?? null;
+}
 
 /**
  * An item of the page's list a reader reaches with `j` and `k`: a session's row, or a group's
@@ -92,9 +107,11 @@ function focusedAgentRow(): HTMLElement | null {
 
 /**
  * Out of a row's composer and back to the row, closing anything the reader opened on the way in.
- * The issue picker is the one of those: it is a `<select>`, where only `inEditable` bindings run,
- * so this Escape is the only dismissal that control has - leaving it expanded would make the key
- * a move rather than a way back.
+ * The Issue list is the one of those. With the focus in its text box, Escape is the list's own
+ * (`AnchoredPanel`), and the composer then hands the reader to the row; this closes a list left
+ * open while the reader is elsewhere in the composer or on the row itself - one opened before
+ * its issues came, which took no focus - since leaving it expanded would make the key a move
+ * rather than a way back.
  *
  * Two callers run this, and they are the same act. `MentionComposer` owns Escape on its own form
  * and stops it before the window dispatcher sees it (its `handleEscape`), so the composer
@@ -191,18 +208,19 @@ export function useAgentsKeymap(
       id: "issue-picker",
       keys: "i",
       label: "Pick an issue for the message",
-      // The picker takes focus itself once its list lands (`AgentMessageComposer.tsx`'s
-      // `issueSelect`), so the key that opens it leaves the reader inside it, where the arrows
-      // choose an issue and Escape is the control's own way out. It opens rather than toggles:
-      // a picker left open when the row collapsed is still open, so the key goes into its select
-      // instead of clicking it shut. A row not yet opened has no picker at all and a collapsed
-      // one's is hidden, so the row says whether one can open; an open row's picker is disabled
-      // while its message is in flight.
+      // The Issue list takes focus itself once its issues land (`AgentMessageComposer.tsx`'s
+      // `pickerTookFocus`), so the key that opens it leaves the reader in its text box, where the
+      // arrows choose an issue and Escape is the list's own way back to the row. It opens rather
+      // than toggles: a list the reader left open - opened before its issues came, and roved
+      // away from - is still open, so the key goes into its text box instead of clicking it
+      // shut. A row not yet opened has no picker at all and a collapsed one's is hidden, so the
+      // row says whether one can open; an open row's picker is disabled while its message is in
+      // flight.
       run: () =>
         inOpenRow((row) => {
           const toggle = row.querySelector<HTMLElement>(ISSUE_PICKER_SELECTOR);
           if (toggle?.getAttribute("aria-expanded") === "true") {
-            row.querySelector<HTMLElement>(ISSUE_SELECT_SELECTOR)?.focus();
+            issueSearchOf(toggle)?.focus();
             return;
           }
           toggle?.click();
@@ -236,8 +254,8 @@ export function useAgentsKeymap(
       keys: "Escape",
       label: "Close the issue picker, or go back to the agent row",
       run: leaveAgentComposer,
-      // From inside the composer, and from the row itself while its picker is open - a read
-      // that fails or is still out renders no select, so the row is where `i` leaves the
+      // From inside the composer, and from the row itself while its picker is open - a list
+      // opened before its issues came takes no focus, so the row is where `i` leaves the
       // reader, and Escape has to close what it opened from there too.
       when: () => inAgentComposer() || openPickerOfFocusedRow() !== null,
     },

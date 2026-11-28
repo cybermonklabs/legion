@@ -3464,7 +3464,9 @@ type TableField = "description" | "title";
 
 /** One write of the field the page sent, with its answer once it came. */
 interface LoggedWrite {
-  readonly expected: string | undefined;
+  /** The texts the write named as the ones it may go over: its `expected`, one string or a list
+   *  of them, as a list; empty where it named none. */
+  readonly expected: readonly string[];
   readonly text: string | undefined;
   /** Whether the reader's press of Use my text made it. */
   readonly use: boolean;
@@ -3526,9 +3528,9 @@ async function tableCell(page: Page, field: TableField, title: string): Promise<
     if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${made.id}`))
       return;
     const body = request.postDataJSON() as Record<string, unknown>;
-    const expected = (body.expected as Record<string, string> | undefined)?.[field];
+    const named = (body.expected as Record<string, string | string[]> | undefined)?.[field];
     const write: LoggedWrite = {
-      expected,
+      expected: named === undefined ? [] : typeof named === "string" ? [named] : named,
       text: body[field] as string | undefined,
       use: cell.using,
     };
@@ -3616,7 +3618,7 @@ async function useMyText(cell: TableCell): Promise<void> {
 }
 
 /** Rule 1 and rule 5 over every write the page sent: a write the server took that named another
- *  person's text as the one it replaced was Use my text's, or named a text the field had taken as
+ *  person's text as one it may replace was Use my text's, or named a text the field had taken as
  *  its start, and no write carries the escapes a reading written back as markdown leaves. */
 function checkWrites(cell: TableCell): void {
   const soft = expect.configure({ soft: true });
@@ -3624,9 +3626,7 @@ function checkWrites(cell: TableCell): void {
     (write) =>
       write.status === 200 &&
       !write.use &&
-      write.expected !== undefined &&
-      cell.others.includes(write.expected) &&
-      !cell.taken.includes(write.expected)
+      write.expected.some((text) => cell.others.includes(text) && !cell.taken.includes(text))
   );
   soft(overwrote, "no write of hers but Use my text replaced another person's text").toEqual([]);
   soft(
@@ -3777,22 +3777,26 @@ async function holdTableWrites(cell: TableCell) {
 
 /** Answers each write of the field 503, with a second's Retry-After, until `stop` presses the
  *  shell's Stop trying for it: the write ends with no answer. Where `reaches` is set, the first
- *  try reaches the server, which takes it, and only its answer is lost. Set before she types. */
+ *  try reaches the server, which takes it, and only its answer is lost. Set before she types. A
+ *  try is counted (`tried`) once its 503 is sent: `stop` goes on, and unroutes, only then. An
+ *  unroute while a try's handler still waits on the server's answer hands that route on
+ *  (Playwright continues a route in flight whose handler is removed), and the handler's
+ *  `route.fulfill` then throws "Route is already handled!". */
 async function refuseTableWrites(cell: TableCell, reaches: boolean) {
   let first = true;
   let tried = 0;
   await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
     if (route.request().method() !== "PATCH") return route.fallback();
-    tried += 1;
     if (first && reaches) {
       first = false;
       await route.fetch();
     }
-    return route.fulfill({
+    await route.fulfill({
       headers: { "Retry-After": "1" },
       json: { code: "DATABASE_BUSY", error: "the database is too busy to take this request" },
       status: 503,
     });
+    tried += 1;
   });
   return {
     stop: async () => {
@@ -3810,6 +3814,83 @@ async function lateThenStop(cell: TableCell, tried: () => number): Promise<void>
   const stop = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Stop trying" });
   await expect(stop.first()).toBeVisible();
   await stop.first().click();
+}
+
+/** Holds each read of the priorities the page sends, `GET /api/v1/priorities` with no query,
+ *  from her first write of the field until her next one leaves after `stopped`: the first write
+ *  of the field the page sends once the row has said her write stopped. It stands for a live feed
+ *  slow to tell the page of her stopped write, so her next write goes before the page has read
+ *  what that write left on the server. A read with a query, as the rail's counts
+ *  (`?summary=true`), and a read of one priority's history go on unheld. The page closes at the
+ *  end of every row, failed or not, and its close lets the held reads go too, so a row that fails
+ *  leaves none held. Set before she types. */
+async function holdTableReads(cell: TableCell) {
+  let armed = false;
+  let stopped = false;
+  const release = Promise.withResolvers<void>();
+  await cell.page.route("**/api/v1/priorities", async (route) => {
+    if (armed && route.request().method() === "GET") await release.promise;
+    return route.fallback();
+  });
+  cell.page.on("request", (request) => {
+    if (request.method() !== "PATCH" || !request.url().endsWith(`/api/v1/priorities/${cell.id}`))
+      return;
+    if (stopped) release.resolve();
+    else armed = true;
+  });
+  cell.page.once("close", () => release.resolve());
+  return {
+    stopped: () => {
+      stopped = true;
+    },
+  };
+}
+
+/** Answers each write of the field that names a list of texts it may go over as a build of
+ *  Dispatch from before the list does, while a deploy rolls out: `400 INVALID_JSON`, writing
+ *  nothing (the answer is that build's own, read from it at main fe4c8f97). A write naming one
+ *  text goes on to the server. Matched by a predicate, so `refuseTableWrites`' unroute of the
+ *  field's path leaves it standing. Set before she types. */
+async function olderDispatch(cell: TableCell): Promise<void> {
+  await cell.page.route(
+    (url) => url.pathname === `/api/v1/priorities/${cell.id}`,
+    async (route) => {
+      if (route.request().method() !== "PATCH") return route.fallback();
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      const named = (body.expected as Record<string, unknown> | undefined)?.[cell.field];
+      if (!Array.isArray(named)) return route.fallback();
+      return route.fulfill({
+        json: {
+          code: "INVALID_JSON",
+          error: `invalid JSON body: json: cannot unmarshal array into Go struct field patchPriorityInput.expected.${cell.field} of type string`,
+        },
+        status: 400,
+      });
+    }
+  );
+}
+
+/** Presses each Retry the shell offers, newest line first, at most `most` times, waiting after
+ *  each press for that write's answer. */
+async function retryEach(cell: TableCell, most: number): Promise<void> {
+  const retry = pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" });
+  for (let pressed = 0; pressed < most; pressed++) {
+    // Read once the shell's line has come to rest: right after a Stop, the stopped line may not
+    // show its Retry yet.
+    const offered = await settledValue("the Retries the shell offers", () => retry.count());
+    if (offered === 0) break;
+    const answered = cell.writes.filter((write) => write.status !== undefined).length;
+    await retry.last().click();
+    // The Retry's write is answered, or the shell lets it go and its line leaves.
+    await expect
+      .poll(
+        async () =>
+          cell.writes.filter((write) => write.status !== undefined).length > answered ||
+          (await retry.count()) < offered,
+        { message: "the Retry's write was answered or let go", timeout: 15_000 }
+      )
+      .toBe(true);
+  }
 }
 
 const tableCells: {
@@ -4094,6 +4175,26 @@ const tableCells: {
     },
   },
   {
+    field: "description",
+    name: "a write whose answer was lost stopped, she edits again before the page reads the priorities",
+    slow: true,
+    run: async (cell) => {
+      const busy = await refuseTableWrites(cell, true);
+      // The server takes her first write, and the page's reads of the priorities wait from then
+      // until her next write leaves, as they would behind a live feed slow to tell the page of
+      // the write: her next write goes before the page has read the text the stopped one left
+      // on the server. Had it named only the text the field last read, it would name the one
+      // from before her stopped write, which the server no longer holds, and be refused 409 as
+      // another person's change; it names her texts whose end is unknown too (rule 1), and lands.
+      const reads = await holdTableReads(cell);
+      await typeAndLeave(cell, " five-j");
+      await busy.stop();
+      reads.stopped();
+      await typeAndLeave(cell, " five-k");
+      await checkClean(cell, " five-j five-k");
+    },
+  },
+  {
     field: "title",
     name: "a title write that never reached the server stopped, she edits again",
     slow: true,
@@ -4350,6 +4451,96 @@ const tableCells: {
       await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
       await typeAndLeave(cell, " five-h");
       await checkClean(cell, " five-g five-h");
+    },
+  },
+  {
+    field: "description",
+    name: "a write stopped while out lands late, she edits again before the page reads the priorities",
+    slow: true,
+    run: async (cell) => {
+      const late = Promise.withResolvers<void>();
+      let tried = 0;
+      await cell.page.route(`**/api/v1/priorities/${cell.id}`, async (route) => {
+        if (route.request().method() !== "PATCH") return route.fallback();
+        tried += 1;
+        await late.promise;
+        // The page gave the write up; it reaches the server all the same, as a slow network's
+        // would, and its answer goes nowhere.
+        await route.fetch().catch(() => undefined);
+        await route.abort().catch(() => undefined);
+      });
+      // Her stopped write lands late, and the page's reads of the priorities wait from her first
+      // write until her next one leaves, as they would behind a live feed slow to tell the page
+      // of the landing: her next write goes before the page has read her late text. Had it named
+      // only the text the field last read, it would name the one from before her stopped write,
+      // which the server no longer holds, and be refused 409 as another person's change; it
+      // names her texts whose end is unknown too (rule 1), and lands.
+      const reads = await holdTableReads(cell);
+      await typeAndLeave(cell, " five-l");
+      await lateThenStop(cell, () => tried);
+      late.resolve();
+      await expect.poll(() => tableStored(cell), { timeout: 15_000 }).toContain(" five-l");
+      await cell.page.unroute(`**/api/v1/priorities/${cell.id}`);
+      reads.stopped();
+      await typeAndLeave(cell, " five-m");
+      await checkClean(cell, " five-l five-m");
+    },
+  },
+  // A rolling deploy (R5): an older Dispatch takes only one text. A write that names a list and
+  // stopped is sent again by its Retry, or by her Retry after a reload, and lands as a fresh write
+  // that names a list does: the older build's refusal of the list writes nothing, and the write
+  // goes once more naming one text.
+  {
+    field: "description",
+    name: "an older Dispatch serves: her second write names a list and stops, then she presses its Retry",
+    slow: true,
+    run: async (cell) => {
+      await olderDispatch(cell);
+      const first = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-a");
+      await first.stop();
+      const second = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-b");
+      await second.stop();
+      expect(
+        cell.writes.some(
+          (write) => write.expected.length > 1 && (write.text ?? "").includes(" six-b")
+        ),
+        "her second write named a list"
+      ).toBe(true);
+      await expect(
+        pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" }).first(),
+        "the shell offers her stopped writes' Retry"
+      ).toBeVisible();
+      await retryEach(cell, 4);
+      await expect
+        .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
+        .toContain(" six-a six-b");
+      checkWrites(cell);
+    },
+  },
+  {
+    field: "description",
+    name: "an older Dispatch serves: her second write names a list and stops, she reloads and presses its Retry",
+    slow: true,
+    run: async (cell) => {
+      await olderDispatch(cell);
+      const first = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-c");
+      await first.stop();
+      const second = await refuseTableWrites(cell, false);
+      await typeAndLeave(cell, " six-d");
+      await second.stop();
+      await cell.page.reload();
+      await expect(
+        pendingWrites(cell.page).getByRole("button", { exact: true, name: "Retry" }).first(),
+        "the shell offers her stopped writes' Retry after a reload"
+      ).toBeVisible();
+      await retryEach(cell, 4);
+      await expect
+        .poll(() => tableStored(cell), { message: "her last text landed", timeout: 15_000 })
+        .toContain(" six-c six-d");
+      checkWrites(cell);
     },
   },
 ];

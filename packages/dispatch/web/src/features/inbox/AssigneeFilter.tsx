@@ -62,6 +62,10 @@ export function AssigneeFilter({
 
   return (
     <MultiSelect
+      // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this page.
+      chevron={false}
+      // Main's keys on the trigger, until a piece of INFRA-3135 converts this page.
+      triggerKeys="page"
       emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
       error={people.isError ? "Could not load the people list." : null}
       label="Assignee"

@@ -519,12 +519,14 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown, D = 
   // A held press the shell's Retry lands (the hook's doc says what follows): it is let go, and
   // where it is the press the hook made last, its error is cleared. That is read from the press as
   // it was made (`newestMade`) and not as React last drew it, so a press made just before the
-  // landing, which React has not drawn yet, keeps its own state.
+  // landing, which React has not drawn yet, keeps its own state. The landing is known by the key
+  // the write was pressed under (`Write.pressedKey`), which the write its kind made in its place
+  // keeps though it went under a key of its own (`WriteKind.fallback`).
   const { reset } = mutation;
   useEffect(
     () =>
       writes.onOutcome((outcome) => {
-        const { key } = outcome.write;
+        const key = outcome.write.pressedKey;
         if (outcome.kind !== "landed" || !held.current.some((press) => press.key === key)) return;
         held.current = held.current.filter((press) => press.key !== key);
         if (key === newestMade.current?.key) reset();

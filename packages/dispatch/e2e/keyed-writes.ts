@@ -58,6 +58,14 @@ export function watchWrites<T>(
   return writes;
 }
 
+/** The `Idempotency-Key`s `writes` went under, each once, in the order the page first sent it. The
+ *  store sends an action again under the action's own key when its request got no answer, so this
+ *  lists one key per action however many requests the action took. A write the page sent with no
+ *  key is listed as `undefined`. */
+export function distinctKeys(writes: readonly KeyedWrite<unknown>[]): (string | undefined)[] {
+  return [...new Set(writes.map((write) => write.key))];
+}
+
 /** The first answer the page gets to a `method` request to `path` that Dispatch replayed from a
  *  key it already answered (`Idempotency-Replayed: ?1`). */
 export function replayed(page: Page, method: string, path: string): Promise<Response> {

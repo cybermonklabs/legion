@@ -14,6 +14,8 @@ import type { ArtifactOwner } from "../../api/client";
 import { dispatchOrigins } from "../../api/origins";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
+import { addressPath } from "../../lib/page-address";
+import { agentsAddress } from "../agents/agent-search";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
 import {
@@ -99,7 +101,11 @@ export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "perso
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in `filters` below.
+ * `InboxRoute.assignees` rather than in that type's `filters`. These are the words the Inbox's
+ * address reads and writes: this file's Inbox block (`InboxRoute`, `parseInboxSearch` and
+ * `buildInboxPath`) is the grammar the Inbox runs until the later piece of INFRA-3135 that
+ * converts the Inbox, and `features/inbox/inbox-route.ts` holds the same grammar for the Agents
+ * page's link to the Inbox.
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -129,11 +135,29 @@ export type InboxShow = (typeof INBOX_SHOWS)[number];
  *  priority, a thread with no urgency, a row belonging to no project. */
 export const NO_FILTER_VALUE = "none";
 
-/** The values each filter field offers, in the order the control lists them. A project key is
- *  whatever the workspace holds, so that field takes any non-empty word and `none`. */
+/** The values the priority, urgency and type fields offer, in the order the control lists
+ *  them. */
 export const INBOX_PRIORITY_VALUES = ["P0", "P1", "P2", "P3", NO_FILTER_VALUE] as const;
 export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const;
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
+
+/** Each filter field's vocabulary, the table the address reads: the words the address keeps for
+ *  the field. The Filter panel reads the lists above directly (`features/inbox/InboxBar.tsx`'s
+ *  `fieldOptions`), and this table holds them, so the field's control lists them in the same
+ *  order. The address drops any other word, which would match no row: this file's Inbox block
+ *  (`parseInboxSearch`), the grammar the Inbox runs until the later piece of INFRA-3135 that
+ *  converts the Inbox, drops it, and so does `features/inbox/inbox-route.ts`, which holds the
+ *  same grammar for the Agents page's link to the Inbox. `project` has no vocabulary, because a
+ *  project key is whatever somebody created: the address keeps any non-empty word, and the
+ *  control lists the keys its rows carry and then `none`. */
+export const INBOX_FILTER_VOCABULARY: Readonly<
+  Record<InboxFilterField, readonly string[] | undefined>
+> = {
+  priority: INBOX_PRIORITY_VALUES,
+  project: undefined,
+  type: INBOX_TYPE_VALUES,
+  urgency: INBOX_URGENCY_VALUES,
+};
 
 /** The Inbox at `/`, optionally narrowed to one agent's asks (`?agent=<session id>`); with
  *  `section=needs-you` only the asks waiting on the viewer are shown. Every field below is
@@ -164,6 +188,7 @@ export interface InboxRoute {
    *  with nothing chosen is absent, never an empty array. */
   filters?: Partial<Record<InboxFilterField, readonly string[]>>;
 }
+
 /** Every tab of the issue page, each the path segment that opens it (`/issues/<KEY>/<tab>`). The
  *  dashboard's pages file (`dashboard-pages-file.ts`) is generated from this list, so a tab added
  *  here reaches the server's and the agent client's readers of a dashboard address, unless its
@@ -642,25 +667,11 @@ export function buildMachinePath(host: string): string {
   return `/machines/${encodeURIComponent(host)}`;
 }
 
-/** The `?machine=` the Agents page filters on, named once here so the page reading it
- *  (`useAgentMachine`) and the links building it cannot drift apart. */
-export const AGENTS_MACHINE_PARAM = "machine";
-
-/** The `?role=` the Agents page narrows to, the page a `dispatch://role/<token>` reference
- *  opens (`buildReferencePath`), named here beside the filter it stands with. */
-export const AGENTS_ROLE_PARAM = "role";
-
 /** The `?component=` the Architecture pane holds its selected component in, the page a
  *  `dispatch://<PROJECT>/component/<id>` reference opens (`buildReferencePath`), named once
  *  here so the pane reading it (`features/architecture/ArchitecturePage.tsx`) and the link
  *  building it cannot drift apart. */
 export const ARCHITECTURE_COMPONENT_PARAM = "component";
-
-/** The Agents page narrowed to one machine, `/agents?machine=<host>`: the link a machine's own
- *  page sends a reader to its sessions by. */
-export function buildAgentsMachinePath(host: string): string {
-  return `/agents?${new URLSearchParams({ [AGENTS_MACHINE_PARAM]: host })}`;
-}
 
 /** The machine `/machines/<machine>` names, its segment percent-decoded as every other segment
  *  is (`decodedSegment`); `undefined` for any other path and for a segment naming nothing. */
@@ -1175,13 +1186,23 @@ export function buildReferencePath(route: PagedReferenceRoute, specSlug?: string
   switch (route.kind) {
     case "agent-artifact": {
       const artifact = `/agents/${encodeURIComponent(route.session)}/artifacts/${encodeURIComponent(route.slug)}`;
+      // The version a document opens at is the document's own parameter, which R5 leaves as it
+      // is rather than moving into `lib/page-address.ts`.
       return route.version === undefined ? artifact : `${artifact}?v=${route.version}`;
     }
     case "agent-session":
       return `/agents/${encodeURIComponent(route.session)}/live`;
     case "role":
-      return `/agents?${new URLSearchParams({ [AGENTS_ROLE_PARAM]: route.role })}`;
+      // The Agents page narrowed to the role, written by that page's own address grammar
+      // (`agentsAddress`), so the link is the address its role picker writes. A role token is
+      // `[a-z0-9-]+` (`roleTokenOnlyPattern`), which that grammar carries whole at any length:
+      // a token the reference grammar reads never reaches the plain page, which is here only
+      // because `agentsAddress` answers `null` for a list it cannot carry.
+      return agentsAddress({ roles: [route.role] }) ?? "/agents";
     case "component": {
+      // The Architecture page is outside the directories whose addresses move into
+      // `lib/page-address.ts` (`ADDRESS_FEATURES` in `components/one-definition.test.ts`), so its
+      // `?component=` is built here as that page reads it.
       const architecture = buildProjectPath({ kind: "architecture", project: route.project });
       return `${architecture}?${ARCHITECTURE_COMPONENT_PARAM}=${encodeURIComponent(route.id)}`;
     }
@@ -1266,16 +1287,7 @@ export function buildProjectPath(route: ProjectRoute): string {
   if (route.item !== undefined) {
     query.set(route.item.kind, route.item.id);
   }
-  const search = query.toString();
-  return search === "" ? document : `${document}?${search}`;
-}
-
-/** The values a filter field accepts, or undefined for the one field whose vocabulary is the
- *  workspace's own: a project key is whatever somebody created, so only `none` is reserved. */
-function filterVocabulary(field: InboxFilterField): readonly string[] | undefined {
-  if (field === "priority") return INBOX_PRIORITY_VALUES;
-  if (field === "urgency") return INBOX_URGENCY_VALUES;
-  return field === "type" ? INBOX_TYPE_VALUES : undefined;
+  return addressPath(document, query);
 }
 
 /**
@@ -1343,7 +1355,7 @@ export function parseInboxSearch(search: string): InboxRoute {
   }
   const filters: Partial<Record<InboxFilterField, readonly string[]>> = {};
   for (const field of INBOX_FILTER_FIELDS) {
-    const vocabulary = filterVocabulary(field);
+    const vocabulary = INBOX_FILTER_VOCABULARY[field];
     const chosen: string[] = [];
     for (const raw of params.getAll(field)) {
       for (const part of raw.split(",")) {
