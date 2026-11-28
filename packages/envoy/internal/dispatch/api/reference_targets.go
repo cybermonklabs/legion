@@ -250,14 +250,16 @@ func (s *server) wholeReferences(ctx context.Context, who model.Actor, reference
 // its text stands (documentBlockPrefix). So one block answers one tree in this read and those two.
 // The footnotes are read from the stored texts, which call the same labels.
 //
-// A block whose bytes stand at two or more starts that a lead allows in its outermost container's
-// text is ambiguous (placedPrefix): that text alone cannot tell which start is the block's, since
-// the container can hold the block's bytes after another lead too, as in the code of a code block.
-// Such a block is handed to calledFootnotes too, which reads its document's latest markdown once
-// for the notes of its blocks and for its ambiguous blocks, parses it once with the ranges of its
-// nested blocks, and gives the block the prefix of the first of them whose bytes are its text
-// (rangedPrefix). Where that parse gives the block no range, or its document is not read, the
-// block takes the prefix of the first start.
+// A block whose bytes stand at two or more starts that container syntax allows in its outermost
+// container's text, where two of those starts write different prefixes, is ambiguous
+// (placedPrefix): that text alone cannot tell which start is the block's, since the container can
+// hold the block's bytes after another lead too, as in the code of a code block. Such a block is
+// handed to calledFootnotes too, which reads its document's latest markdown once for the notes of
+// its blocks and for its ambiguous blocks, parses it once with the ranges of its nested blocks, and
+// gives the block the prefix of the first of them whose bytes are its text (rangedPrefix). Where
+// that parse gives the block no range, or its document is not read, the block takes the prefix of
+// the first start. A block whose starts all write one prefix takes that prefix, which is its own
+// start's, and is handed to calledFootnotes only where its text holds a call.
 //
 // The request reads at most footnoteDocumentsMax documents: its one call of calledFootnotes takes
 // the blocks in the order in which the request's `ref` parameters first name each (blocks), and so

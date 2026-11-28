@@ -147,57 +147,74 @@ func footnoteLabel(rest string) int {
 // place a segment ends being a place text may start, and the walk of a line stops at the first
 // byte that opens no segment, since no lead the renderer writes holds it. At each such place a
 // window of len(text) bytes of outer, slid along it one byte at a time, has its hash compared with
-// text's (placement), and the bytes are compared only where the two hashes agree, which two
-// different strings of that length do only by chance (placementHashBase). The walk stops at the
-// second place whose bytes are text's, and the line of the first is walked once more from its
-// start for a place past it, so the bytes are compared at two places at most but by chance, each
-// line is walked twice at most, and the time grows with len(outer) + len(text), whatever bytes
-// their author writes. prefix is containerPrefix of the first place's lead, and ambiguous is
-// whether a second place's bytes are text's too. It is "" and not ambiguous where text holds one
-// line, which has no later line, and where no place's bytes are text's, which texts of one
-// markdown do not give: the block is then read as one whose containers the block index does not
-// record (documentBlockPrefix).
+// text's (placement). Up to the first place whose bytes are text's, the bytes are compared where
+// the two hashes agree, which two different strings of that length do only by chance
+// (placementHashBase), and prefix is containerPrefix of that first place's lead. Past it the
+// hashes alone are compared: at each later place whose hash agrees, containerPrefix of its lead is
+// compared with prefix, and the walk stops at the first that differs, where ambiguous is true;
+// where the walk reaches outer's end with none that differs, ambiguous is false. The line of each
+// place whose hash agrees is walked once more from its start, for a place past it. No line holds
+// text's bytes at two places, since text holds a newline: the copy from the earlier place ends the
+// line where text's first newline stands, so a copy from the later one would meet that newline
+// before text's first. So, but by chance, each line is walked twice at most, containerPrefix
+// reads one lead of it at most, and the bytes are compared at one place, and the time grows with
+// len(outer) + len(text), however many copies of text outer holds and whatever bytes their author
+// writes. It is "" and not ambiguous where text holds one line, which has no later line, and where
+// no place's bytes are text's, which texts of one markdown do not give: the block is then read as
+// one whose containers the block index does not record (documentBlockPrefix).
 //
 // The first such place is the block's own unless the outermost container holds the same bytes
-// before it, in another block or in the code of a code block, after a lead that can write another
-// prefix. Each line of a block's text after the first carries the prefix its lead writes, so such
-// bytes differ from the block's in every later line but where those lines start with what reads
-// as the other prefix, which only code whose lines start with spaces or `>` can do. outer alone
-// cannot tell which of two such places is the block's, so the block is ambiguous wherever a second
-// one stands, before its own or after it: its read takes its prefix from its document's parse,
-// which names the bytes of each nested block in the markdown, where it can (calledFootnotes,
-// rangedPrefix), and the first place's prefix where it cannot (documentBlockPrefix).
+// before it, in another block or in the code of a code block. Each line of a block's text after
+// the first carries the prefix its lead writes, so such bytes after a lead that writes another
+// prefix differ from the block's in every later line but where those lines start with what reads
+// as the other prefix, which only code whose lines start with spaces or `>` can do, and such bytes
+// after a lead that writes the same prefix, as where each item of a list holds the same code
+// block, give the block its own prefix wherever they stand. outer alone cannot tell which place is
+// the block's, so the block is ambiguous where its bytes stand at two or more starts that
+// container syntax allows in outer, where two of those starts write different prefixes, before
+// its own or after it: its read takes its prefix from its document's parse, which names the bytes
+// of each nested block in the markdown, where it can (calledFootnotes, rangedPrefix), and the
+// first place's prefix where it cannot (documentBlockPrefix). The block's own start is one of the
+// places, so where every place writes one prefix, that prefix is the block's, the only one the
+// parse could answer: the block takes it and reads no document, where a parse would spend one of
+// the request's footnoteDocumentsMax places and could leave a document's footnote definitions
+// unread for nothing. A later place whose hash agrees with text's and whose bytes are not text's,
+// which comes only by chance, can only make ambiguous a block that is not, whose read then spends
+// one parse that answers that same prefix: comparing the hashes alone past the first place changes
+// no tree.
 func placedPrefix(outer, text string) (prefix string, ambiguous bool) {
 	if !strings.Contains(text, "\n") || len(text) >= len(outer) {
 		return "", false
 	}
 	search := newPlacement(outer, text)
-	// first is the first place whose bytes are text's and lead the start of its line. No place is
-	// outer's first byte, so first is 0 while none is found, and each walk looks past it.
-	first, lead := 0, 0
+	// found is whether the first place whose bytes are text's is found, whose lead's prefix is
+	// prefix. after is the place the walk last stopped at, outer's first byte, where no place is,
+	// before the first stop, and each walk looks past it, so the line it stopped on is walked
+	// again from its start for a place past it.
+	found, after := false, 0
 	for line := 0; line <= search.last; {
 		end := len(outer)
 		if newline := strings.IndexByte(outer[line:], '\n'); newline >= 0 {
 			end = line + newline
 		}
-		at := search.on(line, end, first)
+		at := search.on(line, end, after)
 		if at < 0 {
 			line = end + 1
 			continue
 		}
-		if first > 0 {
-			ambiguous = true
-			break
+		after = at
+		// The walk ends a lead only where containerPrefix accepts it (containerSegment).
+		if !found {
+			if found = outer[at:at+len(text)] == text; found {
+				prefix, _ = containerPrefix(outer[line:at])
+			}
+			continue
 		}
-		// The same line is walked again, for a place past the first.
-		first, lead = at, line
+		if other, _ := containerPrefix(outer[line:at]); other != prefix {
+			return prefix, true
+		}
 	}
-	if first == 0 {
-		return "", false
-	}
-	// The walk ends a lead only where containerPrefix accepts it (containerSegment).
-	prefix, _ = containerPrefix(outer[lead:first])
-	return prefix, ambiguous
+	return prefix, false
 }
 
 // placement is placedPrefix's search for text in outer: a window of len(text) bytes of outer,
@@ -224,24 +241,24 @@ func newPlacement(outer, text string) placement {
 }
 
 // on is the first place past after on outer's line from line to end, its newline or outer's end,
-// at which text may start and from which outer's bytes are text's, or -1 where none is. after is 0,
-// outer's first byte, or a place on the line found before, from which the window has not slid on,
-// so every place it looks at is past the window's start and past outer's first byte. A place text
-// may start at is at most last and ends a lead that containerPrefix accepts: the line's start, and
-// the end of each segment (containerSegment) of the run of them the line opens with, and of each
-// such segment without its optional end, which come in that order along the line. Every other
-// place on the line ends a lead that containerPrefix refuses, so the walk stops at the first byte
-// that opens no segment.
+// at which text may start and the hash of the window from it is text's (agrees), or -1 where none
+// is. after is 0, outer's first byte, or the place an earlier call answered, and the window has
+// slid past it only on lines before this one, so every place it looks at is past the window's
+// start and past outer's first byte. A place text may start at is at most last and ends a lead
+// that containerPrefix accepts: the line's start, and the end of each segment (containerSegment)
+// of the run of them the line opens with, and of each such segment without its optional end,
+// which come in that order along the line. Every other place on the line ends a lead that
+// containerPrefix refuses, so the walk stops at the first byte that opens no segment.
 func (s *placement) on(line, end, after int) int {
 	for at := line; at <= s.last; {
-		if at > after && s.holds(at) {
+		if at > after && s.agrees(at) {
 			return at
 		}
 		length, optional, _ := containerSegment(s.outer[at:end])
 		if length == 0 {
 			return -1
 		}
-		if bare := at + length - optional; optional > 0 && bare > after && bare <= s.last && s.holds(bare) {
+		if bare := at + length - optional; optional > 0 && bare > after && bare <= s.last && s.agrees(bare) {
 			return bare
 		}
 		at += length
@@ -249,11 +266,13 @@ func (s *placement) on(line, end, after int) int {
 	return -1
 }
 
-// holds is whether outer's bytes from start are text's, for a start no earlier than the window's
-// and at most last. The window slides to start one byte at a time, each step taking the byte
-// that enters it into the hash and the byte that leaves it out of it, and the bytes are compared
-// only where the hashes agree.
-func (s *placement) holds(start int) bool {
+// agrees is whether the hash of outer's bytes from start is text's, for a start no earlier than
+// the window's and at most last. The window slides to start one byte at a time, each step taking
+// the byte that enters it into the hash and the byte that leaves it out of it. Two different
+// strings of len(text) bytes share a hash only by chance (placementHashBase), so where the hashes
+// agree the bytes are text's but by chance, and placedPrefix compares the bytes up to its first
+// place alone.
+func (s *placement) agrees(start int) bool {
 	for ; s.start < start; s.start++ {
 		leaving := placementTimes(uint64(s.outer[s.start]), s.weight)
 		s.hash = placementHashStep(s.hash, s.outer[s.start+len(s.text)])
@@ -262,7 +281,7 @@ func (s *placement) holds(start int) bool {
 		}
 		s.hash -= leaving
 	}
-	return s.hash == s.want && s.outer[start:start+len(s.text)] == s.text
+	return s.hash == s.want
 }
 
 // placementHashModulus is the Mersenne prime 2^61 − 1, modulo which placement takes hashes.
@@ -282,7 +301,7 @@ var placementHashBase = 2 + rand.Uint64N(placementHashModulus-2)
 // string's hash is its bytes taken in by this step from the first. The hash of a string without
 // its first byte b is the string's hash minus b times the base to the power of the string's
 // length less one, so a window slid one byte along a text has its next hash in two products
-// (placement.holds).
+// (placement.agrees).
 func placementHashStep(hash uint64, b byte) uint64 {
 	hash = placementTimes(hash, placementHashBase) + uint64(b)
 	if hash >= placementHashModulus {
@@ -318,8 +337,8 @@ func lineStart(text string, at int) int {
 // none, and one whose rendering is not markdown byte for byte (footnoteParseOf). The reference
 // graph's read reads the containers of a pin so where the graph store states none at its version
 // (nestedPrefix), and calledFootnotes reads so the containers of each ambiguous block, whose
-// bytes stand at two or more starts that a lead allows in its outermost container's text
-// (placedPrefix).
+// bytes stand at two or more starts that container syntax allows in its outermost container's
+// text, where two of those starts write different prefixes (placedPrefix).
 func rangedPrefix(markdown string, nested [][2]int, text string) (prefix string, found bool) {
 	for _, span := range nested {
 		if markdown[span[0]:span[1]] == text {
@@ -379,10 +398,12 @@ func fencePrefix(whole string) string {
 // text of its outermost container, as the block index records it (refs.OutermostContainers,
 // refs.OutermostContainerAt): placedPrefix of outer and whole, where that is not "" or the block
 // is ambiguous, and ambiguous, whether it is. An ambiguous block's bytes stand at two or more
-// starts that a lead allows in outer, which outer alone cannot tell apart, and prefix is the
-// first start's: its read takes the prefix from its document's parse instead, where that parse
-// gives the block a range (calledFootnotes, rangedPrefix), and keeps this one where it gives none
-// or the request reads no more documents (footnoteDocumentsMax).
+// starts that container syntax allows in outer, where two of those starts write different
+// prefixes, which outer alone cannot tell apart, and prefix is the first start's: its read takes
+// the prefix from its document's parse instead, where that parse gives the block a range
+// (calledFootnotes, rangedPrefix), and keeps this one where it gives none or the request reads no
+// more documents (footnoteDocumentsMax). A block whose starts all write one prefix takes that
+// prefix, which is its own start's, and is not ambiguous.
 //
 // Otherwise the block index records no container of the block: held is false, as for a block at
 // the document's top level, a block whose outermost container cannot be read, and a block whose

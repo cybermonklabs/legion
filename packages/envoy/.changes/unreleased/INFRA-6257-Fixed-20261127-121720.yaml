@@ -31,19 +31,22 @@ body: |-
   first. The reads learn which blocks hold the block from the block index, and for a pin where
   the block stood at the version it pins, so a list inside a list item or a quote draws as one
   list of its own items. Where the block's bytes stand at two or more starts that container
-  syntax allows in its outermost container's text, as where a code block before it in the same
-  quote holds the same bytes, the reads take its prefix from the range that the parse of its
-  document gives it, of the version a pin names for a pin, and the first such start's where that
-  parse gives it none. Such a block's document takes one of the request's 16 documents, as a
-  document whose text calls a note does, and one read and one parse of it serve both; past the
-  16, the block keeps the first start's prefix. Before, a fenced code block there could hold its
-  closing fence as code, a paragraph's line in a quote could open a quote of its own, a list in a
-  list item could draw its second item inside its first, and a list in a quote could draw its
-  second item in a quote of its own. Where the block index records no block that holds a block,
-  these reads take off each line after the first of a typed block the indentation or `>` written
-  before its closing fence, as the coverage and results reads do, and draw any other block as its
-  stored text stands. The coverage and results reads draw the content of a typed block in a quote
-  as they draw one at the top level, where before they drew its whole stored text.
+  syntax allows in its outermost container's text, and two of those starts write different
+  prefixes, as where a code block before it in the same quote holds the same bytes after a `>` of
+  its own, the reads take its prefix from the range that the parse of its document gives it, of
+  the version a pin names for a pin, and the first such start's where that parse gives it none.
+  Such a block's document takes one of the request's 16 documents, as a document whose text calls
+  a note does, and one read and one parse of it serve both; past the 16, the block keeps the first
+  start's prefix. A block whose starts all write the same prefix takes that prefix without a
+  parse, so it takes none of the 16 unless its text calls a note. Before, a fenced code block
+  there could hold its closing fence as code, a paragraph's line in a quote could open a quote of
+  its own, a list in a list item could draw its second item inside its first, and a list in a
+  quote could draw its second item in a quote of its own. Where the block index records no block
+  that holds a block, these reads take off each line after the first of a typed block the
+  indentation or `>` written before its closing fence, as the coverage and results reads do, and
+  draw any other block as its stored text stands. The coverage and results reads draw the content
+  of a typed block in a quote as they draw one at the top level, where before they drew its whole
+  stored text.
 time: 2026-11-27T12:17:20Z
 custom:
     Issue: INFRA-6257

@@ -77,6 +77,52 @@ func TestABlockInAContainerWhoseLinesRepeatItsTextTakesItsOwnPrefix(t *testing.T
 	}
 }
 
+// A block is ambiguous only where two of the starts that its bytes stand at in its outermost
+// container's text, each after a lead that container syntax allows, write different prefixes
+// (placedPrefix): its prefix is then the first start's, which its read replaces with the one its
+// document's parse gives it. Where every start writes one prefix, the block's own start among
+// them, that prefix is the block's and the block is not ambiguous, so its read spends none of the
+// request's documents on a parse that could answer only that prefix. The rows are a list whose two
+// items each hold the same code block, of two lines of code, two columns in, which answers the
+// items' two columns and is not ambiguous; the shape of row 12 of check c-open-fence, a quote
+// holding a code block fenced with four backticks whose code is `> ` and then the block, before
+// the block itself, which answers the prefix `> > ` of the first start and is ambiguous; a quote
+// holding the block twice and then that code block, whose third start alone writes another
+// prefix, which answers the quote's `> ` and is ambiguous, since the walk goes on past a start
+// that writes the first start's prefix; and a quote holding the block at one start alone, which
+// answers the quote's `> ` and is not ambiguous. It reads no database.
+func TestABlockIsAmbiguousOnlyWhereItsStartsWriteDifferentPrefixes(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name, outer, text, prefix string
+		ambiguous                 bool
+	}{
+		{name: "a list whose two items each hold the same code block two columns in",
+			outer:  "- The first item.\n\n  ```\n  first code line\n  second code line\n  ```\n\n- The second item.\n\n  ```\n  first code line\n  second code line\n  ```",
+			text:   "```\n  first code line\n  second code line\n  ```",
+			prefix: "  "},
+		{name: "row 12's quote, whose code block fenced with four backticks holds the block after `> > `",
+			outer:  "> ````\n> > ```\n> > The code line.\n> ```\n> ````\n>\n> ```\n> > The code line.\n> ```",
+			text:   "```\n> > The code line.\n> ```",
+			prefix: "> > ", ambiguous: true},
+		{name: "a quote holding the block twice after `> ` and then in a code block's code after `> > `",
+			outer:  "> ```\n> > The code line.\n> ```\n>\n> ```\n> > The code line.\n> ```\n>\n> ````\n> > ```\n> > The code line.\n> ```\n> ````",
+			text:   "```\n> > The code line.\n> ```",
+			prefix: "> ", ambiguous: true},
+		{name: "a quote holding the block at one start alone",
+			outer:  "> The quote's paragraph.\n>\n> ```\n> The code line.\n> ```",
+			text:   "```\n> The code line.\n> ```",
+			prefix: "> "},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			prefix, ambiguous := placedPrefix(row.outer, row.text)
+			if prefix != row.prefix || ambiguous != row.ambiguous {
+				t.Fatalf("placedPrefix(%q, %q) = %q, %t, want %q, %t", row.outer, row.text, prefix, ambiguous, row.prefix, row.ambiguous)
+			}
+		})
+	}
+}
+
 // mebibyteList is the list BenchmarkABlockPlacedInAMebibyteContainerWhoseLinesRepeatItsText
 // places its block in, and that block, listWhoseLinesRepeatItsBlock with r = 5,000 and a run of
 // 63 `z`, with the list's size as an upload measures it (pmdoc.MeasureDocument): made and

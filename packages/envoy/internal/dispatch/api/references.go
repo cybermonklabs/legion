@@ -237,13 +237,14 @@ type graphFootnotes struct {
 //
 // prefixes is what the read of the node's containers answered (readGraphPrefixes), which this
 // read completes. Where that read found the node's text or the pin's ambiguous, its bytes at two
-// or more starts that a lead allows in its outermost container's text (placedPrefix), the text's
-// call reads its prefix from the parse of its document, with the ranges of its nested blocks, in
-// the read and the parse that serve its notes: the node's text in the first call, at the latest
-// version, and the pin's in the pin's call, at the version it pins, which is made for an ambiguous
-// pin whose text calls no note too. The text's prefix in prefixes is then set to that of the first
-// nested block of the parse whose bytes are the text (rangedPrefix), and stays the first start's
-// where the parse gives the text no range or its document is not read.
+// or more starts that container syntax allows in its outermost container's text, where two of
+// those starts write different prefixes (placedPrefix), the text's call reads its prefix from the
+// parse of its document, with the ranges of its nested blocks, in the read and the parse that
+// serve its notes: the node's text in the first call, at the latest version, and the pin's in the
+// pin's call, at the version it pins, which is made for an ambiguous pin whose text calls no note
+// too. The text's prefix in prefixes is then set to that of the first nested block of the parse
+// whose bytes are the text (rangedPrefix), and stays the first start's where the parse gives the
+// text no range or its document is not read.
 //
 // The read reads at most footnoteDocumentsMax documents, as the batched reference read does, and
 // both calls spend from documents, what the request reads of its documents (footnoteDocuments):
@@ -317,9 +318,10 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 // at the pinned version. The read takes each off its text before it draws it
 // (graphNodeRead.shape). A text no container holds, a text of one line, and every text of a node
 // that is no document's block, has none. nodeAmbiguous and pinAmbiguous say whether that text is
-// ambiguous, its bytes at two or more starts that a lead allows in its outermost container's
-// text: its prefix is then the first start's until the read of its footnotes sets it from its
-// document's parse (readGraphFootnotes).
+// ambiguous, its bytes at two or more starts that container syntax allows in its outermost
+// container's text, where two of those starts write different prefixes: its prefix is then the
+// first start's until the read of its footnotes sets it from its document's parse
+// (readGraphFootnotes).
 type graphPrefixes struct {
 	node, pin                   string
 	nodeAmbiguous, pinAmbiguous bool
@@ -336,10 +338,11 @@ type graphPrefixes struct {
 // level that holds it, and no document is read here for the node's. That container starts its
 // line, so the line the block starts on is whole in its text, with what every container of the
 // block writes on it (placedPrefix), and the texts of the containers inside it are not read. Where
-// the text's bytes stand at two or more starts that a lead allows in that container's text, the
-// text is ambiguous: its prefix here is the first start's, and the read of its footnotes takes it
-// from its document's parse instead, the node's at the latest version and the pin's at the version
-// it pins, each in its place of the request's bound of documents (readGraphFootnotes).
+// the text's bytes stand at two or more starts that container syntax allows in that container's
+// text, where two of those starts write different prefixes, the text is ambiguous: its prefix here
+// is the first start's, and the read of its footnotes takes it from its document's parse instead,
+// the node's at the latest version and the pin's at the version it pins, each in its place of the
+// request's bound of documents (readGraphFootnotes).
 //
 // The node's text, where it holds more than one line, is read with the block's outermost
 // container now (refs.OutermostContainers): a removed node has no text, and so none. The pin's

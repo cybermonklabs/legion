@@ -521,11 +521,12 @@ type graphNodeRead struct {
 // stood in at the pinned version, so the tree is the one the block's document draws for it, or,
 // where the read does not learn those blocks, from a typed block's closing fence, as the coverage
 // and the results reads learn it (documentBlockPrefix). A block whose bytes stand at two or more
-// starts in its outermost container's text has its prefix from its document's parse instead,
-// where the request reads that document (readGraphFootnotes). The footnotes are read from the
-// texts as stored, which call the same labels. Every other node's prefixes are empty
-// (readGraphPrefixes), and withoutPrefix answers a text with no prefix as it stands, so its texts
-// are registered as they stand.
+// starts that container syntax allows in its outermost container's text, where two of those starts
+// write different prefixes, has its prefix from its document's parse instead, where the request
+// reads that document (readGraphFootnotes). The footnotes are read from the texts as stored, which
+// call the same labels. Every other node's prefixes are empty (readGraphPrefixes), and
+// withoutPrefix answers a text with no prefix as it stands, so its texts are registered as they
+// stand.
 func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes, prefixes graphPrefixes) {
 	n.Pin = nil
 	if pin := n.GraphNode.Pin; pin != nil {
