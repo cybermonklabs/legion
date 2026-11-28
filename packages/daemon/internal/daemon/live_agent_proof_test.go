@@ -252,7 +252,7 @@ func proofCheckoutRoot(t *testing.T) string {
 	return root
 }
 
-// buildProofLegion builds the `legion` every pane's shim and every operator command in either
+// buildProofLegion builds the `legion` every pane's shim and every operator command of a live
 // proof is, from this checkout.
 func buildProofLegion(t *testing.T, root, work string) string {
 	t.Helper()

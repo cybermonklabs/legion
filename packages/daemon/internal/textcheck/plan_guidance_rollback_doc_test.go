@@ -65,16 +65,22 @@ func TestThePlanGuidanceRollbackSectionNamesTheKeyTheTableDeclares(t *testing.T)
 }
 
 // sectionTextIn is the visible text of heading's section in text, a Markdown page: from the line
-// after that heading to the next heading of its level or above, or the end of the page. A page
-// with no such heading is an error rather than an empty string, which would read as a section that
-// says nothing.
+// after that heading to the next heading of its level or above, or the end of the page. A `#` line
+// inside a fenced block, from a line opening "```" to the next, is a shell comment and no heading,
+// as headingOf and wayBackBlockIn read it. A page with no such heading is an error rather than an
+// empty string, which would read as a section that says nothing.
 func sectionTextIn(text, heading string) (string, error) {
 	lines := strings.Split(visibleMarkdown(text), "\n")
 	section, level, end := -1, 0, len(lines)
+	fenced := false
 	for i, line := range lines {
+		if strings.HasPrefix(line, "```") {
+			fenced = !fenced
+			continue
+		}
 		opens := markdownHeading.FindStringSubmatch(line)
 		switch {
-		case opens == nil:
+		case fenced || opens == nil:
 		case opens[2] == heading && section < 0:
 			section, level = i+1, len(opens[1])
 		case section >= 0 && end == len(lines) && len(opens[1]) <= level:

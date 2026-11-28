@@ -255,25 +255,26 @@ func ReadPlanGuidance(path string) ([]byte, error) {
 
 // WritePlanGuidance writes `# Plan guidance of this deployment (<legionID>)`, a blank line,
 // Legion's sentence that the guidance binds no plan, a blank line, and contents, which
-// ReadPlanGuidance answered, verbatim to PlanGuidanceCopy, returning that path. Boot writes it
-// before the first pane opens, so no launch reads the operator's own path, and the daemon writes it
-// again whenever a launch reads an edited file, as it does the instructions' copies
-// (instructionsCopies in internal/daemon). The copy is replaced whole, so an owner's launch
-// composing its prompt while it is written reads the old copy or the new one, never half of one.
-// Under Kubernetes the copy is on the daemon's own disk, which no pod reaches, and the composed
-// prompt goes to the pod in its start command. Under tmux every pane runs as the daemon's Unix
-// user, so a pane can rewrite the copy, and the next owner launch reads what it wrote until the
-// daemon next reads an edit of the operator's file, as with the deployment instructions' copy.
-func WritePlanGuidance(contents []byte, stateDir, legionID string) (string, error) {
+// ReadPlanGuidance answered, verbatim to PlanGuidanceCopy. Boot writes it before the first pane
+// opens, so no launch reads the operator's own path, and the daemon writes it again whenever a
+// launch reads an edited file, as it does the instructions' copies (instructionsCopies in
+// internal/daemon). The copy is replaced whole, so an owner's launch composing its prompt while it
+// is written reads the old copy or the new one, never half of one. The path is no answer of its
+// own: a reader of the copy builds it with PlanGuidanceCopy. Under Kubernetes the copy is on the
+// daemon's own disk, which no pod reaches, and the composed prompt goes to the pod in its start
+// command. Under tmux every pane runs as the daemon's Unix user, so a pane can rewrite the copy,
+// and the next owner launch reads what it wrote until the daemon next reads an edit of the
+// operator's file, as with the deployment instructions' copy.
+func WritePlanGuidance(contents []byte, stateDir, legionID string) error {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return "", fmt.Errorf("create state directory %s: %w", stateDir, err)
+		return fmt.Errorf("create state directory %s: %w", stateDir, err)
 	}
 	target := PlanGuidanceCopy(stateDir)
 	body := fmt.Sprintf("# Plan guidance of this deployment (%s)\n\nLegion requires none of this guidance and refuses no plan for a step it lacks.\n\n%s", legionID, contents)
 	if err := writeAtomically(target, body); err != nil {
-		return "", fmt.Errorf("write %s: %w", target, err)
+		return fmt.Errorf("write %s: %w", target, err)
 	}
-	return target, nil
+	return nil
 }
 
 // ReadMemoryInstructions is the project's memory instructions file

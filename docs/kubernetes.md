@@ -5481,7 +5481,7 @@ The daemon's Service carries the API port and the worker-stream port under one s
 A liveness probe on it would restart that one daemon for the same reason, in the middle of its drain.
 
 `legion config check` runs all of it without starting the daemon, writing a file or running a key command, and then every refusal boot makes from the files and the environment before its first write, in boot's words:
-the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, the plan guidance file (`plan_guidance`, refused when unreadable or blank), and the runtime's own reads (the kubeconfig and every value's translation;
+the operator, Envoy and Dispatch bearers' files, the NATS nkey seed, the instructions file, the plan guidance file (`plan_guidance`, refused when it is unreadable or blank, when the path is not a regular file, and when the file holds more than 64 KiB), and the runtime's own reads (the kubeconfig and every value's translation;
 under tmux, the OMP invocation, through `mise where` when it names a `mise` tool, and the host's `gh`, `git` and `jj`).
 After its `Config OK: project=…` line it prints one line per deployment capability the file alone leaves open with no decision
 — `resource-limits` under tmux, where a pane reserves no CPU and memory, and `secrets` when no broker is configured

@@ -30,10 +30,10 @@ func TestOnlyAnOwnersPromptHoldsThePlanGuidance(t *testing.T) {
 		header     = "# Plan guidance of this deployment (s1)"
 		deployment = "Deployment rule 7f3a."
 	)
-	guidance, err := config.WritePlanGuidance([]byte(planted+"\n"), stateDir, "s1")
-	if err != nil {
+	if err := config.WritePlanGuidance([]byte(planted+"\n"), stateDir, "s1"); err != nil {
 		t.Fatalf("WritePlanGuidance: %v", err)
 	}
+	guidance := config.PlanGuidanceCopy(stateDir)
 	if err := config.WriteDeploymentInstructions([]byte(deployment+"\n"), stateDir, "s1"); err != nil {
 		t.Fatalf("WriteDeploymentInstructions: %v", err)
 	}

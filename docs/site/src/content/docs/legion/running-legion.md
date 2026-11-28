@@ -809,13 +809,15 @@ What each part is for:
   before `instructions`; no other agent reads it. Legion requires none of it and refuses no plan
   that does not follow it. The daemon reads the file at boot and refuses to start, as
   `legion config check` refuses, when it is missing, unreadable or holds only blank lines
-  (`plan guidance file <path> is empty`); it writes its copy to `<state_dir>/plan-guidance.md`
-  under the line `# Plan guidance of this deployment (<project>)`. It reads the file again before
-  every launch, as it reads `instructions`, so a changed file reaches each owner at its next launch
-  with no restart; a running owner keeps the prompt it started with, and no pod is replaced. An
-  edit that leaves the file missing, unreadable or blank stops no launch: owners launch with the
-  text last read, and the daemon logs a warning naming the file. `legion state --json` answers the
-  path at `settings.plan_guidance`. It must hold no secret.
+  (`plan guidance file <path> is empty`), and, naming `plan_guidance`, when the path is not a
+  regular file (a directory, a FIFO or a device) or the file holds more than 64 KiB; it writes its
+  copy to `<state_dir>/plan-guidance.md` under the line
+  `# Plan guidance of this deployment (<project>)`. It reads the file again before every launch,
+  as it reads `instructions`, so a changed file reaches each owner at its next launch with no
+  restart; a running owner keeps the prompt it started with, and no pod is replaced. An edit that
+  makes the file unusable (missing, unreadable, blank, no regular file, or over 64 KiB) stops no
+  launch: owners launch with the text last read, and the daemon logs a warning naming the file.
+  `legion state --json` answers the path at `settings.plan_guidance`. It must hold no secret.
 - **`hooks`** (optional) is the list of prompts the daemon puts in front of the workers of an
   issue whose work keeps going back. Each entry carries `name`, its own and named once in the
   file; `on`, the event, and `work_back`, a move to an earlier phase, is the one event the daemon

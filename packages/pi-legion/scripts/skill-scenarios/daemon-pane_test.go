@@ -41,11 +41,11 @@ func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 	}
 
 	const guidance = "Plant 7f3a.\n"
-	path, err := config.WritePlanGuidance([]byte(guidance), t.TempDir(), rigProject)
-	if err != nil {
+	stateDir := t.TempDir()
+	if err := config.WritePlanGuidance([]byte(guidance), stateDir, rigProject); err != nil {
 		t.Fatal(err)
 	}
-	written, err := os.ReadFile(path)
+	written, err := os.ReadFile(config.PlanGuidanceCopy(stateDir))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,10 +86,11 @@ func TestTheToolRestatesTheDaemonsPlanGuidance(t *testing.T) {
 // addressing and the guidance copy is the daemon's, part for part and blank line for blank line.
 func TestTheToolJoinsAPromptAsTheDaemonDoes(t *testing.T) {
 	guidance := []byte("Plant 7f3a.\n")
-	copied, err := config.WritePlanGuidance(guidance, t.TempDir(), rigProject)
-	if err != nil {
+	guidanceDir := t.TempDir()
+	if err := config.WritePlanGuidance(guidance, guidanceDir, rigProject); err != nil {
 		t.Fatal(err)
 	}
+	copied := config.PlanGuidanceCopy(guidanceDir)
 	compared := 0
 	for _, role := range claim.Roles {
 		for _, root := range []bool{true, false} {

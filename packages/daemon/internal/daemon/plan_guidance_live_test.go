@@ -190,12 +190,7 @@ func (g *planGuidanceLive) checkConfigNamesIt() (string, error) {
 	t := g.t
 	t.Helper()
 	dir := t.TempDir()
-	legion := filepath.Join(dir, "legion")
-	build := exec.Command("go", "build", "-o", legion, "./cmd/legion")
-	build.Dir = filepath.Join(g.root, "packages", "daemon")
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build the legion binary: %v\n%s", err, out)
-	}
+	legion := buildProofLegion(t, g.root, dir)
 	body := fmt.Sprintf(`project: DEMO
 port: 13370
 postgres_dsn: postgres://legion@127.0.0.1:1/legion

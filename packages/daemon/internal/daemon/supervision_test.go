@@ -222,40 +222,34 @@ func TestRunLaunchesWithThePromptInstructionsAndSecretsItWasGiven(t *testing.T) 
 }
 
 // Boot copies the operator's plan guidance under the state directory before the first pane opens,
-// headed as the copy is (config.WritePlanGuidance), so an owner's launch reads what boot read and
-// never the operator's own path.
-func TestRunWritesThePlanGuidanceCopy(t *testing.T) {
+// as config.WritePlanGuidance writes it, and an owner's launch reads that copy, never the
+// operator's own path; a phase worker's launch of the same daemon reads none.
+func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
 	t.Parallel()
 	cfg := testConfig(t)
+	const guidance = "Review on another model family.\n"
 	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
-	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
+	if err := os.WriteFile(cfg.PlanGuidancePath, []byte(guidance), 0o600); err != nil {
 		t.Fatalf("write the plan guidance: %v", err)
 	}
-	startDaemon(t, cfg, fakeRuntime(fake.NewRuntime(), &built{}))
+	rt := fake.NewRuntime()
+	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
 
 	written, err := os.ReadFile(filepath.Join(cfg.StateDir, "plan-guidance.md"))
 	if err != nil {
 		t.Fatalf("boot wrote no plan guidance copy: %v", err)
 	}
-	want := "# Plan guidance of this deployment (" + cfg.Project + ")\n\n" +
-		"Legion requires none of this guidance and refuses no plan for a step it lacks.\n\n" +
-		"Review on another model family.\n"
-	if string(written) != want {
-		t.Fatalf("plan guidance copy = %q, want %q", written, want)
+	expected := t.TempDir()
+	if err := config.WritePlanGuidance([]byte(guidance), expected, cfg.Project); err != nil {
+		t.Fatalf("WritePlanGuidance: %v", err)
 	}
-}
-
-// An owner's launch reads the copy boot wrote of the plan guidance, and a phase worker's launch of
-// the same daemon reads none.
-func TestAnOwnersLaunchReadsThePlanGuidanceCopy(t *testing.T) {
-	t.Parallel()
-	cfg := testConfig(t)
-	cfg.PlanGuidancePath = filepath.Join(t.TempDir(), "plan-guidance.md")
-	if err := os.WriteFile(cfg.PlanGuidancePath, []byte("Review on another model family.\n"), 0o600); err != nil {
-		t.Fatalf("write the plan guidance: %v", err)
+	wantCopy, err := os.ReadFile(config.PlanGuidanceCopy(expected))
+	if err != nil {
+		t.Fatal(err)
 	}
-	rt := fake.NewRuntime()
-	d := startDaemon(t, cfg, fakeRuntime(rt, &built{}))
+	if string(written) != string(wantCopy) {
+		t.Fatalf("plan guidance copy = %q, want what config.WritePlanGuidance writes of the operator's file, %q", written, wantCopy)
+	}
 
 	owner := lastLaunch(t, rt, d.spawn(architect()))
 	worker := lastLaunch(t, rt, d.spawn(api.SpawnRequest{Tree: "LEGION-1", Issue: "LEGION-2", Role: claim.RoleImplementer, Prompt: "Wait."}))

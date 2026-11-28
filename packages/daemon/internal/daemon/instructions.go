@@ -37,7 +37,8 @@ type instructionsCopy struct {
 	source string
 	// read is source read with boot's refusal of it, and write the copy replaced whole, so a
 	// launch composing its prompt beside a refresh reads the old copy or the new one, never half
-	// of one (config.WriteDeploymentInstructions, config.WriteVariantInstructions).
+	// of one (config.WriteDeploymentInstructions, config.WritePlanGuidance,
+	// config.WriteVariantInstructions).
 	read  func() ([]byte, error)
 	write func([]byte) error
 	// contents is what the copy holds, and failure the refusal last logged for this file: "" while
@@ -67,8 +68,8 @@ func readArmInstructions(experiment string, variant config.Variant) ([]byte, err
 // `memory` block's arm at the block's own `memory-instructions.md`
 // (config.VariantInstructionsFile, where a launch's arms read the copies back from:
 // experiment.Launch).
-func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logger) (*instructionsCopies, string, string, error) {
-	copies := &instructionsCopies{log: log}
+func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logger) (copies *instructionsCopies, deployment, guidance string, err error) {
+	copies = &instructionsCopies{log: log}
 	keep := func(file instructionsCopy) error {
 		if err := file.write(file.contents); err != nil {
 			return err
@@ -76,7 +77,6 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 		copies.files = append(copies.files, file)
 		return nil
 	}
-	deployment := ""
 	if reads.instructions != nil {
 		source := cfg.InstructionsPath
 		if err := keep(instructionsCopy{
@@ -91,7 +91,6 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 		}
 		deployment = config.DeploymentInstructionsCopy(cfg.StateDir)
 	}
-	guidance := ""
 	if reads.planGuidance != nil {
 		source := cfg.PlanGuidancePath
 		if err := keep(instructionsCopy{
@@ -99,8 +98,7 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 			contents: reads.planGuidance,
 			read:     func() ([]byte, error) { return config.ReadPlanGuidance(source) },
 			write: func(contents []byte) error {
-				_, err := config.WritePlanGuidance(contents, cfg.StateDir, cfg.Project)
-				return err
+				return config.WritePlanGuidance(contents, cfg.StateDir, cfg.Project)
 			},
 		}); err != nil {
 			return nil, "", "", err
@@ -126,10 +124,11 @@ func writeInstructionsCopies(cfg config.Config, reads bootReads, log *slog.Logge
 // refresh reads each operator's file again and replaces the copy of each one that changed, so the
 // launch about to be built carries what the files hold now; SpawnSpec calls it first. Each edit it
 // reads is logged once, at INFO, naming the file. A file that no longer reads, which boot would
-// refuse (missing, unreadable or blank), keeps the copy last read: a mistake in an edit stops no
-// launch, and the daemon says so once for each refusal, at WARN, naming the file and the refusal;
-// a copy it cannot replace is the same, at ERROR. A file that reads again after a refusal is
-// logged once at INFO, whether or not its text changed. A nil c, a test's specs literal,
+// refuse (missing, unreadable or blank, and for the plan guidance also a path that is not a regular
+// file or a file over config.PlanGuidanceMaxBytes), keeps the copy last read: a mistake in an edit
+// stops no launch, and the daemon says so once for each refusal, at WARN, naming the file and the
+// refusal; a copy it cannot replace is the same, at ERROR. A file that reads again after a refusal
+// is logged once at INFO, whether or not its text changed. A nil c, a test's specs literal,
 // refreshes nothing.
 func (c *instructionsCopies) refresh(ctx context.Context) {
 	if c == nil {

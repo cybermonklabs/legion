@@ -228,7 +228,7 @@ func (s specs) launchBackend(role claim.Role) (runtime.Backend, string, error) {
 // role. It is the one test of an owner's launch: the deployment's plan guidance reaches an owner's
 // prompt and no other. A release whose owner is no longer told by its role alone (an owner that
 // takes a step of its own plan keeps its owner's claim) changes this body; a release that changes
-// which role owns a plan changes claim.OwnsPlan, which the composer and the plan routes read too.
+// which role owns a plan changes claim.OwnsPlan, whose comment names everything that reads it.
 func OwnsPlan(c supervise.Claim) bool {
 	return claim.OwnsPlan(c.Role)
 }

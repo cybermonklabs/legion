@@ -189,7 +189,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "plan_guidance", Default: "an owner's system prompt gains no guidance", RequiredBy: "no",
-			Description: "A Markdown file of the deployment's guidance for the plans its owners write — which steps a task takes, which agent takes each, what a review and a test must be — appended to the system prompt of each owner alone, after its addressing and before `instructions`; Legion requires none of it and refuses no plan that does not follow it; it must hold no secret.",
+			Description: "A Markdown file of the deployment's guidance for the plans its owners write — which steps a task takes, which agent takes each, what a review and a test must be — appended to the system prompt of each owner alone, after its addressing and before `instructions`; Legion requires none of it and refuses no plan that does not follow it; it must hold no secret. Boot refuses a file that is missing, unreadable or blank, a path that is not a regular file, and a file over 64 KiB. The daemon reads it at boot and again before each launch, so an edit reaches the next owner's launch with no restart, and an edit that leaves the file unusable in any of these ways keeps the text last read.",
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.PlanGuidance = v }),
 		},
 		{

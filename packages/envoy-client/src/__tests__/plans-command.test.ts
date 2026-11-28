@@ -276,9 +276,9 @@ function finishedRun(issue: FinishedIssue, first: number, count: number): Finish
 describe("dispatch plans", () => {
   // An owner reads the earlier plans to learn from plans, and a busy project closes hundreds of
   // issues a day that Legion never ran, each `plan none ratings none`. So with no `since` the
-  // command asks Dispatch for only the newest PLANS_DEFAULT_COUNT finished issues that have a plan
-  // or a rating, and Dispatch counts the rest: the header's two counts are Dispatch's, which here
-  // differ from every count of the issues answered.
+  // command asks Dispatch for only the newest DISPATCH_PLANS_DEFAULT_COUNT finished issues that
+  // have a plan or a rating, and Dispatch counts the rest: the header's two counts are Dispatch's,
+  // which here differ from every count of the issues answered.
   test("with no since, it asks for the 20 newest finished issues with a plan or a rating, and prints Dispatch's counts", async () => {
     const planned = finishedRun(ratedOnce, 125, 20);
     const answer: ProjectPlans = {

@@ -31,6 +31,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
@@ -139,12 +140,7 @@ func readPlanGuidance(path string) ([]byte, error) {
 // planGuidanceKeyed is whether this checkout's daemon reads the key plan_guidance
 // (config.ConfigReference), without which no launch of it carries a plan guidance.
 func planGuidanceKeyed() bool {
-	for _, key := range config.ConfigReference() {
-		if key.Name == "plan_guidance" {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(config.ConfigReference(), func(key config.ConfigKey) bool { return key.Name == "plan_guidance" })
 }
 
 func printPhase(role claim.Role) error {

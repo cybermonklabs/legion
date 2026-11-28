@@ -317,8 +317,7 @@ test.skipIf(skip)(
     const guidance = path.join(rig, "plan-guidance.md");
     writeFileSync(guidance, "Plant 7f3a.\n");
     const header = "\n\n# Plan guidance of this deployment (";
-    const end =
-      "Legion requires none of this guidance and refuses no plan for a step it lacks.\n\nPlant 7f3a.";
+    const end = "\n\nPlant 7f3a.";
     for (const root of [true, false]) {
       const plain = composeRolePrompt(DAEMON_MODULE, "architect", root);
       const guided = composeRolePrompt(DAEMON_MODULE, "architect", root, {

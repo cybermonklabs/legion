@@ -331,9 +331,10 @@ func rigLaunch(t *testing.T, req rigLaunchRequest) rigLaunchAnswer {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if guidance, err = config.WritePlanGuidance(contents, req.StateDir, req.Project); err != nil {
+		if err := config.WritePlanGuidance(contents, req.StateDir, req.Project); err != nil {
 			t.Fatal(err)
 		}
+		guidance = config.PlanGuidanceCopy(req.StateDir)
 	}
 	owner := strings.ToLower(repo.Owner())
 	s := specs{

@@ -43,30 +43,26 @@ func TestPlanGuidanceIsAPathKeyReadAtBoot(t *testing.T) {
 	})
 }
 
-// The copy an owner's prompt reads is headed with the deployment's name and Legion's own sentence
-// that the guidance binds no plan, then the operator's file verbatim. A configured file with
-// nothing in it is a misconfiguration, never an empty guidance, and a file that cannot be read is
-// refused naming the operator's path, as the deployment's instructions are.
+// The copy an owner's prompt reads starts with a heading that names the deployment and a blank
+// line, and ends with a blank line and the operator's file verbatim; what stands between is
+// Legion's own prompt text, whose words no test holds. A configured file with nothing in it is a
+// misconfiguration, never an empty guidance, and a file that cannot be read is refused naming the
+// operator's path, as the deployment's instructions are.
 func TestPlanGuidanceCopyCarriesItsHeaderAndRefusesAnUnusableFile(t *testing.T) {
 	t.Run("the copy", func(t *testing.T) {
 		stateDir := filepath.Join(t.TempDir(), "state")
+		const guidance = "Review on another model family.\n"
 
-		written, err := WritePlanGuidance([]byte("Review on another model family.\n"), stateDir, "demo")
-		if err != nil {
+		if err := WritePlanGuidance([]byte(guidance), stateDir, "demo"); err != nil {
 			t.Fatalf("WritePlanGuidance: %v", err)
 		}
-		if want := filepath.Join(stateDir, "plan-guidance.md"); written != want {
-			t.Errorf("path = %q, want %q", written, want)
-		}
-		got, err := os.ReadFile(written)
+		got, err := os.ReadFile(filepath.Join(stateDir, "plan-guidance.md"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "# Plan guidance of this deployment (demo)\n\n" +
-			"Legion requires none of this guidance and refuses no plan for a step it lacks.\n\n" +
-			"Review on another model family.\n"
-		if string(got) != want {
-			t.Errorf("contents = %q, want %q", got, want)
+		header, end := "# Plan guidance of this deployment (demo)\n\n", "\n\n"+guidance
+		if !strings.HasPrefix(string(got), header) || !strings.HasSuffix(string(got), end) {
+			t.Errorf("contents = %q, want them to start %q and end %q, the operator's file after a blank line", got, header, end)
 		}
 	})
 
