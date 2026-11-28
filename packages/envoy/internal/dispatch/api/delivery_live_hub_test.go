@@ -320,6 +320,24 @@ func (r *hubRig) settle(t *testing.T) {
 	r.waitNothingOwed(t, latest)
 }
 
+// settleConnected waits for the listener's first connection and then settles, so the work that
+// connection causes has run before the caller marks: deliveryHub.intake's connected case catches
+// the change log up, draining its outbox first (catchUpChanges), and marks every Legion view for a
+// recompute (dirtyLegionViews). settle alone does not wait for it: the listener dials on a
+// goroutine of its own, and until it has connected the intake owes nothing for it (intakeOwes), so
+// a connection that lands after the mark wakes the hub for nothing the test did. A test whose
+// listener connects and that counts the recomputes, frames or deltas after its mark, or waits on
+// their absence, takes this in place of settle; a rig whose dial refuses every connection takes
+// settle, since its listener never connects. It waits on the note waitConnected's first wait
+// reads, without that helper's wait for a still pool, which only a count of the hub's connections
+// needs: settle already waits for the feed, and for the recompute the connection marks as
+// waitNothingOwed reads what is owed.
+func (r *hubRig) settleConnected(t *testing.T) {
+	t.Helper()
+	r.waitFor(t, 0, "the listener's first connection", listenerConnected)
+	r.settle(t)
+}
+
 // waitNothingOwed waits until the hub owes no work for anything committed up to latest: nothing
 // the intake has taken in and not run yet (intakeOwes), its change cursor at latest, and no view
 // it will recompute or narrow without the test moving its clock (viewOwes), the last two read in
@@ -2350,7 +2368,7 @@ func acquires(database *store.Store) int64 { return database.Pool.Stat().Acquire
 // connection, and a measurement of what one change costs is taken after them.
 func (r *hubRig) waitConnected(t *testing.T) {
 	t.Helper()
-	r.waitFor(t, 0, "the listener's connection", func(note deliveryHubNote) bool { return note.what == "connected" })
+	r.waitFor(t, 0, "the listener's connection", listenerConnected)
 	r.waitForEvent(t, 0, "the hub's event feed", func(note deliveryHubNote) bool { return note.what == "events seeded" })
 	awaitStill(t, "the shared pool's acquires", 300*time.Millisecond, func() int64 { return acquires(r.deps.Store) })
 }

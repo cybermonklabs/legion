@@ -31,7 +31,7 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	conn := newFakeLiveConn()
 	rig.hub.Subscribe(conn, subscribeFrame("b", frame))
 	conn.snapshot(t, "b")
-	rig.settle(t)
+	rig.settleConnected(t)
 
 	mark := rig.mark()
 	if _, err := rig.database.Pool.Exec(t.Context(), `
@@ -44,8 +44,11 @@ func TestAChangeACrashLeftPendingWakesASubscribedViewOnceTheBootDrains(t *testin
 	// every catch-up drains the outbox before it reads the log (catchUpChanges), so either would move
 	// this row itself and recompute the board; a read of the hub's state without that barrier
 	// (intakeOwes) cannot see a wake still on its way from the listener. Four times the quiet a
-	// woken board waits before its recompute is longer than a wake would take to begin one, and a
-	// loaded machine can only make the window miss a wake, never fail a hub the row leaves idle.
+	// woken board waits before its recompute is longer than a wake would take to begin one. The
+	// guard holds because the test waited for the listener's first connection, and for the catch-up
+	// and the recompute of the board that connection causes, before its mark (settleConnected), and
+	// the insert sends no notification (only delivery_change_log_pending does): in the window the
+	// board is recomputed by nothing but a reconnection of the listener, which this test never drops.
 	time.Sleep(4 * viewQuiet)
 	if woken := rig.count(mark, recomputeOfView(t, frame)); woken != 0 {
 		t.Fatalf("the Legion board was recomputed %d times before any drain, so this test cannot tell what woke it", woken)

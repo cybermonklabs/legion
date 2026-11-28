@@ -374,7 +374,7 @@ func TestAnIssueFactsWriteSendsTheLegionBoardItsEntryAndNoFreshness(t *testing.T
 	rig.hub.Subscribe(board, subscribeFrame("b", boardFrame))
 	board.snapshot(t, "b")
 	board.freshness(t, "the verdict after the board's first snapshot")
-	rig.settle(t)
+	rig.settleConnected(t)
 
 	// INFRA-4 is on the board's cards, and INFRA-99 on none and with no row before its write: a
 	// closed new member of the tree of INFRA-3, whose card the board shows, so neither its key nor
@@ -462,7 +462,7 @@ func TestAnEventOnAnIssueWithNoCardRecomputesNothingAndItsFactsSendOneDelta(t *t
 	if _, carried := answered.Issues[issue]; !carried {
 		t.Fatalf("the board's first answer carries no entry of %s, so a rename of it moves nothing this test can judge", issue)
 	}
-	rig.settle(t)
+	rig.settleConnected(t)
 
 	// A title Dispatch rewrites: the event reaches the hub on the relay's feed, behind the event
 	// horizon, and the board's answer carries no title of an issue on no card.
@@ -561,7 +561,7 @@ func TestWhatOneBatchOfChangedLegionFactsRowsCostsAnOpenBoard(t *testing.T) {
 		t.Fatalf("the board's first answer names %d issues entries, want the %d rows the batch below rewrites",
 			len(answered.Issues), batchRows)
 	}
-	rig.settle(t)
+	rig.settleConnected(t)
 
 	start := rig.mark()
 	before := latestChange(t, rig.database)
@@ -704,7 +704,7 @@ func TestALegionBoardSendsAnIssuesEntryOnlyWhenItsStoredRowMoves(t *testing.T) {
 	for key, want := range wantSnapshot {
 		checkLegionEntry(t, key, snapped.Issues[key], want)
 	}
-	rig.settle(t)
+	rig.settleConnected(t)
 	held := snapshot.Body
 
 	// The Legion intake's next read, a minute on: the header carries it, and no stored row moved.
