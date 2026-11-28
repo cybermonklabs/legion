@@ -9,15 +9,13 @@ package pmdoc
 
 import (
 	"encoding/json"
+	"fmt"
 	"math/rand/v2"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
-
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // engineReadings reads each markdown as the browser editor imports a document, with the fork's
@@ -25,49 +23,92 @@ import (
 func engineReadings(t *testing.T, markdowns []string) []*Node {
 	t.Helper()
 	dir := t.TempDir()
-	var lines []string
+	var input strings.Builder
+	encoder := json.NewEncoder(&input)
 	for index, markdown := range markdowns {
-		line, _ := json.Marshal(map[string]any{"id": index, "md": markdown})
-		lines = append(lines, string(line))
+		if err := encoder.Encode(map[string]any{"id": index, "md": markdown}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	in, out := filepath.Join(dir, "in.jsonl"), filepath.Join(dir, "out.jsonl")
-	if err := os.WriteFile(in, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(in, []byte(input.String()), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return runEngineReadings(t, in, out)
+	return requireEngineReadings(t, runEngineReadings(t, in, out), len(markdowns))
 }
 
-// runEngineReadings runs the engine once and reads its output in input order. In names mode the
-// engine writes the list of names to in, rather than reading that file.
-func runEngineReadings(t *testing.T, in, out string, flags ...string) []*Node {
+// runEngineReadings reads the engine's output lines. In names mode the engine writes its list
+// of entity names to in rather than reading that file.
+func runEngineReadings(t *testing.T, in, out string, flags ...string) []string {
 	t.Helper()
-	if _, err := exec.LookPath("bun"); err != nil {
-		if os.Getenv("CI") == "" {
-			t.Skip("bun is not on PATH; the engine's reading is required in CI")
-		}
-		t.Fatalf("bun is required in CI: %v", err)
-	}
-	args := append([]string{"run", "differential.ts"}, flags...)
-	cmd := exec.CommandContext(testwait.Context(t), "bun", append(args, in, out, "md")...)
-	cmd.Dir = "gen"
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("differential.ts: %v\n%s", err, output)
-	}
-	raw, err := os.ReadFile(out)
+	return jsonlLines(genOutput(t, "differential.ts", out, append(flags, in, out, "md")...))
+}
+
+// requireEngineReadings fails the test before any comparison if the engine's file is incomplete
+// or malformed.
+func requireEngineReadings(t *testing.T, lines []string, count int) []*Node {
+	t.Helper()
+	readings, err := parseEngineReadings(lines, count)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var readings []*Node
-	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+	return readings
+}
+
+// parseEngineReadings decodes one line per input in order, retaining nil trees for refusals.
+func parseEngineReadings(lines []string, count int) ([]*Node, error) {
+	if len(lines) != count {
+		return nil, fmt.Errorf("differential.ts: %d readings for %d markdowns", len(lines), count)
+	}
+	readings := make([]*Node, count)
+	for index, line := range lines {
 		var read struct {
 			MD *diffReading `json:"md"`
 		}
 		if err := json.Unmarshal([]byte(line), &read); err != nil {
-			t.Fatal(err)
+			return nil, fmt.Errorf("differential.ts output line %d: %w", index+1, err)
 		}
-		readings = append(readings, diffTree(read.MD))
+		readings[index] = diffTree(read.MD)
 	}
-	return readings
+	return readings, nil
+}
+
+// TestEngineReadingsOutput checks the engine's file protocol independently of Bun.
+// Capture the fixture with bun gen/differential.ts testdata/differential-in.jsonl testdata/differential-out.jsonl md.
+func TestEngineReadingsOutput(t *testing.T) {
+	t.Parallel()
+	raw, err := os.ReadFile(filepath.Join("testdata", "differential-out.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := jsonlLines(raw)
+	want := []string{"paragraph", "heading", "table"}
+	readings, err := parseEngineReadings(lines, len(want))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, kind := range want {
+		doc := readings[index]
+		if doc == nil || len(doc.Children) != 1 || doc.Children[0].Type != kind {
+			t.Errorf("reading %d = %+v, want one %s", index, doc, kind)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		lines   []string
+		message string
+	}{
+		{"short output", lines[:2], "2 readings for 3 markdowns"},
+		{"extra line", append(append([]string(nil), lines...), lines[0]), "4 readings for 3 markdowns"},
+		{"not JSON", []string{lines[0], "not JSON", lines[2]}, "output line 2:"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseEngineReadings(test.lines, len(want))
+			if err == nil || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("got %v, want %q", err, test.message)
+			}
+		})
+	}
 }
 
 // A document the browser editor holds is stored as its rendering, so the rendering must read back,
@@ -771,7 +812,7 @@ func TestEveryNameTheEngineKnowsReadsAsTheEngineReadsIt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	namesPath := filepath.Join(dir, "names.txt")
-	readings := runEngineReadings(t, namesPath, filepath.Join(dir, "out.jsonl"), "--entity-names")
+	lines := runEngineReadings(t, namesPath, filepath.Join(dir, "out.jsonl"), "--entity-names")
 	raw, err := os.ReadFile(namesPath)
 	if err != nil {
 		t.Fatal(err)
@@ -780,6 +821,7 @@ func TestEveryNameTheEngineKnowsReadsAsTheEngineReadsIt(t *testing.T) {
 	if len(names) <= 2000 {
 		t.Fatalf("the engine supplied %d names, want the more than 2,000 of character-entities", len(names))
 	}
+	readings := requireEngineReadings(t, lines, len(names))
 	markdowns := make([]string, len(names))
 	for index, name := range names {
 		markdowns[index] = "&" + name + ";\n"

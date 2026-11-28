@@ -112,7 +112,13 @@ func ParseWithBlockIDs(markdown string, mint func() string) (*Node, error) {
 // ParseRendering is Parse of markdown the renderer wrote, a read-back, whose short rows are the
 // tree's: its padding spends a budget of its own (readBackBudget), not a caller write's.
 func ParseRendering(markdown string) (*Node, error) {
-	return parseStamped(markdown, readBackBudget())
+	return parseRenderingWithBlockIDs(markdown, mintBlockID)
+}
+
+// parseRenderingWithBlockIDs keeps the read-back budget while the caller supplies the block IDs,
+// under the same mint contract as ParseWithBlockIDs.
+func parseRenderingWithBlockIDs(markdown string, mint func() string) (*Node, error) {
+	return parseStampedAt(markdown, fromStart, readBackBudget(), mint)
 }
 
 // ParseWithSourceStarts parses markdown as Parse does and also answers, for each of the tree's

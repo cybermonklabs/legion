@@ -171,9 +171,7 @@ func writtenRealSizeDoc(t *testing.T, size int) *Node {
 	if doc, ok := writtenRealSize.docs[size]; ok {
 		return doc
 	}
-	SetBlockIDGenerator(counterBlockIDs())
-	defer SetBlockIDGenerator(nil)
-	doc, err := ParseRendering(writtenCorpus(t, size))
+	doc, err := parseRenderingWithBlockIDs(writtenCorpus(t, size), counterBlockIDs())
 	if err != nil {
 		t.Fatalf("parse the corpus repeated to %d bytes: %v", size, err)
 	}
@@ -309,6 +307,7 @@ func TestAsWrittenIsTheOldPipelineOnEveryBranch(t *testing.T) {
 }
 
 func TestAsWrittenIsTheOldPipelineOnRealSizeDocuments(t *testing.T) {
+	t.Parallel()
 	for _, size := range []int{150_000, 660_000} {
 		t.Run(fmt.Sprint(size), func(t *testing.T) {
 			doc := writtenRealSizeDoc(t, size)
@@ -343,6 +342,7 @@ func TestAsWrittenSharesWhatItWritesAsItIs(t *testing.T) {
 // every step, as its encoding costs as much as a read-back; the others after each step, which
 // names the one that wrote.
 func TestRenderAndReadBackLeaveTheirInputUntouched(t *testing.T) {
+	t.Parallel()
 	check := func(t *testing.T, name string, tree *Node, eachStep bool) {
 		t.Helper()
 		before := writtenJSON(t, name, tree)

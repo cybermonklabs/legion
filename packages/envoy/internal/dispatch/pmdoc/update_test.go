@@ -10,6 +10,9 @@ package pmdoc
 import (
 	"bytes"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/reearth/ygo/crdt"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Go-authored bytes read back as the tree, and the browser editor loads them as the node it would
@@ -24,33 +28,42 @@ import (
 // null: a table cell with no alignment holds "none", since that editor gives an absent alignment
 // the default, left, and writes it back when the cell is edited, and a code block with no
 // language and an image with no title hold "", that editor's own default.
+// All fixtures share one Bun process, which builds the editor schema once.
 func TestUpdateFromEmptyEqualsAuthoredByBrowser(t *testing.T) {
 	t.Parallel()
-	for _, fx := range loadFixtures(t) {
+	fixtures := loadFixtures(t)
+	inputs := make([]browserUpdate, len(fixtures))
+	wants := make([]*Node, len(fixtures))
+	for index, fx := range fixtures {
+		want, err := FromJSON(fx.PMJSON)
+		if err != nil {
+			t.Fatalf("%s: %v", fx.Name, err)
+		}
+
+		doc := crdt.New(crdt.WithClientID(1))
+		frag := doc.GetXmlFragment("prosemirror")
+		doc.Transact(func(txn *crdt.Transaction) {
+			err = Update(txn, frag, want)
+		})
+		if err != nil {
+			t.Fatalf("%s: Update: %v", fx.Name, err)
+		}
+
+		got, err := Read(frag)
+		if err != nil {
+			t.Fatalf("%s: Read after Update: %v", fx.Name, err)
+		}
+		if !got.Equal(want) {
+			t.Fatalf("%s: Read after Update differs from want", fx.Name)
+		}
+		inputs[index] = browserUpdate{fx.Name, crdt.EncodeStateAsUpdateV1(doc, nil)}
+		wants[index] = want
+	}
+	// Check Go's write and read before the Bun check can skip on a host without Bun.
+	decoded := decodeAllWithYProsemirror(t, inputs)
+	for index, fx := range fixtures {
 		t.Run(fx.Name, func(t *testing.T) {
-			want, err := FromJSON(fx.PMJSON)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			doc := crdt.New(crdt.WithClientID(1))
-			frag := doc.GetXmlFragment("prosemirror")
-			doc.Transact(func(txn *crdt.Transaction) {
-				err = Update(txn, frag, want)
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			got, err := Read(frag)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !got.Equal(want) {
-				t.Fatal("Read after Update differs from want")
-			}
-
-			pm := decodeWithYProsemirror(t, crdt.EncodeStateAsUpdateV1(doc, nil))
+			want, pm := wants[index], decoded[index]
 			if live := asTheLiveDocumentHoldsIt(want); !pm.Equal(live) {
 				actual, _ := pm.JSON()
 				expected, _ := live.JSON()
@@ -196,6 +209,7 @@ func hasMark(node *Node, markType string) bool {
 	return false
 }
 
+// decodeWithYProsemirror uses the decoder's one-update form for tests with one update.
 func decodeWithYProsemirror(t *testing.T, update []byte) *Node {
 	t.Helper()
 	output := genResult(t, "decode.ts", base64.StdEncoding.EncodeToString(update))
@@ -208,6 +222,142 @@ func decodeWithYProsemirror(t *testing.T, update []byte) *Node {
 	return decoded
 }
 
+// browserUpdate pairs a fixture's name with the Yjs bytes sent to the browser decoder.
+type browserUpdate struct {
+	name   string
+	update []byte
+}
+
+// decodeAllWithYProsemirror reads every update with one editor schema.
+func decodeAllWithYProsemirror(t *testing.T, inputs []browserUpdate) []*Node {
+	t.Helper()
+	var input bytes.Buffer
+	encoder := json.NewEncoder(&input)
+	names := make([]string, len(inputs))
+	for id, row := range inputs {
+		names[id] = row.name
+		if err := encoder.Encode(struct {
+			ID     int    `json:"id"`
+			Update string `json:"update"`
+		}{id, base64.StdEncoding.EncodeToString(row.update)}); err != nil {
+			t.Fatalf("%s: encode update: %v", row.name, err)
+		}
+	}
+	lines := genLines(t, "decode.ts", input.Bytes(), "--jsonl")
+	nodes, err := parseDecodeBatch(lines, names)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return nodes
+}
+
+// parseDecodeBatch requires a tree for every fixture and reports failures with the fixture name.
+func parseDecodeBatch(lines, names []string) ([]*Node, error) {
+	if len(lines) == 0 && len(names) == 0 {
+		return nil, errors.New("decode.ts: empty output for 0 updates")
+	}
+	if len(lines) < len(names) {
+		return nil, fmt.Errorf("decode.ts: %d lines for %d updates, first missing line is for fixture %q", len(lines), len(names), names[len(lines)])
+	}
+	if len(lines) > len(names) {
+		if len(names) == 0 {
+			return nil, fmt.Errorf("decode.ts: %d lines for 0 updates, unexpected output at line 1", len(lines))
+		}
+		return nil, fmt.Errorf("decode.ts: %d lines for %d updates, extra line %d after fixture %q", len(lines), len(names), len(names)+1, names[len(names)-1])
+	}
+	nodes := make([]*Node, len(names))
+	for index, line := range lines {
+		var row struct {
+			ID    *int            `json:"id"`
+			PM    json.RawMessage `json:"pm"`
+			Error *string         `json:"error"`
+		}
+		lineError := func(err error) error {
+			return fmt.Errorf("decode.ts output line %d for fixture %q: %w", index+1, names[index], err)
+		}
+		if err := json.Unmarshal([]byte(line), &row); err != nil {
+			return nil, lineError(err)
+		}
+		if row.ID == nil {
+			return nil, lineError(errors.New("missing id"))
+		}
+		id := *row.ID
+		if id < 0 || id >= len(nodes) {
+			return nil, lineError(fmt.Errorf("id %d out of range", id))
+		}
+		if nodes[id] != nil {
+			return nil, lineError(fmt.Errorf("repeated id %d for fixture %q", id, names[id]))
+		}
+		if id != index {
+			return nil, lineError(fmt.Errorf("got id %d for fixture %q, want %d", id, names[id], index))
+		}
+		if row.Error != nil {
+			return nil, lineError(errors.New(*row.Error))
+		}
+		node, err := FromJSON(row.PM)
+		if err != nil {
+			return nil, lineError(fmt.Errorf("invalid pm: %w", err))
+		}
+		nodes[id] = node
+	}
+	return nodes, nil
+}
+
+// TestDecodeBatchOutput checks the decoder's file protocol independently of Bun.
+// Capture the fixture with bun run gen/decode.ts --jsonl testdata/decode-batch-in.jsonl testdata/decode-batch-out.jsonl.
+func TestDecodeBatchOutput(t *testing.T) {
+	t.Parallel()
+	if _, err := parseDecodeBatch(nil, nil); err == nil || !strings.Contains(err.Error(), "empty output for 0 updates") {
+		t.Fatalf("empty batch: got %v, want an error naming the empty output", err)
+	}
+	raw, err := os.ReadFile(filepath.Join("testdata", "decode-batch-out.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := jsonlLines(raw)
+	fixtures := loadFixtures(t)[:2]
+	names := []string{fixtures[0].Name, fixtures[1].Name, "invalid base64"}
+	if len(lines) != len(names) {
+		t.Fatalf("captured %d lines, want %d", len(lines), len(names))
+	}
+	nodes, err := parseDecodeBatch(lines[:2], names[:2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, fx := range fixtures {
+		want, err := FromJSON(fx.PMJSON)
+		if err != nil {
+			t.Fatalf("%s: %v", fx.Name, err)
+		}
+		if !nodes[index].Equal(asTheLiveDocumentHoldsIt(want)) {
+			t.Errorf("%s: captured tree differs from fixture", fx.Name)
+		}
+	}
+	for _, test := range []struct {
+		name    string
+		lines   []string
+		fixture string
+		message string
+	}{
+		{"decoder error", lines, names[2], "invalid base64 update"},
+		{"empty output", nil, names[0], "0 lines for 3 updates"},
+		{"short output", lines[:2], names[2], "2 lines for 3 updates"},
+		{"extra line", append(append([]string(nil), lines...), lines[0]), names[2], "4 lines for 3 updates"},
+		{"repeated id", []string{lines[0], lines[0], lines[2]}, names[1], "repeated id 0"},
+		{"not JSON", []string{lines[0], "not JSON", lines[2]}, names[1], "invalid character"},
+		{"missing id", []string{lines[0], `{"pm":{}}`, lines[2]}, names[1], "missing id"},
+		{"out of range id", []string{lines[0], `{"id":3,"pm":{}}`, lines[2]}, names[1], "id 3 out of range"},
+		{"invalid pm", []string{lines[0], `{"id":1,"pm":{}}`, lines[2]}, names[1], "invalid pm"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := parseDecodeBatch(test.lines, names)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%q", test.fixture)) || !strings.Contains(err.Error(), test.message) {
+				t.Fatalf("got %v, want fixture %q and %q", err, test.fixture, test.message)
+			}
+		})
+	}
+}
+
 // genResult runs gen/<script> with args and, last, a file to write its result to, and returns what
 // the script wrote there. A gen script hands its result back in a file, never on stdout, which a
 // Bun script can cut short while exiting 0
@@ -217,14 +367,45 @@ func decodeWithYProsemirror(t *testing.T, update []byte) *Node {
 // test's own check of the result is what fails on it.
 func genResult(t *testing.T, script string, args ...string) []byte {
 	t.Helper()
+	out := filepath.Join(t.TempDir(), "result")
+	return genOutput(t, script, out, append(args, out)...)
+}
+
+// genLines gives the script an input file and returns the lines from its output file.
+func genLines(t *testing.T, script string, input []byte, flags ...string) []string {
+	t.Helper()
+	dir := t.TempDir()
+	in, out := filepath.Join(dir, "in.jsonl"), filepath.Join(dir, "out.jsonl")
+	if err := os.WriteFile(in, input, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return jsonlLines(genOutput(t, script, out, append(flags, in, out)...))
+}
+
+// jsonlLines leaves blank records visible but does not count the final newline as a record.
+func jsonlLines(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	return strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+}
+
+// requireBun skips only outside CI, where the browser decoder may not be installed.
+func requireBun(t *testing.T, script string) {
+	t.Helper()
 	if _, err := exec.LookPath("bun"); err != nil {
 		if os.Getenv("CI") == "" {
 			t.Skipf("bun is not on PATH; %s is required in CI", script)
 		}
 		t.Fatalf("bun is required in CI: %v", err)
 	}
-	out := filepath.Join(t.TempDir(), "result")
-	cmd := genScript(script, append(args, out)...)
+}
+
+// genOutput runs the script and checks that it writes its result only to the given file.
+func genOutput(t *testing.T, script, out string, args ...string) []byte {
+	t.Helper()
+	requireBun(t, script)
+	cmd := genScript(t, script, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
@@ -243,8 +424,9 @@ func genResult(t *testing.T, script string, args ...string) []byte {
 
 // genScript is the command that runs gen/<script> with args, as every test that reads the
 // browser editor's engine runs it.
-func genScript(script string, args ...string) *exec.Cmd {
-	cmd := exec.Command("bun", append([]string{"run", script}, args...)...)
+func genScript(t *testing.T, script string, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.CommandContext(testwait.Context(t), "bun", append([]string{"run", script}, args...)...)
 	cmd.Dir = "gen"
 	return cmd
 }
