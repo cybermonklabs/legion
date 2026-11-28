@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The plan reviewer reviews the task blocks its caller names. It does not review the block of
+  the owner's task.
+time: 2026-11-28T19:00:00Z
+custom:
+    Issue: planner-blocks-under-task

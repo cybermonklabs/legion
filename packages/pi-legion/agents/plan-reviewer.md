@@ -25,6 +25,9 @@ advise its author, and the author owns the document.
 You answer one question: can a capable engineer who has only this plan and the repository carry
 it out without getting stuck? You find blockers, not improvements.
 
+The plan under review is the task blocks your caller names. A block your caller names as the
+owner's task is not under review.
+
 ### What you check
 
 1. **References.** The files, functions, commands, and skills the plan names exist and hold what
