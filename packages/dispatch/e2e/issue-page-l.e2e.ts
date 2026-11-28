@@ -1363,14 +1363,16 @@ test("the box at the foot is never drawn in Threads, and Conversation draws it a
   });
 });
 
-// c-box, the half that waited on INFRA-3948 (decision 127): the panel's Reply and Edit set no
-// target in Threads, and Conversation opened after them draws the box at rest, with no target
-// line. The Reply is on a turn of Details' history. The Edit is in Details' facts of the focused
-// row: the reader's own comment, which a person wrote, so it is a row of the outline and no turn
-// of the history. Threads draws no outline, so the focus is put on that row in Conversation,
-// Threads is opened with the focus still on it, and the facts keep it. INFRA-3948's history and
-// focused node in Details are under this part's head.
-test("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone", async ({
+// c-box, the half that waited on INFRA-3948 (decision 127): Threads mounts no box at the foot, so
+// under Threads Details draws neither control that would aim it - no Reply on a turn of its
+// history and no Edit in its facts of the focused row (`threads-open.ts`) - and Conversation
+// opened after Threads draws the box at rest, with no target line. Each control's absence is
+// read where it would stand, on a turn and in facts the row first finds drawn. The turn is the
+// daemon's, of Details' history. The facts are the reader's own comment's, which a person wrote,
+// so it is a row of the outline and no turn of the history. Threads draws no outline, so the focus
+// is put on that row in Conversation, Threads is opened with the focus still on it, and the facts
+// keep it. INFRA-3948's history and focused node in Details are under this part's head.
+test("the box at the foot is never drawn in Threads, and under Threads Details draws no Reply or Edit, so nothing sets a target @phone", async ({
   browser,
 }) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
@@ -1397,32 +1399,30 @@ test("the box at the foot is never drawn in Threads, and the panel's Reply or Ed
         await pickPreset(page, THREADS);
       }
       await expectActivePreset(page, THREADS);
+      await expect(composer(page), `the box at the foot is drawn in Threads ${at}`).toHaveCount(0);
       await openDetails(page);
+      await expect(
+        focusedNodeFacts(page),
+        `Details draws no facts in Threads, so the row proves nothing ${at}`
+      ).toBeVisible();
       await expect(
         focusedNodeFacts(page),
         `Details' facts in Threads are not the reader's own comment's, so the row proves nothing ${at}`
       ).toHaveAttribute("data-focused-node", seeded.own.id);
-      // The Edit first: on a phone the turn's Reply closes Details, a sheet there, so that the box
-      // at the foot can take the focus (`history-entries.tsx`), which would take the facts' Edit
-      // off the page; the Edit closes nothing.
-      await focusedNodeFacts(page)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
-        .click();
-      // The press's handler and the render it asks for are done within these frames, so a box
-      // the press aimed would be drawn by their end.
-      await nextFrames(page);
       await expect(
-        composer(page),
-        `the panel's Edit on the reader's own comment drew the box in Threads ${at}`
+        focusedNodeFacts(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit }),
+        `Details' facts of the reader's own comment draw Edit in Threads ${at}`
       ).toHaveCount(0);
-      await panelEntry(page, seeded.daemon.words)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.reply })
-        .click();
-      // The same frames, for the Reply's press.
-      await nextFrames(page);
       await expect(
-        composer(page),
-        `the panel's Reply on a turn of the history drew the box in Threads ${at}`
+        panelEntry(page, seeded.daemon.words),
+        `Details' history draws no turn of the daemon's in Threads, so the row proves nothing ${at}`
+      ).toBeVisible();
+      await expect(
+        panelEntry(page, seeded.daemon.words).getByRole("button", {
+          exact: true,
+          name: CONTROL_LABELS.reply,
+        }),
+        `a turn of Details' history draws Reply in Threads ${at}`
       ).toHaveCount(0);
       await closeDetails(page);
       await pickPreset(page, PRESET_NAMES.conversation);
@@ -1434,7 +1434,7 @@ test("the box at the foot is never drawn in Threads, and the panel's Reply or Ed
       ).toBeVisible();
       await expect(
         composerTarget(page),
-        `the panel's Reply or Edit in Threads set a target the box draws in Conversation ${at}`
+        `Conversation after Threads draws a target line in the box ${at}`
       ).toHaveCount(0);
     }
   });

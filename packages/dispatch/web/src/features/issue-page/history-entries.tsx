@@ -38,6 +38,7 @@ import { useOutlineWriter } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { ROW_LINK } from "./row-references";
+import { useThreadsOpen } from "./threads-open";
 
 // The entries of the issue's history as `IssueHistory.tsx` draws them: each kind of entry, and
 // the key each run of uploads is drawn under.
@@ -333,7 +334,9 @@ function BlockName({ block }: { block: HistoryBlock }): ReactNode {
  * One turn of a thread the history holds: when, who, and ` · edited` after the author where
  * the author edited it (`EditedMark`); its words whole at any length, or, where its author
  * deleted it, the deleted line in their place, as the outline's rows draw it (`DeletedLine`);
- * and Reply, which a deleted turn has not, as Dispatch takes no reply to it.
+ * and Reply, which a deleted turn has not, as Dispatch takes no reply to it, and which no turn
+ * draws under Threads, where the page mounts no box at the foot for it to aim
+ * (`useThreadsOpen`).
  */
 function Turn({
   issueKey,
@@ -347,6 +350,7 @@ function Turn({
   const writer = useOutlineWriter();
   const drawer = useMarginDrawer();
   const phone = useMediaQuery(PHONE_VIEWPORT_QUERY);
+  const threads = useThreadsOpen();
   return (
     <article
       aria-current={marked ? "true" : undefined}
@@ -383,7 +387,7 @@ function Turn({
           <DeletedLine deleted={turn.deleted} />
         )}
       </div>
-      {writer === undefined || turn.deleted !== null ? null : (
+      {writer === undefined || threads || turn.deleted !== null ? null : (
         <p>
           <button
             className={`dispatch-inline-link text-xs font-medium ${pageMutedText} ${pageRowAct}`}
