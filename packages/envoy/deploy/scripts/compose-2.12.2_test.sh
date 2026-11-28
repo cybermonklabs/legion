@@ -4,7 +4,18 @@
 # docker:20.10.20-cli (.github/ci-images.yaml), pulled by digest, so no run downloads it from
 # GitHub: that image's Compose plugin is the v2.12.2 release asset byte for byte, on amd64 and on
 # arm64. .github/scripts/check-ci-images.sh reads this file and holds the reference to that row.
+# The envoy-go-checks job's step 'Pull the Compose 2.12.2 image the deploy tests take'
+# (.github/workflows/ci-job-envoy-go-checks.yaml) sources it too and calls pull_compose_2_12, before
+# the job queues either test, so take_compose_2_12, in up-dispatch_test.sh and in the group of
+# autodeploy_test.sh that calls it, finds the image already on the runner.
 compose_2_12_image=ghcr.io/cybermonklabs/legion/ci@sha256:466edff9fbc8e1326259d04412f55684c2e0f79c574eb9782c252011a87d8046
+
+# pull_compose_2_12 pulls that image by its digest with the docker on PATH, printing only the
+# reference it pulled, and fails as docker pull fails. The pull is here, beside the digest, so the
+# job's step names no image of its own and check-ci-images.sh reads the image from this file.
+pull_compose_2_12() {
+  docker pull --quiet "$compose_2_12_image"
+}
 
 # take_compose_2_12 DOCKER DEST copies the Compose plugin out of that image into DEST with DOCKER,
 # the real docker CLI, and fails, naming the step, where it cannot or where DEST does not answer

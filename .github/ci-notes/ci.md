@@ -1429,8 +1429,8 @@ ubuntu-24.04, each a reason of its own machine and not of the job's code:
     CGO_ENABLED, as release-envoy-listener.yaml does on ubuntu-24.04: Go's default turns cgo on
     for a native build and off for a cross build, so only an x86_64 runner builds the release's
     own pair (ci-job-envoy-go-build.yaml says what the arm64 runner built instead);
-  * envoy-go-checks, whose script tests drive this image's own `docker compose` and
-    `locale-gen` and have run on no other image;
+  * envoy-go-checks, whose script tests drive this image's own Compose plugin and its en_US.UTF-8
+    locale, which the job generates only where the image lacks it, and have run on no other image;
   * tool-fallback, which is the x86_64 half of the tool proof; tool-fallback-arm is its arm64
     half.
 Every Go cache family carries the runner's architecture in its key, as the paragraph above
@@ -2738,9 +2738,11 @@ of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
-step that queued it), longest first. envoy-session-stall queues its thirteen stack suites the
-same way, after the contracts build they all import and the build of the Go commands they build
-that the go-envoy entry does not hold
+step that queued it), longest first. Two plain steps stand after the fourth harness's step, when
+the first four hold every slot: the one that generates en_US.UTF-8 where the runner lacks it, and
+the one that pulls the Compose 2.12.2 image the deploy tests take. envoy-session-stall queues its
+thirteen stack suites the same way, after the contracts build they all import and the build of the
+Go commands they build that the go-envoy entry does not hold
 (#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 Each job that queues harnesses also keeps a record of when each line of each harness's log was
