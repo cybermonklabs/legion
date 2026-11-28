@@ -29,10 +29,12 @@ import { asRead, rowTextOf, type TextRuns, textRuns } from "./row-text-runs";
  *  message (`itemBlocksOf`), or the block a reply names (`reply_block`). */
 export type ItemBlock = Pick<TreeAnswerNode, "block_id" | "text" | "text_tree">;
 
-/** The node a selection is in, as the tree read answers it: its own text, and its reading where
- *  the read sent one; for an ask, a comment or a message, its blocks in the item's order
- *  (`itemBlocksOf`), and none for any other node. */
+/** The node a selection is in, as the tree read answers it: its own text, its reading where the
+ *  read sent one, and its own block id where it has one (a block of a document's); for an ask, a
+ *  comment or a message, its blocks in the item's order (`itemBlocksOf`), and none for any other
+ *  node. */
 export interface QuotedNode<Block extends ItemBlock = ItemBlock> {
+  readonly block_id?: TreeAnswerNode["block_id"];
   readonly blocks?: readonly Block[];
   readonly text: string;
   readonly text_tree?: TreeAnswerNode["text_tree"];
@@ -73,12 +75,18 @@ export function itemBlocksOf(answer: TreeAnswer, item: string): TreeAnswerNode[]
   });
 }
 
-/** `node`, a node of `answer`, as `quoteOf`, `rangeOf` and `quoteStart` read its words: its text
- *  and its reading, and, for an ask, a comment or a message, its blocks in the item's order
- *  (`itemBlocksOf`). A node of any other kind, or one of no answer, is read as it is. */
+/** `node`, a node of `answer`, as `quoteOf`, `rangeOf`, `quoteStart` and `anchorMatch` read its
+ *  words: its block id, its text and its reading, and, for an ask, a comment or a message, its
+ *  blocks in the item's order (`itemBlocksOf`). A node of any other kind, or one of no answer, is
+ *  read as it is. */
 export function quotedNodeOf(answer: TreeAnswer | undefined, node: TreeAnswerNode): QuotedNode {
   return answer !== undefined && ITEM_KINDS[node.supertag] === true
-    ? { blocks: itemBlocksOf(answer, node.id), text: node.text, text_tree: node.text_tree }
+    ? {
+        block_id: node.block_id,
+        blocks: itemBlocksOf(answer, node.id),
+        text: node.text,
+        text_tree: node.text_tree,
+      }
     : node;
 }
 
@@ -201,19 +209,28 @@ export function quoteStart(
  * The match of a document anchor's stored `quote` that the tree read's `occurrence` names in
  * `node`'s text, read as the server's plain text reads it (`sourceOf`): where it starts, and which
  * match of the whole text it is, which `rangeOf` marks it by; null where no match stands for it.
- * The read counts `occurrence` within the anchor's `block_id` (R2, "Quote and block"). Where the
- * node's text holds more than one paragraph, a typed block's, that block is the inner paragraph
- * that holds the words (`pmdoc.BlockIDForRange`), which no node stands for and `text_tree` does
- * not name, so the match is the one in the only paragraph that holds at least `occurrence` + 1
- * matches, and none where no paragraph or more than one does. A text of one paragraph, or with no
- * reading, is counted whole (`quoteStart`).
+ * The read counts `occurrence` within the anchor's block, `blockId`, the lowest block that holds
+ * the whole quote (`pmdoc.BlockIDForRange`; R2, "Quote and block"):
+ *
+ * - Where `blockId` is the node's own (`node.block_id`), as for a quote across two paragraphs of a
+ *   typed block, the match is counted in the node's whole text (`quoteStart`), as it is in a text
+ *   of one paragraph or with no reading.
+ * - Where it is not, and the node's text holds more than one paragraph, a typed block's,
+ *   `blockId` names a block inside it that no node stands for and `text_tree` does not name: the
+ *   inner paragraph that holds the words, or a list or a list item that holds paragraphs. The
+ *   match is then the one in the only paragraph that holds at least `occurrence` + 1 matches.
+ *   There is none where no paragraph or more than one does, or where any match of the quote in
+ *   the text crosses a paragraph boundary (no one paragraph holds it whole), since `blockId` may
+ *   then name a list that counts that match among its own.
  */
 export function anchorMatch(
   node: QuotedNode,
   quote: string,
-  occurrence: number
+  occurrence: number,
+  blockId: string | null
 ): { readonly occurrence: number; readonly start: number } | null {
-  const paragraphs = node.text_tree === undefined ? [] : paragraphsOf(node.text_tree);
+  const paragraphs =
+    node.text_tree === undefined || blockId === node.block_id ? [] : paragraphsOf(node.text_tree);
   if (paragraphs.length <= 1) {
     const start = quoteStart(node, quote, occurrence);
     return start < 0 ? null : { occurrence, start };
@@ -224,7 +241,11 @@ export function anchorMatch(
     source,
     paragraphs.map((paragraph) => ({ text: "", text_tree: paragraph }))
   );
-  const starts = (spans ?? []).flatMap(({ end, start }) => {
+  if (spans === null) return null;
+  for (let index = source.indexOf(quote); index >= 0; index = source.indexOf(quote, index + 1)) {
+    if (!spans.some(({ end, start }) => start <= index && index + quote.length <= end)) return null;
+  }
+  const starts = spans.flatMap(({ end, start }) => {
     const at = matchAt(source, quote, occurrence, start, end);
     return at === undefined ? [] : [at];
   });

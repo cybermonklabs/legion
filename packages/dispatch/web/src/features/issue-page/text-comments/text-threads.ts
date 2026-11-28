@@ -42,8 +42,9 @@ import type { QuotedWords } from "./text-comment-write";
 /** One thread on text, as the column and a node's sheet draw it. */
 export interface TextThread {
   /** Whether its words stand at its node's first line: they left the node's text (`orphaned`), the
-   *  node's words hold no such match, or, in a typed block of more than one paragraph, no one
-   *  paragraph alone holds it (`anchorMatch`), so the row draws its first line instead. */
+   *  node's words hold no such match, or, where a document anchor names a block inside a typed
+   *  block of more than one paragraph, no one paragraph alone holds it or a match of its words
+   *  crosses two paragraphs (`anchorMatch`), so the row draws its first line instead. */
   readonly firstLine: boolean;
   /** The lenses on each comment of the thread, by the comment's id, each a row of W's with its
    *  findings and risks under it, in the read's order (R7). A comment with none has no entry. */
@@ -205,9 +206,11 @@ interface Placed {
  * The thread of `root`, whose words are at `place`, as the card draws it (`record`, with
  * `entries` its replies in time order), with where its words start in `node`'s words as the
  * server's plain text reads them (`anchorMatch`, `quoteStart`): the match its occurrence names,
- * counted in the one paragraph of a typed block that alone can hold it for a document anchor and
- * in the quoted block for a reply, and the node's first line for words that left the text, that
- * the node's words do not hold, or that no one paragraph alone holds.
+ * counted for a document anchor in the node's whole words where the anchor names the node's own
+ * block and else in the one paragraph of a typed block that alone can hold it, and in the quoted
+ * block for a reply; and the node's first line for words that left the text, that the node's
+ * words do not hold, or that no one paragraph alone holds or a match of which crosses two
+ * paragraphs.
  */
 function placedThread(
   root: TreeAnswerNode,
@@ -229,7 +232,7 @@ function placedThread(
   const match = orphaned
     ? null
     : place.kind === "block"
-      ? anchorMatch(node, quote, occurrence)
+      ? anchorMatch(node, quote, occurrence, place.anchor.block_id)
       : { occurrence, start: quoteStart(node, quote, occurrence, block) };
   const at = match === null ? -1 : match.start;
   const anchor = cardAnchorOf(place);

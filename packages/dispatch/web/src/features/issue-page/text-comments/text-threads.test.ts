@@ -202,18 +202,10 @@ test("a document anchor's thread stands at the match its occurrence names", () =
   ]);
 });
 
-// R2 ("Quote and block"): the server stores a comment on a typed block's words under the inner
-// paragraph that holds them (`pmdoc.BlockIDForRange`), which no node stands for, so the read
-// hangs it under the typed block and counts its `occurrence` in that paragraph alone, and
-// `text_tree` names no paragraph. In a requirement of the paragraphs "Keep the note." and "Draw
-// the note beside the note.", only the second holds two matches of "note": a thread on a second
-// match is marked there, the block's third match (offset 40), and a thread on a first match,
-// which both paragraphs hold, and one on a third, which neither holds, stand at the row's first
-// line with no mark. Counted from the start of the block's whole text instead, the thread on a
-// second match would be marked at offset 24, the one on a first at 9 and the one on a third at 40.
-test("a thread in a typed block of two paragraphs marks its words only where one paragraph alone can hold the match, and else stands at the row's first line", () => {
-  const paragraphs = ["Keep the note.", "Draw the note beside the note."];
-  const requirement = treeNode("r-two", "requirement", KEY, {
+/** A requirement `r-two` of the spec whose text is `paragraphs`, as the server returns a typed
+ *  block (`doc > requirement > [paragraph, paragraph]`). */
+function requirementOf(paragraphs: readonly string[]): TreeAnswerNode {
+  return treeNode("r-two", "requirement", KEY, {
     ...inDocument(SPEC_DOCUMENT, 2),
     text: `:::requirement{#r-two}\n${paragraphs.join("\n\n")}\n:::`,
     text_tree: {
@@ -230,30 +222,92 @@ test("a thread in a typed block of two paragraphs marks its words only where one
       type: "doc",
     },
   });
+}
+
+/** The threads beside `requirement` (`requirementOf`) of alice's comments on the words `quote`
+ *  within its block `block`, one for each of `on`, by its id and the match the read names
+ *  (`occurrence`), written in that order: each one's root, whether it stands at the row's first
+ *  line, and which match of the row's whole words it marks. */
+function threadsOnRequirement(
+  requirement: TreeAnswerNode,
+  block: string,
+  quote: string,
+  on: readonly (readonly [string, number])[]
+): [string, boolean, number][] | undefined {
   const comments: Comment[] = [];
   const nodes: TreeAnswerNode[] = [];
-  for (const [id, at, occurrence] of [
-    ["in-one", 1, 1],
-    ["in-both", 2, 0],
-    ["in-neither", 3, 2],
-  ] as const) {
-    // Each is on words of the second paragraph, whose id no node of the read stands for.
-    const anchor = anchorOn(SPEC_DOCUMENT, "r-two-draw", "note");
-    const comment = { ...readComment(id, at), anchor };
+  for (const [index, [id, occurrence]] of on.entries()) {
+    const anchor = anchorOn(SPEC_DOCUMENT, block, quote);
+    const comment = { ...readComment(id, index + 1), anchor };
     comments.push(comment);
     nodes.push(nodeOf(comment, "r-two", { anchor: { ...treeAnchorOf(anchor), occurrence } }));
   }
   const tree = treeOf([...seededNodes([]), requirement, ...nodes], SERVES);
+  return threadsOver(tree, comments)
+    .get(blockNodeId(SPEC_DOCUMENT.slug, "r-two"))
+    ?.threads.map(({ firstLine, thread, words }): [string, boolean, number] => [
+      thread.key,
+      firstLine,
+      words.occurrence,
+    ]);
+}
 
+// R2 ("Quote and block"): the server stores a comment on a typed block's words under the inner
+// paragraph that holds them (`pmdoc.BlockIDForRange`), which no node stands for, so the read
+// hangs it under the typed block and counts its `occurrence` in that paragraph alone, and
+// `text_tree` names no paragraph. In a requirement of the paragraphs "Keep the note." and "Draw
+// the note beside the note.", only the second holds two matches of "note": a thread on a second
+// match is marked there, the block's third match (offset 40), and a thread on a first match,
+// which both paragraphs hold, and one on a third, which neither holds, stand at the row's first
+// line with no mark. Counted from the start of the block's whole text instead, the thread on a
+// second match would be marked at offset 24, the one on a first at 9 and the one on a third at 40.
+test("a thread in a typed block of two paragraphs marks its words only where one paragraph alone can hold the match, and else stands at the row's first line", () => {
+  const requirement = requirementOf(["Keep the note.", "Draw the note beside the note."]);
+
+  // Each is on words of the second paragraph, whose id no node of the read stands for.
   expect(
-    threadsOver(tree, comments)
-      .get(blockNodeId(SPEC_DOCUMENT.slug, "r-two"))
-      ?.threads.map(({ firstLine, thread, words }) => [thread.key, firstLine, words.occurrence])
+    threadsOnRequirement(requirement, "r-two-draw", "note", [
+      ["in-one", 1],
+      ["in-both", 0],
+      ["in-neither", 2],
+    ])
   ).toEqual([
     ["in-both", true, 0],
     ["in-neither", true, 2],
     ["in-one", false, 2],
   ]);
+});
+
+// R2 ("Quote and block"): a quote across two paragraphs of a typed block, which `dispatch comment
+// --quote` and an editor's mark write, is stored under the lowest block that holds the whole
+// range (`pmdoc.BlockIDForRange`), the typed block itself, and the read counts its `occurrence`
+// over the block's whole text. In a requirement of the paragraphs "Keep the note" and "beside the
+// margin.", a thread on "note beside" is marked at that match, the block's first, which neither
+// paragraph holds alone. Read by the paragraph rule instead, it would stand at the row's first
+// line.
+test("a quote across two paragraphs of a typed block, anchored on the block itself, is marked at its occurrence over the block's whole text", () => {
+  const requirement = requirementOf(["Keep the note", "beside the margin."]);
+
+  expect(threadsOnRequirement(requirement, "r-two", "note beside", [["across", 0]])).toEqual([
+    ["across", false, 0],
+  ]);
+});
+
+// R2 ("Quote and block"): an anchor whose block is not the typed block's own names a block inside
+// it that no node stands for and `text_tree` does not name: an inner paragraph, or a list or a
+// list item that holds paragraphs. In a requirement of the paragraphs "Keep the note" and "beside
+// it, the note beside the margin.", the words "note beside" stand across the two paragraphs and
+// again in the second, so a first match counted in a block that holds both paragraphs is the one
+// across them, and one counted in the second paragraph is the one in it. The row cannot tell
+// which the comment is on, so the thread stands at its first line with no mark. Without the test
+// for a match that crosses a paragraph boundary, the second paragraph alone holds a match, and
+// the thread would be marked there, the block's second match.
+test("where a match of the quote crosses a paragraph boundary, the thread stands at the row's first line and marks no words", () => {
+  const requirement = requirementOf(["Keep the note", "beside it, the note beside the margin."]);
+
+  expect(
+    threadsOnRequirement(requirement, "r-two-beside", "note beside", [["crossing", 0]])
+  ).toEqual([["crossing", true, 0]]);
 });
 
 // R2: where the view does not draw the node the anchor names - Plan draws its plan tasks - the
