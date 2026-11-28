@@ -2690,9 +2690,12 @@ func (r *outbox) publishToRole(ctx context.Context, row record.OutboxRow, topic,
 // (`session-store-fault`, workflow's sessionStoreFault); a claim whose turns keep ending in a
 // provider error (`provider-errors`, supervise's tellOfProviderErrors), which the issue's
 // architect is told as well, unless the run is the tree root's architect's own, and a child's own
-// architect's run is told to the architect above that child; one of the controller's own programs
-// its pod's memory guard ended (`memory-guard-kill`, workflow's controllerMemoryGuardKill, once
-// for each kill); the messages the intake gave up, counted in one notice that waits a minute for
+// architect's run is told to the architect above that child; a claim write the store refused for
+// good (`claim-write-refused`, workflow's claimWriteRefused), once for each claim, generation,
+// SQLSTATE and constraint, which reaches the architects a `provider-errors` notice reaches; one of
+// the controller's own programs its pod's memory guard ended (`memory-guard-kill`, workflow's
+// controllerMemoryGuardKill, once for each kill); the messages the intake gave up, counted in one
+// notice that waits a minute for
 // the give-ups after its first (`intake-gave-up`, record's Postgres.GiveUpIntakeMessage), which
 // the controller replays or discards (its replay_give_up and discard_give_up); and the operator's
 // pause and resume of the project (`project-paused` and `project-resumed`, record.ProjectPause,

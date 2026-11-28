@@ -279,7 +279,7 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 			rec.HoldPod = !live
 		}
 		if issue, err = p.records.Issue(ctx, tx, c.Issue); err != nil {
-			return made, err
+			return made, pauseStopRefused(err)
 		}
 		if issue != nil && p.backstop > 0 && c.Role == workflow.OpenPhaseRole(issue.Phase) && c.ServingGeneration == issue.Generation {
 			rec.Backstop = &store.PodWakeBackstop{Project: p.token, Issue: c.Issue, Role: c.Role, DueAt: at.Add(p.backstop)}
@@ -313,17 +313,33 @@ func (p *projectPause) stopTx(ctx context.Context, tx pgx.Tx, c supervise.Claim,
 	}
 	row, err := record.NewOutboxRow(c.Issue, workflow.PauseWakeRow(*issue, c.Role, held.ID), at)
 	if err != nil {
-		return made, err
+		// A row the outbox refuses to build is the stop's own records refused in Go, which the
+		// same stop meets again: the claim write it ends reads it as refused (supervise's rule).
+		return made, &supervise.RowRefusedError{Rule: supervise.RulePauseStop, Err: err}
 	}
 	id, err := p.records.EnqueueID(ctx, tx, row)
 	if err != nil {
-		return made, err
+		return made, pauseStopRefused(err)
 	}
 	made.started = true
 	if held.Ended() && !later {
 		made.released = id
 	}
 	return made, nil
+}
+
+// pauseStopRefused types err as the stop's own records refused in Go (supervise.RulePauseStop)
+// where it is one of the two refusals a read or a write of the stop's transaction makes in Go and
+// meets again for as long as the rows hold what they hold: a stored issue record no daemon can act
+// on (record.ErrIssueUnreadable) and an outbox row keyed by another project's issue
+// (claim.ErrKeyOfAnotherProject). The claim write the stop ends then reads it as refused
+// (supervise's rule), and errors.Is still finds the sentinel through it. Every other error is
+// returned as it is, for the rule to read: a failure of the database is owed.
+func pauseStopRefused(err error) error {
+	if errors.Is(err, record.ErrIssueUnreadable) || errors.Is(err, claim.ErrKeyOfAnotherProject) {
+		return &supervise.RowRefusedError{Rule: supervise.RulePauseStop, Err: err}
+	}
+	return err
 }
 
 // wakeLetOut is supervise.Deps.WakeLetOut (decision 14): the moment a launch of the claim token

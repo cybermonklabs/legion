@@ -784,13 +784,15 @@ func TestAForgetThroughALauncherWithoutTheLookupSaysSoInEveryText(t *testing.T) 
 }
 
 // A forget of a session is told once, however many launches forget it. The machine tells the
-// workflow at the forget, before the fresh agent's Spawn, while the forget is in memory alone: a
-// daemon stop while that Spawn waits on its pod cuts the launch short, and the store still holds
-// the claim recording the session, as the write the launch made before its start left it. The
-// next daemon builds its machines from the store, its launch forgets the session again, at a
-// generation of its own, and its fresh agent's Spawn succeeds. The issue is told in one message,
-// and the architect in one session-forgotten notice: the fact's event id names the session
-// forgotten, so the second forget's fact is the first's (workflowRuntime's sessionLost).
+// workflow with the launch's next claim write, the one that records the forget (supervise's
+// afterRecord, D6 of dispatch://INFRA-4099's plan): a daemon stop while the fresh agent's Spawn
+// waits on its pod cuts the launch short before any such write, so the store still holds the claim
+// recording the session, as the write the launch made before its start left it, and nothing is
+// told of a forget the store never held. The next daemon builds its machines from the store, its
+// launch forgets the session again, at a generation of its own, and its fresh agent's Spawn
+// succeeds and is written. The issue is told in one message, and the architect in one
+// session-forgotten notice, by that daemon: the fact's event id names the session forgotten, so a
+// forget told twice would be one fact (workflowRuntime's sessionLost).
 func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
 	t.Parallel()
 	r := newOlderLauncherRig(t, 0)
@@ -802,14 +804,15 @@ func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
 		t.Fatalf("the store holds the claim %s, recording session %q and process %v, after the stop cut the fresh spawn short; want it launching, recording %s and no process",
 			stopped.State, stopped.Session, stopped.Locator, olderLauncherSession)
 	}
-	r.awaitForgetTold()
+	if told := r.toldCauses(); len(told) != 0 {
+		t.Fatalf("the machine told the workflow of forgets for the causes %q before any write recorded the forget; want none", told)
+	}
 
 	// The next daemon's machine tells the workflow of its forget inside its decision, and the
-	// workflow applies the fact on a goroutine of its own (applySessionFact), which writes nothing
-	// where the fact was applied before. So the first tell takes the lock every fact applies under
-	// (intake.SerializeFacts) before it tells, and lets it go once that goroutine waits on it; the
-	// test then takes the lock itself, which it is granted only once that goroutine's transaction
-	// has ended, and counts the rows after.
+	// workflow applies the fact on a goroutine of its own (applySessionFact). So the tell takes the
+	// lock every fact applies under (intake.SerializeFacts) before it tells, and lets it go once
+	// that goroutine waits on it; the test then takes the lock itself, which it is granted only
+	// once that goroutine's transaction has ended, and counts the rows after.
 	tell, queued := r.sup.deps.SessionLost, make(chan bool, 1)
 	var first sync.Once
 	r.sup.deps.SessionLost = func(c supervise.Claim, cause supervise.SessionLoss, detail string) {
@@ -839,11 +842,11 @@ func TestAForgetADaemonStopCutShortIsToldOnce(t *testing.T) {
 		t.Fatalf("the next daemon's launch made %s; want a Resume of %s by its id, which the launcher refuses, then one Spawn",
 			olderLauncherStarts(starts), olderLauncherSession)
 	}
-	if told := r.toldCauses(); len(told) != 2 || told[0] != supervise.SessionLossNotResumedByID || told[1] != supervise.SessionLossNotResumedByID {
-		t.Fatalf("the machines told the workflow of forgets for the causes %q; want two, each %q: one by each daemon", told, supervise.SessionLossNotResumedByID)
+	if told := r.toldCauses(); len(told) != 1 || told[0] != supervise.SessionLossNotResumedByID {
+		t.Fatalf("the machines told the workflow of forgets for the causes %q; want one, %q, by the daemon whose write recorded the forget", told, supervise.SessionLossNotResumedByID)
 	}
 	if !<-queued {
-		t.Fatal("the workflow's apply of the second forget never waited on the fact lock the tell held")
+		t.Fatal("the workflow's apply of the forget never waited on the fact lock the tell held")
 	}
 	if err := holdFactLock(t, r.pool).Rollback(context.Background()); err != nil {
 		t.Fatalf("let the fact lock go: %v", err)

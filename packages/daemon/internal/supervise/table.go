@@ -188,7 +188,8 @@ const (
 	// the agent's turn, and the retry of a stop that failed.
 	TimerSuspend TimerKind = "suspend"
 	// TimerRelaunch is the retry of a relaunch left waiting with no process (relaunchLater): one whose
-	// lifecycle check failed with no cleanup reserved, or a launch whose write failed. The claim waits
+	// lifecycle check failed with no cleanup reserved, a launch whose write failed, or a request's
+	// revive the window after a refused claim write held back (reviveAfterWindow). The claim waits
 	// launching with no process until it fires.
 	TimerRelaunch TimerKind = "relaunch"
 	// TimerWake is the let-out of the place the wake pacing holds a launch in (reserveWake,
@@ -212,6 +213,20 @@ const (
 	// parked launch's wake takes its start out of the gate at the end of that decision, naming
 	// that end, and disarms it (endPodPark).
 	TimerPodStart TimerKind = "pod_start"
+	// TimerReread is the next try of the read of the claim's row after a refused claim write
+	// whose read failed or found no row (settleRefusal, D5 of dispatch://INFRA-4099's plan): until
+	// a read lands, the machine decides nothing, and this timer tries the read at each probe
+	// interval (awaitRead). It is decided before the table is read (handle), so its rows are named
+	// ignores: a read that lands builds the machine again and disarms it with every other timer.
+	TimerReread TimerKind = "reread"
+	// TimerWindowEnd is the end of the window after a refused claim write (Machine.writesWaitUntil,
+	// D5 of dispatch://INFRA-4099's plan), armed at the end of a decision in that window that left
+	// a claim write owed (armWindowEnd). What that decision does outside the machine and its
+	// durable report wait on the owed write (owedClaimWrite.after, owedClaimWrite.reports), and a
+	// decision that let the claim's process go is followed by no other event of the claim's. Its
+	// decision is the repair at the head of every decision (repair) and nothing more (handle), so
+	// its rows are named ignores.
+	TimerWindowEnd TimerKind = "window_end"
 )
 
 // Timer is a timer the machine armed, firing.
@@ -970,6 +985,11 @@ const (
 	onPauseTimer eventKind = timerPrefix + eventKind(TimerPause)
 	// The grant of its issue pod's start to a launch parked at the pod's gate (askPod).
 	onPodStartTimer eventKind = timerPrefix + eventKind(TimerPodStart)
+	// The next try of the read after a refused write whose read failed (awaitRead).
+	onRereadTimer eventKind = timerPrefix + eventKind(TimerReread)
+	// The end of the window after a refused claim write, when a decision in it left a write owed
+	// (armWindowEnd).
+	onWindowEndTimer eventKind = timerPrefix + eventKind(TimerWindowEnd)
 
 	onSpawn         eventKind = "request_spawn"
 	onRegister      eventKind = "request_register"
@@ -1335,8 +1355,11 @@ func fillTable(t *builder) {
 		[]ClaimState{StateSuspended}, StateWorking, StateIdle, StateReady, StateLaunching, StateShimConnected, StateRegistered)
 	t.ignore(onSuspendTimer, "no suspension is held", StateQueued, StateLaunchUncertain, StateSuspended, StateRetired, StateFailed)
 
+	// A request's revive the window after a refused claim write held back is made over the claim as
+	// the request found it (reviveAfterWindow), so an admission the tree lifecycle refuses leaves it
+	// queued, suspended, failed or retired, as it was.
 	t.row(onRelaunchTimer, "the waiting relaunch is tried again, or a suspension held meanwhile ends it", relaunchAgain,
-		[]ClaimState{StateFailed, StateSuspended}, StateLaunching)
+		[]ClaimState{StateFailed, StateSuspended, StateQueued, StateRetired}, StateLaunching)
 	t.ignore(onRelaunchTimer, "no relaunch is waiting", StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered,
 		StateReady, StateWorking, StateIdle, StateSuspended, StateFailed, StateRetired)
 
@@ -1370,6 +1393,20 @@ func fillTable(t *builder) {
 	t.ignore(onPodStartTimer, "no launch waits at the issue pod's gate: a parked launch keeps its claim launching, and every decision that moves the claim out of launching lets that launch go with its park",
 		StateQueued, StateLaunchUncertain, StateShimConnected, StateRegistered, StateReady, StateWorking, StateIdle,
 		StateSuspended, StateFailed, StateRetired)
+
+	// The next try of the read of the claim's row after a refused claim write whose read failed
+	// (settleRefusal, D5 of dispatch://INFRA-4099's plan). While that read is owed, handle decides
+	// every event before the table (awaitRead), this timer's firing among them, so no state reaches
+	// a row of it: the read that lands builds the machine again, and the build arms no such timer.
+	t.ignore(onRereadTimer, "no read of the claim is owed: a read after a refused claim write that landed built the machine again over the row, which leaves this timer disarmed",
+		slices.Concat(live, processless)...)
+
+	// The end of the window after a refused claim write, armed where a decision in that window left
+	// a claim write owed (armWindowEnd). handle decides it at the head of the decision, after the
+	// repair that makes the owed write, and before the table (D5 of dispatch://INFRA-4099's plan),
+	// so no state reaches a row of it.
+	t.ignore(onWindowEndTimer, "the window's end is decided by the repair at the head of its decision, which makes the claim write the window held, and by nothing else",
+		slices.Concat(live, processless)...)
 
 	// A re-adopted claim found still speaking another plugin contract, at boot or at a later sweep.
 	t.row(onStalePlugin, "the process speaks another plugin contract: relaunch it onto the current one", refreshStalePlugin,
@@ -1982,7 +2019,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
 	var err error
 	if untold || handshakeMoved {
-		err = m.saved(m.putClaimAndPending(ctx))
+		err = m.saved(m.writeFailed(m.pendingWriteMethod(), m.putClaimAndPending(ctx)))
 	} else {
 		err = m.putPending(ctx)
 	}
@@ -2936,6 +2973,18 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // (endNeverReady, letGo) — what its agent never did is no turn, so a record comes only of
 // background work the process reported — and the relaunch that follows lets nothing more go.
 //
+// Whether the count spends the launch budget is read before anything is stopped
+// (relaunchSpends; D6 of dispatch://INFRA-4099's plan). A deadline whose count spends it ends the
+// process rather than replacing it: the claim fails over its live process, the failure written
+// before the process is stopped (fail), so a failure the store refuses stops nothing, and what the
+// process ended is recorded as the deadline's first (recordEnd). Such a deadline counts and fails
+// the claim itself (chargeRelaunch) and asks the tree lifecycle nothing more: its own check above
+// passed, and a failure launches nothing. A second check, relaunchAfterFailure's, that failed would
+// leave the claim live over its process, past its deadline, with no deadline armed
+// (relaunchRefused keeps a claim that still records its process as it is). A deadline that
+// relaunches stops the process first and relaunches it in the same decision, the relaunch's
+// launching write being its record (suspendProcess, writeTry).
+//
 // The deadline of a process of a claim that records a session and no file names an outcome of its
 // own where that process is one an earlier release started, whose registration the fence refused,
 // or a start that had Oh My Pi resume the session by its id and never registered as it
@@ -2957,16 +3006,19 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 			return fmt.Errorf("retire %s, whose agent %s: %w", m.claim.Token, never, err)
 		}
 		incarnation := m.claim.Locator.Incarnation
-		if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
-			m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
-			return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
-		}
 		o := m.endOutcome(runtime.OutcomeNeverRegistered, "the registration deadline")
+		fails := m.relaunchSpends(o)
+		if !fails {
+			if err := m.suspendProcess(ctx, endNeverReady(never)); err != nil {
+				m.arm(TimerRegistration, m.deps.Timeouts.Probe, "")
+				return fmt.Errorf("retire %s, whose agent %s: suspend: %w", m.claim.Token, never, err)
+			}
+		}
 		// The line names the claim (the machine's logger carries it), what its agent never did, and
-		// the launch this retirement counts against its budget (relaunchAfterFailure counts it next),
-		// so a controller whose role claim waits out its registration deadline shows in the daemon's
-		// log as that, attempt by attempt. An end the policy charges nothing counts against no
-		// budget, so its line names none.
+		// the launch this retirement counts against its budget (chargeRelaunch counts it next, itself
+		// or through relaunchAfterFailure), so a controller whose role claim waits out its
+		// registration deadline shows in the daemon's log as that, attempt by attempt. An end the
+		// policy charges nothing counts against no budget, so its line names none.
 		args := []any{"incarnation", incarnation}
 		if Charges(o) {
 			args = append(args, "launchFailure", m.claim.Budgets.LaunchFailures+1, "limit", m.deps.Limits.LaunchFailures)
@@ -2977,6 +3029,11 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 		// (endOutcome) is not, as a death the policy charges nothing is not (died).
 		if Charges(o) {
 			m.sessionEnded("its agent " + never)
+		}
+		if fails {
+			m.recordEnd(ctx, endNeverReady(never))
+			_, err := m.chargeRelaunch(ctx, o)
+			return err
 		}
 		return m.relaunchAfterFailure(ctx, o, noEnd, nil)
 	}, TimerRegistration, m.deps.Timeouts.Probe)
@@ -3400,13 +3457,13 @@ func stop(m *Machine, ctx context.Context, ev Event) error {
 func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ctx, noEnd) }
 
 // issueClose is the workflow's close of a child issue as done: it releases the claim through the
-// runtime, which ends at most this role's process and forgets the claim. It deletes no issue
-// Sandbox — under Agent Sandbox a release deletes only the controller's, whose Sandbox is that
-// claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
-// disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
-// claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
-// that fails changes nothing, so the close can be asked again.
+// runtime, which ends at most this role's process and forgets the claim, and retires it (end). It
+// deletes no issue Sandbox — under Agent Sandbox a release deletes only the controller's, whose
+// Sandbox is that claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an
+// issue's pod and the disk it owns go with the separately fenced IssueSuspend, or with the tree
+// cleanup once every claim of the tree has retired. That is why a merged close leaves the
+// implementer's pod standing: its five siblings take this close and no IssueSuspend is queued
+// (workflow/linger.go). A release that fails changes nothing, so the close can be asked again.
 //
 // The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
 // moves it back, a production check fails — and its roles are started again on the same issue,
@@ -3424,10 +3481,7 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // outcome R8 forbids. Nothing of the workspace is recovered either way: a later start of the
 // issue runs on a pod and a disk of its own, resuming the agent's session on it.
 func issueClose(m *Machine, ctx context.Context, _ Event) error {
-	if err := m.release(ctx); err != nil {
-		return err
-	}
-	return m.retire(ctx, noEnd)
+	return m.end(ctx, noEnd)
 }
 
 // forgetSession drops the named session record from a processless claim: the operator's
@@ -3552,12 +3606,17 @@ func (m *Machine) treeClosable(ctx context.Context) (bool, error) {
 
 // end releases the claim's process and retires the claim, which is what every stop and close does
 // once it is allowed, recording what that process ended under cause (retire): the stop's own
-// (endStopped), and noEnd for a close, which ends the claim's work on purpose.
+// (endStopped), and noEnd for a close, which ends the claim's work on purpose. The release comes
+// first: one the runtime refuses returns its refusal and writes nothing, so the claim, its row, its
+// registration, the tree's cleanup reservation and the process it could not release stand as they
+// were, across a restart too, and the stop or the close can be asked again (R3 of
+// dispatch://INFRA-4099's spec). What the retirement ends outside the machine follows its record
+// (retire, releaseMade).
 func (m *Machine) end(ctx context.Context, cause string) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	return m.retire(ctx, cause)
+	return m.retire(ctx, cause, releaseMade)
 }
 
 // rootStopRefusal is ErrRootStop with what stops the root's process in state instead: a suspension,
@@ -3628,29 +3687,23 @@ func deliverResuming(m *Machine, ctx context.Context, ev Event) error {
 }
 
 // exit is the agent reporting its own end. A worker's or sub-architect's claim ends with it and is
-// released. The tree's root claim ends only with its tree, whose close is a stop: its exit suspends
-// it instead, so it stays resumable and known to the orphan sweep, which would otherwise take
-// whatever the runtime holds for the tree with it. The agent has ended either way, so a runtime
-// that cannot release or suspend its process is logged and the claim moves all the same: a
-// finished agent's claim never stays live, its secret still authenticating. A root's stop records
-// what it ended as a suspension by its exit (endSuspended), as every suspension does; a worker's
-// retirement records nothing (noEnd, retire), since the exit is the agent's own end of its work.
-// The root's suspension sends the clean stop of its Envoy session once the runtime's stop has
-// returned, and none for a stop the runtime refused (stopForSuspension).
+// retired, and released once the retirement is written (retire, releaseOwed). The tree's root claim
+// ends only with its tree, whose close is a stop: its exit suspends it instead, so it stays
+// resumable and known to the orphan sweep, which would otherwise take whatever the runtime holds
+// for the tree with it, and its process is stopped once the suspension is written (suspended). The
+// agent has ended either way, so a runtime that cannot release or suspend its process once the
+// claim's record is written is logged and the claim moves all the same (stopRecorded): a finished
+// agent's claim never stays live, its secret still authenticating. A root's stop records what it
+// ended as a suspension by its exit (endSuspended), as every suspension does; a worker's retirement
+// records nothing (noEnd, retire), since the exit is the agent's own end of its work. The root's
+// suspension sends the clean stop of its Envoy session once the runtime's stop has returned, and
+// none for a stop the runtime refused.
 func exit(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Info("supervise: the agent reported its exit", "reason", ev.(RequestExit).Reason)
 	if m.claim.treeRoot() {
-		incarnation := m.claim.Locator.Incarnation
-		if err := m.stopForSuspension(ctx, SuspendedByExit, stopOwed); err != nil {
-			m.log.Error("supervise: could not suspend the exited root's process; suspending its claim anyway",
-				"incarnation", incarnation, "error", err)
-		}
-		return m.suspended(ctx, SuspendedByExit, nil)
+		return m.suspended(ctx, SuspendedByExit, nil, stopOwed)
 	}
-	if err := m.release(ctx); err != nil {
-		m.log.Error("supervise: could not release the exited agent's process; retiring its claim anyway", "error", err)
-	}
-	return m.retire(ctx, noEnd)
+	return m.retire(ctx, noEnd, releaseOwed)
 }
 
 // openPodUpdate records this claim's update round (PodUpdateOpen). The daemon's sweep posts the

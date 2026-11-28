@@ -183,7 +183,10 @@ func (m *Machine) backstopStalledTurn(ctx context.Context, ev StallBackstop) err
 	end, err := m.replaceProcess(ctx, "the daemon's stall backstop ended a turn whose agent stopped stepping", ordinaryEnd,
 		endStalled(ev.Bound, m.endState() == StateWorking))
 	charged = m.claim.Budgets.LaunchFailures - charged
-	if end.TellsOwner() && m.deps.StallBackstopped != nil {
+	// A refused write ends the decision with the claim built again over its row, so the end this
+	// replacement reached is no end the store records, and the owner is told nothing of it: the
+	// backstop's next pass finds the stalled turn again (D10 of dispatch://INFRA-4099's plan).
+	if end.TellsOwner() && m.deps.StallBackstopped != nil && m.refusal == nil {
 		stop := StallBackstopStop{Step: ev.Step, LastStep: last, Bound: ev.Bound, End: end,
 			StopUnconfirmed: m.stopUnconfirmed, LaunchFailures: charged}
 		if end == EndRelaunchParked {

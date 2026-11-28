@@ -229,7 +229,7 @@ func TestARestartedHoldersStopIsNotCutShortByTheEndOfItsDecision(t *testing.T) {
 //
 // The negative controls are the stop taken out of suspendNow, where the first five rows and the
 // release before the repeated suspension record no stop, and letProcessGoFor ignoring the
-// stop-already-sent argument (cleanStopSent), where the suspension over a process the read found
+// stop-already-sent argument (stops, stopSent), where the suspension over a process the read found
 // gone and the death under a held release each record two.
 func TestASuspensionThatEndsAProcessStopsItsSessionOnce(t *testing.T) {
 	refused := errors.New("the pod would not stop")

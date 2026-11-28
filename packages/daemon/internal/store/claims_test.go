@@ -961,6 +961,51 @@ func TestClaimByBootTokenHashFindsTheClaimCarryingIt(t *testing.T) {
 	}
 }
 
+// The read of one claim after a refused claim write (ReadClaim, D1 of dispatch://INFRA-4099's
+// plan) answers the row as a daemon start reads it (Claims): the claim with its pending delivery
+// where it holds one, the claim alone where it holds none, and no row, with no error, for a token
+// no claim carries.
+func TestReadClaimAnswersTheRowAndItsDelivery(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	store := migratedStore(t)
+	pending := tmuxClaim("legion-LEGION-209-implementer")
+	pending.Pending = &supervise.Delivery{ID: "delivery-1", Task: "implement the plan", Phase: phase.Implementing,
+		Generation: 4, QueuedAt: at(1), DeliveredAt: at(2)}
+	alone := tmuxClaim("legion-LEGION-209-tester")
+	for _, c := range []supervise.Claim{pending, alone} {
+		if err := store.PutClaim(ctx, c); err != nil {
+			t.Fatalf("put claim %s: %v", c.Token, err)
+		}
+	}
+	if err := store.PutDelivery(ctx, pending.Token, *pending.Pending); err != nil {
+		t.Fatalf("put delivery: %v", err)
+	}
+	listed, err := store.Claims(ctx)
+	if err != nil {
+		t.Fatalf("claims: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("claims = %d rows, want 2: %+v", len(listed), listed)
+	}
+
+	for _, want := range listed {
+		got, ok, err := store.ReadClaim(ctx, want.Token)
+		if err != nil || !ok {
+			t.Fatalf("read claim %s = %t, %v; want its row", want.Token, ok, err)
+		}
+		sameClaim(t, got, want)
+	}
+	if got, _, _ := store.ReadClaim(ctx, pending.Token); got.Pending == nil {
+		t.Fatalf("read claim %s holds no delivery, want the one its row holds", pending.Token)
+	}
+
+	got, ok, err := store.ReadClaim(ctx, "legion-LEGION-209-reviewer")
+	if err != nil || ok {
+		t.Fatalf("read of a token no claim carries = %+v, %t, %v; want no row and no error", got, ok, err)
+	}
+}
+
 func TestADeliveryIsPutConfirmedAndRetired(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

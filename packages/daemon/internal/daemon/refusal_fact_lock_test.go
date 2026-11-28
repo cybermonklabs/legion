@@ -206,7 +206,12 @@ func holdFactLock(t *testing.T, pool *store.Pool) pgx.Tx {
 // advisory lock: the fact lock is the only one the outbox takes, so a waiter is an outbox
 // transaction queued behind the fact that holds it.
 func factLockWaited(pool *store.Pool) bool {
-	return testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool {
+	return factLockWaitedWithin(pool, 10*time.Second)
+}
+
+// factLockWaitedWithin is factLockWaited within bound.
+func factLockWaitedWithin(pool *store.Pool, bound time.Duration) bool {
+	return testwait.Holds(bound, 10*time.Millisecond, func() bool {
 		var waiting int
 		err := pool.QueryRow(context.Background(), `select count(*) from pg_locks
 			where locktype = 'advisory' and not granted

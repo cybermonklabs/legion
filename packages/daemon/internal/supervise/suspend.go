@@ -223,7 +223,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 	}
 	if m.stoppedAStart() && m.launchRecordsNoProcess() {
 		m.log.Info("supervise: the suspension stopped the claim's start, so it suspends the claim now", "reason", request.Reason, "by", request.By)
-		return m.suspendedFor(ctx, request, true)
+		return m.suspendedFor(ctx, request, true, stopOwed)
 	}
 	if ev.(RequestSuspend).NeverHold {
 		return &RefusedError{State: m.claim.State, Request: "suspend",
@@ -234,7 +234,7 @@ func holdSuspendUntilReady(m *Machine, ctx context.Context, ev Event) error {
 			m.log.Info("supervise: a suspension reached a claim whose paced wake waits over no process; deciding it here",
 				"reason", request.Reason, "by", request.By, "kind", m.wake.kind, "due", m.wake.due())
 		}
-		return m.suspendedFor(ctx, request, true)
+		return m.suspendedFor(ctx, request, true, stopOwed)
 	}
 	if m.wake != nil && request.Pause != 0 {
 		m.log.Info("supervise: a project pause's stop reached a claim whose paced relaunch waits over the process it would replace; stopping that process now",
@@ -387,16 +387,27 @@ func suspendRequest(m *Machine, ev Event) (RequestSuspend, error) {
 // stop ended as a suspension by request's source (endSuspended, letGo). It is the stop of the
 // suspend row and of suspendHeld, not of every suspension of a live process: a held suspension
 // that a replacement or a wake's turn ends stops through endHeld and letProcessGoFor, and a
-// root's exit stops through exit. It sends the clean stop of the process's Envoy session once the
-// runtime's stop has returned, and none for a stop the runtime refused (stopForSuspension).
-// launch is whether the stop meets a launch its caller knows of (suspendedFor); the launch the
-// claim itself owes is read here, before the stop lets its process go (stopOwesLaunch).
+// root's exit stops through exit. launch is whether the stop meets a launch its caller knows of
+// (suspendedFor); the launch the claim itself owes is read here, before the stop lets its process
+// go (stopOwesLaunch).
+//
+// The runtime's stop comes first, before the suspension's record, while View says the process is
+// being stopped and the claim still shows the state it is leaving (makeStop). A stop the runtime
+// refuses is the suspension's refusal: nothing is let go and nothing is written, so the claim, its
+// row, its registration and the surviving process stand as they were, across a restart too (R3 of
+// dispatch://INFRA-4099's spec). A stop that landed is followed by the record, and only once that
+// write has landed or failed owed are the clean stop of the process's Envoy session sent, its
+// capability revoked and its session's registration stopped (suspended, stopMade). A record the
+// store then refuses acts on none of those: the claim is built again over its row, which still
+// records the process the runtime stopped, and the next observation finds that process gone and
+// recovers it as a daemon start over the same row would (rebuild; D12 of dispatch://INFRA-4099's
+// plan).
 func (m *Machine) suspendNow(ctx context.Context, request RequestSuspend, launch bool) error {
 	launch = launch || m.stopOwesLaunch()
-	if err := m.stopForSuspension(ctx, request.By, stopOwed); err != nil {
+	if err := m.makeStop(ctx, processStop{loc: cloneLocator(m.claim.Locator)}); err != nil {
 		return fmt.Errorf("suspend %s: %w", m.claim.Token, err)
 	}
-	return m.suspendedFor(ctx, request, launch)
+	return m.suspendedFor(ctx, request, launch, stopMade)
 }
 
 // stopOwesLaunch is whether a stop of the claim's process owes the role a launch, which a project
@@ -409,58 +420,61 @@ func (m *Machine) stopOwesLaunch() bool {
 	return m.launchMet() || m.claim.DeathCharged
 }
 
-// stopForSuspension asks the runtime to stop the claim's process for a suspension by by, and
-// once that stop has returned sends the clean stop of the process's Envoy session (sessionGone),
-// unless cleanStopSent says this decision sent it already. A stop the runtime refused sends
-// nothing, since the process may still run, and its error is returned for the caller to decide
-// on: suspendNow refuses the suspension, while letProcessGoFor and exit suspend the claim all the
-// same. It is the one place a suspension's stop and its clean stop are written together.
-func (m *Machine) stopForSuspension(ctx context.Context, by SuspendSource, cleanStopSent bool) error {
-	if err := m.endProcess(ctx, endSuspended(by)); err != nil {
-		return err
-	}
-	if !cleanStopSent {
-		m.sessionGone(ctx)
-	}
-	return nil
-}
-
-// suspendedFor moves the claim to suspended once request's stop has ended its process, and says
-// why. A suspension a project pause asked for (RequestSuspend.Pause) ends in the pause's stop
-// transaction rather than the plain write (suspended, persistStop), carrying whether the role is
-// owed a launch at the resume: launch is whether the stop met one its caller knows of — a start
-// it cancelled, a launch held until ready, a wake's turn, a waiting relaunch — and a launch still
-// waiting on the machine is read here too (launchMet); the task the claim holds is read where the
-// stop is written (putStop).
-func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, launch bool) error {
+// suspendedFor moves the claim to suspended for request, and says why. A suspension a project
+// pause asked for (RequestSuspend.Pause) ends in the pause's stop transaction rather than the
+// plain write (suspended, persistStop), carrying whether the role is owed a launch at the resume:
+// launch is whether the stop met one its caller knows of — a start it cancelled, a launch held
+// until ready, a wake's turn, a waiting relaunch — and a launch still waiting on the machine is
+// read here too (launchMet); the task the claim holds is read where the stop is written
+// (putStop). stops is suspended's.
+func (m *Machine) suspendedFor(ctx context.Context, request RequestSuspend, launch bool, stops suspensionStops) error {
 	var stop *PauseStop
 	if request.Pause != 0 {
 		stop = &PauseStop{Pause: request.Pause, LaunchOwed: launch || m.launchMet()}
 	}
-	if err := m.suspended(ctx, request.By, stop); err != nil {
+	if err := m.suspended(ctx, request.By, stop, stops); err != nil {
 		return err
 	}
 	m.log.Info("supervise: suspended", "reason", request.Reason, "by", request.By)
 	return nil
 }
 
-// suspended moves the claim to suspended by by: its session kept, and the process it stopped let
-// go for the resume to wait out. It only persists — revoking the stopped agent's capability, in
-// memory even when the write fails. The finished phase's unconfirmed task is retired after it by
-// settle, which Handle runs after every row; a retirement that fails is reported, and the claim's
-// next decision retires it before anything else. A project pause's stop is written through its
-// stop transaction (persistStop); nil is a suspension of no pause, written as it always was.
+// suspended moves the claim to suspended by by: its session kept, and the process it ends let go
+// for the resume to wait out. The finished phase's unconfirmed task is retired after it by settle,
+// which Handle runs after every row; a retirement that fails is reported, and the claim's next
+// decision retires it before anything else. A project pause's stop is written through its stop
+// transaction (persistStop); nil is a suspension of no pause, written as it always was.
 //
-// A process still recorded here is one whose stop the runtime refused and the suspension let go
-// all the same (endHeld, exit): what it ended is recorded as a suspension by by, as the stop that
-// did land records it (endSuspended, letGo), and the record goes to the store with this write.
+// The suspension is written first, and only once that write has landed or failed owed does what
+// it ends outside the machine follow (afterRecord, D6 of dispatch://INFRA-4099's plan): the
+// process's capability revoked, its session's registration stopped, and, as stops says, the
+// runtime's stop of the process the claim recorded (Runtime.Suspend of the locator read before
+// letGo cleared it) and the clean stop of its Envoy session once that stop has returned
+// (sessionGone). suspendNow made the runtime's stop before the record (stopMade), so only the
+// clean stop follows it. Every other suspension that lets a process go — one over a process found
+// gone or replaced, a root's exit — stops it after the record, best effort: a stop the runtime
+// refuses then is logged at Error and recorded as a process possibly running (stopUnconfirmed),
+// the suspension stands, and no clean stop is sent (stopRecorded). A suspension the store refuses
+// acts on none of it: the claim is built again over its row, and the decision answers the
+// refusal. A claim that records no process — a start this suspension cancelled, a wake parked
+// over none, a relaunch waiting — has nothing to stop, and revokes and stops what the let-go
+// leaves.
 //
 // A launch its issue pod's gate holds leaves the gate as this suspension's at the end of the
 // decision, so the start the gate grants next names a suspension as what ended its wait
 // (endPodPark, podSuspension).
-func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop) error {
-	m.letGo(ctx, endSuspended(by))
+func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseStop, stops suspensionStops) error {
+	loc, session, file := cloneLocator(m.claim.Locator), m.claim.Session, m.claim.SessionFile
+	after := m.letGo(ctx, endSuspended(by))
+	if loc != nil {
+		s := processStop{loc: loc, made: stops == stopMade}
+		if stops != stopSent {
+			s.session, s.sessionFile = session, file
+		}
+		after.stops = []processStop{s}
+	}
 	m.claim.State, m.claim.SuspendedBy = StateSuspended, by
+	m.awaitRecord(after)
 	if stop != nil {
 		return m.persistStop(ctx, *stop)
 	}
@@ -471,7 +485,9 @@ func (m *Machine) suspended(ctx context.Context, by SuspendSource, stop *PauseSt
 // again at the probe interval, as the registration deadline retries its own: the operator's
 // suspend, answered 202, has nothing else to retry it. A stop that landed has let the process go
 // and the hold with it (letGo), whether or not its write then failed; nothing is retried then, and
-// m.held is nil — which is how a caller tells the two apart.
+// m.held is nil — which is how a caller tells the two apart. A write the store refused ends with
+// the claim built again over its row, the hold dropped with the rest of memory, as a restart drops
+// it, for whoever holds the request to ask again (D12 of dispatch://INFRA-4099's plan).
 func (m *Machine) suspendHeld(ctx context.Context) error {
 	request := m.held
 	if request == nil {
@@ -510,8 +526,8 @@ func (m *Machine) dropHeld() {
 // not handed (repoint), while a suspension is held. Nothing is left to hold the suspension for, so
 // the claim is suspended rather than relaunched, and nothing is charged: died asks before it charges
 // anything. The stop and the suspension are the two steps every claim with nothing left to run
-// takes, written once (letProcessGoFor). cleanStopSent is whether the decision that reached here
-// has already sent the clean stop of the process's Envoy session (sessionGone): a death a probe
+// takes, written once (letProcessGoFor). stops says whether the decision that reached here has
+// already sent the clean stop of the process's Envoy session (sessionGone): a death a probe
 // judged has (died, stopSent), and a replacement (replaceNow) and a paced launch's turn (wakeNow)
 // have not (stopOwed). replaceNow is reached by displaced too — a process found gone, or another
 // runtime's process — and stopOwed is right there as well: a displaced process may still run
@@ -523,18 +539,27 @@ func (m *Machine) dropHeld() {
 // the suspension is what ends the process, rather than the relaunch it replaces. A death or a
 // displacement that reached here recorded its own end first (died, displaced), and that record
 // stands.
-func (m *Machine) endHeld(ctx context.Context, launch, cleanStopSent bool) error {
+func (m *Machine) endHeld(ctx context.Context, launch bool, stops suspensionStops) error {
 	request, launched := *m.held, m.heldLaunch
 	m.dropHeld()
-	return m.letProcessGoFor(ctx, request, launch || launched, cleanStopSent)
+	return m.letProcessGoFor(ctx, request, launch || launched, stops)
 }
 
-// stopSent and stopOwed are the cleanStopSent of endHeld, letProcessGoFor and stopForSuspension:
-// the decision letting the process go has already sent the clean stop of its Envoy session, or it
-// still owes that stop once the runtime's stop has returned (sessionGone).
+// suspensionStops is what a suspension that lets its claim's process go owes that process once
+// the suspension's record is written (suspended): the runtime's stop, and the clean stop of the
+// process's Envoy session once that stop has returned (sessionGone).
+type suspensionStops int
+
 const (
-	stopSent = true
-	stopOwed = false
+	// stopOwed owes both: the decision has stopped nothing and sent nothing, and its stop is best
+	// effort (letProcessGoFor over a replaced process, a root's exit).
+	stopOwed suspensionStops = iota
+	// stopSent owes the runtime's stop alone: the decision letting the process go has already sent
+	// the clean stop, for a process a death or a report found gone (died, suspendOverADeadProcess).
+	stopSent
+	// stopMade owes the clean stop alone: the decision made the runtime's stop before the record,
+	// and a stop the runtime refused ended the decision there (suspendNow).
+	stopMade
 )
 
 // suspendOverADeadProcess runs the suspension of a claim stored working that no process stands
@@ -549,10 +574,13 @@ const (
 // that found the process gone said so (goneOutOfMemory), and the claim keeps that report's
 // account of the death for the operator's listing and a failed claim's notices (goneCause,
 // Claim.LastDeathCause), as died keeps the death it judges. A take-back the store will not write
-// stops everything — nothing is stopped, nothing is sent and the claim is left as it stands, its
-// last death's cause put back, as died leaves it — so the caller's next request takes it back
-// then, rather than this leaving a suspended claim holding a task settle would retire as a
-// finished turn.
+// stops everything — nothing is stopped, nothing is sent and the task is left as it stands — so
+// the caller's next request takes it back then, rather than this leaving a suspended claim holding
+// a task settle would retire as a finished turn. What becomes of the death's account turns on the
+// rule (D8 of dispatch://INFRA-4099's plan): a take-back whose write the rule owes keeps it, a true
+// account of the death, and owes the claim write that records it, as died keeps the account its
+// own failed take-back leaves; a take-back the rule refuses puts the last death's cause back, so
+// memory holds what the row holds.
 //
 // The clean stop of the dead process's Envoy session is sent once that write has landed, and
 // before the process is let go (sessionGone), so it goes whether or not the runtime's stop of a
@@ -583,8 +611,12 @@ const (
 func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSuspend) error {
 	cause, at := m.claim.LastDeathCause, m.claim.LastDeathAt
 	m.claim.LastDeathCause, m.claim.LastDeathAt = m.goneCause, m.deps.Clock.Now()
-	if err := m.interrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
-		m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
+	if method, err := m.takeBackInterrupted(ctx, "the process the task's turn ran on is gone", m.goneOutOfMemory); err != nil {
+		if SortClaimWriteFailure(err) == WriteOwed {
+			m.oweWrite(method, err)
+		} else {
+			m.claim.LastDeathCause, m.claim.LastDeathAt = cause, at
+		}
 		return err
 	}
 	m.recordEnd(ctx, endDied(m.goneCause))
@@ -592,27 +624,22 @@ func (m *Machine) suspendOverADeadProcess(ctx context.Context, request RequestSu
 	return m.letProcessGoFor(ctx, request, false, stopSent)
 }
 
-// letProcessGoFor asks the runtime to let the claim's process go and suspends the claim for
-// request, whether or not that stop landed. It is written once because two paths take exactly
-// these two steps: a process found dead, at a stale address or otherwise replaced while a
-// suspension is held (endHeld), and a suspension that arrives over a process the daemon has
-// already found gone (suspendOverADeadProcess). A runtime that cannot stop the process is logged
-// and recorded (stopUnconfirmed) and the claim is suspended all the same, as a failed claim is
-// (fail): the claim runs nothing either way, and a process the runtime would not stop goes on
-// holding what it runs on, which is the owner of a stalled worker's to hear (the daemon's
-// stallBackstopRecord).
+// letProcessGoFor suspends the claim for request and, once that suspension is written, asks the
+// runtime to stop the claim's process (suspended). It is written once because three paths take
+// exactly these steps: a process found dead, at a stale address or otherwise replaced while a
+// suspension is held (endHeld), a project pause's stop of a relaunch parked over the process it
+// would replace (holdSuspendUntilReady), and a suspension that arrives over a process the daemon
+// has already found gone (suspendOverADeadProcess). Its stop is best effort, so it follows the
+// record: a suspension the store refuses stops nothing (D6 of dispatch://INFRA-4099's plan), and a
+// runtime that cannot stop the process once the suspension is written is logged and recorded
+// (stopUnconfirmed), the claim suspended all the same, as a failed claim is (fail): the claim runs
+// nothing either way, and a process the runtime would not stop goes on holding what it runs on,
+// which is the owner of a stalled worker's to hear (the daemon's stallBackstopRecord).
 //
-// Between the two it sends the clean stop of the process's Envoy session once the runtime's stop
-// has returned, unless cleanStopSent says this decision sent it already (stopForSuspension).
-// launch is suspendNow's: a launch the caller knows the stop meets, beside the launch the claim
-// itself owes, read before the stop lets the process go (stopOwesLaunch).
-func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch, cleanStopSent bool) error {
-	launch = launch || m.stopOwesLaunch()
-	incarnation := m.claim.Locator.Incarnation
-	if err := m.stopForSuspension(ctx, request.By, cleanStopSent); err != nil {
-		m.stopUnconfirmed = true
-		m.log.Error("supervise: could not stop the process with the runtime; suspending its claim anyway",
-			"incarnation", incarnation, "error", err)
-	}
-	return m.suspendedFor(ctx, request, launch)
+// Once the runtime's stop has returned it sends the clean stop of the process's Envoy session,
+// unless stops says this decision sent it already (suspended). launch is a launch the caller knows
+// the stop meets, beside the launch the claim itself owes, read before the let-go clears what it
+// reads (stopOwesLaunch).
+func (m *Machine) letProcessGoFor(ctx context.Context, request RequestSuspend, launch bool, stops suspensionStops) error {
+	return m.suspendedFor(ctx, request, launch || m.stopOwesLaunch(), stops)
 }

@@ -378,7 +378,9 @@ const creditTakenBackMessage = "supervise: the refresh gate's correction took ba
 // claim, since a path that gave a credit up without giving it back is a defect of the lane.
 //
 // It is a locked section that can change the credit, so it ends in unlock, as every such section
-// does.
+// does. It is the one that does not wait while a read of the claim's row is owed after a refused
+// claim write (Machine.rereadOwed, D5 of dispatch://INFRA-4099's plan): it decides nothing of the
+// claim and writes nothing, and the credit it corrects is the gate's, which the wait must not keep.
 func (m *Machine) reclaimCredit(credit *RefreshCredit) {
 	if !m.mu.TryLock() {
 		return

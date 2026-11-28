@@ -385,74 +385,104 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 
 // The take-back is written before the stop is sent (suspendOverADeadProcess): a take-back the
 // store will not write ends the suspension with nothing stopped, so the clean stop of the dead
-// process's Envoy session is not sent either, and the claim is left exactly as it stood for the
-// next request to take back, its last death's cause included, which the suspension set from the
-// read and puts back (Claim.LastDeathCause). That next request, with the store answering again,
-// lands the suspension, records the read's cause and sends the stop once. The claim died once and
-// was relaunched before all this, a minute before the read, so the death it holds carries a cause
-// of its own and a time off the clock: an undo that zeroed the time, or stamped the clock, fails.
-// The negative controls are the stop sent before the write, which leaves the session stopped
-// behind a refused suspension, and the cause not put back, which leaves the claim naming a death
-// it did not take back.
+// process's Envoy session is not sent either, and the task is left exactly as it stood for the
+// next request to take back. What becomes of its last death's cause, which the suspension set from
+// the read, turns on the rule (D8 of dispatch://INFRA-4099's plan): a take-back the rule refuses
+// puts it back (Claim.LastDeathCause), and one whose write the rule owes keeps it, a true account
+// of the death, and owes the claim write that records it. That next request, with the store
+// answering again — and, after a refusal, which builds the machine again over its row as a daemon
+// start builds it, once the process is read again — lands the suspension, records the read's cause
+// and sends the stop once. The
+// claim died once and was relaunched before all this, a minute before the read, so the death it
+// holds carries a cause of its own and a time off the clock: an undo that zeroed the time, or
+// stamped the clock, fails. The negative controls are the stop sent before the write, which leaves
+// the session stopped behind a refused suspension, and the cause not put back, which leaves the
+// claim naming a death it did not take back.
 func TestASuspendOverADeadProcessWhoseTakeBackTheStoreRefusesSendsNoStop(t *testing.T) {
-	h, stopped := sessionStops(t)
-	h.reach(StateReady)
-	h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
-		At: h.clock.Now(), Detail: "pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled"}})
-	h.relaunched()
-	h.advance(time.Minute)
-	h.reach(StateWorking)
-	*stopped = (*stopped)[:0]
-	held := h.pending()
-	cause, at := h.claim().LastDeathCause, h.claim().LastDeathAt
-	if cause == "" || at.IsZero() || !at.Before(h.clock.Now()) {
-		t.Fatalf("the relaunched claim records its last death as %q at %v, want the first death's cause at a time before the clock's %v",
-			cause, at, h.clock.Now())
-	}
-	h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
-	if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
-		t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
-	}
-	gone := deathCause(runtime.Observation{Kind: runtime.Gone})
-	if cause == gone {
-		t.Fatalf("the claim already records its last death as %q, the cause the read finds, so its restore would show nothing", cause)
-	}
-	h.store.fail("PutDelivery", errBoom)
+	for _, tc := range claimWriteFailures() {
+		t.Run(tc.name, func(t *testing.T) {
+			h, stopped := sessionStops(t)
+			h.reach(StateReady)
+			h.must(RuntimeObservation{Observation: runtime.Observation{Locator: h.locator(), Kind: runtime.Gone,
+				At: h.clock.Now(), Detail: "pod legion-legion-209 (uid 8fdd52cc) ended: OOMKilled"}})
+			h.relaunched()
+			h.advance(time.Minute)
+			h.reach(StateWorking)
+			*stopped = (*stopped)[:0]
+			held := h.pending()
+			cause, at := h.claim().LastDeathCause, h.claim().LastDeathAt
+			if cause == "" || at.IsZero() || !at.Before(h.clock.Now()) {
+				t.Fatalf("the relaunched claim records its last death as %q at %v, want the first death's cause at a time before the clock's %v",
+					cause, at, h.clock.Now())
+			}
+			h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+			if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+				t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
+			}
+			gone := deathCause(runtime.Observation{Kind: runtime.Gone})
+			if cause == gone {
+				t.Fatalf("the claim already records its last death as %q, the cause the read finds, so its restore would show nothing", cause)
+			}
+			h.store.fail("PutDelivery", tc.err)
 
-	err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
-		By: SuspendedByOperator, NeverHold: true})
+			err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
+				By: SuspendedByOperator, NeverHold: true})
 
-	if !errors.Is(err, errBoom) {
-		t.Fatalf("the suspension whose take-back the store refused returned %v, want that refusal", err)
-	}
-	if len(*stopped) != 0 {
-		t.Errorf("stopped sessions %v after the refused take-back, want none: nothing was stopped", *stopped)
-	}
-	h.wantState(StateWorking)
-	h.wantCalls("Suspend", 0)
-	if p := h.pending(); p.ID != held.ID || p.ConfirmedAt.IsZero() || p.Interrupted {
-		t.Errorf("the claim holds %+v, want the dead turn's task as it stood, %+v", p, held)
-	}
-	if c := h.claim(); c.LastDeathCause != cause || !c.LastDeathAt.Equal(at) {
-		t.Errorf("the claim records its last death as %q at %v after the refused take-back, want the cause and time it held before, %q at %v",
-			c.LastDeathCause, c.LastDeathAt, cause, at)
-	}
+			if !errors.Is(err, tc.err) {
+				t.Fatalf("the suspension whose take-back the store did not take returned %v, want the store's error", err)
+			}
+			if len(*stopped) != 0 {
+				t.Errorf("stopped sessions %v after the failed take-back, want none: nothing was stopped", *stopped)
+			}
+			h.wantState(StateWorking)
+			h.wantCalls("Suspend", 0)
+			if p := h.pending(); p.ID != held.ID || p.ConfirmedAt.IsZero() || p.Interrupted {
+				t.Errorf("the claim holds %+v, want the dead turn's task as it stood, %+v", p, held)
+			}
+			wantCause, wantAt := cause, at
+			if tc.owed {
+				wantCause, wantAt = gone, h.clock.Now()
+			}
+			if c := h.claim(); c.LastDeathCause != wantCause || !c.LastDeathAt.Equal(wantAt) {
+				t.Errorf("the claim records its last death as %q at %v after the failed take-back, want %q at %v",
+					c.LastDeathCause, c.LastDeathAt, wantCause, wantAt)
+			}
+			h.m.mu.Lock()
+			owed := h.m.owedWrite != nil
+			h.m.mu.Unlock()
+			if owed != tc.owed {
+				t.Errorf("the claim write is owed = %t after the failed take-back, want %t", owed, tc.owed)
+			}
 
-	h.store.fail("PutDelivery", nil)
-	if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
-		By: SuspendedByOperator, NeverHold: true}); err != nil {
-		t.Fatalf("the suspension asked again once the store answers returned %v, want it landed", err)
-	}
-	h.wantState(StateSuspended)
-	if !slices.Equal(*stopped, []string{session}) {
-		t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
-	}
-	if c := h.claim(); c.LastDeathCause != gone || !c.LastDeathAt.Equal(h.clock.Now()) {
-		t.Errorf("the suspended claim records its last death as %q at %v, want the read's own account %q at the daemon's clock, %v",
-			c.LastDeathCause, c.LastDeathAt, gone, h.clock.Now())
-	}
-	if stored := h.store.load(testToken); stored.LastDeathCause != gone || !stored.LastDeathAt.Equal(h.clock.Now()) {
-		t.Errorf("the stored claim records its last death as %q at %v, want %q at %v", stored.LastDeathCause, stored.LastDeathAt, gone, h.clock.Now())
+			h.store.fail("PutDelivery", nil)
+			if !tc.owed {
+				// The refusal built the machine again over its row, as a daemon start builds it, so
+				// what the read found of the process is gone with the rest of memory (D3 of
+				// dispatch://INFRA-4099's plan): the process is read again, as after a restart, a
+				// probe interval on, past the window in which no claim write of the refused claim
+				// reaches the store (D5).
+				h.advance(testProbe)
+				h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+				if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+					t.Fatalf("the read of the rebuilt claim's process answered %q, want %q", got, ProcessGone)
+				}
+			}
+			if err := h.handle(RequestSuspend{Claim: testToken, Reason: "a fresh session was asked for",
+				By: SuspendedByOperator, NeverHold: true}); err != nil {
+				t.Fatalf("the suspension asked again once the store answers returned %v, want it landed", err)
+			}
+			h.wantState(StateSuspended)
+			if !slices.Equal(*stopped, []string{session}) {
+				t.Errorf("stopped sessions %v, want the dead process's own session once", *stopped)
+			}
+			if c := h.claim(); c.LastDeathCause != gone || !c.LastDeathAt.Equal(h.clock.Now()) {
+				t.Errorf("the suspended claim records its last death as %q at %v, want the read's own account %q at the daemon's clock, %v",
+					c.LastDeathCause, c.LastDeathAt, gone, h.clock.Now())
+			}
+			if stored := h.store.load(testToken); stored.LastDeathCause != gone || !stored.LastDeathAt.Equal(h.clock.Now()) {
+				t.Errorf("the stored claim records its last death as %q at %v, want %q at %v", stored.LastDeathCause, stored.LastDeathAt, gone, h.clock.Now())
+			}
+		})
 	}
 }
 

@@ -1756,6 +1756,35 @@ type SessionStoreFault struct {
 
 func (f SessionStoreFault) namedIssue() (string, bool) { return f.Issue, true }
 
+// ClaimWriteRefused is a claim write the store refused for good (supervise's refusedWrite and
+// SortClaimWriteFailure): the store, the server or the driver judged the row the daemon's memory
+// held, so the daemon put the claim back to the row the store holds and asks the agent for its
+// state (R2 and R4 of dispatch://INFRA-4099). It is told to the issue's architect and to the
+// controller once for each claim, generation, SQLSTATE and constraint, which the event id names
+// (the daemon's workflowRuntime.claimWriteRefused), so a second refusal with the same key tells
+// nobody, also after a restart.
+//
+// Tree is the claim's tree, which says whether the claim is the tree root's own architect
+// (claim.IsTreeArchitect). Store is the store call refused, Stored the state the claim's row last
+// held, Refused the state memory held at the refusal, and Generation the refused claim's.
+// SQLState is the server's code, and empty for a refusal the store made itself: one made in Go
+// before it sent a statement, whose rule word (supervise.RowRefusedError.Rule) stands in
+// Constraint where a server's refusal names its constraint, and a retirement it refused because
+// the claim's row holds another delivery, whose rule word is supervise.RuleOtherDelivery.
+type ClaimWriteRefused struct {
+	Issue      string
+	Role       claim.Role
+	Tree       string
+	Store      string
+	Stored     supervise.ClaimState
+	Refused    supervise.ClaimState
+	Generation uint64
+	SQLState   string
+	Constraint string
+}
+
+func (f ClaimWriteRefused) namedIssue() (string, bool) { return f.Issue, true }
+
 // MemoryGuardKill is one process an issue pod's memory guard ended with SIGKILL because the pod
 // was near its memory limit, or, in a microVM pod, one that the pod's own kernel stopped because
 // the pod ran out of memory (the report's Cause, shimwire.MemoryKillCauseKernel, or

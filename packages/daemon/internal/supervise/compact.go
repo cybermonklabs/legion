@@ -371,7 +371,10 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 	}
 	m.log.Info("supervise: the claim's session is being compacted; it is busy until the compaction ends",
 		"generation", m.claim.Generation, "session", m.claim.Session)
-	if err := m.persist(ctx); err != nil {
+	// A write the rule owes leaves the compaction standing, owed, and the agent is asked, as a
+	// decision acts on a record whose write is owed (D8 of dispatch://INFRA-4099's plan); only a
+	// write the rule refuses gives the claim back as the row holds it.
+	if err := m.persist(ctx); err != nil && SortClaimWriteFailure(err) == WriteRefused {
 		m.compacting, m.heldSend = nil, held
 		m.claim.State, m.claim.LastTurnEnd = was, ended
 		return err

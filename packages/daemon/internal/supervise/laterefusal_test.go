@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -270,53 +271,68 @@ func TestAReplayedRefusalTakesBackATaskAForeignTurnConfirmed(t *testing.T) {
 }
 
 // A refusal can land after settle retired the task it names: the suspension's retire, or the
-// turn end's, failed and left the task held, so the fence let the refusal through, and the settle
-// before the row retired it. The row then finds no pending task, and it must have nothing to do
-// rather than end the daemon.
+// turn end's, failed, so the fence let the refusal through. A retire the rule refuses left the task
+// held, and the settle before the row retired it, the refusal coming past the window in which no
+// claim write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's plan); one
+// whose write the rule owes retired it in memory at once and owed the write (retirePending, D8),
+// which the row's own decision makes first (repair). Either way the row finds no pending task,
+// and it must have nothing to do rather than end the daemon.
 func TestARefusalOfATaskRetiredUnderItHasNothingToDo(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		replayed bool
-		hold     func(h *harness) string
+		hold     func(h *harness, failure error) string
 	}{
-		{name: "suspended", hold: func(h *harness) string {
+		{name: "suspended", hold: func(h *harness, failure error) string {
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 			id := h.pending().ID
-			h.store.fail("RetireDelivery", errBoom)
+			h.store.fail("RetireDelivery", failure)
 			_ = h.handle(RequestSuspend{Claim: testToken, By: SuspendedByDaemon})
 			return id
 		}},
-		{name: "suspended, replayed", replayed: true, hold: func(h *harness) string {
+		{name: "suspended, replayed", replayed: true, hold: func(h *harness, failure error) string {
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 			id := h.pending().ID
-			h.store.fail("RetireDelivery", errBoom)
+			h.store.fail("RetireDelivery", failure)
 			_ = h.handle(RequestSuspend{Claim: testToken, By: SuspendedByDaemon})
 			return id
 		}},
-		{name: "idle", hold: func(h *harness) string {
+		{name: "idle", hold: func(h *harness, failure error) string {
 			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
 			id := h.pending().ID
 			h.must(StreamTurnStart{Claim: testToken})
-			h.store.fail("RetireDelivery", errBoom)
+			h.store.fail("RetireDelivery", failure)
 			_ = h.handle(StreamTurnEnd{Claim: testToken})
 			return id
 		}},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newHarness(t)
-			h.reach(StateReady)
-			id := tc.hold(h)
-			if h.claim().Pending == nil {
-				t.Fatal("the failed retire left no task held")
-			}
-			h.store.fail("RetireDelivery", nil)
+		for _, failure := range claimWriteFailures() {
+			t.Run(tc.name+", "+failure.name, func(t *testing.T) {
+				h := newHarness(t)
+				h.reach(StateReady)
+				id := tc.hold(h, failure.err)
+				if held := h.claim().Pending != nil; held == failure.owed {
+					t.Fatalf("the failed retire left a task held = %t, want %t: a refused retire leaves the task as the row holds it, an owed one retires it in memory and owes the write",
+						held, !failure.owed)
+				}
+				h.store.fail("RetireDelivery", nil)
+				if !failure.owed {
+					// The next event comes a probe interval on, past the window in which no
+					// claim write of the refused claim reaches the store (D5 of
+					// dispatch://INFRA-4099's plan).
+					h.advance(testProbe)
+				}
 
-			h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: "the model provider refused the request", Replayed: tc.replayed})
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: "the model provider refused the request", Replayed: tc.replayed})
 
-			if p := h.claim().Pending; p != nil {
-				t.Fatalf("pending after the refusal = %+v, want the task retired", p)
-			}
-		})
+				if p := h.claim().Pending; p != nil {
+					t.Fatalf("pending after the refusal = %+v, want the task retired", p)
+				}
+				if d, stored := h.store.delivery(testToken); stored {
+					t.Fatalf("the row still holds delivery %+v after the refusal's decision, want the retirement made", d)
+				}
+			})
+		}
 	}
 }
 
@@ -568,47 +584,64 @@ func TestALateAcknowledgementOfATaskWhoseTurnRanWaitsForItsResult(t *testing.T) 
 }
 
 // A send's outcome can arrive after settle retired its task: the prompt's turn and its result were
-// decided before the send's acknowledgement (sending), the result's retire failed and left the task
-// held, and the next event's settle retires it. The acknowledgement then has no task to mark, and
-// it must record nothing rather than end the daemon.
+// decided before the send's acknowledgement (sending), and the result's retire failed. A retire the
+// rule refuses left the task held, and the settle of the next event, past the window in which no
+// claim write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's plan), retires
+// it; one whose write the rule owes retired it in memory at once and owed the write
+// (retirePending), which the next event's repair makes. The acknowledgement then has no task to
+// mark, and it must record nothing rather than end the daemon.
 func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
-	h := newHarness(t)
-	h.reach(StateReady)
-	gated := newGatedConn()
-	h.conns.Register(testToken, gated)
-	if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Generation: 7}); err != nil {
-		t.Fatal(err)
-	}
-	id := waitFor(t, "the send", gated.entered)
-	for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
-		if err := h.m.Handle(h.ctx, ev); err != nil {
-			t.Fatal(err)
-		}
-	}
-	h.store.fail("RetireDelivery", errBoom)
-	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}); err == nil {
-		t.Fatal("the result's retire succeeded, want it to fail and leave the task held")
-	}
-	h.store.fail("RetireDelivery", nil)
-	if h.claim().Pending == nil {
-		t.Fatal("the task was retired, want it held after the failed retire")
-	}
-
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				t.Fatalf("the late acknowledgement panicked: %v", r)
+	for _, failure := range claimWriteFailures() {
+		t.Run(failure.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateReady)
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			if err := h.m.Handle(h.ctx, RequestDeliver{Claim: testToken, Task: "the task", Generation: 7}); err != nil {
+				t.Fatal(err)
 			}
-		}()
-		if err := h.m.Handle(h.ctx, PromptAcked{Claim: testToken, Generation: h.generation(), DeliveryID: id}); err != nil {
-			t.Fatalf("the late acknowledgement: %v", err)
-		}
-	}()
-	if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
-		t.Fatalf("after the late acknowledgement: pending %+v serving %d, want run 7 served", c.Pending, c.ServingGeneration)
+			id := waitFor(t, "the send", gated.entered)
+			for _, ev := range []Event{StreamTurnStart{Claim: testToken}, StreamTurnEnd{Claim: testToken}} {
+				if err := h.m.Handle(h.ctx, ev); err != nil {
+					t.Fatal(err)
+				}
+			}
+			h.store.fail("RetireDelivery", failure.err)
+			if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: id, AgentInvoked: true}); !errors.Is(err, failure.err) {
+				t.Fatalf("the result's retire = %v, want it to fail with the store's error", err)
+			}
+			h.store.fail("RetireDelivery", nil)
+			if !failure.owed {
+				// The acknowledgement comes a probe interval on, past the window in which no claim
+				// write of the refused claim reaches the store (D5 of dispatch://INFRA-4099's
+				// plan). The clock alone moves: the send it acknowledges is held until the end.
+				h.clock.Advance(testProbe)
+			}
+			if held := h.claim().Pending != nil; held == failure.owed {
+				t.Fatalf("the failed retire left a task held = %t, want %t: a refused retire leaves the task as the row holds it, an owed one retires it in memory and owes the write",
+					held, !failure.owed)
+			}
+
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						t.Fatalf("the late acknowledgement panicked: %v", r)
+					}
+				}()
+				if err := h.m.Handle(h.ctx, PromptAcked{Claim: testToken, Generation: h.generation(), DeliveryID: id}); err != nil {
+					t.Fatalf("the late acknowledgement: %v", err)
+				}
+			}()
+			if c := h.claim(); c.Pending != nil || c.ServingGeneration != 7 {
+				t.Fatalf("after the late acknowledgement: pending %+v serving %d, want run 7 served", c.Pending, c.ServingGeneration)
+			}
+			if d, stored := h.store.delivery(testToken); stored {
+				t.Fatalf("the row still holds delivery %+v after the acknowledgement's decision, want the retirement made", d)
+			}
+			gated.release <- struct{}{}
+			h.m.Wait()
+		})
 	}
-	gated.release <- struct{}{}
-	h.m.Wait()
 }
 
 // A replayed refusal of a prompt no turn confirmed takes nothing back, even from a connection that

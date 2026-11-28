@@ -52,7 +52,7 @@ const newsModelLatest = 40
 // turn runs and two versions are left to approve, so both come early enough. The first is held to
 // the traces of a credit counted from an unfinal one. While its tester's turn runs no clear is
 // listed at all. Until the reviewer has taken to its result a prompt of its run that told it a
-// version while that credit stands (newsModel.reviewed), no refused write is listed, the reviewer's
+// version while that credit stands (newsModel.reviewed), no failed write is listed, the reviewer's
 // turn and its result are listed twelve times and nothing else ends that turn, and a person's new
 // version once of each kind, so the reviewer's credit counted from the tester's is made final while
 // the tester's stands; from then on the tester's provider error is listed six times, which gives the
@@ -293,9 +293,11 @@ func (m *newsModel) do(name string) {
 		// A newer task of the phase, as an operator's or a repair's: it carries no entry, so the
 		// claim's given entry stays the one its phases row names, and a news-only start still
 		// reaches it. It takes the place of the confirmed task whose turn runs (queue), and gives
-		// back that task's credit: the turn's result, when it comes, is another delivery's. A
-		// refused write can refuse the newer task whole, which leaves the claim holding the task
-		// whose turn runs; check marks the give-back where the claim holds this task, or none.
+		// back that task's credit: the turn's result, when it comes, is another delivery's. The
+		// retirement of the running task, or the write of the newer task after it, can fail:
+		// memory keeps the retirement either way and takes the newer task only once the store has
+		// it, so a failed write leaves the claim holding no task; check marks the give-back where
+		// the claim holds this task, or none.
 		m.superseding = fmt.Sprintf("model:%d", m.step)
 		m.handle(rev, supervise.RequestDeliver{Claim: rev.token, ID: m.superseding, Task: "Review the change again.",
 			Phase: phase.Reviewing, Generation: readIssue(m.t, m.r.pool, pathChild).Generation})
@@ -336,7 +338,7 @@ func (m *newsModel) do(name string) {
 // acknowledgement sets the task's copy of its news and writes the task to the claim store in one
 // decision, under the machine's lock, so once that write succeeds the store holds the delivery the
 // machine holds. A check that read the store before that decision and the machine after it would
-// see a lag that no refused write made.
+// see a lag that no failed write made.
 func (m *newsModel) wait() {
 	for _, a := range m.agents() {
 		if a.machine != nil {
@@ -365,8 +367,9 @@ func (m *newsModel) handoverClearDue() bool {
 	return tester.turn != "" && m.handovers == newsModelHandovers && m.handoverClear == 0 && p != nil && p.run == m.child.run
 }
 
-// handle posts ev to a's machine and waits for what it started. A decision a refused write cut
-// short is no failure of the run: the machine owes that write and makes it again.
+// handle posts ev to a's machine and waits for what it started. A decision a failed write cut
+// short is no failure of the run: the machine owes that write and makes it again (claimWriteFailed,
+// repair).
 func (m *newsModel) handle(a *newsModelAgent, ev supervise.Event) {
 	m.t.Helper()
 	if err := a.machine.Handle(m.r.ctx, ev); err != nil && !errors.Is(err, errModelWrite) {

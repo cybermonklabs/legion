@@ -204,20 +204,33 @@ func (m *Machine) relaunchAfterFailure(ctx context.Context, o runtime.Outcome, e
 			return m.relaunchAfterFailure(ctx, o, ending, nil)
 		}, err)
 	}
-	cause := failureCause(o)
-	// A death an earlier raise of this relaunch charged is in the count already: this raise counts
-	// nothing, and fails the claim only where that count spent the budget.
-	var spent bool
-	if m.deathLaunchFailureCharged(cause) {
-		spent = m.launchBudgetSpent()
-	} else {
-		m.claim.PendingCause = cause
-		spent = m.chargeLaunch(o)
-	}
-	if spent {
-		return m.fail(ctx, cause, "launch failures ran out")
+	if failed, err := m.chargeRelaunch(ctx, o); failed {
+		return err
 	}
 	return m.launchAfter(ctx, true, false, false, place, ending)
+}
+
+// chargeRelaunch counts o, an outcome the policy charges (Charges), against the launch budget,
+// recording its cause on the claim (Claim.PendingCause), and fails the claim where that count spends
+// the budget. It answers whether it failed the claim, and the failure's error. It is
+// relaunchAfterFailure's count, and the whole of a registration deadline's whose count spends the
+// budget: that deadline ends its process rather than replacing it, so no lifecycle check stands
+// between its own check and the failure (registrationDeadline).
+func (m *Machine) chargeRelaunch(ctx context.Context, o runtime.Outcome) (bool, error) {
+	cause := failureCause(o)
+	// Whether the count spends the budget is read before the count is made, by the one rule the
+	// registration deadline reads too (relaunchSpends). A death an earlier raise of this relaunch
+	// charged is in the count already: this raise counts nothing, and fails the claim only where
+	// that count spent the budget.
+	spent := m.relaunchSpends(o)
+	if !m.deathLaunchFailureCharged(cause) {
+		m.claim.PendingCause = cause
+		m.chargeLaunch(o)
+	}
+	if !spent {
+		return false, nil
+	}
+	return true, m.fail(ctx, cause, "launch failures ran out")
 }
 
 // deathLaunchFailureCharged is whether cause is a death whose launch failure an earlier raise of
@@ -248,7 +261,29 @@ func (m *Machine) chargeLaunch(o runtime.Outcome) bool {
 }
 
 func (m *Machine) launchBudgetSpent() bool {
-	return m.claim.Budgets.LaunchFailures >= m.deps.Limits.LaunchFailures
+	return m.launchBudgetSpentAt(m.claim.Budgets.LaunchFailures)
+}
+
+// launchBudgetSpentAt is whether a count of launch failures spends the launch budget.
+func (m *Machine) launchBudgetSpentAt(failures int) bool {
+	return failures >= m.deps.Limits.LaunchFailures
+}
+
+// relaunchSpends is whether the count of o after a failure (chargeRelaunch) spends the launch
+// budget, and so fails the claim rather than relaunch it, read before anything of the count is
+// made: it is the one rule of it, which chargeRelaunch reads before it counts. The registration
+// deadline reads it before it stops anything: a deadline whose count fails the claim writes that
+// failure before its process is stopped, as every failure does, and one that relaunches stops its
+// process first, the relaunch's launching write being its record (registrationDeadline; D6 of
+// dispatch://INFRA-4099's plan).
+func (m *Machine) relaunchSpends(o runtime.Outcome) bool {
+	if !Charges(o) {
+		return false
+	}
+	if m.deathLaunchFailureCharged(failureCause(o)) {
+		return m.launchBudgetSpent()
+	}
+	return m.launchBudgetSpentAt(m.claim.Budgets.LaunchFailures + 1)
 }
 
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
@@ -316,12 +351,20 @@ func (m *Machine) turnOpen() bool {
 // (checkLaunch): it asks whether the tree may launch at all. A retirement while an operator's
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld): the
 // operator decided what becomes of the process. And the last retirement fails the claim (fail)
-// rather than relaunching it, which is the budget running out, not an event's charge. A suspension
-// that fails charges nothing: the next failure reaches the limit again and retries the retirement.
+// rather than relaunching it, which is the budget running out, not an event's charge. A retirement
+// that relaunches and whose suspension fails charges nothing: the next failure reaches the limit
+// again and tries the retirement again. The last retirement writes the claim failed first, and a
+// stop the runtime then refuses is logged at Error (stopRefusedLine) and sets stopUnconfirmed: the
+// claim stays failed, and nothing tries the stop again (stopRecorded).
 //
 // The retirement's stop is where the process is let go, so that is where what it ended is
-// recorded, under the retirement's own cause (endRetired, letGo): the last retirement as well,
-// whose failure then finds no process left to record. The launch that follows lets nothing go.
+// recorded, under the retirement's own cause (endRetired, letGo). A retirement that relaunches
+// stops its process first and relaunches it in the same decision, the relaunch's launching write
+// being its record (suspendProcess, writeTry); the launch that follows lets nothing go. The last
+// retirement ends the process rather than replacing it, so it stops nothing first: it records the
+// retirement's end and fails the claim over its live process, the failure written before that
+// process is stopped (fail; D6 of dispatch://INFRA-4099's plan), so a failure the store refuses
+// stops nothing.
 func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	if !Charges(o) {
 		m.log.Info("supervise: the turn's outcome charges nothing", "outcome", string(o))
@@ -339,14 +382,15 @@ func (m *Machine) chargePrompt(ctx context.Context, o runtime.Outcome) error {
 	}
 	retires := m.claim.Budgets.PromptRetires + 1
 	last := retires >= m.deps.Limits.PromptRetires
-	retirement := m.suspendProcess
 	if last {
-		retirement = m.endProcess // the last retirement fails the claim, which does not run again
-	} else if err := m.checkLaunch(ctx); err != nil {
-		return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
-	}
-	if err := retirement(ctx, endRetired); err != nil {
-		return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
+		m.recordEnd(ctx, endRetired)
+	} else {
+		if err := m.checkLaunch(ctx); err != nil {
+			return fmt.Errorf("retire %s after %d prompt failures: %w", m.claim.Token, failures, err)
+		}
+		if err := m.suspendProcess(ctx, endRetired); err != nil {
+			return fmt.Errorf("retire %s after %d prompt failures: suspend: %w", m.claim.Token, failures, err)
+		}
 	}
 	m.claim.Budgets.PromptRetires = retires
 	m.log.Warn("supervise: retired after prompt failures", "outcome", string(o), "promptFailures", failures,

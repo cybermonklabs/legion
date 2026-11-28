@@ -1220,7 +1220,9 @@ type podReplacement struct {
 // first line only where it ends the round as a replacement made (above). What either line names a
 // claim as having said is read from the claims as they hold it (told, and in the last word's
 // ended), never masked: the mask holds a replacement back for a sweep, and is no answer a claim
-// withdrew (noticeGroup).
+// withdrew (noticeGroup). Before the round's bound, a claim the line or the notice would name as
+// one that had not answered, and whose machine was deciding something at that read, holds the
+// replacement back for a sweep too, since that decision may be its answer (replaceForRound).
 //
 // Where the read found work that no branch or tag on origin holds, or failed, and the replacement
 // is made all the same, the issue's architect is told what it took (roundReplaced,
@@ -1249,7 +1251,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 		}
 		return
 	}
-	told, live := s.liveGroup(claimsOf(claims, issue))
+	told, live, deciding := s.liveGroupDeciding(claimsOf(claims, issue))
 	clock := s.roundClockAt(s.plan.clock.Now(), replace.holds)
 	reading := readReplacement(live, round, clock)
 	switch reading.wait {
@@ -1306,7 +1308,7 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	if awaitsRoundPod(reading.through, round) {
 		process, lost = runtime.Known{}, lostClaims(told, round, earlierWork)
 	}
-	s.replaceForRound(ctx, replace, at, told, live, clock, roundCall{
+	s.replaceForRound(ctx, replace, at, told, live, deciding, clock, roundCall{
 		process:     process,
 		name:        "replacement through a process",
 		notDue:      "supervise: this update round's replacement was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
@@ -1355,8 +1357,20 @@ type roundCall struct {
 // what the call's lines say, and the runtime's call it makes (the Legion reviewer's fix 3 on #5285
 // at 4b123279). replace.by, who makes the replacement (roundReplacer), is carried on the read to
 // the replacement's line and notice (workspaceRead). at is the moment the read began, taken before
-// the claims were read again; told and live are those claims, unmasked and masked (liveGroup); and
+// the claims were read again; told and live are those claims, unmasked and masked, and deciding
+// the claims of told whose machine was deciding something at that read (liveGroupDeciding); and
 // clock is the moment they were read at.
+//
+// Before the round's bound, a claim the line or the notice would name as one that had not
+// answered (rc.named, rc.lost) and whose machine was deciding something at the read holds the
+// replacement back for this sweep (decidingNamed), before anything is read or written. A machine
+// publishes a decision's claim only once that decision's write has answered (supervise's
+// publishAnswered, D10 of dispatch://INFRA-4099's plan), so the view of such a claim does not show
+// an answer the decision is writing, and the claim would be named as one that had not answered
+// although it did. The cost is one sweep, as the mask's is (masked): the next sweep reads the claim
+// as that decision left it. Past the bound nothing holds the replacement for an answer
+// (roundEnd.holding), and such a claim is named as its view holds it, which errs towards naming a
+// role that may have lost work rather than hiding a loss (workOnRoundPod).
 //
 // The read decides the replacement (roundKeeps): a read that keeps the pod ends the round with no
 // replacement (keepPodForRound). Otherwise the replacement's record is written before the call
@@ -1373,9 +1387,14 @@ type roundCall struct {
 // call's record goes (overtakenByLaunch); or as a launch's delete of the issue's Sandbox over the
 // pod, whose record tells the architect, and the round's finish yields to it (roundReplaced). Where
 // no record of such an act stands, a nil ends the round as the replacement made (roundReplaced).
-func (s *supervision) replaceForRound(ctx context.Context, replace podReplacement, at time.Time, told, live []supervise.Claim, clock roundClock,
+func (s *supervision) replaceForRound(ctx context.Context, replace podReplacement, at time.Time, told, live, deciding []supervise.Claim, clock roundClock,
 	rc roundCall) {
 	issue, round, pod, reasons := replace.issue, replace.round, replace.pod, replace.reasons
+	if waiting := decidingNamed(deciding, rc.named, rc.lost); len(waiting) > 0 && !clock.pastBound(told, round) {
+		s.log.Info("supervise: a claim this update round's replacement would name as not having answered was in a decision of its machine, which may be its answer, and the round's bound has not come; nothing was replaced and the round stays open",
+			"issue", issue, "round", round, "pod", pod, "deciding", namesOf(waiting))
+		return
+	}
 	read := s.readPodWorkspace(ctx, issue, round, rc.process, replace.by, at)
 	read.origin = roundRepository(told, round)
 	if roundKeeps(reasons, read) {
@@ -1420,6 +1439,22 @@ func (s *supervision) replaceForRound(ctx context.Context, replace podReplacemen
 		return
 	}
 	s.roundReplaced(ctx, issue, round, pod, reasons, ended, rc.named, rc.lost, read, told, rc.earlierWork, recorded, !asked)
+}
+
+// decidingNamed is every claim of deciding that one of named names, by token, in deciding's order:
+// the claims a round's replacement would name as not having answered whose machine was deciding
+// something at the read they were named from (replaceForRound).
+func decidingNamed(deciding []supervise.Claim, named ...[]supervise.Claim) []supervise.Claim {
+	var of []supervise.Claim
+	for _, c := range deciding {
+		for _, set := range named {
+			if slices.ContainsFunc(set, func(n supervise.Claim) bool { return n.Token == c.Token }) {
+				of = append(of, c)
+				break
+			}
+		}
+	}
+	return of
 }
 
 // overtakenByLaunch is whether a round's replacement whose call answered nil took nothing because
@@ -1925,12 +1960,12 @@ var errReplacementNotDue = errors.New("the pod replacement is no longer due")
 // What each claim holds is read from its machine's published view (Machine.View), never from
 // Machine.Claim: Claim waits out the decision in flight, and the decision in flight can be the
 // launch or the suspension that is waiting on the very pod lock this call is made under, which
-// would deadlock the daemon's sweep against its own runtime. The view is at least as fresh as the
-// store for a claim a machine holds — it is what the latest decision left, or what the decision
-// in flight last tried to write — and the store's row stands for a claim no machine of this
-// daemon holds. The activity report alone is read from the store's row this call reads
-// (roundGroup), so a report a session sent while the runtime waited for the pod's launch turn is
-// weighed here.
+// would deadlock the daemon's sweep against its own runtime. The view is what the latest decision
+// whose write answered left (supervise's publishAnswered): a decision in flight publishes nothing
+// before its write answers, which is why a claim whose machine is deciding reads masked here. The
+// store's row stands for a claim no machine of this daemon holds. The activity report alone is
+// read from the store's row this call reads (roundGroup), so a report a session sent while the
+// runtime waited for the pod's launch turn is weighed here.
 func (s *supervision) replacementDue(issue, round string, readAt time.Time, ended *roundEnd) func(context.Context) error {
 	return func(ctx context.Context) error {
 		claims, err := s.supervisor.Claims(ctx)
@@ -2158,7 +2193,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 		}
 		return
 	}
-	told, live := s.liveGroup(claimsOf(claims, issue))
+	told, live, deciding := s.liveGroupDeciding(claimsOf(claims, issue))
 	clock := s.roundClockAt(s.plan.clock.Now(), replace.holds)
 	if err := s.issuePodKept(live, round, clock); err != nil {
 		s.log.Info("supervise: the pod of this update round is kept now the sweep has reached its replacement by issue; nothing was replaced and the round stays open",
@@ -2167,7 +2202,7 @@ func (s *supervision) replaceIssuePodForRound(ctx context.Context, replace podRe
 	}
 	earlierWork := s.roundPodHoldsEarlierWork(ctx, issue, round)
 	lost := lostClaims(told, round, earlierWork)
-	s.replaceForRound(ctx, replace, at, told, live, clock, roundCall{
+	s.replaceForRound(ctx, replace, at, told, live, deciding, clock, roundCall{
 		name:        "replacement by issue",
 		notDue:      "supervise: this update round's replacement by issue was no longer due when its pod's launch turn came; nothing was replaced and the round stays open",
 		failed:      "supervise: replace by issue the pod of an update round with no process in it; retrying at the next sweep",
@@ -2556,11 +2591,22 @@ func claimsOf(claims []supervise.Claim, issue string) []supervise.Claim {
 // liveGroup is one read of the group as its claims' own machines hold them now, in the group's
 // order, given twice: as the claims hold their answers (told, which noticeGroup gives alone), and
 // masked (live, masked). A caller that decides from live and asks or reports from told reads both
-// at one moment, and the mask is applied here alone, so no caller pairs a claim with another
-// claim's machine.
+// at one moment, and the mask is applied here and in liveGroupDeciding alone, so no caller pairs a
+// claim with another claim's machine.
 func (s *supervision) liveGroup(group []supervise.Claim) (told, live []supervise.Claim) {
 	told, deciding := s.roundGroup(group)
 	return told, masked(told, deciding)
+}
+
+// liveGroupDeciding is liveGroup with the claims of told whose machine was deciding something at
+// the same read (deciding, roundGroup), for a round's own replacement, which names no such claim
+// before the round's bound (replaceForRound).
+func (s *supervision) liveGroupDeciding(group []supervise.Claim) (told, live, deciding []supervise.Claim) {
+	told, at := s.roundGroup(group)
+	for _, i := range at {
+		deciding = append(deciding, told[i])
+	}
+	return told, masked(told, at), deciding
 }
 
 // noticeGroup is the group as its claims hold their answers: liveGroup's told alone, one fresh read
@@ -2605,8 +2651,10 @@ func (s *supervision) machinesGroup(issue string) []supervise.Claim {
 // waits out the decision in flight, and that decision can be a Sandbox relaunch that holds the
 // machine for minutes. This runs for every drifted issue on every tick, so one relaunching claim
 // would otherwise stall the whole sweep behind it — the orphan reaping, the stale-plugin posts
-// and every later issue's round. The view is at least as fresh as the store for a claim a
-// machine holds, and the store's row stands for a claim no machine of this daemon holds.
+// and every later issue's round. The view is as fresh as the store for a claim a machine holds,
+// but for the decision in flight, which publishes only once its write has answered (supervise's
+// publishAnswered) and which the readers below weigh apart (deciding); the store's row stands for
+// a claim no machine of this daemon holds.
 //
 // The activity report is the one part of a claim read from the store's row in group and not from
 // the view. The activity route writes the store and posts nothing to the machine, and a machine
@@ -2623,9 +2671,10 @@ func (s *supervision) machinesGroup(issue string) []supervise.Claim {
 //
 // Each claim is read as its machine published it, its answer included, which is a fact about the
 // claim. Where its machine was deciding something at the same read (Machine.Deciding, which
-// waits on nothing either), its position in read is kept in deciding, for the one kind of reader
-// that weighs it: a decision to replace the pod, which reads the claims masked. liveGroup alone
-// pairs the two.
+// waits on nothing either), its position in read is kept in deciding, for the two kinds of reader
+// that weigh it: a decision to replace the pod, which reads the claims masked, and a round's own
+// replacement, which names no such claim before the round's bound (replaceForRound).
+// liveGroupDeciding alone pairs the read with either.
 func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Claim, deciding []int) {
 	read = make([]supervise.Claim, 0, len(group))
 	for _, c := range group {
@@ -2654,8 +2703,9 @@ func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Clai
 
 // masked is roundGroup's read as a decision to replace the pod reads it: a claim whose machine
 // was deciding something at the read (at a position deciding names) reads as not having answered.
-// The view of such a claim is what the decision in flight last tried to write, and the decision
-// may be a turn starting that the view does not show yet, so a reader about to delete a disk
+// The view of such a claim is what its last decision left: a machine publishes a decision's claim
+// only once that decision's write has answered (supervise's publishAnswered), so the decision in
+// flight may be a turn starting that the view does not show yet, and a reader about to delete a disk
 // before the round's bound masks it: the cost is one sweep, and the cost of the other way is a
 // turn cut before the bound. Those readers are the walk's reading (readReplacement) and what it
 // decides of a pod with no process in it (roundWithNoProcessInItsPod, roundPodEnds), and the
@@ -2671,7 +2721,10 @@ func (s *supervision) roundGroup(group []supervise.Claim) (read []supervise.Clai
 // the replacement makes, not a fact about a claim: the controller's notice, for one, marks each
 // claim the round asks with whether it answered (record.UpdateWaiting.Answered), and a masked
 // claim would read there as one that said nothing although it answered. The launch hook reads
-// noticeGroup too, though it may delete a disk, for the reason its own doc gives.
+// noticeGroup too, though it may delete a disk, for the reason its own doc gives. Before the
+// round's bound, a round's own replacement names no claim whose machine was deciding at its read,
+// and waits a sweep instead, since that decision may be the claim's answer, which the view does
+// not show yet either (replaceForRound).
 //
 // Where no machine was deciding, masked is read itself, so no reader of either may write it;
 // otherwise it is a copy.

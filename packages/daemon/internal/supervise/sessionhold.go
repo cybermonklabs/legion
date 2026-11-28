@@ -210,12 +210,14 @@ func (e *NamesCarriedError) Error() string {
 // (store's recordedNames) and the claim keeps the record of where that session went. The two
 // commit together or not at all: a daemon that stopped between them would leave names other
 // claims may take while the next boot took back for this claim every one nobody took. The mark
-// joins memory's claim only once the transaction commits, so a refused write leaves the claim as
-// it was. The names it would free leave the machine's cache (heldNames) whatever the write
-// answers: a commit whose answer was lost freed them all the same, and a name left cached would
-// let this claim register it again without asking the store, after another claim took it
-// (review of #4355). A name dropped from the cache that the store still holds costs one store
-// call at the claim's next registration of it.
+// joins memory's claim only once the transaction commits, so a failed write leaves the claim as
+// it was: its failure is put to the rule (writeFailed), which logs and tells a refusal, and one
+// the rule owes owes nothing, since memory then holds what the row holds and the operator's next
+// run makes the release again. The names it would free leave the machine's cache (heldNames)
+// whatever the write answers: a commit whose answer was lost freed them all the same, and a name
+// left cached would let this claim register it again without asking the store, after another
+// claim took it (review of #4355). A name dropped from the cache that the store still holds costs
+// one store call at the claim's next registration of it.
 //
 // The broker is asked before that transaction, outside it, and never after it. No transaction
 // or row lock is held while the broker answers, so a slow broker holds only this claim's lock, as
@@ -232,6 +234,9 @@ func (e *NamesCarriedError) Error() string {
 func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return ReleasedNames{}, err
+	}
 	// The read is bounded as a claim write is (bounded), as HoldsItsSession bounds its own, so a
 	// database that has stopped answering does not hold the machine's lock for the outage.
 	reading, cancel := m.bounded(ctx)
@@ -302,21 +307,31 @@ func (m *Machine) ReleaseNames(ctx context.Context) (ReleasedNames, error) {
 	}
 	// The exception to write's retry (Machine.write): made once under its bound, since a second try
 	// after a cut whose first try freed the names would free none and answer an empty Freed as a
-	// success, losing the names the first try freed.
-	releasing, cancel := m.bounded(ctx)
-	released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
-	cancel()
+	// success, losing the names the first try freed. A refusal this section met stands for it
+	// too, and so does the window after a refused write's read, and the release reaches no store
+	// (withheld, D2 and D5 of dispatch://INFRA-4099's plan).
+	if err = m.withheld(); err == nil {
+		releasing, cancel := m.bounded(ctx)
+		released.Freed, err = m.deps.Store.ReleaseHolds(releasing, c, free)
+		cancel()
+	}
 	// The names leave the cache whatever the write answered (the doc above).
 	for _, h := range free {
 		delete(m.heldNames, h)
 	}
 	if err != nil {
-		return ReleasedNames{}, err
+		m.recorded(ctx, err)
+		return ReleasedNames{}, m.writeFailed("ReleaseHolds", err)
 	}
 	// The write was the claim as memory holds it, the mark aside, so it is also any claim write
-	// the machine owed (settleOwedWrite).
+	// the machine owed (settleOwedWrite) — but for a pause's stop the mark holds, which only its
+	// own transaction records (putStops), so the mark stays for the repair to make.
+	m.rowState = c.State
 	m.claim.Abandoned.Released = c.Abandoned.Released
-	m.settleOwedWrite("ReleaseHolds")
+	if len(m.owedStops()) == 0 {
+		m.settleOwedWrite(ctx, "ReleaseHolds")
+	}
+	m.recorded(ctx, nil)
 	m.log.Info("supervise: released the names of a claim's other sessions",
 		"freed", len(released.Freed), "checked", released.Checked, "abandoned", released.Abandoned)
 	return released, nil

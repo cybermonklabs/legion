@@ -295,6 +295,39 @@ func TestASuspendThatFailsAtTheDeadlineIsRetriedAtTheNextProbe(t *testing.T) {
 	h.wantCalls("Spawn", 2)
 }
 
+// A registration deadline whose count spends the launch budget fails the claim over its live
+// process, the failure written before the process is stopped (D6 of dispatch://INFRA-4099's
+// plan). The deadline's own check of the tree lifecycle passes, and a check after it would refuse
+// (an operator's close reserved the tree's cleanup in between): the claim fails all the same, since
+// a failure launches nothing, and it is never left live over its process past its deadline with
+// no deadline armed.
+func TestASpentRegistrationDeadlineFailsTheClaimWhateverALaterLaunchCheckSays(t *testing.T) {
+	c := queuedClaim()
+	c.Budgets.LaunchFailures = testLimits().LaunchFailures - 1
+	h := newHarnessOf(t, c)
+	h.launch()
+	alive := h.locator()
+	h.m.deps.Store = &cleanupReservedAfterFirstCheckStore{memStore: h.store}
+
+	h.advance(deadline)
+
+	h.m.mu.Lock()
+	_, deadlineArmed := h.m.timers[TimerRegistration]
+	h.m.mu.Unlock()
+	if got := h.claim(); slices.Contains(live, got.State) && !deadlineArmed {
+		t.Fatalf("after the spent deadline the claim is %s over %+v with no registration deadline armed, want it failed", got.State, got.Locator)
+	}
+	h.wantState(StateFailed)
+	if stored := h.store.load(testToken); stored.State != StateFailed || stored.FailureCause != CauseNeverRegistered {
+		t.Fatalf("the row reads %s failed for %q, want failed for %q", stored.State, stored.FailureCause, CauseNeverRegistered)
+	}
+	if suspends := h.wantCalls("Suspend", 1); suspends[0].Locator != alive {
+		t.Errorf("suspended %+v, want the process the failure ended", suspends[0].Locator)
+	}
+	h.wantBudgets(Budgets{LaunchFailures: testLimits().LaunchFailures})
+	h.wantCalls("Spawn", 1)
+}
+
 // A daemon that restarts while a claim is booting watches it again from its own start: the
 // in-memory timers did not survive, and a process that never registers must still be retired.
 func TestABootingClaimIsWatchedAgainAfterARestart(t *testing.T) {

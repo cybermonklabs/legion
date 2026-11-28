@@ -77,7 +77,7 @@ import (
 //     its holders read told it, beyond versions that changed only decision blocks, and never says an
 //     opening told that no message and no prompt they read told (told twice, never lost);
 //   - level with what its holders read: everything they read is credited, but a prompt a newer task
-//     took the place of in its turn (a supersede) and one whose final credit a refused write lost,
+//     took the place of in its turn (a supersede) and one whose final credit an owed write lost,
 //     and the record owes an opening exactly when no message and no prompt whose credit stands told
 //     it;
 //   - the news a delivery records is the news its prompt carried (invariant 1): the news the delivery
@@ -90,16 +90,18 @@ import (
 //     prompt sent in that run told;
 //   - and, once the run quiesces, the reviewer has taken the approved version and owes no opening.
 //
-// A refused write leaves the claim store behind the machine until the machine's next write of the
-// same delivery finishes it or undoes it (lagging). The store refuses only the reviewer's writes, so
-// a store behind any other claim's machine lost a write it answered as made, and that fails the run,
-// as does a store that falls behind the reviewer's with no write of it refused since the last check.
-// The model reads the credit the store holds, so the exact rule and the never-ahead rule hold
-// through a refused write; but whether the agents' own view is level with the record has two
-// answers until the store has caught up, so each step after which a claim's store lags is counted as
-// ambiguous, with how many steps each such stretch lasts until the step that settles it
-// (newsModelAmbiguity), and the level rule is held again from that step on. Each seed logs its
-// counts, and the run logs their totals.
+// The model's claim store fails a write with a plain error (errModelWrite), which supervise's rule
+// owes (SortClaimWriteFailure): the machine keeps its memory and owes the write (claimWriteFailed),
+// and the failed write leaves the claim store behind the machine until the machine's next write of
+// the same delivery, the repair at the head of its next decision (repair) or a later one, finishes
+// it or undoes it (lagging). The store fails only the reviewer's writes, so a store behind any other
+// claim's machine lost a write it answered as made, and that fails the run, as does a store that
+// falls behind the reviewer's with no write of it failed since the last check. The model reads the
+// credit the store holds, so the exact rule and the never-ahead rule hold through an owed write;
+// but whether the agents' own view is level with the record has two answers until the store has
+// caught up, so each step after which a claim's store lags is counted as ambiguous, with how many
+// steps each such stretch lasts until the step that settles it (newsModelAmbiguity), and the level
+// rule is held again from that step on. Each seed logs its counts, and the run logs their totals.
 //
 // One credit the drive never makes final is a tester's: the first hand-over's tester turn ends in a
 // provider error, and the second's runs until a clear has ended its run, so no tester's turn ends
@@ -171,7 +173,9 @@ const newsModelCISeed = 35
 // seed of 1 to 100 passes with it in place.
 const newsModelReplacementSeed = 5
 
-// errModelWrite is a write the model's claim store refused (newsModelStore).
+// errModelWrite is a write the model's claim store fails (newsModelStore): a plain error, which
+// supervise's rule owes (SortClaimWriteFailure), so the machine owes the write and makes it again
+// (claimWriteFailed, repair).
 var errModelWrite = errors.New("the claim store refused this write")
 
 // newsModelStore is the daemon's claim store with a switch that refuses the next writes of the
@@ -388,9 +392,9 @@ type newsModelAgent struct {
 	superseded map[string]bool
 	// ranAt is each prompt whose turn's result came and whose final credit the claim store has not
 	// landed yet, with how many refusals had been spent before that result; finalized each delivery
-	// id the claim store wrote final; lost each prompt whose final credit a refused write lost: its
-	// claim's writes are the ones refused (newsModelStore.refusing), its result came, a write was
-	// refused since, and the store caught up without making it final.
+	// id the claim store wrote final; lost each prompt whose final credit an owed write lost: its
+	// claim's writes are the ones the store fails (newsModelStore.refusing), its result came, a
+	// write failed since, and the store caught up without making it final.
 	ranAt     map[string]int
 	finalized map[string]bool
 	lost      map[string]bool
@@ -452,7 +456,7 @@ func (r *newsModelRow) toldPrompts(lagging bool) []*newsModelPrompt {
 }
 
 // creditedPrompts is every prompt the row's holders read whose credit the steps leave standing:
-// each they read but one a supersede gave back and one a refused write lost.
+// each they read but one a supersede gave back and one an owed write lost.
 func (r *newsModelRow) creditedPrompts() []*newsModelPrompt {
 	return r.readPrompts(func(a *newsModelAgent, id string) bool { return !a.superseded[id] && !a.lost[id] })
 }
@@ -491,9 +495,10 @@ func (r *newsModelRow) named(text string) ([]newsModelLink, bool) {
 }
 
 // newsModelAmbiguity counts the steps after which the record could stand in either of two states
-// the agents' view allows, because a refused write left a claim store behind its machine: how many
-// such steps, how many stretches of them, and how long the longest stretch lasted, in steps until
-// the step that settled it. open is the length of the stretch still running.
+// the agents' view allows, because a failed write the machine owes left a claim store behind its
+// machine: how many such steps, how many stretches of them, and how long the longest stretch
+// lasted, in steps until the step that settled it. open is the length of the stretch still
+// running.
 type newsModelAmbiguity struct {
 	steps, stretches, longest, open int
 }
@@ -574,7 +579,7 @@ type newsModel struct {
 	// entryStarts says a step since then can have run the start of a newer entry: a re-entry's, a
 	// re-admission's and a hand-over's starts of the reviewer, the sweep's admission pass, which
 	// sends a claim the entry its phases row is owed, and the starts step, which runs such a start
-	// that a refused write left on its backoff. Each of those steps sets it in its own case (do).
+	// that an owed write left on its backoff. Each of those steps sets it in its own case (do).
 	// The two are what take the place of a task whose turn runs (check).
 	superseding string
 	entryStarts bool
@@ -918,8 +923,9 @@ func (m *newsModel) quiesce() {
 				m.do("ladder")
 			}
 			// The shim's hello, as the sweep's observation in production: a decision of the
-			// machine's, at whose head it makes every write a refused write left owed (settle,
-			// owes), so the record reads the claim the machine holds.
+			// machine's, at whose head it makes every write it owes after a failed write
+			// (claimWriteFailed owes it; repair and settle make it), so the record reads the claim
+			// the machine holds.
 			m.do("hello")
 			m.do("sweep")
 			m.do("reconcile")

@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -16,8 +18,9 @@ import (
 )
 
 // releaseRefusingStore refuses, once for each of its claims, the write that releases that claim's
-// uncertain launch (the claim written queued), as a store that fails at the boot's release and
-// answers the sweep that retries it.
+// uncertain launch (the claim written queued), as a store whose server refuses the row at the
+// boot's release (a CHECK it breaks, which the rule refuses: supervise.SortClaimWriteFailure) and
+// takes it at the sweep that retries it.
 type releaseRefusingStore struct {
 	*outboxClaimStore
 	mu     sync.Mutex
@@ -30,10 +33,19 @@ func (s *releaseRefusingStore) PutClaim(ctx context.Context, c supervise.Claim) 
 	delete(s.refuse, c.Token)
 	s.mu.Unlock()
 	if refuse {
-		return errors.New("the store did not answer")
+		return &pgconn.PgError{Code: "23514", Message: `new row for relation "claims" violates check constraint "claims_state_check"`,
+			Severity: "ERROR", ConstraintName: "claims_state_check"}
 	}
 	return s.outboxClaimStore.PutClaim(ctx, c)
 }
+
+// bootRigProbe is the rig's probe interval, which is also the window after a refused claim write
+// whose row was read again in which no claim write of that claim reaches the store (supervise's
+// withheld, D5 of dispatch://INFRA-4099's plan). It is shorter than a turn of the pacing, so a row
+// that retries a refused release past it at once moves the clock by less than a turn, and shorter
+// than each retry a row makes after a turn or more, as the orphan sweep's minute is longer than the
+// shipped probe interval's 30 seconds.
+const bootRigProbe = testWakeInterval / 2
 
 // bootRig is a boot's supervisor over n claims a previous daemon left launching with no process,
 // each holding a task, handed back newest-owed first, whose launches one pacer paces over one
@@ -76,11 +88,23 @@ func newBootRigEdited(t *testing.T, n int, store supervise.Store, edit func([]su
 		edit(r.claims)
 	}
 	r.claims = append(r.claims, restored...)
+	// The store holds each claim and its delivery as the boot reads them back, so a machine that
+	// reads its row again after a refused write (supervise's settleRefusal) finds the task it holds.
+	for _, c := range r.claims {
+		if err := store.PutClaim(context.Background(), supervise.StoredClaim(c)); err != nil {
+			t.Fatal(err)
+		}
+		if c.Pending != nil {
+			if err := store.PutDelivery(context.Background(), c.Token, *c.Pending); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	r.sup = newSupervisor(context.Background(), nil, "legion", t.TempDir(), quietLogger())
 	r.sup.deps = supervise.Deps{
 		Runtime: r.rt, Conns: fake.NewConns(), Store: store, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		Timeouts:       supervise.Timeouts{Boot: time.Hour, RegistrationIntervals: 2, RPC: time.Second, Probe: bootRigProbe, Stop: time.Second, LaunchBackoff: time.Millisecond},
 		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
 		WakePace:       wakePaceOf(wakepace.New(testWakeRate, testWakeBurst, nil), clock),
@@ -288,6 +312,8 @@ func TestABootRelaunchWhoseReleaseIsRefusedKeepsItsTurnForTheRetry(t *testing.T)
 	r.wantWaitingAt(2, 1)
 	r.wantWaitingAt(0, 3)
 
+	// The sweep's retry comes once the window after the refusal is over (bootRigProbe).
+	r.clock.advance(bootRigProbe)
 	if again := r.s.launchUnfinished(context.Background(), refused); len(again) != 0 {
 		t.Fatalf("the retry refused %v", again)
 	}

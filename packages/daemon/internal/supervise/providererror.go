@@ -360,13 +360,18 @@ func classifyProviderError(status int, code string) providerErrorClass {
 // providerErrorClears keeps the task on the claim and arms the next step of the ladder for it:
 // the delivery counts one more send, carries the sentence the re-sent prompt is given
 // (Delivery.ProviderErrorNote), and is written with the claim's run of provider-error turns in
-// one transaction. Its timer's firing is what sends it (promptRetryDue); until then sendPending
-// holds it, and a newer task queued meanwhile replaces it rather than waiting behind it (queue).
+// one transaction, through the machine's own write (putClaimAndDelivery) under its deadline. Both
+// rows changed in memory first, so a failure the rule owes leaves the claim write owed and the
+// delivery unsaved (claimWriteFailed, saved), and the repair writes both. Its timer's firing is
+// what sends it (promptRetryDue); until then sendPending holds it, and a newer task queued
+// meanwhile replaces it rather than waiting behind it (queue).
 func (m *Machine) providerErrorClears(ctx context.Context, cause string) error {
 	p := m.claim.Pending
 	p.ProviderErrorRetries++
 	p.ProviderErrorNote = providerErrorTask(cause)
-	if err := m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p)); err != nil {
+	written := m.putClaimAndDelivery(ctx, m.stored(), *p)
+	m.recorded(ctx, written)
+	if err := m.saved(m.claimWriteFailed("PutClaimAndDelivery", written)); err != nil {
 		return err
 	}
 	after := promptRetryDelay(p.ProviderErrorRetries)
@@ -404,6 +409,12 @@ func providerErrorTask(cause string) string {
 // none. next is what the daemon does about the turn that reached the count, in the caller's words:
 // a prompt's task is kept and sent again, and a turn that ran no prompt of the daemon's has no task
 // to send (providerErrorTurnEnded).
+//
+// The notice reports the decision's result, the run's count, so it waits for the claim write that
+// records that count (awaitRecord, afterRecord.told; D10 of dispatch://INFRA-4099's plan): it goes
+// once that write lands or fails owed (tellProviderErrorRun), and a write the store refuses drops
+// it. The claim is then built again over the row, whose run is one turn short of the count, so the
+// next such turn reaches the count again and tells the run once.
 func (m *Machine) tellOfProviderErrors(model, cause, next string) {
 	if m.claim.ProviderErrorRun != providerErrorRunTold || m.deps.ProviderErrorRunReached == nil {
 		return
@@ -413,9 +424,27 @@ func (m *Machine) tellOfProviderErrors(model, cause, next string) {
 		on = " on " + model
 	}
 	reason := fmt.Sprintf("%d turns in a row%s ended in %s; %s", m.claim.ProviderErrorRun, on, cause, next)
+	m.awaitRecord(afterRecord{told: &providerErrorNotice{claim: m.current(), model: model, reason: reason}})
+}
+
+// providerErrorNotice is the notice of a run of provider-error turns that reached
+// providerErrorRunTold, held for the claim write that records the run's count (afterRecord.told):
+// the claim as the turn that reached the count left it, the model the failed request went to, and
+// the reason whoever is told is given (tellOfProviderErrors).
+type providerErrorNotice struct {
+	claim         Claim
+	model, reason string
+}
+
+// tellProviderErrorRun hands n to Deps.ProviderErrorRunReached, now that the claim write that
+// records the run's count has landed or failed owed (act).
+func (m *Machine) tellProviderErrorRun(n providerErrorNotice) {
+	if m.deps.ProviderErrorRunReached == nil {
+		return
+	}
 	m.log.Warn("supervise: a run of turns that ended in a provider error; it is handed to ProviderErrorRunReached",
-		"providerErrorRun", m.claim.ProviderErrorRun, "model", model, "reason", reason)
-	m.deps.ProviderErrorRunReached(m.current(), reason)
+		"providerErrorRun", n.claim.ProviderErrorRun, "model", n.model, "reason", n.reason)
+	m.deps.ProviderErrorRunReached(n.claim, n.reason)
 }
 
 // waitsForProviderError is whether the ladder's wait is armed for the delivery of this id.

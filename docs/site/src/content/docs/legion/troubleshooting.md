@@ -792,6 +792,28 @@ Only after one of those can another notice go. The notice is the claim's own —
 role that names it — so two claims of one issue each get a notice of their own, and in a provider
 outage every claim that reaches six is told.
 
+**When the store refuses a write of a claim**, the daemon tells once, as
+`claim-write-refused on <KEY>`, with the claim's role and generation, the store call, the state the
+claim's row holds, the state the daemon tried to write, the SQLSTATE and the constraint. A refusal
+the store made itself has no SQLSTATE and names the store's rule as the constraint: a value the
+store refused before it sent a statement, or `other-delivery`, a retirement the store refused
+because the claim's row holds another delivery than the one the retirement deletes. The daemon
+keeps none of the refused decision: it reads the claim again from the store,
+so its memory holds what the store holds, and it asks the agent for its state before it sends the
+agent anything (`supervise: a claim write the store refused` and `supervise: the claim was read
+again from the store after a refused write`, in [A pod does not come up](#a-pod-does-not-come-up)).
+A refusal of a phase worker's claim is told to the architect that owns the issue and to the
+project's controller, a refusal of the tree root's architect's own claim to the controller alone,
+and a refusal of a child's own architect's claim to the architect above that child and the
+controller. A refusal of the controller's own claim is told to nobody, and its log lines are the
+whole record. A second refusal of the same claim at the same generation, with the same SQLSTATE and
+constraint, tells nobody, after a restart too. The notice's reason says what each reader does. The
+architect acts only when the role stays stuck for more than one probe interval
+(`probe_interval_seconds`), and then sends the claim and the notice to the controller in a comment
+that mentions the controller's role. The controller treats the refusal as a defect of the daemon:
+it finds the two log lines of the claim and files the defect with the claim, the SQLSTATE and the
+constraint, as it files a clear defect.
+
 **When the memory guard of the controller's own pod ends one of the controller's programs**, the
 controller is told of that kill, as `memory-guard-kill on <PROJECT>`, under the project key as a
 `tick` is (`workflow: the controller whose program the memory guard ended is told why`). The
@@ -1618,25 +1640,26 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   keeps its task, and the same launch is tried again every `probe_interval_seconds` until the write
   lands. If the line keeps coming, look at the database.
 - **`supervise: a claim write the database did not take`** at Warn, with `store=` (the store
-  method whose call failed) and `owed=`, means the daemon decided something about a claim and its
-  Postgres did not take the write. With `owed=true` the write is kept and made again at that
-  claim's next write that lands, which is the repair at the head of its next decision or a later
-  write that decision makes of the claim as the daemon holds it: the daemon's memory is ahead of
-  the row. The mark is held in memory only, so a daemon that stops while a write is owed loses
-  that write and the reports it carried, as a stop between a decision and its write always has.
-  A write the daemon's own stop cut short writes the same line at Info, with `owed=true` and a
+  method whose call failed) and `owed=true`, means the daemon decided something about a claim and
+  its Postgres did not take the write. The cause is one that can end with the row unchanged: no
+  connection, a deadline, the SQLSTATE classes 08, 40, 53, 55, 57 and 58 (a lost connection, a
+  rolled-back transaction, a server out of resources, a lock it could not take, an operator's or a
+  shutdown's cancel, a server's own system error), or `25006`, `42703` and `42P01` (a server a
+  failover left read-only, a binary that runs ahead of its migration). The write is kept and made
+  again at that claim's next write that lands, which is the repair at the head of its next
+  decision or a later write that decision makes of the claim as the daemon holds it: the daemon's
+  memory is ahead of the row. The mark is held in memory only, so a daemon that stops while a
+  write is owed loses that write and the reports it carried, as a stop between a decision and its
+  write always has. A write the daemon's own stop cut short writes the same line at Info, with a
   `context canceled` error: the database refused nothing, and the next boot takes the claim up
   from its row, as it does every decision the stop ends. A write that ran out its own deadline
-  while the daemon stopped did wait on the database, and stays at Warn.
-  The line comes again with `owed=true` at each decision whose repair fails again. With
-  `owed=false` a repair's write reached the server, which judged the statement and would judge it
-  the same way again, so the owed write and the reports it carried are dropped and the row stays
-  as it was; that line also carries `droppedReports=`, how many reports went with it, and it is
-  the only record that they were lost — that one is a defect to look at, not an outage. A
-  decision's own write that fails drops the event that decision was handling, as it always has:
-  one the server judged writes no such line and is the `supervise: an event failed` error with
-  the store's message, and one it did not judge writes this line with `owed=true` beside that
-  error. A repair that fails drops nothing, and the decision goes on.
+  while the daemon stopped did wait on the database, and stays at Warn. In the probe interval
+  after a refused write (below), the line carries the error `supervise: the claim's writes wait
+  out the probe interval after a refused write`: the daemon held the write back and sent nothing.
+  The line comes again at each decision whose repair fails again for such a cause. Such a repair
+  drops nothing, and the decision goes on. A decision's own write that fails for such a cause
+  drops the event that decision was handling, as it always has, and this line stands beside the
+  `supervise: an event failed` error.
 - **`supervise: the store holds no such delivery; the refusal is of a retirement it has already
   made`** at Warn, with `delivery=`, means the daemon retired a task and the store answered that
   the claim's row holds no delivery at all: the retirement this daemon already made, whose answer
@@ -1666,7 +1689,42 @@ So a role sets no `user.name`, no `user.email`, none of the overlay's three temp
   and `generation=`). A claim whose last `owed=true` line has no such line after it is still
   behind: while that daemon runs, the claim's next decision tries the write again, and a daemon
   that stopped since lost the mark, so its next boot takes the claim up from its row. One whose
-  last line is `owed=false` has dropped the write, and nothing tries it again.
+  last line is `supervise: a claim write the store refused` (below) has dropped the write, and the
+  daemon holds the claim as its row does.
+- **`supervise: a claim write the store refused`** at Error, with `store=`, `stored=` (the state
+  the claim's row holds), `refused=` (the state the daemon tried to write), `generation=`,
+  `sqlstate=` and `constraint=`, means the store judged the row the daemon held and would refuse
+  the same write again. The refusal is a check the row breaks (`23514`), a unique index another
+  row holds (`23505`), any other SQLSTATE outside the owed ones above, or a refusal the store made
+  itself. That last one has no `sqlstate`, and it names the store's rule as the constraint: a value
+  the store refused before it sent a statement (`bigint-fit`, `int4-fit`, `json-encode`,
+  `pause-stop`), or a retirement it refused because the claim's row holds another delivery than the
+  one the retirement deletes (`other-delivery`). The daemon keeps none of that decision.
+  It makes no other claim write of it and does nothing the decision was to do once its write
+  landed: it revokes no capability, stops no registration and stops no process it had not stopped
+  already. It reads the claim again from the store (the next line), so its memory holds what the
+  store holds. A suspension of a running process, a stop and a close ask the runtime to stop or
+  release the process before their write, so after their refusal that process is gone. The
+  daemon's next look at the claim finds it gone and recovers the claim as a daemon start over the
+  same row would. A refused repair also carries `droppedReports=` and `droppedStops=`, the reports
+  and the project pause's stops that the owed write held, and the line is the only record that they
+  were lost. The decision's event is dropped, with the `supervise: an event failed` error beside
+  this line. The issue's architect and the project's controller are told once, in a
+  `claim-write-refused` notice ([An issue is held](#an-issue-is-held)). The line is a defect of the
+  daemon or of its schema to file, not an outage.
+- **`supervise: the claim was read again from the store after a refused write`** at Info, with
+  `store=` (the refused call), `state=`, `generation=`, `delivery=` (the row's pending task, empty
+  for none) and `writesWaitUntil=`, means the daemon built its memory of the claim again over the
+  row it read, as a daemon start builds it. Until `writesWaitUntil`, one probe interval on, no write
+  of that claim reaches the store. Each such write is owed, and the first decision after that time
+  makes it, so a claim whose every write is refused tries one write in each probe interval and
+  starts no process. The daemon asks the claim's agent for its state before it sends it anything.
+  A read that fails or finds no row writes `supervise: the claim could not be read again from the
+  store after a refused write` at Warn instead, with `store=`, `found=`, `error=` and `retry=`.
+  The claim then decides nothing until a read lands, and the read is tried again every
+  `probe_interval_seconds`. A request to the claim is answered with a wait. Every other event is
+  dropped and counted, and the line of the read that lands names them (`dropped=`,
+  `droppedEvents=`). If the Warn line keeps coming, look at the database.
 - **`supervise: a turn started`** and **`supervise: a turn ended`** at Info, each with the claim
   and its `generation`, and with `delivery=` where the turn is a task's, are how a reader tells a
   turn that started from one the daemon never saw, and a turn that ended from one still running.

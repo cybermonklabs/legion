@@ -89,6 +89,13 @@ const processReadBound = 5 * time.Second
 func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 	m.mu.Lock()
 	defer m.unlock()
+	// While a read of the claim's row is owed after a refused claim write, the claim decides
+	// nothing and asks the runtime nothing (Machine.rereadOwed): the answer is no statement about
+	// the process, as for a runtime that could not be asked.
+	if m.rereadOwed != "" {
+		m.log.Info("supervise: the process is not read while the claim waits for a read of its row after a refused claim write")
+		return ProcessUnanswered
+	}
 	if m.claim.Locator == nil {
 		m.log.Info("supervise: the claim records no process to read; the runtime is asked nothing")
 		return ProcessNotRecorded
@@ -114,12 +121,14 @@ func (m *Machine) ReadProcess(ctx context.Context) ProcessRead {
 		// that is over (Claim.DeathCharged, reportedProcess). It is written here as judge writes
 		// it, because a clear held in memory alone is lost at a restart and leaves the sweep's
 		// next report of the same live process nothing to clear, so the process's next real death
-		// would go uncounted. A store that will not take it leaves the clear in memory: where the
-		// failure is one the store may take on a retry, the write is marked owed and the repair or
-		// the claim's next write carries it (owes); where the server refused the statement, the
-		// claim's next write that the store takes carries it.
+		// would go uncounted. A failure the rule owes leaves the clear in memory, and the write is
+		// marked owed, so the repair or the claim's next write carries it (claimWriteFailed). A
+		// failure the rule refuses leaves nothing in memory: the section ends by reading the
+		// claim's row and building the machine again over it (unlock, settleRefusal), so the
+		// charge stands in memory as in the store, for the next read or report that finds the
+		// process running to clear, as this one did.
 		if err := m.persist(ctx); err != nil {
-			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; it stays in memory for the claim's next write the store takes",
+			m.log.Error("supervise: the read of the claim's process found it running and the cleared death charge was not written; a write the rule owes is made at the claim's next decision, and one the store refused leaves the charge as the store holds it",
 				"incarnation", m.claim.Locator.Incarnation, "error", err)
 		}
 	}

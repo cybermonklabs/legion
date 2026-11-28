@@ -36,9 +36,13 @@ import (
 // 'legion.intake_give_up_notice:' key, treelifecycle.Serialize, the migrations' lock), so this
 // lock can never be mistaken for one of those whatever the hashes give. The first key names the
 // lock and the second the issue; two issues whose keys hash alike only serialize their pod holds.
+//
+// A key that is no issue key is refused before the lock, as the store's own refusal of a pause
+// stop's records (supervise.RulePauseStop), which the claim write a pause's stop makes reads as
+// refused (supervise.Deps.PauseStopped).
 func LockIssueForPause(ctx context.Context, tx pgx.Tx, issue string) error {
 	if !claim.IsIssueKey(issue) {
-		return fmt.Errorf("lock %q for its pod hold: not an issue key", issue)
+		return refusedRow(supervise.RulePauseStop, "lock %q for its pod hold: not an issue key", issue)
 	}
 	if _, err := tx.Exec(ctx, `select pg_advisory_xact_lock(hashtext('legion.pause.issue'), hashtext($1::text))`, issue); err != nil {
 		return fmt.Errorf("lock %s for its pod hold: %w", issue, err)

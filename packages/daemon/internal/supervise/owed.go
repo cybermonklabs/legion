@@ -13,7 +13,9 @@ import (
 // the repair runs rather than a copy taken when the write failed (repair), and it names no store
 // method either: which call the repair makes is decided afresh from what the claim holds then,
 // and the method of each failure is in that failure's own log line. What is left is the durable
-// reports those failed decisions never made.
+// reports those failed decisions never made, the pause stops they never recorded, a retirement
+// whose delete they never made, and what those decisions do outside the machine while the window
+// after a refused write holds their writes back.
 type owedClaimWrite struct {
 	// reports are the durable reports the failed decisions owed, oldest first, made when the
 	// write they waited on lands — at a repair, or at any claim write of a later decision that
@@ -30,10 +32,32 @@ type owedClaimWrite struct {
 	// before its retirement — so no write of a stopped claim lands without the pause's records,
 	// and the one that lands is the repair, as this mark's rule is. A write that settles no mark
 	// leaves them where they are: queue, takeBackPending, interrupted and providerErrorClears
-	// write the claim beside a delivery and settle nothing, so the stop stays owed and the next
-	// repair makes it. Each goes off the mark as its own transaction lands, so a stop of one
-	// pause is never written twice for a later one that fails.
+	// write the claim beside a delivery and settle nothing, and an admission (revive) and a
+	// release of names (ReleaseNames) that land while a stop is owed leave the mark standing, so
+	// the stop stays owed and the next repair makes it. Each goes off the mark as its own
+	// transaction lands, so a stop of one pause is never written twice for a later one that
+	// fails.
 	stops []PauseStop
+	// retire is the id of the delivery a retirement whose write was owed dropped from memory
+	// (retirePending), "" for none. Memory holds the claim retired from that task, so the repair
+	// makes the retirement itself (Store.RetireDelivery, repairRetirement), which deletes the
+	// delivery the row still holds, rather than a write of the claim and of the delivery memory
+	// holds (Store.PutClaimAndDelivery), which would leave it there. A claim write of another kind
+	// that lands makes the claim row whole but deletes nothing, so it settles the mark's reports
+	// and leaves this (settleOwedWrite); only a retirement that lands, or a row that holds no
+	// delivery at all, clears it, and a row that holds another one refuses it (repairRetirement).
+	retire string
+	// after is what the decisions whose writes this mark owes do outside the machine once those
+	// writes are made (afterRecord): the stop of a process, a revocation, the stop of a
+	// registration, a forgotten session's report, a run of provider errors' notice. It holds them
+	// only while the window after a refused claim write holds every write back (errWritesWait, D5
+	// of dispatch://INFRA-4099's plan): the write that makes the owed write acts on them once it
+	// lands (settleOwedWrite) or fails owed with the store's own answer (recorded), and never on the
+	// window's own answer, so no act runs before its record's write was tried. The window's end
+	// makes that write if no other decision does (TimerWindowEnd, armWindowEnd). A refusal drops
+	// them with the mark, since the claim is built again over a row that still records what they
+	// would have ended.
+	after afterRecord
 }
 
 // owedReport is one report a decision would have made had its write landed, kept until the write
@@ -66,6 +90,20 @@ const owedWriteLine = "supervise: a claim write the database did not take"
 // caught up from one that is still behind.
 const repairedWriteLine = "supervise: a claim write the database did not take was made"
 
+// RefusedWriteLine is the one message a claim write the rule refuses is logged under, at Error
+// (refusedWrite): the store, the server or the driver judged the row memory holds, so the same
+// write fails again for as long as memory holds it (SortClaimWriteFailure). Its attributes are
+// the store call, the state the row last held (Machine.rowState), the state memory held at the
+// refusal, the claim's generation, the SQLSTATE (empty for a refusal the store made in Go, and for
+// a retirement it refused over another delivery), the constraint the server names or the store's
+// rule word (RowRefusedError.Rule, RuleOtherDelivery; refusalOf), and the error; a refused repair
+// adds what the dropped mark held. It is pinned as a constant for the reason owedWriteLine is: a
+// search for it is the search for every refused claim write, and each one is a defect of the
+// daemon or of its schema that a person has to read. It is exported because the
+// claim-write-refused notice names it whole, for its controller to find (workflow's
+// claimWriteRefusedReason), so the line logged and the line named are one constant.
+const RefusedWriteLine = "supervise: a claim write the store refused"
+
 // claimWriteAgainLine is the line of a store call of a decision that the claim-write bound cut
 // short and that the decision makes again at once (Machine.write), at Warn: the database answered
 // that call past defaultClaimWrite, which a healthy one never does, so an operator sees a slow
@@ -79,13 +117,15 @@ const claimWriteAgainLine = "supervise: a claim write the bound cut short; makin
 // stands rather than one write per failure; method names the call that failed for the log line
 // alone, and each failure's line carries its own.
 //
-// It is split out of owes for the two callers that do not put a failure to the rule. One is the
-// repair's own failure, which has already asked. The other is a retirement the store refused
-// because it had already made it (retirePending), which knows from the refusal itself that the
-// claim write of that same transaction was rolled back with the delete — a fact about the
-// store's transaction rather than about the shape of the error. Asking writeOwed there would be
-// asking the wrong question, and would answer by accident: the sentinel carries no SQLSTATE, so
-// the rule owes it, but it would stop owing it the day the refusal is spelled as a server error.
+// It is split out of claimWriteFailed for the callers that owe a write without putting the
+// failure to the rule here. One is a caller that has already put it to the rule and keeps the
+// owed failure its own way (repair, retirePending, suspendOverADeadProcess). The other is a
+// retirement the store refused because it had already made it (retirePending), which knows from
+// the refusal itself that the claim write of that same transaction was rolled back with the
+// delete — a fact about the store's transaction rather than about the shape of the error. Asking
+// the rule there would be asking the wrong question, and would answer by accident: the sentinel
+// carries no SQLSTATE, so the rule owes it, but it would stop owing it the day the refusal is
+// spelled as a server error.
 //
 // A write the daemon's own stop cut short is logged at Info instead. The stop cancels the context
 // the machine was built with (supervision.halt in internal/daemon), and the context of each
@@ -108,15 +148,85 @@ func (m *Machine) oweWrite(method string, err error) {
 	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", true)
 }
 
-// owes marks the claim write owed when the rule owes err, and returns err as it was: the decision
-// still fails, and its event is still dropped; what the mark adds is that the write itself is not
-// lost with it. A failure the rule does not owe marks nothing: the server answered and refused
-// the statement, and would refuse it again.
-func (m *Machine) owes(method string, err error) error {
-	if writeOwed(err) {
+// claimWriteFailed puts err, the failure of the claim write method, to the rule
+// (sortWriteFailure), and returns err as it was: the decision still fails, and its event is still
+// dropped. A failure the rule owes marks the claim write owed (oweWrite), so the write itself is
+// not lost with the event: memory keeps its state, and the claim's next decision makes the write
+// (repair). A failure the rule refuses marks nothing: it is logged and told where the rule reads
+// it, the same write would be refused again, and the decision ends by building the machine again
+// over the claim's row (settleRefusal). A nil err is no failure, and is returned nil.
+//
+// It is the rule's form for a write whose failure leaves memory ahead of the row and nothing else
+// to say so: persist, persistStop, a confirmation (confirmCarrying) and a provider error's note
+// (providerErrorClears), whose claim and delivery memory both changed first, and a project pause's
+// stop that a retirement writes first (retirePending). A write whose owed failure keeps a mark of
+// its own takes writeFailed instead.
+func (m *Machine) claimWriteFailed(method string, err error) error {
+	if err != nil && m.sortWriteFailure(method, err) == WriteOwed {
 		m.oweWrite(method, err)
 	}
 	return err
+}
+
+// writeFailed puts err, the failure of the claim write method, to the rule (sortWriteFailure),
+// and returns err as it was, for a write whose owed failure leaves no claim write owed: the
+// failure the rule owes is the caller's to keep, and a refusal is logged and told here as every
+// refusal is. A nil err is no failure, and is returned nil.
+//
+// Its callers are the writes of D8 of dispatch://INFRA-4099's plan whose owed failure keeps a mark
+// of their own or leaves memory as the row holds it: a delivery written with memory's change made
+// first keeps its unsaved mark (saved: putPending, rewritePending, settle, takeBackPending, the
+// failed send's record), and queue and interrupted change memory only once the store has taken
+// their write; a take-back a let-go obliges the next claim write to carry keeps that obligation
+// (writeCarried, carryPending); and an admission (revive) and a release of names (ReleaseNames)
+// write a claim to which nothing of their decision has been added yet, since each joins memory
+// only once its transaction lands, so a write that failed owed leaves memory as the row holds it
+// and nothing to make again.
+func (m *Machine) writeFailed(method string, err error) error {
+	if err != nil {
+		m.sortWriteFailure(method, err)
+	}
+	return err
+}
+
+// sortWriteFailure is the rule applied to err, a failure of the claim write method: the kind it
+// is (SortClaimWriteFailure), with a refusal logged and told once (refusedWrite). refusedWrite is
+// the one place a refusal is logged and told, for this function and for a refused repair
+// (dropOwedWrite), so every refused claim write is logged and told the same way, whichever call
+// made it and whatever its caller does with the kind. Other code reads the kind alone
+// (SortClaimWriteFailure), which logs and tells nothing.
+func (m *Machine) sortWriteFailure(method string, err error) WriteFailure {
+	kind := SortClaimWriteFailure(err)
+	if kind == WriteRefused {
+		m.refusedWrite(method, err)
+	}
+	return kind
+}
+
+// refusedWrite logs a claim write the rule refused under RefusedWriteLine, at Error, tells the
+// daemon once through Deps.ClaimWriteRefused (D10 of dispatch://INFRA-4099's plan), and records the
+// refusal on the machine (Machine.refusal): no other claim write of the decision reaches the store,
+// and the decision ends by building the machine again over the claim's row (settleRefusal, D2).
+// The claim is memory's as it stands at the refusal, which is the claim the store refused; stored
+// is the state the row last held (Machine.rowState). more is what the caller adds to the line: what
+// a refused repair dropped with its mark (repair).
+//
+// A refusal already recorded is the answer every later claim write of the decision gives
+// (Machine.write), so it is the same refusal sorted again by the caller of that write, and is
+// neither logged nor told a second time.
+func (m *Machine) refusedWrite(method string, err error, more ...any) {
+	if m.refusal != nil {
+		return
+	}
+	sqlstate, constraint := refusalOf(err)
+	m.refusal = &claimRefusal{store: method, err: err}
+	attrs := append([]any{"store", method, "stored", m.rowState, "refused", m.claim.State,
+		"generation", m.claim.Generation, "sqlstate", sqlstate, "constraint", constraint, "error", err}, more...)
+	m.log.Error(RefusedWriteLine, attrs...)
+	if m.deps.ClaimWriteRefused != nil {
+		m.deps.ClaimWriteRefused(WriteRefusal{Claim: copyClaim(m.claim), Store: method, Stored: m.rowState,
+			SQLState: sqlstate, Constraint: constraint, Err: err})
+	}
 }
 
 // oweDurableState keeps the report a decision owed when its own write was left owed, made once
@@ -126,7 +236,7 @@ func (m *Machine) owes(method string, err error) error {
 // memory already holds — the working report of a turn that started is the one the measured
 // incident lost.
 //
-// A claim that owes no write owes no report either: the write the server refused will be refused
+// A claim that owes no write owes no report either: the write the rule refused will be refused
 // again, so no write of this claim is coming to make the report, and a report of a transition
 // the row will never hold would tell the daemon more than the store can say.
 func (m *Machine) oweDurableState(state ClaimState) {
@@ -151,7 +261,9 @@ func (m *Machine) oweDurableState(state ClaimState) {
 // none is. One call covers both rows, so a claim that owes a claim write and holds an unsaved
 // delivery is made whole here, and the settle that follows this call finds nothing unsaved and
 // writes nothing — where two writes would leave the row in between, and the second would have to
-// be owed in its turn.
+// be owed in its turn. A mark that holds a retirement is made by the retirement itself
+// (repairRetirement), after the pause's stops the mark holds, since those are the transaction
+// every claim write of a stopped claim goes through first.
 //
 // It goes through the machine's own write helpers (putClaim, putClaimAndPending), so the write
 // it makes is the write every other decision makes, under the same deadline and normalized the
@@ -163,56 +275,119 @@ func (m *Machine) oweDurableState(state ClaimState) {
 // for those failure lines alone, since the line of a write that landed is written where it
 // landed.
 //
-// It returns nothing. A repair that fails must not drop the event behind it: the error would
-// reach supervisor.decisionFailed in internal/daemon, which logs it and drops the event, and an
-// event dropped for a write the database did not take is the fault this change exists to end. A
-// repair that failed keeps the mark, logs it, and the decision goes on to its own row, which will
-// be owed too if the database is still away.
+// It returns nothing. A repair whose failure the rule owes must not drop the event behind it: the
+// error would reach supervisor.decisionFailed in internal/daemon, which logs it and drops the
+// event, and an event dropped for a write the database did not take is the fault this change
+// exists to end. Such a repair keeps the mark, logs it, and the decision goes on to its own row,
+// which will be owed too if the database is still away.
 //
-// A failure the rule does not owe drops the mark: the server answered and refused the write, and
-// it would refuse the same write again, so keeping the mark would only buy the same refusal at
-// every decision from here on. The reports the mark held go with it, and the line that records
-// the drop carries how many of them there were (droppedReports), because that line is the whole
-// record of what was lost: R6 asks it to say that the write and the reports it held are dropped,
-// and a line naming only the write would leave no trace that anything went with it — the states
-// and the generations those reports carried are gone from the daemon the moment the mark is.
+// A failure the rule refuses drops the mark: the store, the server or the driver judged the row
+// memory holds, and would refuse the same write again, so keeping the mark would only buy the same
+// refusal at every decision from here on. The reports the mark held go with it, and the refusal's
+// line carries how many of them there were (droppedReports) and how many of the pause's stops
+// (droppedStops), because that line is the whole record of what was lost: a line naming only the
+// write would leave no trace that anything went with it — the states and the generations those
+// reports carried are gone from the daemon the moment the mark is. Memory does not stay ahead of
+// the row: the refusal stands for the rest of the decision (Machine.refusal), its caller decides
+// nothing more (handle returns the refusal and drops the event, and PublishUpdateAsk publishes
+// nothing and answers a wait), and the decision ends by reading the claim's row and building the
+// machine again over it (settleRefusal), so memory holds what the store holds.
 func (m *Machine) repair(ctx context.Context) {
 	if m.owedWrite == nil {
 		return
 	}
-	method, pending := "PutClaim", m.claim.Pending
-	if pending != nil {
-		method = "PutClaimAndDelivery"
+	if m.owedWrite.retire == "" || len(m.owedWrite.stops) > 0 {
+		if !m.repairWrite(ctx) {
+			return
+		}
 	}
-	if len(m.owedWrite.stops) > 0 {
-		method = "PauseStopped"
+	if m.owedWrite != nil && m.owedWrite.retire != "" {
+		m.repairRetirement(ctx)
 	}
+}
+
+// repairWrite is repair's write of the claim, the claim with its pending delivery where one is
+// pending, and answers whether it landed.
+func (m *Machine) repairWrite(ctx context.Context) bool {
+	// The store call is named before the write, which can settle what names it.
+	var method string
 	var err error
-	if pending != nil {
+	if m.claim.Pending != nil {
+		method = m.pendingWriteMethod()
 		err = m.putClaimAndPending(ctx)
 	} else {
+		method = m.claimWriteMethod()
 		err = m.putClaim(ctx)
 	}
 	// A write that landed settled the mark inside the helper that made it, reports and all.
 	if err == nil {
-		return
+		return true
 	}
-	if writeOwed(err) {
+	m.repairFailed(method, err)
+	return false
+}
+
+// repairRetirement is repair's retirement (owedClaimWrite.retire): the claim as memory holds it
+// now, written with the delete of the delivery that retirement dropped from memory, in the
+// store's one transaction (Store.RetireDelivery), as retirePending would have written it.
+//
+// A row that holds no delivery at all has nothing left to delete: a retirement whose answer was
+// lost committed it (ErrNoSuchDelivery). The claim write that went with the delete was rolled back
+// with it, so the mark stays owed for that alone, and the claim is written now as every owed claim
+// write is (repairWrite).
+//
+// A row that holds another delivery under the claim (ErrOtherDelivery) is a refusal of this very
+// retirement: the same RetireDelivery meets the same answer for as long as memory holds what it
+// holds, so it is sorted as the rule sorts a refusal — logged and told once under the store's rule
+// word for it (RuleOtherDelivery, refusalOf), the mark dropped with what it held (dropOwedWrite) —
+// rather than made again at every decision.
+func (m *Machine) repairRetirement(ctx context.Context) {
+	id, c := m.owedWrite.retire, m.stored()
+	err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.Store.RetireDelivery(ctx, c, id) })
+	switch {
+	case err == nil:
+		m.retirementLanded(ctx, c.State)
+	case errors.Is(err, ErrNoSuchDelivery):
+		m.log.Warn("supervise: the owed retirement's delivery is no longer in the row; the claim write it carried is made alone",
+			"delivery", id, "error", err)
+		m.owedWrite.retire = ""
+		m.repairWrite(ctx)
+	case errors.Is(err, ErrOtherDelivery):
+		m.dropOwedWrite("RetireDelivery", err)
+	default:
+		m.recorded(ctx, err)
+		m.repairFailed("RetireDelivery", err)
+	}
+}
+
+// repairFailed is a repair whose write failed, by the rule: an owed failure keeps the mark and
+// logs it again, and a refusal drops the mark with what it held (dropOwedWrite).
+func (m *Machine) repairFailed(method string, err error) {
+	if SortClaimWriteFailure(err) == WriteOwed {
 		m.oweWrite(method, err)
 		return
 	}
-	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", false,
-		"droppedReports", len(m.owedWrite.reports), "droppedStops", len(m.owedWrite.stops))
+	m.dropOwedWrite(method, err)
+}
+
+// dropOwedWrite is a repair the store refused: the refusal logged and told once (refusedWrite),
+// with what the dropped mark held on its line, and the mark dropped.
+func (m *Machine) dropOwedWrite(method string, err error) {
+	m.refusedWrite(method, err, "droppedReports", len(m.owedWrite.reports), "droppedStops", len(m.owedWrite.stops))
 	m.owedWrite = nil
 }
 
 // settleOwedWrite settles the write the machine owes, now that a claim write has landed, and
 // returns at once when nothing is owed. A claim write that lands while a write is owed is the
 // repair, whichever decision made it: every claim write that reaches here writes the claim as
-// the machine holds it — putClaim and putClaimAndPending from m.stored(), and retirePending its
-// own claim write, written in the same transaction as the delete — which is exactly what the
-// repair would have written. The row is no longer behind memory, so there is nothing left for a
-// later repair to do, and nothing of the order to get wrong.
+// the machine holds it — putClaim and putClaimAndPending from m.stored(), retirePending its
+// own claim write, written in the same transaction as the delete, and an admission (revive) and
+// a release of names (ReleaseNames) the claim memory holds — which is exactly what the repair
+// would have written. The row is no longer behind memory, so there is nothing left for a later
+// repair to do, and nothing of the order to get wrong. The one thing a claim write does not make
+// is a retirement the mark holds (owedClaimWrite.retire): the delivery is still in the row, so
+// the mark stays for that alone until the retirement lands, and its caller clears it first where
+// it made the retirement.
 //
 // That order is why the owed reports are made here rather than left to the next repair. They are
 // made before the landing decision's own report, which follows its own write, so the daemon is
@@ -229,14 +404,22 @@ func (m *Machine) repair(ctx context.Context) {
 //
 // method is the store call that landed, for the line that closes the story (repairedWriteLine):
 // an operator counts the pair of lines, and the one that ends it names the write that made good.
-func (m *Machine) settleOwedWrite(method string) {
+//
+// What the decisions whose writes the mark owed do outside the machine, which the window after a
+// refused write held on the mark (owedClaimWrite.after), is done here too, first, since their
+// record is now written (act, D5 and D6 of dispatch://INFRA-4099's plan).
+func (m *Machine) settleOwedWrite(ctx context.Context, method string) {
 	if m.owedWrite == nil {
 		return
 	}
-	// The reports are taken before the mark goes, since the mark is what holds them.
-	reports := m.owedWrite.reports
+	// The reports and the acts are taken before the mark goes, since the mark is what holds them.
+	reports, retire, after := m.owedWrite.reports, m.owedWrite.retire, m.owedWrite.after
 	m.owedWrite = nil
+	if retire != "" {
+		m.owedWrite = &owedClaimWrite{retire: retire}
+	}
 	m.log.Info(repairedWriteLine, "store", method)
+	m.act(ctx, after)
 	m.makeOwedReports(reports)
 }
 
@@ -269,14 +452,116 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 	}
 }
 
-// writeOwed is the rule for a claim write the store refused: a write is owed unless the server
-// judged the statement. A server that judged it read the statement and decided against it — a
-// constraint it breaks, a column it has not got, a fence it does not pass — and it would decide
-// the same way again, so that refusal is reported once and never repeated, and the write is not
-// made a second time. Every other failure leaves the write unmade, or its fate unknown, and is
-// owed: dropping one loses a claim fact the daemon's memory already holds and the row does not,
-// and the write is the only thing that would ever put it there. A nil error is no refusal and
-// owes nothing.
+// WriteFailure is the kind of a failed claim write (SortClaimWriteFailure). The zero value is no
+// failure: the kind of a nil error.
+type WriteFailure int
+
+const (
+	// WriteOwed is a failure that can end while memory stays as it is: the database or the schema
+	// failed, not the row memory holds. Memory keeps its state, and the write is made again at the
+	// claim's next decision (repair).
+	WriteOwed WriteFailure = iota + 1
+	// WriteRefused is a failure the row memory holds caused: the server, the store or the driver
+	// judged it, so the same write fails again for as long as memory holds it.
+	WriteRefused
+)
+
+// String is the kind's word, for a log line and a test's message.
+func (f WriteFailure) String() string {
+	switch f {
+	case WriteOwed:
+		return "owed"
+	case WriteRefused:
+		return "refused"
+	default:
+		return "none"
+	}
+}
+
+// RowRefusedError is a claim write the store refused itself, in Go, before it sent a statement:
+// a value that fits no column of its type, a value whose JSON does not encode, and a pause's stop
+// whose records the store does not take (D8 of dispatch://INFRA-4099's plan). The store judged the
+// row memory holds, as a server's CHECK does, so the rule refuses it (SortClaimWriteFailure);
+// without the type it would carry no SQLSTATE, the rule would owe it, and the repair would make
+// the same refused write at every decision of the claim. Rule is a short stable word naming the
+// check (RuleBigintFit, RuleInt4Fit, RuleJSONEncode, RulePauseStop), which stands where a server's
+// refusal names its constraint (refusalOf). Err is the store's own error, which this one wraps.
+type RowRefusedError struct {
+	Rule string
+	Err  error
+}
+
+// Error is the store's own error's text.
+func (e *RowRefusedError) Error() string {
+	if e.Err == nil {
+		return "the store refused the row (" + e.Rule + ")"
+	}
+	return e.Err.Error()
+}
+
+// Unwrap is the store's own error.
+func (e *RowRefusedError) Unwrap() error { return e.Err }
+
+// The rule words of the store's own refusals (RowRefusedError.Rule), and of the one refusal of the
+// store's that no RowRefusedError carries (RuleOtherDelivery).
+const (
+	// RuleBigintFit is a uint64 past the bigint column that holds it.
+	RuleBigintFit = "bigint-fit"
+	// RuleInt4Fit is an int past the integer column that holds it, which the store checks before
+	// the statement so the driver's own refusal of the value (pgx's pgtype) is never reached.
+	RuleInt4Fit = "int4-fit"
+	// RuleJSONEncode is a value of a json or jsonb column that encoding/json does not encode.
+	RuleJSONEncode = "json-encode"
+	// RulePauseStop is a project pause's stop whose records the store does not take
+	// (Deps.PauseStopped): a stop that names no claim, a backstop of another issue or role, a
+	// lock of no issue key, a pause no row holds.
+	RulePauseStop = "pause-stop"
+	// RuleOtherDelivery is a retirement the store refused because the claim's row holds another
+	// delivery than the one the retirement deletes (ErrOtherDelivery), which a repair's retirement
+	// meets (repairRetirement). The store ran its statements to find that, so it is no refusal
+	// made before a statement and no RowRefusedError carries it: refusalOf names it for the
+	// sentinel.
+	RuleOtherDelivery = "other-delivery"
+)
+
+// errWritesWait is the answer of a claim write the machine does not send to the store while the
+// writes of a refused claim wait out the probe interval after the read of its row (withheld,
+// Machine.writesWaitUntil, D5 of dispatch://INFRA-4099's plan). The row memory holds was not
+// judged, so the rule owes it, and the repair makes the write at the first decision after the
+// window. It is no write that landed or that the store failed: nothing the owed mark holds for a
+// write is settled by it.
+var errWritesWait = errors.New("supervise: the claim's writes wait out the probe interval after a refused write")
+
+// WriteRefusal is one claim write the rule refused, as the machine tells it (Deps.ClaimWriteRefused,
+// D10 of dispatch://INFRA-4099's plan): the fields of RefusedWriteLine, and the claim the store
+// refused, whose state and generation are the line's refused state and generation.
+type WriteRefusal struct {
+	// Claim is the claim as memory held it at the refusal: the claim the write tried to record.
+	Claim Claim
+	// Store is the store call that was refused (PutClaim, PutDelivery, PutClaimAndDelivery,
+	// RetireDelivery, AdmitClaim, ReleaseHolds, PauseStopped).
+	Store string
+	// Stored is the state the claim's row last held (Machine.rowState).
+	Stored ClaimState
+	// SQLState is the server's code, and empty for a refusal the store made in Go and for a
+	// retirement the store refused over another delivery in the claim's row.
+	SQLState string
+	// Constraint is the constraint the server names, or the store's rule word for a refusal it
+	// made in Go (RowRefusedError.Rule) or for a retirement it refused over another delivery
+	// (RuleOtherDelivery).
+	Constraint string
+	// Err is the refusal.
+	Err error
+}
+
+// SortClaimWriteFailure is the one rule that sorts the failure of a claim write (R1 of
+// dispatch://INFRA-4099's spec): owed, when the failure can end while memory stays as it is, or
+// refused, when the row memory holds is what failed, so the same write would fail again for as
+// long as memory holds it. A claim write is a store call of a machine that writes the claim's row
+// or its pending delivery: PutClaim, PutDelivery, PutClaimAndDelivery, RetireDelivery, AdmitClaim,
+// ReleaseHolds and the pause's stop (Deps.PauseStopped). A nil error is no failure, and sorts as
+// the zero WriteFailure, which is neither kind; every caller sorts an error it has, and
+// sortWriteFailure is reached only with one.
 //
 // This rule decides what is owed once Machine.write has stopped trying, not whether it tries again
 // first: write makes a deadline cut of a write the database was handed once more in the same
@@ -284,8 +569,8 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // A deadline cut of a write the database was never handed (a dial, a queue's wait, a BEGIN) is
 // owed at once, as the deadline row of TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout reads.
 //
-// The rule reads the error in two steps, and their order is the substance of it rather than a
-// style of writing.
+// The rule reads the error in steps, and their order is the substance of it rather than a style
+// of writing.
 //
 // The wrapper comes first: an error that unwraps to a *pgconn.ConnectError is owed whatever it
 // carries. The connection never opened, so no statement of this write ever reached a server, and
@@ -293,12 +578,17 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // carries no SQLSTATE at all, and equally a connection PostgreSQL itself refused, which pgx
 // answers as the server's own *pgconn.PgError inside that wrapper (newPerDialConnectError in
 // pgconn/pgconn.go, whose Unwrap keeps the chain open) and which can carry any SQLSTATE
-// whatever — a restart's 57P03, and a rotated password's 28P01, whose class the second step
-// would not owe at all.
+// whatever — a restart's 57P03, and a rotated password's 28P01, whose class the SQLSTATE step
+// would refuse.
 //
-// The SQLSTATE comes second, and only then is it the server's answer about a statement it was
+// The store's own refusal comes next: an error that unwraps to a *RowRefusedError is refused.
+// The store judged the row in Go before it sent a statement, so the error carries no SQLSTATE,
+// and the steps below would owe it. Then errWritesWait, a write the machine held back itself, is
+// owed: nothing judged that row.
+//
+// The SQLSTATE comes last, and only then is it the server's answer about a statement it was
 // given: an error that unwraps to a *pgconn.PgError is owed when that code's class, its first two
-// characters, is one of the six a server answers with about something other than the statement:
+// characters, is one of the six a server answers with about something other than the row:
 //
 //   - 08, connection exception: the connection itself is what failed, and the statement went down
 //     with it.
@@ -313,23 +603,46 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 //   - 58, system error: a file or an input/output error of the server's own, which says nothing
 //     about what was asked of it.
 //
-// Any other class is the server judging the statement, and is not owed. A code shorter than two
-// characters has no class to read and judges nothing, so it is owed with the rest rather than
-// taken for a decision about the statement. An error that unwraps to neither type is owed too:
-// the network cut, and a write the claim-write deadline cut short before any answer (R5).
+// Three codes of other classes are owed too, because each stops when the database or the schema
+// comes back, whatever the row holds:
+//
+//   - 25006, read_only_sql_transaction: a server a failover left read-only, or a replica the pool
+//     reached, refuses every write until a writable primary answers again.
+//   - 42703, undefined_column, and 42P01, undefined_table: a binary that runs ahead of its
+//     migration names a column or a table the schema has not got yet, and the same write is
+//     taken once the migration lands.
+//
+// Every other SQLSTATE is the server judging the row memory holds — a CHECK it breaks (23514), a
+// unique index another row holds (23505), a foreign key (23503) — and is refused. A code shorter
+// than two characters has no class to read and judges nothing, so it is owed with the rest rather
+// than taken for a decision about the row. An error that unwraps to none of these types is owed
+// too: the network cut, and a write the claim-write deadline cut short before any answer (R5).
 //
 // Read the other way round — the SQLSTATE first, the wrapper after — the rule refuses every
 // connection the server itself refused, because such an error does carry a PgError and its class
 // is whatever the refusal was: a rotated password's 28P01 would read as a statement judged, and
 // the write of a claim fact only memory holds would be dropped for a statement no server ever
-// read. That is this issue's own fault, reached through the rule written to end it. The same
-// order, for the same reason, is how the outbox tells a statement Postgres refused from a
+// read. That is this issue's own fault, reached through the rule written to end it. The outbox
+// reads the wrapper first for the same reason when it tells a statement Postgres refused from a
 // connection it refused (refusedStatement in packages/envoy's
-// internal/dispatch/outbox/lookups.go); it is another module, so the rule is kept consistent with
-// it by hand rather than imported.
+// internal/dispatch/outbox/lookups.go); it is another module, so the two are kept in step by
+// hand rather than one imported by the other.
+//
+// The two no longer sort the codes the same way. refusedStatement takes 25006, 42703 and 42P01
+// for statements Postgres refused, as every code outside its server classes (08, 40, 53, 57, 58),
+// because what it asks is whether a run of its statement over fewer ids may not meet the
+// failure, so that splitting the batch keeps the ids that can still be read; a failure that fails
+// every run alike is the other answer, and what it does with each answer is its own. This rule
+// asks whether the row memory holds is what failed, because a refused claim write is put back to
+// the row the store holds (R2) and an owed one is made again: a read-only server, a missing
+// column and a missing table fail whatever the row holds, and end when the database or the
+// migration does, so here they are owed. It owes class 55 as well, which refusedStatement does not
+// name.
 //
 // The identities below are what pgx v5.11.0 returns, measured in this pod on 2026-11-07, and they
-// are the only evidence this rule rests on:
+// are the evidence the connection steps of this rule rest on; the server's own refusals of a
+// claim write, 25006, 42703 and 42P01 among them, are measured against the pod's server by
+// TestTheServersRefusalsOfAClaimWriteAreSortedByTheRule in internal/store:
 //
 // |what was done|error|Go type|SQLSTATE|pgconn.SafeToRetry|
 // |---|---|---|---|---|
@@ -348,29 +661,60 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // The rows are also why the rule cannot be a list of error types. The first is a pgx type, the
 // second one the standard library returns through a path that reaches no pgx type at all, the
 // third is neither, and the last two are both at once; what the owed ones share is not a type but
-// the absence of a judgement of the statement, which no list can be kept in step with. They are
-// also why the rule cannot be pgconn.SafeToRetry: it is false for all five — it reports whether
-// pgx knows the statement never reached the server, not whether the server decided against it —
-// so a rule built on it would drop the dial failure and the cut-short write, the two that are
-// most plainly owed. Only asking whether the server judged the statement covers every row.
-func writeOwed(err error) bool {
+// the absence of a judgement of the row, which no list can be kept in step with. They are also
+// why the rule cannot be pgconn.SafeToRetry: it is false for all five — it reports whether pgx
+// knows the statement never reached the server, not whether the server decided against it — so a
+// rule built on it would drop the dial failure and the cut-short write, the two that are most
+// plainly owed.
+func SortClaimWriteFailure(err error) WriteFailure {
 	if err == nil {
-		return false
+		return 0
 	}
 	// The wrapper first: a connection that never opened judged no statement, whatever the server
 	// said in refusing the connection itself.
 	var connErr *pgconn.ConnectError
 	if errors.As(err, &connErr) {
-		return true
+		return WriteOwed
+	}
+	var rowErr *RowRefusedError
+	if errors.As(err, &rowErr) {
+		return WriteRefused
+	}
+	if errors.Is(err, errWritesWait) {
+		return WriteOwed
 	}
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
-		return true
+		return WriteOwed
 	}
 	switch pgErr.Code[:2] {
 	case "08", "40", "53", "55", "57", "58":
-		return true
-	default:
-		return false
+		return WriteOwed
 	}
+	switch pgErr.Code {
+	case "25006", "42703", "42P01":
+		return WriteOwed
+	}
+	return WriteRefused
+}
+
+// refusalOf is the SQLSTATE and the constraint of a refused claim write, for its line and its
+// hook (refusedWrite): no code and the store's rule word for a refusal the store made in Go
+// (RowRefusedError), no code and RuleOtherDelivery for a retirement the store refused over another
+// delivery in the claim's row (ErrOtherDelivery, which a repair's retirement meets), and the
+// server's code and the constraint it names for one the server made. The store's type is read
+// first, in the order the rule reads it (SortClaimWriteFailure).
+func refusalOf(err error) (sqlstate, constraint string) {
+	var rowErr *RowRefusedError
+	if errors.As(err, &rowErr) {
+		return "", rowErr.Rule
+	}
+	if errors.Is(err, ErrOtherDelivery) {
+		return "", RuleOtherDelivery
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		return pgErr.Code, pgErr.ConstraintName
+	}
+	return "", ""
 }

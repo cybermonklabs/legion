@@ -264,6 +264,16 @@ func (s *relaunchingStore) PutClaimStep(_ context.Context, token claim.Token, st
 	return true, nil
 }
 
+// ReadClaim is the current row, as the store's own read answers it; this fake keeps no delivery.
+func (s *relaunchingStore) ReadClaim(_ context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current.Token != token {
+		return supervise.Claim{}, false, nil
+	}
+	return s.current, true, nil
+}
+
 // A claim stored mid-launch across a restart (generation 1, no locator) is written at generation 2
 // while a shim's hello for generation 1's own token is already held in helloResolver, resolved once
 // before the hold started. Judging that hold by the first resolve alone would accept the old

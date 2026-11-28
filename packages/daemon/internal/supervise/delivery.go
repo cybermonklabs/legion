@@ -623,7 +623,8 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row, the entry and its handshake only once the store has them
 		// with the delivery: a write that failed leaves the row undelivered and the entry ungiven,
-		// so its retry queues the task.
+		// so its retry queues the task. Memory changes only once the store has taken the write,
+		// so a failure the rule owes leaves nothing to make again (writeFailed).
 		stored := m.stored()
 		if request.Row > 0 {
 			stored.DeliveredRows = append(slices.Clone(m.claim.DeliveredRows), request.Row)
@@ -632,11 +633,13 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 			stored.GivenEntry = request.Entry
 			stored.Handshake = m.claim.Handshake.queued(request.Entry, request.Generation, d.QueuedAt)
 		}
-		if err := m.putClaimAndDelivery(ctx, stored, d); err != nil {
+		written := m.putClaimAndDelivery(ctx, stored, d)
+		m.recorded(ctx, written)
+		if err := m.writeFailed("PutClaimAndDelivery", written); err != nil {
 			return err
 		}
 		m.claim.DeliveredRows, m.claim.GivenEntry, m.claim.Handshake = stored.DeliveredRows, stored.GivenEntry, stored.Handshake
-	} else if err := m.putDelivery(ctx, d); err != nil {
+	} else if err := m.writeFailed("PutDelivery", m.putDelivery(ctx, d)); err != nil {
 		return err
 	}
 	m.claim.Pending, m.unsaved = &d, false
@@ -1204,7 +1207,7 @@ func renderedID(was string, news, held []byte) string {
 func (m *Machine) rewritePending(ctx context.Context, id, task string, kept, news []byte) error {
 	next := *m.claim.Pending
 	next.ID, next.Task, next.Kept, next.News = id, task, kept, news
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	if err := m.saved(m.writeFailed("PutDelivery", m.putDelivery(ctx, next))); err != nil {
 		return err
 	}
 	*m.claim.Pending = next
@@ -1449,6 +1452,9 @@ var ErrTaskSending = wait.New("the task is on its way to the agent")
 func (m *Machine) RetireStoppedTask(ctx context.Context, p phase.Phase, generation uint64, entry int64) (bool, error) {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return false, err
+	}
 	d := m.claim.Pending
 	if d == nil || d.Phase == "" || d.Phase != p || d.Generation != generation || (entry > 0 && d.Entry > entry) {
 		return false, nil
@@ -1588,8 +1594,18 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 // the wedge the owed write exists to end. One event is lost, the one whose decision met the
 // refusal; the claim decides the next and every one after it.
 //
+// Every other failure of the retirement is put to the rule (sortWriteFailure, D8 of
+// dispatch://INFRA-4099's plan). A refusal is returned with memory as the row holds it: the
+// claim still holds the task. A failure the rule owes leaves the retirement standing, as every
+// decision whose write is owed stands: memory drops the task as a landed retirement does, and the
+// owed mark keeps the retirement (owedClaimWrite.retire), so the repair at the claim's next
+// decision makes Store.RetireDelivery, which deletes the delivery the row still holds, rather
+// than a write of the claim alone, which would leave it there for a restart to send again. The
+// decision still fails with the error, as every decision whose write is owed does.
+//
 // A retirement that landed is the repair of any claim write the machine owed: the store wrote
-// the claim beside the delete, so the row is no longer behind memory (settleOwedWrite).
+// the claim beside the delete, so the row is no longer behind memory (settleOwedWrite), and a
+// retirement the mark still held is moot, since the row holds no delivery at all now.
 //
 // A project pause's stop the machine owes is written first, through its own transaction, with the
 // claim and this delivery as memory holds them now — the repair's own write (putClaimAndPending,
@@ -1600,7 +1616,7 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 func (m *Machine) retirePending(ctx context.Context) error {
 	if len(m.owedStops()) > 0 {
 		if err := m.putClaimAndPending(ctx); err != nil {
-			return m.owes("PauseStopped", err)
+			return m.claimWriteFailed("PauseStopped", err)
 		}
 	}
 	p := m.claim.Pending
@@ -1615,16 +1631,19 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	}
 	// The deaths were charged against this task, so they end with it, in the same write.
 	retired.Budgets.Deaths = 0
-	err := m.write(ctx, func(ctx context.Context) error {
+	err := m.writeClaim(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)
 	})
 	// The row holds a delivery this machine is not retiring, so what it lacks is exactly the
-	// delivery memory holds; the mark is what has the next settle write it there.
+	// delivery memory holds; the mark is what has the next settle write it there. The claim write
+	// went with the refused delete, so what waits for the claim's record waits on for the write
+	// that makes it (awaitingRecord).
 	if errors.Is(err, ErrOtherDelivery) {
 		m.unsaved = true
 		return err
 	}
-	if err != nil && !errors.Is(err, ErrNoSuchDelivery) {
+	if err != nil && !errors.Is(err, ErrNoSuchDelivery) && m.sortWriteFailure("RetireDelivery", err) == WriteRefused {
+		m.recorded(ctx, err)
 		return err
 	}
 	// The prompts the retired task waited on a result for go with it (Machine.outstanding): their
@@ -1632,31 +1651,56 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	// queue puts in its place is never taken for the turn one of them runs.
 	m.claim, m.unsaved = retired, false
 	m.forgetOutstanding()
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrNoSuchDelivery):
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
 		m.oweWrite("RetireDelivery", err)
+		m.recorded(ctx, err)
 		return nil
+	case err != nil:
+		// Owed: the retirement stands in memory and on the mark, for the repair to make.
+		m.oweWrite("RetireDelivery", err)
+		m.owedWrite.retire = p.ID
+		m.recorded(ctx, err)
+		return err
 	}
-	m.settleOwedWrite("RetireDelivery")
+	m.retirementLanded(ctx, retired.State)
 	return nil
 }
 
+// retirementLanded is a retirement that landed (Store.RetireDelivery), whose claim write left the
+// row in state: the row holds no delivery now, so no retirement the owed mark held is left to
+// make, the claim write the mark owed is made good (settleOwedWrite), and what waits for the
+// claim's record acts (recorded). It is retirePending's end and the repair's (repairRetirement).
+func (m *Machine) retirementLanded(ctx context.Context, state ClaimState) {
+	m.rowState = state
+	if m.owedWrite != nil {
+		m.owedWrite.retire = ""
+	}
+	m.settleOwedWrite(ctx, "RetireDelivery")
+	m.recorded(ctx, nil)
+}
+
 // saved records the outcome of a write of the pending delivery that memory changed first, since
-// the decision it records has been made whether or not the store takes it. A write that failed
-// leaves the delivery unsaved, and settle writes it again, with the claim, before the next decision
-// - confirmCarrying's write covers both, and a delivery written confirmed beside a claim still
-// ready is a turn a restart would find over. So once the store takes writes again, a restart reads
-// what the machine decided rather than what it replaced; one before that reads the older rows, as
-// a restart after a crash between a decision and its write does.
+// the decision it records has been made whether the store takes the write or owes it. A write
+// that failed for a cause the rule owes leaves the delivery unsaved, and settle writes it again,
+// with the claim, before the next decision - confirmCarrying's write covers both, and a delivery
+// written confirmed beside a claim still ready is a turn a restart would find over. So once the
+// store takes writes again, a restart reads what the machine decided rather than what it replaced;
+// one before that reads the older rows, as a restart after a crash between a decision and its
+// write does. A write the rule refuses keeps none of the decision: the decision ends by reading
+// the claim's row and building the machine again over it (settleRefusal), which holds the delivery
+// as the store holds it.
 func (m *Machine) saved(err error) error {
 	m.unsaved = err != nil
 	return err
 }
 
-// putPending writes the pending delivery as memory holds it (saved).
+// putPending writes the pending delivery as memory holds it (saved), its failure put to the rule
+// with the delivery's own mark kept (writeFailed).
 func (m *Machine) putPending(ctx context.Context) error {
-	return m.saved(m.putDelivery(ctx, *m.claim.Pending))
+	return m.saved(m.writeFailed("PutDelivery", m.putDelivery(ctx, *m.claim.Pending)))
 }
 
 // streaming asks the agent whether a turn is in flight; answered is false when the agent could not
@@ -1842,12 +1886,12 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // turn, so its worker is never prompted again, and an idle claim holding a confirmed delivery holds
 // one nothing retires. Once the write holds, the workflow is told the agent took its work
 // (Deps.TaskConfirmed): a root whose wait that untaken task held is decided on this fact rather
-// than at the next tick. A write that failed tells no one, and is owed: the claim it carries is
-// the claim memory holds from here on — the turn started whether or not the row says so — so the
-// write is marked and made again at the claim's next decision (owes). The mark is taken beside
-// saved rather than instead of it, and saved still sees the same error, because the two say
-// different things: saved is the delivery's own, and settle writes it again before the next
-// decision, where the mark is the claim's.
+// than at the next tick. A write that failed tells no one, and one the rule owes is owed: the
+// claim it carries is the claim memory holds from here on — the turn started whether or not the
+// row says so — so the write is marked and made again at the claim's next decision
+// (claimWriteFailed). The mark is taken beside saved rather than instead of it, and saved still
+// sees the same error, because the two say different things: saved is the delivery's own, and
+// settle writes it again before the next decision, where the mark is the claim's.
 //
 // The send that reached this turn clears the claim's prompt budgets and, with them, the
 // delivery's record of the sends that failed before it (Delivery.SendFailures and its two
@@ -1908,7 +1952,8 @@ func (m *Machine) confirmCarrying(ctx context.Context, news []byte) error {
 		m.log.Info("supervise: a turn took the prompt that told the agent what its relaunch ended",
 			"delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
 	}
-	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx))); err != nil {
+	method := m.pendingWriteMethod()
+	if err := m.saved(m.claimWriteFailed(method, m.putClaimAndPending(ctx))); err != nil {
 		return err
 	}
 	if m.deps.TaskConfirmed != nil {
@@ -2024,8 +2069,13 @@ func (m *Machine) settle(ctx context.Context) error {
 		return nil
 	}
 	if m.unsaved {
-		if err := m.saved(m.putClaimAndPending(ctx)); err != nil {
+		if err := m.saved(m.writeFailed(m.pendingWriteMethod(), m.putClaimAndPending(ctx))); err != nil {
 			m.log.Warn("supervise: the pending delivery is still not written", "delivery", p.ID, "error", err)
+			// A refused write ends the decision, as a refused repair does (handle): its caller
+			// returns, so no fence, row or send acts over a claim the rebuild is about to replace.
+			if m.refusal != nil {
+				return err
+			}
 		}
 	}
 	turnOver := !p.ConfirmedAt.IsZero() && m.claim.State != StateWorking && !m.resultPending()
@@ -2221,9 +2271,11 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // confirmation a turn took while the send of its prompt was still in flight, or while a prompt of
 // the task still waited on its result, may be another input's, and goes back to untold before the
 // id moves (untellInFlight, where that rule is), in the same write as the delivery when a telling
-// moved. The untelling stands in memory whether or not that write lands, since untold is the safe
-// way round, and the claim's next write carries it. The record of the let-go that cut the turn off
-// is new words, and is told by a prompt of its own.
+// moved. The untelling stands in memory while that write is owed, since untold is the safe way
+// round, and the claim's next write carries it; a write the rule refuses ends the decision with
+// the machine built again over the claim's row (settleRefusal), which holds the telling the store
+// holds. The record of the let-go that cut the turn off is new words, and is told by a prompt of
+// its own.
 //
 // The claim's handshake gives back the same confirmation by the same reading (Claim.Handshake,
 // EntryHandshake.unconfirmed), where it was this task's: a turn that may be another input's is no
@@ -2236,9 +2288,19 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // write, as queue writes it: the claim goes with the delivery when either changed, and a write
 // that fails leaves the handshake as the store holds it, for the take-back made again to read.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
+	_, err := m.takeBackInterrupted(ctx, why, outOfMemory)
+	return err
+}
+
+// takeBackInterrupted is interrupted, answering beside its error the store call its write made,
+// for a caller that keeps a failure the rule owes on the claim's owed mark
+// (suspendOverADeadProcess). A failure of that write is put to the rule here (writeFailed): memory
+// takes the take-back only once the store has, so an owed failure leaves nothing of it to make
+// again.
+func (m *Machine) takeBackInterrupted(ctx context.Context, why string, outOfMemory bool) (string, error) {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
-		return nil
+		return "", nil
 	}
 	m.log.Warn("supervise: "+why+"; the task waits for the relaunch", "delivery", p.ID)
 	next := *p
@@ -2254,20 +2316,23 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 	if doubt {
 		stored.Handshake, handshakeMoved = m.claim.Handshake.unconfirmed(*p)
 	}
+	method := "PutDelivery"
 	var err error
 	if untold || handshakeMoved {
+		method = "PutClaimAndDelivery"
 		err = m.putClaimAndDelivery(ctx, stored, next)
+		m.recorded(ctx, err)
 	} else {
 		err = m.putDelivery(ctx, next)
 	}
-	if err != nil {
-		return err
+	if m.writeFailed(method, err) != nil {
+		return method, err
 	}
 	*p = next
 	m.claim.Handshake = stored.Handshake
 	m.forgetOutstanding()
 	m.cutTurnOf = next.ID
-	return nil
+	return method, nil
 }
 
 // taskRead and taskUnread say whether the agent may have read a task being taken back: the task
@@ -2476,16 +2541,18 @@ func (m *Machine) turnNews() []byte {
 //
 // The refusal or timeout behind it arrives once, and settle and ServingRun read the claim as memory
 // holds it, so what it established — not confirmed, not read when taken back unread, and no longer
-// told by that confirmation — holds at once, whether or not the write recording it lands. Only the
-// new id waits for the write, and the telling moved to it with it, so the claim's id is always one
-// the store holds; a write that fails leaves the delivery unsaved, and settle writes it again
-// under the id it kept, with the claim (saved). Where none is outstanding, the wait for the
-// prompts' results is over before that write, which is safe here, where interrupted ends the wait
-// after its own write: this clears ConfirmedAt in memory first, so the claim a failed write leaves
-// is one settle reads as a task still waiting rather than as a turn that is over (turnOver,
-// resultPending). A telling that moved goes in the same write as the delivery, the claim and the
-// delivery together, so a restart never reads a record told by a confirmation the delivery no
-// longer holds.
+// told by that confirmation — holds at once, and stands while the write recording it is owed. Only
+// the new id waits for the write, and the telling moved to it with it, so the claim's id is always
+// one the store holds; a write that fails for a cause the rule owes leaves the delivery unsaved,
+// and settle writes it again under the id it kept, with the claim (saved). A write the rule
+// refuses ends the decision with the machine built again over the claim's row (settleRefusal),
+// which holds the delivery and the claim as the store holds them. Where none is outstanding, the
+// wait for the prompts' results is over before that write, which is safe here, where interrupted
+// ends the wait after its own write: this clears ConfirmedAt in memory first, so the claim a
+// failed owed write leaves is one settle reads as a task still waiting rather than as a turn that
+// is over (turnOver, resultPending). A telling that moved goes in the same write as the delivery,
+// the claim and the delivery together, so a restart never reads a record told by a confirmation
+// the delivery no longer holds.
 //
 // A confirmation taken back was never the worker's, so the claim's handshake gives back its own
 // too (takeBackConfirmation); a confirmation kept for an outstanding prompt keeps the handshake's
@@ -2514,13 +2581,16 @@ func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	}
 	next := *p
 	next.ID = id
+	method := "PutDelivery"
 	var err error
 	if moved || handshakeMoved {
+		method = "PutClaimAndDelivery"
 		err = m.putClaimAndDelivery(ctx, m.stored(), next)
+		m.recorded(ctx, err)
 	} else {
 		err = m.putDelivery(ctx, next)
 	}
-	if m.saved(err) != nil {
+	if m.saved(m.writeFailed(method, err)) != nil {
 		if kept && moved {
 			// The confirmation stays under the id the write could not move it from.
 			m.moveTelling(id, p.ID)

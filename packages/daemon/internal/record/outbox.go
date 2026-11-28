@@ -1120,12 +1120,13 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // answered, where it answered one, in words built from structured fields alone (supervise's
 // tellOfProviderErrors). It is told once for each run of such turns (supervise.Claim's
 // ProviderErrorRun says what ends a run); nothing is held and nothing is bounded, because a
-// chain's bottom refusing deterministically costs one request every ten minutes. It is the one
-// kind of these that an architect is told as well, in a notice row of its own (validNoticeKinds;
-// the daemon's providerErrorRunReached says which architect, and for which run none). A
-// tree-stalled notice names a root of the daemon's own whose tree has stopped: nothing of the tree
-// has moved for longer than `stalled_tree_notice_hours`, no claim of it is at work, and it does
-// not wait by design (admit's tellStalledTrees says which trees are told). Its issue is that root,
+// chain's bottom refusing deterministically costs one request every ten minutes. It is one of the
+// two kinds of these that an architect is told as well, in a notice row of its own, with
+// claim-write-refused below (validNoticeKinds; the daemon's providerErrorRunReached says which
+// architect, and for which run none). A tree-stalled notice names a root of the daemon's own
+// whose tree has stopped: nothing of the tree has moved for longer than
+// `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
+// tellStalledTrees says which trees are told). Its issue is that root,
 // and its Reason names the tree's quiet hours, each issue the workflow still runs with its phase,
 // the role whose turn it is and the state of its pull request, and what the controller is to
 // decide. It is told once for each stall: the daemon marks the root with the movement the notice
@@ -1181,20 +1182,32 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // while no publish has taken it, and one that finds it leased or given back to retry opens the
 // next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
 // and the controller replays or discards it (dispatch://INFRA-1575).
+//
+// A claim-write-refused notice names a claim whose write the store refused for good (supervise's
+// SortClaimWriteFailure): the store, the server or the driver judged the row the daemon's memory
+// held, so the daemon put the claim back to the row the store holds and asks the agent for its
+// state (R2 and R4 of dispatch://INFRA-4099). Its Role is the claim's role, and its Reason names
+// the claim, the store call, the stored and the refused state, the SQLSTATE and the constraint,
+// and says what the architect and the controller do (workflow's claimWriteRefused). The
+// controller's copy is queued in the fact that tells the refusal, beside the architect's notice,
+// and never through admit.Admission.wakeController: the daemon applies that fact once for each
+// claim, generation, SQLSTATE and constraint, also across a restart (the daemon's
+// claimWriteRefused). validNoticeKinds says which architect is told, and for which claim none.
 const (
-	TriageNotice           NoticeKind = "triage"
-	SlotFreeNotice         NoticeKind = "slot-free"
-	TodoNotice             NoticeKind = "todo"
-	TickNotice             NoticeKind = "tick"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
-	UpdateStalledNotice    NoticeKind = "update-stalled"
-	ProviderErrorsNotice   NoticeKind = "provider-errors"
-	TreeStalledNotice      NoticeKind = "tree-stalled"
-	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
-	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
+	TriageNotice            NoticeKind = "triage"
+	SlotFreeNotice          NoticeKind = "slot-free"
+	TodoNotice              NoticeKind = "todo"
+	TickNotice              NoticeKind = "tick"
+	ParkedDecisionNotice    NoticeKind = "parked-decision"
+	UpdateStalledNotice     NoticeKind = "update-stalled"
+	ProviderErrorsNotice    NoticeKind = "provider-errors"
+	TreeStalledNotice       NoticeKind = "tree-stalled"
+	ArchitectStalledNotice  NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice   NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice     NoticeKind = "project-paused"
+	ProjectResumedNotice    NoticeKind = "project-resumed"
+	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
+	ClaimWriteRefusedNotice NoticeKind = "claim-write-refused"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1288,7 +1301,8 @@ type ArchitectStall struct {
 // Every other kind that wakeController queues says something about the project — a free slot, a
 // todo issue, the day's tick — which one wake carries however many facts find it pending. A
 // memory-guard-kill notice never passes through that rule: the workflow writes one row for each
-// kill.
+// kill. Nor does a claim-write-refused notice: the workflow queues its row in the fact that tells
+// the refusal, which the daemon applies once for each claim, generation, SQLSTATE and constraint.
 func NoticePerClaim(kind NoticeKind) bool {
 	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
@@ -3544,6 +3558,22 @@ func designReview(decision DecisionKind) bool {
 // controller, the controller's copy in a row of its own (ProviderErrorsNotice); internal/daemon's
 // providerErrorRunReached says which architect, and for which run none (NoticeStartsAtParent).
 //
+// `claim-write-refused` is a claim write the store refused for good (supervise's refusedWrite and
+// SortClaimWriteFailure): the store, the server or the driver judged the row the daemon's memory
+// held, so the daemon put the claim back to the row the store holds and asks the agent for its
+// state (R2 and R4 of dispatch://INFRA-4099). Workflow's claimWriteRefused writes it, in the fact
+// that internal/daemon's claimWriteRefused applies once for each claim, generation, SQLSTATE and
+// constraint, so a second refusal of the same claim with the same key tells nobody, also after a
+// restart. It reaches the architects a provider-errors notice reaches, and the controller in a row
+// of its own (ClaimWriteRefusedNotice): a phase worker's claim tells the architect that owns the
+// issue, the tree root's architect's own claim tells no architect, and a child's own architect's
+// claim tells the architect above that child (NoticeStartsAtParent). Its reason names the claim,
+// the store call, the stored and the refused state, the SQLSTATE and the constraint, or the
+// store's rule word where the store refused the write itself — before it sent a statement, or as a
+// retirement over another delivery in the claim's row — and says what the architect and the
+// controller do. No earlier release decodes it, so a rollback deletes its unsent rows first (D11
+// of dispatch://INFRA-4099's plan).
+//
 // The three basis notices (basisNoticeKinds) are of a root's design-gate step on an ancestor's
 // approval (dispatch://INFRA-3320): `basis-ended` tells a root's architect that its step's wait on
 // the ancestor's approval request has ended, and what ended it; `basis-changes-requested` tells a
@@ -3617,6 +3647,7 @@ var validNoticeKinds = []NoticeKind{
 	"child-closed", "child-status", "children-first", "awaiting-children", "child-release-stalled", "child-not-recorded",
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
+	ClaimWriteRefusedNotice,
 	"task-stopped", "plan-not-taken", "retro-held",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
 	HookPromptUndeliveredNotice,

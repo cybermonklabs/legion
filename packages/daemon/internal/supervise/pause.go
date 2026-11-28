@@ -302,11 +302,13 @@ func resumePause(m *Machine, ctx context.Context, ev Event) error {
 
 // persistStop is persist for the claim write a project pause's suspension ends in (suspended,
 // decision 6): the claim goes through the pause's stop transaction (Deps.PauseStopped) with the
-// pause's records, rather than through the plain write. A failure the rule owes (writeOwed)
+// pause's records, rather than through the plain write. A failure the rule owes (claimWriteFailed)
 // leaves the stop on the owed mark (owedClaimWrite.stops), for the repair and every write that
 // settles the mark to make (putStops). Where a write is already owed, the stop joins it and the
 // write is made as an owed one, the reports and any earlier stop with it. A daemon that hands no
-// stop transaction writes the claim through the plain write.
+// stop transaction writes the claim through the plain write. It is the record of the pause's stop,
+// so what the suspension does outside the machine once its record is written follows its answer
+// (recorded, D6 of dispatch://INFRA-4099's plan).
 func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 	if m.deps.PauseStopped == nil {
 		return m.persist(ctx)
@@ -315,16 +317,18 @@ func (m *Machine) persistStop(ctx context.Context, stop PauseStop) error {
 		m.owedWrite.stops = oweStop(m.owedWrite.stops, stop)
 		return m.persist(ctx)
 	}
-	// Published before the write, so View shows the stopped claim while the stop's transaction
-	// runs. The pending delivery goes on the claim the stop writes, in the one transaction, where
-	// putClaim would carry it (carriesPending), and the obligation ends only once that write lands.
-	m.publish()
+	// The pending delivery goes on the claim the stop writes, in the one transaction, where putClaim
+	// would carry it (carriesPending), and the obligation ends only once that write lands. The
+	// stopped claim is published once the stop's transaction has answered (publishAnswered).
 	c, carried := m.stored(), m.carriesPending()
 	if carried {
 		pending := *m.claim.Pending
 		c.Pending = &pending
 	}
-	err := m.owes("PauseStopped", m.putStop(ctx, c, stop))
+	written := m.putStop(ctx, c, stop)
+	m.publishAnswered(written)
+	m.recorded(ctx, written)
+	err := m.claimWriteFailed("PauseStopped", written)
 	if err == nil && carried {
 		m.wroteCarried()
 	}
@@ -360,9 +364,10 @@ func (m *Machine) owedStops() []PauseStop {
 // launch that delivers it (holdsTask), which a later write of an owed stop reads afresh.
 func (m *Machine) putStop(ctx context.Context, c Claim, stop PauseStop) error {
 	stop.LaunchOwed = stop.LaunchOwed || m.holdsTask()
-	if err := m.write(ctx, func(ctx context.Context) error { return m.deps.PauseStopped(ctx, c, stop) }); err != nil {
+	if err := m.writeClaim(ctx, func(ctx context.Context) error { return m.deps.PauseStopped(ctx, c, stop) }); err != nil {
 		return err
 	}
+	m.rowState = c.State
 	m.log.Info(PauseRoleStoppedMessage, "pause", stop.Pause, "launch_owed", stop.LaunchOwed)
 	return nil
 }
@@ -379,7 +384,7 @@ func (m *Machine) putStops(ctx context.Context, c Claim) error {
 		}
 		m.owedWrite.stops = m.owedWrite.stops[1:]
 	}
-	m.settleOwedWrite("PauseStopped")
+	m.settleOwedWrite(ctx, "PauseStopped")
 	return nil
 }
 

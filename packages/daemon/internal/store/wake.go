@@ -304,8 +304,10 @@ func ArmPodBackstopTx(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
 }
 
 func armPodBackstop(ctx context.Context, tx pgx.Tx, b PodWakeBackstop) error {
+	// The store's own refusal, of the type the claim write of a pause's stop reads as refused
+	// (supervise.RulePauseStop): that stop arms its backstop here (RecordPauseStopTx).
 	if b.Project == "" || b.Issue == "" || b.Role == "" || b.DueAt.IsZero() {
-		return errors.New("a pod wake backstop needs its project, issue, role and due time")
+		return refusedRow(supervise.RulePauseStop, "a pod wake backstop needs its project, issue, role and due time")
 	}
 	_, err := tx.Exec(ctx, `insert into pod_wake_backstops (project, issue, role, release_id, due_at)
 		values ($1, $2, $3, $4, $5) on conflict do nothing`,
@@ -362,11 +364,13 @@ func duePodBackstops(ctx context.Context, tx pgx.Tx, project string, now time.Ti
 // is the pause that holds the wake, 0 for none; a held wake pairs with no release
 // (pod_resumes_held_wake_pairs_with_no_release), so its caller passes release 0.
 func RecordPodWakeTx(ctx context.Context, tx pgx.Tx, res PodResume) (id int64, taken bool, err error) {
+	// The store's own refusals, of the type the claim write of a pause's stop reads as refused
+	// (supervise.RulePauseStop): that stop takes its owed launch's wake here (PodRecords.TakePodWake).
 	if res.Project == "" || res.Issue == "" || res.Kind == "" {
-		return 0, false, errors.New("a pod resume record needs its project, issue and wake kind")
+		return 0, false, refusedRow(supervise.RulePauseStop, "a pod resume record needs its project, issue and wake kind")
 	}
 	if res.Pause < 0 || (res.Pause > 0 && res.Release != 0) {
-		return 0, false, fmt.Errorf("a wake held by pause %d of %s pairs with release 0, not %d", res.Pause, res.Issue, res.Release)
+		return 0, false, refusedRow(supervise.RulePauseStop, "a wake held by pause %d of %s pairs with release 0, not %d", res.Pause, res.Issue, res.Release)
 	}
 	// The release the wake was taken after, of whatever kind, which is what the heal of a stuck
 	// resume compares against (newestPodRelease, ClosePodGoneResume). It is read here, in the

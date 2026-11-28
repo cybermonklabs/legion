@@ -2327,6 +2327,15 @@ func (s *supervisedSandboxStore) PutClaimStep(_ context.Context, token claim.Tok
 	return true, nil
 }
 
+// ReadClaim is the one row this store keeps, as the store's own read answers it; it keeps no
+// delivery.
+func (s *supervisedSandboxStore) ReadClaim(_ context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	if s.claim.Token != token {
+		return supervise.Claim{}, false, nil
+	}
+	return s.claim, true, nil
+}
+
 // A Running patch the server applied but whose answer never arrived (a client timeout) is as
 // ambiguous as a pod that never came: the launch sets its Sandbox Suspended before returning. The
 // repository cache the launch makes first is answered as usual.

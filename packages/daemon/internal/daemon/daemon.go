@@ -581,6 +581,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.claimWriteRefused = workflow.claimWriteRefused
 		// The run's boot event, and from it on the state event of every write the run makes. The
 		// boot row is queued in a transaction of its own, which commits before either switch below
 		// is on, so it takes the project's next state sequence before any state row this run
@@ -1331,6 +1332,11 @@ type plan struct {
 	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
 	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
+	// claimWriteRefused tells the workflow of a claim write the store refused for good, once for
+	// each refusal, which tells the roles providerErrorRunReached's rule names once for each claim,
+	// generation, SQLSTATE and constraint; nil without a workflow, where the refusal's log line is
+	// all there is of it.
+	claimWriteRefused func(supervise.WriteRefusal)
 	// tools are the git and jj boot resolved on the host, by name, for workspace provisioning;
 	// nil without a repository, and under a runtime whose agents run the worker image's own.
 	tools         map[string]string
@@ -2279,6 +2285,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
 		ProviderErrorRunReached: p.providerErrorRunReached,
+		ClaimWriteRefused:       p.claimWriteRefused,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),
 		Clock:                   p.clock,

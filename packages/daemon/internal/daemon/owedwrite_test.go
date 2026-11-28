@@ -140,6 +140,10 @@ func (s *switchStore) ReleaseHolds(ctx context.Context, c supervise.Claim, holds
 	return s.now().ReleaseHolds(ctx, c, holds)
 }
 
+func (s *switchStore) ReadClaim(ctx context.Context, token claim.Token) (supervise.Claim, bool, error) {
+	return s.now().ReadClaim(ctx, token)
+}
+
 // detachedWrites is the real store as the rig hands it out: every call Machine.write bounds runs
 // with the claim-write deadline off it. The bound a row names is the bound of a store that
 // withholds its answer, and a healthy write to a real database is not that store. One value
@@ -293,7 +297,8 @@ func blocked(t *testing.T, behind supervise.Store, token claim.Token) *claimWrit
 
 // brokenConnection is the server saying the connection under the statement failed: class 08,
 // which is an answer about the connection and not about the statement, and so one the rule owes
-// (supervise's writeOwed). It is what a claim write meets when the database goes away under it.
+// (supervise.SortClaimWriteFailure). It is what a claim write meets when the database goes away
+// under it.
 func brokenConnection() *pgconn.PgError {
 	return &pgconn.PgError{Code: "08006", Message: "server closed the connection unexpectedly", Severity: "FATAL"}
 }
@@ -372,6 +377,10 @@ type owedWriteRig struct {
 	// and an operator read it by.
 	logs  *syncBuffer
 	write time.Duration
+	// extend is what a test sets in each boot's Deps beside the rig's own, before the boot
+	// restores a claim (supervise.NewMachine copies its Deps), nil for nothing: the hook a refused
+	// write tells, a broker, a clock the test moves.
+	extend func(*supervise.Deps)
 }
 
 // newOwedWriteRig seeds each role's claim in a database of its own and supervises them, with
@@ -433,6 +442,9 @@ func (r *owedWriteRig) boot() {
 		BoundWrite:     store.BoundAfterAcquire,
 		PluginContract: api.DaemonAPIVersion(),
 		RefreshGate:    supervise.NewRefreshGate(0),
+	}
+	if r.extend != nil {
+		r.extend(&sup.deps)
 	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)

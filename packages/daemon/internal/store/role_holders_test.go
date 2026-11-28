@@ -420,8 +420,9 @@ func refuseRoleHoldersQueue(t *testing.T, s *Store) {
 // A claim write that changes the role holder and the queue of its publication commit together or
 // not at all: when the outbox refuses the row, each of the four writes fails and the claim row is
 // the row it was, so no change of a holder stands that nothing owes a publication. The machine
-// owes such a write as it owes any other (supervise's writeOwed), and its repair queues the row
-// when it lands. A write that changes no holder queues nothing, so the refusal does not reach it.
+// owes such a write as it owes any other (supervise.SortClaimWriteFailure), and its repair queues
+// the row when it lands. A write that changes no holder queues nothing, so the refusal does not
+// reach it.
 func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

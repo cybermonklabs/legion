@@ -6763,9 +6763,11 @@ Each item below names a path with its method and identity, then its purpose.
     The claim write queues the publication in its own transaction in the daemon's store, so the change and its publication commit together or not at all.
     An end whose claim write failed with an error that the daemon owes, such as a lost connection, is published when the daemon makes that write again at the claim's next decision, and not before: until then the store still holds the claim live.
     The session of an ended claim keeps its role until the next publication lands, and in that time a process whose stop failed can still write with the pane's Dispatch bearer.
-    An end whose claim write failed and is not owed leaves the daemon's memory ended and its store live, and the set follows the store (dispatch://INFRA-4099).
-    A later decision of that claim, such as a second stop, makes that write again only while the claim still holds a pending task that the decision retires, such as the task of a turn that is over, because the retirement writes the claim with it; otherwise the session stays listed until another write of that claim lands, and the daemon's next start takes the claim up from its row as live.
-    Such ends include a suspension, a stop or a failure whose claim write the database refused, and a stop whose retirement of its round's ask failed.
+    An end whose claim write the store refused is not made, whatever the end is: a suspension, a stop, a failure, or a stop's retirement of its round's ask.
+    The daemon reads the claim again from the store and builds its memory of the claim again over that row.
+    So its memory and its store both hold the claim live, the set follows them, and the session stays listed.
+    The daemon logs such a refusal at Error (`supervise: a claim write the store refused`) and waits one probe interval before it writes that claim again.
+    It tells the issue's architect and the project's controller of the refusal once.
     The boot publishes each issue with a claim that holds its role or a claim that changed in the last seven days, for the claims that an earlier release changed and did not publish.
     The daemon ends a publication that this route refuses with `400`, and logs one ERROR line with the issue and the code; the next ready, end or other change of a claim on the issue queues a fresh publication of the set.
     A claim that holds its role and whose session this route refuses stops each publication of its issue in that way, with one ERROR line each time, until that claim ends.

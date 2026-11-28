@@ -36,21 +36,82 @@ import (
 // process, so its launch lets none go and records nothing of one (noEnd). Each was raised by a
 // request, which the pod's start gate puts first among the starts waiting in the claim's pod
 // (launchAfter's requested, podQueue.next).
+//
+// The admission writes the claim as memory holds it, normalized as every claim write is
+// (stored), so one that lands is the repair of any claim write the machine owed
+// (settleOwedWrite), unless a pause's stop is owed, which only its own transaction records
+// (putStops). Its failure is put to the rule (writeFailed), but for the tree lifecycle's own
+// answers, which keep their handling: a reserved cleanup, a lifecycle that is absent, its row
+// missing among them, or one whose cleanup is confirmed is returned as it is, the claim left
+// exactly as it was. A failure the rule owes owes nothing: nothing of this decision has reached
+// memory before the admission lands (admitted runs after it), so memory is what the row holds.
+//
+// A revive in the window after a refused claim write's read (D5 of dispatch://INFRA-4099's plan)
+// makes no write and is made again at the window's end (reviveAfterWindow).
 func (m *Machine) revive(ctx context.Context, exempt bool, place *wakepace.Place, admitted func()) error {
+	if until, waits := m.writesWait(); waits {
+		m.reviveAfterWindow(until, exempt, admitted)
+		return nil
+	}
 	// The admission writes the claim row alone, so a take-back the claim must carry goes first
 	// (carryPending, writeCarried).
 	if err := m.writeCarried(ctx); err != nil {
 		return err
 	}
-	bound, err := m.deps.Store.AdmitClaim(ctx, m.claim)
-	if err != nil {
-		return err
+	c := m.stored()
+	// A refusal this decision met stands for the admission too, which reaches no store (D2 of
+	// dispatch://INFRA-4099's plan).
+	bound, err := Claim{}, m.withheld()
+	if err == nil {
+		bound, err = m.deps.Store.AdmitClaim(ctx, c)
 	}
+	switch {
+	case errors.Is(err, treelifecycle.ErrCleanupReserved), errors.Is(err, treelifecycle.ErrLifecycleAbsent),
+		errors.Is(err, treelifecycle.ErrLifecycleClosed):
+		return err
+	case err != nil:
+		m.recorded(ctx, err)
+		return m.writeFailed("AdmitClaim", err)
+	}
+	m.rowState = bound.State
+	if len(m.owedStops()) == 0 {
+		m.settleOwedWrite(ctx, "AdmitClaim")
+	}
+	m.recorded(ctx, nil)
 	m.claim.TreeEpoch = bound.TreeEpoch
 	if admitted != nil {
 		admitted()
 	}
 	return m.launchAfter(ctx, false, exempt, true, place, noEnd)
+}
+
+// reviveAfterWindow is a revive that met the window after a refused claim write's read (D5 of
+// dispatch://INFRA-4099's plan). Its admission reaches no store before until, the window's end, and
+// a launch with no admission starts nothing, so the revive is made again then, as the request
+// asked it (exempt, admitted), over the claim as the request found it: the state is put back
+// first, so the admission writes what the request's own would have written, and one the tree
+// lifecycle refuses leaves the claim exactly as it was (revive). Until then the claim waits
+// launching with no process (relaunchLater), as a launch whose launching write the window held
+// waits (writeTry): a second request finds a launch under way, as it would with no window, a stop
+// ends the wait (letGo), a suspension is held and ends it at its turn (holdSuspendUntilReady,
+// relaunchAgain), and a restart, which loses the wait with the rest of memory, takes the claim up
+// from its row. The place in the pacing a request carried is given up as its decision ends
+// (leaveUntaken), and the launch takes a place of its own at its turn.
+//
+// The request is answered with no error, since its launch is the machine's to make now. A wait
+// would leave the launch to the requester, and a request the daemon posts to the machine has none
+// who asks again: the supervisor logs a decision's error and drops the event (internal/daemon's
+// decisionFailed), which is what the boot's spawn of a released launch met. A launching write the
+// window holds back needs nothing of this: its launch is tried again at the probe interval from
+// that try (writeTry, relaunchAtProbe), which is past the window's end already.
+func (m *Machine) reviveAfterWindow(until time.Time, exempt bool, admitted func()) {
+	found := m.claim.State
+	m.log.Info("supervise: the launch waits out the window after a refused claim write; it is made at the window's end",
+		"state", found, "writesWaitUntil", until)
+	m.relaunchLater(until.Sub(m.deps.Clock.Now()), WakeLaunch, func(ctx context.Context) error {
+		m.claim.State = found
+		return m.revive(ctx, exempt, nil, admitted)
+	})
 }
 
 // checkLaunch is the lifecycle recheck every launch makes first: a claim whose tree cleanup is
@@ -140,7 +201,7 @@ func (m *Machine) relaunchRefused(ctx context.Context, kind WakeKind, relaunch f
 	}
 	if errors.Is(err, treelifecycle.ErrCleanupReserved) {
 		m.log.Warn("supervise: the tree's cleanup is reserved and the retired process is stopped; suspending the claim for the tree's close", "error", err)
-		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil))
+		return errors.Join(err, m.suspended(ctx, SuspendedByDaemon, nil, stopOwed))
 	}
 	m.log.Warn("supervise: the lifecycle check of the retired process's relaunch failed; trying it again at the probe interval", "error", err)
 	m.relaunchLater(m.deps.Timeouts.Probe, kind, m.retryHolding(m.pluginRelaunch, relaunch))
@@ -214,9 +275,12 @@ type waitingRelaunch struct {
 // its task kept, and tries relaunch again after wait (TimerRelaunch, relaunchAgain): a relaunch
 // whose lifecycle check the store did not answer (relaunchRefused), or a launch whose write failed
 // or whose hold of the session the store did not answer (relaunchAtProbe), each at the probe
-// interval, and a start the session store could not answer or that waits for its pod's update
-// round, each at its own minute (startWaitsForStore, startWaitsForPodRound). Nothing else would
-// relaunch such a claim before a restart, which takes it up from what the store last holds.
+// interval, a start the session store could not answer or that waits for its pod's update
+// round, each at its own minute (startWaitsForStore, startWaitsForPodRound), a row the rebuild
+// after a refused claim write found naming a launch no process carries, at the probe interval
+// (rebuild), and a request's revive the window after a refused claim write held back, at the
+// window's end (reviveAfterWindow). Nothing else would relaunch such a claim before a restart,
+// which takes it up from what the store last holds.
 //
 // kind is the wake kind of the launch relaunch retries, recorded with it. A retry of a launch of
 // the stale-plugin lane is that lane's launch still owed, so the machine keeps the credit of the
@@ -237,6 +301,9 @@ type waitingRelaunch struct {
 //   - startWaitsForStore and startWaitsForPodRound pass WakeLaunch whatever launch they retry,
 //     and their retries restore no intent: each waits on a fault outside the daemon or on a pod's
 //     round, which can take hours, and a credit held that long would stop the lane.
+//   - rebuild and reviveAfterWindow pass WakeLaunch: the rebuild has given back the plugin intent
+//     with everything else the refused decision held (giveBackHeld), and a request's revive
+//     restores none.
 func (m *Machine) relaunchLater(wait time.Duration, kind WakeKind, relaunch func(context.Context) error) {
 	m.claim.State = StateLaunching
 	m.relaunch = &waitingRelaunch{retry: relaunch, kind: kind}
@@ -254,7 +321,7 @@ func relaunchAgain(m *Machine, ctx context.Context, _ Event) error {
 	relaunch := m.relaunch
 	m.relaunch = nil
 	if m.held != nil {
-		return m.suspendedFor(ctx, *m.held, true)
+		return m.suspendedFor(ctx, *m.held, true, stopOwed)
 	}
 	return relaunch.retry(ctx)
 }
@@ -280,6 +347,9 @@ func (c Claim) Gone() bool { return IsGone(c.State) }
 func (m *Machine) Retree(ctx context.Context, tree string) error {
 	m.mu.Lock()
 	defer m.unlock()
+	if err := m.rereadWait(); err != nil {
+		return err
+	}
 	if m.claim.Tree == tree {
 		return nil
 	}

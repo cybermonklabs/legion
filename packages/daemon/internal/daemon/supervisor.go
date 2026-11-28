@@ -205,20 +205,20 @@ func (s *supervisor) Step(ctx context.Context, token claim.Token) (supervise.Ste
 // launch the last daemon began and never finished: live with no locator — launching, its process,
 // if one opened at all, never recorded, or in any later live state a daemon wrote with no process
 // recorded — or a launch it released at boot and stopped before the relaunch wrote its next
-// generation (supervise.Claim.ReleasedLaunch). Each is put back to launch_uncertain, which is what
-// it is: the daemon cannot yet say whether a process runs for it. Every boot claim is normalized
-// before the store and NewMachine see it, so state a claim holds only with a recorded process
-// cannot survive a repair. Each repair is logged with the state it was stored in, and written back
-// into claims, so the boot's later passes over them (refreshStalePlugins, replayTerminal) read it
-// as restored rather than as a live claim with no process.
+// generation (supervise.Claim.ReleasedLaunch); supervise.Claim.UnfinishedLaunch reads both. Each
+// is put back to launch_uncertain, which is what it is: the daemon cannot yet say whether a
+// process runs for it. Every boot claim is normalized before the store and NewMachine see it, so
+// state a claim holds only with a recorded process cannot survive a repair. Each repair is logged
+// with the state it was stored in, and written back into claims, so the boot's later passes over
+// them (refreshStalePlugins, replayTerminal) read it as restored rather than as a live claim with
+// no process.
 func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]claim.Token, error) {
 	var unfinished []claim.Token
-	live := supervise.LiveStates()
 	for i, c := range claims {
 		// Before the repair below moves a ready, working or idle claim to launch_uncertain: the
 		// start failure goes by the state the claim's agent last reached.
 		dropped := supervise.DropStaleStartFailure(&c)
-		repaired := (c.Locator == nil && slices.Contains(live, c.State)) || c.ReleasedLaunch()
+		repaired := c.UnfinishedLaunch()
 		if repaired {
 			s.log.Warn("supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no process is recorded for it",
 				"claim", c.Token, "stored", c.State, "generation", c.Generation)
