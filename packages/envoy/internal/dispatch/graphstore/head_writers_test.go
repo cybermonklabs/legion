@@ -27,10 +27,10 @@ var headWriteFunctions = []string{"QueueHeads", "WriteHeads", "Write", "Caused",
 // headNoTree are the store writers (storeWriteCallSites) that write no node of an issue's tree and
 // name no head write, each beside why: every node they write, and the near end of every tuple they
 // append, is a node no issue's tree holds - a person, a session, a role and its page, a run of the
-// command bar and its frames. headWrappers are this package's own writers that run another writer
-// for their caller, whose caller names the head write itself (QueueAuthored). Both lists are
-// exact: an entry the source no longer holds as a store writer fails, and so does an entry that
-// names a head write after all.
+// command bar and its frames, a node of a repository's approved spec and a hold of its import.
+// headWrappers are this package's own writers that run another writer for their caller, whose
+// caller names the head write itself (QueueAuthored). Both lists are exact: an entry the source no
+// longer holds as a store writer fails, and so does an entry that names a head write after all.
 var headNoTree = map[string]string{
 	"graphstore/people.go#QueueReached":                   "writes a session's node alone",
 	"graphstore/people.go#QueueSessionRecorded":           "writes a session's node alone",
@@ -44,6 +44,9 @@ var headNoTree = map[string]string{
 	"cmd/dispatch-seed/write_items.go#writeFollowerNodes": "writes the session nodes of the followers the seed copies",
 	"docs/removed_by.go#queueRemovals":                    "writes the node of the person who removed an answered ask's block; the removed_by it appends rides in the version's block index, whose cause sites write its heads",
 	"asks/followers.go#queueFollow":                       "writes the following session's node alone; its callers state the ask's followed_by and write the ask's heads",
+	"specstore/apply.go#Apply":                            "writes nodes of a repository's approved spec (spec_node) and clears holds of its import (spec_import_hold), each by an address under its project and repository, with values alone: no issue holds one and none has a part_of",
+	"specstore/import.go#Import":                          "writes nodes of a repository's approved spec (spec_node) and holds of its import (spec_import_hold), each by an address under its project and repository, with values alone: no issue holds one and none has a part_of",
+	"api/spec_import.go#repairIssueHook":                  "appends the repair_issue value on holds of an import of a repository's approved spec (spec_import_hold), which no issue holds",
 }
 
 var headWrappers = map[string]string{
@@ -58,21 +61,21 @@ var headWrappers = map[string]string{
 // head write, or the test fails naming both.
 var headLeftTo = map[string][]string{
 	"refs/blocks.go#Queue": {"api/artifacts.go#storeArtifact", "api/artifacts.go#commitArtifactVersionEvent",
-		"api/issue_create.go#createIssue", "docs/block_index.go#indexOwedDocument", "docs/block_index.go#causeRoomFacts",
+		"api/issue_create.go#createIssueWith", "docs/block_index.go#indexOwedDocument", "docs/block_index.go#causeRoomFacts",
 		"docs/settlement.go#appendEvents", "docs/decision_restore.go#writeVersion", "cmd/dispatch-seed/write_docs.go#writeDocument"},
 	"refs/decision_nodes.go#Queue": {"docs/block_index.go#indexOwedDocument", "docs/block_index.go#causeRoomFacts",
 		"docs/settlement.go#appendEvents"},
 	"docs/mutation.go#WriteVersionNode": {"api/artifacts.go#storeArtifact", "api/artifacts.go#commitArtifactVersionEvent",
-		"api/issue_create.go#createIssue", "docs/settlement.go#appendEvents"},
-	"api/artifacts.go#createIssueTree":           {"api/issue_create.go#createIssue"},
+		"api/issue_create.go#createIssueWith", "docs/settlement.go#appendEvents"},
+	"api/artifacts.go#createIssueTree":           {"api/issue_create.go#createIssueWith"},
 	"api/artifacts.go#queueNewArtifact":          {"api/artifacts.go#storeArtifact"},
 	"api/comment_create.go#queueCommentRow":      {"api/comment_create.go#queueCommentCreated"},
-	"api/issue_create.go#createDecisionsQuery":   {"api/issue_create.go#createIssue"},
+	"api/issue_create.go#createDecisionsQuery":   {"api/issue_create.go#createIssueWith"},
 	"api/broadcasts.go#writeBroadcast":           {"api/server.go#appendCausingEvent"},
 	"api/message_delivery.go#insertSessionReply": {"api/server.go#appendCausingEvent"},
 	"docs/retire.go#writeRetiredNode":            {"docs/retire.go#RetireDocument"},
 	"docs/ask_blocks.go#createAskBlock":          {"docs/settlement.go#appendEvents"},
-	"api/issue_relations.go#queueIssueRelations": {"api/issue_create.go#createIssue", "api/issue_patch.go#writeIssue"},
+	"api/issue_relations.go#queueIssueRelations": {"api/issue_create.go#createIssueWith", "api/issue_patch.go#writeIssue"},
 	"cmd/dispatch-seed/write_items.go#writeItemNodes": {"cmd/dispatch-seed/write_items.go#writeAsks",
 		"cmd/dispatch-seed/write_items.go#writeMessages"},
 }

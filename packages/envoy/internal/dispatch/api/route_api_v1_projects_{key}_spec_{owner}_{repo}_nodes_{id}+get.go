@@ -12,6 +12,7 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "One node of the approved spec of a spec source of a project - a statement, check, component or interface - with each approved text, oldest first, printed as The Spec's files hold it, and the provenance of each: the act (approval, brought_back or import), the issue, the documents and versions the person's approval named with their digests, the approval request, the review row and the person; and each removal. 404 SPEC_NODE_NOT_FOUND when the approved spec never held the id.",
 	Handler:     (*server).getSpecNode,
+	Read:        readEntry{Writes: readWritesNothing},
 	// A node of a repository's approved spec, whose {id} is the node's own id in that repository:
 	// a statement's, check's, component's or interface's slug, which no prefix shortens. The route
 	// answers SPEC_NODE_NOT_FOUND wherever the approved spec holds no node of that id.

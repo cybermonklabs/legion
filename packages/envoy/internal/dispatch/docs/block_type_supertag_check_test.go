@@ -32,11 +32,11 @@ const blockTypeSupertagUnanswered = "g2"
 
 // The three documents of issue CORE-1. Together they hold one block of each type of
 // pmdoc/schema/blocks.json - a callout, an ask, a requirement, a plan task, a check, a decision, a
-// reading and a criterion - and a paragraph, a heading, a list and a code block, a reading in an
-// ask that nobody has answered among them (blockTypeSupertagUnansweredReading, which a browser's
-// write puts in the spec's ask a1). d2 is a decision with no reading and vp1 a paragraph of the
-// Verification document, which the retypes below turn into a check; c2 is a check they turn into a
-// requirement.
+// reading, a criterion, a component and a conclusion - and a paragraph, a heading, a list and a
+// code block, a reading in an ask that nobody has answered among them
+// (blockTypeSupertagUnansweredReading, which a browser's write puts in the spec's ask a1). d2 is a
+// decision with no reading and vp1 a paragraph of the Verification document, which the retypes
+// below turn into a check; c2 is a check they turn into a requirement.
 const (
 	blockTypeSupertagSpec = "## The spec heading\n\n" +
 		"A plain paragraph of the spec.\n\n" +
@@ -45,6 +45,8 @@ const (
 		":::criterion{#cr1}\nThe criterion.\n:::\n\n" +
 		":::requirement{#r1 serves=\"dispatch://CORE-1/spec#b-cr1\"}\nThe requirement.\n:::\n\n" +
 		":::callout{#co1 kind=\"note\" title=\"\"}\nA callout.\n:::\n\n" +
+		":::component{#cm1 name=\"A component\"}\nThe component.\n:::\n\n" +
+		":::conclusion{#cn1}\nThe conclusion.\n:::\n\n" +
 		"::::decision{#d1}\nThe decision with its reading.\n\n:::reading{#g1}\nThe agent reads the decision.\n:::\n::::\n\n" +
 		":::decision{#d2}\nA decision with no reading.\n:::\n\n" +
 		":::ask{#a1 urgency=\"med\" multiple=\"false\"}\nWhich way?\n\n- Left: Go left\n- Right: Go right\n:::\n"

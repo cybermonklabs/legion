@@ -443,17 +443,17 @@ func TestTheAttributeVersionFiveAddsIsUnknownToABuildAtVersionFour(t *testing.T)
 
 // The check block's marks, subject and program (what a check reads - code, production or the
 // graph - and which deployed program it reads), are read from manifest version 6, N, and created
-// from version 10, creatable: #5416 declared them created from N+1, the block schema bump to
-// version 8 moved that to 9 and the bump to version 9 moved it to 10, since the release after
-// #5416 that records real deploys has not shipped. A build at N, and every build below creatable,
-// reads a check carrying either, and writes one only into a document that already holds that
-// mark, so no write of it puts one into a document that holds none; a build at N-1, the release
-// before, declares the check block but neither mark, so it creates none and reads a stored check
-// carrying one as an element it does not know (ErrUnknownElement, answered 409
-// DOC_NEWER_CONTENT). Each build is the embedded manifest as of its version (manifestAsOf), so
-// each assertion holds whatever this build's version is.
+// from version 11, creatable: #5416 declared them created from N+1, the block schema bump to
+// version 8 moved that to 9, the bump to version 9 moved it to 10 and the bump to version 10 moved
+// it to 11, since the release after #5416 that records real deploys has not shipped. A build at
+// N, and every build below creatable, reads a check carrying either, and writes one only into a
+// document that already holds that mark, so no write of it puts one into a document that holds
+// none; a build at N-1, the release before, declares the check block but neither mark, so it
+// creates none and reads a stored check carrying one as an element it does not know
+// (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT). Each build is the embedded manifest as of
+// its version (manifestAsOf), so each assertion holds whatever this build's version is.
 func TestTheCheckMarksAreReadFromNAndCreatedOnlyFromTheirCreatableVersion(t *testing.T) {
-	const n, creatable = 6, 10
+	const n, creatable = 6, 11
 	const withoutIt = ":::check{#b-c1}\nBody.\n:::\n"
 	for _, mark := range []struct{ name, markdown string }{
 		{name: "subject", markdown: ":::check{#b-c1 subject=\"production\"}\nBody.\n:::\n"},

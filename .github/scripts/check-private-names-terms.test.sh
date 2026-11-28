@@ -96,14 +96,18 @@ check "names the directory it is in" \
 check "does not print the term" "$(is "$(names_planted "$out")" false)"
 
 root=$(fixture term-owner-path)
+# The fixture file's name is held in a variable: written out before a colon and a line number, as
+# the annotation below prints it, ci_citations.py reads it as a citation of a tracked file whose
+# path ends with that name.
+notes=notes.md
 mkdir -p "$root/docs/${planted_owner^^}"
-printf 'see %s\n' "$planted_owner" > "$root/docs/${planted_owner^^}/notes.md"
+printf 'see %s\n' "$planted_owner" > "$root/docs/${planted_owner^^}/$notes"
 git -C "$root" add docs
 run_check "$root"
 check "a term that spans two directories fails" "$(is "$status" 1)"
 check "masks it where it stands in a line's annotation" \
-  "$(contains "$out" "^::error file=docs/<name>/notes.md,line=1::docs/<name>/notes.md:1: names a term")"
-check "and in the path's own report" "$(contains "$out" "^::error::docs/<name>/notes.md: names a term")"
+  "$(contains "$out" "^::error file=docs/<name>/$notes,line=1::docs/<name>/$notes:1: names a term")"
+check "and in the path's own report" "$(contains "$out" "^::error::docs/<name>/$notes: names a term")"
 check "prints neither half of it" "$(is "$(names_planted "$out")" false)"
 
 echo "case: a path that grep's case folding matches to a term is masked by that same folding"
