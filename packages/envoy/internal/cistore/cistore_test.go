@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectNATS connects to the package's shared NATS server, in the JetStream account
@@ -44,18 +44,17 @@ func openStore(t testing.TB, conn *natsgo.Conn) *Store {
 	return st
 }
 
-// within returns f's error, or an error when f has not returned within 10 s: a record that a
-// broken hand-over leaves waiting on its record's writer fails its test instead of hanging the
-// package until go test's timeout.
+// within returns f's error, or testwait's error when f has not returned by the time testwait's
+// wait gives up (ReceiveInHelper): a record that a broken hand-over leaves waiting on its record's
+// writer fails its test instead of hanging the package until go test's timeout.
 func within(f func() error) error {
 	done := make(chan error, 1)
 	go func() { done <- f() }()
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(10 * time.Second):
-		return errors.New("did not return within 10 s")
+	err, waitErr := testwait.ReceiveInHelper("within", "a Record or RecordSuite call to return", done)
+	if waitErr != nil {
+		return waitErr
 	}
+	return err
 }
 
 func recordCheck(s *Store, owner, repo, number, sha, checkName, checkRunID, url, status, conclusion, observedAt string) error {
@@ -355,18 +354,10 @@ func TestListReflectsRecords(t *testing.T) {
 	if err := recordCheck(s, "o", "r", "7", "sha7", "build", "1", "", "completed", "success", ""); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	deadline := time.After(5 * time.Second)
-	for {
+	testwait.Until(t, "List to reflect the record", func() ([]State, bool) {
 		list := s.List()
-		if len(list) == 1 && list[0].Number == "7" {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("List did not reflect record in time: %+v", s.List())
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
+		return list, len(list) == 1 && list[0].Number == "7"
+	})
 }
 
 func TestRecordIgnoresStaleCheckRunID(t *testing.T) {
@@ -539,17 +530,10 @@ func TestWatchEvictsMalformedState(t *testing.T) {
 		t.Fatalf("put malformed state: %v", err)
 	}
 
-	deadline := time.After(5 * time.Second)
-	for {
-		if len(s.List()) == 0 {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("malformed state remained in cache: %+v", s.List())
-		case <-time.After(15 * time.Millisecond):
-		}
-	}
+	testwait.Until(t, "the watch to evict the malformed state from the cache", func() ([]State, bool) {
+		list := s.List()
+		return list, len(list) == 0
+	})
 }
 
 // An earlier listener kept each pull request's head as a record of its own kind in the same bucket.
