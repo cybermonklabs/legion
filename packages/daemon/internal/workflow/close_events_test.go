@@ -29,6 +29,26 @@ func TestEachEventJudgesTheCloseAgain(t *testing.T) {
 		closedOnChecks(t, rig, waitRoot)
 	})
 
+	// A leave no Dispatch event brings: the child closes on its own checks, so no DispatchIssue
+	// fact runs dispatchIssue's read of the ancestors (askAncestorsRead) before the leave, and the
+	// leave's own read of each ancestor in verifying is the only one that can queue the root's. The
+	// case above leaves by a DispatchIssue fact, whose ancestors' read queues the root's first.
+	t.Run("an issue beneath leaves with no Dispatch event", func(t *testing.T) {
+		rig := newWaitRig(t, "")
+		rig.seedRoot(phase.Merging, "retro")
+		rig.seedChild(waitChild, phase.Merging, "retro")
+		rig.mergeRoot()
+		rig.mergeChild()
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "testing"}}, passing("c-after", waitRootMerge)))
+		rig.stands(waitRoot, phase.Verifying, "testing")
+		rig.ranOut(waitRoot, "close_read")
+		rig.read(waitChild, answerOf(waitChild, nil, passing("c-child", waitChildMerge)))
+		closedOnChecks(t, rig, waitChild)
+		readsQueued(t, rig, 1)
+		rig.read(waitRoot, answerOf(waitRoot, []dispatch.IssueChild{{Key: waitChild, Status: "done"}}, passing("c-after", waitRootMerge)))
+		closedOnChecks(t, rig, waitRoot)
+	})
+
 	// The echo of the daemon's own status write of a child that stays in the workflow: no leave, so
 	// only the Dispatch event's own read wakes the root above it.
 	t.Run("a recorded Dispatch child moves", func(t *testing.T) {
