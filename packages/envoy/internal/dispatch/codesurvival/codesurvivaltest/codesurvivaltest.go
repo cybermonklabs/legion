@@ -14,7 +14,8 @@
 // floor once n patches were read", and "from the closed pull requests list's next page on"), a
 // force-push (another branch served in the repository's place), a commit listed that is off the
 // branch, a patch held back until other patches were read, and a failure of every request. It
-// records every request with its method, path, query and Accept.
+// records every request a client it built (GitHub.Client) sends, with its method, path, query and
+// Accept, as the client sends it.
 //
 // Every git command runs when a test builds its history and reads it back (History.Branch), never
 // while the double serves, so a run under test that reads it starts no process of its own or of the
@@ -232,7 +233,7 @@ type Budget struct {
 // replaces its last.
 var DefaultBudget = Budget{Limit: 5000, Remaining: 5000, Reset: time.Unix(0, 0).UTC()}
 
-// Request is one request the double was sent.
+// Request is one request a client the double built (GitHub.Client) sent.
 type Request struct {
 	Method string
 	Path   string
@@ -306,24 +307,45 @@ func New(t *testing.T) *GitHub {
 	t.Helper()
 	g := &GitHub{t: t, branches: map[string]*Branch{}, unread: map[string]bool{}, off: map[string][]Commit{},
 		refusals: map[string]Refusal{}, budget: DefaultBudget, holds: map[string]*held{}}
-	g.url = githubtest.Server(t, githubtest.Spec{Record: g.record, Handle: g.serve})
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.serve})
 	return g
 }
 
 // URL is the double's base URL, which the App client is pointed at as DISPATCH_GITHUB_API_BASE
-// points the server's.
+// points the server's. A client pointed at it that the double did not build (Client) is answered,
+// and none of its requests is recorded (Requests).
 func (g *GitHub) URL() string { return g.url }
 
 // Client is an App client of the double, signed with a key made for the test, built as the server
-// builds its own (githubapp.New with the base URL).
+// builds its own (githubapp.New with the base URL), and the one client whose requests the double
+// records: its transport (githubapp.WithTransport) records each request in the goroutine that
+// sends it, before the request's round trip (record), then sends it on.
 func (g *GitHub) Client(t testing.TB) *githubapp.Client {
 	t.Helper()
 	_, encoded := githubapptest.Key(t)
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.codesurvival", PEM: encoded}, g.url)
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.codesurvival", PEM: encoded}, g.url,
+		githubapp.WithTransport(func(next http.RoundTripper) http.RoundTripper {
+			if next == nil {
+				next = http.DefaultTransport
+			}
+			return recorder{g: g, next: next}
+		}))
 	if err != nil || client == nil {
 		t.Fatalf("codesurvivaltest: the App client: %v", err)
 	}
 	return client
+}
+
+// recorder is the transport of a client the double built (Client): it records each request
+// (record), then sends it through next.
+type recorder struct {
+	g    *GitHub
+	next http.RoundTripper
+}
+
+func (rt recorder) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.g.record(r)
+	return rt.next.RoundTrip(r)
 }
 
 // Serve serves branch as repo's default branch from now on: a force-push where repo served another.
@@ -394,28 +416,35 @@ func (g *GitHub) Hold(sha string, after int) {
 	g.holds[sha] = &held{after: max(after, 1), release: make(chan struct{})}
 }
 
-// FailAll makes every request from now on answered 500, and recorded, for a test that proves a step
-// sends none (k9's regroup).
+// FailAll makes the double answer every request from now on 500, for a test that proves a step
+// sends none (k9's regroup); a client the double built still records each request it sends.
 func (g *GitHub) FailAll(fail bool) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.failAll = fail
 }
 
-// Requests is every request the double was sent, in order.
+// Requests is every request a client the double built (Client) sent since the last Forget, in the
+// order the clients sent them. Each was recorded as its client sent it, before its round trip, so
+// a request a step sent is here once the step returns, whether or when the double reads it.
 func (g *GitHub) Requests() []Request {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return slices.Clone(g.requests)
 }
 
-// Forget drops the requests recorded so far, so a test reads one step's requests alone.
+// Forget drops the requests recorded so far, so a test reads one step's requests alone. A request
+// is recorded as a client the double built sends it, so one a step sent before Forget is never
+// recorded after it, as a request of a later step, however late the double reads it.
 func (g *GitHub) Forget() {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.requests = nil
 }
 
+// record records r, a request a client the double built (Client) is sending, in the goroutine that
+// sends it and before its round trip, so it is recorded before the caller that sent it returns,
+// whatever the double's server does with it later.
 func (g *GitHub) record(r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()

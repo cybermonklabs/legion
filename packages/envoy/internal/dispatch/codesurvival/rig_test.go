@@ -153,8 +153,8 @@ func (r *rig) issue(project string, number int, repo string) string {
 	return key
 }
 
-// passAt makes one run pass with the clock at now, and answers the requests the double was sent
-// during it.
+// passAt makes one run pass with the clock at now, and answers the requests the run's client (the
+// double's Client) sent during it, each recorded as the client sent it.
 func (r *rig) passAt(now time.Time) []codesurvivaltest.Request {
 	r.t.Helper()
 	r.clock.Set(now)

@@ -345,6 +345,17 @@ func WithRateCounter(counter *githubrate.Counter) Option {
 	}
 }
 
+// WithTransport makes the client send every request through the round tripper wrap answers for
+// the transport the client would send it through otherwise. wrap is given nil where that is
+// http.DefaultTransport, as an http.Client's nil Transport is, so wrap must then send through
+// http.DefaultTransport. Each option wraps the transport the options before it left, so it composes
+// with WithRateCounter in either order. It is for a test double, which records there what the
+// client sent, in the goroutine that sent it: a request is recorded before its round trip, so a
+// caller that returned sent nothing the double records later.
+func WithTransport(wrap func(http.RoundTripper) http.RoundTripper) Option {
+	return func(c *Client) { c.http.Transport = wrap(c.http.Transport) }
+}
+
 // Client calls the GitHub App API as the configured App. A nil *Client is the
 // valid "no app credentials yet" state: every method returns ErrNoAppKey.
 type Client struct {
