@@ -603,14 +603,17 @@ running_child() {
 # the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
 # its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
 # further INT and TERM, so a `wait` on such a process would have held the stop, and both
-# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
-# grace is never signalled again, whatever holds its pid by then. The grace is counted in
-# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
-# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
-# 10 came up to a second short.
+# databases, for good. The look is running_child at once and again after naps of 0.02, 0.03 and
+# 0.05 s, and every 0.1 s from then on, so a process that exits during the grace is never signalled
+# again, whatever holds its pid by then. Each process of the stack exits within milliseconds of its
+# SIGTERM, so a first nap of 0.1 s cost a tenth of a second for each process of each stop. The
+# grace is counted in microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped,
+# which a locale may make a comma), so it is the whole grace: SECONDS counts whole seconds, and a
+# deadline of SECONDS plus 10 came up to a second short.
 stop_bounded() {
   local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
   local termed deadline waited
+  local naps=(0.02 0.03 0.05) nap=0
   if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
@@ -618,7 +621,8 @@ stop_bounded() {
   termed=${EPOCHREALTIME//[!0-9]/}
   deadline=$((termed + grace * 1000000))
   while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
-    sleep 0.1
+    sleep "${naps[nap]:-0.1}"
+    nap=$((nap + 1))
   done
   if running_child "$pid"; then
     waited=$((${EPOCHREALTIME//[!0-9]/} - termed))

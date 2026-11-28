@@ -1506,17 +1506,21 @@ kill "$stranger" 2>/dev/null || true
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
 printf 'PASS: the stop stopped a running child, waited on no child that had exited, even one bash still listed, and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
 
-# (e10b) The stop's grace, the default and one a caller gives, held by what the stop does: the
-# same helpers run in a shell of their own on a child that ignores SIGTERM, under that shell's own
-# clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a function that moves
-# it on by the 0.1 s the stop asks for and returns at once, so the whole grace passes in the stop's
-# own polls, with no real wait and no scheduler to wake it late, and its kill line names the time
-# by that clock. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and
-# with it set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed
-# before its grace names another. The child says it ignores SIGTERM before the stop signals it, so
-# the signal cannot end it first, and the shell kills its own child on any way out, a timeout's
-# TERM included, and writes its pid where this row kills it if the shell itself was killed, so no
-# such child outlives a failing row.
+# (e10b) The stop's grace, the default and one a caller gives, and its naps, held by what the stop
+# does: the same helpers run in a shell of their own on a child that ignores SIGTERM, under that
+# shell's own clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a
+# function that records the nap asked of it, moves the clock on by that nap and returns at once,
+# as (w)'s does, so the whole grace passes in the stop's own polls, with no real wait and no
+# scheduler to wake it late, and its kill line names the time by that clock. The record is named
+# apart from the stop's locals, which `sleep`, called from the stop, would otherwise write in their
+# place. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and with it
+# set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed before its
+# grace names another. Its naps must be 0.02, 0.03 and 0.05 s and then 0.1 s each: the shell
+# checks its record and prints any other naps, which the row's comparison then fails on. The first
+# three add up to 0.1 s, so the grace still ends on a nap's end. The child says it ignores SIGTERM
+# before the stop signals it, so the signal cannot end it first, and the shell kills its own child
+# on any way out, a timeout's TERM included, and writes its pid where this row kills it if the
+# shell itself was killed, so no such child outlives a failing row.
 grace_by_clock() { # <want seconds> [DEV_STACK_STOP_GRACE_SECONDS value]
   local want="$1" out="${temporary_dir}/stop-grace-clock.out" child_file="${temporary_dir}/stop-grace-clock.pid"
   local -a grace_env=(-u DEV_STACK_STOP_GRACE_SECONDS)
@@ -1538,13 +1542,19 @@ for _ in $(seq 1 200); do [ -e "$ready" ] && break; sleep 0.05; done
 [ -e "$ready" ] || { echo "the child that ignores SIGTERM never said so"; exit 1; }
 unset EPOCHREALTIME
 EPOCHREALTIME=1000.000000
+slept=()
 sleep() {
-  local now=${EPOCHREALTIME//[!0-9]/}
-  now=$((now + 100000))
+  slept+=("$1")
+  local now=${EPOCHREALTIME//[!0-9]/} whole="${1%%.*}" fraction
+  fraction="${1#"$whole"}"
+  fraction="${fraction#.}000000"
+  now=$((now + 10#${whole:-0} * 1000000 + 10#${fraction:0:6}))
   printf -v EPOCHREALTIME "%d.%06d" $((now / 1000000)) $((now % 1000000))
 }
 stop_bounded "a child that ignores SIGTERM" "$stubborn"
 kill -0 "$stubborn" 2>/dev/null && echo "a child that ignores SIGTERM outlived the grace"
+[[ "${slept[*]}" =~ ^0\.02\ 0\.03\ 0\.05(\ 0\.1)+$ ]] ||
+  echo "the stop napped ${slept[*]}, not 0.02, 0.03 and 0.05 s and then 0.1 s each"
 exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 || status=$?
   child="$(cat "$child_file" 2>/dev/null || true)"
   if [[ "$child" =~ ^[1-9][0-9]*$ ]] && kill -0 "$child" 2>/dev/null; then
@@ -1553,7 +1563,7 @@ exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 |
   fi
   [[ "$status" -eq 0 ]] || fail "$label did not return within 15 s (status $status): $(cat "$out")"
   [[ "$(cat "$out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${want} s of its SIGTERM; killing it ${want}.000 s after it" ]] ||
-    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock: $(cat "$out")"
+    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock, after naps of 0.02, 0.03 and 0.05 s and then 0.1 s each: $(cat "$out")"
 }
 grace_by_clock "$stop_grace_default"
 grace_by_clock 3 3
