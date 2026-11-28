@@ -88,11 +88,11 @@ func TestAttributingStoredPullRequestsTakesEverySourceInOrder(t *testing.T) {
 // TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn: the stored
 // population answers a two-key title exactly as the head row does. Its pair is
 // TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn (pull_request_heads_test.go),
-// which holds the same title to pull_request_heads. One rule answers both — every candidate the
-// five sources name (attributionCandidates), the first of them held to the pull request's own
-// repository (attributionHeld) — and the two tables must never disagree about which issue one
-// pull request belongs to: pull_request_heads is what a check result's commit is compared
-// with, delivery_pull_requests what the Delivery timeline credits.
+// which holds the same title to pull_request_heads. One rule answers both — the first held
+// candidate of the first source that names an issue (attributionCandidates, attributionHeld), and
+// both keys are in the title, one source — and the two tables must never disagree about which
+// issue one pull request belongs to: pull_request_heads is what a check result's commit is
+// compared with, delivery_pull_requests what the Delivery timeline credits.
 func TestAttributingAStoredPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)

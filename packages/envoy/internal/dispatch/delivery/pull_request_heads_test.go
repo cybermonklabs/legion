@@ -485,13 +485,12 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 }
 
 // A title that names another repository's issue before this repository's own does not cost the
-// pull request its attribution: the attribution walks every candidate the five sources name
-// (attributionCandidates) and takes the first one that resolves to the pull request's own
-// repository (attributionHeld), so the other repository's issue is passed over and the one that
-// belongs here is kept. An attributed head is exactly the basis a `before_merge` result at that
-// head stands at (HeadAttributedTo, the question api/results_comparison.go asks). Both writers
-// of the row answer for it: the `pull_request` envelope and the read-through a recorded result
-// makes.
+// pull request its attribution: the attribution takes the first held candidate of the first
+// source that names an issue (attributionCandidates, attributionHeld), and both keys are in the
+// title, one source, so the other repository's issue is passed over and the one that belongs here
+// is kept. An attributed head is exactly the basis a `before_merge` result at that head stands at
+// (HeadAttributedTo, the question api/results_comparison.go asks). Both writers of the row answer
+// for it: the `pull_request` envelope and the read-through a recorded result makes.
 func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
 	fastPageRetries(t)
 	pool, ctx := deliveryTestPool(t)

@@ -10,7 +10,11 @@
 -- They are read from GitHub with the other four attribution inputs and stored beside them, so
 -- AttributePullRequests judges a stored row by the same rule as the head row. A row stored before
 -- this migration holds null in both, which the attribution reads as no trailer: such a row is
--- judged by the keys it stored, as before.
+-- judged by the keys it stored, as before. So does a row whose inputs the previous release stores
+-- while both builds run, or after an image rollback, since its writes name neither column.
+-- Neither kind is filled in afterwards: the backfill (StoreAttributionInputs) fills only a row
+-- whose title keys are null, and UpsertPullRequest keeps a stored value it is not given
+-- (coalesce), so only a later merge event this build reads would fill them.
 --
 -- Two nullable columns with no default: the change is to the catalog alone and rewrites no row.
 alter table delivery_pull_requests

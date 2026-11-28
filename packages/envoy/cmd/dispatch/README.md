@@ -3346,7 +3346,9 @@ It deletes the migration's version row, so the next boot of this release applies
 
 Migration `20261128154633_delivery_pull_requests_trailer_keys` adds `delivery_pull_requests.attribution_body_trailer_keys` and `attribution_commit_trailer_keys`, nullable `text[]`: the keys a pull request's `Dispatch:` trailer lines name in its body and in its commit messages, which the attribution ranks above every key the same text only mentions (`dispatchTrailer` in `delivery/attribution.go`).
 They are read from GitHub with the other four attribution inputs, so `AttributePullRequests` judges a stored row by the same rule as its head row.
-A row stored before the migration holds null in both, which the attribution reads as no trailer, so such a row is judged by the keys it stored, as before; nothing backfills them.
+A row stored before the migration holds null in both, which the attribution reads as no trailer, so such a row is judged by the keys it stored, as before.
+So does a row whose inputs the previous release stores while both builds run, or after an image rollback, since its writes name neither column.
+Neither kind is filled in afterwards: the backfill (`StoreAttributionInputs`) fills only a row whose title keys are null, and `UpsertPullRequest` keeps a stored value it is not given (`coalesce`), so only a later merge event this build reads would fill them.
 Two nullable columns with no default: the ALTER holds ACCESS EXCLUSIVE for its catalog write alone and rewrites no row, and its census answers `0`.
 The previous release names its insert columns and ignores these, so both builds can run together, and an image rollback leaves them in place.
 

@@ -2312,12 +2312,12 @@ func TestRecordingAResultReadsThroughToAPullRequestDispatchHasNoEventFor(t *test
 }
 
 // The same case at the surface a reviewer reads: a pull request of acme/gadgets whose title
-// names acme/widgets' issue before its own. The attribution walks every candidate the five
-// sources name (delivery's attributionCandidates) and takes the first one held to the pull
-// request's own repository (attributionHeld), so the head the read-through learns is
-// attributed to the check's own issue and the result stands at it, although the title names
-// another repository's issue first. Judged through the route, which is where a reviewer's
-// approval condition is actually read.
+// names acme/widgets' issue before its own. The attribution takes the first held candidate of
+// the first source that names an issue (delivery's attributionCandidates and attributionHeld), and
+// both keys are in the title, one source, so the head the read-through learns is attributed to
+// the check's own issue and the result stands at it, although the title names another
+// repository's issue first. Judged through the route, which is where a reviewer's approval
+// condition is actually read.
 func TestAResultAtTheHeadOfAPullRequestTitledAfterAnotherRepositorysIssueStandsAtIt(t *testing.T) {
 	t.Parallel()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
