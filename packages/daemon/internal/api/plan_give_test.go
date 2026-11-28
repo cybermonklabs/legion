@@ -74,18 +74,41 @@ func newPlanWorld(t *testing.T, recorded bool) planWorld {
 }
 
 // planAnswer is register_plan's answer to version of childDoc, as the route answers a give it took
-// or answers as taken: the plan given.
-func planAnswer(version int) string {
-	return `{"plan":{"version":` + strconv.Itoa(version) + `,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
+// or answers as taken: the plan given, with the act task a stands at where it runs (`running`, the
+// contract entry 20261125174555 running-step), running "" for a task a that does not run.
+func planAnswer(version int, running string) string {
+	task := `{"id":"a","steps":["implementer","reviewer"]`
+	if running != "" {
+		task += `,"running":[` + running + `]`
+	}
+	return `{"plan":{"version":` + strconv.Itoa(version) + `,"tasks":[` + task + `}]}}`
 }
 
+// atImplementer is the act task a stands at once its issue's first step ran: step 1, the
+// implementer.
+const atImplementer = `{"kind":"step","place":1,"role":"implementer"}`
+
 // taken fails unless giver's give of version of childDoc for LEGION-209 is answered 200 with the
-// plan.
+// plan, its task a not running.
 func (w planWorld) taken(t *testing.T, giver liveClaim, version int, why string) {
 	t.Helper()
+	w.takenAnswer(t, giver, version, planAnswer(version, ""), why)
+}
+
+// takenRunning is taken for a give once the issue's first step ran, so the answer names task a
+// running at step 1 (atImplementer).
+func (w planWorld) takenRunning(t *testing.T, giver liveClaim, version int, why string) {
+	t.Helper()
+	w.takenAnswer(t, giver, version, planAnswer(version, atImplementer), why)
+}
+
+// takenAnswer fails unless giver's give of version of childDoc for LEGION-209 is answered 200 with
+// want.
+func (w planWorld) takenAnswer(t *testing.T, giver liveClaim, version int, want, why string) {
+	t.Helper()
 	answer := registerPlan(w.h, giver.grant(t), "LEGION-209", childDoc, version)
-	if body := strings.TrimSpace(answer.Body.String()); answer.Code != http.StatusOK || body != planAnswer(version) {
-		t.Fatalf("version %d given by %s = %d %s, want 200 with the plan: %s", version, giver.token, answer.Code, body, why)
+	if body := strings.TrimSpace(answer.Body.String()); answer.Code != http.StatusOK || body != want {
+		t.Fatalf("version %d given by %s = %d %s, want 200 with %s: %s", version, giver.token, answer.Code, body, want, why)
 	}
 }
 
@@ -240,7 +263,7 @@ func TestAPlanVersionPassedOverIsStoredWhenGivenAgain(t *testing.T) {
 				t.Fatalf("stop the default steps = %d %s, want 200", stopped.Code, stopped.Body)
 			}
 
-			w.taken(t, giver, 1, "the version passed over is judged again and stored")
+			w.takenRunning(t, giver, 1, "the version passed over is judged again and stored")
 			if got, want := w.versionsOf(t, 1), []versionRow{defaultVersion, ownersVersion(1, giver)}; !reflect.DeepEqual(got, want) {
 				t.Errorf("LEGION-209 holds %+v at generation 1, want %+v", got, want)
 			}
@@ -292,7 +315,7 @@ func TestAGiveOfTheVersionInForceStoresNothing(t *testing.T) {
 			t.Fatalf("premise: after its first step LEGION-209 holds %+v at generation 1, want version 1 carried from generation 0", got)
 		}
 		before := testdb.TableRows(t, w.h.store.Pool())
-		w.taken(t, w.root, 1, "the first step carried version 1 to generation 1, where the give names it")
+		w.takenRunning(t, w.root, 1, "the first step carried version 1 to generation 1, where the give names it")
 		// The give's id, which names generation 1, was never marked: the give marks it, and
 		// writes nothing else.
 		if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"processed_events"}) {
@@ -523,7 +546,7 @@ func TestTheNewOwnersGiveOfAHandedOverVersion(t *testing.T) {
 		owner := newLiveClaim(t, w.h, "LEGION-209", claim.RoleArchitect)
 		before := testdb.TableRows(t, w.h.store.Pool())
 
-		w.taken(t, owner, 1, "the version the carried run walks")
+		w.takenRunning(t, owner, 1, "the version the carried run walks")
 		// The give's id, which names generation 2, was never marked: the give marks it, adds the
 		// new owner to the version's givers, and writes nothing else.
 		if changed := testdb.ChangedTables(before, testdb.TableRows(t, w.h.store.Pool())); !slices.Equal(changed, []string{"issue_plans", "processed_events"}) {

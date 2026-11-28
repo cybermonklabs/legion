@@ -454,7 +454,7 @@ func TestDialAllowOpensTheAddressesItNamesAndNoOthers(t *testing.T) {
 }
 
 // serviceRange is GKE's default Service range, which a cluster's ClusterIPs are drawn from. It is
-// global unicast, so none of localRule's fixed rules refuses an address in it: only
+// global unicast, so none of netaddr.DialRefusal's fixed rules refuses an address in it: only
 // Options.ClusterRanges does.
 var serviceRange = netip.MustParsePrefix("34.118.224.0/20")
 
