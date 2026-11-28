@@ -543,6 +543,33 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 	return nil
 }
 
+// redueRequeued makes a role-holders publication due again at once, and wakes its board lane,
+// where the row was queued again while its run was in its send: the queue marked the
+// run's lease (store.EnqueueRoleHolders), so the settle's finish or retry matched nothing, and
+// the row stands for a set this run did not send. runRow calls it once the settle has recorded
+// what the run came to, and it changes nothing where no change came during the run. The rule and
+// why it is this kind's alone are store.RedueRoleHolders'. A read that fails is logged, and the
+// row runs again once its lease lapses, as it would have before the rule.
+func (r *outbox) redueRequeued(ctx context.Context, row record.OutboxRow) {
+	if row.Kind != record.OutboxKindRoleHoldersPublish {
+		return
+	}
+	var redue bool
+	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
+		var err error
+		redue, err = store.RedueRoleHolders(ctx, tx, row.ID, row.LeaseToken, r.now().UTC())
+		return err
+	}); err != nil {
+		r.log.Error("outbox role-holders publish not read for a change queued during its send; such a change is published once the row's lease lapses",
+			"row", row.ID, "issue", row.Issue, "error", err)
+		return
+	}
+	if redue {
+		r.log.Debug("outbox role-holders publish queued again during its send; it runs again now", "row", row.ID, "issue", row.Issue)
+		r.wake(row.Issue, row.Kind)
+	}
+}
+
 // finishRefused finishes a row whose failure no retry repairs (permanentRefusal), its follow-up in
 // the same transaction and only while the row's lease still holds (FinishLeasedOutbox), so a worker
 // whose lease expired commits nothing beside the one that holds the row now.

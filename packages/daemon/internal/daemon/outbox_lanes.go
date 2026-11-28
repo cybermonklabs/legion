@@ -310,13 +310,14 @@ func (r *outbox) nextDue(ctx context.Context, issue string, kinds []record.Outbo
 
 // runRow claims the listed row and, if the claim is its, runs it to its settle: the effect runs
 // outside every transaction with the lease renewed under it, and the finish or retry fences on the
-// lease token. It reports a claim that failed. A claim that returns nothing — another runner's
-// lease, a row finished since the list, or one an older row of its issue since queued ahead of —
-// is no one's failure and is passed over silently. A claimed row whose kind spends a GitHub budget
-// a limit still stands on (deferral) runs nothing and is retried at that limit's end, so it never
-// meets the limit again. The settle runs even once ctx has ended: the effect ran, so what it came
-// to is recorded on a bounded context of its own (outboxSettleTimeout) rather than left to run
-// again at the next boot.
+// lease token. A role-holders publication queued again during the run is made due at once after
+// the settle (redueRequeued). It reports a claim that failed. A claim that returns nothing —
+// another runner's lease, a row finished since the list, or one an older row of its issue since
+// queued ahead of — is no one's failure and is passed over silently. A claimed row whose kind
+// spends a GitHub budget a limit still stands on (deferral) runs nothing and is retried at that
+// limit's end, so it never meets the limit again. The settle runs even once ctx has ended: the
+// effect ran, so what it came to is recorded on a bounded context of its own
+// (outboxSettleTimeout) rather than left to run again at the next boot.
 func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	now := r.now().UTC()
 	var row record.OutboxRow
@@ -364,6 +365,7 @@ func (r *outbox) runRow(ctx context.Context, listed record.OutboxRow) error {
 	settleCtx, cancel := settleContext(ctx)
 	defer cancel()
 	r.settle(settleCtx, row, err)
+	r.redueRequeued(settleCtx, row)
 	return nil
 }
 

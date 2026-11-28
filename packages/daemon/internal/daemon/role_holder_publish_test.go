@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // roleHoldersPublished is one publication of an issue's role sessions as Dispatch received it.
@@ -928,4 +929,108 @@ func TestARoleHoldersPublicationWaitsForADispatchThatHasNoRouteForIt(t *testing.
 	if !slices.Equal(levels, want) {
 		t.Fatalf("the waits logged at %v, want %v:\n%s", levels, want, logs.String())
 	}
+}
+
+// roleHoldersArrival is one PUT as heldSendDispatch took it: the set it carried and the moment it
+// came.
+type roleHoldersArrival struct {
+	holders []dispatch.RoleHolder
+	at      time.Time
+}
+
+// heldSendDispatch is a Dispatch whose first role-holders PUT answers only once release is closed,
+// or once the run's context ends. Each PUT it takes is sent on arrived as it comes, and the moment
+// the held PUT answers is sent on answered.
+type heldSendDispatch struct {
+	gatePublishDispatch
+	release  chan struct{}
+	arrived  chan roleHoldersArrival
+	answered chan time.Time
+	mu       sync.Mutex
+	held     bool
+}
+
+func (d *heldSendDispatch) PutRoleHolders(ctx context.Context, _ string, holders []dispatch.RoleHolder) error {
+	arrival := roleHoldersArrival{holders: append(make([]dispatch.RoleHolder, 0, len(holders)), holders...), at: time.Now()}
+	select {
+	case d.arrived <- arrival:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	d.mu.Lock()
+	first := !d.held
+	d.held = true
+	d.mu.Unlock()
+	if !first {
+		return nil
+	}
+	select {
+	case <-d.release:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	d.answered <- time.Now()
+	return nil
+}
+
+// Two changes of one issue's role holders fall inside one send: the architect's registration
+// queues the publication, and while the lane's PUT of that set is in flight the architect's claim
+// retires, which queues the row again under the lease of the run that sends it
+// (store.EnqueueRoleHolders). Once that PUT answers, the row runs again at once with the newer set
+// (store.RedueRoleHolders, outbox.redueRequeued): Dispatch is sent the empty set within one second
+// of the first answer. Dispatch takes the role of each check result from the set it holds, so
+// until the newer set lands the ended session still records as the architect. The lanes run as the
+// daemon runs them (outbox.Run), and the store wakes the issue's board lane for each publication
+// its claim writes queue, as the daemon's workflow does (workflowRuntime.wakeRoleHolders).
+//
+// The control is the daemon before this change, whose queue gave the lease a token no lane held:
+// the first run's finish matched nothing, and the row ran again only once its lease lapsed
+// (outboxLease, 30 seconds from its claim) and a sweep found it, half a minute or more after the
+// first answer, so the wait for the second PUT below fails.
+func TestARoleChangeDuringASendIsPublishedWhenTheSendEnds(t *testing.T) {
+	t.Parallel()
+	r := newHeldRoleRig(t)
+	d := &heldSendDispatch{release: make(chan struct{}), arrived: make(chan roleHoldersArrival, 8), answered: make(chan time.Time, 1)}
+	r.runner.dispatch = d
+	r.st.PublishRoleHolders(func(issue string) { r.runner.wake(issue, record.OutboxKindRoleHoldersPublish) })
+	ctx, cancel := context.WithCancel(r.ctx)
+	ran := make(chan struct{})
+	go func() {
+		defer close(ran)
+		r.runner.Run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-ran
+	})
+
+	write := func(what string, state supervise.ClaimState) {
+		t.Helper()
+		if err := r.st.PutClaim(r.ctx, supervise.Claim{Token: r.token, Project: "legion", Tree: heldRoleIssue, Issue: heldRoleIssue,
+			Role: claim.RoleArchitect, Generation: 1, State: state, Session: "ses-1"}); err != nil {
+			t.Fatalf("%s: write the claim: %v", what, err)
+		}
+	}
+	write("the registration", supervise.StateRegistered)
+	first := testwait.Receive(t, "the PUT of the registration's set", d.arrived)
+	if want := []dispatch.RoleHolder{{Role: "architect", Session: "ses-1"}}; !reflect.DeepEqual(first.holders, want) {
+		t.Fatalf("the first PUT carried %+v, want %+v", first.holders, want)
+	}
+	// The fake holds that PUT, so the retirement is queued while the run that sends it is in its
+	// send; the PUT answers only once the retirement has committed.
+	write("the retirement", supervise.StateRetired)
+	close(d.release)
+	answered := testwait.Receive(t, "the answer to the first PUT", d.answered)
+	second := testwait.ReceiveWithin(t, time.Second, "the PUT of the retirement's set",
+		"the row waits for the lease of the first send to lapse", d.arrived)
+	if len(second.holders) != 0 {
+		t.Fatalf("the second PUT carried %+v, want the empty set: the architect's claim retired", second.holders)
+	}
+	if gap := second.at.Sub(answered); gap >= time.Second {
+		t.Fatalf("the second PUT came %s after the first one answered, want less than a second", gap)
+	}
+	testwait.Eventually(t, "the second publication finished", func() bool {
+		_, rows := queuedRoleHolders(t, r.pool)
+		return rows == 0
+	})
 }

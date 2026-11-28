@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    A claim change that comes while the daemon sends the role holders of its issue to Dispatch is
+    now sent as soon as that send ends. Before, the change waited until the send's outbox lease
+    lapsed and a sweep found the row, 30 s to a minute later, and in that time Dispatch stored the
+    results of the session whose role changed under the older set.
+time: 2026-11-28T16:29:04Z
+custom:
+    Issue: role-holders-send-end
