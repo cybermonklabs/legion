@@ -106,10 +106,10 @@ describe("the record /messages/<id> opens in Threads", () => {
     expect(messageRecord(NOTE.message.id, CONVERSATION, PROJECT)).toBe(NOTE.message.id);
   });
 
-  test("an agent's note that a person answered opens its own record", () => {
+  test("an agent's note that a person answered opens as on main", () => {
     const answered = answeredByPerson(NOTE);
     for (const message of [answered.message, ...(answered.replies ?? [])]) {
-      expect(messageRecord(message.id, [answered], PROJECT), message.id).toBe(NOTE.message.id);
+      expect(messageRecord(message.id, [answered], PROJECT), message.id).toBeUndefined();
     }
   });
 

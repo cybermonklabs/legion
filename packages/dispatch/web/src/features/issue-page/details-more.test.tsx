@@ -1920,7 +1920,8 @@ test("the address of an agent's note opens no Details, and that of the daemon's 
   );
   try {
     // Every read the outline lands by is held or answers at once, so these turns of the loop and
-    // two frames are past the outline's landing on the note's row, where an open asked for has run.
+    // two frames are past the address's move to Threads, which draws the note (`messageRecord`),
+    // where an open asked for has run.
     await act(async () => {});
     await nextFrames(2);
     expect(hold.isOpen, "the address of an agent's note opened Details").toBe(false);

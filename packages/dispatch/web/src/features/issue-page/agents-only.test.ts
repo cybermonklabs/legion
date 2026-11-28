@@ -2,12 +2,13 @@ import { expect, test } from "bun:test";
 
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import type { Actor, Ask, Comment, MessageRead } from "../../api/types";
-import { agentsOnlyIds, historyHoldsReply } from "./agents-only";
+import { agentsOnlyIds, historyHoldsReply, isThreadsOnly } from "./agents-only";
 
 /**
  * Which comments and messages the history in the panel draws, each thread whole, and the outline
  * none of: a message thread the Legion daemon began, whoever wrote in it, and a comment thread
- * tied to no text that only agents wrote in.
+ * tied to no text that only agents wrote in. And which message threads only Threads draws: an
+ * agent's note no person answered and a thread between agents (`isThreadsOnly`).
  */
 
 const PERSON: Actor = { id: "alice", kind: "user" };
@@ -92,6 +93,41 @@ test("an agent's untargeted note and a thread whose root targets a role are not 
   expect(ids([], [thread(note, noteAnswered), thread(toRole, roleReply, roleAnswered)])).toEqual(
     []
   );
+});
+
+// Root R37: "An agent's note no person answered and a thread between agents are in Threads only".
+// A person's turn anywhere in a thread makes it the outline's, and the thread the Legion daemon
+// began is the history's, a person's reply in it included.
+test("only Threads draws an agent's note no person answered and a thread between agents", () => {
+  const note = message("note", AGENT);
+  const noteReply = message("note-reply", REVIEWER, { in_reply_to: "note" });
+  const noteAnswered = message("note-answered", PERSON, { in_reply_to: "note" });
+  const between = message("between", AGENT, { target: "role:legion-p-core-1-reviewer" });
+  const betweenReply = message("between-reply", REVIEWER, { in_reply_to: "between" });
+  const betweenAnswered = message("between-answered", PERSON, { in_reply_to: "between" });
+  const asked = message("asked", PERSON, { target: "role:legion-p-core-1-reviewer" });
+  const askedReply = message("asked-reply", REVIEWER, { in_reply_to: "asked" });
+  const daemon = message("daemon", DAEMON);
+  const daemonReply = message("daemon-reply", AGENT, { in_reply_to: "daemon" });
+  const daemonAnswered = message("daemon-answered", PERSON, { in_reply_to: "daemon" });
+  const cases: [string, MessageRead, boolean][] = [
+    ["an agent's note no one answered", thread(note), true],
+    ["an agent's note an agent answered", thread(note, noteReply), true],
+    ["an agent's note a person answered", thread(note, noteReply, noteAnswered), false],
+    ["a thread between agents", thread(between, betweenReply), true],
+    [
+      "a thread between agents a person wrote in",
+      thread(between, betweenReply, betweenAnswered),
+      false,
+    ],
+    ["a thread a person began", thread(asked, askedReply), false],
+    ["the daemon's thread", thread(daemon, daemonReply), false],
+    ["the daemon's thread a person answered", thread(daemon, daemonReply, daemonAnswered), false],
+  ];
+
+  for (const [what, read, only] of cases) {
+    expect(isThreadsOnly(read), what).toBe(only);
+  }
 });
 
 // A reply never carries an anchor of its own (the server refuses one), so whether a comment

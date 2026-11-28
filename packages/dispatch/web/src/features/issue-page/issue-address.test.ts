@@ -284,10 +284,12 @@ test("an address naming an ask or a comment opens the outline, unless it pins a 
 
 // The address of a turn of a thread the history holds lands in the history, not the outline: a
 // comment thread tied to no text that only agents wrote in, and a message thread the Legion
-// daemon began, a person's reply in it included. A comment thread a person wrote in, one whose
-// head is tied to text, a reply under an ask, an agent's note and a message thread a person
-// answered are nodes of the outline like any other.
-test("an item of a thread the history holds is the history's, and every other the outline's", () => {
+// daemon began, a person's reply in it included. No other turn is the history's: a comment thread
+// a person wrote in, one whose head is tied to text and a reply under an ask are nodes of the
+// outline, and of the two agents' notes, Threads draws `agents-message`, which no person wrote
+// in, and the outline draws `asked-message`, which a person answered; `agentsOnlyItem` leaves
+// both out of the history.
+test("an item of a thread the history holds is the history's, and no other item is", () => {
   const agent = { id: "session-1", kind: "session" } as const;
   const daemon = { id: "legion-daemon:CORE", kind: "session" } as const;
   const person = { id: "alice", kind: "user" } as const;

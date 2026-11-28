@@ -2821,12 +2821,12 @@ test("a thread no person wrote in is no node, and one a person replied in is dra
   expect(placementsOf(root, "under-ask").map((one) => one.parent)).toEqual(["ask-1"]);
 });
 
-// Root R37: a message thread only Threads draws (`thread-address.ts`'s `isThreadsOnly`) is no node
-// of the outline, neither its root nor any reply of it: an agent's note to the issue's people,
-// whoever replied to it, and a thread between agents, which no person wrote in. A thread a person
-// began is the conversation's, an agent's reply in it included, and the thread the Legion daemon
-// began stays the history's.
-test("an agent's note and a thread between agents are no node, and a thread a person began is drawn whole", () => {
+// Root R37: a message thread only Threads draws (`agents-only.ts`'s `isThreadsOnly`) is no node of
+// the outline, neither its root nor any reply of it: an agent's note no person answered, and a
+// thread between agents, which no person wrote in. A thread a person wrote in is the
+// conversation's, an agent's turns in it included, whether a person answered an agent's note or
+// began the thread, and the thread the Legion daemon began stays the history's.
+test("an agent's note no person answered and a thread between agents are no node, and a note a person answered and a thread a person began are drawn whole", () => {
   const planner = { id: "planner", kind: "session" as const };
   const reviewer = { id: "reviewer", kind: "session" as const };
   const alice = { id: "alice", kind: "user" as const };
@@ -2841,9 +2841,13 @@ test("an agent's note and a thread between agents are no node, and a thread a pe
   const messages: MessageRead[] = [
     {
       message: entry("note", "2026-11-04T09:00:00Z", planner),
+      replies: [entry("note-agent", "2026-11-04T09:10:00Z", reviewer, { in_reply_to: "note" })],
+    },
+    {
+      message: entry("answered", "2026-11-04T09:30:00Z", planner),
       replies: [
-        entry("note-agent", "2026-11-04T09:10:00Z", reviewer, { in_reply_to: "note" }),
-        entry("note-person", "2026-11-04T09:20:00Z", alice, { in_reply_to: "note" }),
+        entry("answered-agent", "2026-11-04T09:40:00Z", reviewer, { in_reply_to: "answered" }),
+        entry("answered-person", "2026-11-04T09:50:00Z", alice, { in_reply_to: "answered" }),
       ],
     },
     {
@@ -2863,17 +2867,12 @@ test("an agent's note and a thread between agents are no node, and a thread a pe
   ];
   const root = buildIssueTree({ issue: issueDetails([]), messages });
 
-  for (const id of [
-    "note",
-    "note-agent",
-    "note-person",
-    "between",
-    "between-reply",
-    "daemon",
-    "daemon-reply",
-  ]) {
+  for (const id of ["note", "note-agent", "between", "between-reply", "daemon", "daemon-reply"]) {
     expect(nodeOf(root, id), `${id} is drawn in the outline`).toBeUndefined();
   }
+  expect(placementsOf(root, "answered").map((one) => one.parent)).toEqual([KEY]);
+  expect(placementsOf(root, "answered-agent").map((one) => one.parent)).toEqual(["answered"]);
+  expect(placementsOf(root, "answered-person").map((one) => one.parent)).toEqual(["answered"]);
   expect(placementsOf(root, "person").map((one) => one.parent)).toEqual([KEY]);
   expect(placementsOf(root, "person-reply").map((one) => one.parent)).toEqual(["person"]);
 });

@@ -231,7 +231,8 @@ interface Following {
    *  following reads it. */
   readonly failedBefore: number | undefined;
   /** Whether the tree has held the address's node, or the nearest drawn ancestor of a turn of
-   *  the history, at any time during this following. */
+   *  the history, at any time during this following; it holds too for an address whose message
+   *  Threads opens (`threadsRecord`). */
   readonly found: boolean;
   /** The following: the location's key with its address (`useFollowing`). */
   readonly key: string;
@@ -373,7 +374,7 @@ export function useAddressFallback({
     [agentsOnly, comments, messages, root]
   );
   // An address that goes to Threads (`threadsRecord`) finds nothing in the outline, so it reads
-  // nothing either: the redirect above takes it away in this same render.
+  // nothing either: the redirect above takes it away once this render commits.
   const found = before?.found === true || (reveal ?? agentsOnly ?? threadsRecord) !== undefined;
   // The issue's own route reads nothing: the landing reads an item only where it falls back.
   const read = found ? undefined : unheld;

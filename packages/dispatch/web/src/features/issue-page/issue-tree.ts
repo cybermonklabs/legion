@@ -17,10 +17,10 @@ import type {
 import type { ReferenceNameReading } from "../refs/reference-names";
 import type { TextSource } from "../refs/text-references";
 import { firstWordedBlock, wordsOf } from "../refs/tree-fragment";
+import { isThreadsOnly } from "./agents-only";
 import type { GapKind, NodeState, NodeType } from "./page-words";
 import { titleReading } from "./statement-rules";
 import { treeContext } from "./target-naming";
-import { isThreadsOnly } from "./threads/thread-address";
 import { type Draft, treeDrafts } from "./tree-drafts";
 
 /**
@@ -498,15 +498,15 @@ export function lineReading(node: {
 /**
  * The issue's whole tree, from the reads it was given.
  *
- * A message thread only Threads draws - a thread between agents, an agent's note to the issue's
- * people (`isThreadsOnly`) - is no node of it, neither its root nor any reply, so the drafts are
- * made from the reads without those threads. The context reads the reads whole: it reads no
- * message, and it is the one the page publishes its names from (`targetNaming`), so a chip and a
- * link name one target from the same reads.
+ * A message thread only Threads draws - a thread between agents, an agent's note no person
+ * answered (`agents-only.ts`'s `isThreadsOnly`) - is no node of it, neither its root nor any
+ * reply, so the drafts are made from the reads without those threads. The context reads the
+ * reads whole: it reads no message, and it is the one the page publishes its names from
+ * (`targetNaming`), so a chip and a link name one target from the same reads.
  */
 export function buildIssueTree(reads: IssueTreeReads): TreeNode {
   const context = treeContext(reads);
-  const messages = reads.messages?.filter((thread) => !isThreadsOnly(thread, reads.issue.project));
+  const messages = reads.messages?.filter((thread) => !isThreadsOnly(thread));
   const outline = messages === undefined ? reads : { ...reads, messages };
   return assemble(reads.issue, [...treeDrafts(outline, context).values()], context.chipOf);
 }
