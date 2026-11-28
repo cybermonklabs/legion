@@ -103,11 +103,11 @@ var settingRoles = map[string]settingRole{
 	"BROKER_RESULT_GRANT_TEST_SECONDS":    givesNone("a test-only lifetime"),
 
 	"BROKER_SECRETS_KMS_KEY_NAME":     givesNone("a KMS key"),
-	"BROKER_SECRETS_KMS_KEY_ARN":      givesNone("a KMS key"),
 	"BROKER_MEMORY_SECRETS_FILE":      givesNone("a file path"),
 	"BROKER_SIGNIN_WORKSPACE_DOMAINS": givesNone("the Workspace's domains"),
 	"BROKER_AIRLOCK_CLUSTER_RANGES":   givesNone("address ranges"),
 	"BROKER_PROXY_PRIVATE_UPSTREAM":   givesNone("a host and a URL"),
+	"BROKER_SECRETS_KMS_KEY_ARN":      givesNone("a KMS key"),
 
 	"BROKER_SERVICES": givesARole(
 		"a BROKER_SERVICES entry names its login service",
