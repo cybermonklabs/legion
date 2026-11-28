@@ -1,4 +1,6 @@
+import { replaceEqualDeep } from "@tanstack/react-query";
 import {
+  type FocusEvent,
   type MouseEvent,
   type ReactNode,
   type RefObject,
@@ -6,6 +8,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
 } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
@@ -16,21 +19,22 @@ import { TextAskCard } from "../refs/markdown-cards";
 import { useLoadedEngine } from "../refs/parsed-references";
 import { isPlainClick } from "../refs/picture-lightbox";
 import { useReferenceNames } from "../refs/plain-text";
-import { deletedLineText } from "../refs/post-marks";
 import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { placedStorePath, placeStoreLinks } from "./lenses/store-link";
 import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import {
   knownIssueKeys,
   linkRowReferences,
+  rowReferenceNames,
   rowReferences,
   rowReferenceWords,
 } from "./row-references";
-import { titleReading } from "./tree-drafts";
+import { titleReading } from "./statement-rules";
 
 /**
  * A node's own text, as its row in the outline draws it (R16, R20, R34), and the words of the
@@ -217,22 +221,18 @@ function useRowNames(words: string, issue: string | undefined): RowNames {
   const { names: named, reads } = useReferenceNames(addresses, issue);
   // A post the page read as deleted is named by its deleted line, the actor named by the page's
   // rule for an author, in place of the published name, which names the actor as no registry
-  // knows it.
-  const names = useMemo(() => {
-    const byReference = new Map<string, string>();
-    for (const one of found) {
-      const deletion = deletions.get(one.reference);
-      const name =
-        deletion !== undefined
-          ? deletedLineText(deletion, { label: author })
-          : (lines.get(one.reference) ??
-            (documentWord(one.route, issue) === undefined
-              ? named.get(one.reference)?.name
-              : undefined));
-      if (name !== undefined) byReference.set(one.reference, name);
-    }
-    return byReference;
-  }, [author, deletions, found, issue, lines, named]);
+  // knows it (`rowReferenceNames`).
+  const names = useMemo(
+    () =>
+      rowReferenceNames(
+        found,
+        { deleted: deletions, lines },
+        (reference) => named.get(reference)?.name,
+        issue,
+        author
+      ),
+    [author, deletions, found, issue, lines, named]
+  );
   const deleted = useMemo(
     () => new Set(found.map((one) => one.reference).filter((one) => deletions.has(one))),
     [deletions, found]
@@ -351,6 +351,18 @@ const SERVER_ROOT = /^\/(?:api|v1|auth|ws|healthz|assets)(?:\/|$)/u;
 /** What takes the focus in a drawn text: every control a reading can hold. */
 export const FOCUSABLE = "a[href], area[href], button, input, select, textarea, iframe, [tabindex]";
 
+/** The class `mermaid-diagrams.ts`'s `drawBlock` gives a drawn diagram's preview, which scrolls
+ *  sideways when the diagram is wider than the words (`styles.css`). */
+const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
+
+/** Every element in drawn words that can scroll its own content: the ones `styles.css` gives an
+ *  `overflow-x: auto` - a code block's `pre` and a table (in a node's words, a document's reading,
+ *  an ask block's footer), and a drawn diagram's preview (`DIAGRAM_PREVIEW`) - and one whose own
+ *  `style` sets its overflow. A row's words hold hundreds of elements, and a style read for each
+ *  of them cost seconds of a large issue's load, so `useOutOfTabOrder` reads the style only of
+ *  these. */
+const SCROLLABLE = `pre, table, .${DIAGRAM_PREVIEW}, [style*="overflow"]`;
+
 /** Whether `element`'s overflow lets it scroll its own content, on either axis. Chromium makes
  *  such an element a tab stop of its own once its content runs past its box, while no control
  *  inside it is in the tab order: a wide code block's `pre`, a table's scrolling wrapper. */
@@ -358,10 +370,6 @@ function scrolls(element: Element): boolean {
   const { overflowX, overflowY } = getComputedStyle(element);
   return [overflowX, overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
 }
-
-/** The class `mermaid-diagrams.ts`'s `drawBlock` gives a drawn diagram's preview, which scrolls
- *  sideways when the diagram is wider than the words (`styles.css`). */
-const DIAGRAM_PREVIEW = "dispatch-mermaid-preview";
 
 /** The mark a scroller carries while `useOutOfTabOrder` keeps its tab stop, so that a tree's keys
  *  can tell a kept scroller from the row's other controls. Its reader is part I's tree keys,
@@ -438,7 +446,7 @@ export function useOutOfTabOrder(
     const untab = (): void => {
       // Every style and every size is read before any tab index is written, so the reads cost
       // one style pass and one layout.
-      const scrollers = [...element.querySelectorAll<HTMLElement>("*")].filter(scrolls);
+      const scrollers = [...element.querySelectorAll<HTMLElement>(SCROLLABLE)].filter(scrolls);
       const kept = new Map<HTMLElement, string>(
         keepScrollers
           ? scrollers
@@ -501,10 +509,44 @@ export function useOutOfTabOrder(
   }, [box, keepScrollers, out]);
 }
 
+/** `value`, or the one this hook last answered while `value` holds the same values, as TanStack
+ *  Query's `replaceEqualDeep` compares two answers of a read (`api/queries.ts`). A later read of
+ *  the tree hands a row the same reading and record in objects of its own (`tree-nodes.ts`'s
+ *  `readingOf`, `text-references.ts`'s `textSourceOf`), and the body paints again for every new
+ *  reading it is handed (`useRenderedMarkdown`), which replaces the link the reader is on. */
+function useSameValue<T>(value: T): T {
+  const [held, hold] = useState(value);
+  // `replaceEqualDeep` gives back the old value where the new one holds the same values.
+  if (replaceEqualDeep(held, value) === held) return held;
+  // React draws the component again at once with the state its render set, before it commits
+  // anything, and that render finds the value held.
+  hold(value);
+  return value;
+}
+
+/** The link in `root` of the address `link` has: the reference a row's own link names, else its
+ *  `href`. Undefined where `link` has no address, or `root` holds no link of it. */
+function linkOfAddress(root: HTMLElement, link: HTMLAnchorElement): HTMLAnchorElement | undefined {
+  const mark = link.hasAttribute("data-row-reference") ? "data-row-reference" : "href";
+  const address = link.getAttribute(mark);
+  if (address === null) return undefined;
+  return root.querySelector<HTMLAnchorElement>(`a[${mark}="${CSS.escape(address)}"]`) ?? undefined;
+}
+
 /** A text drawn from its reading, with every control it holds taken out of the tab order unless
  *  `tabStops` holds: the ones it is drawn with, and the ones the reading puts in after - a
  *  reference's link once its target answers, a picture once it loads - as they arrive. A
- *  reference to a corrected post carries its mark (`RowText`). */
+ *  reference to a corrected post carries its mark (`RowText`). A reading that holds the same
+ *  words as the one painted paints nothing again (`useSameValue`), and a paint of other words
+ *  keeps the focus on the link the reader was on: the new link of its address takes it, where the
+ *  new words hold one. A store address the words name by its node is a link to that node's row,
+ *  written before the words are painted as a link to nothing that holds the row's path
+ *  (`lenses/store-link.ts`' `placeStoreLinks`), since the body's own pass draws an address no
+ *  route names as its words; the row's pass takes the path as the link's address, and the link
+ *  is followed in place as every other link of the row is. The words break a word or a link that
+ *  would end past their column
+ *  (`overflow-wrap: anywhere`), which `break-word` does not do inside a flex or grid row: there it
+ *  leaves the box as wide as its longest word, and a long address widens the page. */
 function DrawnText({
   focused,
   markdown,
@@ -521,10 +563,24 @@ function DrawnText({
   tree: DisplayTree;
 }): ReactNode {
   const box = useRef<HTMLDivElement>(null);
+  // The reading and the record the body was last handed, while the new ones hold the same values.
+  const reading = useSameValue(tree);
+  const record = useSameValue(source);
+  /** The link inside the words that took the focus last, until the focus moves to another
+   *  element. */
+  const focusedLink = useRef<HTMLAnchorElement | null>(null);
+  // The page's address, which the store links are placed on when the reading changes: a store
+  // link opens a row of the issue it names (`storeLinkPath`). It is read through a ref, so a move
+  // of the page's address alone paints nothing again.
+  const location = useLocation();
+  const page = useRef(location);
+  page.current = location;
   // What the reading's words cite, read from the reading itself: a block's stored text is an
   // excerpt, or plain words with its references left out (`TreeNode.text`).
-  const words = useMemo(() => wordsOf(tree), [tree]);
-  const issue = source?.issue;
+  const words = useMemo(() => wordsOf(reading), [reading]);
+  // The reading with each store link it holds placed, which is the reading painted.
+  const painted = useMemo(() => placeStoreLinks(reading, page.current), [reading]);
+  const issue = record?.issue;
   const { ambiguous, deleted, drawn, edited, issues, names, reads } = useRowNames(words, issue);
   // After every paint of the reading, and again when the references take their names. The
   // row's pass takes its links out of the tab order as it makes them; a view with tab stops
@@ -548,15 +604,60 @@ function DrawnText({
       }
       if (tabStops) anchor.removeAttribute("tabindex");
     }
+    // A store address named in the words links to its node's row: the link `placeStoreLinks`
+    // wrote holds the row's path in its title, and only that path is taken.
+    for (const anchor of element.querySelectorAll<HTMLAnchorElement>('a[href=""][title]')) {
+      const path = placedStorePath(anchor.getAttribute("title") ?? "");
+      if (path === undefined) continue;
+      anchor.setAttribute("href", path);
+      anchor.removeAttribute("title");
+    }
+    // A paint of other words replaces every node of them, the link the reader was on with it,
+    // and the focus falls to nothing. The new link of the same address takes it back; a reader
+    // who has put the focus elsewhere since keeps it there, and a link the words no longer hold
+    // takes nothing.
+    const last = focusedLink.current;
+    if (last !== null && !last.isConnected) {
+      const active = document.activeElement;
+      const again =
+        active === null || active === document.body ? linkOfAddress(element, last) : undefined;
+      again?.focus({ preventScroll: true });
+      focusedLink.current = again ?? null;
+    }
   }, [ambiguous, deleted, edited, issue, issues, names, tabStops]);
   useLayoutEffect(link, [link]);
   useRedrawn(drawn, onRedrawn);
   useOutOfTabOrder(box, !tabStops, { keepScrollers: focused });
   const follow = useFollowInPlace();
+  const enter = (event: FocusEvent<HTMLDivElement>): void => {
+    if (event.target instanceof HTMLAnchorElement) focusedLink.current = event.target;
+  };
+  // A focus that goes to another element forgets the link. One that goes to nothing keeps it
+  // only where the link itself is gone, as a paint removes it: a reader who puts the focus on
+  // nothing - a press on the page's blank space, a move to another window - leaves the link
+  // drawn, and the next paint gives them no focus they did not ask for.
+  const leave = (event: FocusEvent<HTMLDivElement>): void => {
+    const left: EventTarget = event.target;
+    if (event.relatedTarget !== null) {
+      focusedLink.current = null;
+      return;
+    }
+    queueMicrotask(() => {
+      const held = focusedLink.current;
+      if (held !== null && held === left && held.isConnected) focusedLink.current = null;
+    });
+  };
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: the press is the links' own, followed in place.
     // biome-ignore lint/a11y/useKeyWithClickEvents: a link's Enter is a click, which this follows.
-    <div className="min-w-0 break-words" onClick={follow} ref={box} {...authorText}>
+    <div
+      className="min-w-0 [overflow-wrap:anywhere]"
+      onBlur={leave}
+      onClick={follow}
+      onFocus={enter}
+      ref={box}
+      {...authorText}
+    >
       {reads}
       <TextAskCard.Provider value={undefined}>
         {/* The body's own link pass is held to the references of `referenceText`: none, so it
@@ -565,9 +666,9 @@ function DrawnText({
           markdown={markdown}
           onRendered={link}
           referenceText=""
-          source={source}
+          source={record}
           surface="node-row-words"
-          tree={tree}
+          tree={painted}
         />
       </TextAskCard.Provider>
     </div>

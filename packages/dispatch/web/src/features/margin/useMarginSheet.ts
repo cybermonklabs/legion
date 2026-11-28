@@ -252,6 +252,7 @@ export function useMarginSheet(): MarginSheetModel {
     threads,
   } = useMarginItems(owner, tab, visibleArtifact, markPlacements, blockPlacements, blockFilterId, {
     documentShown: placementsPublished,
+    documentUp: documentBridge !== undefined,
     held: heldReplyKeys,
     issue: issue.data,
   });

@@ -97,6 +97,57 @@ export const issueQuery = (key: string | undefined) =>
       olderIssue(next, cached) ? cached : replaceEqualDeep(cached, next),
   });
 
+/** The issue page's tree read's key (`GET /api/v1/issues/{key}/tree`), each view of the tree
+ *  under it (`["issue-tree", key, view]`). It is not under `["issue", key]`, so a write that
+ *  refreshes the issue's key by prefix does not reach it; every event of the issue names it
+ *  (`event-refresh.ts`). */
+export function issueTreeKey(key: string): readonly ["issue-tree", string] {
+  return ["issue-tree", key];
+}
+
+/** The kinds Conversation's read names (`?kind=`, repeated, one each), in the one order every
+ *  load writes them in, so its key is the same in every load (`conversationTreeKey`): root R1's
+ *  kinds, each by the name the read's `kind` filter gives it - the asks, the comments, the
+ *  readings, the lenses with their findings and risks, the criteria, the requirements, the
+ *  checks, the decisions, the child issues (`issue`) and the blocks written in the conversation
+ *  (`prose`) - and the memo's callout (`callout`), which the three sentences draw and no row does.
+ *  None is `block`, the supertag every untyped block holds, which the filter takes no value of. */
+export const CONVERSATION_KINDS = [
+  "ask",
+  "comment",
+  "reading",
+  "lens",
+  "finding",
+  "risk",
+  "criterion",
+  "requirement",
+  "check",
+  "decision",
+  "issue",
+  "prose",
+  "callout",
+] as const;
+
+/** Conversation's read's key: the tree read with `kind` repeated for `CONVERSATION_KINDS`, under
+ *  the tree's key (`issueTreeKey`), so every event of the issue reaches it as it reaches the tree
+ *  read and each view (`event-refresh.ts`). The kinds it reads are its last member, in their one
+ *  order, so no view's name (`["issue-tree", key, view]`) is it. */
+export function conversationTreeKey(
+  key: string
+): readonly ["issue-tree", string, { readonly kind: typeof CONVERSATION_KINDS }] {
+  return [...issueTreeKey(key), { kind: CONVERSATION_KINDS }];
+}
+
+/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
+ *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
+export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
+
+/** The views of the tree a filter reads (`?view=`), each under the tree's key
+ *  (`["issue-tree", key, view]`). Each is the query of the document of the same role, so the name
+ *  says which role's blocks a caller asks for as well (`blocksOfRole`). The type is the members
+ *  of `TREE_FILTERS`, so that list holds every filter. */
+export type TreeFilter = (typeof TREE_FILTERS)[number];
+
 /** Whether the issue is a view on its ancestor's spec: the issue it is a view of, or null where it
  *  is none. Each document of the issue is edited under the schema this answer gives
  *  (`editorBlockSchema`), and its admission waits for it (`ProofDocument.tsx`). An issue under no
@@ -162,11 +213,12 @@ export const issueStepsQuery = (key: string) =>
     queryFn: () => api.listSteps(key),
   });
 
-/** The issue's asks as the issue page's tree reads them: every ask, open or closed
- *  (`listIssueAsks` with `all`), under the key the margin, a document's ask blocks and the feed's
- *  ask rules read and refresh (`["asks", key]`). One definition, so a view that observes the same
- *  read takes the key from here and cannot drift from it; such a view, like the tree, adds how it
- *  is kept fresh (`EVENT_FRESH`). It is here, beside the issue's other reads, and not beside the
+/** The issue's asks as the margin, a document's ask blocks and the feed's ask rules read and
+ *  refresh them: every ask, open or closed (`listIssueAsks` with `all`), under `["asks", key]`.
+ *  The issue page's outline reads them with each ask's thread instead (`issueAskThreadsQuery`).
+ *  One definition, so a view that observes the same read takes the key from here and cannot
+ *  drift from it; such a view adds how it is kept fresh (`EVENT_FRESH`). It is here, beside the
+ *  issue's other reads, and not beside the
  *  tree (`issue-page/useIssueTree.ts`), because a document's ask blocks read it on today's pages
  *  too (`doc/ProofDocument.tsx`, which the Inbox's reading pane loads), and those pages load
  *  nothing of the issue page's model or its words (INFRA-1196 decisions 31 and 512;
@@ -175,6 +227,19 @@ export const issueAsksQuery = (key: string) =>
   queryOptions({
     queryKey: ["asks", key],
     queryFn: () => api.listIssueAsks(key, "all"),
+  });
+
+/** The outline's one asks read (R5): `GET /api/v1/issues/{key}/asks?thread=1`, every ask, open
+ *  or closed, with its thread - the options and their descriptions, the answer and each ask's
+ *  answers, rewordings and replies, which the ask row and the facts of a focused ask draw - under
+ *  a key of its own beneath the plain read's (`["asks", key, "thread"]`), the one today's
+ *  Conversation tab reads the same request by, so every rule that refreshes the issue's asks
+ *  reaches it. Each reader of the outline's asks takes it from here, with how it is kept fresh
+ *  (`EVENT_FRESH`). */
+export const issueAskThreadsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["asks", key, "thread"],
+    queryFn: () => api.listIssueAskThreads(key, "all"),
   });
 
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own

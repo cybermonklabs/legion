@@ -1,48 +1,11 @@
 import { expect, type Page, type Request } from "@playwright/test";
 
-/** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
- *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
-export interface Traffic {
-  /** Path and query of each GET under `/api/` since the last `reset`. */
-  readonly gets: string[];
-  /** How many times `GET /api/v1/issues/<key>` (the full issue, not its summary) was sent. */
-  issueReads(key: string): number;
-  /** Whether no request has been in flight for `ms`. */
-  quietFor(ms: number): boolean;
-  reset(): void;
-}
-
-export function watchTraffic(page: Page): Traffic {
-  const gets: string[] = [];
-  const issueReads = new Map<string, number>();
-  const inFlight = new Set<Request>();
-  let lastSettledAt = Date.now();
-  page.on("request", (request) => {
-    inFlight.add(request);
-    const url = new URL(request.url());
-    if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
-    gets.push(`${url.pathname}${url.search}`);
-    const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];
-    if (issue !== undefined) {
-      const key = decodeURIComponent(issue);
-      issueReads.set(key, (issueReads.get(key) ?? 0) + 1);
-    }
-  });
-  const settle = (request: Request) => {
-    if (inFlight.delete(request)) lastSettledAt = Date.now();
-  };
-  page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
-  return {
-    gets,
-    issueReads: (key) => issueReads.get(key) ?? 0,
-    quietFor: (ms) => inFlight.size === 0 && Date.now() - lastSettledAt >= ms,
-    reset: () => {
-      gets.length = 0;
-    },
-  };
+/** Whether a request is the page's live socket: its path starts with `/ws/`. The socket stays open
+ *  for the page's whole life and is no read of the page, so no watcher of a page's requests holds
+ *  it in flight. In a CI trace the upgrade of a load's `GET /ws/live` (status 101) was reported as
+ *  a request that stayed open 29,998.5 ms, though every read had answered within 0.5 s. */
+export function isLiveSocket(url: URL): boolean {
+  return url.pathname.startsWith("/ws/");
 }
 
 /** One request under `/api/`, as `watchApiRequests` counts it. */
@@ -66,8 +29,9 @@ export interface RouteCount {
 export interface ApiRequests {
   /** The count per route, most sent first and then by route, so two runs print one order. */
   byRoute(): readonly RouteCount[];
-  /** Whether nothing at all has been in flight for `ms` - every request the page makes, not
-   *  only the ones counted here. This is how the recorded baseline measures one load
+  /** Whether nothing has been in flight for `ms` - every request the page makes but the live
+   *  socket's upgrade (`isLiveSocket`), not only the ones counted here. This is how the recorded
+   *  baseline measures one load
    *  ("between navigation and network idle
    *  (nothing in flight for 1500 ms)"), and why a caller polls it rather than Playwright's own
    *  `networkidle`, which calls a page idle after 500 ms and so stops counting before a read
@@ -109,9 +73,12 @@ export function watchApiRequests(page: Page): ApiRequests {
   const requests: ApiRequest[] = [];
   const inFlight = new Set<Request>();
   let lastSettledAt = Date.now();
+  // The request of a new document the main frame is loading, until that document commits.
+  let loading: Request | undefined;
   page.on("request", (request) => {
-    inFlight.add(request);
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) loading = request;
     const url = new URL(request.url());
+    if (!isLiveSocket(url)) inFlight.add(request);
     if (!url.pathname.startsWith("/api/")) return;
     requests.push({
       method: request.method(),
@@ -123,7 +90,22 @@ export function watchApiRequests(page: Page): ApiRequests {
     if (inFlight.delete(request)) lastSettledAt = Date.now();
   };
   page.on("requestfinished", settle);
-  page.on("requestfailed", settle);
+  // A document that fails to load never takes the page's place, so it settles nothing else.
+  page.on("requestfailed", (request) => {
+    if (request === loading) loading = undefined;
+    settle(request);
+  });
+  // A new document takes the page's place: a read the document it replaced still had in flight
+  // can no longer answer the page, and the browser may report neither its end nor its failure,
+  // so it is settled here, as Playwright's own idle wait drops it at a new document (a move to
+  // a fragment of the same document loads none, and drops nothing). Kept, it would hold the
+  // page from ever going quiet again.
+  page.on("framenavigated", (frame) => {
+    if (frame !== page.mainFrame() || loading === undefined) return;
+    const kept = loading;
+    loading = undefined;
+    for (const request of inFlight) if (request !== kept) settle(request);
+  });
   return {
     byRoute: () => {
       const counts = new Map<string, number>();

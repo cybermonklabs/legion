@@ -20,6 +20,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxCountBadge, inboxCountText } from "./inbox-threads";
 import { COMPONENT_MODEL, COMPONENT_REFERENCE, COMPONENT_REPO } from "./reference-surfaces";
 import { expect, type Page, type Request, test } from "./test";
+import { isLiveSocket } from "./traffic";
 import { asUser } from "./users";
 
 // INFRA-492: how many reads one open tab sends while other sessions write. As #2324 wrote it, the
@@ -32,8 +33,9 @@ const bob = { actor: { id: "bob", kind: "session" as const }, as: "agent" as con
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
- *  the page's live socket (`/ws/live`), which Playwright reports as a websocket and never as a
- *  request, so none of these counts it. */
+ *  the page's live socket (`/ws/live`). Playwright can report the socket's upgrade as a request
+ *  that stays in flight for as long as the socket is open, so a request whose path starts with
+ *  `/ws/` is left out of the requests in flight (`isLiveSocket`), and no count here holds it. */
 interface Traffic {
   /** Path and query of each GET under `/api/` since the last `reset`. */
   readonly gets: string[];
@@ -50,8 +52,8 @@ function watchTraffic(page: Page): Traffic {
   const inFlight = new Set<Request>();
   let lastSettledAt = Date.now();
   page.on("request", (request) => {
-    inFlight.add(request);
     const url = new URL(request.url());
+    if (!isLiveSocket(url)) inFlight.add(request);
     if (request.method() !== "GET" || !url.pathname.startsWith("/api/")) return;
     gets.push(`${url.pathname}${url.search}`);
     const issue = /^\/api\/v1\/issues\/([^/]+)$/.exec(url.pathname)?.[1];

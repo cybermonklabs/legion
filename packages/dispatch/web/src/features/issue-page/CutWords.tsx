@@ -4,14 +4,14 @@ import { MoreWords, useClamp } from "./NodeRow";
 import { FOCUSABLE, useOutOfTabOrder } from "./RowText";
 
 /**
- * A node's words as a filter's own body draws them, cut as the outline cuts an agent's words
+ * A node's words as a filter's own body draws them, cut as the rulings cut an agent's words
  * (the architect's rulings 1 and 6, the prototype's
  * `CUT_LINES`): at six lines where more than 20 words would be hidden, with "more · N words"
  * opening the rest in place, and whole while `whole` holds - the focused node, or one the
- * reader opened. The cut is measured by `NodeRow.tsx`'s `useClamp`, so a row of the outline and
- * a statement of the Spec or the Verification filter cut at one place.
+ * reader opened. The cut is measured by `NodeRow.tsx`'s `useClamp`, so a statement of the Spec
+ * and of the Verification filter cut at one place; a row of the outline cuts none (R11).
  *
- * The control leaves the focus where it is, as the outline's own does: focusing the node would
+ * The control leaves the focus where it is, as the outline's controls do: focusing the node would
  * draw the words whole under the pointer and move the control before the press ends. It and
  * every control the words hold are out of the tab order, as everything inside a row of the
  * outline is, unless `tabStops` holds: a view that no tree's keys reach keeps them in it, save

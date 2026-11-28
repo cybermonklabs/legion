@@ -1,13 +1,8 @@
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import {
-  artifactBlocksQuery,
-  issueCoverageQuery,
-  projectsQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { issueCoverageQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -36,16 +31,14 @@ import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
-import { changeDocumentIds } from "./decision-review";
 import { presetPath } from "./issue-address";
 import { statusGlyph, statusTone } from "./issue-status";
-import type { DocumentBlocks } from "./issue-tree";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
 import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
+import { useReadUnloadedPages, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
-import { issueCommentsQuery, treeDocumentIds } from "./useIssueTree";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
 /**
@@ -89,36 +82,19 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the decisions, the coverage's statements, the comments a Change is written
-  // as, and the blocks of each document the outline reads (`treeDocumentIds`) that a decision a
-  // Change can be asked of stands in (`changeDocumentIds`), which say which decision a Change's
-  // anchor belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s
-  // `EVENT_FRESH`): events refresh them, never their age (decision 180). Staleness is per
-  // observer, so each read here takes that rule too, and the count costs no request of its own
-  // (`waiting.ts`). Until a document's blocks answer the count reads the Changes anchored in it
-  // by their quotes, as `decision-review.ts` does with no blocks read; a Change in a document the
-  // outline does not read is read by its quote alone, as the tree places it.
+  // reader's login, the decisions, the coverage's statements, and the tree read, which the
+  // outline keeps fresh by its own rule (`TREE_FRESH`), whose decision nodes hang the Changes
+  // written on them and whose comments are the Changes of a decision it holds no node for - and
+  // kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
+  // refresh them, never their age. Staleness is per observer, so each read here
+  // takes that rule too, and the count costs no request of its own (`waiting.ts`). Until a
+  // decision's node is held the count reads the Changes asked of it by their quotes, as
+  // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
+  // read is read by its quote alone, as the tree places it.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
   const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
-  const comments = useQuery({
-    ...issueCommentsQuery(issue.key),
-    ...EVENT_FRESH,
-  });
-  const decided = changeDocumentIds(issue, decisions.data);
-  const decisionDocuments = treeDocumentIds(issue).filter((id) => decided.has(id));
-  // `combine` keeps one value for the documents' blocks, replaced only when a document's own read
-  // changes, as the outline's does (`useIssueTree`), so the count is not counted again each render.
-  const documents = useQueries({
-    combine: (answers): DocumentBlocks[] =>
-      answers.flatMap((answer, index) => {
-        const artifactId = decisionDocuments[index];
-        return artifactId === undefined || answer.data === undefined
-          ? []
-          : [{ artifactId, blocks: answer.data }];
-      }),
-    queries: decisionDocuments.map((id) => ({ ...artifactBlocksQuery(id), ...EVENT_FRESH })),
-  });
+  const tree = useTreeRead(issue).answer;
   const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
   const statements = useMemo(
     () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
@@ -131,11 +107,16 @@ export function IssuePropertiesRow({
         viewer,
         decisions.data,
         (reference) => statements.has(nodeIdOf(reference)),
-        comments.data,
-        documents
+        tree
       ),
-    [issue, viewer, decisions.data, statements, nodeIdOf, comments.data, documents]
+    [issue, viewer, decisions.data, statements, nodeIdOf, tree]
   );
+  // A decision whose Change may stand on a page the tree read has not loaded is left out of the
+  // count until that page is read (`waiting.ts`): the header reads the next pages and then the
+  // older comment pages once the stage's view has drawn (`useTellViewDrawn`), until each such
+  // Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the count is right
+  // on every view that holds an outline read.
+  useReadUnloadedPages(issue, () => waiting.unread > 0);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -169,7 +150,7 @@ export function IssuePropertiesRow({
   // document's chip. A press made on the filter already replaces its entry, so Back leaves the
   // filter rather than walking back through the presses.
   const goToWaiting = () => {
-    if (waiting.asks + waiting.decisions > 0) {
+    if (waiting.asks + waiting.decisions + waiting.mayWait > 0) {
       const press: WaitingPress = { waitingPress: performance.now() };
       const path = presetPath(issue.key, "decisions");
       navigate(path, { replace: pathname === path, state: press });
@@ -230,7 +211,7 @@ export function IssuePropertiesRow({
         variant="header"
       />
       <ChildrenProgress childIssues={issue.children ?? []} />
-      {waiting.total > 0 ? (
+      {waiting.total + waiting.mayWait > 0 ? (
         // The prototype's `.waitchip`: a control, because the reader acts on what it counts.
         <button
           className={`inline-flex shrink-0 items-center gap-1.5 rounded-full border px-2.5 text-xs leading-[22px] font-semibold ${pageWaitingChip} ${focusVisibleRing}`}
@@ -242,9 +223,16 @@ export function IssuePropertiesRow({
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
           {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
               the brackets and the number each took the gap and the count drew "Waiting on
-              you ( 2 )". */}
+              you ( 2 )". While a decision that may wait is marked (`waiting.mayWait`), the
+              number takes "+", as every count with more to read does (R15, decisions 580 and
+              583 (1)): "(1+)", or "(0+)" where only such decisions may wait. */}
           <span>
-            {PROPERTY_LABELS.waiting_on_you} (<span {...authorText}>{waiting.total}</span>)
+            {PROPERTY_LABELS.waiting_on_you} (
+            <span {...authorText}>
+              {waiting.total}
+              {waiting.mayWait > 0 ? "+" : ""}
+            </span>
+            )
           </span>
         </button>
       ) : agentsTurn > 0 && knowsWhoseTurn ? (
@@ -323,7 +311,11 @@ const MOST_SEGMENTS = 12;
  * bar filled to the share done. That keeps the line of a large root - 24 children, a gated step
  * waiting on the reader, 20 labels - inside the header's height limits.
  */
-function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] }): ReactNode {
+export function ChildrenProgress({
+  childIssues,
+}: {
+  childIssues: readonly IssueChild[];
+}): ReactNode {
   if (childIssues.length === 0) return null;
   const done = childIssues.filter((child) => child.status === "done").length;
   const subtree = childIssues.reduce(

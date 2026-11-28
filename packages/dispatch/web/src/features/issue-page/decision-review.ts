@@ -1,6 +1,9 @@
 import type {
+  Actor,
+  Anchor,
   Artifact,
   Comment,
+  CommentWithTrees,
   DecisionEntry,
   DisplayTree,
   IssueDecisions,
@@ -14,14 +17,18 @@ import { parseNodeReference } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { DocumentBlocks } from "./issue-tree";
 import { storedReading } from "./stored-reading";
+import { nextTreeCursor, olderCommentsBefore, splitPosition } from "./tree-read/comment-positions";
+import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
 
 /**
  * Which of an issue's decisions wait for the reader's review, and which a reader asked to
  * change.
  *
- * This module is pure and imports no code of the tree, only the type of a document's blocks, so
- * the tree (`tree-drafts.ts`), the Decisions filter and the header's count of what waits on the
- * reader (`waiting.ts`) read one rule each and cannot disagree.
+ * This module is pure and imports no code of the tree, only the types of a document's blocks and
+ * of the tree read and the read's own page positions (`tree-read/comment-positions.ts`), so the
+ * tree (`issue-tree.ts`, `tree-read/tree-nodes.ts`), the Decisions filter
+ * (`decisions-filter/decisions-parts.ts`) and the header's count of what waits on the reader
+ * (`waiting.ts`) read one rule each and cannot disagree.
  *
  * An agent's decision is a `decision` block of one of the issue's documents, the spec's or
  * another's (`decisionread`): the decisions read's entry for it (`DecisionEntry`) names it by that
@@ -31,34 +38,113 @@ import { storedReading } from "./stored-reading";
  * (`isPersonDecision`): no Change is written on it, and it is on no review list.
  *
  * A Change is a comment of the issue anchored to the decision's own words in the document its
- * block stands in (`features/issue/DecisionsPanel.tsx`'s Change composer writes it so);
+ * block stands in (`DecisionActions.tsx`'s Change composer writes it so);
  * `changeAnchor` gives the quote and the occurrence it is written with, counted over that
  * document's own reading, so it lands on the decision's first block that is no heading though
  * another decision, or the document's text around it, holds the same words. The decisions read
- * holds no state for it. So the page reads it from the comments it already reads: every comment
- * a person anchored inside a decision's block, on that decision's words, since that decision
- * last changed is a change they asked for, and is drawn under it (`decisionChangeComments`); the
- * newest is the change the decision waits on (`decisionChanges`). The decision then waits on its
- * agent, not on the reader: it says it was changed, and it leaves the review list and every count
- * of what waits on the reader. Once the agent edits the decision, every change is older than its
- * words and the decision waits for review again. A change its author deleted is no longer asked
- * for: it stays drawn under the decision, as the deleted line (`tree-drafts.ts`'s `addTurns`), but
- * no decision waits on it (`decisionChanges`), so a decision whose every change was deleted waits
- * for review again.
+ * holds no state for it. So the page reads it from the comments the tree read answers: every
+ * comment a person anchored inside a decision's block, on that decision's words, since that
+ * decision last changed is a change they asked for, and is drawn under it
+ * (`decisionChangeComments`); the newest is the change the decision waits on (`decisionChanges`).
+ * The decision then waits on its agent, not on the reader: it says it was changed, and it leaves
+ * the review list and every count of what waits on the reader. Once the agent edits the
+ * decision, every change is older than its words and the decision waits for review again. A
+ * change its author deleted is no longer asked for: it stays drawn under the decision, as the
+ * deleted line (`tree-drafts.ts`'s `addTurns`), but no decision waits on it (`decisionChanges`),
+ * so a decision whose every change was deleted waits for review again.
  *
  * What a decision's block holds is every block of its document whose markdown range lies inside
  * the decision's own (`ArtifactBlock.from`, `to`), the decision's block itself among them, in the
  * document's blocks (`DocumentBlocks`). The block an anchor was written in (`Anchor.block_id`) is
  * the lowest block holding the quote that carries an id (`pmdoc.BlockIDForRange`), so it names
  * the decision: the quote alone cannot, since two decisions can hold the same words.
+ *
+ * A decision node of the tree read is placed by the read, and so is its Change: a comment
+ * anchored inside the decision's words hangs under its node, so its Changes are the comments a
+ * person wrote that the read hangs under it, made since it last changed and was last kept
+ * (`decisionNodeChanges`), and no quote is matched for it. A decision the read holds no node
+ * for is found by the decision's block that holds the anchor's block where its document's blocks
+ * are given, and by its words alone where they are not. The Decisions filter
+ * (`decisions-entries.ts`) reads the blocks of the spec, the plan and the Verification document,
+ * each where its decisions stand in it, so it finds such a decision there by its block once they
+ * answer, and one of any other document by its words alone; the outline and the header's count
+ * read no document's blocks, so they find it by its words alone: the change is then the first
+ * decision's whose words hold the quote.
  */
 
 /** The fields of a comment this module reads, and when its author last edited it, which the
- *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). */
-export type ChangeComment = Pick<
-  Comment,
-  "anchor" | "author" | "body" | "created_at" | "deleted_at" | "edited_at" | "id"
->;
+ *  Decisions view draws a Change with (`decisions-parts.ts`'s `DecisionChange`). A comment the
+ *  tree read answers carries its author's marks only where they are set (`treeComments`): an
+ *  absent mark is none, as the contract's node declares it - "not deleted" or "not edited". */
+export type ChangeComment = Pick<Comment, "anchor" | "author" | "body" | "created_at" | "id"> &
+  Partial<Pick<Comment, "deleted_at" | "edited_at">>;
+
+/** A comment as the tree read answers it (`treeComments`): the fields a Change is found and drawn
+ *  by, the server's reading of its words, and who deleted it, where the read answers that. */
+export type TreeComment = ChangeComment &
+  Pick<CommentWithTrees, "body_tree"> &
+  Partial<Pick<Comment, "deleted_by">>;
+
+/** No comment: the same empty list on every call. */
+const NO_COMMENTS: readonly TreeComment[] = [];
+
+/** The author of a comment node the read names none for, which is no person's, so it is no
+ *  Change (`decisionChangeComments`). */
+const NO_AUTHOR: Actor = { id: "", kind: "" };
+
+/** The comments of each answer `treeComments` has read, one list per answer, held by the answer
+ *  and gone with it. */
+const commentsOfAnswer = new WeakMap<TreeAnswer, readonly TreeComment[]>();
+
+/**
+ * The comments the tree read's `answer` holds, every page of it merged: each comment node, with
+ * its document anchor (none for a comment on a node, which no quote is matched in), its first
+ * author, its words and the server's reading of them, when it was made, and what its author did
+ * to it (`edited_at`, `deleted_at`, `deleted_by`, `TreeAnswerNode`). The answer holds every comment
+ * the page draws and every comment on the text of a node it returns, so the outline's post marks
+ * and Changes (`tree-read/tree-nodes.ts`, `tree-drafts.ts`' `addDecisions`), the header's count
+ * (`waiting.ts`) and the Decisions filter (`decisions-filter/decisions-entries.ts`) read the
+ * comments from it and the page reads no comment list of its own. One list for each answer, so
+ * every one of them reads the same list.
+ */
+export function treeComments(answer: TreeAnswer | undefined): readonly TreeComment[] {
+  if (answer === undefined) return NO_COMMENTS;
+  const held = commentsOfAnswer.get(answer);
+  if (held !== undefined) return held;
+  const comments: TreeComment[] = [];
+  const nodes: readonly TreeAnswerNode[] = answer.nodes ?? [];
+  for (const node of nodes) {
+    if (node.supertag !== "comment") continue;
+    comments.push({
+      anchor: documentAnchor(node.anchor),
+      author: node.author?.[0] ?? NO_AUTHOR,
+      body: node.text,
+      ...(node.text_tree === undefined ? {} : { body_tree: node.text_tree }),
+      created_at: node.made_at ?? "",
+      // An answer leaves out a mark that is none: the post was not edited, or not deleted.
+      ...(node.deleted_at === undefined ? {} : { deleted_at: node.deleted_at }),
+      ...(node.deleted_by === undefined ? {} : { deleted_by: node.deleted_by }),
+      ...(node.edited_at === undefined ? {} : { edited_at: node.edited_at }),
+      id: node.id,
+    });
+  }
+  commentsOfAnswer.set(answer, comments);
+  return comments;
+}
+
+/** A comment node's anchor as a comment's (`Anchor`) where it is in a document, and none where it
+ *  is on a node or where there is none. */
+function documentAnchor(anchor: TreeAnswerNode["anchor"]): Anchor | null {
+  if (anchor?.artifact_id === undefined) return null;
+  return {
+    artifact_id: anchor.artifact_id,
+    block_id: anchor.block_id ?? null,
+    mark_id: anchor.mark_id ?? "",
+    orphaned: anchor.orphaned,
+    quote: anchor.quote,
+    version: anchor.version ?? 0,
+  };
+}
 
 /** The fields of a decision this module reads: an entry of the decisions read. */
 type ChangedDecision = Pick<
@@ -83,9 +169,10 @@ export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"
  * requirement the coverage read holds: a caller passes `coverageStatements(issue, coverage)`
  * (`tree-drafts.ts`), not the rows' `isStatement` (`issue-tree.ts`).
  *
- * It is the one rule that decides the list, so the count of what waits on the reader (R13), the
- * filter's "to review" signal and the node's own `waiting` read it too and cannot disagree with
- * the list.
+ * It is the one rule that decides the list. The list holds a decision whose Change may stand on a
+ * page the tree read has not loaded (`tree-drafts.ts`' `changeUnread`, the mark its state
+ * carries), which waits on no reader until that page is read, so whether an entry of the list
+ * waits on the reader is `waitsOnReader`'s to say.
  */
 export function inReviewList(
   decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
@@ -102,6 +189,30 @@ export function inReviewList(
 }
 
 /**
+ * Whether `decision` waits on the reader: it is an entry of the review list (`inReviewList`, with
+ * `isCoverageStatement` and `changed` as there), and it carries no mark of a Change on a page the
+ * tree read has not loaded (`unread`, `tree-drafts.ts`' `changeUnread`). It is the one rule that
+ * every reader of what waits reads, so none can disagree with another: the node's own `waiting`
+ * (`tree-drafts.ts`' `addDecisions`, `tree-read/tree-nodes.ts`' `draftDecision`), the header's
+ * count (`waiting.ts`) and the count of the Decisions view's review list
+ * (`decisions-filter/decisions-parts.ts`' `reviewWaiting`).
+ */
+export function waitsOnReader(
+  decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
+  isCoverageStatement: (reference: string) => boolean,
+  changed: boolean,
+  unread: boolean
+): boolean {
+  return !unread && inReviewList(decision, isCoverageStatement, changed);
+}
+
+/** A decision's own words and its own reading (`decisionContent`). */
+export interface DecisionContent {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
+/**
  * What `decision` says: the decisions read answers a decision's text as its one `decision` block
  * (`decisionread`'s words, the block rendered alone) and the server's reading of it as that
  * block's (`DecisionEntry.text_tree`), so its own words are that text with the lines that open and
@@ -110,10 +221,9 @@ export function inReviewList(
  * its own already. `tree` is absent where the read sent no reading. Every reader of a decision's
  * words reads them here: the tree's node (`tree-drafts.ts`) and a Change's quote (`anchorQuote`).
  */
-export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tree">): {
-  readonly text: string;
-  readonly tree?: DisplayTree;
-} {
+export function decisionContent(
+  decision: Pick<DecisionEntry, "text" | "text_tree">
+): DecisionContent {
   const text = ownWords(decision.text);
   const tree = ownTree(decision.text_tree);
   return tree === undefined ? { text } : { text, tree };
@@ -178,9 +288,14 @@ function changeableByDocument(
 
 /**
  * The documents a Change of one of the issue's decisions can be anchored in
- * (`changeableByDocument`). A caller reads the blocks of those of them the tree reads, which name
- * the decision whose block holds a Change's anchor (`decisionChangeComments`): the header's count
- * and the Decisions filter read them so, and the tree reads them all.
+ * (`changeableByDocument`). Until part U only the Decisions filter reads the blocks of any of
+ * them (part Q's seam, `decisions-filter/decisions-entries.ts`): those of the spec, the plan and
+ * the Verification document, where they are among them, which name the decision whose block
+ * holds a Change's anchor (`decisionChangeComments`); a Change in any other is matched by its
+ * quote alone.
+ * The outline and the header's count read no block of a document to match a Change (R3): each
+ * takes it from the comment the tree read hangs under a decision node, and for a decision the
+ * tree holds no node of, by the quote alone.
  */
 export function changeDocumentIds(
   issue: DecisionDocuments,
@@ -205,14 +320,171 @@ export function decisionBlockId(
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }
 
+/** The block id the tree read names `node` by: a typed block's own (`block_id`), else the node's
+ *  id, which names a node that is no block. */
+export function blockIdOfNode(node: Pick<TreeAnswerNode, "block_id" | "id">): string {
+  return node.block_id ?? node.id;
+}
+
+/**
+ * The decision node of the tree read each decision of the decisions read is, by the decision's
+ * address (`DecisionEntry.ref`): a decision node of this issue whose block id (`block_id`) is the
+ * decision's block (`decisionBlockId`), in the document the entry names
+ * (`DecisionEntry.document`), or the one its address names where it names none, wherever the node
+ * names its document. Two documents can each hold a decision block of one id, and each is a
+ * decision of its own, so the other document's is not this decision's node. A node that names no
+ * `document` - a block of a document that plays no part, of the issue's own tree, or of a role
+ * document whose place the read does not list - is an entry's node only where it is the node the
+ * entry names (`DecisionEntry.node`), since two such nodes can hold one block id. A decision no
+ * node is is not held: a section of the decisions document a server of the release before
+ * answers, or a person's decision, which is the answered ask.
+ */
+export function decisionNodes(
+  decisions: readonly Pick<DecisionEntry, "document" | "node" | "ref">[],
+  tree: TreeAnswer | undefined
+): ReadonlyMap<string, TreeAnswerNode> {
+  const nodes = new Map<string, TreeAnswerNode[]>();
+  for (const node of tree?.nodes ?? []) {
+    if (node.supertag !== "decision" || node.issue !== undefined) continue;
+    const block = blockIdOfNode(node);
+    const same = nodes.get(block);
+    if (same === undefined) nodes.set(block, [node]);
+    else same.push(node);
+  }
+  const held = new Map<string, TreeAnswerNode>();
+  for (const decision of decisions) {
+    const block = decisionBlockId(decision);
+    if (block === undefined) continue;
+    const artifact = decision.document?.artifact_id;
+    const route = parseNodeReference(decision.ref);
+    const slug = route?.kind === "artifact" ? route.slug : undefined;
+    const node = nodes
+      .get(block)
+      ?.find((one) =>
+        one.document === undefined
+          ? one.kind === decision.node.kind && one.id === decision.node.id
+          : artifact === undefined
+            ? one.document.slug === slug
+            : one.document.artifact_id === artifact
+      );
+    if (node !== undefined) held.set(decision.ref, node);
+  }
+  return held;
+}
+
+/**
+ * Each Change of a decision node, by the comment's node, to the decision node it changes: every
+ * comment whose first maker - the first of the authors the read lists for it - is a person, that
+ * the read hangs under a decision node that was not replaced, made after the decision last
+ * changed and after it was last kept, as the node's `decision` answers both. The node a comment
+ * hangs under is the one its `parent` names by the outline's rule (`parentsIn`). An agent's
+ * comment under it is no Change, and neither is one older than its words, which asked for a
+ * change the words have since had, nor one the read records no time for.
+ */
+function nodeChangeComments(tree: TreeAnswer | undefined): Map<TreeAnswerNode, TreeAnswerNode> {
+  const changes = new Map<TreeAnswerNode, TreeAnswerNode>();
+  for (const [node, parent] of parentsIn(tree?.nodes ?? [])) {
+    if (
+      parent.supertag === "decision" &&
+      parent.decision?.replaced !== true &&
+      node.supertag === "comment" &&
+      node.author?.[0]?.kind === "user" &&
+      node.made_at !== null &&
+      after(node.made_at, parent.decision ?? {})
+    ) {
+      changes.set(node, parent);
+    }
+  }
+  return changes;
+}
+
+/**
+ * The node each node of `order` hangs under: the nearest node before it in `order` that its
+ * `parent` names, since a parent comes before its children; else the first node of that id,
+ * among `first` where the caller hands it, else among `order`. The outline places a node by this
+ * rule (`tree-read/tree-nodes.ts`), so a Change is the comment the outline draws under its
+ * decision: it walks the answer in an order of its own, and hands the answer's first node of
+ * each id.
+ */
+export function parentsIn(
+  order: readonly TreeAnswerNode[],
+  first: ReadonlyMap<string, TreeAnswerNode> = firstOfEachId(order)
+): Map<TreeAnswerNode, TreeAnswerNode> {
+  const parents = new Map<TreeAnswerNode, TreeAnswerNode>();
+  const latest = new Map<string, TreeAnswerNode>();
+  for (const node of order) {
+    const parent =
+      node.parent === null ? undefined : (latest.get(node.parent.id) ?? first.get(node.parent.id));
+    if (parent !== undefined) parents.set(node, parent);
+    latest.set(node.id, node);
+  }
+  return parents;
+}
+
+/** Each node of `nodes` by its id, the first where two share one: the node of an id `parentsIn`
+ *  falls back to, and the one the outline looks a read id up by (`tree-read/tree-nodes.ts`). */
+export function firstOfEachId(nodes: readonly TreeAnswerNode[]): Map<string, TreeAnswerNode> {
+  const first = new Map<string, TreeAnswerNode>();
+  for (const node of nodes) {
+    if (!first.has(node.id)) first.set(node.id, node);
+  }
+  return first;
+}
+
+/**
+ * The Change each decision node waits on, by the id `idOf` gives the node: the newest of the
+ * Changes the read hangs under it (`nodeChangeComments`) that its author has not deleted
+ * (`deleted`, the comments the answer marks deleted, `treeComments`: the read answers a deleted
+ * comment with no body). A deleted Change keeps its place under the decision, as the
+ * read puts it, and asks nothing any more, as `decisionChanges` has it for a Change found by its
+ * quote. The outline (`tree-read/tree-nodes.ts`) names each node by its tree id
+ * (`treeIdOfNode`), so two decision nodes of one block id in two documents are two decisions
+ * there; a caller that names no id reads the node's own id in the read. The outline and the
+ * header's count (`waiting.ts`, through `decisionChangeComments`) read this one rule.
+ */
+export function decisionNodeChanges(
+  answer: TreeAnswer,
+  idOf: (node: TreeAnswerNode) => string = (node) => node.id,
+  deleted: ReadonlySet<string> = NO_DELETED
+): ReadonlyMap<string, TreeAnswerNode> {
+  const changes = new Map<string, TreeAnswerNode>();
+  for (const [comment, decision] of nodeChangeComments(answer)) {
+    if (deleted.has(comment.id)) continue;
+    const id = idOf(decision);
+    const held = changes.get(id);
+    // Every Change holds a time (`nodeChangeComments`).
+    if (held === undefined || compareTimestamps(comment.made_at ?? "", held.made_at ?? "") > 0) {
+      changes.set(id, comment);
+    }
+  }
+  return changes;
+}
+
+/** No comment is known deleted: the same empty set on every call. */
+const NO_DELETED: ReadonlySet<string> = new Set();
+
+/** The ids of the comments among `comments` that their author deleted (`postDeletion`): the
+ *  Changes that ask nothing any more, whichever way a Change is found. */
+export function deletedPostIds(
+  comments: readonly Pick<ChangeComment, "deleted_at" | "id">[] | undefined
+): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const comment of comments ?? []) {
+    if (postDeletion(comment) !== null) ids.add(comment.id);
+  }
+  return ids.size === 0 ? NO_DELETED : ids;
+}
+
 /**
  * Each change a person asked of a decision, by the comment's id, to the decision's own address
- * (`DecisionEntry.ref`): every comment a person wrote, anchored in the document a decision's block
- * stands in (`decisionDocumentId`) on the words of the decision whose block holds the anchor's
- * block (`sectionsOf`), made after the decision last changed and after it was last kept. A
- * decision that was replaced takes no change: nothing waits on it any longer. A quote is matched
- * against the decision's words as the server matches quotes (`pmdoc.FindQuote`), on its text and
- * not its markdown: the words of its own reading (`decisionWords`).
+ * (`DecisionEntry.ref`). A decision a node of the tree read holds (`decisionNodes`) takes the
+ * Changes the read hangs under that node (`nodeChangeComments`). Any other takes every comment a
+ * person wrote, anchored in the document a decision's block stands in (`decisionDocumentId`) on
+ * the words of the decision whose block holds the anchor's block (`sectionsOf`), made after the
+ * decision last changed and after it was last kept. A decision that was replaced takes no change:
+ * nothing waits on it any longer. A quote is matched against the decision's words as the server
+ * matches quotes (`pmdoc.FindQuote`), on its text and not its markdown: the words of its own
+ * reading (`decisionWords`).
  *
  * The decision is read from `documents`, the blocks of the issue's documents the page has read.
  * Only where the anchor stores no block, or that document's blocks are not read or do not hold
@@ -225,16 +497,26 @@ export function decisionChangeComments(
   decisions: Pick<IssueDecisions, "entries"> | undefined,
   comments: readonly ChangeComment[] | undefined,
   issue: DecisionDocuments,
-  documents: readonly DocumentBlocks[] | undefined
+  documents: readonly DocumentBlocks[] | undefined,
+  tree?: TreeAnswer
 ): ReadonlyMap<string, string> {
   const changes = new Map<string, string>();
+  const standing = (decisions?.entries ?? []).filter((row) => !row.replaced);
+  const onNodes = decisionNodes(standing, tree);
+  const byNode = new Map([...onNodes].map(([ref, node]) => [node, ref]));
+  for (const [comment, node] of nodeChangeComments(tree)) {
+    const ref = byNode.get(node);
+    if (ref !== undefined) changes.set(comment.id, ref);
+  }
+  // Every decision that stands is a node, so no quote is matched for any.
+  if (standing.every((row) => onNodes.has(row.ref))) return changes;
   const byDocument = changeableByDocument(issue, decisions);
   // A decision's whole words as a quote is matched against them (`decisionWords`), for each one a
-  // change can be asked of.
+  // change can be asked of by a quote: none a node of the tree read holds.
   const words = new Map(
     [...byDocument.values()]
       .flat()
-      .filter((row) => !row.replaced)
+      .filter((row) => !row.replaced && !onNodes.has(row.ref))
       .map((row) => [row.ref, flat(decisionWords(row))])
   );
   if (words.size === 0) return changes;
@@ -513,10 +795,38 @@ function flat(text: string): string {
   return text.replace(/\s+/gu, " ").trim();
 }
 
-/** Whether a comment made at `at` is newer than the decision's words and its last Keep. */
-function after(at: string, row: ChangedDecision): boolean {
+/** Whether a comment made at `at` is newer than the decision's words and its last Keep: a row of
+ *  the decisions read, or a decision node's `decision`, which answers both by the same names. */
+function after(at: string, row: Partial<Pick<DecisionEntry, "changed_at" | "kept">>): boolean {
   const since = [row.changed_at, row.kept?.kept_at].filter(
     (moment): moment is string => typeof moment === "string"
   );
   return since.every((moment) => compareTimestamps(at, moment) > 0);
+}
+
+/**
+ * Whether a Change of `decision` may stand on a page of the tree read that its `answer` does not
+ * hold. While the read holds no answer it has loaded no page, so any Change may stand on one: a
+ * decision with no Change held then waits on no reader, and no count counts it, until the read
+ * answers (decision 578 (2)). The read pages its walk (`cursor`,
+ * `tree-read/comment-positions.ts`' `nextTreeCursor`), and a comment may stand anywhere in it, so
+ * while the answer names a next page any Change may stand there: a decision node's, which the
+ * read hangs under the node, after it in the walk, and the Change of a decision the read holds no
+ * node for, found by its quote. The read pages the issue's comments too, the newest first, and an
+ * answer with an older page names where it starts (`comments_before`, `<made_at>,<id>` of the
+ * oldest comment it holds, `olderCommentsBefore`). A Change is newer than the decision's words
+ * and its last Keep (`after`), so a comment older than the oldest held can be one only where that
+ * oldest comment is newer than both. A decision drawn with no Change it may have then carries the
+ * page's mark of a count with more to read (`tree-drafts.ts`' `markChangeUnread`), rather than
+ * reading as unchanged; one whose Change the answer holds draws that Change, and no mark
+ * (`changeUnread`).
+ */
+export function changeMayBeUnloaded(
+  decision: Partial<Pick<DecisionEntry, "changed_at" | "kept">>,
+  answer: TreeAnswer | undefined
+): boolean {
+  if (answer === undefined) return true;
+  if (nextTreeCursor(answer) !== undefined) return true;
+  const before = olderCommentsBefore(answer);
+  return before !== undefined && after(splitPosition(before)[0], decision);
 }

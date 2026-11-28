@@ -11,6 +11,7 @@ import { TAB_STOP_ROW } from "../tree-focus";
 import { useIssueKeymap } from "../useIssueKeymap";
 import { FAILED_READ_RETRY, FailedReadLine } from "./failed-read-line";
 import { ViewStage } from "./stage";
+import { spyOnBoxes } from "./stage-fixtures";
 
 // A failed read's line, as each view drawn in the stage is to draw it. The views here are
 // stand-ins that draw the lines over a tree the way a view is to: each view's own slot is to be
@@ -195,6 +196,30 @@ test("a read that names its failures says each again while its line stays drawn,
   }
 });
 
+// A screen reader says an alert as it is drawn, so a line that stands again for a failure it
+// already said is drawn with no live role: its words and its Retry are drawn as ever. A line
+// drawn with nothing said of it speaks.
+test("a line drawn not to speak carries no live role, and draws its words and Retry", () => {
+  const words = "Couldn't read the statements.";
+  const view = render(
+    <FailedReadLine message={words} onRetry={() => undefined} retrying={false} speaks={false} />
+  );
+  try {
+    expect(view.queryByRole("alert"), "a line drawn not to speak spoke").toBeNull();
+    const line = view.getByText(words);
+    expect(line, "a line drawn not to speak carries a live role").not.toHaveAttribute("role");
+    expect(line, "a line drawn not to speak is a live region").not.toHaveAttribute("aria-live");
+    expect(view.getByRole("button", { name: "Retry" }), "no Retry was drawn").toBeInTheDocument();
+    view.rerender(<FailedReadLine message={words} onRetry={() => undefined} retrying={false} />);
+    expect(view.getByText(words), "a line drawn as ever does not speak").toHaveAttribute(
+      "role",
+      "alert"
+    );
+  } finally {
+    view.unmount();
+  }
+});
+
 /** How a read of `TwoReadsView` stands. */
 type Stands = "failed" | "out" | "answered";
 
@@ -289,6 +314,92 @@ test("a failed read's line that leaves with the focus in it gives the focus to w
     );
   } finally {
     again.unmount();
+  }
+});
+
+// A view's reads are refused in any order, and the view draws their lines in an order of its
+// own: a line drawn above the one whose Retry the stage gave the focus takes the focus, so it
+// rests on the view's first line, as where that line had been drawn first. A focus the reader
+// moved elsewhere stays there.
+test("a failed read's line drawn above the Retry the stage gave the focus takes the focus, unless the reader moved it", async () => {
+  const drawn = (statements: Stands, results: Stands) => (
+    <ViewStage>
+      <TwoReadsView results={results} statements={statements} />
+    </ViewStage>
+  );
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  const view = render(drawn("out", "failed"));
+  try {
+    const results = view.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    view.rerender(drawn("failed", "failed"));
+    const [statements] = view.getAllByRole("button", { name: "Retry" });
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the statements' line drawn above the results' left the focus on the results' Retry"
+      ).toBe(statements)
+    );
+  } finally {
+    view.unmount();
+  }
+
+  const control = document.createElement("button");
+  document.body.append(control);
+  (document.activeElement as HTMLElement | null)?.blur();
+  const moved = render(drawn("out", "failed"));
+  try {
+    const results = moved.getByRole("button", { name: "Retry" });
+    await waitFor(() => expect(document.activeElement).toBe(results));
+    await act(async () => control.focus());
+    moved.rerender(drawn("failed", "failed"));
+    await frames(2);
+    expect(
+      document.activeElement,
+      "the statements' line drawn above took the focus the reader had moved off the Retry"
+    ).toBe(control);
+  } finally {
+    moved.unmount();
+    control.remove();
+  }
+});
+
+// The frame after the stage's take gives the focus back where nothing holds it then, as where the
+// app's main element took it at a page change. A line drawn above the Retry the take chose before
+// that frame took the focus to its own Retry, so the frame gives it back there, to the view's
+// first line, and not to the Retry the take chose. The frame comes after the draw's microtasks,
+// so the case waits on no frame or timer until the app's main element holds the focus.
+test("a failed read's line drawn above the Retry the stage gave the focus gets the focus back from the frame after the take", async () => {
+  const drawn = (statements: Stands) => (
+    <main tabIndex={-1}>
+      <ViewStage>
+        <TwoReadsView results="failed" statements={statements} />
+      </ViewStage>
+    </main>
+  );
+
+  (document.activeElement as HTMLElement | null)?.blur();
+  const page = render(drawn("out"));
+  try {
+    const results = page.getByRole("button", { name: "Retry" });
+    expect(document.activeElement, "the stage gave the results' Retry no focus").toBe(results);
+    page.rerender(drawn("failed"));
+    // The stage's observer of the view's lines runs as a microtask of the draw.
+    await Promise.resolve();
+    const [statements] = page.getAllByRole("button", { name: "Retry" });
+    expect(
+      document.activeElement,
+      "the statements' line drawn above the results' left the focus on the results' Retry"
+    ).toBe(statements);
+    act(() => page.getByRole("main").focus());
+    await frames(1);
+    expect(
+      document.activeElement,
+      "the frame after the take gave the focus to the results' Retry, below the view's first line"
+    ).toBe(statements);
+  } finally {
+    page.unmount();
   }
 });
 
@@ -468,9 +579,7 @@ test("the chord that opens a view with no row reaches its failed read's Retry fr
 // box is given, 100 px above the screen, and every other box is empty.
 test("the chord that opens a view with no row brings its failed read's Retry on screen in the next frame", async () => {
   const user = userEvent.setup();
-  const boxes = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (
-    this: HTMLElement
-  ) {
+  const boxes = spyOnBoxes(function (this: HTMLElement) {
     return this.matches(FAILED_READ_RETRY) ? new DOMRect(0, -100, 80, 24) : new DOMRect();
   });
   const scrolled = spyOn(window, "scrollBy").mockImplementation(() => {});

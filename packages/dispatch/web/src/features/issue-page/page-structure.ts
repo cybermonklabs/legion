@@ -154,7 +154,6 @@ export const KEY_REPORTS = freeze({
   first_row: "This is the first row.",
   last_row: "This is the last row.",
   nothing_under: "Nothing is under this row.",
-  parent_zoomed: "The tree is already zoomed to this row's parent.",
   already_zoomed: "The tree is already zoomed to this row.",
   editor_closed: "This row's editor could not open.",
   /** The zoom-out key, and Left on a row whose parent is the issue, the whole issue drawn. */

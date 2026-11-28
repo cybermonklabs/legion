@@ -1,4 +1,13 @@
-import { createContext, type ReactNode, useCallback, useContext, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useState,
+  useSyncExternalStore,
+} from "react";
+
+import { createHeld, type Held } from "./held-value";
 
 /**
  * What the room of each of the issue's documents last admitted the page to, by the document's
@@ -9,10 +18,11 @@ import { createContext, type ReactNode, useCallback, useContext, useState } from
  * a page whose build's schema is out of date (`doc/connection.ts`'s `onAdmission`), and then no
  * block of that document takes typing. The page hears it only from a room, and the one room it
  * opens is the editor of the document a row is being edited in (`StagedDocument.tsx`), which
- * reports each admission its room makes here. The outline's rows read it (`TreeRows.tsx`,
- * through `useNodeEditing.ts`'s `nodeEditable`), so every row of a document its room admitted
- * read-only drops the cue that it takes typing, not only the row holding the editor. An admission
- * stands after its editor has closed, until a room of that document answers again.
+ * reports each admission its room makes here. Each row reads its own document's read-only state
+ * (`useDocumentReadOnly`, `NodeRow.tsx`), so every row of a document its room admitted read-only
+ * drops the cue that it takes typing, while an admission to write - the common case when an
+ * editor first connects - changes no row's state and draws nothing again. An admission stands
+ * after its editor has closed, until a room of that document answers again.
  */
 export type DocumentAdmissions = ReadonlyMap<string, boolean>;
 
@@ -23,8 +33,11 @@ export type ReportAdmission = (artifactId: string, readOnly: boolean) => void;
 /** Outside a `DocumentAdmissionProvider` no room's admission is held, and every row follows
  *  Enter's rule alone: what a unit test that mounts the tree on its own gets. */
 const NO_ADMISSIONS: DocumentAdmissions = new Map();
+const NO_STORE: Held<DocumentAdmissions> = createHeld<DocumentAdmissions>(NO_ADMISSIONS);
 
-const AdmissionsContext = createContext<DocumentAdmissions>(NO_ADMISSIONS);
+/** The admissions store itself, whose identity never changes for the provider's life, so a report
+ *  draws only readers whose own slice of the map changed. */
+const AdmissionsStoreContext = createContext<Held<DocumentAdmissions>>(NO_STORE);
 
 /** The report alone, in a context of its own whose value never changes, so the editor that
  *  reports is drawn again for no admission. */
@@ -35,27 +48,39 @@ const ReportAdmissionContext = createContext<ReportAdmission>(() => {});
  * the body, whose rows read it and whose row editor reports to it.
  */
 export function DocumentAdmissionProvider({ children }: { children: ReactNode }): ReactNode {
-  const [admissions, setAdmissions] = useState<DocumentAdmissions>(NO_ADMISSIONS);
-  // An admission that says what the document's entry already says hands back the same map, which
-  // React draws nothing again for: the rows that read it are drawn again only when a document's
-  // admission changes.
+  const [store] = useState<Held<DocumentAdmissions>>(() => createHeld(NO_ADMISSIONS));
+  // An admission that says what the document's entry already says keeps the same map, which tells
+  // no reader.
   const report = useCallback<ReportAdmission>(
-    (artifactId, readOnly) =>
-      setAdmissions((held) =>
-        held.get(artifactId) === readOnly ? held : new Map(held).set(artifactId, readOnly)
-      ),
-    []
+    (artifactId, readOnly) => {
+      const current = store.get();
+      if (current.get(artifactId) === readOnly) return;
+      store.set(new Map(current).set(artifactId, readOnly));
+    },
+    [store]
   );
   return (
     <ReportAdmissionContext.Provider value={report}>
-      <AdmissionsContext.Provider value={admissions}>{children}</AdmissionsContext.Provider>
+      <AdmissionsStoreContext.Provider value={store}>{children}</AdmissionsStoreContext.Provider>
     </ReportAdmissionContext.Provider>
   );
 }
 
 /** Each document's admission, held by the nearest `DocumentAdmissionProvider`. */
 export function useDocumentAdmissions(): DocumentAdmissions {
-  return useContext(AdmissionsContext);
+  const store = useContext(AdmissionsStoreContext);
+  return useSyncExternalStore(store.subscribe, store.get);
+}
+
+/** Whether the room of `artifactId` last admitted the page read-only: false while no room has
+ *  answered or while it admitted writes, so a first write admission changes no row's value and
+ *  draws nothing again. */
+export function useDocumentReadOnly(artifactId: string | undefined): boolean {
+  const store = useContext(AdmissionsStoreContext);
+  return useSyncExternalStore(
+    store.subscribe,
+    () => artifactId !== undefined && store.get().get(artifactId) === true
+  );
 }
 
 /** The nearest `DocumentAdmissionProvider`'s report, the same function for the page's whole

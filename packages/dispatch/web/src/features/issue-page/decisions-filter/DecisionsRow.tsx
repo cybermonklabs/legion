@@ -1,4 +1,4 @@
-import { type ReactNode, useRef, useState } from "react";
+import { type ReactNode, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
 import type { Actor, Artifact } from "../../../api/types";
@@ -27,6 +27,7 @@ import {
   NodeOptions,
   RowActs,
   RowMargin,
+  rowNameIds,
   type Tone,
   useClamp,
   useRowOnScreen,
@@ -57,6 +58,13 @@ interface RowPerson {
   readonly reader: boolean;
 }
 
+/** A statement's name as the body names it (`DecisionsFilterBody.tsx`'s `statementNames`): the
+ *  words its line draws, cut to a chip's room, and its whole words, which the line's title holds. */
+export interface StatementName {
+  readonly name: string;
+  readonly title: string;
+}
+
 /**
  * One row of the Decisions filter, drawn as the prototype's `.dcard` is: "outline lines, the
  * same as the conversation's".
@@ -64,8 +72,8 @@ interface RowPerson {
  * It is a row of the outline, laid out by the outline's own classes (`NODE_ROW_LAYOUT`) and
  * read by the same marks (`[data-node-row]`, `[data-node-content]`, `[data-node-margin]`): its
  * bullet in its kind's colour, its words first, and its kind as one tag, who made it and when
- * on one line, at the right end of the first line from 761 px up and under the words on a
- * phone, with how it stands under them.
+ * on one line, at the right end of the first line at every width, with how it stands under
+ * them.
  *
  * An ask draws what its row in the conversation draws, by the same parts: its question, cut at
  * six lines once it is answered, its options, which are the choices of its answer while it is
@@ -151,9 +159,9 @@ export function DecisionsRow({
   report?: string;
   /** Whether this decision is an entry of the review list, which draws Keep and Change. */
   review: boolean;
-  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`),
-   *  drawn as it is; a statement whose name is `""` is not named. */
-  statementNames: ReadonlyMap<string, string>;
+  /** Each statement's name by its node id, as the body names it (`DecisionsFilterBody.tsx`). A
+   *  statement the map holds no name for is not named yet. */
+  statementNames: ReadonlyMap<string, StatementName>;
   /** Whether this row is the list's one tab stop. */
   tabStop: boolean;
   /** The thread whose newest write this row draws, which a dwell on the row marks read. */
@@ -177,6 +185,7 @@ export function DecisionsRow({
   // Where the reader writes: an open question's options and Answer set it (R16).
   const writer = useOutlineWriter();
   const press = useRowOnScreen(row, focused);
+  const ids = rowNameIds(useId());
   // An answered question and an agent's decision are cut at six lines, as an agent's words are
   // on every row; a question that waits on the reader and a decision that waits for their
   // review are drawn whole, since they are what the reader is asked to read (rulings 1 and 6).
@@ -192,14 +201,18 @@ export function DecisionsRow({
   const [opened, setOpened] = useState(false);
   const clamped = clamp !== undefined && !opened && !body;
   const tone = toneOf(entry);
-  // Each statement the entry shaped by its name, and none whose node holds no words: no
-  // address, slug or id is drawn in a statement's place (R22).
-  const statements = entry.shapes.flatMap((shape) => {
-    const name = statementNames.get(shape.id) ?? "";
-    return name === "" ? [] : [{ name, shape }];
-  });
+  // Each statement the entry shaped, by its name once the page holds it, and none of its address,
+  // slug or id in a statement's place (R22). Each has a line of its own from the first drawing -
+  // one its page has not read yet among them (decision 579) - so the row's height is known from
+  // the decisions read's ties before any name comes, and the names, or a statement's page,
+  // landing move no row (decision 583 (2), amended).
+  const statements = entry.shapes.map((shape) => ({
+    named: statementNames.get(shape.id),
+    shape,
+  }));
   return (
     <div
+      aria-labelledby={ids.labelledBy}
       aria-level={level}
       className="relative my-0.5 min-w-0 outline-none"
       data-node-context={entry.kind === "named" ? "" : undefined}
@@ -220,7 +233,30 @@ export function DecisionsRow({
             className={`block size-[7px] rounded-full ${pageKindBullet[tone]}`}
           />
         </span>
-        <div className={NODE_ROW_LAYOUT.content} data-node-content="">
+        {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
+            state: the token of the one reading `entryStanding` gives the row and the panel alike.
+            So a decision shows its standing with the reader, not the tree's state, and "Kept
+            by" with the keeper this list holds. A decision waits on the reader where it is an
+            entry of the review list, which draws its state in the decisions' violet: one rule
+            decides the list, and a second decides the mark on a row. An ask waits as the
+            conversation says. The node an address names stands in no state here and is drawn
+            for its context: in its grey, with no reader's ink on its author, and a child issue
+            by its key, as the outline's row draws one. It stands before the words, as the
+            outline's does, and the row's name reads it after them (`rowNameIds`). */}
+        <RowMargin
+          author={author}
+          context={tone === "context"}
+          id={ids.margin}
+          node={{
+            ...node,
+            keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
+            state: standing?.token,
+            waiting: entry.kind === "decision" ? review : node.waiting,
+          }}
+          tabStops={false}
+          tone={tone}
+        />
+        <div className={NODE_ROW_LAYOUT.content} data-node-content="" id={ids.content}>
           {/* A replaced decision's words are struck through and grey, beside the word that
               says so (the prototype's `.replaced`). */}
           <div
@@ -275,39 +311,48 @@ export function DecisionsRow({
           )}
           {entry.parent === undefined ? null : <EntryParentLine parent={entry.parent} />}
           {statements.length === 0 ? null : (
-            <p
-              className={`flex min-w-0 flex-wrap items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
+            // One line, 20 px, for each statement, whether its name has come or not: what does
+            // not fit is cut with an ellipsis, its whole words in the link's title, so no line
+            // wraps and no name of a later statement is hidden behind an earlier one.
+            <div
+              className={`flex min-w-0 items-baseline gap-x-2 text-xs leading-5 ${pageQuietText}`}
               data-decision-informs=""
             >
               <span className="shrink-0" {...pageChrome}>
                 {DECISIONS_WORDS.informs}
               </span>
-              {statements.map(({ name, shape }) => (
-                <span
-                  className="min-w-0 break-words"
-                  data-decision-statement={shape.id}
-                  key={shape.id}
-                >
-                  {/* A sentence about the statement, so a colon sets it apart from the
-                      statement's own words. */}
-                  {shape.stale ? (
-                    <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span>
-                  ) : null}
-                  {shape.path === undefined ? (
-                    <span {...authorText}>{name}</span>
-                  ) : (
-                    <Link
-                      className={`dispatch-inline-link font-semibold hover:underline ${pageKindTag.statement}`}
-                      tabIndex={-1}
-                      to={shape.path}
-                      {...authorText}
-                    >
-                      {name}
-                    </Link>
-                  )}
-                </span>
-              ))}
-            </p>
+              <span className="flex min-w-0 flex-col">
+                {statements.map(({ named, shape }) => (
+                  <span
+                    className="block h-5 min-w-0 truncate"
+                    data-decision-line=""
+                    data-decision-statement={shape.id}
+                    key={shape.id}
+                  >
+                    {/* A sentence about the statement, so a colon sets it apart from the
+                        statement's own words. */}
+                    {shape.stale ? (
+                      <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span>
+                    ) : null}
+                    {named === undefined || named.name === "" ? null : shape.path === undefined ? (
+                      <span title={named.title} {...authorText}>
+                        {named.name}
+                      </span>
+                    ) : (
+                      <Link
+                        className={`dispatch-inline-link font-semibold hover:underline ${pageKindTag.statement}`}
+                        tabIndex={-1}
+                        title={named.title}
+                        to={shape.path}
+                        {...authorText}
+                      >
+                        {named.name}
+                      </Link>
+                    )}
+                  </span>
+                ))}
+              </span>
+            </div>
           )}
           {/* Keep and Change on one line with the entry's link (the prototype's `.dbtns`); the
               form Change opens, and what a refused write says, take a line of their own. A
@@ -347,8 +392,8 @@ export function DecisionsRow({
               </Link>
             )}
           </div>
-          {/* What the focus adds to the row, as the outline's body adds it (`NodeRow.tsx`'s
-              `NodeBody`), for a decision as for an ask: who made the node where the margin does
+          {/* What the focus adds to the row, as the outline's face draws it (`NodeRow.tsx`'s
+              `NodeFace`), for a decision as for an ask: who made the node where the margin does
               not say it whole - "Author unknown", with its own shape, where the model holds no
               author, and an agent's whole session title where the margin names it by its role's
               word alone (ruling 5) - and the control that keeps the body open (R6). The open
@@ -378,27 +423,6 @@ export function DecisionsRow({
             </p>
           )}
         </div>
-        {/* The outline's own margin (`NodeRow.tsx`), given how the entry stands as its node's
-            state: the token of the one reading `entryStanding` gives the row and the panel alike.
-            So a decision shows its standing with the reader, not the tree's state, and "Kept
-            by" with the keeper this list holds. A decision waits on the reader where it is an
-            entry of the review list, which draws its state in the decisions' violet: one rule
-            decides the list, and a second decides the mark on a row. An ask waits as the
-            conversation says. The node an address names stands in no state here and is drawn
-            for its context: in its grey, with no reader's ink on its author, and a child issue
-            by its key, as the outline's row draws one. */}
-        <RowMargin
-          author={author}
-          context={tone === "context"}
-          node={{
-            ...node,
-            keptBy: entry.kind === "decision" ? entry.keptBy : undefined,
-            state: standing?.token,
-            waiting: entry.kind === "decision" ? review : node.waiting,
-          }}
-          tabStops={false}
-          tone={tone}
-        />
         {threadRead === undefined ? null : <ThreadReadMark mark={threadRead} />}
       </div>
     </div>

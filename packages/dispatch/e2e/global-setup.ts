@@ -242,7 +242,7 @@ export default async function globalSetup(config: FullConfig): Promise<void> {
   // whatever else is wrong with it.
   await refuseMissingBrowsers(config.filteredProjects);
   // `config.workers` is this run's resolved worker count, a `--workers` on the command line
-  // included, and under `--shard` it is this process's own.
+  // included, and on a shard leg it is this process's own.
   const count = config.workers;
   const stacks = await startStacks(count);
   // Every worker inherits what this writes (Playwright carries the environment `globalSetup`

@@ -49,7 +49,7 @@ import { type ItemLanding, type ItemRoute, isItemRoute, useItemLanding } from ".
 export function IssuePage(): ReactNode {
   const { pathname, search } = useLocation();
   const route = parseIssuePath(pathname, search);
-  if (route === undefined) {
+  if (route === undefined || route.kind === "graph") {
     return <NotFoundPage />;
   }
   // key={route.key}: switching to a different issue remounts IssueDetail

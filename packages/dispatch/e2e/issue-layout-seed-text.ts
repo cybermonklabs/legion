@@ -31,6 +31,9 @@ export const SUMMARY_BLOCK_ID = "summary";
  *  issue's open question. */
 export const OPEN_QUESTION_BLOCK_ID = "q-open";
 
+/** The block id of the question whose answer shaped three statements. */
+export const ANSWERED_QUESTION_BLOCK_ID = "q-addresses";
+
 /** How a seeded check's newest result stands, in the words `NODE_STATE_WORDS.check` draws
  *  (`web/src/features/issue-page/page-words.ts`), plus `no-control`: a pass of an after-merge
  *  check that records no negative control, which reads `passed` on the page and draws no gap -
@@ -138,8 +141,8 @@ interface SeededDecision {
 
 /** The decisions a seeded spec holds, in document order, the last one replaced. Each is the
  *  planner's `decision` block of the spec's `## Decisions` part, a node of the store, whose facts
- *  are its block's attributes (`SeededDecision`); its words still name what it shaped and the ask
- *  it settles, as a reader would write them. */
+ *  are its block's attributes (`SeededDecision`). Its words name the blocks it shaped or the
+ *  ask it settles; the ask carries its own ties. */
 function seededDecisions(options: { askRef: string; issueKey: string }): SeededDecision[] {
   const block = (index: number) => specBlockRef(options.issueKey, requirementBlockId(index));
   return [
@@ -149,10 +152,10 @@ function seededDecisions(options: { askRef: string; issueKey: string }): SeededD
       shaped: [block(1), block(2)],
     },
     {
-      body: `Decided in ${options.askRef}. Shapes ${block(3)}, ${block(4)} and ${block(5)}.`,
+      body: `Decided in ${options.askRef}.`,
       fromAsk: true,
       heading: "Keep every address the old page answered",
-      shaped: [block(3), block(4), block(5)],
+      shaped: [],
     },
     {
       body: "A reader who never finds the newest question would change this.",
@@ -186,8 +189,13 @@ function seededDecisions(options: { askRef: string; issueKey: string }): SeededD
 
 /** The words that close decision `index`'s block of a seeded spec: the last of its words, which
  *  hold no line break, so a caret at the block's end stands after them. */
-export function decisionClosingWords(issueKey: string, index: number): string {
-  return seededDecisions({ askRef: "", issueKey })[index - 1]?.body.split(". ").at(-1) ?? "";
+export function decisionClosingWords(
+  issueKey: string,
+  index: number,
+  answeredAskId: string
+): string {
+  const askRef = `dispatch://${issueKey}/ask/${answeredAskId}`;
+  return seededDecisions({ askRef, issueKey })[index - 1]?.body.split(". ").at(-1) ?? "";
 }
 
 /** The spec's `## Decisions` part holding the first `count` seeded decisions, each a `decision`
@@ -227,7 +235,15 @@ At which width does the identity block condense?
 :::`;
 }
 
-/** The issue's spec: its three sentences, its requirements, and the `ask` block the server
+/** The question the planner adds once it can name the statements the answer shaped. */
+export function answeredQuestionBlock(issueKey: string): string {
+  const shaped = [3, 4, 5].map((index) => specBlockRef(issueKey, requirementBlockId(index)));
+  return `:::ask{#${ANSWERED_QUESTION_BLOCK_ID} urgency="high" shaped="${shaped.join(" ")}"}
+Which addresses must the new page still answer?
+:::`;
+}
+
+/** The issue's initial spec: its three sentences, its requirements, and the `ask` block the server
  *  indexes into an open question two levels below the issue (issue, document, block). */
 export function specDocument(options: {
   openQuestion: boolean;

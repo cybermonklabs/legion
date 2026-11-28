@@ -28,10 +28,11 @@ import {
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
 import { focusOnDocument } from "../../shell/roving";
+import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
 import { documentOfNode } from "../issue-artifacts";
-import { chipName, type TreeNode } from "../issue-tree";
+import type { TreeNode } from "../issue-tree";
 import type { OutlineReads } from "../outline-reads";
 import { useTakeOutlineRequest } from "../outline-request";
 import { threadMarks } from "../outline-thread-read";
@@ -51,14 +52,16 @@ import { focusIsLoose } from "../tree-focus";
 import type { DrawnRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import { useTreeKeymap } from "../useTreeKeymap";
-import { DecisionsRow } from "./DecisionsRow";
+import { DecisionsRow, type StatementName } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
   conversationPath,
   DECISIONS_PART_ORDER,
   type DecisionsEntry,
   type DecisionsPart,
+  mayWaitOrder,
   type NamedEntry,
+  reviewWaiting,
   waitingOrder,
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
@@ -200,13 +203,15 @@ export function DecisionsFilterBody({
   view: TreeNode;
   /** The press of the header's count of what waits on the reader that turned this filter on
    *  (`waiting.ts`'s `waitingPressOf`): each press puts the focus on the next thing that waits,
-   *  in the filter's order (R13, the tester's F12). */
+   *  in the filter's order (R13, the tester's F12), or where nothing waits on the next decision
+   *  that may wait once its page is read. The slot hands it over only once the reads the tree is
+   *  built from have settled (`slots/view-decisions.tsx`), so a press is taken once, at the first
+   *  render where the entries and the tree they are drawn from are held, and never later. */
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
-  );
+  const { entriesHeld, failures, parts, readsHeld, retry, retrying, unreadable, writeUps } =
+    useDecisionsEntries({ issue, reader, root, view });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
@@ -217,19 +222,26 @@ export function DecisionsFilterBody({
   // the line the names store projects beside its name from the reading the page published for
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
-  // does, as a chip draws nothing until its name comes. A statement drawn under two parents is
-  // one node, so its first placement in the page's reading order names it.
+  // does, as a chip draws nothing until its name comes. Each statement is named by its address
+  // (`ShapedStatement.reference`), so one the tree holds no node for yet - its page is not read
+  // yet (decision 579) - is named as one it holds; one statement shaped by two entries is named
+  // once. Beside its name goes its whole line, the title of the link its line draws, which cuts
+  // the name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
-  const statementNames = useMemo<ReadonlyMap<string, string>>(() => {
-    const names = new Map<string, string>();
-    for (const node of nodesInOrder(root)) {
-      const reference = node.type === "requirement" ? node.reference : undefined;
-      if (reference === undefined || names.has(node.id)) continue;
-      const line = lines.get(reference);
-      if (line !== undefined) names.set(node.id, chipName(parseNodeReference(reference), line));
+  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
+    const names = new Map<string, StatementName>();
+    for (const part of DECISIONS_PART_ORDER) {
+      for (const { shapes } of parts[part]) {
+        for (const { id, reference } of shapes) {
+          const line = lines.get(reference);
+          if (line !== undefined && !names.has(id)) {
+            names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
+          }
+        }
+      }
     }
     return names;
-  }, [lines, root]);
+  }, [lines, parts]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -386,22 +398,32 @@ export function DecisionsFilterBody({
 
   // The header's count of what waits on the reader puts the focus on a thing that waits, in
   // this filter's order: each open question whose turn is the reader's, then each decision of
-  // the review list (R13). Each press goes to the next of them after the one the last press
-  // went to, and round to the first again, so a reader works down what waits with the one
-  // control (the tester's F12). The reads that hold it may still be out when the press lands,
-  // so the press is taken once the list holds something that waits.
+  // the review list that waits (R13). Each press goes to the next of them after the one the last
+  // press went to, and round to the first again, so a reader works down what waits with the one
+  // control (the tester's F12). The count may show only decisions that may wait, its "+" with
+  // nothing before it: where nothing waits, a press goes the same way through the decisions of
+  // the review list that carry the mark of a Change on a page not read yet, which the "+" counts
+  // (`mayWaitOrder`), and where there is none of those either it goes nowhere. The reads that
+  // hold the entries and the tree read they are drawn from may still be out when the press
+  // lands, so it waits for them: the slot hands it over once the tree's reads have settled
+  // (`slots/view-decisions.tsx`), and it is taken in the first render that holds the entries too
+  // (`entriesHeld`), wherever it lands then, or nowhere. It is never taken later: a press that
+  // waited for something to wait would move the focus long after, whatever the reader had done
+  // since.
   const pressed = useRef<number | undefined>(undefined);
   const went = useRef<string | undefined>(undefined);
   const waiting = useMemo(() => waitingOrder(parts), [parts]);
+  const waitingInReview = useMemo(() => reviewWaiting(parts).length, [parts]);
   useEffect(() => {
-    if (waitingPress === undefined || waitingPress === pressed.current) return;
-    if (waiting.length === 0) return;
+    if (waitingPress === undefined || waitingPress === pressed.current || !entriesHeld) return;
     pressed.current = waitingPress;
-    const next = waiting[(waiting.indexOf(went.current ?? "") + 1) % waiting.length];
+    const order = waiting.length > 0 ? waiting : mayWaitOrder(parts);
+    if (order.length === 0) return;
+    const next = order[(order.indexOf(went.current ?? "") + 1) % order.length];
     if (next === undefined) return;
     went.current = next;
     goTo(next);
-  }, [goTo, waiting, waitingPress]);
+  }, [entriesHeld, goTo, parts, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
@@ -716,7 +738,6 @@ export function DecisionsFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
-    onOpenDeeper: NOTHING,
     // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
     // pins a row by its node's id, as the row's own control does.
     onPin: (rowKey) => {
@@ -726,7 +747,6 @@ export function DecisionsFilterBody({
     onReport: reportHere,
     onReveal: goToOrOpen,
     onZoom: NOTHING,
-    oneNodeAtATime: false,
     readsHeld,
     rows,
     root: keyOrder,
@@ -859,8 +879,9 @@ export function DecisionsFilterBody({
               role="group"
             >
               {/* The part's heading (the prototype's `.dgh`): its name and how many entries
-                  it holds. Its name is the group's; a tree holds rows and groups alone, so it
-                  is no element with a role of its own. */}
+                  it holds, the review list's those that wait on the reader (`reviewWaiting`).
+                  Its name is the group's; a tree holds rows and groups alone, so it is no
+                  element with a role of its own. */}
               <div
                 className="mt-[22px] mb-1 flex min-w-0 items-baseline gap-2.5 max-[761px]:mt-[18px]"
                 data-decisions-heading=""
@@ -877,7 +898,7 @@ export function DecisionsFilterBody({
                   data-decisions-count=""
                   {...authorText}
                 >
-                  {entries.length}
+                  {part === "review" ? waitingInReview : entries.length}
                 </span>
               </div>
               {entries.map((entry) => rowFor(entry, part))}

@@ -2,6 +2,7 @@ import type {
   Actor,
   Artifact,
   AskResolutionWithTrees,
+  Comment,
   Decision,
   DecisionEntry,
   DecisionLink,
@@ -10,6 +11,8 @@ import type {
 } from "../../../api/types";
 import type { TreeNode } from "../issue-tree";
 import type { NodeType } from "../page-words";
+import { markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import type { TreeAnswer } from "../tree-read/tree-read";
 import type { DecisionsAsk } from "./decisions-parts";
 
 /**
@@ -60,6 +63,11 @@ export function artifact(id: string, slug: string, primary = false): Artifact {
 /** The issue's spec, whose `decision` blocks are the agent's decisions: the document a Keep is
  *  written against and a Change is anchored in. */
 export const SPEC_DOCUMENT = artifact("artifact-spec", SPEC_SLUG, true);
+
+/** The slug of a decisions document an earlier release stored, and that document: what the
+ *  Decisions and Spec views' cases of decisions as sections of it read (parts Q and J). */
+export const DECISIONS_SLUG = "decisions-md";
+export const DECISIONS_DOCUMENT = artifact("artifact-decisions", DECISIONS_SLUG);
 
 /** The issue, with its spec and no decisions document, which is all the addressing rule reads
  *  of it. */
@@ -271,7 +279,8 @@ export function personDecision(id: string, partial: Partial<Decision> = {}): Dec
 }
 
 /** The entry the decisions read answers beside `row` (`api/decisions.go`'s `decisionEntry`): an
- *  agent's decision by the block node of `spec`, the issue's spec, that holds it, with the asks its
+ *  agent's decision by the block node of `spec`, the issue's spec, that holds it - named as the
+ *  tree read names a block of that document (`tree-fixtures.ts`' `treeNode`) - with the asks its
  *  `from_ask` settles, a person's by the ask's own node, and each member the node holds none of
  *  null. Its `decided_by` is the row's where the case names one, else the server's for the node:
  *  the person who answered an ask, by the `person` kind the server names a person with, and the
@@ -306,7 +315,9 @@ export function entryOf(row: MadeDecision, spec: SpecDocument = SPEC_DOCUMENT): 
     kept_text_sum: row.kept === null ? null : row.text_sha256,
     kind: row.kind,
     multiple: null,
-    node: person ? { id: row.asks?.[0] ?? "", kind: "ask" } : { id: block, kind: "block" },
+    node: person
+      ? { id: row.asks?.[0] ?? "", kind: "ask" }
+      : { id: `${KEY}/${spec.slug}#${row.block_id}`, kind: "block" },
     options: null,
     question: person ? row.heading : null,
     readings: [],
@@ -346,4 +357,15 @@ export function decisionsRead(
     entries: made.map((row) => entryOf(row, spec)),
     open_questions: [],
   };
+}
+
+/** Conversation's tree read of the issue holding `comments` under the issue and nothing else, as
+ *  the read hangs a comment of a decision it holds no node for: each Change is found by its
+ *  quote, with its author's corrections as the read answers them on its node, and as a correction
+ *  writes them into the answer the cache holds (`api/corrected-post.ts`). */
+export function commentsTree(comments: readonly Comment[]): TreeAnswer {
+  return treeAnswer([
+    treeNode(KEY, "issue", null),
+    ...comments.map((comment) => markedCommentNode(comment, KEY)),
+  ]);
 }

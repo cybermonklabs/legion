@@ -1,18 +1,34 @@
-import { type ReactNode, type RefObject, useCallback, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
+import type { IssueDetails } from "../../../api/types";
 import { focusOnDocument } from "../../shell/roving";
+import { ChildrenSection } from "../children-section";
+import { ThreeThingsAbove } from "../contents-frame";
 import { DocumentStages } from "../document-stage";
 import { bringOnScreen } from "../identity-block";
 import { issueAddress } from "../issue-address";
+import { useReadsSettled } from "../outline-reads";
 import type { Preset } from "../page-words";
 import type { SlotProps } from "../slot-props";
 import { focusIsLoose, TAB_STOP_ROW } from "../tree-focus";
+import { useTellViewDrawn, type ViewDrawnTeller } from "../tree-read/tree-read";
+import { ViewReadProvider } from "../tree-read/view-read";
 import { BodySlot, ReaderActsWatch } from "./body";
 import { FAILED_READ_RETRY, FailedLineLeaves } from "./failed-read-line";
-import { useFollowing } from "./following";
+import { useDroppedAddress, useFollowing } from "./following";
 import { ViewDecisionsSlot } from "./view-decisions";
+import { LandsItself, useLandsItself, ViewGraphSlot } from "./view-graph";
 import { ViewPlanSlot } from "./view-plan";
 import { ViewSpecSlot } from "./view-spec";
 import { ViewVerificationSlot } from "./view-verification";
@@ -50,6 +66,21 @@ import { ViewVerificationSlot } from "./view-verification";
  * the row being edited in takes onto its own stage (`document-stage.tsx`). The outline is drawn
  * in a stage's box as a view is (`StageBox`), so a failed read's line over its tree gives the
  * focus back as it leaves.
+ *
+ * Below 1024 px, where no Contents pane holds them, the issue's three sentences stand above the
+ * slot (`contents-frame.tsx`'s `ThreeThingsAbove`), but under the Spec view, whose own first
+ * group draws them (R13).
+ *
+ * Above the slot, after those sentences, stand the issue's children, a section of their own that
+ * opens and closes (`children-section.tsx`), in every view that draws an outline read (R14).
+ *
+ * The stage tells the page once its view has drawn its first drawing from its reads, painted
+ * (`useTellViewDrawn`): its first row, which the box the slot is drawn in watches for
+ * (`StageBox`), or, where it draws none once every read it draws from has answered
+ * (`useReadsSettled`), what it draws in their place - the line that the issue holds nothing, a
+ * refused read's line, the Decisions view's folded foot. Until then the page reads none of the
+ * pages the outline read has not loaded (`useReadUnloadedPages`), whatever frame another surface
+ * draws first, the header's included (decision 578 (2)).
  */
 export function StageSlot({
   filled = SLOT_FILLED,
@@ -101,25 +132,67 @@ export function StageSlot({
   const swapped = undrawn?.following === following;
   const outline = beside && (!filled[preset] || swapped);
   const View = outline ? undefined : views[preset];
+  // Graph's slot draws the outline (`view-graph.tsx`), whose own landing puts the focus on the
+  // node an address beside it names: the view stage is told so (`LandsItself`), and waits on that
+  // landing for the first focus, which it takes itself once the address has lost the node
+  // (`ViewStage`).
+  const landsItself = beside && preset === "graph";
+  const dropped = useDroppedAddress();
+  // The view's first drawing from its reads (`useTellViewDrawn`): its first row, which the box it
+  // is drawn in tells (`StageBox`), or, once every read it draws from has answered, what it draws
+  // then, in the frame after (`TellWhenSettled`).
+  const viewDrawn = useTellViewDrawn(props.issue.key);
   return (
-    <DocumentStages>
-      <ReaderActsWatch into={acts} key={following} />
-      {View === undefined ? (
-        <StageBox>
-          <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
-        </StageBox>
-      ) : (
-        <ViewStage box={viewBox} key={preset}>
-          <View {...props} onAddressDrawn={onAddressDrawn} />
-        </ViewStage>
-      )}
-    </DocumentStages>
+    <ViewReadProvider issue={props.issue} preset={preset}>
+      <FirstRowDrawn.Provider value={viewDrawn}>
+        <DocumentStages>
+          <ReaderActsWatch into={acts} key={following} />
+          {/* Below 1024 px, the issue's three sentences above the slot's first row (R13). */}
+          <ThreeThingsAbove {...props} view={View !== undefined} />
+          {/* The issue's children, above the slot's first row (R14). */}
+          <ChildrenSection {...props} />
+          {View === undefined ? (
+            <StageBox>
+              <BodySlot {...props} acts={swapped && undrawn.viewsFocus ? undefined : acts} />
+            </StageBox>
+          ) : (
+            <LandsItself.Provider value={landsItself}>
+              <ViewStage box={viewBox} dropped={dropped} key={preset}>
+                <View {...props} acts={acts} onAddressDrawn={onAddressDrawn} />
+              </ViewStage>
+            </LandsItself.Provider>
+          )}
+        </DocumentStages>
+        <TellWhenSettled issue={props.issue} preset={preset} tell={viewDrawn.tell} />
+      </FirstRowDrawn.Provider>
+    </ViewReadProvider>
   );
+}
+
+/** Tells the stage's mark that its view has drawn (`useTellViewDrawn`) in the frame after every
+ *  read the view draws from has answered (`useReadsSettled`): where the view draws no row, what it
+ *  draws then in their place is its first drawing. It draws nothing itself, so as those reads
+ *  change - each refetch, each page merged - it alone is drawn again, and not the stage. */
+function TellWhenSettled({
+  issue,
+  preset,
+  tell,
+}: {
+  issue: IssueDetails;
+  preset: Preset;
+  tell: () => void;
+}): null {
+  const settled = useReadsSettled(issue, preset);
+  useEffect(() => (settled ? afterPaint(tell) : undefined), [settled, tell]);
+  return null;
 }
 
 /** What the stage hands the view it draws in place of the outline: the slot's own props, and
  *  how the view tells the stage whether its tree draws the node the address names. */
 export interface ViewSlotProps extends SlotProps {
+  /** The reader's acts since the address was followed (`ReaderActsWatch`, keyed on the
+   *  following): a controller their first act aborts, which a view's landing reads. */
+  readonly acts?: RefObject<AbortController | undefined>;
   /**
    * Tells the stage whether the view's tree draws the node the address names (`drawn`). The
    * stage takes the first call of each following of the address (`useFollowing`) that names a
@@ -141,6 +214,8 @@ export type ViewSlots = Readonly<Record<Preset, ((props: ViewSlotProps) => React
 export const VIEW_SLOTS: ViewSlots = {
   conversation: undefined,
   decisions: ViewDecisionsSlot,
+  // Graph draws Graph's read whole as one outline, through the outline's own rows (R10).
+  graph: ViewGraphSlot,
   plan: ViewPlanSlot,
   spec: ViewSpecSlot,
   verification: ViewVerificationSlot,
@@ -153,12 +228,16 @@ export type SlotsFilled = Readonly<Record<Preset, boolean>>;
  *  address naming a node beside it draws the outline (`StageSlot`). Each view's part sets its
  *  entry here when it fills its slot; from then the address is that view's, which is to land on
  *  its tab stop or the row its tree draws for the node, and to tell the stage where it draws none
- *  (`ViewSlotProps.onAddressDrawn`): the stage then draws the outline in the view's place. */
+ *  (`ViewSlotProps.onAddressDrawn`): the stage then draws the outline in the view's place. Each
+ *  of the four views draws its own tree here (`view-spec.tsx`, `view-plan.tsx`,
+ *  `view-verification.tsx`, `view-decisions.tsx`), so each is filled. */
 export const SLOT_FILLED: SlotsFilled = {
   conversation: true,
   decisions: true,
+  // Graph draws its tree here too (`view-graph.tsx`), so it is filled.
+  graph: true,
   plan: true,
-  spec: false,
+  spec: true,
   verification: true,
 };
 
@@ -175,7 +254,11 @@ const SLOT_TREE = '[role="tree"]';
  * page itself, or on an element that holds the stage, as the app's main element does when a
  * view's address is opened from another page - so a reader who pressed a control keeps it there,
  * and once it is taken this does nothing more for that view until the view's tree itself takes
- * the focus.
+ * the focus, but for one thing: a view's reads are refused in any order, and a view draws its
+ * lines in an order of its own, so a line it draws above the Retry the focus was given to, while
+ * the focus still rests on that Retry, takes the focus to its own Retry. The focus then rests on
+ * the first line the view draws, as where that line had been drawn first. A focus that moves
+ * anywhere else, or a tab-stop row drawn, ends that.
  *
  * The chord that opens a view (`t` then the view's key) reaches the stage through the view's
  * tree: where the tree draws no tab-stop row the chord focuses the tree itself (`reachPart`,
@@ -191,17 +274,41 @@ const SLOT_TREE = '[role="tree"]';
  * A failed read's line that leaves the page with the focus in it gives the focus back as every
  * stage's box does (`StageBox`), and the view draws its own measure. The stage draws one for each
  * view, keyed on it, so a view turned on is a new one, which takes the focus once.
+ *
+ * A view whose tree lands on the node the address names itself - Graph's, which draws the
+ * outline (`view-graph.tsx`), on an address naming a node - is drawn under `LandsItself` set so
+ * by `StageSlot`, and the stage waits on that landing rather than take the focus: the landing
+ * puts the focus on the node's row in the frame after it draws the row, and reads a focus the
+ * stage gave the tab stop before then as somebody else's, which it leaves there, so the address
+ * would land on the tree's first row. The take is done once something holds the focus - the
+ * node's row, or a control the reader pressed. Where the address loses its node first - the body
+ * replaces an address whose node no read holds with the address without it (`addressView`) - the
+ * stage takes no focus at that address, which names no id the reader asked for
+ * (`DROPPED_ADDRESS`): the page opens there with the focus on no row, since the tree's first row
+ * is not the node the address named (decision 553 (1)). A focus on the tree itself still starts
+ * the take, as below.
  */
 export function ViewStage({
   box: given,
   children,
+  dropped: droppedNow = false,
 }: {
   /** The box's element, for a caller that reads it too (`StageSlot`); else the stage's own. */
   box?: RefObject<HTMLDivElement | null>;
   children: ReactNode;
+  /** Whether the address is one the body opened in place of one it dropped
+   *  (`DROPPED_ADDRESS`), where the stage takes no focus; never, where none is given. */
+  dropped?: boolean;
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  // Whether the view lands on the address's node itself (`LandsItself`), as the stage last drew
+  // it: the take runs from an effect of the stage's first draw, and reads it whenever it runs.
+  const landsItself = useRef(false);
+  landsItself.current = useLandsItself();
+  // Whether the address is one the body dropped, as the stage last drew it, read the same way.
+  const dropped = useRef(false);
+  dropped.current = droppedNow;
   useEffect(() => {
     const stage = box.current;
     if (stage === null) return;
@@ -223,6 +330,35 @@ export function ViewStage({
       if (bring) focusOn(to);
       else to.focus({ preventScroll: true });
     };
+    // The Retry the take gave the focus to, while the focus rests there or nothing holds it: a
+    // line the view draws above it later takes the focus to its own Retry (`firstLine`), so the
+    // focus rests on the first line the view draws. Undefined once the focus moved anywhere else,
+    // or the view drew a tab-stop row, and while the take gave the focus to no Retry.
+    let held: HTMLElement | undefined;
+    const release = (): void => {
+      held = undefined;
+      firstLine.disconnect();
+    };
+    const firstLine = new MutationObserver(() => {
+      if (held === undefined) return;
+      if (
+        stage.querySelector(TAB_STOP_ROW) !== null ||
+        (document.activeElement !== held && !focusIsLoose(stage))
+      ) {
+        release();
+        return;
+      }
+      const first = stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
+      if (first === null || first === held) return;
+      held = first;
+      place(first);
+    });
+    // Any focus the take did not place ends `held`, but for one nothing holds: the app's on its
+    // main element, which the frame after the take gives back.
+    const moved = (event: FocusEvent): void => {
+      if (held !== undefined && event.target !== held && !focusIsLoose(stage)) release();
+    };
+    document.addEventListener("focusin", moved);
     // True once the focus is placed, or once something other than the view's tree holds it.
     // Nothing holds it on the page itself, or on an element that holds the stage
     // (`focusIsLoose`): the app focuses its main element at each page change but the first
@@ -237,16 +373,26 @@ export function ViewStage({
       const active = document.activeElement;
       const onTree = active?.matches(SLOT_TREE) === true && stage.contains(active);
       if (!focusIsLoose(stage) && !onTree) return true;
+      // A view whose tree lands on the address's node itself (`LandsItself`) is waited on: the
+      // take is done once something holds the focus (above), and goes on below to take it once
+      // the address has lost its node.
+      if (landsItself.current) return false;
+      // An address the body opened in place of one it dropped opens with the focus on no row,
+      // unless a focus on the tree itself started the take again (`bring`).
+      if (dropped.current && !bring) return true;
       const to =
         stage.querySelector<HTMLElement>(TAB_STOP_ROW) ??
         stage.querySelector<HTMLElement>(FAILED_READ_RETRY);
       if (to === null) return false;
+      held = to.matches(FAILED_READ_RETRY) ? to : undefined;
       place(to);
       placed = to;
+      if (held === undefined) firstLine.disconnect();
+      else firstLine.observe(stage, { childList: true, subtree: true });
       const frame = requestAnimationFrame(() => {
         ending.delete(frame);
         placed = null;
-        if (focusIsLoose(stage)) place(to);
+        if (focusIsLoose(stage)) place(held ?? to);
       });
       ending.add(frame);
       return true;
@@ -259,6 +405,13 @@ export function ViewStage({
       if (!take()) drawn.observe(stage, { childList: true, subtree: true });
     };
     watch();
+    // While the view lands on the address's node itself, a focus anything takes - the landing's on
+    // the node's row, or a control the reader pressed - ends the take as a look would, so a focus
+    // dropped after that is not taken for the view once the address has lost its node.
+    const focusTaken = () => {
+      if (landsItself.current && take()) drawn.disconnect();
+    };
+    document.addEventListener("focusin", focusTaken);
     // A focus on the tree itself, where it draws no tab-stop row, starts the take again,
     // whatever held the focus before outside the view: the chord's, or the stage's own once a
     // line left. A focus that moves onto the tree from inside the view - from its Retry, or a
@@ -276,7 +429,10 @@ export function ViewStage({
     stage.addEventListener("focusin", treeFocused);
     return () => {
       drawn.disconnect();
+      firstLine.disconnect();
+      document.removeEventListener("focusin", moved);
       stage.removeEventListener("focusin", treeFocused);
+      document.removeEventListener("focusin", focusTaken);
       for (const frame of ending) cancelAnimationFrame(frame);
     };
   }, [box]);
@@ -291,6 +447,11 @@ export function ViewStage({
  * tab-stop row, or to the tree itself, in that order, unless something else took it in the
  * render the line left in: once the line is off the page the browser has moved the focus to the
  * page's body, where nothing says where the reader was.
+ *
+ * Inside the stage (`FirstRowDrawn`), the box watches for the slot's first row until it holds
+ * one, and tells the stage's mark that its view has drawn once the browser has painted it. Once
+ * the stage has told (`ViewDrawnTeller.told`), by this box or another or by its reads settling
+ * (`TellWhenSettled`), the box watches no more.
  */
 function StageBox({
   box: given,
@@ -303,6 +464,28 @@ function StageBox({
 }): ReactNode {
   const own = useRef<HTMLDivElement>(null);
   const box = given ?? own;
+  const teller = useContext(FirstRowDrawn);
+  useEffect(() => {
+    const stage = box.current;
+    if (teller === undefined || stage === null || teller.told()) return;
+    let painted: (() => void) | undefined;
+    const look = (): void => {
+      if (teller.told()) {
+        rows.disconnect();
+        return;
+      }
+      if (painted !== undefined || stage.querySelector(VIEW_ROW) === null) return;
+      rows.disconnect();
+      painted = afterPaint(teller.tell);
+    };
+    const rows = new MutationObserver(look);
+    rows.observe(stage, { childList: true, subtree: true });
+    look();
+    return () => {
+      rows.disconnect();
+      painted?.();
+    };
+  }, [box, teller]);
   // The line calls this while React takes it off the page, before what replaces it is drawn: the
   // focus is placed once that render is on the page.
   const lineLeaves = useCallback(() => {
@@ -323,6 +506,28 @@ function StageBox({
       </div>
     </FailedLineLeaves.Provider>
   );
+}
+
+/** A row of the slot's tree, the outline's or a view's. */
+const VIEW_ROW = "[data-node-row]";
+
+/** What the box a slot is drawn in tells once it has drawn the slot's first row, painted
+ *  (`StageBox`): the stage's mark that its view has drawn (`useTellViewDrawn`), whose `told` says
+ *  the box may stop watching. Undefined outside a stage (`ViewStage` drawn alone), where the box
+ *  watches for nothing. */
+const FirstRowDrawn = createContext<ViewDrawnTeller | undefined>(undefined);
+
+/** Calls `then` once the browser has painted the frame it draws next: in the task that frame's
+ *  animation callback queues, as the page reads a frame painted. Answers how to call it off. */
+function afterPaint(then: () => void): () => void {
+  let painted: number | undefined;
+  const frame = requestAnimationFrame(() => {
+    painted = window.setTimeout(then, 0);
+  });
+  return () => {
+    cancelAnimationFrame(frame);
+    window.clearTimeout(painted);
+  };
 }
 
 /** Puts the focus on `to` without scrolling to it, then brings it on screen on the next frame

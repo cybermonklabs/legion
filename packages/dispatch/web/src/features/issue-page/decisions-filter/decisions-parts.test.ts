@@ -7,7 +7,7 @@ import type { DocumentBlocks, TreeNode } from "../issue-tree";
 import { NODE_TYPE_NAMES } from "../page-words";
 import { presetView } from "../presets";
 import { parentLinkWords } from "../projection-fixture";
-import { nodeIdOf as issueNodeIdOf } from "../tree-drafts";
+import { coverageStatements, nodeIdOf as issueNodeIdOf } from "../tree-drafts";
 import {
   AGENT,
   answeredAsk,
@@ -52,6 +52,10 @@ beforeAll(async () => {
 /** How this issue addresses a node, which is the page's own rule (`tree-drafts.ts`). */
 const nodeIdOf = issueNodeIdOf(issueDetails());
 
+/** The statements of a coverage read that has not answered: none, so a tie counts only to a
+ *  statement the tree holds, as each case here builds the tree with them. */
+const NO_COVERAGE = coverageStatements(issueDetails(), undefined);
+
 /** The spec's blocks as the blocks read answers them: each agent's decision's own `decision`
  *  block, in the order the decisions were made. */
 function specBlocks(made: readonly Decision[]): DocumentBlocks[] {
@@ -84,6 +88,7 @@ function partsOf(
     asks,
     changes: decisionChanges(decisions, comments, issueDetails(), specBlocks(made)),
     decisions,
+    isCoverageStatement: NO_COVERAGE,
     issueKey: KEY,
     nodeIdOf,
     reader: READER,
@@ -593,30 +598,31 @@ test("a decision that shaped three statements is one entry that reaches all thre
 
   expect(idsOf(parts).review).toEqual([D("wide")]);
   expect(
-    parts.review[0]?.shapes.map(({ id, node, path, stale }) => ({
+    parts.review[0]?.shapes.map(({ id, path, reference, stale }) => ({
       id,
-      line: parentLinkWords(node),
       path,
+      reference,
       stale,
     }))
   ).toEqual([
-    // The statement's first line, as R1 cuts a row's, and its place in the conversation.
+    // Each statement by its address, which the page names it by, and its place in the
+    // conversation.
     {
       id: statement("s1").id,
-      line: "The first statement holds.",
       path: `/issues/${KEY}#b-s1`,
+      reference: specRef("s1"),
       stale: false,
     },
     {
       id: statement("s2").id,
-      line: "The page draws s2.",
       path: `/issues/${KEY}#b-s2`,
+      reference: specRef("s2"),
       stale: true,
     },
     {
       id: statement("s3").id,
-      line: "The page draws s3.",
       path: `/issues/${KEY}#b-s3`,
+      reference: specRef("s3"),
       stale: false,
     },
   ]);
@@ -659,12 +665,11 @@ test("each entry carries its address in the conversation and its parent's line",
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });
 
-// R1 and R22: the filter's one line for a parent and for a statement a decision shaped is drawn
-// as every one line of a node is (`lineReading`, `drawnLine`): projected from the words of the
-// node's first block, so a heading never runs into the paragraph after it; with an ellipsis where
-// the cut ends inside a sentence; and a node with no words is named by its kind's word, never by
-// its id.
-test("a parent's line and a statement's line are cut from the node's first block", () => {
+// R1 and R22: the filter's one line for a parent is drawn as every one line of a node is
+// (`lineReading`, `drawnLine`): projected from the words of the node's first block, so a heading
+// never runs into the paragraph after it, and a node with no words is named by its kind's word,
+// never by its id.
+test("a parent's line is cut from the node's first block", () => {
   const words = Array.from({ length: 30 }, (_unused, at) => `word${at + 1}`).join(" ");
   // A question whose reading opens on a heading, then a paragraph.
   const headed: DisplayTree = {
@@ -722,9 +727,11 @@ test("a parent's line and a statement's line are cut from the node's first block
     reference: `dispatch://${KEY}/ask/q2`,
     type: "ask",
   });
-  expect(entry("headed")?.shapes.map((one) => parentLinkWords(one.node))).toEqual([
-    "The page draws word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12 word13…",
-    NODE_TYPE_NAMES.requirement,
+  // A statement's line is the one the page names its address by (`DecisionsFilterBody.tsx`'s
+  // `statementNames`), so each shape names the statement's address.
+  expect(entry("headed")?.shapes.map((one) => one.reference)).toEqual([
+    specRef("s1"),
+    specRef("s2"),
   ]);
 });
 
@@ -798,6 +805,7 @@ test("the parts are read before every read has answered", () => {
   const parts = decisionsParts({
     asks: undefined,
     decisions: undefined,
+    isCoverageStatement: NO_COVERAGE,
     issueKey: KEY,
     nodeIdOf,
     reader: undefined,

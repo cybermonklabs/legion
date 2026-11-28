@@ -13,7 +13,7 @@ import {
 } from "react-router-dom";
 
 import { ApiError, api } from "../../../api/client";
-import type { IssueDetails } from "../../../api/types";
+import type { Artifact, Comment, IssueDetails } from "../../../api/types";
 import { MarginProvider } from "../../margin/margin-context";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
@@ -21,6 +21,8 @@ import { KeymapProvider } from "../../shell/KeymapProvider";
 import { decisionsRead, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
+import { commentNode, treeAnswer, treeNode, wholeTreeOnly } from "../tree-read/tree-fixtures";
+import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { FAILED_READ_RETRY } from "./failed-read-line";
 import { ProvidersSlot } from "./providers";
 import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
@@ -32,7 +34,9 @@ import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
  * provides above the page (`AppProviders`) is what the stage's tests, the Decisions body's
  * drawn test (`DecisionsFilterBody.drawn.test.tsx`) and the outline's reads test
  * (`outline-reads.test.tsx`) draw in; the outline's own tests and the Plan view's
- * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand.
+ * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. `spyOnBoxes` gives
+ * the boxes happy-dom does not lay out, for the outline's tests, the Spec body's drawn test and
+ * the failed read's line's test.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -155,13 +159,13 @@ export function drawAtBrowserEntry(
 }
 
 /** Which slot the stage drew, by each slot's own mark: a view's body - the Decisions view's, the
- *  Plan view's or the Verification view's - or a case's stand-in view (`data-stand-in-view`), or
- *  the body that draws the outline or a line in its place. */
+ *  Plan view's, the Spec view's or the Verification view's - or a case's stand-in view
+ *  (`data-stand-in-view`), or the body that draws the outline or a line in its place. */
 export function drawnSlot(view: RenderResult): string {
   const { container } = view;
   if (container.querySelector("[data-issue-body]") !== null) return "the body";
   const drawn = container.querySelector(
-    "[data-decisions-body], [data-plan-body], [data-verification-body], [data-stand-in-view]"
+    "[data-decisions-body], [data-plan-body], [data-spec-body], [data-verification-body], [data-stand-in-view]"
   );
   return drawn === null ? "nothing" : "the view";
 }
@@ -192,16 +196,18 @@ export async function rowTakesFocus(
 /** A refusal of a read, as Dispatch answers one it cannot serve now. */
 export const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
 
-/** Waits for the outline, drawn in a view's place, to draw the failed read's line that says
- *  `message` with the focus on its Retry, saying what `what` drew where it does not. */
+/** Waits for the slot `within` finds - the outline, drawn in a view's place, where none is given -
+ *  to draw the failed read's line that says `message` with the focus on its Retry, saying what
+ *  `what` drew where it does not. */
 export async function retryTakesFocus(
   view: RenderResult,
   message: string,
-  what: string
+  what: string,
+  within = "[data-issue-body]"
 ): Promise<void> {
   await waitFor(() => {
-    const line = [...view.container.querySelectorAll("[data-issue-body] [data-failed-read]")].find(
-      (each) => each.textContent?.includes(message)
+    const line = [...view.container.querySelectorAll(`${within} [data-failed-read]`)].find((each) =>
+      each.textContent?.includes(message)
     );
     expect(
       line,
@@ -228,14 +234,65 @@ export async function goneLineTakesFocus(view: RenderResult, what: string): Prom
 /** An id that names no comment of the issue, which the comment's own read answers 404 for. */
 export const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
 
-/** The comment's own read, answering that no comment has the id it is asked for. */
-export function commentGone(): Mock<typeof api.getComment> {
-  return spyOn(api, "getComment").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no such comment" })
-  );
+/** The comment's own read's answer for an id that names no comment of the issue. */
+function noSuchComment(): ApiError {
+  return new ApiError(404, { code: "NOT_FOUND", error: "no such comment" });
 }
 
-/** Every read the page's tree is built from, answered with nothing, and who is reading. */
+/** The comment's own read, answering that no comment has the id it is asked for. */
+export function commentGone(): Mock<typeof api.getComment> {
+  return spyOn(api, "getComment").mockRejectedValue(noSuchComment());
+}
+
+/** Answers each comment's own read (`GET /api/v1/comments/{id}`) from `comments`: the comment
+ *  and every comment that replies to it, as the server answers it, and that no comment has any
+ *  other id. */
+export function answerCommentReads(comments: readonly Comment[]): Mock<typeof api.getComment> {
+  return spyOn(api, "getComment").mockImplementation(async (id: string) => {
+    const comment = comments.find((one) => one.id === id);
+    if (comment === undefined) throw noSuchComment();
+    return {
+      comment,
+      replies: comments.filter((one) => one.reply_to === id),
+    } as never;
+  });
+}
+
+/** The tree read's answer for the issue holding `nodes` under it, each named as a case names it
+ *  (`tree-read/tree-fixtures.ts`), with `tuples` between them, and no node at all where `nodes`
+ *  is empty. */
+export function treeOf(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): TreeAnswer {
+  return treeAnswer(nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes], tuples);
+}
+
+/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree at once, and each
+ *  view of it never (`wholeTreeOnly`). The spy is the one `stubReads` set, which `spyOn` hands
+ *  back, so the `afterEach` that restores those restores it. */
+export function answerTree(
+  nodes: readonly TreeAnswerNode[],
+  tuples: readonly TreeTuple[] = []
+): void {
+  spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf(nodes, tuples)));
+}
+
+/** Each of `comments` as the tree read answers it (`commentNode`). */
+export function commentNodes(comments: readonly Comment[]): TreeAnswerNode[] {
+  return comments.map((comment) => commentNode(comment));
+}
+
+/** Where a block written in `document` stands in the tree read's answer: in that document, at
+ *  `position` among its blocks. */
+export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0) {
+  return { document: { artifact_id: document.id, position, slug: document.slug } };
+}
+
+/** Every read the page's tree is built from, answered with nothing, the blocks the Decisions view
+ *  reads of each document a decision stands in, and who is reading. The issue's comments are the
+ *  tree read's own, so no comments list is answered: a read of one reaches the network, which
+ *  fails the file (`__tests__/network.ts`). */
 export function stubReads(): { mockRestore(): void }[] {
   return [
     spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -253,10 +310,25 @@ export function stubReads(): { mockRestore(): void }[] {
     }),
     spyOn(api, "getIssueReferences").mockResolvedValue({ members: [], truncated: false }),
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
-    spyOn(api, "listComments").mockResolvedValue([]),
+    spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
     spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
+    spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];
+}
+
+/** Answers each HTML element's box with `box`, called on that element as the DOM's own read is;
+ *  any other element keeps the empty box the DOM gives it. On Element, which owns the method: a
+ *  spy on HTMLElement leaves an own property behind once restored, which hides every later spy on
+ *  Element (Margin.landing.test.tsx's `stubRects`). */
+export function spyOnBoxes(
+  box: (this: HTMLElement) => DOMRect
+): Mock<Element["getBoundingClientRect"]> {
+  return spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+    this: Element
+  ) {
+    return this instanceof HTMLElement ? box.call(this) : new DOMRect();
+  });
 }

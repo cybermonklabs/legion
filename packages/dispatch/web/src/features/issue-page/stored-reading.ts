@@ -149,10 +149,10 @@ const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
  *
  * The reading holds what decides the words, where they stand apart and how a link reads: the
  * blocks, the text runs and the marks on them, by the server's names, and of their attributes an
- * ordered list's first number (`blockOf`) and a link's target and title (`linkMark`), as the
- * server writes them; no word lies in any other. The shared projection reads a link whose words
- * are its own address, an autolink among them, as its target's short form or name, by that
- * target (`linkDrawn`), as it reads the server's reading of the same text. A
+ * ordered list's first number where that is not 1 (`blockOf`) and a link's target and title
+ * (`linkMark`), as the server writes them; no word lies in any other. The shared projection
+ * reads a link whose words are its own address, an autolink among them, as its target's short
+ * form or name, by that target (`linkDrawn`), as it reads the server's reading of the same text. A
  * block opens a space before its words and after them. A mark sits on the runs it covers, so a
  * marked run and the run beside it stay consecutive children of one block and read adjacent
  * (`a **b**c` reads `a bc`). A leaf that holds no text - a hard break, an image, a footnote
@@ -291,7 +291,8 @@ function blocksOf(nodes: readonly Parsed[], links: DefinedLinks): DisplayTree[] 
  * The reading of one block of the parse and what it holds, by the server's name for it. A block
  * of HTML is a paragraph holding it as one `html` leaf, as the server shows one, since the
  * server's schema carries HTML inline only. An ordered list keeps the number it starts on as its
- * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`.
+ * `order`, as the server keeps it (`parseList`, `pmdoc/parse.go`), so `3. Ship it` reads `3.`,
+ * and leaves it out where that is 1, its schema's default, as the server's reading does.
  * Front matter is one text run of its lines between two plain `---` fences, and of the two fences
  * alone where it holds nothing, as the server writes it (`parseFrontmatterBlock`,
  * `pmdoc/lines.go`). A link reference definition, which only names a link's target, draws
@@ -304,13 +305,15 @@ function blockOf(node: Parsed, links: DefinedLinks): DisplayTree | undefined {
       return withContent(node.type, runsOf(node.children, links));
     case "blockquote":
       return withContent("blockquote", blocksOf(node.children, links));
-    case "list":
-      return node.ordered === true
-        ? {
-            ...withContent("ordered_list", blocksOf(node.children, links)),
-            attrs: { order: node.start ?? 1 },
-          }
-        : withContent("bullet_list", blocksOf(node.children, links));
+    case "list": {
+      if (node.ordered !== true) return withContent("bullet_list", blocksOf(node.children, links));
+      const list = withContent("ordered_list", blocksOf(node.children, links));
+      // The server's reading writes the number an ordered list starts at as the list's `order`,
+      // and leaves it out where that is 1, its schema's default, so a list from 3 reads apart
+      // from a list from 1 here as it does there.
+      if (node.start != null && node.start !== 1) return { attrs: { order: node.start }, ...list };
+      return list;
+    }
     case "listItem":
       return withContent("list_item", blocksOf(node.children, links));
     case "code": {

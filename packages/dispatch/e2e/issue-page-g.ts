@@ -42,17 +42,17 @@ import { asUser } from "./users";
  * them (decision 2 of the parts).
  *
  * The page is the one the reader turns on (`withIssuePage`), opened at the issue's own address
- * with `page.goto`; the body is `slots/body.tsx`'s: G's rows drew every branch unfolded, and
- * part I's outline later, which folds to the frontier: so a row that reads a node unfolds every
- * folded branch first (`unfoldEveryBranch`), and holds on either body.
+ * with `page.goto`; the body is `slots/body.tsx`'s, whose outline opens with every node unfolded
+ * and folds a node only where the reader folds it: a row that reads a node the reader may have
+ * folded unfolds every folded branch first (`unfoldEveryBranch`).
  *
  * The DOM a row reads: each node is a `role="treeitem"` `[data-node-row]` inside the
  * `role="tree"` named "Issue tree", carrying `data-node-id`, `data-node-type`, `data-node-state`
  * and `aria-level`; inside it the bullet `[data-node-bullet]` (the fold control where the node
  * holds nodes), the words `[data-node-words]` with their trail of chips `[data-node-chip]`, the
  * group `[data-node-margin]` (tag `[data-node-tag]`, author `[data-node-author]`, time
- * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` of the focused or
- * pinned row, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
+ * `[data-node-time]`, state `[data-node-state]`), the body `[data-node-body]` that every row's
+ * face draws whatever the focus, and the focused row's acts `[data-row-act]` and `[data-row-copy]`.
  *
  * A reader answers through one `page.evaluate` and returns what is there - an empty list for a
  * page that draws none of it - and a row asserts on that answer.
@@ -169,13 +169,11 @@ export function rowAct(row: Locator, act: "answer" | "change-answer" | "reply"):
 }
 
 /** Puts the focus on node `id`'s row, as a press or a key puts it there, and waits until the row
- *  holds it and draws its body, which every row draws while it has the focus: a row draws its
- *  card whether or not it has the focus, so the card says nothing of it. */
+ *  holds it. A row draws its body whatever the focus, so the focus opens nothing to wait for. */
 export async function focusRow(page: Page, id: string): Promise<Locator> {
   const row = nodeRow(page, id).first();
   await row.focus();
   await expect(row).toBeFocused();
-  await expect(rowBody(row)).toHaveCount(1);
   return row;
 }
 
@@ -255,19 +253,15 @@ function cssValue(value: string): string {
 const BRANCHES_OPENED_AT_MOST = 200;
 
 /**
- * Opens every branch a fold left shut, as a reader does to read past one: these rows were drawn
- * with every branch open before the outline, which folds to the frontier and draws a
- * branch deeper than the levels it draws - one below 1024 px, three from there up - as one
- * `[data-branch-more]` line counting its nodes. So a row that reads what a branch holds presses
- * each fold control and each such line's control, until neither is left, rather than asserting
- * that the first drawing carried it. It ends with the focus on no row: a press may leave it on
- * the row it opened, and a focused row draws its body, while the rows read the tree as it stands
- * with no row focused.
+ * Opens every branch a fold left shut, as a reader does to read past one: the outline opens with
+ * every node unfolded, and a row that folded one, or a node that arrives under a fold, is read
+ * only once its branch is open again. So a row that reads what a branch holds presses each fold
+ * control until none is left, rather than asserting that the first drawing carried it. It ends
+ * with the focus on no row: a press may leave it on the row it opened, while the rows read the
+ * tree as it stands with no row focused.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
-  const controls = nodeRows(page)
-    .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-    .or(issuePage(page).locator("[data-branch-more] button"));
+  const controls = nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold });
   for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
     const first = controls.first();
     // A caller waits for the tree it opens first - a settled load, or an expect.poll that reads
@@ -287,16 +281,32 @@ export async function unfoldEveryBranch(page: Page): Promise<void> {
 /** How long `expectSeedDrawn` waits for the seed's rows and the names their chips read. */
 const SEED_DRAWN_MS = 30_000;
 
+/** The seeded nodes Conversation draws no row of: its read holds no result, plan task or
+ *  message, and a comment on a node's text is drawn beside that node and not as a row. Graph,
+ *  which draws the whole tree read, draws each of them as Conversation draws a node. */
+export function leftOutOfConversation(seeded: RowSeed): string[] {
+  return [
+    seeded.result,
+    seeded.longMessage,
+    seeded.linked,
+    ...seeded.replies,
+    seeded.change,
+    blockNode(seeded.slugs.plan, "t1"),
+    blockNode(seeded.slugs.plan, "t2"),
+  ];
+}
+
 /**
- * Waits until the page draws a row for every node the seed wrote that a row reads, and the names
- * of what their chips cite. The tree is drawn with the issue alone; its comments, messages,
- * questions, decisions, results and blocks arrive after it, and the batched names last
- * (`useIssueTree.ts`), so a reading taken as soon as the tree exists may find a row, or a chip's
- * name, not drawn yet. The needs chip of `t2` draws nothing until the names have come
- * (`NodeRow.tsx`'s `Chip`), so it stands for them. Each poll first opens every branch a fold
- * left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
+ * Waits until the page draws a row for every node the seed wrote that Conversation draws, and
+ * the names of what their chips cite. The tree is drawn with the issue alone; its nodes, the
+ * kept reads and the batched names arrive after it (`useIssueTree.ts`), so a reading taken as
+ * soon as the tree exists may find a row, or a chip's name, not drawn yet. The unsure decision
+ * cites the plan's `t1`, which Conversation's read does not hold, so its chip names `t1` only
+ * once the batched names have come, and it stands for them. Each poll first opens every branch
+ * a fold left shut (`unfoldEveryBranch`), since a node that arrives late may arrive folded.
  */
 export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void> {
+  const leftOut = leftOutOfConversation(seeded);
   const ids = [
     seeded.child,
     seeded.blocker,
@@ -322,8 +332,10 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
     blockNode(seeded.slugs.plan, "t1"),
     blockNode(seeded.slugs.plan, "t2"),
     blockNode(seeded.slugs.verification, "c1"),
-  ];
-  const needs = blockNode(seeded.slugs.plan, "t2");
+  ].filter((id) => !leftOut.includes(id));
+  const cited = nodeRow(page, seeded.unsure)
+    .first()
+    .locator(`${SELECTORS.nodeWords} a[data-row-chip]`);
   await expect
     .poll(
       async () => {
@@ -331,7 +343,7 @@ export async function expectSeedDrawn(page: Page, seeded: RowSeed): Promise<void
         const rows = await drawnRows(page);
         return {
           missing: ids.filter((id) => rowOf(rows, id) === undefined),
-          named: (rowOf(rows, needs)?.chips.length ?? 0) > 0,
+          named: /^1\. Stand/u.test((await cited.allTextContents()).join("").trim()),
         };
       },
       {
@@ -526,6 +538,9 @@ export async function parentOfRow(page: Page, id: string): Promise<string | null
  *  of its words and their first line, its tag, its byline and its time, and their colours. */
 export interface RowLayout {
   readonly author: { readonly color: string; readonly name: string } | null;
+  /** The box the author's name is drawn in: its width and the width its text takes, which is
+   *  more where the box cuts it. */
+  readonly authorBox: { readonly client: number; readonly scroll: number } | null;
   readonly byline: { readonly left: number; readonly top: number } | null;
   /** The time's computed colour. */
   readonly bylineColor: string | null;
@@ -555,6 +570,7 @@ export interface RowLayout {
   readonly statement: boolean;
   /** The kind's tag: its box, its words, and the shape it draws, by its glyph token. */
   readonly tag: {
+    readonly bottom: number;
     readonly glyph: string | null;
     readonly left: number;
     readonly right: number;
@@ -562,6 +578,13 @@ export interface RowLayout {
     readonly top: number;
   } | null;
   readonly time: string | null;
+  /** The time's box against the margin's, where the row draws a time. */
+  readonly timeBox: {
+    readonly left: number;
+    readonly marginLeft: number;
+    readonly marginRight: number;
+    readonly right: number;
+  } | null;
   readonly type: string;
   /** Whether the first thing the row's content draws is the node's words. */
   readonly wordsFirst: boolean;
@@ -637,6 +660,8 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
         const tagBox = tag?.getBoundingClientRect();
         const bylineBox = row.querySelector("[data-node-byline]")?.getBoundingClientRect();
         const time = row.querySelector("[data-node-time]");
+        const timeBox = time?.getBoundingClientRect();
+        const marginBox = row.querySelector("[data-node-margin]")?.getBoundingClientRect();
         const name = author?.querySelector("[data-author-text], [data-page-chrome]") ?? null;
         const fold = bullet?.matches("button") === true ? bullet : null;
         const card = row.querySelector("[data-node-card]") ?? row;
@@ -645,6 +670,7 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
             name === null
               ? null
               : { color: getComputedStyle(name).color, name: (name.textContent ?? "").trim() },
+          authorBox: name === null ? null : { client: name.clientWidth, scroll: name.scrollWidth },
           bullet: {
             fill: dot === null ? "" : getComputedStyle(dot).backgroundColor,
             kindFill: computed("backgroundColor", kindToken),
@@ -679,6 +705,7 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
             tag === null || tagBox === undefined
               ? null
               : {
+                  bottom: tagBox.bottom,
                   glyph: tag.querySelector("svg[data-glyph]")?.getAttribute("data-glyph") ?? null,
                   left: tagBox.left,
                   right: tagBox.right,
@@ -686,6 +713,15 @@ export function rowLayouts(page: Page, spec: string): Promise<RowLayout[]> {
                   top: tagBox.top,
                 },
           time: time?.textContent ?? null,
+          timeBox:
+            timeBox === undefined || marginBox === undefined
+              ? null
+              : {
+                  left: timeBox.left,
+                  marginLeft: marginBox.left,
+                  marginRight: marginBox.right,
+                  right: timeBox.right,
+                },
           type,
           wordsFirst: content?.firstElementChild === words,
           wordsHidden: words === null ? 0 : Math.max(0, words.scrollHeight - words.clientHeight),
@@ -706,8 +742,11 @@ const UNTYPED_KINDS: readonly string[] = ["comment", "message"];
  * naming it - a child issue's is its key - with its author and its time after it, in grey, and a
  * turn draws none. A requirement is a statement in the spec alone, with the statement's colour,
  * word and shape; one of any other document is a block, in a block's colour, whose tag says
- * "requirement" and draws no shape (decision 246). At 761 px and above the tag stands at the
- * right end of the words' first line.
+ * "requirement" and draws no shape (decision 246). At every width the tag stands at the right end
+ * of the words' first line and inside the screen, its left edge right of that line's last word.
+ * The author and the time stand after it on that line, or, where the three do not fit, on the
+ * line under the tag's; a turn's, which has no tag, stand on the first line. The author's name is
+ * drawn whole - no box cuts it - and the time stands whole inside the margin.
  */
 export function expectRowLayouts(
   layouts: readonly RowLayout[],
@@ -769,24 +808,49 @@ export function expectRowLayouts(
             : `${at} draws a statement's shape on its tag, and it is no statement`
         ).toBe(row.statement ? GLYPH_TOKENS.types.requirement : null);
       }
-      if (row.line.right > 0 && width > 760) {
+      if (row.line.right > 0) {
         expect(
           row.tag?.left ?? -1,
           `${at} draws its tag before the end of its words' first line`
         ).toBeGreaterThanOrEqual(row.line.right - 1);
+        expectOnFirstLine(row.tag?.top, row, `${at} draws its tag`);
         expect(
-          row.tag?.top ?? -1,
-          `${at} draws its tag above its first line`
-        ).toBeGreaterThanOrEqual(row.line.top - 8);
-        expect(row.tag?.top ?? 1e6, `${at} draws its tag under its first line`).toBeLessThan(
-          row.line.bottom
-        );
+          row.tag?.right ?? 1e6,
+          `${at} draws its tag past the right edge of the ${width} px screen`
+        ).toBeLessThanOrEqual(width);
       }
-      if (row.byline !== null) {
-        const after =
-          row.byline.left >= (row.tag?.right ?? 0) - 1 || row.byline.top > (row.tag?.top ?? 0) + 1;
-        expect(after, `${at} draws its author and its time before its tag`).toBe(true);
+    }
+    if (row.byline !== null && row.line.right > 0) {
+      expect(
+        row.byline.left,
+        `${at} draws its author and its time before the end of its words' first line`
+      ).toBeGreaterThanOrEqual(row.line.right - 1);
+      const tag = row.tag;
+      if (tag === null || row.byline.top < tag.bottom - 1) {
+        expectOnFirstLine(row.byline.top, row, `${at} draws its author and its time`);
+        expect(
+          row.byline.left,
+          `${at} draws its author and its time before its tag`
+        ).toBeGreaterThanOrEqual((tag?.right ?? 0) - 1);
+      } else {
+        expect(
+          row.byline.top,
+          `${at} draws its author and its time lower than the line under its tag`
+        ).toBeLessThanOrEqual(tag.bottom + 8);
       }
+    }
+    if (row.authorBox !== null) {
+      expect(
+        row.authorBox.scroll,
+        `${at} cuts its author's name: its text takes ${row.authorBox.scroll} px of a ${row.authorBox.client} px box`
+      ).toBeLessThanOrEqual(row.authorBox.client + 1);
+    }
+    if (row.timeBox !== null) {
+      const box = row.timeBox;
+      expect(
+        box.left >= box.marginLeft - 1 && box.right <= box.marginRight + 1 && box.right <= width,
+        `${at} draws its time outside its margin or past the screen's edge`
+      ).toBe(true);
     }
     if (row.author !== null && row.author.name !== READER) {
       expect(row.author.color, `${at} draws its author other than in grey`).toBe(row.quiet);
@@ -795,6 +859,13 @@ export function expectRowLayouts(
       expect(row.bylineColor, `${at} draws its time other than in grey`).toBe(row.quiet);
     }
   }
+}
+
+/** Holds that `top`, the top of a part of `row`'s margin, stands on the line of the words' first
+ *  line: no more than 8 px above that line's top, and above its bottom. */
+function expectOnFirstLine(top: number | undefined, row: RowLayout, what: string): void {
+  expect(top ?? -1, `${what} above its first line`).toBeGreaterThanOrEqual(row.line.top - 8);
+  expect(top ?? 1e6, `${what} under its first line`).toBeLessThan(row.line.bottom);
 }
 
 /** What rulings 4 and 5 read of one row (R1, R4, R5): the line of the kind's tag, the author and
@@ -901,13 +972,13 @@ export function rowGroups(page: Page): Promise<RowGroup[]> {
 }
 
 /**
- * Rulings 4 and 5 on every row one view draws. At 761 px and above a row that is not open draws
- * its kind, its author and its time on one line, and its state on a second line under it; at
- * 760 px and below that line stands under the row's words. No row draws the page's words for an
- * author nobody recorded. Each tie is a chip inside the box of the node's words, named by at most
- * 32 characters and by no address, slug or short form of one (`addresses`). A link in a node's
- * words is the words' own colour, a child's blocker the ink, each underlined in the bullets'
- * grey. On a phone a fold control is 24 px square at least (WCAG 2.5.8).
+ * The group of every row one view draws. At every width a row draws its state on a line under
+ * the line of its kind, its author and its time, which take one line where they fit and more
+ * where the author stands under the tag (`expectRowLayouts`). No row draws the page's words for
+ * an author nobody recorded. Each tie is a chip inside the box of the node's words, named by at
+ * most 32 characters and by no address, slug or short form of one (`addresses`). A link in a
+ * node's words is the words' own colour, a child's blocker the ink, each underlined in the
+ * bullets' grey. On a phone a fold control is 24 px square at least (WCAG 2.5.8).
  */
 export function expectRowGroups(
   groups: readonly RowGroup[],
@@ -921,29 +992,11 @@ export function expectRowGroups(
       row.author,
       `${at} draws the page's words for an author nobody recorded on its row`
     ).not.toBe(CONTROL_LABELS.unknown_author);
-    if (row.group !== null && width > 760) {
-      if (!row.open) {
-        expect(
-          row.group.lines,
-          `${at} draws its kind, its author and its time on more than one line`
-        ).toBe(1);
-      }
-      if (row.stateTop !== null) {
-        expect(
-          row.stateTop,
-          `${at} draws its state on the line of its kind, its author and its time`
-        ).toBeGreaterThan(row.group.top + 8);
-      }
-    }
-    if (row.group !== null && width <= 760) {
+    if (row.group !== null && row.stateTop !== null) {
       expect(
-        row.group.lines,
-        `${at} draws its kind, its author and its time on more than one line`
-      ).toBe(1);
-      expect(
-        row.group.top,
-        `${at} draws its kind, its author and its time beside its words and not under them`
-      ).toBeGreaterThanOrEqual(row.contentBottom - 1);
+        row.stateTop,
+        `${at} draws its state on the line of its kind, its author and its time`
+      ).toBeGreaterThan(row.group.top + 8);
     }
     for (const chip of row.chips) {
       expect(
@@ -1103,7 +1156,7 @@ async function uploadPicture(key: string, name: string): Promise<string> {
  * change - and its `decision` block of the plan holding `:::requirement{#r1}` and a block's
  * address, so `r1` is a requirement of a document other than the spec (decision 246); a
  * picture; an open question with two options waiting on the reader, an answered one, and the
- * long texts c-cut reads. It is at most three levels deep (`DRAWN_LEVELS`).
+ * long texts c-cut reads. It is at most three levels deep.
  *
  * A decision is a `decision` block of the document that holds it, which the seed names by the
  * id it writes on it: Dispatch refuses a document of decisions (409 `DECISIONS_ARE_NODES`).
@@ -1354,12 +1407,11 @@ export interface LongRowsSeed {
 /**
  * One issue whose spec opens with one long statement the planner wrote, which a check of its
  * Verification document serves and no result proves, and whose conversation is the reader's
- * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, which a
- * row cuts at six lines at either width and draws whole shorter than a phone's screen, with a
- * run of `OWN_ROWS` replies of the reader's own of the same words after the first
- * `ROWS_ABOVE_OWN`, which no cut ever shortens. Drawn whole they make a page many screens tall,
- * so a jump into it lands on rows no batch measured. The statement is the body's first row, and
- * the check nothing proves keeps it open in an outline folded to what is open.
+ * comment and, under it, `LONG_ROWS` replies of the planner's of 160 short words each, each drawn
+ * whole and shorter than a phone's screen, with a run of `OWN_ROWS` replies of the reader's own
+ * of the same words after the first `ROWS_ABOVE_OWN`. Drawn whole they make a page many screens
+ * tall, so a jump into it lands on rows no frame has laid out yet. The statement is the body's
+ * first row.
  */
 export async function seedLongRows(): Promise<LongRowsSeed> {
   await createProject({ key: PROJECT, name: "Rows" });
@@ -1385,7 +1437,7 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
   const specSlug =
     ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
   // A question that waits on the reader, which an outline that opens with the focus on such a
-  // question focuses in place of its first row, so the statement keeps its cut.
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
   await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
   const head = await createComment(key, { body: "Each reply under this one is long." });
   const rows: string[] = [];
@@ -1405,6 +1457,49 @@ export async function seedLongRows(): Promise<LongRowsSeed> {
     rows,
     statement: blockNode(specSlug, "r-long"),
   };
+}
+
+/** What `seedLongStatement` wrote: the issue, and the planner's long statement by node id. */
+export interface LongStatementSeed {
+  readonly key: string;
+  readonly statement: string;
+}
+
+/**
+ * One issue whose spec holds one long statement the planner wrote, which a check of its
+ * Verification document serves and no result proves, and whose conversation is one question the
+ * planner asked that waits on the reader: `seedLongRows`' statement, check and question, with
+ * none of its comments. The tree read answers a node's conversation before its ranked children
+ * (R8), so the question is the body's first row and the statement the second, in the first view
+ * at every width, where `seedLongRows`' comments stand above it.
+ */
+export async function seedLongStatement(): Promise<LongStatementSeed> {
+  await createProject({ key: PROJECT, name: "Rows" });
+  const issue = await createIssue({
+    force: true,
+    project: PROJECT,
+    title: "A long statement",
+  });
+  const key = issue.key;
+  const body = longWords("w", 160);
+  await editArtifact(
+    issue.primary_artifact_id,
+    { ops: [{ after: "end", markdown: `:::requirement{#r-long}\n${body}\n:::\n`, op: "insert" }] },
+    asPlanner
+  );
+  const serves = buildDispatchReference({ block: { id: "r-long" }, key, kind: "spec" });
+  await createIssueArtifact(key, {
+    content:
+      `:::check{#c-long serves="${serves}" surface="browser" run="bun run e2e" ` +
+      `when="before_merge"}\nThe long statement holds.\n:::\n`,
+    name: "verification.md",
+  });
+  const specSlug =
+    ((await getIssue(key)).artifacts ?? []).find((artifact) => artifact.primary)?.slug ?? "";
+  // A question that waits on the reader, which an outline that opens with the focus on such a
+  // question focuses in place of its first row, so the statement is no row the opening focuses.
+  await createAsk(key, { question: "At which width is the cut read?", urgency: "high" }, asPlanner);
+  return { key, statement: blockNode(specSlug, "r-long") };
 }
 
 /** How many columns the table of `seedWideNote`'s note holds: at 390 px, each headed by one word

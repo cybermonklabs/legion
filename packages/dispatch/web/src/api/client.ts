@@ -1355,9 +1355,14 @@ export class DispatchApiClient {
 
   /** `GET /api/v1/issues/{key}/tree`: the issue's tree as the reader may see it, under the view
    *  `query` names. Every view answers `view_of`: the issue whose spec this issue is a view on, or
-   *  null where it is none. */
-  getIssueTree(key: string, query: Query<"/api/v1/issues/{key}/tree", "get"> = {}) {
-    return this.read("/api/v1/issues/{key}/tree", { key }, query);
+   *  null where it is none. A caller passes the `signal` of the read it is still interested in,
+   *  so a read it gave up is aborted in flight. */
+  getIssueTree(
+    key: string,
+    query: Query<"/api/v1/issues/{key}/tree", "get"> = {},
+    init: { signal?: AbortSignal } = {}
+  ) {
+    return this.read("/api/v1/issues/{key}/tree", { key }, query, init);
   }
 
   /** The issue whose spec the issue `key` is a view on, as its spec view's tree read answers

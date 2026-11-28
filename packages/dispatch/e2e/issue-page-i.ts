@@ -10,29 +10,29 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
  * How the outline's rows read the outline of the new issue page (`e2e/issue-page-i.e2e.ts`):
  * the readers that `e2e/issue-page.ts` (the page's root and its frame) and
  * `e2e/issue-page-g.ts` (one node's row, and the tree as rows) do not hold. Later rows import
- * from this file rather than change it.
+ * from this file, and add to it only what the rows of more than one part share.
  *
  * What the outline draws, beyond what `e2e/issue-page-g.ts` names:
  *
  * - **The tree** `role="tree"` named `CONTROL_LABELS.tree` (`issue-page-g.ts`'s `tree`), its
  *   rows `treeitem`s carrying `aria-level`, and the one row with `tabindex="0"`, its tab stop. A
- *   row of the outline carries `data-row-key`, which `NodeRow.tsx` draws and no view's row does:
- *   every view draws a tree of its own, so a tree is no sign that the outline is drawn.
+ *   row of the outline carries `data-row-key`, which `NodeRow.tsx` draws; a view's rows may
+ *   carry it too (the Spec view's statements do, for the outline's editing), so the outline's
+ *   rows are read inside its own body, `[data-issue-body]`: every view draws a tree of its own,
+ *   so a tree is no sign that the outline is drawn.
  * - **The stage** the outline is drawn in: the column `[data-testid="issue-column"]` that holds
  *   the stage and the foot (`IssueOutlinePage.tsx`).
  * - **A row's bullet** `[data-node-bullet]`: its column, or its fold control where its node holds
  *   others; its tag `[data-node-tag]` in its margin; and a link its words draw for a reference,
  *   `a[data-row-reference]` naming the reference it links.
- * - **A node's body** `[data-node-body]`, drawn for the focused row and each row pinned open
- *   (`[data-node-body][data-pinned]`), and for no other row.
- * - **A branch deeper than the drawn levels**, one row `[data-branch-more]` whose text says how
- *   many nodes it holds and whose `button` opens them in place.
+ * - **A node's body** `[data-node-body]`, the facts, gaps, counts and author line that every
+ *   unfolded row's face draws whatever the focus, and that a row with none of them draws none of.
  * - **A gap the page names** `[data-gap]` with `data-gap-kind`.
  * - **What a key reports** where it has nowhere to go: `[data-row-report]`, a `role="status"`
  *   drawn at the row the key was pressed on.
- * - **The children**: rows of the outline, `[data-node-type="child_issue"]`, one group; and the
- *   section the page drew above the outline before the children became its rows,
- *   `[data-testid="issue-children"]`, which no address draws now.
+ * - **The children**: the section above the outline, `[data-children-section]`, with its one
+ *   control `[data-children-toggle]` and an entry `[data-child-entry]` for each child; and each
+ *   child's row of the outline, `[data-node-type="child_issue"]`, where the tree places it.
  * - **What stays at the top of the screen**: the header's band `[data-identity-block]` from
  *   761 px up, and the view row's band at 760 px and below.
  * - **What stays at the foot of the screen**: the box to write in, whose height the page
@@ -44,7 +44,6 @@ import { type DrawnRow, nodeRows, parentOfRow, tree } from "./issue-page-g";
 
 /** The selectors the readers pass into the browser. */
 const SELECTORS = {
-  branchMore: "[data-branch-more]",
   /** The part of the header that stays at the top of the screen from 761 px up. */
   identityBand: "[data-identity-block]",
   gap: "[data-gap]",
@@ -55,8 +54,8 @@ const SELECTORS = {
   nodeGlyph: "svg[data-glyph]",
   nodeRow: "[data-node-row]",
   nodeTag: "[data-node-margin] [data-node-tag]",
-  /** A row of the outline, and of no view's tree. */
-  outlineRow: "[data-node-row][data-row-key]",
+  /** A row of the outline, read inside the outline's own body, which no view's tree is drawn in. */
+  outlineRow: "[data-issue-body] [data-node-row][data-row-key]",
   presetRow: '[data-testid="issue-presets"]',
   stage: '[data-testid="issue-column"]',
   tree: '[role="tree"]',
@@ -83,30 +82,30 @@ export function rowsOfType(page: Page, type: string): Locator {
   });
 }
 
-export function nodeBodies(page: Page): Locator {
-  return issuePage(page).locator(SELECTORS.nodeBody);
-}
-
-export function pinnedBodies(page: Page): Locator {
-  return issuePage(page).locator(`${SELECTORS.nodeBody}[data-pinned]`);
-}
-
-export function branchMoreRows(page: Page): Locator {
-  return issuePage(page).locator(SELECTORS.branchMore);
-}
-
 /** The gaps drawn on one row. */
 export function rowGaps(row: Locator): Locator {
   return row.locator(SELECTORS.gap);
 }
 
-/** The children's section the page drew above the outline before the architect ruled that the
- *  children are rows of it: no view draws one now, and a row reads this to say so. */
+/** The children's section at the top of the body, above the outline, which Conversation, each
+ *  filter and Graph draw once (`children-section.tsx`). */
 export function childrenSection(page: Page): Locator {
-  return page.getByTestId("issue-children");
+  return issuePage(page).locator("[data-children-section]");
 }
 
-/** The children as the page draws them: rows of the outline, one group of them. */
+/** The section's one control, which opens and closes its list, and which the children's
+ *  address and `t h` put the focus on. */
+export function childrenToggle(page: Page): Locator {
+  return childrenSection(page).locator("[data-children-toggle]");
+}
+
+/** The section's entry for the child `key`: its key as a link to its page, its title and its
+ *  facts. */
+export function childEntry(page: Page, key: string): Locator {
+  return childrenSection(page).locator(`[data-child-entry="${cssValue(key)}"]`);
+}
+
+/** The children's rows of the outline, each where the tree places it. */
 export function childRows(page: Page): Locator {
   return tree(page).locator('[data-node-row][data-node-type="child_issue"]');
 }
@@ -205,51 +204,6 @@ export function bulletBoxes(
             right: box?.right ?? -1,
           };
         }),
-    SELECTORS
-  );
-}
-
-/** Every item the tree draws, in order, with its `aria-level`: a node's row by its node's id,
- *  and the one line a branch below the drawn levels folds to by its text, which counts what it
- *  holds. */
-export function drawnItems(
-  page: Page
-): Promise<
-  { readonly id: string | null; readonly level: string | null; readonly more: string | null }[]
-> {
-  return page.evaluate(
-    (selectors) =>
-      [
-        ...document.querySelectorAll(
-          `${selectors.issuePage} ${selectors.tree} :is(${selectors.nodeRow}, ${selectors.branchMore})`
-        ),
-      ].map((item) => ({
-        id: item.getAttribute("data-node-id"),
-        level: item.getAttribute("aria-level"),
-        more: item.matches(selectors.branchMore)
-          ? (item.textContent ?? "").replace(/\s+/g, " ").trim()
-          : null,
-      })),
-    SELECTORS
-  );
-}
-
-/** Each deeper branch's one line: the `--row-depth` it is drawn at and its computed left
- *  padding, in pixels, which is its indent (`TreeRows.tsx`'s `BranchMore`). */
-export function branchMoreIndents(
-  page: Page
-): Promise<{ readonly depth: number; readonly padding: number }[]> {
-  return page.evaluate(
-    (selectors) =>
-      [...document.querySelectorAll(`${selectors.issuePage} ${selectors.branchMore}`)].map(
-        (line) => {
-          const style = getComputedStyle(line);
-          return {
-            depth: Number.parseFloat(style.getPropertyValue("--row-depth")),
-            padding: Number.parseFloat(style.paddingLeft),
-          };
-        }
-      ),
     SELECTORS
   );
 }
@@ -680,46 +634,23 @@ export async function standInControlBelow(page: Page): Promise<{
   };
 }
 
-/** How many presses `openEveryDeeperBranch` makes before it gives up: well past the branches any
- *  seeded issue holds, so a tree that draws the control whatever is pressed ends as the
- *  caller's own failed reading rather than as this helper running until the row's deadline. */
-const BRANCHES_OPENED_AT_MOST = 200;
-
-/** Opens every branch the tree folded to one line because it sits below the drawn levels
- *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a row reads the nodes such a branch holds as rows of
- *  their own, as `issue-page-g.ts`'s `unfoldEveryBranch` does with a fold control. It opens the
- *  tree as it stands, so a caller first waits for the tree it means to open to be drawn. No row
- *  of this part calls it: it is the later parts' (their rows import it from this file). */
-export async function openEveryDeeperBranch(page: Page): Promise<void> {
-  const controls = branchMoreRows(page).getByRole("button");
-  for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
-    const first = controls.first();
-    // The first count reads the tree as its caller waited for it, and each press draws the
-    // branch it opens before its click resolves, so none left is every deeper branch open.
-    if ((await first.count()) === 0) return;
-    await first.click();
-  }
-  expect(
-    await controls.count(),
-    `the tree still draws a deeper branch after ${BRANCHES_OPENED_AT_MOST} openings`
-  ).toBe(0);
-}
-
 /**
  * Moves to the view `name` by pressing the view row itself, however that row draws at the width
- * a row runs at: five toggles from 1280 px, and one control opening a menu of five below it. A
- * toggle already pressed is left as it is, since pressing it again turns it off. `openPreset`
- * goes to the control's own address instead, which is a load.
+ * a row runs at: a toggle for each of its controls from 1280 px, and one control opening a menu
+ * of them below it. A toggle already pressed is left as it is, since pressing it again turns it
+ * off. `openPreset` goes to the control's own address instead, which is a load.
  */
 export async function pickPreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
   // The row has to be on the page before its shape can be read: a count taken while the page
   // is still loading answers zero for both shapes.
   await row.waitFor();
-  const toggle = row.getByRole("button", { exact: true, name });
   // The wait above drew the row, which draws one shape or the other with it by one media query
-  // and its negation, so one count says which shape this width draws.
-  if ((await toggle.count()) > 0) {
+  // and its negation, so one count says which shape this width draws: the one control's. A
+  // count of the toggle by its name would not say it, since on a view with no signal, such as
+  // Conversation, the one control is named by that view's word alone.
+  if ((await presetChooser(page).count()) === 0) {
+    const toggle = row.getByRole("button", { exact: true, name });
     // Its `aria-pressed` is drawn with it, from the address the page is on, so it says whether
     // its view is on now: a press on one already on would turn it off.
     if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
@@ -734,16 +665,69 @@ export async function pickPreset(page: Page, name: string): Promise<void> {
 
 /** Fails unless the page is on the view `name`, whichever shape the row has at this width: the
  *  row of toggles presses the one it is on (`aria-pressed`), and the one control below 1280 px
- *  draws its name and its signal as its own name (`IssuePresets.tsx`). */
+ *  draws the name of the view that is on as its own name, then that view's signal where the view
+ *  is a filter (`IssuePresets.tsx`). */
 export async function expectActivePreset(page: Page, name: string): Promise<void> {
   const row = presetRow(page);
   await row.waitFor();
-  const toggle = row.getByRole("button", { exact: true, name });
-  // The wait above drew the row, which draws one shape or the other with it by one media query
-  // and its negation, so one count says which shape this width draws.
-  if ((await toggle.count()) > 0) {
-    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+  // One count says which shape this width draws, as in `pickPreset`.
+  if ((await presetChooser(page).count()) === 0) {
+    await expect(row.getByRole("button", { exact: true, name })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
     return;
   }
-  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name} \\d+\\b`));
+  await expect(presetChooser(page)).toHaveAccessibleName(new RegExp(`^${name}(?: \\d+\\b|$)`));
+}
+
+// ---------------------------------------------------------------------------------------------
+// The line for an address that names nothing.
+// ---------------------------------------------------------------------------------------------
+
+/** A comment id of the right shape, a whole uuid, that no comment of the seeded issue has: the
+ *  comment's own read answers 404 for it. */
+export const GONE_COMMENT = "5f0c2a9e-7d41-4b8a-9c3e-2e6d1b7a4c90";
+
+/** The heading and the line part I's outline draws in its own place for an address that names
+ *  nothing the issue holds (`slots/body.tsx`'s `ItemFallback` and `ABSENT_LINES`), for the
+ *  issue `key`. That file keeps these words to itself, so they are written out here, as
+ *  `deep-links.e2e.ts` writes the heading of a comment that is not found. */
+export const FALLBACK_LINES = {
+  block: (key: string) => ({
+    heading: "No row for this block",
+    line: `That link names no row of ${key}'s outline.`,
+  }),
+  comment: (key: string) => ({
+    heading: "Comment not found",
+    line: `That link doesn't name a comment on ${key} — it may have been deleted.`,
+  }),
+} as const;
+
+/** The page draws part I's line `words` in the place of the view whose body is `view` for the
+ *  address it has just loaded, `what`: its heading and its line, with the focus on the heading,
+ *  and none of the view beside it. Answers the heading. */
+export async function expectFallbackLine(
+  page: Page,
+  words: { readonly heading: string; readonly line: string },
+  view: Locator,
+  what: string
+): Promise<Locator> {
+  const named = { exact: true, name: words.heading } as const;
+  const heading = issuePage(page).getByRole("heading", named);
+  await expect(heading, `${what} draws no "${words.heading}" in the view's place`).toBeVisible();
+  // The inner locator of `has` is read inside each section, so it names no root of its own.
+  await expect(
+    issuePage(page)
+      .locator("section")
+      .filter({ has: page.getByRole("heading", named) })
+      .locator("p"),
+    `${what} draws another line under "${words.heading}"`
+  ).toHaveText(words.line);
+  await expect(
+    heading,
+    `${what} leaves the focus off "${words.heading}", on the page's body or elsewhere`
+  ).toBeFocused();
+  await expect(view, `${what} draws the view beside the line`).toHaveCount(0);
+  return heading;
 }

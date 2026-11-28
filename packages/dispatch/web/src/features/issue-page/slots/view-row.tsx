@@ -3,32 +3,35 @@ import { type ReactNode, type RefObject, useLayoutEffect, useMemo, useRef } from
 import { useLocation } from "react-router-dom";
 
 import { primarySpec } from "../../../api/issue-cache";
-import { whoAmIQuery } from "../../../api/queries";
+import { TREE_FILTERS, whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
-import { contentsEntries } from "../contents-entries";
-import { CONTENTS_PANE_QUERY, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
+import type { TreeNode } from "../issue-tree";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals, isFilter, presetView } from "../presets";
+import type { Preset } from "../page-words";
+import { type Filter, filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { planTasksOut } from "../tree-read/tree-read";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the five view controls and Keys
- * (`IssuePresets.tsx`), each control's signal read off the issue's one tree, and below 1024 px,
- * with no view on, the Outline control beside the one control (`contents-frame.tsx`). It binds
- * the views' chords (`useIssueKeymap.ts`). The signals are drawn only once every read the tree
- * is built from holds its answer (`useOutlineReads`'s `readsHeld`) and the reader's login has
- * answered, which Conversation's count is read for: until then the tree lacks the nodes of a
- * read still out or failed, or Conversation counts no thread as the reader's, and a count read
- * then - a `0`, or a number short of the real one - would read as the real count, so the
- * controls draw none. Under a words filter (`?q=`) they wait on the names too (`namesHeld`): a
- * plan task's or a callout's words come from the names alone, so a count read before they are
- * held finds none of those nodes. With no filter on a count reads no words, and does not wait
- * on the names.
+ * The view row (R2, R11): Conversation with no count, the four filter controls with signals
+ * from the issue's tree, Graph with no count, and Keys (`IssuePresets.tsx`). Below 1024 px, in
+ * Conversation, each filter and Graph (R13), the Outline control stands beside the one control
+ * (`contents-frame.tsx`'s `drawsContents`). The row binds the views' chords
+ * (`useIssueKeymap.ts`).
+ *
+ * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
+ * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
+ * decision `waiting` until the login answers, so the Decisions flag would omit decisions that
+ * need review. Under a words filter (`?q=`) signals wait for the names (`namesHeld`), since
+ * the names supply the words of plan tasks and callouts. Without a words filter the counts
+ * do not depend on the names. A filter loaded cold with no outline read draws its own count
+ * from its view answer alone (`viewRowSignals`).
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -41,24 +44,20 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { hash, search } = useLocation();
   const address = issueAddress(route, search, hash, primarySpec(issue)?.slug);
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
-  // Who the reader is, which Conversation's count is read for: a thread is counted where the
-  // reader began it.
+  // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  // What each control draws after its name: a view's count of its main kind and what of it asks
-  // something of the reader, and for Conversation how many entries the Contents list holds, as
-  // the prototype's signal counts its branches. Each follows `?q=`. None while the reads or the
-  // reader's login do not hold, nor under `?q=` while the names do not (above).
+  // What each control draws after its name (`viewRowSignals`).
   const signals = useMemo(
     () =>
-      readsHeld && viewer !== undefined && (namesHeld || address.filter === "")
-        ? {
-            ...filterSignals(root, address.filter),
-            conversation: {
-              count: contentsEntries(presetView(root, "conversation", address.filter).root, viewer),
-            },
-          }
-        : undefined,
-    [address.filter, namesHeld, readsHeld, root, viewer]
+      viewRowSignals({
+        filter: address.filter,
+        namesHeld,
+        preset: address.preset,
+        readsHeld,
+        root,
+        viewer,
+      }),
+    [address.filter, address.preset, namesHeld, readsHeld, root, viewer]
   );
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
@@ -72,11 +71,59 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
       <IssuePresets
         active={address.preset}
         issueKey={issue.key}
-        outline={paned || isFilter(address.preset) ? undefined : <OutlineSheet slot={props} />}
+        outline={
+          paned || !drawsContents(address.preset) ? undefined : <OutlineSheet slot={props} />
+        }
         signals={signals}
       />
     </div>
   );
+}
+
+/**
+ * What each control of the view row draws after its name: a filter's count of its main kind and
+ * what of it asks something of the reader, and nothing for Conversation or Graph. Each follows
+ * the words filter (`filter`, `?q=`), and carries "+" while the read it is read from holds nodes
+ * no page read yet holds (R15). None while the reads (`readsHeld`) or the reader's login
+ * (`viewer`) do not hold, nor under a words filter while the names do not (`namesHeld`). Plan's
+ * control draws none either while the plan's tasks are still to be read (`planTasksOut`): the
+ * outline read holds none of them, so its count would read 0 for what the page has not read
+ * yet, and then change; its room stays empty (`IssuePresets`'s `SIGNAL_ROOM`) so no control moves.
+ *
+ * A filter loaded cold with no outline read - Spec below 1024 px, which sends none until the
+ * Outline sheet opens (R13) - never holds the outline's reads, and its count is its own view
+ * answer's nodes of its main kind (R4): once that answer is held (`TreeViews`), its control
+ * draws that count alone, and every other control none.
+ */
+export function viewRowSignals({
+  filter,
+  namesHeld,
+  preset,
+  readsHeld,
+  root,
+  viewer,
+}: {
+  filter: string;
+  namesHeld: boolean;
+  preset: Preset;
+  readsHeld: boolean;
+  root: TreeNode;
+  viewer: string | undefined;
+}): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
+  if (!namesHeld && filter !== "") return undefined;
+  if (readsHeld && viewer !== undefined) {
+    const signals = filterSignals(root, filter);
+    return planTasksOut(root, preset) ? { ...signals, plan: undefined } : signals;
+  }
+  const cold = TREE_FILTERS.find((one) => one === preset);
+  if (cold === undefined || root.views?.[cold] === undefined) return undefined;
+  return {
+    decisions: undefined,
+    plan: undefined,
+    spec: undefined,
+    verification: undefined,
+    [cold]: filterSignals(root, filter)[cold],
+  };
 }
 
 /**

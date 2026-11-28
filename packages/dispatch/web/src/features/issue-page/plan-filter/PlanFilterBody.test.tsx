@@ -9,40 +9,39 @@ import { displayTree } from "../../../__tests__/display-trees";
 import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import {
-  artifactBlocksQuery,
-  issueAsksQuery,
+  issueAskThreadsQuery,
   issueCoverageQuery,
   issueResultsQuery,
   whoAmIQuery,
 } from "../../../api/queries";
-import type { Artifact, ArtifactBlock, IssueDetails } from "../../../api/types";
+import type { Artifact, IssueDetails } from "../../../api/types";
 import { pageFocusedRow } from "../../../theme/classes";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { MarginProvider } from "../../margin/margin-context";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
+import * as referenceNames from "../../refs/reference-names";
 import { type PublishedReferences, ReferenceNamesProvider } from "../../refs/reference-names";
+import { buildIssuePath, type IssueRoute } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { useKeymapScope } from "../../shell/keymap";
 import { artifact, issueDetails } from "../decisions-filter/decisions-fixtures";
+import { firstLineOf } from "../first-line";
 import { FocusedNodeProvider, useFocusedNode } from "../focused-node";
-import {
-  firstLineOf,
-  type IssueTreeReads,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-} from "../issue-tree";
+import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "../issue-tree";
+import { NodeFacts } from "../NodeFacts";
 import { FirstLine } from "../node-line";
 import { NO_FAILED_READS } from "../outline-reads";
 import {
   BLOCK_ATTRIBUTE_LABELS,
   CONTROL_LABELS,
   EMPTY_STATE_LINES,
+  NODE_FACT_LABELS,
   NODE_TYPE_NAMES,
   type NodeType,
   PLAN_WORDS,
   STATE_LINES,
 } from "../page-words";
+import { presetView } from "../presets";
 import {
   blockReads,
   Publisher,
@@ -54,13 +53,17 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
+import { treeAnswer, treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import { outlineQuery, type TreeAnswerNode, viewQuery } from "../tree-read/tree-read";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
  * What the Plan filter's body draws: it opens on the chart of time - one bar per step, after
- * every step it needs, each row saying what it needs, that it holds no size and what it serves
- * - and one control switches to the ordered steps, which are the outline's own rows; a cycle is
- * one line that lists its tasks.
+ * every step it needs and as long as its size, each row saying what it needs, its size or that it
+ * holds none, and what it serves - and one control switches to the ordered steps, which are the
+ * outline's own rows; a cycle is one line that lists its tasks. The steps stand in the order the
+ * Plan view's read answers, each task at the place the read gives it; on an issue with issues
+ * under it the tasks of each stand in the same order, each marked with its issue's key.
  *
  * The nodes are built as `presets.ts`'s `filterView` leaves them for the Plan filter: each task
  * a row of its own, the statement it serves its parent line, and any further statement a chip
@@ -69,19 +72,20 @@ import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody"
  * the tasks and the statements from (`planReads`). The body is drawn under the names store, with
  * what the page publishes for those tasks, their statements and their chips, by that rule too
  * (`publishedPlan`): the view draws the names the store projects from it and names no edge
- * itself.
+ * itself. A parent's plan is drawn from the view `presetView` makes of a held Plan read.
  *
- * Two cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
- * holds the reads the issue's tree is built from, for what the slot hands the body as the reads
- * change: the body kept mounted, and a refused read's line and Retry.
+ * Some cases draw the Plan view's slot itself (`slots/view-plan.tsx`), over a query client that
+ * holds the reads the issue's tree is built from, under the names store, for what the slot hands
+ * the body as the reads change and what it publishes: the body kept mounted, a refused read's
+ * line and Retry, and the names of a step's needs and statements.
  */
 
 const KEY = "CORE-1";
 const PLAN = "plan-md";
 const SPEC = "spec-md";
 
-/** happy-dom answers every media query against its own window; the tree reads one to tell the
- *  width it is read at (`IssueTree.tsx`'s `ZOOMED_TREE_QUERY`), so a test sets it. */
+/** happy-dom answers every media query against its own window; the page reads them to tell the
+ *  width it is read at, so a test sets it. */
 function setViewport(width: number): void {
   window.matchMedia = ((query: string) => {
     const max = /max-width:\s*([\d.]+)px/.exec(query)?.[1];
@@ -117,14 +121,16 @@ function taskRef(blockId: string): string {
   return `dispatch://${KEY}/artifact/${PLAN}#b-${blockId}`;
 }
 
-/** The chip the tree draws for one `needs` pointer of a task's block (`tree-drafts.ts`'s
- *  `placeBlocks`), under the attribute's own word; `issue` names it as the tree names the task it
- *  points at, once a test has built every task. */
+/** The chip the tree draws for one `needs` pointer of a task's block (`tree-read/tree-nodes.ts`'
+ *  `needsChips`), under the attribute's own word, naming the task it points at by the tree's id
+ *  of it (`NodeChip.node`); `issue` names it as the tree names the task it points at, once a test
+ *  has built every task. */
 function need(blockId: string): NodeChip {
   return {
     answered: true,
     gone: false,
     label: BLOCK_ATTRIBUTE_LABELS.needs,
+    node: blockNodeId(PLAN, blockId),
     ref: taskRef(blockId),
   };
 }
@@ -181,25 +187,39 @@ function alsoUnder(statement: ParentLine): NodeChip {
   return treeContext(planReads([statement])).chipOf(statement.reference ?? "");
 }
 
-/** One plan task, by its block id: what it needs, by their block ids, and the statement it
- *  serves, where the plan gives it one. */
+/** One plan task, by its block id: what it needs, by their block ids, as the Plan view's read
+ *  answers them (`TreeNode.needs`) and its chips name them; the statement it serves, where the
+ *  plan gives it one; its place in the order the Plan view's read answers (`TreeNode.position`),
+ *  where the read gives it one: a task of a cycle holds none; and the cycle the read puts it in
+ *  (`TreeNode.cycle`), where it puts it in one. */
 function task(
   blockId: string,
   {
+    cycle,
     needs = [],
     parentLine,
+    position,
     type = "plan_task",
-  }: { needs?: readonly string[]; parentLine?: ParentLine; type?: NodeType } = {}
+  }: {
+    cycle?: string;
+    needs?: readonly string[];
+    parentLine?: ParentLine;
+    position?: number;
+    type?: NodeType;
+  } = {}
 ): TreeNode {
   return {
     alsoUnder: [],
     children: [],
     chips: needs.map(need),
+    ...(cycle === undefined ? {} : { cycle }),
     facts: [],
     gaps: [],
     held: 0,
     id: blockNodeId(PLAN, blockId),
+    ...(needs.length === 0 ? {} : { needs: needs.map((one) => blockNodeId(PLAN, one)) }),
     ...(parentLine === undefined ? {} : { parentLine }),
+    ...(position === undefined ? {} : { position }),
     question: false,
     reference: taskRef(blockId),
     replaced: false,
@@ -212,14 +232,18 @@ function task(
 
 /** The issue's root over a test's tasks, each `needs` chip named as the tree names it, from the
  *  reads the page names the tasks from (`tasksReads`, `treeContext`'s `chipOf`), with its label
- *  spread into a chip of its own, as the filter's view hands the tree over. */
+ *  and the task it names spread into a chip of its own, as the filter's view hands the tree over. */
 function issue(tasks: readonly TreeNode[]): TreeNode {
   const { chipOf } = treeContext(tasksReads(tasks));
   const children = tasks.map((one) => ({
     ...one,
     chips: one.chips.map((chip) =>
       chip.label === BLOCK_ATTRIBUTE_LABELS.needs
-        ? { ...chipOf(chip.ref), label: chip.label }
+        ? {
+            ...chipOf(chip.ref),
+            label: chip.label,
+            ...(chip.node === undefined ? {} : { node: chip.node }),
+          }
         : chip
     ),
   }));
@@ -286,20 +310,20 @@ type DrawnBody = RenderResult & {
 
 /** Draws the body over `root`, the view's tasks, in the stage the page draws a view in
  *  (`slots/stage.tsx`), which keeps the focus in the view. `plan` is the whole plan's tasks, which the
- *  order and the chart's places are worked out from (`slots/view-plan.tsx`): the view's own
- *  tasks unless a case draws the view a words filter leaves. `reveal` is the chain down to the
- *  node the address names. `written` is the block ids of the plan document in the order they
- *  are written, as the page's own blocks read holds them (`useIssueTree.ts`); where a case gives
- *  none the page holds no document, as on a tree drawn before that read answered. `reads` is
- *  how the plan's and the spec's blocks reads stand, as the slot hands them on
- *  (`slots/view-plan.tsx`): answered unless a case gives another. `published` is what the page
- *  publishes of its batched names read, which is published to the names store the body is drawn
- *  under and handed to the body, as the slot hands it: what it publishes for the whole plan
+ *  order and the chart's places are drawn from (`slots/view-plan.tsx`): the view's own tasks
+ *  unless a case draws the view a words filter leaves. `reveal` is the chain down to the node the
+ *  address names. `reads` is how the plan's and the spec's blocks reads stand, as the slot hands
+ *  them on (`slots/view-plan.tsx`): answered unless a case gives another. `published` is what the
+ *  page publishes of its batched names read, which is published to the names store the body is
+ *  drawn under and handed to the body, as the slot hands it: what it publishes for the whole plan
  *  (`publishedPlan`) where a case gives nothing else, one value for as long as the tree it is
- *  drawn over is the same, as the page's is. `client` is the query client, by default one whose
- *  reads never go stale. `container` is the element the body is drawn in, by default one the
- *  test adds to the page. `redraw` draws the same body again where it is mounted, over another
- *  `root` and `reads`, as the slot does when the issue's reads change. */
+ *  drawn over is the same, as the page's is. That value names by hand what the page and the
+ *  Plan view's own read publish together, so no case drawn here proves the slot publishes it: the
+ *  case drawn through the slot itself ("a step names the step it needs and the statements it
+ *  serves from the view's own tree") hands nothing by hand. `client` is the query client, by
+ *  default one whose reads never go stale. `container` is the element the body is drawn in, by
+ *  default one the test adds to the page. `redraw` draws the same body again where it is
+ *  mounted, over another `root` and `reads`, as the slot does when the issue's reads change. */
 function renderBody(
   root: TreeNode,
   {
@@ -309,7 +333,6 @@ function renderBody(
     published,
     reads = ANSWERED,
     reveal,
-    written,
   }: {
     client?: QueryClient;
     container?: HTMLElement;
@@ -317,7 +340,6 @@ function renderBody(
     published?: PublishedReferences;
     reads?: PlanReads;
     reveal?: readonly TreeNode[];
-    written?: readonly string[];
   } = {}
 ): DrawnBody {
   const client =
@@ -326,13 +348,6 @@ function renderBody(
       defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
     });
   const artifacts = new Map<string, Artifact>();
-  if (written !== undefined) {
-    artifacts.set(PLAN, { id: PLAN_ARTIFACT, slug: PLAN } as Artifact);
-    client.setQueryData(
-      ["artifact", PLAN_ARTIFACT, "blocks"],
-      written.map((id) => ({ id }))
-    );
-  }
   const publications = new WeakMap<TreeNode, PublishedReferences>();
   const publishedFor = (shown: TreeNode): PublishedReferences => {
     const held = publications.get(shown) ?? publishedPlan(plan ?? shown.children);
@@ -354,7 +369,6 @@ function renderBody(
                     artifacts={artifacts}
                     context={new Set()}
                     emptyLine={EMPTY_STATE_LINES.plan}
-                    filtering
                     focusReveal
                     holdsEscape={false}
                     isClosed={false}
@@ -417,11 +431,20 @@ async function showSteps(view: RenderResult): Promise<void> {
 // first line, and a task with no size a short bar marked No size.
 test("the plan opens on the chart: one bar per step, each after every step it needs", () => {
   setViewport(1440);
-  // The plan writes the third task first: the third needs the first, and the second the third.
+  // The view hands the third task over first, and the read places it second: the third needs the
+  // first, and the second the third.
   const whole = issue([
-    task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
-    task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
-    task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
+    task("t3", {
+      needs: ["t1"],
+      parentLine: serves("r2", "The outline draws one body"),
+      position: 1,
+    }),
+    task("t1", { parentLine: serves("r1", "The page draws the conversation"), position: 0 }),
+    task("t2", {
+      needs: ["t3"],
+      parentLine: serves("r1", "The page draws the conversation"),
+      position: 2,
+    }),
   ]);
   const view = renderBody(whole);
   let start: string | null = null;
@@ -434,8 +457,8 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
       "false"
     );
     expect(rowIds(view.container)).toEqual([D("t1"), D("t3"), D("t2")]);
-    // One bar per step, and each starts one unit after the step it needs: today's model holds
-    // no size, so a bar is one unit long and its row says so.
+    // One bar per step, and each starts one unit after the step it needs: no task here holds a
+    // size, so a bar is one unit long and its row says so.
     expect(
       ["t1", "t3", "t2"].map((id) => [
         rowOf(view, id).getAttribute("data-plan-start"),
@@ -533,9 +556,9 @@ test("the plan opens on the chart: one bar per step, each after every step it ne
   };
   const cutView = renderBody(
     issue([
-      { ...task("t1"), text: long("t1") },
-      { ...task("t2", { needs: ["t3"] }), text: long("t2") },
-      task("t3", { needs: ["t2"] }),
+      { ...task("t1", { position: 0 }), text: long("t1") },
+      { ...task("t2", { cycle: "c", needs: ["t3"] }), text: long("t2") },
+      task("t3", { cycle: "c", needs: ["t2"] }),
     ])
   );
   try {
@@ -556,8 +579,8 @@ test("a cycle names a task by its projected line, not its stored marks", async (
   setViewport(1440);
   const view = renderBody(
     issue([
-      { ...task("t2", { needs: ["t3"] }), text: "**Draw** the `rows` first" },
-      task("t3", { needs: ["t2"] }),
+      { ...task("t2", { cycle: "c", needs: ["t3"] }), text: "**Draw** the `rows` first" },
+      task("t3", { cycle: "c", needs: ["t2"] }),
     ])
   );
   try {
@@ -582,7 +605,11 @@ test("a step's line reads a reference by its target's name, as the task's folded
   const names = new Map([[cited, "Ship the release"]]);
   const words = `Wait for ${cited} to land.`;
   const tree = displayTree(words);
-  const waiting: TreeNode = { ...task("t1"), text: words, ...(tree === undefined ? {} : { tree }) };
+  const waiting: TreeNode = {
+    ...task("t1", { position: 0 }),
+    text: words,
+    ...(tree === undefined ? {} : { tree }),
+  };
   const root = issue([waiting]);
   // What the page publishes for the plan, and the name its batched read gave the issue the task
   // cites, as one value, as the page's one read publishes both.
@@ -627,7 +654,7 @@ test("a bar draws every serves chip, two with the same words or the same referen
   const view = renderBody(
     issue([
       {
-        ...task("t1"),
+        ...task("t1", { position: 0 }),
         alsoUnder: [
           alsoUnder(serves("r4", "Same words")),
           alsoUnder(serves("r5", "Same words")),
@@ -667,9 +694,9 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   const user = userEvent.setup();
   const view = renderBody(
     issue([
-      task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
-      task("t2", { needs: ["t1"] }),
-      task("t3", { needs: ["t2"] }),
+      task("t1", { parentLine: serves("r1", "The page draws the conversation"), position: 0 }),
+      task("t2", { needs: ["t1"], position: 1 }),
+      task("t3", { needs: ["t2"], position: 2 }),
     ])
   );
   try {
@@ -736,12 +763,50 @@ test("the keys reach the bars in order, and the focused step's facts go to Detai
   }
 });
 
+// Down and Up scroll the page from the page's body, as the outline's do: the chart takes them
+// only from a row or a link inside one, where they move as `j` and `k` do, while `j` from the
+// page's body still goes to the first bar.
+test("Plan: an arrow with the focus on the page's body is not taken", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderBody(
+    issue([
+      task("t1", { position: 0 }),
+      task("t2", { needs: ["t1"], position: 1 }),
+      task("t3", { needs: ["t2"], position: 2 }),
+    ])
+  );
+  try {
+    // The stage gives the chart's first bar the focus nobody holds; Escape leaves the chart from
+    // there for the page's body.
+    await waitFor(() => expect(focusedRow()).toBe(D("t1")));
+    await user.keyboard("{Escape}");
+    expect(document.activeElement).toBe(document.body);
+    for (const key of ["ArrowDown", "ArrowUp"]) {
+      const event = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key });
+      act(() => {
+        document.body.dispatchEvent(event);
+      });
+      expect(event.defaultPrevented, `the chart took ${key} from the page's body`).toBe(false);
+      expect(document.activeElement, `${key} from the page's body moved the focus`).toBe(
+        document.body
+      );
+    }
+    await user.keyboard("j");
+    expect(focusedRow(), "j from the page's body did not go to the first bar").toBe(D("t1"));
+    await user.keyboard("{ArrowDown}");
+    expect(focusedRow(), "Down from a bar did not go to the next").toBe(D("t2"));
+  } finally {
+    view.unmount();
+  }
+});
+
 // An address that names a step lands on it, in the view the filter opens on. The landing focuses
 // the row in the frame after the commit that draws it (`IssueTree.tsx`'s `landOnRow`).
 test("an address naming a step puts the focus on its bar's row", async () => {
   setViewport(1440);
-  const named = task("t2", { needs: ["t1"] });
-  const root = issue([task("t1"), named]);
+  const named = task("t2", { needs: ["t1"], position: 1 });
+  const root = issue([task("t1", { position: 0 }), named]);
   const view = renderBody(root, { reveal: [root, named] });
   try {
     await waitFor(() => expect(focusedRow()).toBe(D("t2")));
@@ -756,8 +821,8 @@ test("an address naming a step puts the focus on its bar's row", async () => {
 // address's row is not the tree's tab stop (`slots/stage.tsx`).
 test("an address opened before the reads answer lands on its step once they answer", async () => {
   setViewport(1440);
-  const named = task("t2", { needs: ["t1"] });
-  const root = issue([task("t1"), named]);
+  const named = task("t2", { needs: ["t1"], position: 1 });
+  const root = issue([task("t1", { position: 0 }), named]);
   const opened = renderBody(root, { reads: { state: "waiting" }, reveal: [root, named] });
   try {
     opened.redraw(root, ANSWERED);
@@ -793,11 +858,22 @@ test("an address opened before the reads answer lands on its step once they answ
 test("the control switches to the ordered steps, which are the outline's own rows", async () => {
   setViewport(1440);
   // The address names the first task's step.
-  const named = task("t1", { parentLine: serves("r1", "The page draws the conversation") });
+  const named = task("t1", {
+    parentLine: serves("r1", "The page draws the conversation"),
+    position: 0,
+  });
   const root = issue([
-    task("t3", { needs: ["t1"], parentLine: serves("r2", "The outline draws one body") }),
+    task("t3", {
+      needs: ["t1"],
+      parentLine: serves("r2", "The outline draws one body"),
+      position: 1,
+    }),
     named,
-    task("t2", { needs: ["t3"], parentLine: serves("r1", "The page draws the conversation") }),
+    task("t2", {
+      needs: ["t3"],
+      parentLine: serves("r1", "The page draws the conversation"),
+      position: 2,
+    }),
   ]);
   const view = renderBody(root, { reveal: [root, named] });
   try {
@@ -838,7 +914,10 @@ test("a step's serves chips name each statement by the line the store projects f
   const other = `dispatch://${KEY}/spec#b-r2`;
   const root = issue([
     {
-      ...task("t1", { parentLine: serves("r1", "**Stand** the page up first.\n\nThen the rest.") }),
+      ...task("t1", {
+        parentLine: serves("r1", "**Stand** the page up first.\n\nThen the rest."),
+        position: 0,
+      }),
       alsoUnder: [alsoUnder(serves("r2", "1\\. Number the steps."))],
     },
   ]);
@@ -875,7 +954,7 @@ test("a task that serves a statement with no worded block draws a serves chip na
   const view = renderBody(
     issue([
       {
-        ...task("t1", { parentLine: serves("r1", "") }),
+        ...task("t1", { parentLine: serves("r1", ""), position: 0 }),
         alsoUnder: [alsoUnder(serves("r2", ""))],
       },
     ])
@@ -905,12 +984,16 @@ test("a task that serves a statement with no worded block draws a serves chip na
 test("a step's needs and serves chips name each block by its first worded block, cut to a chip's room", async () => {
   setViewport(1440);
   const root = issue([
-    { ...task("t1"), text: "# Stand the **harness** up\n\nThen read the rows." },
-    { ...task("t2"), text: "Read every row of the harness and say which one failed." },
+    { ...task("t1", { position: 0 }), text: "# Stand the **harness** up\n\nThen read the rows." },
+    {
+      ...task("t2", { position: 1 }),
+      text: "Read every row of the harness and say which one failed.",
+    },
     {
       ...task("t3", {
         needs: ["t1", "t2"],
         parentLine: serves("r1", "# Draw the **chart**\n\nThen the rest."),
+        position: 2,
       }),
       alsoUnder: [alsoUnder(serves("r2", "Draw each bar of the chart after every bar it needs."))],
     },
@@ -954,7 +1037,7 @@ test("a step's row waits on the page's read for a reference the page asks for", 
   const words = `See ${address} first.`;
   const name = "the queue's drain";
   const getReferences = spyOn(api, "getReferences").mockImplementation(() => new Promise(() => {}));
-  const root = issue([{ ...task("t1"), text: words }]);
+  const root = issue([{ ...task("t1", { position: 0 }), text: words }]);
   const view = renderBody(root, { published: publishedNames(new Map(), { asked: [address] }) });
   const rowWords = () => rowOf(view, "t1").querySelector("[data-node-words]")?.textContent ?? "";
   try {
@@ -1010,29 +1093,23 @@ function issueRead(verification?: Artifact): IssueDetails {
   };
 }
 
-/** A plan task's block, as the plan document's blocks read holds it. */
-function taskBlock(id: string): ArtifactBlock {
-  return {
-    attributes: [],
-    from: 0,
-    id,
-    references: { asks: 0, comments: 0 },
-    to: 1,
-    token: id,
-    type: "plan_task",
-  };
+/** A plan task of the plan document as the tree read answers it, at `position` in it. */
+function taskBlock(id: string, position: number): TreeAnswerNode {
+  return treeNode(id, "plan_task", KEY, {
+    document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
+  });
+}
+
+/** What the Plan view's read answers of a task beside its node (`plan`): its place in the order
+ *  the read answers, and no size, need, skill or doc. */
+function planAt(position: number): NonNullable<TreeAnswerNode["plan"]> {
+  return { cycle: false, docs: [], needs: [], position, size: null, skills: [] };
 }
 
 /** A query client holding every read the issue's tree is built from (`useIssueTree.ts`), each
- *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, either
- *  of which a case may leave unheld for its read to go to `api.getArtifactBlocks`. */
-function slotClient({
-  planHeld = true,
-  specHeld = true,
-}: {
-  planHeld?: boolean;
-  specHeld?: boolean;
-} = {}): QueryClient {
+ *  answered and never stale, so none is sent: the plan's two tasks, and the spec's blocks, which
+ *  a case may leave unheld for the tree read, which holds both, to go to `api.getIssueTree`. */
+function slotClient({ specHeld = true }: { specHeld?: boolean } = {}): QueryClient {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1054,15 +1131,14 @@ function slotClient({
     document: null,
     open_questions: [],
   });
-  client.setQueryData(issueAsksQuery(KEY).queryKey, []);
-  for (const read of ["comments", "issue-messages"]) client.setQueryData([read, KEY], []);
-  if (planHeld) {
-    client.setQueryData(artifactBlocksQuery(PLAN_ARTIFACT).queryKey, [
-      taskBlock("t1"),
-      taskBlock("t2"),
-    ]);
+  client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  client.setQueryData(["issue-messages", KEY], []);
+  if (specHeld) {
+    client.setQueryData(
+      outlineQuery(KEY, "conversation").queryKey,
+      treeAnswer([taskBlock("t1", 0), taskBlock("t2", 1)])
+    );
   }
-  if (specHeld) client.setQueryData(artifactBlocksQuery(SPEC_ARTIFACT).queryKey, []);
   return client;
 }
 
@@ -1071,20 +1147,30 @@ type DrawnSlot = RenderResult & { readonly redraw: (issue: IssueDetails) => void
 
 /** Draws the Plan view's slot (`slots/view-plan.tsx`) for `shown` over `client`, in the stage the
  *  page draws a view in (`slots/stage.tsx`), with the providers the page draws every slot under
- *  (`slots/providers.tsx`). */
-function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
-  const route = { key: KEY, kind: "issue" } as const;
+ *  (`slots/providers.tsx`), under the one names store the application draws every page under
+ *  (`app.tsx`'s `ReferenceNamesProvider`), so what the slot publishes names what it draws and
+ *  nothing names it by hand. `at` is the address the router holds and the slot's route for it,
+ *  where a case gives one; where none is given the router holds no address the page reads, and
+ *  the slot is handed the issue's own route. */
+function renderSlot(
+  client: QueryClient,
+  shown: IssueDetails,
+  at?: { readonly path: string; readonly route: IssueRoute }
+): DrawnSlot {
+  const route = at?.route ?? ({ key: KEY, kind: "issue" } as const);
   const draw = (issue: IssueDetails): ReactNode => (
-    <MemoryRouter>
+    <MemoryRouter {...(at === undefined ? {} : { initialEntries: [at.path] })}>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <ProvidersSlot issue={issue} route={route}>
-              <IssueScope />
-              <ViewStage>
-                <ViewPlanSlot issue={issue} route={route} />
-              </ViewStage>
-            </ProvidersSlot>
+            <ReferenceNamesProvider>
+              <ProvidersSlot issue={issue} route={route}>
+                <IssueScope />
+                <ViewStage>
+                  <ViewPlanSlot issue={issue} route={route} />
+                </ViewStage>
+              </ProvidersSlot>
+            </ReferenceNamesProvider>
           </MarginProvider>
         </KeymapProvider>
       </QueryClientProvider>
@@ -1093,6 +1179,37 @@ function renderSlot(client: QueryClient, shown: IssueDetails): DrawnSlot {
   const view = render(draw(shown));
   return { ...view, redraw: (issue) => view.rerender(draw(issue)) };
 }
+
+test("a Plan block address focuses the task from the view even when the outline has no task", async () => {
+  setViewport(1440);
+  const client = slotClient({ specHeld: false });
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([treeNode(KEY, "issue", null)])
+  );
+  client.setQueryData(
+    viewQuery(KEY, "plan").queryKey,
+    treeAnswer([
+      { ...taskBlock("t1", 0), plan: planAt(0), role: "query" },
+      { ...taskBlock("t2", 1), plan: planAt(1), role: "query" },
+    ])
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan#b-t2`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => expect(rowOf(view, "t2")).toHaveFocus());
+    await userEvent.click(view.getByRole("button", { name: PLAN_WORDS.steps }));
+    expect(view.getByRole("button", { name: PLAN_WORDS.steps })).toHaveFocus();
+    expect(rowOf(view, "t2")).not.toHaveFocus();
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    client.clear();
+  }
+});
 
 // A Verification or decisions document made while the reader is on Plan rebuilds the issue's
 // tree and opens a read of its blocks that holds nothing yet, and the slot draws the same body
@@ -1114,7 +1231,10 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
     view.redraw(
       issueRead({ ...artifact(VERIFICATION_ARTIFACT, "verification-md"), role: "verification" })
     );
-    await waitFor(() => expect(blocks).toHaveBeenCalledWith(VERIFICATION_ARTIFACT));
+    expect(
+      blocks,
+      "a new document opens no read of its blocks: the tree read holds them"
+    ).not.toHaveBeenCalled();
     expect(
       steps().getAttribute("aria-pressed"),
       "the body drawn again over the same tasks is back on the chart"
@@ -1128,11 +1248,114 @@ test("the body drawn again over the same tasks keeps Steps pressed and the focus
   }
 });
 
+// The Plan view's own read is the one read that holds the plan's tasks and the statement they
+// stand under: the outline's read, Conversation's, holds neither, so the page's names read names
+// none of them. The view publishes the reading of each block a chip or a parent line of its rows
+// names (`presets.ts`' `PresetView.readings`, `slots/view-readings.ts`), and the chart names a
+// step's need and the statement it serves by the line the names store projects from it. The case
+// draws the slot itself, so nothing hands the body a name the slot does not publish. The view
+// worked out again over the same answers names each block by equal readings, and publishes
+// nothing new: the store keeps the readings it holds.
+test("a step names the step it needs and the statements it serves from the view's own tree", async () => {
+  setViewport(1440);
+  const client = slotClient({ specHeld: false });
+  client.setQueryData(
+    outlineQuery(KEY, "conversation").queryKey,
+    treeAnswer([treeNode(KEY, "issue", null)])
+  );
+  const words = (text: string) => ({ text, text_tree: displayTree(text) });
+  // A step at `position` in the plan document and at `place` in the order the read answers,
+  // waiting on the steps `needs` names, as the read answers them (`plan.needs`).
+  const step = (
+    id: string,
+    position: number,
+    place: number,
+    text: string,
+    needs: readonly string[] = []
+  ): TreeAnswerNode =>
+    treeNode(id, "plan_task", "r1", {
+      document: { artifact_id: PLAN_ARTIFACT, position, slug: PLAN },
+      plan: {
+        ...planAt(place),
+        needs: needs.map((one) => ({ id: `${KEY}/${PLAN}#${one}`, kind: "block" })),
+      },
+      role: "query",
+      ...words(text),
+    });
+  client.setQueryData(
+    viewQuery(KEY, "plan").queryKey,
+    treeAnswer(
+      [
+        treeNode("r1", "requirement", KEY, {
+          document: { artifact_id: SPEC_ARTIFACT, position: 0, slug: SPEC },
+          role: "context",
+          ...words("Draw the chart of the plan."),
+        }),
+        step("t2", 1, 0, "Stand the harness up."),
+        step("t1", 0, 1, "Read every row of the harness.", ["t2"]),
+      ],
+      [
+        treeTuple("needs", "t1", "t2"),
+        treeTuple("serves", "t1", "r1"),
+        treeTuple("serves", "t2", "r1"),
+      ],
+      { view: "plan" }
+    )
+  );
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const publishes = spyOn(referenceNames, "usePublishReferenceNames");
+  // The values the view publishes: the page's own names read answers no target here, so its
+  // value names no reading.
+  const viewValues = () =>
+    publishes.mock.calls.flatMap(([value]) =>
+      value === undefined || value.readings.size === 0 ? [] : [value]
+    );
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => {
+      expect(
+        [...rowOf(view, "t1").querySelectorAll("[data-plan-need]")].map((one) => [
+          one.getAttribute("data-plan-need"),
+          one.textContent,
+        ]),
+        "t1 does not name the step it needs"
+      ).toEqual([[D("t2"), "Stand the harness up."]]);
+      expect(
+        [...rowOf(view, "t1").querySelectorAll("[data-plan-serve]")].map((one) => [
+          one.textContent,
+          one.querySelector("a")?.getAttribute("href"),
+        ]),
+        "t1 does not name the statement it serves"
+      ).toEqual([["Draw the chart of the plan.", expect.stringMatching(/#b-r1$/)]]);
+    });
+
+    const before = viewValues();
+    const held = before.at(-1)?.readings;
+    expect(held, "the view publishes no reading").toBeDefined();
+    view.redraw(issueRead());
+    await waitFor(() => expect(viewValues().length).toBeGreaterThan(before.length));
+    expect(
+      viewValues()
+        .slice(before.length)
+        .filter((value) => value.readings !== held),
+      "the view worked out again over the same answers published its readings anew"
+    ).toEqual([]);
+  } finally {
+    view.unmount();
+    names.mockRestore();
+    publishes.mockRestore();
+    client.clear();
+  }
+});
+
 // The spec's blocks read refused before it first answered: the view says, in the page's words,
 // that it could not load the spec, with a Retry that asks the spec's blocks again.
 test("a refused read of the spec's blocks says so, with a Retry that reads them again", async () => {
   setViewport(1440);
-  const blocks = spyOn(api, "getArtifactBlocks").mockRejectedValue(new Error("refused"));
+  const blocks = spyOn(api, "getIssueTree").mockRejectedValue(new Error("refused"));
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   const view = renderSlot(slotClient({ specHeld: false }), issueRead());
   try {
@@ -1143,13 +1366,79 @@ test("a refused read of the spec's blocks says so, with a Retry that reads them 
     });
     expect(line.querySelector("p")?.textContent).toBe(STATE_LINES.spec_unreadable);
     expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
-    const asked = () => blocks.mock.calls.filter(([id]) => id === SPEC_ARTIFACT).length;
+    const asked = () => blocks.mock.calls.filter(([, query]) => query?.view === undefined).length;
     const before = asked();
     expect(before, "the tree sends no read of the spec's blocks").toBe(1);
     await userEvent.click(retryOf(view, "statements"));
     await waitFor(() =>
       expect(asked(), "Retry on the statements line does not read the spec's blocks").toBe(
         before + 1
+      )
+    );
+  } finally {
+    view.unmount();
+    blocks.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// At the Plan view's own address the plan's blocks are Plan's own view read and the spec's the
+// outline read (`tree-read/tree-read.ts`'s `blocksOf`). With both refused the view draws one line,
+// the statements', whose one Retry reads each of the two again, and is busy while either runs:
+// while Plan's view read runs on after the outline read was refused again.
+test("at the Plan view's address the one Retry reads both refused reads again, busy while either runs", async () => {
+  setViewport(1440);
+  const outlineAgain = Promise.withResolvers<never>();
+  const viewAgain = Promise.withResolvers<unknown>();
+  const sent = { outline: 0, view: 0 };
+  // Each read's first answer is a refusal, and each later read of it is out until the case ends it.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    const read = query?.view === undefined ? "outline" : "view";
+    sent[read] += 1;
+    if (sent[read] === 1) return Promise.reject(new Error("refused"));
+    return read === "outline" ? outlineAgain.promise : viewAgain.promise;
+  }) as never);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const client = slotClient({ specHeld: false });
+  // Plan's view read refused before the view is drawn, as the load leaves it, which the stage
+  // sends (`ViewReadProvider`) and this case draws no stage for.
+  await client.prefetchQuery(viewQuery(KEY, "plan"));
+  const view = renderSlot(client, issueRead(), {
+    path: `/issues/${KEY}/plan`,
+    route: { key: KEY, kind: "plan" },
+  });
+  try {
+    await waitFor(() => {
+      if (view.container.querySelector('[data-plan-unreadable="statements"]') === null) {
+        throw new Error("the view says nothing of the refused statements read");
+      }
+    });
+    expect(view.container.querySelectorAll("[data-plan-unreadable]")).toHaveLength(1);
+    expect(sent).toEqual({ outline: 1, view: 1 });
+    await userEvent.click(retryOf(view, "statements"));
+    await waitFor(() =>
+      expect(sent, "Retry did not read each refused read again").toEqual({ outline: 2, view: 2 })
+    );
+    expect(retryOf(view, "statements")).toHaveAttribute("aria-busy", "true");
+    await act(async () => outlineAgain.reject(new Error("refused")));
+    await waitFor(() =>
+      expect(client.getQueryState(outlineQuery(KEY, "conversation").queryKey)?.fetchStatus).toBe(
+        "idle"
+      )
+    );
+    expect(
+      retryOf(view, "statements"),
+      "the Retry is not busy while Plan's view read runs"
+    ).toHaveAttribute("aria-busy", "true");
+    await act(async () =>
+      viewAgain.resolve(treeAnswer([{ ...taskBlock("t1", 0), plan: planAt(0) }]))
+    );
+    await waitFor(() =>
+      expect(retryOf(view, "statements"), "the Retry is busy with no read out").not.toHaveAttribute(
+        "aria-busy"
       )
     );
   } finally {
@@ -1167,8 +1456,13 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
   setViewport(1440);
   const again = Promise.withResolvers<never>();
   let specReads = 0;
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
-    if (id !== SPEC_ARTIFACT) return again.promise;
+  // The spec's blocks are the tree read's (`useIssueTree`'s `blocksOf`): its first read is the
+  // one refused, and every later read of it is out.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    if (query?.view !== undefined) return again.promise;
     specReads += 1;
     return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
   }) as never);
@@ -1186,18 +1480,15 @@ test("a refused read's line stays drawn while its Retry reads again, its Retry b
     await settled();
     expect(line(), "the statements line leaves while its read runs again").not.toBeNull();
     const retry = retryOf(view, "statements");
-    expect(retry.getAttribute("aria-busy"), "the Retry of a read running again is not busy").toBe(
+    expect(retry, "the Retry of a read running again is not busy").toHaveAttribute(
+      "aria-busy",
       "true"
     );
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree is not busy while its refused read runs again"
-    ).toBe("true");
-    expect(document.activeElement, "the focus leaves the Retry while its read runs again").toBe(
-      retry
-    );
+    ).toHaveAttribute("aria-busy", "true");
+    expect(retry, "the focus leaves the Retry while its read runs again").toHaveFocus();
     await userEvent.click(retry);
     await settled();
     expect(specReads, "a second press of a busy Retry asks the spec's blocks again").toBe(2);
@@ -1217,8 +1508,12 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
   setViewport(1440);
   const again = Promise.withResolvers<never>();
   let specReads = 0;
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) => {
-    if (id !== SPEC_ARTIFACT) return again.promise;
+  // The spec's blocks are the tree read's, as above.
+  const blocks = spyOn(api, "getIssueTree").mockImplementation(((
+    _key: string,
+    query?: { readonly view?: string }
+  ) => {
+    if (query?.view !== undefined) return again.promise;
     specReads += 1;
     return specReads === 1 ? Promise.reject(new Error("refused")) : again.promise;
   }) as never);
@@ -1232,7 +1527,7 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
     });
     onlineManager.setOnline(false);
     await userEvent.click(retryOf(view, "statements"));
-    const state = () => client.getQueryState(artifactBlocksQuery(SPEC_ARTIFACT).queryKey);
+    const state = () => client.getQueryState(outlineQuery(KEY, "conversation").queryKey);
     await waitFor(() =>
       expect(state()?.fetchStatus, "Retry offline does not hold the spec's blocks read").toBe(
         "paused"
@@ -1259,11 +1554,9 @@ test("a refused read's line stays drawn while its Retry waits for the network", 
       "the statements line drops its Retry while its Retry waits for the network"
     ).toBe(CONTROL_LABELS.retry);
     expect(
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy"),
+      view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`),
       "the view's empty tree reads busy while its refused read waits for the network"
-    ).toBe("false");
+    ).toHaveAttribute("aria-busy", "false");
   } finally {
     view.unmount();
     // Back online once the view is gone: its query client no longer listens for the network
@@ -1323,7 +1616,7 @@ async function aFrame(): Promise<void> {
 // takes it, and Enter on it, once the reads answer, leaves the focus on the chart's first row.
 test("while a read is out the view draws nothing, and a read that failed says so with a Retry that takes the focus", async () => {
   setViewport(1440);
-  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const root = issue([task("t1", { position: 0 }), task("t2", { needs: ["t1"], position: 1 })]);
   const asked: PlanRead[] = [];
   const view = renderBody(root, { reads: { state: "waiting" } });
   try {
@@ -1378,7 +1671,7 @@ test("while a read is out the view draws nothing, and a read that failed says so
 // answers. The stage the view is drawn in moves it (`slots/stage.tsx`).
 test("the focus stays in the view while a retried read is out, and goes on to a Retry or the first row", async () => {
   setViewport(1440);
-  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const root = issue([task("t1", { position: 0 }), task("t2", { needs: ["t1"], position: 1 })]);
   /** The plan's read, after its first failure, running again. */
   const planRunsAgain = failedAs([], [{ failure: 1, read: "plan", retrying: true }], true);
   /** Draws the view with `reads` refused and the focus on the Retry of `on`, then runs `steps`. */
@@ -1520,7 +1813,7 @@ test("the focus stays in the view while a retried read is out, and goes on to a 
 // failures (`failure`), not by the runs it saw end.
 test("a failed line says its failure again only on a new refusal, not when a run stops without one", () => {
   setViewport(1440);
-  const root = issue([task("t1")]);
+  const root = issue([task("t1", { position: 0 })]);
   const view = renderBody(root, {
     reads: failedAs([], [{ failure: 1, read: "plan", retrying: true }], true),
   });
@@ -1556,7 +1849,7 @@ test("the view's tree focused with a read refused hands the focus to its Retry",
   setViewport(1440);
   const control = document.createElement("button");
   document.body.append(control);
-  const view = renderBody(issue([task("t1")]), { reads: failed([], "plan") });
+  const view = renderBody(issue([task("t1", { position: 0 })]), { reads: failed([], "plan") });
   try {
     act(() => control.focus());
     expect(document.activeElement).toBe(control);
@@ -1578,7 +1871,7 @@ test("the view's tree focused with a read refused hands the focus to its Retry",
 // own, and stays on the tree: only a focus from outside the view is handed on to the Retry.
 test("a focus moved onto the view's tree from its Retry stays on the tree", async () => {
   setViewport(1440);
-  const view = renderBody(issue([task("t1")]), { reads: failed([], "plan") });
+  const view = renderBody(issue([task("t1", { position: 0 })]), { reads: failed([], "plan") });
   try {
     const tree = view.container.querySelector<HTMLElement>(
       `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`
@@ -1609,44 +1902,39 @@ test("a focus moved onto the view's tree from its Retry stays on the tree", asyn
 // A read still out beside one that was refused - here the spec's blocks not yet answered, and
 // the plan's refused - leaves the view's tree busy: it holds nothing because a read has not
 // answered yet. Once the spec's answer is in, only the refused read is left, waiting for its
-// Retry, and the tree is not busy.
+// Retry, and the tree is not busy. The plan's and the spec's blocks are the one tree read on the
+// page (`slots/view-plan.tsx`), so the body is drawn with the reads as a slot hands them on.
 test("the view's tree reads busy while a read is out beside a refused one, and not once it answers", async () => {
   setViewport(1440);
-  const spec = Promise.withResolvers<ArtifactBlock[]>();
-  const blocks = spyOn(api, "getArtifactBlocks").mockImplementation(((id: string) =>
-    id === PLAN_ARTIFACT ? Promise.reject(new Error("refused")) : spec.promise) as never);
-  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
-  const view = renderSlot(slotClient({ planHeld: false, specHeld: false }), issueRead());
+  const root = issue([task("t1", { position: 0 })]);
+  const view = renderBody(root, {
+    reads: failedAs([], [{ failure: 1, read: "plan", retrying: false }], true),
+  });
   try {
-    const busy = () =>
-      view.container
-        .querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`)
-        ?.getAttribute("aria-busy");
+    const tree = view.container.querySelector(`[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`);
     const lines = () =>
       [...view.container.querySelectorAll("[data-plan-unreadable]")].map((line) =>
         line.getAttribute("data-plan-unreadable")
       );
-    await waitFor(() =>
-      expect(lines(), "the view says nothing of the refused plan read").toEqual(["plan"])
-    );
+    // jest-dom: the failed lines are read as the list of the reads they name, in their order.
+    expect(lines(), "the view says nothing of the refused plan read").toEqual(["plan"]);
     await settled();
     expect(
-      busy(),
+      tree,
       "the tree of a view whose spec read is out beside a refused one is not busy"
-    ).toBe("true");
-    spec.resolve([]);
-    await waitFor(() =>
-      expect(busy(), "the tree of a view whose one read not answered is refused reads busy").toBe(
-        "false"
-      )
-    );
+    ).toHaveAttribute("aria-busy", "true");
+    view.redraw(root, failed([], "plan"));
+    await settled();
+    expect(
+      tree,
+      "the tree of a view whose one read not answered is refused reads busy"
+    ).toHaveAttribute("aria-busy", "false");
+    // jest-dom: the failed lines are read as the list of the reads they name, in their order.
     expect(lines(), "the refused plan read's line leaves once the spec's blocks answer").toEqual([
       "plan",
     ]);
   } finally {
     view.unmount();
-    blocks.mockRestore();
-    names.mockRestore();
   }
 });
 
@@ -1655,7 +1943,7 @@ test("the view's tree reads busy while a read is out beside a refused one, and n
 // does from a failed line that leaves with the focus in it (`slots/stage.tsx`).
 test("the view's tree leaving the page with the focus on it gives the focus to the first row", async () => {
   setViewport(1440);
-  const root = issue([task("t1"), task("t2", { needs: ["t1"] })]);
+  const root = issue([task("t1", { position: 0 }), task("t2", { needs: ["t1"], position: 1 })]);
   const view = renderBody(root, { reads: failed([], "plan") });
   try {
     const tree = view.container.querySelector<HTMLElement>(
@@ -1690,7 +1978,7 @@ test("a Retry drawn while the element around the view holds the focus takes it",
   const main = document.createElement("div");
   main.tabIndex = -1;
   document.body.append(main);
-  const root = issue([task("t1")]);
+  const root = issue([task("t1", { position: 0 })]);
   const view = renderBody(root, { container: main, reads: { state: "waiting" } });
   try {
     act(() => main.focus());
@@ -1715,7 +2003,11 @@ test("a Retry drawn while the element around the view holds the focus takes it",
 test("a row lets go of its mark when the focus leaves the chart for another control, at once or once the press has ended", async () => {
   setViewport(1440);
   const view = renderBody(
-    issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2", { needs: ["t3"] })])
+    issue([
+      task("t3", { needs: ["t1"], position: 1 }),
+      task("t1", { position: 0 }),
+      task("t2", { needs: ["t3"], position: 2 }),
+    ])
   );
   try {
     const chart = view.getByRole("button", { name: PLAN_WORDS.chart });
@@ -1747,18 +2039,18 @@ test("a row lets go of its mark when the focus leaves the chart for another cont
   }
 });
 
-// A cycle is one line that lists the tasks in it. It stands where the order puts it, after the
-// step its tasks need and before the step that waits on one of them, and an address naming one
-// of its tasks lands on a row.
+// A cycle is one line that lists the tasks in it. The read gives its tasks no place, and the line
+// stands just before the step that waits on one of them, which the read places after the step the
+// cycle's tasks need; an address naming one of its tasks lands on a row.
 test("tasks that need each other are one line at their place, and rows at that place as steps", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const second = task("t5", { needs: ["t4"] });
+  const second = task("t5", { cycle: "c", needs: ["t4"] });
   const root = issue([
-    task("t6", { needs: ["t5"] }),
-    task("t4", { needs: ["t5", "t1"] }),
+    task("t6", { needs: ["t5"], position: 1 }),
+    task("t4", { cycle: "c", needs: ["t5", "t1"] }),
     second,
-    task("t1", { parentLine: serves("r1", "The page draws the conversation") }),
+    task("t1", { parentLine: serves("r1", "The page draws the conversation"), position: 0 }),
   ]);
   // The address names the cycle's second task.
   const view = renderBody(root, { reveal: [root, second] });
@@ -1827,7 +2119,9 @@ test("tasks that need each other are one line at their place, and rows at that p
 
 test("a plan whose every task is in a cycle draws the line, and its tasks as steps", async () => {
   setViewport(1440);
-  const view = renderBody(issue([task("t1", { needs: ["t2"] }), task("t2", { needs: ["t1"] })]));
+  const view = renderBody(
+    issue([task("t1", { cycle: "c", needs: ["t2"] }), task("t2", { cycle: "c", needs: ["t1"] })])
+  );
   try {
     expect(view.container.querySelectorAll("[data-plan-bar-row]")).toHaveLength(0);
     expect(view.container.querySelectorAll("[data-plan-cycle]")).toHaveLength(1);
@@ -1842,6 +2136,62 @@ test("a plan whose every task is in a cycle draws the line, and its tasks as ste
     await showSteps(view);
     expect(rowIds(view.container)).toEqual([D("t1"), D("t2")]);
     expect(view.container.textContent).not.toContain(EMPTY_STATE_LINES.plan);
+  } finally {
+    view.unmount();
+  }
+});
+
+// What a task waits on and the cycle it stands in are the read's alone: the Plan view's read
+// answers them (`TreeNode.needs` and `TreeNode.cycle`, the read's `plan.needs` and `plan.cycle`),
+// and the tree drew no `needs` chip for them, so no chip names the task a step waits on and no
+// chips form the cycle. The cycle is still one line, just before the step that waits on it, and
+// that step's bar starts after the line, which starts after the step the cycle needs.
+test("a need and a cycle the read answers with no chip that names them place the steps and draw the cycle's line", () => {
+  setViewport(1440);
+  /** A task as the tree draws it with no `needs` chip on its row. */
+  const unchipped = (one: TreeNode): TreeNode => ({ ...one, chips: [] });
+  const view = renderBody(
+    issue(
+      [
+        task("t4", { needs: ["t2"], position: 1 }),
+        task("t2", { cycle: "c", needs: ["t3", "t1"] }),
+        task("t3", { cycle: "c", needs: ["t2"] }),
+        task("t1", { position: 0 }),
+      ].map(unchipped)
+    )
+  );
+  try {
+    // The chart: the step the cycle needs, the cycle's line, and two units in the step that
+    // waits on it.
+    const drawn = [
+      ...view.container.querySelectorAll(
+        "[data-plan-chart] :is([data-plan-bar-row], [data-plan-cycle])"
+      ),
+    ].map((row) => row.getAttribute("data-node-id") ?? "cycle");
+    expect(drawn, "the chart's order").toEqual([D("t1"), "cycle", D("t4")]);
+    expect(
+      rowOf(view, "t4").getAttribute("data-plan-start"),
+      "where the step that waits on the cycle starts"
+    ).toBe("2");
+    // One line, which lists the cycle's two tasks and no other, and one row for it.
+    const lines = [...view.container.querySelectorAll("[data-plan-cycle]")];
+    expect(lines, "the cycle's lines").toHaveLength(1);
+    expect(
+      [...(lines[0]?.querySelectorAll("a") ?? [])].map((link) => [
+        link.textContent,
+        link.getAttribute("href"),
+      ]),
+      "the tasks the cycle's line lists"
+    ).toEqual([
+      ["Task t2", `/issues/${KEY}/artifacts/${PLAN}#b-t2`],
+      ["Task t3", `/issues/${KEY}/artifacts/${PLAN}#b-t3`],
+    ]);
+    expect(
+      [...view.container.querySelectorAll("[data-plan-cycle-row]")].map((row) =>
+        row.getAttribute("data-plan-cycle-row")
+      ),
+      "the cycle's rows"
+    ).toEqual([`${D("t2")} ${D("t3")}`]);
   } finally {
     view.unmount();
   }
@@ -1870,12 +2220,16 @@ test("a plan with no tasks says so in the one line the page has for it, and draw
   }
 });
 
-test("a task whose needs names a task the plan does not hold keeps the plan's own order", () => {
+test("a task whose needs names a task the plan does not hold stands where the read places it and waits on nothing", () => {
   setViewport(1440);
   const view = renderBody(
     issue([
-      task("t2", { needs: ["t9"], parentLine: serves("r1", "The page draws the conversation") }),
-      task("t1"),
+      task("t2", {
+        needs: ["t9"],
+        parentLine: serves("r1", "The page draws the conversation"),
+        position: 0,
+      }),
+      task("t1", { position: 1 }),
     ])
   );
   try {
@@ -1891,19 +2245,18 @@ test("a task whose needs names a task the plan does not hold keeps the plan's ow
   }
 });
 
-// The filter's view hands the tasks over grouped by the statement each one serves, which is the
-// spec's order. The walk starts from each task nothing needs, in the order the plan is written
-// in, and places the tasks one needs above it, so a task that needs nothing stands just above the
-// first task that needs it, not at the top. Each task is drawn once.
-test("a task stands just above the first task that needs it, not at the top", () => {
+// The filter's view hands the tasks over grouped by the statement each one serves, the first
+// twice. The read places the second first, and the first just above the third, which needs it:
+// the body draws them in that order, each task once.
+test("tasks the view hands over by statement stand in the read's order, each drawn once", () => {
   setViewport(1440);
-  // The view hands the third task over first and the first twice, by the statements they serve;
-  // the plan writes the three in their numbers' order, and the third needs the first. Nothing
-  // needs the second or the third, so the walk starts from the second, then from the third,
-  // which places the first just above it.
   const view = renderBody(
-    issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2"), task("t1")]),
-    { written: ["t1", "t2", "t3"] }
+    issue([
+      task("t3", { needs: ["t1"], position: 2 }),
+      task("t1", { position: 1 }),
+      task("t2", { position: 0 }),
+      task("t1", { position: 1 }),
+    ])
   );
   try {
     expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
@@ -1915,25 +2268,26 @@ test("a task stands just above the first task that needs it, not at the top", ()
   }
 });
 
-// The written order reads the plan's blocks under the key `useIssueTree` fills, and sends no
-// read of its own: on a client that counts every read stale at once, an enabled observer would
-// fetch them again on mount. The order follows those blocks when the tree's read changes them.
-test("the written order reads the cached blocks and sends no blocks read of its own", async () => {
+// The order is the read's, which the slot hands the body again when the read changes it, and the
+// body sends no read of its own for it: on a client that counts every read stale at once, an
+// enabled observer would fetch on mount.
+test("the order follows the read's places when the read changes them, and the body sends no blocks read of its own", async () => {
   setViewport(1440);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   const read = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
-  const view = renderBody(issue([task("t3", { needs: ["t1"] }), task("t1"), task("t2")]), {
-    client,
-    written: ["t1", "t2", "t3"],
-  });
+  // The three tasks at the places the read gives them; the third needs the first.
+  const placedAt = (first: number, second: number, third: number): TreeNode =>
+    issue([
+      task("t3", { needs: ["t1"], position: third }),
+      task("t1", { position: first }),
+      task("t2", { position: second }),
+    ]);
+  const view = renderBody(placedAt(1, 0, 2), { client });
   try {
     expect(read, "the body sends a read of the plan's blocks of its own").not.toHaveBeenCalled();
     expect(rowIds(view.container)).toEqual([D("t2"), D("t1"), D("t3")]);
     await act(async () => {
-      client.setQueryData(
-        ["artifact", PLAN_ARTIFACT, "blocks"],
-        ["t3", "t1", "t2"].map((id) => ({ id }))
-      );
+      view.redraw(placedAt(0, 2, 1), ANSWERED);
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, 0);
       await promise;
@@ -1951,16 +2305,16 @@ test("the written order reads the cached blocks and sends no blocks read of its 
 // never by its id, which is nobody's word.
 test("a task with no words is named by its kind, never by its id", async () => {
   setViewport(1440);
-  const blank = (blockId: string, needs: readonly string[] = []): TreeNode => ({
-    ...task(blockId, { needs }),
+  const blank = (blockId: string, needs: readonly string[] = [], position?: number): TreeNode => ({
+    ...task(blockId, { needs, position }),
     text: "",
   });
   const view = renderBody(
     issue([
-      blank("t1"),
-      task("t2", { needs: ["t1"] }),
-      blank("t3", ["t4"]),
-      task("t4", { needs: ["t3"] }),
+      blank("t1", [], 0),
+      task("t2", { needs: ["t1"], position: 1 }),
+      { ...blank("t3", ["t4"]), cycle: "c" },
+      task("t4", { cycle: "c", needs: ["t3"] }),
     ])
   );
   try {
@@ -1999,10 +2353,10 @@ test("a need the tree has not named draws no empty need and no '· needs' with n
   // The third task needs the first two, the fourth the first alone; the tree names the second
   // and not the first.
   const root = issue([
-    task("t1"),
-    task("t2"),
-    task("t3", { needs: ["t1", "t2"] }),
-    task("t4", { needs: ["t1"] }),
+    task("t1", { position: 0 }),
+    task("t2", { position: 1 }),
+    task("t3", { needs: ["t1", "t2"], position: 2 }),
+    task("t4", { needs: ["t1"], position: 3 }),
   ]);
   const unnamed: TreeNode = {
     ...root,
@@ -2027,5 +2381,197 @@ test("a need the tree has not named draws no empty need and no '· needs' with n
     expect(alone?.querySelector("[data-plan-facts]")?.textContent).not.toContain(PLAN_WORDS.needs);
   } finally {
     view.unmount();
+  }
+});
+
+/** A drawn row by its node's id, whatever the id's shape: a task of another issue is drawn by the
+ *  read's id, `<KEY>/<slug>#<block id>`. */
+function rowById(view: RenderResult, id: string): HTMLElement {
+  const row = view.container.querySelector<HTMLElement>(
+    `[data-node-row][data-node-id="${CSS.escape(id)}"]`
+  );
+  if (row === null) throw new Error(`the body draws no row for ${id}`);
+  return row;
+}
+
+/** Each fact a row's body draws under Steps (`NodeFacts`), as its label and its value. */
+function stepFactsOf(row: HTMLElement): [string, string][] {
+  return [...row.querySelectorAll("[data-node-body] dt")].map((term) => [
+    term.textContent ?? "",
+    term.nextElementSibling?.textContent ?? "",
+  ]);
+}
+
+/** How wide a row's bar is, as a share of the chart's time column. */
+function barWidth(row: HTMLElement): number {
+  const style = row.querySelector("[data-plan-bar]")?.getAttribute("style") ?? "";
+  return Number.parseFloat(/width: ([\d.]+)%/.exec(style)?.[1] ?? "NaN");
+}
+
+// R19, R26: a step draws its size in words where the read holds one, beside its bar in the chart
+// and as a fact of its row under Steps, and "No size" only for the task that holds none. Each bar
+// is as long as its task's size on the chart's one scale, and the bar of the task with no size is
+// one line of the axis long and dashed. The axis carries the time at each line only where every
+// task holds a size.
+test("a step draws its size where the read holds one, and No size only where it holds none", async () => {
+  setViewport(1440);
+  const view = renderBody(
+    issue([
+      { ...task("t1", { position: 0 }), size: 90 },
+      task("t2", { needs: ["t1"], position: 1 }),
+      { ...task("t3", { needs: ["t1"], position: 2 }), size: 45 },
+    ])
+  );
+  try {
+    expect(
+      ["t1", "t2", "t3"].map((id) => [
+        rowOf(view, id).querySelector("[data-plan-size]")?.textContent ?? null,
+        rowOf(view, id).querySelector("[data-plan-no-size]")?.textContent ?? null,
+      ])
+    ).toEqual([
+      ["1 h 30 min", null],
+      [null, PLAN_WORDS.no_size],
+      ["45 min", null],
+    ]);
+    expect(barWidth(rowOf(view, "t1")) / barWidth(rowOf(view, "t3"))).toBeCloseTo(2);
+    expect(rowOf(view, "t2").querySelector("[data-plan-bar]")?.className).toContain(
+      "border-dashed"
+    );
+    expect(rowOf(view, "t1").querySelector("[data-plan-bar]")?.className).toContain("border-solid");
+    expect(view.container.querySelectorAll("[data-plan-axis-time]")).toHaveLength(0);
+    await showSteps(view);
+    expect(["t1", "t2", "t3"].map((id) => stepFactsOf(rowOf(view, id)))).toEqual([
+      [[BLOCK_ATTRIBUTE_LABELS.size, "1 h 30 min"]],
+      [[BLOCK_ATTRIBUTE_LABELS.size, PLAN_WORDS.no_size]],
+      [[BLOCK_ATTRIBUTE_LABELS.size, "45 min"]],
+    ]);
+  } finally {
+    view.unmount();
+  }
+  const sized = renderBody(
+    issue([
+      { ...task("t1", { position: 0 }), size: 90 },
+      { ...task("t3", { needs: ["t1"], position: 1 }), size: 45 },
+    ])
+  );
+  try {
+    expect(
+      [...sized.container.querySelectorAll("[data-plan-head] [data-plan-axis-time]")].map(
+        (one) => one.textContent
+      )
+    ).toEqual(["30 min", "1 h", "1 h 30 min", "2 h", "2 h 30 min"]);
+  } finally {
+    sized.unmount();
+  }
+});
+
+// R19: on an issue with issues under it the Plan read answers the tasks of every issue under it
+// beside the issue's own, as context marked with their issue, and the view takes each as a row
+// (`presets.ts`' `heldFilterView`). The chart and the steps draw them in the order the read
+// answers, whatever order the view hands them in: the issue's own first and then the child's,
+// whose `c` needs its `a`, as on the child's own page. The places leave room for each issue's
+// start and done, which the read places too and the view hands over as no task. Each task of the
+// child is marked with its issue's key, a link to that issue (`ChildIssueTag`), on its bar's row
+// and as a fact of its row under Steps; the issue's own tasks carry none. The key is a control
+// inside a row: out of the tab order on every row, the focused one included, as every control of
+// a row of the outline or the chart is (the chart's and the outline's `f` reach it), and in it in
+// a view whose rows take tab stops (`tabStops`).
+test("a parent's plan draws the tasks of each issue under it in the order the read answers, each marked with its issue's key, and its own with none", async () => {
+  setViewport(1440);
+  const child = "CORE-2";
+  const own = (id: string): TreeNode => ({ ...task(id), readId: `${KEY}/${PLAN}#${id}` });
+  // A task of the issue under it is drawn by the read's id (`tree-read/tree-nodes.ts`'
+  // `treeIdOfNode`).
+  const childId = (id: string): string => `${child}/${PLAN}#${id}`;
+  const childTask = (id: string, needs: readonly string[] = []): TreeNode => ({
+    ...task(id),
+    chips: needs.map((one) => ({
+      ...need(one),
+      node: childId(one),
+      reading: { words: `Task ${one}` },
+      ref: `dispatch://${child}/artifact/${PLAN}#b-${one}`,
+    })),
+    id: childId(id),
+    readId: childId(id),
+    reference: `dispatch://${child}/artifact/${PLAN}#b-${id}`,
+  });
+  const answer = treeAnswer(
+    [
+      treeNode("a", "plan_task", KEY, { in: PLAN, plan: planAt(1), role: "query" }),
+      treeNode("xa", "plan_task", child, {
+        in: PLAN,
+        issue: child,
+        plan: planAt(5),
+        role: "context",
+      }),
+      treeNode("xb", "plan_task", child, {
+        in: PLAN,
+        issue: child,
+        plan: planAt(4),
+        role: "context",
+      }),
+      treeNode("xc", "plan_task", child, {
+        in: PLAN,
+        issue: child,
+        plan: planAt(6),
+        role: "context",
+      }),
+      treeNode("b", "plan_task", KEY, { in: PLAN, plan: planAt(2), role: "query" }),
+    ],
+    [],
+    { view: "plan" }
+  );
+  const outline = issue([own("a"), own("b")]);
+  const root: TreeNode = {
+    ...outline,
+    views: {
+      plan: answer,
+      trees: {
+        plan: {
+          ...outline,
+          children: [childTask("xa"), childTask("xb"), childTask("xc", ["xa"])],
+        },
+      },
+    },
+  };
+  const whole = presetView(root, "plan", "");
+  const view = renderBody(whole.root, { plan: whole.root.children });
+  const order = [D("a"), D("b"), childId("xb"), childId("xa"), childId("xc")];
+  const href = buildIssuePath({ key: child, kind: "issue" });
+  const marks = () =>
+    order.map((id) => {
+      const key = rowById(view, id).querySelector("[data-child-key]");
+      return key === null
+        ? null
+        : [key.textContent, key.getAttribute("href"), key.getAttribute("tabindex")];
+    });
+  const mark = [child, href, "-1"];
+  const marked = [null, null, mark, mark, mark];
+  try {
+    expect(rowIds(view.container)).toEqual(order);
+    expect(marks(), "the chart marks the tasks with their issue's key").toEqual(marked);
+    await showSteps(view);
+    expect(rowIds(view.container)).toEqual(order);
+    expect(marks(), "the steps mark the tasks with their issue's key").toEqual(marked);
+    expect(stepFactsOf(rowById(view, childId("xa")))).toEqual([
+      [NODE_FACT_LABELS.issue, child],
+      [BLOCK_ATTRIBUTE_LABELS.size, PLAN_WORDS.no_size],
+    ]);
+    act(() => rowById(view, childId("xa")).focus());
+    expect(focusedRow()).toBe(childId("xa"));
+    expect(marks()).toEqual(marked);
+  } finally {
+    view.unmount();
+  }
+  const facts = render(
+    <MemoryRouter>
+      <NodeFacts facts={[{ draw: "issue", name: "issue", value: child }]} tabStops />
+    </MemoryRouter>
+  );
+  try {
+    const key = facts.container.querySelector("[data-child-key]");
+    expect([key?.getAttribute("href"), key?.getAttribute("tabindex")]).toEqual([href, null]);
+  } finally {
+    facts.unmount();
   }
 });

@@ -118,6 +118,7 @@ export type DispatchReadingSurface =
   | "outline-crumb"
   | "issue-pin"
   | "plan-task-line"
+  | "spec-decision-line"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -677,6 +678,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "plan-task-line",
+  },
+  // The Spec view's decision cell and its because line: the quote of a decision and the question an
+  // answer answers, each one line of words `specDecidedBy` has named before the view draws it.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/spec-filter/SpecFilterBody.tsx"],
+    reach: "/issues/<ISSUE>/spec with the new issue page on, a decision cell or because line",
+    reason:
+      "The Spec view draws what decided a statement as one line of plain text with no markup: a decision's quote, the first sentence of the answer's or the decision's words, and the question an answer answers, each cut to one line by `specDecidedBy` (`spec-filter/spec-decided-by.ts`), which names each reference from the page's published names via `one-line.ts`'s `referenceStandIns` before the view draws the string, rather than mounting `PlainText` or `usePlainHeadline`. It passes no source record: the plain string reads no per-record question map for `#id` references and makes no per-record reads, drawing only from the page's published names.",
+    record: false,
+    rendered: false,
+    surface: "spec-decision-line",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.

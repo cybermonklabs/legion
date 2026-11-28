@@ -118,6 +118,9 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
   queryClient.setQueryData(["issue", issue.key], issue);
   queryClient.setQueryData(["inbox"], asks);
   queryClient.setQueryData(["asks", issue.key], asks);
+  // The new page's margin reads the asks with their threads (`useAnsweredAsks`), whose rows are
+  // the plain read's with each one's thread beside it.
+  queryClient.setQueryData(["asks", issue.key, "thread"], asks);
   queryClient.setQueryData(["user-state"], {});
   queryClient.setQueryData(["comments", issue.key], comments);
   return queryClient;
@@ -259,6 +262,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
         <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
+              <ReportEmptyLayoutButton />
               <Details fills open>
                 <SelectedItemLabel />
                 <Margin />
@@ -268,6 +272,7 @@ test("a desktop link to a comment's node marks its card without expanding its th
         </MemoryRouter>
       );
       try {
+        await userEvent.setup().click(screen.getByRole("button", { name: "Report layout" }));
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );
@@ -307,6 +312,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         <MemoryRouter initialEntries={[path]}>
           <QueryClientProvider client={landingClient([comment])}>
             <MarginProvider>
+              <ReportEmptyLayoutButton />
               <Details>
                 <SelectedItemLabel />
                 <Margin />
@@ -316,6 +322,7 @@ test("a link to a card beside its document opens Details on it, and a link to a 
         </MemoryRouter>
       );
       try {
+        await user.click(screen.getByRole("button", { name: "Report layout" }));
         await waitFor(() =>
           expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
         );

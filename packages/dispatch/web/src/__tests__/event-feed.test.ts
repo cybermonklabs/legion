@@ -1819,6 +1819,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
   ]);
   const child = event("result.recorded", {
@@ -1833,6 +1835,8 @@ test("a recorded result refreshes the results of the check's issue and of the re
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1850,6 +1854,7 @@ test("a recorded deploy refreshes the receiving issue's verification results", (
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
     ["issue", "CORE-1", "results"],
   ]);
 });
@@ -1869,6 +1874,8 @@ test("a retracted result refreshes the results of the check's issue and of the r
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "results"],
     ["issue", "CORE-9", "results"],
   ]);
@@ -1900,6 +1907,8 @@ test("a block index that caught up refreshes the issue's coverage, results, deci
     ["issue", "CORE-1"],
     ["events", "CORE-1"],
     ["issues", "project", "CORE"],
+    ["issue-tree", "CORE-1"],
+    ["issue-tree"],
     ["issue", "CORE-1", "coverage"],
     ["issue", "CORE-1", "results"],
     ["decisions", "CORE-1"],
@@ -2026,9 +2035,10 @@ test("a priority.updated of a deleted priority refetches no issue read that does
 });
 
 // No read of the dashboard carries a project's owner, visibility or access list yet, so a change of
-// them refreshes nothing. The feed knows the type, so it is no unknown one, which would refresh
+// them refreshes none of its reads, and none of this page's, which holds no tree read; a page that
+// holds one reads it again. The feed knows the type, so it is no unknown one, which would refresh
 // every query.
-test("a project.access_changed refreshes no read", () => {
+test("a project.access_changed refreshes no read of a page that holds no tree read", () => {
   expect(refreshedReads(eventsByType["project.access_changed"])).toEqual([]);
 });
 

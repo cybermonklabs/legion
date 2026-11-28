@@ -299,6 +299,10 @@ export const PRESET_ORDER = freeze([
   "verification",
   "plan",
   "decisions",
+  // Root R2's one list of views holds Graph last, the whole tree read, a view and no filter (R10,
+  // R12). Dashboard (first), Threads and Documents (after Decisions) are each one line of this
+  // list that its own part adds with its view, at its place in root R2's order.
+  "graph",
 ] as const);
 
 /** One control of the filter row, by its own token: `conversation`, which turns every filter
@@ -310,6 +314,7 @@ export type Preset = (typeof PRESET_ORDER)[number];
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
   decisions: "Decisions",
+  graph: "Graph",
   plan: "Plan",
   spec: "Spec",
   verification: "Verification",
@@ -539,9 +544,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, a plan with no task, an issue with no check. Each is one sentence, in
+ * the simple present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -558,13 +562,6 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
    *  shaped (R35): one statement, and several. */
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
-  spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -574,24 +571,28 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
 /**
  * What the page says of a gap in the reasoning, one line per kind of gap (R4, R10). A gap is
  * drawn on the node it is about and never as an error, and only where it tells that node apart
- * from its siblings and names work somebody owes: a requirement no check serves, and a check or
- * a plan task whose `serves` names no requirement. A gap every node of its kind has under
- * today's model tells the reader nothing about the node, so the page has no line for it - none
- * for a node that names no origin, since no requirement carries a `from` yet and no decision a
- * question it settles, and none for a summary nobody is recorded as writing or confirming,
- * which no issue records - and a requirement no plan task serves is no gap the page draws
- * either. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
+ * from its siblings and names work somebody owes: a requirement no check serves, a requirement no
+ * plan task serves once the issue or an issue under it holds a plan task, and a check or a plan
+ * task whose `serves` names no requirement. A gap every node of its kind has under today's model
+ * tells the reader nothing about the node, so the page has no line for it - none for a node that
+ * names no origin, since no requirement carries a `from` yet and no decision a question it
+ * settles, and none for a summary nobody is recorded as writing or confirming, which no issue
+ * records. Nor is a result that records no negative control: dispatch://INFRA-1253 R3 refuses
  * the results that gap would name, so it is no gap the page draws.
  *
  * `no_check` is the gap the coverage read already carries (`RequirementCoverage.gaps`), said in
  * the page's own words rather than in the server's `<block id> has no check`, which names a
- * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
- * another, which the page draws rather than picking one of the two.
+ * block by its id. `no_plan_task` is read by the page itself (`tree-read/tree-nodes.ts`'
+ * `draftRequirement`): the server writes its own line only where the issue holds a plan document
+ * of its own, and a plan may stand wholly in the issues under it. `shaped_disagreement` is a
+ * decision claiming a node whose own origin names another; no draft of the tree read carries it,
+ * so nothing reads its words. They stay because this file takes additions only while today's
+ * page loads it, and they go when today's page does.
  *
- * Two of them are the chain's (R10), each read from what the page already holds
- * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
- * names a node of another kind, and `nobody_asked` a plan task naming neither a requirement it
- * serves nor a declaration it attempts.
+ * Three of them are the chain's (R10), each read from what the page already holds
+ * (`tree-drafts.ts`): `serves_not_requirement` is a citation naming a node of another kind or
+ * nothing, `serves_nothing` a check naming nothing it serves (`page-words-j.ts`), and
+ * `nobody_asked` a plan task naming neither a requirement it serves nor anything it attempts.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
  * because the line is drawn in the node's own body, and a declaration is what a person asked
@@ -617,10 +618,11 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
-  /** The citation names a node, and that node is a requirement no longer. */
+  /** The citation names a node that is no statement, or nothing in a document the page holds. */
   serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
-   *  two name different sources. */
+   *  two name different sources. Read by nothing now (`GAP_LINES`' doc), and kept until today's
+   *  page goes. */
   shaped_disagreement: "Sources disagree",
 } as const) satisfies Record<GapKind, string>;
 
@@ -629,9 +631,10 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
  * writes `<block id> has no check` and `<block id> has no plan task`
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
- * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing, and so does the line of a document
- * still being indexed (`coverageLineWords`), which names no gap of any requirement.
+ * server phrasing is drawn where a name belongs (R22). The page reads a requirement no plan task
+ * serves from its own reads (`no_plan_task`), since the server writes that line only where the
+ * issue holds a plan document of its own, so that line answers nothing, and so does the line of
+ * a document still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
@@ -696,15 +699,15 @@ export const STATE_LINES = joinWords("STATE_LINES", {
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
    *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions, the comments, the messages, and each document whose blocks it draws, named by
-   *  the part the document plays: the spec, the plan or Verification, since a decision is a block
-   *  of a document and no document of its own. */
+   *  questions and the messages. The spec's, the plan's and the verification
+   *  document's lines, last, are what the Plan and the Verification views say of a tree read
+   *  refused before it first answered, each named by the part the document whose blocks the view
+   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
   issue_decisions_unreadable: "Could not load this issue's decisions.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
-  comments_unreadable: "Could not load the comments.",
   messages_unreadable: "Could not load the messages.",
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
@@ -977,9 +980,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The one panel of the issue's properties, which opens over the right of the page, and the
    *  control at the right of the header's first row that opens it (R14). */
   details: "Details",
-  /** The one row a branch below the three drawn levels folds to, which opens it in place: the
-   *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1), and the
-   *  words agree with it: "1 more row below", "3 more rows below". A node is a row to the
+  /** What the row a branch below the three drawn levels folded to said, when the outline drew
+   *  three levels: every level is drawn now (R11), and no row of the page draws these words.
+   *  They agree with their count: "1 more row below", "3 more rows below". A node is a row to the
    *  reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
   deeper_row: "more row below",
   deeper_rows: "more rows below",
@@ -1015,8 +1018,7 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
   /** What a folded branch says it holds, after the count of the rows under it (R1): they are
-   *  not gone, they are out of sight until the branch is opened. It agrees with its count, as
-   *  `deeper_row` does. */
+   *  not gone, they are out of sight until the branch is opened. It agrees with its count. */
   folded_row: "row hidden inside",
   folded_rows: "rows hidden inside",
   /** Draws one branch of the outline at a time, the Contents pane's current one, by zooming the
