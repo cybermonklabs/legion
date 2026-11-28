@@ -131,14 +131,21 @@ jobs:
       - name: Pull the Compose 2.12.2 image the deploy tests take
         run: . deploy/scripts/compose-2.12.2_test.sh && pull_compose_2_12
         working-directory: packages/envoy
-      # autodeploy_test.sh runs one group of its cases per run, each from a fresh fixture, so each
-      # group is a pool entry of its own, named `deploy/scripts/autodeploy_test.sh <group>`. The
-      # whole harness took 153 to 266 s of wall time as one entry in runs 46133189498 and
-      # 46133189517, and each group's cases summed 14.7 to 34.2 s in run 46133189517. The steps
-      # below stand longest first by those sums, dev-stack's whole entry (68.2 s in that run)
-      # first, so the shorter ones fill the slots around them.
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
+      # dev-stack.test.sh and autodeploy_test.sh each run in parts, each part a pool entry of its
+      # own named for its harness and its part. dev-stack.test.sh has two, each starting the stacks
+      # it reads: `stops`, its cases (a) to (v), and `options`, (h) to (p), named
+      # `scripts/dev-stack.test.sh <part>`. Its whole entry took 73.4 s of wall time in run
+      # 46140194070 (job 140964381366): its cases (a) to (v) 35.7 s, and (h) to its end 37.7 s.
+      # autodeploy_test.sh runs one group of its cases per run, each from a fresh fixture, named
+      # `deploy/scripts/autodeploy_test.sh <group>`. The whole harness took 153 to 266 s of wall
+      # time as one entry in runs 46133189498 and 46133189517, and each group's cases summed 14.7
+      # to 34.2 s in run 46133189517. dev-stack's two parts stand first, then the groups longest
+      # first by those sums, so the shorter ones fill the slots around them.
+      - name: Isolation test for dev-stack.sh, part stops (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh stops' bash scripts/dev-stack.test.sh stops
+        working-directory: packages/envoy
+      - name: Isolation test for dev-stack.sh, part options (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh options' bash scripts/dev-stack.test.sh options
         working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-1' bash deploy/scripts/autodeploy_test.sh url-refused-1

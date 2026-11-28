@@ -93,6 +93,15 @@
 # The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
 # --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
 # both, and is the one entry point that runs every case.
+#
+# The cases run in two parts, each after the setup above the first case and each starting every
+# stack it reads, so neither reads anything the other made: `stops`, the cases from (a) to (v) in
+# this file's order, and `options`, those from (h) to (p). `dev-stack.test.sh <part>` runs one
+# part, `dev-stack.test.sh` with no argument runs both, stops first, and `dev-stack.test.sh
+# --parts` prints the two names, one a line. CI runs each part as a pool entry of its own, named
+# `scripts/dev-stack.test.sh <part>` (.github/workflows/ci-job-envoy-go-checks.yaml). Some
+# controls of the part options stand in stops: instance 1, run without --binaries, --callout or
+# --project-access, and the rows (e3), (e7) and (e9a), which run with bounds the driver takes.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -106,6 +115,36 @@ set -euo pipefail
 # reads the instance's own report that it was not started with SIGINT ignored, so the INT reaches
 # dev-stack.sh's trap exactly as a terminal's Ctrl-C does whatever started this test.
 set -m
+
+# The parts, in the order a run with no argument runs them. An argument that names no part, or
+# more than one argument, is refused with exit 2 before anything is created.
+part_names=(stops options)
+if (($# == 1)) && [[ "$1" == --parts ]]; then
+  printf '%s\n' "${part_names[@]}"
+  exit 0
+fi
+part=all
+if (($# > 0)); then
+  part=
+  if (($# == 1)); then
+    for listed in "${part_names[@]}"; do
+      [[ "$1" != "$listed" ]] || part=$1
+    done
+  fi
+fi
+if [[ -z "$part" ]]; then
+  {
+    if (($# == 1)); then
+      printf 'dev-stack.test.sh: %s is no part of this test\n' "$1"
+    else
+      printf 'dev-stack.test.sh: given %s arguments, where it takes one part or none\n' "$#"
+    fi
+    printf 'Run one part as dev-stack.test.sh <part>, <part> one of these (--parts prints them):\n'
+    printf '  %s\n' "${part_names[@]}"
+    printf 'and every part, in that order, as dev-stack.test.sh with no argument.\n'
+  } >&2
+  exit 2
+fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
@@ -1068,7 +1107,12 @@ curl_calls1="${temporary_dir}/curl-calls-1"
 curl_calls2="${temporary_dir}/curl-calls-2"
 go_calls1="${temporary_dir}/go-calls-1"
 argv1="${temporary_dir}/argv-1"
+# The file a refused run's output goes to: (f)'s run in the part stops, and refuse_run's in the
+# part options, which runs no (f) of its own.
+refusal="${temporary_dir}/refusal.log"
 
+# The part stops: the cases from (a) to (v).
+if [[ "$part" == all || "$part" == stops ]]; then
 # Both instances start before either is waited on: this is the scenario a port and a database of
 # each run's own exist to make safe, not two sequential runs that never contend for anything.
 # Instance 1 records its go calls, the control for (h): a run that builds is seen to call go; and
@@ -1655,7 +1699,6 @@ printf 'PASS: await reads again after 0.05, 0.1 and 0.2 s and then every 0.25 s,
 
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
-refusal="${temporary_dir}/refusal.log"
 refusal_status=0
 env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
   DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-refusal" \
@@ -1715,7 +1758,10 @@ assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
 printf 'PASS: a run whose PATH holds a python3 shim after the fakes, as a developer'"'"'s box does, reached ready (listener %s, dispatch %s) and stopped on INT\n' \
   "${process_port[listener]}" "${process_port[dispatch]}"
+fi
 
+# The part options: the cases from (h) to (p).
+if [[ "$part" == all || "$part" == options ]]; then
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
@@ -2078,5 +2124,6 @@ wait_line="$(grep -n -E '^[[:space:]]*wait -n -p ' "$driver" | head -n1 | cut -d
 ((call_line < first_command_line && call_line < wait_line)) ||
   fail "dev-stack.sh calls its bash gate at line $call_line, after its first command ($first_command_line) or its wait -n -p ($wait_line)"
 printf 'PASS: bash 4.4 and 5.0 are refused with exit 2 and one line naming 5.1, 5.1 and 5.3 are taken, and the gate runs before the first command\n'
+fi
 
 printf 'ALL PASS: dev-stack.test.sh\n'
