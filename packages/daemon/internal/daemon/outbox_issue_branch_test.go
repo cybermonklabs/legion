@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -244,6 +246,46 @@ func TestABranchWithCommitsAfterTheMergeIsLeftAndTold(t *testing.T) {
 	told := r.told()
 	if len(told) != 1 || told[0][0] != "next-change-workspace" || !strings.Contains(told[0][1], nextLater) || !strings.Contains(told[0][1], nextBranch) {
 		t.Fatalf("told %v, want one next-change-workspace notice naming %s at %s", told, nextBranch, nextLater)
+	}
+}
+
+// A refusal of the branch's write stands until a write of that branch GitHub takes: a move or a
+// create (Moved, Made) clears it, and a row that wrote nothing leaves it, whether the branch was
+// left as someone's work (Left) or already stood at the base (Stands). Cleared after every row,
+// `legion state` stopped naming a refusal no write had answered, as the state's own words promise
+// ("no refusal of a branch Legion wrote since"). The control is the move, which clears it.
+func TestOnlyAWriteGitHubTakesClearsTheBranchRefusal(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		refs     map[string]string
+		compared map[string]string
+		clears   bool
+	}{
+		{name: "left as someone's work", refs: map[string]string{"main": nextBaseHead, nextBranch: nextLater},
+			compared: map[string]string{nextBaseHead + "..." + nextLater: "diverged"}},
+		{name: "already at the base", refs: map[string]string{"main": nextBaseHead, nextBranch: nextBaseHead}},
+		{name: "control: moved", refs: map[string]string{"main": nextBaseHead, nextBranch: nextMergedHead}, clears: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newNextBranchRig(t, tc.refs, tc.compared)
+			if err := store.Transact(context.Background(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
+				_, err := r.runner.records.RefuseBranch(ctx, tx, record.BranchRefusal{Issue: "LEGION-208", Generation: 2, Row: 9, Write: record.BranchWriteMove,
+					Kind: "graphql-forbidden", Reason: "the App cannot use GitHub's GraphQL API", RefusedAt: time.Now().UTC()})
+				return err
+			}); err != nil {
+				t.Fatalf("record the earlier refusal: %v", err)
+			}
+			r.run(mergedFrom("main"))
+			var left int
+			if err := r.pool.QueryRow(context.Background(), `select count(*) from branch_refusals where issue = $1`, "LEGION-208").Scan(&left); err != nil {
+				t.Fatalf("count the refusals: %v", err)
+			}
+			if want := map[bool]int{true: 0, false: 1}[tc.clears]; left != want {
+				t.Fatalf("refusals of LEGION-208 after the row = %d, want %d", left, want)
+			}
+		})
 	}
 }
 
