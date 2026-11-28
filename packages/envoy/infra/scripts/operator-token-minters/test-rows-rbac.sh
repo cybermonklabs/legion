@@ -21,7 +21,7 @@
 #        envoy-operator, and with cluster-admin, each exits 1;
 #   (ai) a ServiceAccount that can become ci/runner, which can create pods in envoy-operator, by
 #        each of create pods, create serviceaccounts/token, impersonate, create pods/exec and get
-#        secrets in ci, is a finding naming the chain;
+#        secrets in ci, is a finding naming the chain (one world, one ServiceAccount a way);
 #   (aj) the Group system:unauthenticated bound to create namespaces on another cluster is a
 #        finding for anyone unauthenticated;
 #   (ak) create on a custom resource (sandboxes.agents.x-k8s.io) in envoy-operator is a finding, and
@@ -30,13 +30,14 @@
 #        cannot be read is UNKNOWN;
 #   (am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it, beside two that
 #        match;
-#   (ao) rights limited by name: legion/worker may impersonate the group system:masters by name,
-#        impersonate a named user bound to cluster-admin, or escalate a named clusterrole bound to
-#        it; each exits 1 naming the name;
-#   (aq) deploy/bot can become ci/runner, which can create pods in envoy-operator, by each of create
-#        jobs (rv5), create deployments, create pods/attach, patch pods/ephemeralcontainers, patch
-#        pods, create rolebindings, bind and escalate roles, and create a custom resource in ci; each
-#        is a finding naming the chain;
+#   (ao) rights limited by name: a ServiceAccount that may impersonate the group system:masters by
+#        name, impersonate a named user bound to cluster-admin, or escalate a named clusterrole
+#        bound to it is a finding naming the name (one world, one ServiceAccount a right);
+#   (aq) a ServiceAccount of deploy can become ci/runner, which can create pods in envoy-operator, by
+#        each of create jobs (rv5), create deployments, create pods/attach, patch
+#        pods/ephemeralcontainers, patch pods, create rolebindings, bind and escalate roles, and
+#        create a custom resource in ci; each is a finding naming the chain (one world, one
+#        ServiceAccount a way);
 #   (ar) a kube-system ServiceAccount that may mint the operator's token is no finding, but
 #        legion/worker, which may create pods in kube-system, is one naming the chain (rv6); on
 #        another cluster, ci/runner, which may create pods in kube-system, becomes its namespace
@@ -47,34 +48,37 @@
 #        deployer-bot to cluster-admin each exit 1 naming it;
 #   (ax) Kubernetes' own groups are findings: system:authenticated or system:serviceaccounts:apps
 #        allowed to create pods in envoy-operator on another cluster, system:serviceaccounts on the
-#        operator's, a live binding of system:masters other than the bootstrap one, and a render
-#        binding system:masters to cluster-admin each exit 1;
+#        operator's and a live binding of system:masters other than the bootstrap one (those two in
+#        one world), and a render binding system:masters to cluster-admin each exit 1;
 #   (ay) any other Group reads UNKNOWN where the cluster takes its groups from elsewhere: the Group
 #        ci-deployers bound to cluster-admin on a non-GKE fleet member, a Group on another cluster
 #        or a GKE fleet member with Google Groups for RBAC on, a GKE fleet member whose describe is
 #        refused, and the operator's cluster with Google Groups for RBAC on and no Group bound;
 #   (bb) a ServiceAccount a binding names that does not exist (ci/ghost, allowed to create pods in
 #        envoy-operator) is reviewed and exits 1;
-#   (bd) writes to a binding: legion/worker with update rolebindings in envoy-operator, or with patch
-#        of the operator's RoleBinding by name, beside bind of its ClusterRole by name; update of
-#        that RoleBinding by name; escalate of that ClusterRole by name; and on another cluster
-#        ci/runner with patch of the ClusterRoleBinding cluster-admin and bind of the ClusterRole
-#        cluster-admin, each by name: each exits 1 naming the rights;
+#   (bd) writes to a binding: a ServiceAccount with update rolebindings in envoy-operator, or with
+#        patch of the operator's RoleBinding by name, beside bind of its ClusterRole by name; update
+#        of that RoleBinding by name; escalate of that ClusterRole by name (those four in one world,
+#        one ServiceAccount each); and on another cluster ci/runner with patch of the
+#        ClusterRoleBinding cluster-admin and bind of the ClusterRole cluster-admin, each by name:
+#        each exits 1 naming the rights;
 #   (bi) on a fleet member that is no GKE cluster, a User that looks like an email
 #        (ci-bot@corp.example) bound to cluster-admin reads UNKNOWN: that cluster's own
 #        authenticator names its users, so the name proves no person;
-#   (bj) a client certificate signed by the cluster: legion/worker that may create certificate
+#   (bj) a client certificate signed by the cluster: a ServiceAccount that may create certificate
 #        signing requests, update their approval and approve the signer
 #        kubernetes.io/kube-apiserver-client (rv9, beside a person who may mint the operator's
-#        token), one that may approve for kubernetes.io/* without create, ci/runner on another
-#        cluster, the approval's patch with the client signer (rv13), its update with the kubelet
-#        signer (rv12), the signer kubernetes.io/legacy-unknown, a signer of any name, and on a
-#        fleet member that is no GKE cluster create of certificatesigningrequests/nodeclient or
+#        token), one that may approve for kubernetes.io/* without create, the approval's patch with
+#        the client signer (rv13), its update with the kubelet signer (rv12), the signer
+#        kubernetes.io/legacy-unknown and a signer of any name (those six in one world, one
+#        ServiceAccount each), ci/runner with kubernetes.io/* on another cluster, and on a fleet
+#        member that is no GKE cluster create of certificatesigningrequests/nodeclient or
 #        selfnodeclient alone, each exit 1 naming the chain or the right; create alone, and create
 #        and patch of the request my-csr by name with no signer (pn6), exit 0;
-#   (bo) legion/worker that may impersonate, by name, a user whose power is IAM's (owner@example.com,
-#        who holds roles/owner on the organization, or admin@example.com, a member of a group holding
-#        roles/container.admin) exits 1 naming that user;
+#   (bo) a ServiceAccount that may impersonate, by name, a user whose power is IAM's
+#        (owner@example.com, who holds roles/owner on the organization, or admin@example.com, a
+#        member of a group holding roles/container.admin) is a finding naming that user (one world,
+#        one ServiceAccount a user);
 #   (br) legion/worker that may get, by name, a token Secret the operator's ServiceAccount lists
 #        exits 1 naming it; a list of bindings without the bootstrap cluster-admin binding, on the
 #        operator's cluster or another, reads UNKNOWN;
@@ -87,6 +91,7 @@
 #        secrets-broker-0: each exits 1 naming the name; create pods limited by name beside patch of
 #        that name, and rv14's create and patch of the namespace envoy-operator by name on another
 #        cluster, each exit 1 (server-side apply creates by patch); create limited by name alone exits 0;
+#        those of the operator's cluster that exit 1 share one world, one ServiceAccount each;
 #   (bv) a refused list of roles, on the operator's cluster or another, reads UNKNOWN;
 #   (cc) legion/worker that may get, by name, a token Secret of envoy-operator that no ServiceAccount
 #        lists exits 1 naming it, and a refused list of the namespace's token Secrets reads UNKNOWN.
@@ -242,22 +247,36 @@ if row ac; then
   passed "(ac) ci/runner, outside the agent namespaces, with cluster-admin exits 1"
 fi
 
-# --- (ai) Who can become a ServiceAccount with a finding holds what it holds. ---
-become_row() {
-  local verb resource sub name
-  IFS='|' read -r verb resource sub name <<<"${1%%=*}"
+# --- (ai) Who can become a ServiceAccount with a finding holds what it holds. The five ways share
+# one world and one run: ci/runner, which may create pods in envoy-operator, once, and each way
+# granted in ci to a becomer of its own, deploy/bot-<its place among the ways>, in deploy, which no
+# grant gives a right in, so no becomer becomes another and each chain names ci/runner alone. The
+# fake answers each review by its subject, so each way is still judged by its own line, exact,
+# naming its own becomer; want_recorded holds the run's last line to the FINDING and UNKNOWN lines
+# it printed, so a line printed and not recorded fails the row. ---
+become_shared() {
+  local way verb resource sub name i=0
   base_world
   add_sa operator-cluster ci runner
-  add_sa operator-cluster deploy bot
   subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
-  subject_grant operator-cluster "$(sa_subject deploy bot)" "$verb" "" "$resource" "$sub" ci "$name"
+  for way in "$@"; do
+    i=$((i + 1))
+    IFS='|' read -r verb resource sub name <<<"${way%%=*}"
+    add_sa operator-cluster deploy "bot-$i"
+    subject_grant operator-cluster "$(sa_subject deploy "bot-$i")" "$verb" "" "$resource" "$sub" ci "$name"
+  done
   run
-  want_status 1 "deploy/bot with ${1#*=} in ci"
-  want_line "FINDING system:serviceaccount:deploy:bot: ${1#*=} in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
-    "deploy/bot with ${1#*=} in ci"
+  want_status 1 "deploy/bot-1 to bot-$#, each with one way to become ci/runner in ci"
+  want_recorded "deploy/bot-1 to bot-$#, each with one way to become ci/runner in ci"
+  i=0
+  for way in "$@"; do
+    i=$((i + 1))
+    want_line "FINDING system:serviceaccount:deploy:bot-$i: ${way#*=} in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
+      "deploy/bot-$i with ${way#*=} in ci"
+  done
 }
 if row ai; then
-  each become_row "create|pods||=create pods" "create|serviceaccounts|token|runner=create serviceaccounts/token runner" \
+  become_shared "create|pods||=create pods" "create|serviceaccounts|token|runner=create serviceaccounts/token runner" \
     "impersonate|serviceaccounts||runner=impersonate serviceaccounts runner" "create|pods|exec|=create pods/exec" "get|secrets||=get secrets"
   passed "(ai) a ServiceAccount that can become one with a finding, by each of the five ways in its namespace, is a finding naming the chain"
 fi
@@ -329,39 +348,58 @@ if row am; then
   passed "(am) an --agent-namespace pattern that matches nothing is UNKNOWN, naming it"
 fi
 
-# --- (ao) Rights limited by resource name, which a review naming nothing never finds. ---
-named_right_row() {
-  local planted want
+# --- (ao) Rights limited by resource name, which a review naming nothing never finds. The three
+# share one world and one run, each on a ServiceAccount of its own, legion/<item>: the user item's
+# cluster-admin for alice@example.com binds a person, whom the check does not review, and the role
+# item escalates the ClusterRole its own get of configmaps is bound by. live_named names the subject
+# each named rule's binding gives it, so each item is still judged by its own line, exact, naming its
+# own ServiceAccount; want_recorded holds the run's last line to the lines it printed. ---
+named_right_shared() {
+  local item subject planted want entry wants=()
   base_world
-  case "$1" in
-    group)
-      subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" groups "" "" system:masters
-      want="impersonate groups system:masters cluster-wide"
-      ;;
-    user)
-      cluster_admin operator-cluster "$(user_subject alice@example.com)"
-      subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" users "" "" alice@example.com
-      want="impersonate users alice@example.com cluster-wide"
-      ;;
-    role)
-      # The fake names each grant's ClusterRole planted-<its index>; this one is bound to legion/worker.
-      planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
-      subject_grant operator-cluster "$(sa_subject legion worker)" get "" configmaps "" legion ""
-      subject_grant operator-cluster "$(sa_subject legion worker)" escalate rbac.authorization.k8s.io clusterroles "" "" "$planted"
-      want="escalate clusterroles.rbac.authorization.k8s.io $planted cluster-wide"
-      ;;
-  esac
+  for item in "$@"; do
+    add_sa operator-cluster legion "$item"
+    subject="$(sa_subject legion "$item")"
+    case "$item" in
+      group)
+        subject_grant operator-cluster "$subject" impersonate "" groups "" "" system:masters
+        want="impersonate groups system:masters cluster-wide"
+        ;;
+      user)
+        cluster_admin operator-cluster "$(user_subject alice@example.com)"
+        subject_grant operator-cluster "$subject" impersonate "" users "" "" alice@example.com
+        want="impersonate users alice@example.com cluster-wide"
+        ;;
+      role)
+        # The fake names each grant's ClusterRole planted-<its index>; this one is bound to legion/role.
+        planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
+        subject_grant operator-cluster "$subject" get "" configmaps "" legion ""
+        subject_grant operator-cluster "$subject" escalate rbac.authorization.k8s.io clusterroles "" "" "$planted"
+        want="escalate clusterroles.rbac.authorization.k8s.io $planted cluster-wide"
+        ;;
+    esac
+    wants+=("$item"$'\t'"$want")
+  done
   run
-  want_status 1 "legion/worker may $want, by name"
-  want_line "FINDING system:serviceaccount:legion:worker: $want" "legion/worker may $want, by name"
+  want_status 1 "the rights limited by name ($*), each on a ServiceAccount of its own"
+  want_recorded "the rights limited by name ($*), each on a ServiceAccount of its own"
+  for entry in "${wants[@]}"; do
+    item="${entry%%$'\t'*}" want="${entry#*$'\t'}"
+    want_line "FINDING system:serviceaccount:legion:$item: $want" "legion/$item may $want, by name"
+  done
 }
 if row ao; then
-  each named_right_row group user role
+  named_right_shared group user role
   passed "(ao) a ServiceAccount that may impersonate the group system:masters, impersonate a named user bound to cluster-admin, or escalate a named clusterrole bound to it, each by name, exits 1 naming the name"
 fi
 
-# --- (aq) Every namespaced way to become a ServiceAccount with a finding. Each entry is the grant to
-# deploy/bot in ci (verb, API group, resource, subresource) and the right the run must name. ---
+# --- (aq) Every namespaced way to become a ServiceAccount with a finding. Each entry is a way's grant
+# in ci (verb, API group, resource, subresource) and the right the run must name. The nine share one
+# world and one run, as (ai)'s five do: the discovery's sandboxes and ci/runner, which may create
+# pods in envoy-operator, once, and each way granted to a becomer of its own, deploy/bot-<its place
+# in the list>, in deploy, which no grant gives a right in, so each chain names ci/runner alone. The
+# fake answers each review by its subject, so each way is still judged by its own line, exact,
+# naming its own becomer; want_recorded holds the run's last line to the lines it printed. ---
 become_ways=(
   "create|batch|jobs|=create jobs.batch"
   "create|apps|deployments|=create deployments.apps"
@@ -373,22 +411,30 @@ become_ways=(
   "escalate|rbac.authorization.k8s.io|roles|=escalate roles.rbac.authorization.k8s.io"
   "create|agents.x-k8s.io|sandboxes|=create sandboxes.agents.x-k8s.io"
 )
-become_way_row() {
-  local right="${1#*=}" verb group resource sub
-  IFS='|' read -r verb group resource sub <<<"${1%%=*}"
+become_way_shared() {
+  local way verb group resource sub i=0
   base_world
   echo sandboxes.agents.x-k8s.io >"$world/clusters/operator-cluster/api-resources"
   add_sa operator-cluster ci runner
-  add_sa operator-cluster deploy bot
   subject_grant operator-cluster "$(sa_subject ci runner)" create "" pods "" envoy-operator ""
-  subject_grant operator-cluster "$(sa_subject deploy bot)" "$verb" "$group" "$resource" "$sub" ci ""
+  for way in "$@"; do
+    i=$((i + 1))
+    IFS='|' read -r verb group resource sub <<<"${way%%=*}"
+    add_sa operator-cluster deploy "bot-$i"
+    subject_grant operator-cluster "$(sa_subject deploy "bot-$i")" "$verb" "$group" "$resource" "$sub" ci ""
+  done
   run
-  want_status 1 "deploy/bot with $right in ci"
-  want_line "FINDING system:serviceaccount:deploy:bot: $right in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
-    "deploy/bot with $right in ci"
+  want_status 1 "deploy/bot-1 to bot-$#, each with one way to become ci/runner in ci"
+  want_recorded "deploy/bot-1 to bot-$#, each with one way to become ci/runner in ci"
+  i=0
+  for way in "$@"; do
+    i=$((i + 1))
+    want_line "FINDING system:serviceaccount:deploy:bot-$i: ${way#*=} in ci, so it can become system:serviceaccount:ci:runner, which can create pods in envoy-operator" \
+      "deploy/bot-$i with ${way#*=} in ci"
+  done
 }
 if row aq; then
-  each become_way_row "${become_ways[@]}"
+  become_way_shared "${become_ways[@]}"
   passed "(aq) a ServiceAccount that can become one with a finding by each of ${#become_ways[@]} more namespaced rights is a finding naming the chain"
 fi
 
@@ -464,9 +510,15 @@ if row aw; then
   passed "(aw) a User that is no email (deployer-bot on a non-GKE fleet member, a principal:// name, a render's deployer-bot) is reviewed and exits 1 naming it"
 fi
 
-# --- (ax) Kubernetes' own groups, whatever Google Groups for RBAC says. ---
+# --- (ax) Kubernetes' own groups, whatever Google Groups for RBAC says. On the operator's cluster,
+# system:serviceaccounts and a live binding of system:masters share one world and one run
+# (own_group_shared): each is a principal of its own, a Group reviewed with its own group alone, and
+# the system:masters line is read from the bindings, not from a review, so each is still judged by
+# its own line, exact; want_recorded holds the run's last line to the lines it printed. The other
+# cluster's two groups (each adds that cluster) and the render's system:masters binding (refuse_live
+# refuses the operator's reviews) keep a run of their own. ---
 own_group_row() {
-  local want planted
+  local want
   base_world
   case "$1" in
     authenticated)
@@ -478,16 +530,6 @@ own_group_row() {
       add_cluster other-cluster us-east1
       subject_grant other-cluster "$(group_subject system:serviceaccounts:apps)" create "" pods "" envoy-operator ""
       want="FINDING group:system:serviceaccounts:apps: create pods in envoy-operator, guarding envoy-operator/envoy-operator on cluster $project/us-east1/other-cluster"
-      ;;
-    serviceaccounts)
-      subject_grant operator-cluster "$(group_subject system:serviceaccounts)" create "" pods "" envoy-operator ""
-      want="FINDING group:system:serviceaccounts: create pods in envoy-operator"
-      ;;
-    masters)
-      # The fake binds each grant by RoleBinding planted-<its index> to ClusterRole planted-<its index>.
-      planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
-      subject_grant operator-cluster "$(group_subject system:masters)" get "" configmaps "" legion ""
-      want="FINDING group:system:masters: bound by RoleBinding legion/$planted to ClusterRole $planted, so every holder of a system:masters certificate takes it"
       ;;
     masters-code)
       refuse_live
@@ -502,8 +544,34 @@ own_group_row() {
   want_status 1 "Kubernetes' own group ($1)"
   want_line "$want" "Kubernetes' own group ($1)"
 }
+own_group_shared() {
+  local item planted want entry wants=()
+  base_world
+  for item in "$@"; do
+    case "$item" in
+      serviceaccounts)
+        subject_grant operator-cluster "$(group_subject system:serviceaccounts)" create "" pods "" envoy-operator ""
+        want="FINDING group:system:serviceaccounts: create pods in envoy-operator"
+        ;;
+      masters)
+        # The fake binds each grant by RoleBinding planted-<its index> to ClusterRole planted-<its index>.
+        planted="planted-$(jq length "$world/clusters/operator-cluster/grants.json")"
+        subject_grant operator-cluster "$(group_subject system:masters)" get "" configmaps "" legion ""
+        want="FINDING group:system:masters: bound by RoleBinding legion/$planted to ClusterRole $planted, so every holder of a system:masters certificate takes it"
+        ;;
+    esac
+    wants+=("$item"$'\t'"$want")
+  done
+  run
+  want_status 1 "Kubernetes' own groups ($*) on the operator's cluster"
+  want_recorded "Kubernetes' own groups ($*) on the operator's cluster"
+  for entry in "${wants[@]}"; do
+    want_line "${entry#*$'\t'}" "Kubernetes' own group (${entry%%$'\t'*})"
+  done
+}
 if row ax; then
-  each own_group_row authenticated namespace serviceaccounts masters masters-code
+  each own_group_row authenticated namespace masters-code
+  own_group_shared serviceaccounts masters
   passed "(ax) system:authenticated, system:serviceaccounts, system:serviceaccounts:apps, a non-bootstrap live binding of system:masters, and a render's system:masters binding each exit 1"
 fi
 
@@ -567,29 +635,17 @@ fi
 # binding, and a name-limited write is refused to a review that names nothing. Each item reaches the
 # operator's token through its own RoleBinding envoy-operator/planted-0 and ClusterRole planted-0
 # (the fake names each grant's binding and role planted-<its index>, and the operator's token grant
-# is the world's first), or cluster-admin through the bootstrap binding on another cluster. ---
+# is the world's first), or cluster-admin through the bootstrap binding on another cluster. The four
+# items on the operator's cluster share one world and one run (binding_write_shared), each on a
+# ServiceAccount of its own, legion/<item>: grants are only appended, so planted-0 stays the
+# operator's token grant, and the fake answers each review by its subject, so the bind line update
+# and patch-named both want is each one's own. Each item is still judged by each of its own lines,
+# exact; want_recorded holds the run's last line to the lines it printed. cluster-admin, which adds
+# a cluster, keeps a run of its own. ---
 binding_write_row() {
-  local who=system:serviceaccount:legion:worker suffix="" line want=()
+  local who suffix line want=()
   base_world
   case "$1" in
-    update)
-      subject_grant operator-cluster "$(sa_subject legion worker)" update rbac.authorization.k8s.io rolebindings "" envoy-operator ""
-      subject_grant operator-cluster "$(sa_subject legion worker)" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
-      want=("update rolebindings.rbac.authorization.k8s.io in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
-      ;;
-    patch-named)
-      subject_grant operator-cluster "$(sa_subject legion worker)" patch rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
-      subject_grant operator-cluster "$(sa_subject legion worker)" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
-      want=("patch rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
-      ;;
-    update-named)
-      subject_grant operator-cluster "$(sa_subject legion worker)" update rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
-      want=("update rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator")
-      ;;
-    escalate-named)
-      subject_grant operator-cluster "$(sa_subject legion worker)" escalate rbac.authorization.k8s.io clusterroles "" "" planted-0
-      want=("escalate clusterroles.rbac.authorization.k8s.io planted-0 cluster-wide")
-      ;;
     cluster-admin)
       add_cluster other-cluster us-east1
       add_sa other-cluster ci runner
@@ -605,8 +661,44 @@ binding_write_row() {
     want_line "FINDING $who: $line$suffix" "a write to a binding ($1)"
   done
 }
+binding_write_shared() {
+  local item subject want line entry lines=()
+  base_world
+  for item in "$@"; do
+    add_sa operator-cluster legion "$item"
+    subject="$(sa_subject legion "$item")"
+    case "$item" in
+      update)
+        subject_grant operator-cluster "$subject" update rbac.authorization.k8s.io rolebindings "" envoy-operator ""
+        subject_grant operator-cluster "$subject" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
+        want=("update rolebindings.rbac.authorization.k8s.io in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
+        ;;
+      patch-named)
+        subject_grant operator-cluster "$subject" patch rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
+        subject_grant operator-cluster "$subject" bind rbac.authorization.k8s.io clusterroles "" envoy-operator planted-0
+        want=("patch rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator" "bind clusterroles.rbac.authorization.k8s.io planted-0 in envoy-operator")
+        ;;
+      update-named)
+        subject_grant operator-cluster "$subject" update rbac.authorization.k8s.io rolebindings "" envoy-operator planted-0
+        want=("update rolebindings.rbac.authorization.k8s.io planted-0 in envoy-operator")
+        ;;
+      escalate-named)
+        subject_grant operator-cluster "$subject" escalate rbac.authorization.k8s.io clusterroles "" "" planted-0
+        want=("escalate clusterroles.rbac.authorization.k8s.io planted-0 cluster-wide")
+        ;;
+    esac
+    for line in "${want[@]}"; do lines+=("$item"$'\t'"$line"); done
+  done
+  run
+  want_status 1 "the writes to a binding ($*), each on a ServiceAccount of its own"
+  want_recorded "the writes to a binding ($*), each on a ServiceAccount of its own"
+  for entry in "${lines[@]}"; do
+    want_line "FINDING system:serviceaccount:legion:${entry%%$'\t'*}: ${entry#*$'\t'}" "a write to a binding (${entry%%$'\t'*})"
+  done
+}
 if row bd; then
-  each binding_write_row update patch-named update-named escalate-named cluster-admin
+  each binding_write_row cluster-admin
+  binding_write_shared update patch-named update-named escalate-named
   passed "(bd) update of rolebindings, patch or update of the operator's RoleBinding by name, bind or escalate of its ClusterRole by name, and patch of cluster-admin's binding with bind of its role by name on another cluster each exit 1 naming the rights"
 fi
 
@@ -627,10 +719,17 @@ fi
 # kubernetes.io/kube-apiserver-client authenticates as any user and groups its request names but
 # system:masters, and one for the kubelet signer as a node, so whoever may write a request's
 # approval (update or patch) and approve such a signer becomes anyone, a person who may mint the
-# operator's token included. ---
+# operator's token included. The six items of exit 1 on the operator's cluster share one world and
+# one run (csr_shared), each on a ServiceAccount of its own, legion/<item>: csr_chains joins one
+# principal's parts into one line, so on one ServiceAccount their parts would merge, and it reads no
+# other principal's, so rv9's person, who may mint the operator's token, changes no other item's
+# line. Each item is still judged by its own line, exact; want_recorded holds the run's last line to
+# the lines it printed. ci/runner on another cluster and the node client requests (each adds a
+# cluster or a fleet member) keep a run of their own, and so do create-only and create-patch-named,
+# which exit 0. ---
+readonly csr_clause="cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
 csr_row() {
   local who=system:serviceaccount:legion:worker cluster=operator-cluster subject suffix="" want
-  local clause="cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
   base_world
   subject="$(sa_subject legion worker)"
   case "$1" in
@@ -647,38 +746,10 @@ csr_row() {
       ;;
   esac
   case "$1" in
-    rv9)
-      subject_grant operator-cluster "$(user_subject ops@example.com)" create "" serviceaccounts token envoy-operator envoy-operator
-      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
-      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
-      want="create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client $clause"
-      ;;
-    wildcard | other-cluster)
+    other-cluster)
       subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
       subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" "kubernetes.io/*"
-      want="update certificatesigningrequests/approval and approve signers kubernetes.io/* $clause"
-      ;;
-    rv13)
-      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
-      subject_grant "$cluster" "$subject" patch certificates.k8s.io certificatesigningrequests approval "" ""
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
-      want="create certificatesigningrequests, patch certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client $clause"
-      ;;
-    rv12)
-      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client-kubelet
-      want="update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client-kubelet $clause"
-      ;;
-    legacy)
-      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/legacy-unknown
-      want="update certificatesigningrequests/approval and approve signers kubernetes.io/legacy-unknown $clause"
-      ;;
-    any-signer)
-      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" ""
-      want="update certificatesigningrequests/approval and approve signers of any name $clause"
+      want="update certificatesigningrequests/approval and approve signers kubernetes.io/* $csr_clause"
       ;;
     nodeclient | selfnodeclient)
       subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "$1" "" ""
@@ -703,22 +774,84 @@ csr_row() {
   want_status 1 "a certificate signing chain ($1)"
   want_line "FINDING $who: $want$suffix" "a certificate signing chain ($1)"
 }
+csr_shared() {
+  local item subject want entry wants=()
+  base_world
+  for item in "$@"; do
+    add_sa operator-cluster legion "$item"
+    subject="$(sa_subject legion "$item")"
+    case "$item" in
+      rv9)
+        subject_grant operator-cluster "$(user_subject ops@example.com)" create "" serviceaccounts token envoy-operator envoy-operator
+        subject_grant operator-cluster "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
+        want="create certificatesigningrequests, update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client $csr_clause"
+        ;;
+      wildcard)
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" "kubernetes.io/*"
+        want="update certificatesigningrequests/approval and approve signers kubernetes.io/* $csr_clause"
+        ;;
+      rv13)
+        subject_grant operator-cluster "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+        subject_grant operator-cluster "$subject" patch certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
+        want="create certificatesigningrequests, patch certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client $csr_clause"
+        ;;
+      rv12)
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client-kubelet
+        want="update certificatesigningrequests/approval and approve signers kubernetes.io/kube-apiserver-client-kubelet $csr_clause"
+        ;;
+      legacy)
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/legacy-unknown
+        want="update certificatesigningrequests/approval and approve signers kubernetes.io/legacy-unknown $csr_clause"
+        ;;
+      any-signer)
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" ""
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" ""
+        want="update certificatesigningrequests/approval and approve signers of any name $csr_clause"
+        ;;
+    esac
+    wants+=("$item"$'\t'"$want")
+  done
+  run
+  want_status 1 "the certificate signing chains ($*), each on a ServiceAccount of its own"
+  want_recorded "the certificate signing chains ($*), each on a ServiceAccount of its own"
+  for entry in "${wants[@]}"; do
+    want_line "FINDING system:serviceaccount:legion:${entry%%$'\t'*}: ${entry#*$'\t'}" "a certificate signing chain (${entry%%$'\t'*})"
+  done
+}
 if row bj; then
-  each csr_row rv9 wildcard other-cluster rv13 rv12 legacy any-signer nodeclient selfnodeclient create-only create-patch-named
+  each csr_row other-cluster nodeclient selfnodeclient create-only create-patch-named
+  csr_shared rv9 wildcard rv13 rv12 legacy any-signer
   passed "(bj) who may write a certificate signing request's approval (update or patch) and approve a client, kubelet, legacy or any signer, on the operator's cluster or another, and who may create a node client request on a non-GKE member, exits 1 naming the chain; create alone, or create and patch of one request by name (pn6), exits 0"
 fi
 
 # --- (bo) Impersonating, by name, a user whose power comes from IAM: GKE's IAM authorizer judges an
-# impersonated user by its own IAM, so whoever may impersonate an IAM holder takes what it holds. ---
-iam_user_row() {
+# impersonated user by its own IAM, so whoever may impersonate an IAM holder takes what it holds. The
+# two share one world and one run, each on a ServiceAccount of its own, legion/<the user's name
+# before its @>: live_named names the subject each named rule's binding gives it, so each is still
+# judged by its own line, exact; want_recorded holds the run's last line to the lines it printed. ---
+iam_user_shared() {
+  local user
   base_world
-  subject_grant operator-cluster "$(sa_subject legion worker)" impersonate "" users "" "" "$1"
+  for user in "$@"; do
+    add_sa operator-cluster legion "${user%%@*}"
+    subject_grant operator-cluster "$(sa_subject legion "${user%%@*}")" impersonate "" users "" "" "$user"
+  done
   run
-  want_status 1 "legion/worker may impersonate $1 by name"
-  want_line "FINDING system:serviceaccount:legion:worker: impersonate users $1 cluster-wide" "legion/worker may impersonate $1 by name"
+  want_status 1 "a ServiceAccount of legion for each of $* that may impersonate it by name"
+  want_recorded "a ServiceAccount of legion for each of $* that may impersonate it by name"
+  for user in "$@"; do
+    want_line "FINDING system:serviceaccount:legion:${user%%@*}: impersonate users $user cluster-wide" \
+      "legion/${user%%@*} may impersonate $user by name"
+  done
 }
 if row bo; then
-  each iam_user_row owner@example.com admin@example.com
+  iam_user_shared owner@example.com admin@example.com
   passed "(bo) a ServiceAccount that may impersonate, by name, a user holding the GKE IAM permissions exits 1 naming the user"
 fi
 
@@ -761,16 +894,18 @@ fi
 
 # --- (bu) Rights a live role limits by name. RBAC applies a rule with resourceNames only to a request
 # that names one of them, so a review naming nothing is refused for each of these; the check reads
-# the roles the bindings name. ---
+# the roles the bindings name. The operator's cluster's items of exit 1 but the hand-off share one
+# world and one run (name_limited_shared), each on a ServiceAccount of its own, legion/<item>, beside
+# the outside-namespace items' person, dba@example.com, planted once: live_named names the subject a
+# named rule's binding gives it and the fake answers each review by its subject, so each item is
+# still judged by its own line, exact, naming its own ServiceAccount; want_recorded holds the run's
+# last line to the lines it printed. webhook-other and rv14 (each adds a cluster), the hand-off
+# (which reads every review the run asked) and create-named (exit 0) keep a run of their own. ---
 name_limited_row() {
   local who=system:serviceaccount:legion:worker cluster=operator-cluster subject suffix="" want
   base_world
   subject="$(sa_subject legion worker)"
   case "$1" in
-    webhook-operator)
-      subject_grant "$cluster" "$subject" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
-      want="update mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
-      ;;
     webhook-other)
       add_cluster other-cluster us-east1
       add_sa other-cluster ci runner
@@ -778,29 +913,6 @@ name_limited_row() {
       suffix=" on cluster $project/us-east1/other-cluster"
       subject_grant "$cluster" "$subject" patch admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
       want="patch mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
-      ;;
-    csr)
-      subject_grant "$cluster" "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
-      subject_grant "$cluster" "$subject" update certificates.k8s.io certificatesigningrequests approval "" my-csr
-      subject_grant "$cluster" "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
-      want="create certificatesigningrequests, update certificatesigningrequests/approval my-csr and approve signers kubernetes.io/kube-apiserver-client cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
-      ;;
-    deployment)
-      subject_grant "$cluster" "$subject" patch apps deployments "" secrets-broker secrets-broker
-      want="patch deployments.apps secrets-broker in secrets-broker"
-      ;;
-    cronjob)
-      subject_grant "$cluster" "$subject" update batch cronjobs "" envoy-operator nightly
-      want="update cronjobs.batch nightly in envoy-operator"
-      ;;
-    exec)
-      subject_grant "$cluster" "$subject" create "" pods exec secrets-broker secrets-broker-0
-      want="create pods/exec secrets-broker-0 in secrets-broker"
-      ;;
-    create-patch)
-      subject_grant "$cluster" "$subject" create "" pods "" envoy-operator some-pod
-      subject_grant "$cluster" "$subject" patch "" pods "" envoy-operator some-pod
-      want="create pods some-pod in envoy-operator, which its patch or update of that name makes"
       ;;
     rv14)
       add_cluster other-cluster us-east1
@@ -841,35 +953,77 @@ name_limited_row() {
         fail "the check reviewed $named rights a binding limits by name, which live_named reads from the roles: $(awk -F'\t' "$from_bindings" "$asked" | awk -F'\t' '{ print $1, $3, $6 }' | sort -u | head -n 3 | tr '\n' ';')"
       return
       ;;
-    outside-namespace | outside-namespace-named)
-      # A namespace outside the guarded ones, where a person reads the broker's database login:
-      # legion/worker may create rolebindings there and bind clusterroles there, so it can bind
-      # itself a ClusterRole that reads that Secret, and the login's holders are hold writers. Only
-      # binding_rights asks the bind in that namespace; without it the run passes, none allowed.
-      # The named item limits the bind to one ClusterRole's name, which no review answers and
-      # live_named reads from the cluster's roles for the unnamed right binding_rights asks.
-      subject_grant "$cluster" "$(user_subject dba@example.com)" get "" secrets "" example-db broker-db-login
-      subject_grant "$cluster" "$subject" create rbac.authorization.k8s.io rolebindings "" example-db ""
-      if [ "$1" = outside-namespace ]; then
-        subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db ""
-        want="bind clusterroles.rbac.authorization.k8s.io in example-db"
-      else
-        subject_grant "$cluster" "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db secret-reader
-        want="bind clusterroles.rbac.authorization.k8s.io secret-reader in example-db"
-      fi
-      run
-      want_status 1 "a bind in a namespace outside the guarded ones ($1)"
-      want_line "FINDING $who: $want" "a bind in a namespace outside the guarded ones ($1)"
-      return
-      ;;
   esac
   run
   want_status 1 "a right limited by name ($1)"
   want_line "FINDING $who: $want$suffix" "a right limited by name ($1)"
 }
+name_limited_shared() {
+  local item subject want entry wants=()
+  base_world
+  # The outside-namespace items' person, who reads the broker's database login in example-db.
+  subject_grant operator-cluster "$(user_subject dba@example.com)" get "" secrets "" example-db broker-db-login
+  for item in "$@"; do
+    add_sa operator-cluster legion "$item"
+    subject="$(sa_subject legion "$item")"
+    case "$item" in
+      webhook-operator)
+        subject_grant operator-cluster "$subject" update admissionregistration.k8s.io mutatingwebhookconfigurations "" "" existing-webhook
+        want="update mutatingwebhookconfigurations.admissionregistration.k8s.io existing-webhook cluster-wide"
+        ;;
+      csr)
+        subject_grant operator-cluster "$subject" create certificates.k8s.io certificatesigningrequests "" "" ""
+        subject_grant operator-cluster "$subject" update certificates.k8s.io certificatesigningrequests approval "" my-csr
+        subject_grant operator-cluster "$subject" approve certificates.k8s.io signers "" "" kubernetes.io/kube-apiserver-client
+        want="create certificatesigningrequests, update certificatesigningrequests/approval my-csr and approve signers kubernetes.io/kube-apiserver-client cluster-wide, so it can have the cluster sign it a client certificate for a user, group or node it names"
+        ;;
+      deployment)
+        subject_grant operator-cluster "$subject" patch apps deployments "" secrets-broker secrets-broker
+        want="patch deployments.apps secrets-broker in secrets-broker"
+        ;;
+      cronjob)
+        subject_grant operator-cluster "$subject" update batch cronjobs "" envoy-operator nightly
+        want="update cronjobs.batch nightly in envoy-operator"
+        ;;
+      exec)
+        subject_grant operator-cluster "$subject" create "" pods exec secrets-broker secrets-broker-0
+        want="create pods/exec secrets-broker-0 in secrets-broker"
+        ;;
+      create-patch)
+        subject_grant operator-cluster "$subject" create "" pods "" envoy-operator some-pod
+        subject_grant operator-cluster "$subject" patch "" pods "" envoy-operator some-pod
+        want="create pods some-pod in envoy-operator, which its patch or update of that name makes"
+        ;;
+      outside-namespace | outside-namespace-named)
+        # A namespace outside the guarded ones, where a person reads the broker's database login:
+        # this ServiceAccount may create rolebindings there and bind clusterroles there, so it can
+        # bind itself a ClusterRole that reads that Secret, and the login's holders are hold
+        # writers. Only binding_rights asks the bind in that namespace; without it no review allows
+        # it. The named item limits the bind to one ClusterRole's name, which no review answers and
+        # live_named reads from the cluster's roles for the unnamed right binding_rights asks.
+        subject_grant operator-cluster "$subject" create rbac.authorization.k8s.io rolebindings "" example-db ""
+        if [ "$item" = outside-namespace ]; then
+          subject_grant operator-cluster "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db ""
+          want="bind clusterroles.rbac.authorization.k8s.io in example-db"
+        else
+          subject_grant operator-cluster "$subject" bind rbac.authorization.k8s.io clusterroles "" example-db secret-reader
+          want="bind clusterroles.rbac.authorization.k8s.io secret-reader in example-db"
+        fi
+        ;;
+    esac
+    wants+=("$item"$'\t'"$want")
+  done
+  run
+  want_status 1 "the rights limited by name ($*), each on a ServiceAccount of its own"
+  want_recorded "the rights limited by name ($*), each on a ServiceAccount of its own"
+  for entry in "${wants[@]}"; do
+    want_line "FINDING system:serviceaccount:legion:${entry%%$'\t'*}: ${entry#*$'\t'}" \
+      "a right limited by name, or a bind outside the guarded namespaces (${entry%%$'\t'*})"
+  done
+}
 if row bu; then
-  each name_limited_row webhook-operator webhook-other csr deployment cronjob exec create-patch rv14 create-named handed-off \
-    outside-namespace outside-namespace-named
+  each name_limited_row webhook-other rv14 create-named handed-off
+  name_limited_shared webhook-operator csr deployment cronjob exec create-patch outside-namespace outside-namespace-named
   passed "(bu) each right a live role limits by name (a webhook configuration on two clusters, a CSR approval, a Deployment, a CronJob, a pod's exec, a create with its patch) exits 1 naming the name, read from the cluster's roles and reviewed by no request that names a resource; create limited by name alone exits 0; and a bind of clusterroles in a namespace outside the guarded ones, outright or limited by name, exits 1 naming that namespace"
 fi
 
