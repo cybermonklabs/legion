@@ -193,6 +193,8 @@ jobs:
         run: |
           groups=$(bash scripts/daemon-release-gate.test.sh --groups)
           [ -n "$groups" ]
+          DAEMON_RELEASE_GATE_TEST_REAL_NPM=$(bash scripts/daemon-release-gate.test.sh --real-npm)
+          export DAEMON_RELEASE_GATE_TEST_REAL_NPM
           for group in $groups; do
             ../../.github/scripts/harness-pool.sh start "scripts/daemon-release-gate.test.sh $group" bash scripts/daemon-release-gate.test.sh "$group"
           done

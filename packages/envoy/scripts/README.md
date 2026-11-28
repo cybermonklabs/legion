@@ -1241,19 +1241,21 @@ its output as it runs, then the group's line with the seconds it took. From `pac
 ```bash
 bash scripts/daemon-release-gate.test.sh <group>     # one group alone
 bash scripts/daemon-release-gate.test.sh --groups    # the group names, one a line, longest first
+bash scripts/daemon-release-gate.test.sh --real-npm  # npm's node and CLI paths, one per line
 failed=0; for g in $(bash scripts/daemon-release-gate.test.sh --groups); do bash scripts/daemon-release-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]
 ```
 
 The groups are `versions`, `listeners`, `developer-box-surfaces`, `developer-box-records`,
 `developer-box`, `short-reads`, `short-reads-clients`, `vm-hub-archive`, `image-clients`,
-`image-clients-pins`, `vm-hub`, `daemons` and `project-fields`. With no group, or a name that is
-no group, the test exits 2 before it sets anything up, and so does any run while the list and the
-case files under `lib/` do not name the same groups.
-CI runs each group as a pool entry of its own,
-`scripts/daemon-release-gate.test.sh <group>`, in the `envoy-go-checks` job of
-`.github/workflows/ci.yaml`. Two controls run with it: a copy of the gate whose VM leg reads an
-absent `listenerImage` as no hub, and one that reads pi-envoy alone in an image, must each open on
-the fixture that exists to catch it.
+`image-clients-pins`, `vm-hub`, `daemons` and `project-fields`. With no argument or an unknown
+argument, the test exits 2 before setup. Listing or running groups also exits 2 if the list and
+the case files under `lib/` name different groups.
+The `envoy-go-checks` job (`.github/workflows/ci-job-envoy-go-checks.yaml`) runs `--real-npm`
+once and exports the two paths as `DAEMON_RELEASE_GATE_TEST_REAL_NPM` before queuing the groups.
+When the variable is unset, a group finds the paths itself before its first `--clients` run.
+A group with no `--clients` run does not use npm. Two controls run in CI. A copy of the gate whose
+VM leg reads an absent `listenerImage` as no hub, and one that reads pi-envoy alone in an image,
+must each open on the fixture that exists to catch it.
 
 ## legacy-subjects-gate.sh
 

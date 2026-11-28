@@ -26,7 +26,7 @@ sessions_stack() {
 golden() {
   local file
   file="${case_root}/files/legion/testdata/${1,,}-legion.yaml"
-  mkdir -p "${case_root}/files/legion/testdata"
+  [ -d "${file%/*}" ] || mkdir -p "${file%/*}"
   printf 'project: %s\nruntime:\n  kubernetes:\n    namespace: legion\n    image: %s\n' "$1" "$lean_image" >"$file"
   [ -z "${2:-}" ] || printf '    plugins:\n      pi_legion: 19.28.1\n      pi_envoy: %s\n' "$2" >>"$file"
 }

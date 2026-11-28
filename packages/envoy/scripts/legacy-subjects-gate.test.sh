@@ -81,11 +81,33 @@ readonly group=$1
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
-# fake <path>: writes the fake command at <path> from the body on stdin, started by the bash that
-# runs this test ($BASH) by its path: an `env bash` line would start env on every call.
+# fake <path> [function ...]: writes a fake command from the named functions and its body on stdin.
+# Use this bash's path so each call does not start env to find bash.
 fake() {
-  { printf '#!%s\n' "$BASH" && cat; } >"$1"
+  {
+    printf '#!%s\n' "$BASH"
+    if [ "$#" -gt 1 ]; then declare -f "${@:2}"; fi
+    cat
+  } >"$1"
   chmod +x "$1"
+}
+
+# read_fixture <file> <variable>: reads the file to its end into the variable, keeping every byte
+# (trailing newlines included) in any locale. It fails when the file cannot be read or holds a NUL,
+# so the caller uses the original command for it.
+read_fixture() {
+  local read_status=0
+  [[ -f $1 && -r $1 ]] || return 1
+  { IFS= read -r -d '' "$2" <"$1"; } 2>/dev/null || read_status=$?
+  [ "$read_status" -eq 1 ]
+}
+print_fixture() {
+  local bytes=
+  if read_fixture "$1" bytes; then
+    printf '%s' "$bytes"
+  else
+    cat "$1"
+  fi
 }
 # The gate runs from a copy of this directory's gate and lib/, beside a fake daemon-release-gate.sh
 # (the census of pinned builds (a1) and of listener pins (a3) read), which adds its arguments as a
@@ -95,15 +117,15 @@ fake() {
 mkdir -p "$root/gate/lib"
 cp "$here/legacy-subjects-gate.sh" "$root/gate/"
 cp "$here"/lib/legacy-subjects-gate-*.* "$root/gate/lib/"
-fake "$root/gate/daemon-release-gate.sh" <<'EOF'
+fake "$root/gate/daemon-release-gate.sh" read_fixture print_fixture <<'EOF'
 printf '%s\n' "$*" >>"$FAKE/release-gate.args"
 case " $* " in
   *" --listeners "*)
-    cat "$FAKE/release-gate-listeners.out"
-    exit "$(cat "$FAKE/release-gate-listeners.rc" 2>/dev/null || echo 0)" ;;
+    print_fixture "$FAKE/release-gate-listeners.out"
+    exit "$(print_fixture "$FAKE/release-gate-listeners.rc" 2>/dev/null || echo 0)" ;;
 esac
-cat "$FAKE/release-gate.out"
-exit "$(cat "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
+print_fixture "$FAKE/release-gate.out"
+exit "$(print_fixture "$FAKE/release-gate.rc" 2>/dev/null || echo 0)"
 EOF
 gate="$root/gate/legacy-subjects-gate.sh"
 passed=0
@@ -116,7 +138,7 @@ fail() {
 
 # --- the fakes ------------------------------------------------------------------------------------
 mkdir -p "$root/bin"
-fake "$root/bin/kubectl" <<'EOF'
+fake "$root/bin/kubectl" read_fixture print_fixture <<'EOF'
 # A fake kubectl that answers from the case directory $FAKE and records each call in $FAKE/calls.
 # A listener pod's log is its metrics file ($FAKE/metrics/<ns>.<pod>) written as the listener logs
 # it, on a "listener legacy subjects" line logged at $FAKE/log_at (now when that file is absent),
@@ -130,6 +152,24 @@ printf '%s\n' "$*" >>"$FAKE/calls"
 fields() {
   IFS=$'\x1f' read -r leg arg rc out err <<<"${1//$'\t'/$'\x1f'}"
 }
+
+# metrics_log <file> <at>: the listener's log line for the metrics in <file>, the bytes jq writes.
+# The usual fixture is printable ASCII (bash's ranges are ASCII ranges, globasciiranges) and
+# newlines, whose JSON is the text with `\`, `"` and newline escaped; any other byte (a control
+# character, non-ASCII, invalid UTF-8) and any time outside this epoch range goes to jq.
+metrics_log() {
+  local text= at=$2
+  if [[ $at =~ ^[1-9][0-9]{8,9}$ ]] && read_fixture "$1" text &&
+      [[ ${text//$'\n'/} != *[!\ -~]* ]]; then
+    text=${text//\\/\\\\}
+    text=${text//\"/\\\"}
+    text=${text//$'\n'/\\n}
+    TZ=UTC0 printf '{"time":"%(%Y-%m-%dT%H:%M:%SZ)T","level":"INFO","msg":"listener legacy subjects","at":%s,"metrics":"%s"}\n' \
+      "$at" "$at" "$text"
+  else
+    jq -cn --rawfile m "$1" --argjson at "$at" '{time: ($at | todate), level: "INFO", msg: "listener legacy subjects", at: $at, metrics: $m}'
+  fi
+}
 args=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -142,7 +182,7 @@ set -- "${args[@]}"
 case "$*" in
   "get pods --all-namespaces -o json")
     [ ! -e "$FAKE/pods.fail" ] || { echo "error: You must be logged in to the server (Unauthorized)" >&2; exit 1; }
-    cat "$FAKE/pods.json" ;;
+    print_fixture "$FAKE/pods.json" ;;
   "-n envoy logs job/legacy-subjects-census-"*)
     # The census Job's log: the fixture's census rows, which name the census connection by the
     # name the gate drew for this reading and created the Job with (CENSUS_NAME), written
@@ -162,18 +202,18 @@ case "$*" in
     done <"$FAKE/job.log" ;;
   "-n envoy get statefulset envoy-nats -o json")
     [ ! -e "$FAKE/statefulset.fail" ] || { echo 'Error from server (NotFound): statefulsets.apps "envoy-nats" not found' >&2; exit 1; }
-    cat "$FAKE/statefulset.json" ;;
+    print_fixture "$FAKE/statefulset.json" ;;
   "-n envoy get configmap "*" -o json")
     # A ConfigMap the hub's pods mount: $FAKE/configmaps/<name>.json, refused as the operator's
     # account may not read it when configmap.fail exists.
     [ ! -e "$FAKE/configmap.fail" ] || { echo "Error from server (Forbidden): configmaps \"$5\" is forbidden: User cannot get resource \"configmaps\" in API group \"\" in the namespace \"envoy\"" >&2; exit 1; }
-    if [ -f "$FAKE/configmaps/$5.json" ]; then cat "$FAKE/configmaps/$5.json"
+    if [ -f "$FAKE/configmaps/$5.json" ]; then print_fixture "$FAKE/configmaps/$5.json"
     else echo "Error from server (NotFound): configmaps \"$5\" not found" >&2; exit 1
     fi ;;
   "-n dispatch get deployment envoy-broker -o json")
     # The auth service's Deployment, refused when broker.fail exists.
     [ ! -e "$FAKE/broker.fail" ] || { echo 'Error from server (Forbidden): deployments.apps "envoy-broker" is forbidden: User cannot get resource "deployments" in API group "apps" in the namespace "dispatch"' >&2; exit 1; }
-    cat "$FAKE/broker.json" ;;
+    print_fixture "$FAKE/broker.json" ;;
   "-n "*" logs "*" -c "*" --since=5m")
     ns=$2
     pod=$4
@@ -182,10 +222,10 @@ case "$*" in
         printf -v at '%(%s)T' -1
       fi
       echo '{"time":"2026-11-21T00:00:00Z","level":"INFO","msg":"role claims cache warm-up"}'
-      jq -cn --rawfile m "$FAKE/metrics/$ns.$pod" --argjson at "$at" '{time: ($at | todate), level: "INFO", msg: "listener legacy subjects", at: $at, metrics: $m}'
+      metrics_log "$FAKE/metrics/$ns.$pod" "$at"
     else echo "Error from server (Forbidden): pods \"$pod\" is forbidden: User cannot get resource \"pods/log\"" >&2; exit 1
     fi ;;
-  "-n envoy get deployment envoy-listener -o json") cat "$FAKE/deployment.json" ;;
+  "-n envoy get deployment envoy-listener -o json") print_fixture "$FAKE/deployment.json" ;;
   "-n envoy create -f "*" -o name")
     [ ! -e "$FAKE/create.fail" ] || { echo "Error from server (Forbidden): jobs.batch is forbidden" >&2; exit 1; }
     job_name=$(jq -r .metadata.name "$5")
@@ -196,7 +236,7 @@ case "$*" in
     # A file made at the record's path while the gate runs, the path named in record.racer.
     [ ! -e "$FAKE/record.racer" ] || echo '{"made":"while the gate ran"}' >"$(<"$FAKE/record.racer")"
     echo "job.batch/$job_name" ;;
-  "-n envoy get job "*" -o json") cat "$FAKE/job-status.json" ;;
+  "-n envoy get job "*" -o json") print_fixture "$FAKE/job-status.json" ;;
   "-n envoy delete job "*) : ;;
   "-n envoy get job "*" --ignore-not-found -o name")
     [ ! -e "$FAKE/job.stays" ] || echo "job.batch/$5" ;;
@@ -287,7 +327,8 @@ metrics() {
 
 # line LEG ARG STATUS OUT ERR prints one line of the Job's log.
 line() {
-  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "$(printf '%s' "$4" | base64 -w 0)" "$(printf '%s' "$5" | base64 -w 0)"
+  # The base64 of an empty field is empty.
+  printf '%s\t%s\t%s\t%s\t%s\n' "$1" "$2" "$3" "${4:+$(printf '%s' "$4" | base64 -w 0)}" "${5:+$(printf '%s' "$5" | base64 -w 0)}"
 }
 
 # consumer NAME FILTERS(JSON) [PUSH_BOUND [INACTIVE_THRESHOLD_NS [ACK_FLOOR_STREAM_SEQ]]] prints one

@@ -15,11 +15,30 @@
 #
 # Run one group alone: bash scripts/daemon-release-gate.test.sh <group>
 # List the groups: bash scripts/daemon-release-gate.test.sh --groups
+# Print npm's node and CLI paths for all groups to share: bash scripts/daemon-release-gate.test.sh --real-npm
 # Run every group, one at a time:
 #   failed=0; for g in $(bash scripts/daemon-release-gate.test.sh --groups); do bash scripts/daemon-release-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]
 # CI queues one pool entry per group. The group runner gives each run its own temporary directory,
 # fakes and case roots.
 set -euo pipefail
+
+if [ "$#" -eq 1 ] && [ "$1" = --real-npm ]; then
+  npm_dir=$(mktemp -d)
+  trap 'rm -rf "$npm_dir"' EXIT
+  # npm exec's shell expands these variables with the paths npm gives it.
+  # shellcheck disable=SC2016
+  if (cd "$npm_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
+    >"$npm_dir/paths" 2>"$npm_dir/err"; then
+    mapfile -t npm_paths <"$npm_dir/paths"
+    if [ -n "${npm_paths[0]:-}" ] && [ -n "${npm_paths[1]:-}" ] && [ -z "${npm_paths[2]+x}" ]; then
+      printf '%s\n' "${npm_paths[@]}"
+      exit 0
+    fi
+  fi
+  IFS= read -r npm_error <"$npm_dir/err" || true
+  printf 'daemon-release-gate.test.sh needs npm and node on PATH: %s\n' "$npm_error" >&2
+  exit 1
+fi
 
 # CPU seconds at main 8e248d6c, run 46127046034 (job 140924069070), longest first:
 # versions 19.4, listeners 17.1,
@@ -61,7 +80,7 @@ if [ "$#" -eq 1 ] && [ "$1" = --groups ]; then
 fi
 if [ "$#" -ne 1 ] || ! is_group "$1"; then
   {
-    printf 'usage: bash scripts/daemon-release-gate.test.sh <group|--groups>; groups: %s\n' "${groups[*]}"
+    printf 'usage: bash scripts/daemon-release-gate.test.sh <group|--groups|--real-npm>; groups: %s\n' "${groups[*]}"
     echo 'Run all: failed=0; for g in $(bash scripts/daemon-release-gate.test.sh --groups); do bash scripts/daemon-release-gate.test.sh "$g" || failed=1; done; [ "$failed" = 0 ]'
   } >&2
   exit 2

@@ -229,8 +229,16 @@ if [ "$1" = run ]; then
   case "$entrypoint $*" in
     "cat "*)
       [ -f "$dir/fs$1" ] || { echo "cat: $1: No such file or directory" >&2; exit 1; }
-      # The entrypoint serves raw fixture files, including any trailing newlines.
-      cat "$dir/fs$1"
+      # The entrypoint serves raw fixture files, including any trailing newlines: a read to the
+      # file's end keeps every byte in any locale, and a NUL or a read error goes to the real cat.
+      bytes=
+      read_status=0
+      { IFS= read -r -d '' bytes <"$dir/fs$1"; } 2>/dev/null || read_status=$?
+      if [ "$read_status" -eq 1 ] && [ -r "$dir/fs$1" ]; then
+        printf '%s' "$bytes"
+      else
+        cat "$dir/fs$1"
+      fi
       ;;
     "/opt/legion/bin/legion version")
       if [ ! -f "$dir/legion-version" ]; then
@@ -290,10 +298,11 @@ EOF
 # so the parse is npm's own either way. Starting npm's CLI again for two paths the harness already
 # found costs 0.34 u + 0.19 s of CPU a call against 0.05 u + 0.03 s for the command alone
 # (measured on a developer box, npm 10.9.7 on node 22.22.2), about a fifth of a --clients case, so
-# the fake runs the command itself. The harness runs the real `npm exec`, with these same flags,
-# once in each group, before the group's first --clients run, the only runs that reach npm: an npm
-# that no longer takes them fails the group there. A call of any other
-# shape is refused rather than emulated.
+# the fake runs the command itself. The real `npm exec` runs with these same flags once for the
+# paths (`daemon-release-gate.test.sh --real-npm`): once for the whole job in CI, which exports
+# them in DAEMON_RELEASE_GATE_TEST_REAL_NPM, else once in each group before its first --clients
+# run, so an npm that no longer takes them fails there. A call of any other shape is refused
+# rather than emulated.
 fake "${temporary_dir}/bin/npm" <<'EOF'
 printf 'npm %s\n' "$*" >>"${FAKE_CALLS:?}"
 printf 'npm-cwd %s\n' "$PWD" >>"$FAKE_CALLS"
@@ -334,19 +343,22 @@ jq -n --arg name "$name" --arg version "${version//$'\n'/}" '[{
   entryCount: 0, bundled: []
 }]'
 EOF
-# find_real_npm: the real npm the fake npm runs for `npm exec` and for a case's real `npm pack`: the
-# node npm runs on and npm's own npm-cli.js, as npm exec gives a command them (npm_node_execpath,
-# npm_execpath), found once with the caller's own HOME and written beside the fakes. Only a
-# --clients run reaches npm, so run_bare finds it before the group's first such run, and a group
-# that makes none (the --listeners and VM hub groups) starts no npm. The suite needs npm and node.
+# find_real_npm: write npm's node and npm-cli.js paths beside the fakes before the first --clients
+# run. CI exports both paths in DAEMON_RELEASE_GATE_TEST_REAL_NPM. With no export, the front end
+# finds the paths with the caller's PATH and HOME. Groups without --clients do not use npm.
 find_real_npm() {
   [ ! -s "${temporary_dir}/real-npm" ] || return 0
-  # shellcheck disable=SC2016 # npm exec's shell expands them, with the values npm gives it
-  if ! (cd "$temporary_dir" && npm exec --offline --yes=false -c 'printf "%s\n%s\n" "$npm_node_execpath" "$npm_execpath"') \
-    >"${temporary_dir}/real-npm" 2>"${temporary_dir}/real-npm.err" || [ "$(grep -c . "${temporary_dir}/real-npm")" -ne 2 ]; then
-    echo "daemon-release-gate.test.sh needs npm and node on PATH: $(head -n 1 "${temporary_dir}/real-npm.err")" >&2
-    exit 1
+  local paths
+  if [[ -v DAEMON_RELEASE_GATE_TEST_REAL_NPM ]]; then
+    paths=${DAEMON_RELEASE_GATE_TEST_REAL_NPM%$'\n'}
+    if [[ $paths != ?*$'\n'?* || $paths = *$'\n'*$'\n'* ]]; then
+      echo "DAEMON_RELEASE_GATE_TEST_REAL_NPM must contain exactly two non-empty lines" >&2
+      exit 1
+    fi
+  else
+    paths=$(bash "${BASH_SOURCE[0]%/*}/../daemon-release-gate.test.sh" --real-npm) || exit 1
   fi
+  printf '%s\n' "$paths" >"${temporary_dir}/real-npm"
 }
 
 failures=0
@@ -441,7 +453,9 @@ readonly linked_envoy="17.42.0"
 worker_image() {
   local dir
   image_dir "$1" dir
-  rm -rf "$dir/fs"
+  if [[ -e $dir/fs || -L $dir/fs ]]; then
+    rm -rf "$dir/fs"
+  fi
   mkdir -p "$dir/fs/opt/legion/pi-envoy" "$dir/fs/opt/legion/claude-envoy"
   printf '{"name": "@sjawhar/pi-envoy", "version": "16.12.1"}\n' >"$dir/fs/opt/legion/pi-envoy/package.json"
   printf '{"name": "@sjawhar/claude-envoy", "version": "1.0.0"}\n' >"$dir/fs/opt/legion/claude-envoy/package.json"
