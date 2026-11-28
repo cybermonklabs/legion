@@ -655,7 +655,8 @@ func TestAGateRefusalOrFailedCommitStoresNothingOfTheBatchAndEachUpdateEndsOnce(
 // write stores the room's unstored updates through the point it read the room before its own
 // version (Ledger.flushThrough), the two typed before it among them, so the held append finds them
 // stored. Every update is stored once and the live write's never a second time, and the stored
-// history decodes with nothing left pending, every time over many rounds (run it with -race).
+// history decodes with nothing left pending before and after room-close compaction, every time
+// over many rounds (run it with -race).
 func TestABatchStopsAtASuppressedUpdateAndAtAnotherRoomInstance(t *testing.T) {
 	t.Parallel()
 	const rounds = 150
@@ -714,7 +715,7 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 		t.Fatalf("the live write: %v", err)
 	}
 	liveRows := storedHead(t, database, artifactID) - before
-	storedNow := func() crdt.StateVector {
+	loadStored := func() *crdt.Doc {
 		t.Helper()
 		loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
 		if err != nil {
@@ -724,9 +725,9 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 		if err := crdt.ApplyUpdateV1(stored, loaded.Update, nil); err != nil {
 			t.Fatalf("decode the stored document: %v", err)
 		}
-		return stored.StateVector()
+		return stored
 	}
-	afterLive := storedNow()
+	afterLive := loadStored().StateVector()
 	for index, peer := range []*crdt.Doc{first, second} {
 		for client, clock := range peer.StateVector() {
 			if afterLive[client] < clock {
@@ -785,32 +786,32 @@ func testSuppressedAndRetiredAppendRound(t *testing.T, database *store.Store, ro
 	if duplicated != 0 {
 		t.Fatalf("%d updates are stored more than once", duplicated)
 	}
-	loaded, err := NewPgVersioned(database).Load(ctx, artifactID)
-	if err != nil {
-		t.Fatalf("load the stored document: %v", err)
-	}
-	stored := newDocumentCopy()
-	if err := crdt.ApplyUpdateV1(stored, loaded.Update, nil); err != nil {
-		t.Fatalf("decode the stored document: %v", err)
-	}
-	if pending := stored.PendingStats(); pending.Items != 0 || pending.DeleteRanges != 0 {
-		t.Fatalf("the stored history leaves %d items and %d delete ranges pending", pending.Items, pending.DeleteRanges)
-	}
-	held := stored.StateVector()
-	for index, peer := range []*crdt.Doc{first, second, third, retiredPeer, fourth} {
-		for client, clock := range peer.StateVector() {
-			if held[client] < clock {
-				t.Fatalf("the store does not hold update %d", index)
+	assertStoredPeers := func(stage string) {
+		t.Helper()
+		stored := loadStored()
+		if pending := stored.PendingStats(); pending.Items != 0 || pending.DeleteRanges != 0 {
+			t.Fatalf("%s: the stored history leaves %d items and %d delete ranges pending", stage, pending.Items, pending.DeleteRanges)
+		}
+		held := stored.StateVector()
+		for index, peer := range []*crdt.Doc{first, second, third, retiredPeer, fourth} {
+			for client, clock := range peer.StateVector() {
+				if held[client] < clock {
+					t.Fatalf("%s: the store does not hold update %d", stage, index)
+				}
 			}
 		}
 	}
+	assertStoredPeers("before eviction")
 	// The resident room never took the retired instance's update, so it stands behind the head.
 	// Evict it before the service's cleanup can settle it.
+	// Make every row eligible for the close's tail compaction without waiting for it to age.
+	ageUpdatesThrough(t, database, artifactID, storedHead(t, database, artifactID), compactTail+time.Second)
 	doneWaiting()
 	if err := service.Evict(ctx, artifactID); err != nil {
 		t.Fatalf("evict the room: %v", err)
 	}
 	waitForNoLiveDocument(t, service, artifactID)
+	assertStoredPeers("after eviction")
 }
 
 // countingBurstStore holds the room's appends against gates as burstStore does, and keeps how many

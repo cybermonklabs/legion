@@ -502,13 +502,14 @@ func newEquivalenceSide(t *testing.T, name string, margin bool, write marginWrit
 	}
 	side := &equivalenceSide{name: name, margin: margin, write: write, database: database, service: service}
 	service.afterAnchorRefresh = func(_ string, refreshed int) { side.refreshes.Add(int64(refreshed)) }
-	side.classes = recordEquivalenceClasses(service)
+	side.classes = installClassRecorder(service)
 	return side
 }
 
-// recordEquivalenceClasses installs the same observer as recordClasses, without warming a room:
-// corrupt flows must start from stored history alone.
-func recordEquivalenceClasses(service *Service) *recordedClasses {
+// installClassRecorder observes the classes of updates applied to rooms loaded after it is
+// installed. It does not load or evict a room. A caller that needs an observation of a room
+// already resident must reload it after installing the recorder.
+func installClassRecorder(service *Service) *recordedClasses {
 	recorded := &recordedClasses{}
 	load := service.srv.OnLoadDocument
 	service.srv.OnLoadDocument = func(ctx context.Context, room string, doc *crdt.Doc) error {

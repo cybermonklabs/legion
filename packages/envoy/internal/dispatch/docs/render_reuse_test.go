@@ -1208,13 +1208,13 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 	}{
 		{
 			name:     "one operation",
-			sections: []int{18},
+			sections: []int{0, 18},
 			ops:      []model.EditOp{{Op: "replace", Find: "Paragraph 18 opens", With: "Paragraph 18 now opens"}},
 			want:     renderPaths{beforeRendered: 1},
 		},
 		{
 			name:     "two operations",
-			sections: []int{18, 19},
+			sections: []int{0, 18, 19},
 			ops: []model.EditOp{
 				{Op: "replace", Find: "Paragraph 18 opens", With: "Paragraph 18 now opens"},
 				{Op: "replace", Find: "Paragraph 19 opens", With: "Paragraph 19 now opens"},
@@ -1252,7 +1252,7 @@ func TestRenderReuseAColdWriteIsAlreadyInTheRoom(t *testing.T) {
 // and spliced in, since it changes one paragraph.
 func TestRenderReuseAColdWriteAppendedDuringALoadIsRendered(t *testing.T) {
 	t.Parallel()
-	service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections(22))
+	service, artifactID, sh := newRenderReuseServiceTo(t, nil, renderReuseSections(0, 22))
 	entered, release := make(chan struct{}), make(chan struct{})
 	// A failure still releases the held load before service shutdown.
 	letLoad := sync.OnceFunc(func() { close(release) })
@@ -1409,7 +1409,7 @@ func TestRenderReuseARoomBehindTheHeadRendersThePublish(t *testing.T) {
 	holdRoomsResident(t, taskA)
 	holdRoomsResident(t, taskB)
 	sh := watchRenders(t, taskA, artifactID)
-	seedServiceText(t, taskA, artifactID, renderReuseSections(26))
+	seedServiceText(t, taskA, artifactID, renderReuseSections(0, 26))
 	if err := taskA.warmLiveDocument(context.Background(), artifactID); err != nil {
 		t.Fatalf("load task A's room: %v", err)
 	}

@@ -153,36 +153,38 @@ func collect() {
 // there is no deadline. TestMain turns a true result into a nonzero exit code.
 func reportLeakedServices() bool {
 	start := leakReportClock.Now()
-	built, live := liveServices()
+	collect()
+	var built int
+	var live []liveService
 	neverShutDown := func(s liveService) bool { return !s.shutdownStarted() }
-	if len(live) != 0 && !slices.ContainsFunc(live, neverShutDown) {
-		asks := 0
-		// InMain already prints its error to stderr if the shared wait gives up.
-		_ = testwait.InMain("the document services to finish Shutdown and be collected", func() bool {
-			asks++
-			built, live = liveServices()
-			if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
-				return true
-			}
-			for _, service := range live {
-				if service.returned < service.shutdowns {
-					return false
-				}
-			}
-			if asks%25 != 0 {
+	asks := 0
+	// InMain already prints its error to stderr if the shared wait gives up.
+	_ = testwait.InMain("the document services to finish Shutdown and be collected", func() bool {
+		asks++
+		built, live = liveServices()
+		if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
+			return true
+		}
+		for _, service := range live {
+			if service.returned < service.shutdowns {
 				return false
 			}
-			collect()
-			built, live = liveServices()
-			if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
-				return true
-			}
-			if leakReportAfterGC != nil {
-				leakReportAfterGC(leakReportClock.Now().Sub(start))
-			}
+		}
+		// This depends on testwait's 10 ms pace: 25 asks give a collection pair about
+		// every 250 ms, as with the old leakWaitStep.
+		if asks%25 != 0 {
 			return false
-		})
-	}
+		}
+		collect()
+		built, live = liveServices()
+		if len(live) == 0 || slices.ContainsFunc(live, neverShutDown) {
+			return true
+		}
+		if leakReportAfterGC != nil {
+			leakReportAfterGC(leakReportClock.Now().Sub(start))
+		}
+		return false
+	})
 	fmt.Fprintf(os.Stderr, "docs: %d services built, %d still alive after %s\n",
 		built, len(live), leakReportClock.Now().Sub(start).Round(time.Millisecond))
 	for _, service := range live {

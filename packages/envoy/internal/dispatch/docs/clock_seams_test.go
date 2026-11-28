@@ -30,7 +30,7 @@ func newSeamService(t *testing.T, deps Deps) *Service {
 	t.Helper()
 	service := New(deps)
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

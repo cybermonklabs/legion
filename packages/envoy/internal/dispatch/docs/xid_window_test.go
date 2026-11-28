@@ -54,7 +54,7 @@ func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 		Clock:    clocktest.Held(),
 	})
 	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
+		if err := service.Shutdown(testwait.Context(t)); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})

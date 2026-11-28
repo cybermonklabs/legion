@@ -110,13 +110,8 @@ func newTestServiceOnTo(t *testing.T, database *store.Store, logger *slog.Logger
 // newTestServiceWith builds a test service with caller-supplied dependencies, including its clock.
 func newTestServiceWith(t *testing.T, deps Deps) *Service {
 	t.Helper()
-	service := New(deps)
+	service := newSeamService(t, deps)
 	service.SetFormGate(formKept)
-	testcleanup.Add(t, func() {
-		if err := service.Shutdown(context.Background()); err != nil {
-			t.Errorf("shutdown document service: %v", err)
-		}
-	})
 	return service
 }
 
@@ -5595,6 +5590,8 @@ func TestShutdownContextDoesNotWaitForBlockedSettlement(t *testing.T) {
 		t.Fatalf("lock document issue: %v", err)
 	}
 	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	// Let the append schedule any settlement it needs before taking the timer out of the register.
+	waitForLandedAppends(t, service, artifactID)
 	// Take the timer's settleWG count, not just its generation: Shutdown will join this
 	// settlement exactly as it would join the callback. The one-hour timer never needs to fire.
 	state := service.room(artifactID)
