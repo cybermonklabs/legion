@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 
 import { createIssue, createProject, getIssue } from "./api";
 import { seedFakeGithub } from "./fake-github-helpers";
+import { listTrigger, pickFromList } from "./filters";
 import { openIssueDetails } from "./issue-details";
 import { navigateInApp } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -36,14 +37,9 @@ function componentRow(page: Page, title: string): Locator {
 }
 
 /** Saves `repo` on `main` as a CORE source through the Settings form. The response predicate
- *  matches the one-source route and the per-repository one alike. The Source project list's
- *  trigger is found by a name that begins with its label, which may go on to the project shown. */
+ *  matches the one-source route and the per-repository one alike. */
 async function addSource(page: Page, repo: string): Promise<void> {
-  await page.getByRole("button", { name: /^Source project\b/ }).click();
-  await page
-    .getByRole("listbox", { exact: true, name: "Source project options" })
-    .getByRole("option", { exact: true, name: "CORE · Core" })
-    .click();
+  await pickFromList(listTrigger(page, "Source project"), "CORE · Core");
   await page.getByLabel("Source repository").fill(repo);
   await page.locator("#architecture-source-branch").fill("main");
   const saved = page.waitForResponse(

@@ -3932,22 +3932,19 @@ test("every table with no controls draws its rows in the shared markup and offer
   // rather than its empty line.
   await seedLegionDaemon("http://legion.acme.internal:9731");
 
-  /** Reads one plain table: it is inside the shared markup, it has rows, and it offers no
+  /** Reads one plain table: it is inside the shared markup, it has data rows, and it offers no
    *  search box, no panel trigger and no sort control of its own. */
   const readPlainTable = async (name: string): Promise<void> => {
-    const shell = page.locator(`[data-control="${CONTROL.tableShell}"]`).filter({
+    const shell = control(page, CONTROL.tableShell).filter({
       has: page.getByRole("table", { name }),
     });
     await expect(shell, `${name} is not drawn in the shared table markup`).toHaveCount(1);
     await expect(
-      shell.getByRole("row"),
-      `${name} draws no rows at all, not even a head`
+      shell.locator("tbody tr").filter({ hasNot: page.locator("td[colspan]") }),
+      `${name} draws no data row, only its head or its empty line`
     ).not.toHaveCount(0);
     for (const forbidden of [CONTROL.searchBox, CONTROL.panelTrigger, CONTROL.columnFilter]) {
-      await expect(
-        shell.locator(`[data-control="${forbidden}"]`),
-        `${name} draws a ${forbidden}`
-      ).toHaveCount(0);
+      await expect(control(shell, forbidden), `${name} draws a ${forbidden}`).toHaveCount(0);
     }
     // What a sort control is: the header button `DataTable`'s `TableHeaderCell` draws for a
     // sortable column. `th[aria-sort]` would say nothing here, since that attribute is written
@@ -3981,7 +3978,7 @@ test("every table with no controls draws its rows in the shared markup and offer
   // No second delivery fixture: `seedPipelineFixture` already wrote the one delivery settings
   // row, and a second insert is refused by its primary key. The measures table is behind the
   // panel's own fold, which the page opens shut.
-  await page.goto(`/delivery?${DELIVERY_WINDOW}`);
+  await page.goto(`/delivery?${TIMELINE_FIXTURE_QUERY}`);
   await expect(page.getByRole("heading", { level: 1, name: "Delivery timeline" })).toBeVisible();
   await page.getByRole("button", { name: /Definitions & alternatives/ }).click();
   await readPlainTable("Per day (UTC), newest first");
@@ -8238,11 +8235,12 @@ const MEASURES_ROW_HEIGHT = 21;
 // INFRA-3135, round 24 (the tester's, from the architect's goal red team of 2026-11-22T11:06Z;
 // measured in builds Jobs infra-3135-s-h-z2mdn at 3fce6150 and infra-3135-s-b-h4hh4 at
 // 143b57a7): the measures table of `features/delivery/MeasuresPanel.tsx`, in the Delivery page's
-// Definitions & alternatives fold, is drawn through `components/TableShell.tsx`'s compact recipe,
-// whose cells are `py-1` where main's own were `py-0.5`. Over the measures fixture at 1440x900
-// in Chromium, rows 1 to 28 of 29 are 25 px tall and the last 24.5 px at 3fce6150, against 21
-// and 20.5 px at 143b57a7, with 4 px above and below each cell's 16 px line against 2 px, and
-// the table is 749 px tall against 633 px inside its box held at 192 px. Spec v8, R8: "The rows,
+// Definitions & alternatives fold, was drawn at 3fce6150 through `components/TableShell.tsx`'s
+// compact recipe, whose cells are `py-1` where main's own were `py-0.5`; it now draws the
+// shell's `tight` density, whose cells are `py-0.5`. Over the measures fixture at 1440x900 in
+// Chromium, rows 1 to 28 of 29 were 25 px tall and the last 24.5 px at 3fce6150, against 21 and
+// 20.5 px at 143b57a7, with 4 px above and below each cell's 16 px line against 2 px, and the
+// table was 749 px tall against 633 px inside its box held at 192 px. Spec v8, R8: "The rows,
 // the cards, the reading pane and the panes' widths do not change", and of the measures table,
 // "each draws the shared table markup with its behaviour unchanged".
 test("the Delivery page's measures table keeps the height of its rows from before the shared table markup, at 1440", async ({
