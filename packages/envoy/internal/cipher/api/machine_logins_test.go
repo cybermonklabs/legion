@@ -45,14 +45,16 @@ func (h capturingHandler) WithGroup(string) slog.Handler { return h }
 
 // wireLauncherCredential is one machine login in GET /v1/launcher-credentials's answer.
 type wireLauncherCredential struct {
-	CredentialID string    `json:"credential_id"`
-	Host         string    `json:"host"`
-	Service      *string   `json:"service"`
-	Subject      *string   `json:"subject"`
-	ApprovedBy   string    `json:"approved_by"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
-	Expired      bool      `json:"expired"`
+	CredentialID   string    `json:"credential_id"`
+	Host           string    `json:"host"`
+	Service        *string   `json:"service"`
+	Subject        *string   `json:"subject"`
+	ApprovedBy     string    `json:"approved_by"`
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	Reason         string    `json:"reason"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
+	Expired        bool      `json:"expired"`
 }
 
 // machineLogins reads GET /v1/launcher-credentials?approver=<approver>, as Dispatch's server does

@@ -20,14 +20,16 @@ import (
 // wireIntrospection is the route's answer as a caller reads it: RFC 7662's active flag and, for a
 // live token, the claims the broker knows.
 type wireIntrospection struct {
-	Active     bool     `json:"active"`
-	Session    string   `json:"session"`
-	Person     string   `json:"person"`
-	Projects   []string `json:"projects"`
-	Scope      string   `json:"scope"`
-	ExpiresAt  int64    `json:"exp"`
-	ClientID   string   `json:"client_id"`
-	Thumbprint string   `json:"jkt"`
+	Active       bool     `json:"active"`
+	Session      string   `json:"session"`
+	Person       string   `json:"person"`
+	Projects     []string `json:"projects"`
+	ProjectScope string   `json:"project_scope"`
+	Scope        string   `json:"scope"`
+	SignIn       string   `json:"sign_in"`
+	ExpiresAt    int64    `json:"exp"`
+	ClientID     string   `json:"client_id"`
+	Thumbprint   string   `json:"jkt"`
 }
 
 // introspect posts token to the introspection route as the listed caller does, answering the

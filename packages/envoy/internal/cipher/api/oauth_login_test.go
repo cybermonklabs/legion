@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,6 +141,51 @@ func oauthErrorCode(t *testing.T, err error) (string, string) {
 		t.Fatalf("error = %v, want an OAuth error", err)
 	}
 	return re.ErrorCode, re.ErrorDescription
+}
+
+// TestADispatchSignInIsLookedUpApprovedAndListed: a Dispatch sign-in's lookup answers the scopes
+// it asks for; its person's approval of fewer, here none, mints a credential; the person's
+// machine-login list answers the scopes approved and the reason its request signed; and its lookup
+// once issued still answers the scopes it asked for, since the record keeps them. Its refusals,
+// its tokens, its trades, its refreshes and its revoke are dispatch_signin_test.go's.
+//
+// The named reverts: answer the credential's approved scopes on the issued lookup, and it answers
+// the empty list; store no dispatch_scopes with the record, and both lookups answer null.
+func TestADispatchSignInIsLookedUpApprovedAndListed(t *testing.T) {
+	rig := ciphertest.NewRig(t)
+	_, da, looked := openDispatchSignIn(t, rig, "a Dispatch session", []string{oauthwire.ScopePerson})
+	if looked.State != "pending" || looked.DispatchScopes == nil || !slices.Equal(*looked.DispatchScopes, []string{oauthwire.ScopePerson}) {
+		t.Fatalf("lookup = %+v, want a pending sign-in asking [person]", looked)
+	}
+
+	status, body := rig.UI(t, http.MethodPost, "/v1/credential-requests/"+looked.RecordID+"/approve",
+		map[string]any{"approver": rig.Operator, "code": da.UserCode, "scopes": []string{}})
+	credential := decode[struct {
+		CredentialID string `json:"credential_id"`
+	}](t, body).CredentialID
+	if status != http.StatusOK || credential == "" {
+		t.Fatalf("approve the Dispatch sign-in with no scope = %d %s, want 200 with a credential id", status, body)
+	}
+
+	status, body = rig.UI(t, http.MethodGet, "/v1/launcher-credentials?approver="+url.QueryEscape(rig.Operator), nil)
+	if status != http.StatusOK {
+		t.Fatalf("list the machine logins = %d: %s", status, body)
+	}
+	listed := decode[struct {
+		Credentials []wireLauncherCredential `json:"credentials"`
+	}](t, body).Credentials
+	if len(listed) != 1 || listed[0].CredentialID != credential || listed[0].DispatchScopes == nil || len(*listed[0].DispatchScopes) != 0 ||
+		listed[0].Reason != "a Dispatch session" {
+		t.Fatalf("the machine-login list = %+v, want the sign-in holding the empty approval and the reason its request signed", listed)
+	}
+
+	status, body = rig.UI(t, http.MethodPost, "/v1/machine-logins/lookup", map[string]any{"code": da.UserCode})
+	if status != http.StatusOK {
+		t.Fatalf("the issued sign-in's lookup = %d: %s", status, body)
+	}
+	if issued := decode[wireRecord](t, body); issued.State != "approved" || issued.DispatchScopes == nil || !slices.Equal(*issued.DispatchScopes, []string{oauthwire.ScopePerson}) {
+		t.Fatalf("the issued sign-in's lookup = %+v, want approved and still the scopes it asked, [person]", issued)
+	}
 }
 
 func TestADeviceLoginIsApprovedThroughDispatchsRoutesAndIssuesACredential(t *testing.T) {

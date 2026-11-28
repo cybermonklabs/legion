@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/oauth"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 )
 
@@ -93,6 +94,23 @@ func newEdgeMachine(t *testing.T, rig *ciphertest.Rig, via throughBalancer) *dev
 func (m *deviceMachine) edgeLogin(t *testing.T, loginHint string) (*oauth2.DeviceAuthResponse, error) {
 	t.Helper()
 	return m.authorize(signMachineLoginRequest(t, m.key, m.rig.EdgeURL, loginHint, "example-host-devbox", ""), m.thumbprint(t))
+}
+
+// TestTheEdgeAcceptsADispatchSignIn holds the edge's preflight to the new device scope. Removing
+// dispatch from that preflight makes the broker serve it on its own address only.
+func TestTheEdgeAcceptsADispatchSignIn(t *testing.T) {
+	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
+	m := newEdgeMachine(t, rig, throughBalancer{client: "203.0.113.201"})
+	m.config.Scopes = []string{oauthwire.ScopeDispatch}
+	request, err := record.Sign(m.key, rig.EdgeURL, []record.AuthorizationDetail{{
+		Type: "launcher_credential", Identifier: "example-host-devbox", Actions: []string{oauthwire.ScopePerson},
+	}}, "an edge Dispatch session", "ada@outside.example", nil, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.authorize(request, m.thumbprint(t)); err != nil {
+		t.Fatalf("edge Dispatch sign-in: %v", err)
+	}
 }
 
 // edgeDeviceForm is a device authorization's form naming loginHint, signed by a key of its own
@@ -778,7 +796,7 @@ func TestTheEdgeLoginIsDecidedOnTheTailnetAndUsedAtTheEdge(t *testing.T) {
 	if err := json.Unmarshal(traded.body, &minted); err != nil {
 		t.Fatal(err)
 	}
-	retraded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), minted.AccessToken, "outside-session-again")
+	retraded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), minted.AccessToken, "outside-session-again", "", nil)
 	if retraded.status != http.StatusBadRequest || strings.Contains(string(retraded.body), `"access_token"`) {
 		t.Fatalf("the trade at the edge of a token another trade minted = %d %s, want 400 and no token", retraded.status, retraded.body)
 	}
@@ -808,16 +826,24 @@ func TestTheEdgeLoginIsDecidedOnTheTailnetAndUsedAtTheEdge(t *testing.T) {
 }
 
 // tradeAt trades accessToken, one of the broker's own access tokens, at base through transport,
-// for a token of session, and answers what the broker answered.
-func tradeAt(t *testing.T, base string, transport http.RoundTripper, accessToken, session string) answered {
+// for a token of session, and answers what the broker answered. scope is the trade's scope
+// parameter, none when "", and header holds fields the request also carries, such as a read
+// trade's DPoP-Holder proof; the transport adds its own DPoP proof.
+func tradeAt(t *testing.T, base string, transport http.RoundTripper, accessToken, session, scope string, header map[string]string) answered {
 	t.Helper()
 	form := url.Values{
 		"grant_type": {"urn:ietf:params:oauth:grant-type:token-exchange"}, "client_id": {oauthwire.ExchangeClientID},
 		"subject_token": {accessToken}, oauth.FormSubjectTokenType: {oauthwire.SubjectTokenTypeAccessToken},
 		oauthwire.FormSession: {session},
 	}
-	return send(t, &http.Client{Transport: transport},
-		request(t, http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()), map[string]string{"Content-Type": "application/x-www-form-urlencoded"}))
+	if scope != "" {
+		form.Set("scope", scope)
+	}
+	headers := map[string]string{"Content-Type": "application/x-www-form-urlencoded"}
+	for name, value := range header {
+		headers[name] = value
+	}
+	return send(t, &http.Client{Transport: transport}, request(t, http.MethodPost, base+"/v1/oauth/token", strings.NewReader(form.Encode()), headers))
 }
 
 // TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet: a machine login of a person
@@ -851,7 +877,7 @@ func TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet(t *testin
 	if errors.As(err, &re) && re.ErrorCode != "invalid_grant" {
 		t.Errorf("the edge refused the refresh with %q, want invalid_grant", re.ErrorCode)
 	}
-	traded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), tok.AccessToken, "ada-from-the-internet")
+	traded := tradeAt(t, rig.EdgeURL, cipherclient.NewDPoPTransport(m.key, via), tok.AccessToken, "ada-from-the-internet", "", nil)
 	if traded.status != http.StatusBadRequest || !strings.Contains(string(traded.body), `"code":"EDGE_WORKSPACE_LOGIN"`) {
 		t.Errorf("the trade at the edge of %s's access token = %d %s, want 400 EDGE_WORKSPACE_LOGIN", rig.Operator, traded.status, traded.body)
 	}
@@ -871,7 +897,7 @@ func TestTheEdgeRefusesAWorkspacePersonsMachineLoginOpenedOnTheTailnet(t *testin
 	if err != nil {
 		t.Fatalf("the refresh on the broker's own address after the edge refused one: %v", err)
 	}
-	ownTrade := tradeAt(t, rig.URL, cipherclient.NewDPoPTransport(m.key, http.DefaultTransport), refreshed.AccessToken, "ada-on-the-tailnet")
+	ownTrade := tradeAt(t, rig.URL, cipherclient.NewDPoPTransport(m.key, http.DefaultTransport), refreshed.AccessToken, "ada-on-the-tailnet", "", nil)
 	if ownTrade.status != http.StatusOK || !strings.Contains(string(ownTrade.body), `"access_token"`) {
 		t.Fatalf("the trade on the broker's own address of %s's access token = %d %s, want a token", rig.Operator, ownTrade.status, ownTrade.body)
 	}

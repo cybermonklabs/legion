@@ -120,6 +120,11 @@ export const MACHINE_LOGIN_CLIENT_ID = "agent-secrets-helper";
 /** The one scope a machine login asks for and is granted (`oauthwire.Scope`). */
 export const MACHINE_LOGIN_SCOPE = "machine";
 
+/** The one scope a Dispatch sign-in asks for and is granted, which marks a device login as one
+ *  (`oauthwire.ScopeDispatch`). The Dispatch scopes its person may approve are contracts'
+ *  `DISPATCH_SIGN_IN_SCOPES`, the list the broker reads as `oauthwire.ConsentableScopes`. */
+export const DISPATCH_LOGIN_SCOPE = "dispatch";
+
 /** The `typ` of the credential-request object a machine login signs (`record.RequestTyp`), which
  *  the broker's verifier refuses under any other `typ`. */
 export const REQUEST_OBJECT_TYPE = "agent-secrets-request+jwt";

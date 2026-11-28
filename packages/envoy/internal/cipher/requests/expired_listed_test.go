@@ -281,7 +281,7 @@ func TestExpiredMachineLoginStaysListedUntilDismissed(t *testing.T) {
 	}
 
 	for _, approve := range []bool{true, false} {
-		if state, credential, err := logins.ApplyDecision(ctx, expiredID, approve, approver, "BCDF-GHJK", store.IssuerSubject{}, nil); !errors.Is(err, machine.ErrLoginExpired) {
+		if state, credential, err := logins.ApplyDecision(ctx, expiredID, approve, approver, "BCDF-GHJK", store.IssuerSubject{}, nil, nil); !errors.Is(err, machine.ErrLoginExpired) {
 			t.Fatalf("ApplyDecision(approve=%v) of the overdue login = %q, %q, %v; want machine.ErrLoginExpired", approve, state, credential, err)
 		}
 	}

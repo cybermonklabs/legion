@@ -1156,7 +1156,8 @@ func TestProfilesCheckRefusesAUsageError(t *testing.T) {
 // configuration and no database, and its exit status reaches the process, here 3 for a file one of
 // whose profiles' kinds only the store's tags give; `profiles` with no second word, or another, is
 // a usage error; the removed `airlock-check` exits 2 naming the command that replaces it, and reads
-// no file; and `end-sessions` still reaches its own rather than being swallowed by the new one.
+// no file; and `end-sessions` and `revoke-dispatch-signins` still reach their own rather than
+// being swallowed by the new one.
 func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
 	t.Parallel()
 	binPath := buildBroker(t)
@@ -1194,6 +1195,7 @@ func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
 		t.Fatalf("the removed airlock-check read the file: %s", out)
 	}
 	exitsTwo(t, []string{"usage: broker " + endSessionsCommand + " <login>"}, endSessionsCommand)
+	exitsTwo(t, []string{"usage: broker " + revokeDispatchSignInsCommand + ", with no argument"}, revokeDispatchSignInsCommand, "extra")
 }
 
 // userinfoURL is scheme://user:password@rest, built here so no test line spells a URL that

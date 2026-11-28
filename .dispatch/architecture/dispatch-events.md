@@ -70,3 +70,12 @@ Each observation uses one transaction id; concurrent callers share one, and an i
 The server observes through a two-connection pool of its own (`store.Pool.Horizon`), so the horizon does not wait behind requests for a shared connection; a process whose horizon pool cannot open observes through the shared pool until it restarts, and logs that once.
 A failed observation is logged, and a reader waiting on the horizon gets the error back once every observation has failed for ten seconds, so a horizon that cannot be read never stalls a reader silently.
 Observations and every read capped at the horizon run on the primary.
+
+A read at a past time, the cut, reads the log through the `events` shadow (`internal/dispatch/asof`): the events whose transaction began at or before the cut, each with its payload as its write stored it.
+The three event logs at a cut, an issue's, a document's and `GET /api/v1/events/log`, run their present statements under the cut (`api/events_as_of.go`).
+Ids are not commit order, so a page of the whole log at a cut ends its id range at the largest id of the events at the cut (`asof.NewestEventIDStatement`).
+A page of an issue's or a document's log pages by `seq`, and the shadow alone holds it to the cut.
+`attachPostMarks` runs over a page at a cut as over a present page and reads each post's present `deleted_at`, so a post deleted after the cut answers its own events with no body, and a reply's event keeps the preview that it holds of that post.
+Eleven indexes on `events`, each built by a migration of its own with `CREATE INDEX CONCURRENTLY IF NOT EXISTS`, serve the shadows' reads, and each partial index's predicate is its shadow's list of types:
+`events_issue_state` (`20261120004315`, the newest state of each issue), `events_ask_state` (`20261120004316`, the newest state of each ask), `events_created_at` (`20261120004317`, the newest id at the cut), `events_issue_claim` (`20261120140001`, an issue's claim), `events_issue_activity` (`20261120140002`, an issue's `updated_at` and `last_seq`), `events_comment_state` (`20261120140003`, a comment's events), `events_message_state` (`20261120140004`, a message's events), `events_repo_project` (`20261120140005`, the repository mappings), `events_ask_follower` (`20261120140006`, an ask's follows), `events_artifact_renamed` (`20261120140007`, a document's name) and `events_project_setting` (`20261120140008`, a project's settings).
+`internal/dispatch/store/README.md` gives each index's key and the read that it serves.
