@@ -76,7 +76,6 @@ interface Told {
 interface DaemonAnswers {
   readonly claims?: readonly EnvoyStep[];
   readonly subscribe?: (topic: string) => Promise<void>;
-  readonly unsubscribe?: (topic: string) => Promise<void>;
   readonly slackChannels?: string;
   readonly ready?: () => Response;
   readonly register?: () => Response | Promise<Response>;
@@ -89,15 +88,15 @@ interface DaemonAnswers {
  * The controller the daemon launched (`LEGION_CONTROLLER=1` and a boot token, and
  * `answers.slackChannels` as its LEGION_SLACK_CHANNELS, none by default), against a daemon that
  * answers its health, its registration and its ready, the last with `answers.ready` (a 204 by
- * default). Envoy's one bound instance answers each role claim with the next of `claims`, each
- * subscription with `subscribe` of its topic and each unsubscription with `unsubscribe` of its
- * topic (all default to landing), recording each. The host's stop is `answers.hostStop`; by
- * default none has begun. Every exit is recorded, in `exits` and as `exit <code>` on
- * `answers.steps`, and `exited` settles at the first. The session takes each message the process
- * hands it unless `answers.tell` throws for it, which refuses it as `pi.sendMessage` throws. Every
- * line the Oh My Pi log takes, every message the session took (`told`), and every daemon route,
- * role claim, subscription and unsubscription in the order they were asked (`order`) is recorded
- * too.
+ * default). Envoy's one bound instance answers each role claim with the next of `claims` and each
+ * subscription with `subscribe` of its topic (both default to landing), recording each. The host's
+ * stop is `answers.hostStop`; by default none has begun. Every exit is recorded, in `exits` and as
+ * `exit <code>` on `answers.steps`, and `exited` settles at the first. The session takes each
+ * message the process hands it unless `answers.tell` throws for it, which refuses it as
+ * `pi.sendMessage` throws. Every line the Oh My Pi log takes, every message the session took
+ * (`told`), every daemon route, role claim and subscription in the order they were asked
+ * (`order`), and the session each subscription was asked for with its topic (`subscribedFor`) is
+ * recorded too.
  */
 function daemonLaunchedController(answers: DaemonAnswers) {
   process.env.LEGION_CONTROLLER = "1";
@@ -134,22 +133,18 @@ function daemonLaunchedController(answers: DaemonAnswers) {
   });
   const claims: string[] = [];
   const subscriptions: string[] = [];
-  const unsubscriptions: string[] = [];
+  const subscribedFor: string[] = [];
   legionRoleClaimBridge().instances.push({
     claim: async (_sessionID, role) => {
       claims.push(role);
       order.push(`claim ${role}`);
       await (answers.claims?.[claims.length - 1] ?? (async () => undefined))();
     },
-    subscribe: async (_sessionID, topic) => {
+    subscribe: async (sessionID, topic) => {
       subscriptions.push(topic);
+      subscribedFor.push(`${sessionID} ${topic}`);
       order.push(`subscribe ${topic}`);
       await answers.subscribe?.(topic);
-    },
-    unsubscribe: async (_sessionID, topic) => {
-      unsubscriptions.push(topic);
-      order.push(`unsubscribe ${topic}`);
-      await answers.unsubscribe?.(topic);
     },
     sessionID: () => CONTROLLER_SESSION,
   });
@@ -186,7 +181,7 @@ function daemonLaunchedController(answers: DaemonAnswers) {
     context,
     claims,
     subscriptions,
-    unsubscriptions,
+    subscribedFor,
     exits,
     exited: exited.promise,
     lines,
@@ -447,8 +442,9 @@ test("a daemon-launched controller whose ready the daemon refuses while the host
 // once that the topic waits and once that it landed; any other refusal gives that topic up and
 // tells the session so. The session is told as Envoy tells it its own notices, as a message that
 // starts no turn; a notice the session refuses is logged, and reaches the claim no more than an
-// answer of Envoy's does. A later claim of the same session whose registration names another list
-// closes, in the same task, each watched topic the new list leaves out.
+// answer of Envoy's does. A process keeps one list for its whole life, as it keeps its Slack
+// channels: the list its first registration names. Each later claim subscribes that list for its
+// own session, and a later registration that names another list changes nothing but one log line.
 
 /** One entry of the registration's `watchedWorkflows`. */
 type WatchedWorkflow = NonNullable<LegionControllerRegistration["watchedWorkflows"]>[number];
@@ -597,12 +593,15 @@ test("watched workflows: launched again with one entry, it subscribes only that 
   }
 });
 
+/** The one line a later registration that names another list logs (`watchedWorkflowsKept`). */
+const NEXT_LAUNCH = "the changed list takes effect at the controller's next launch";
+
 // A later claim in the same process and the same session (a typed `/legion-claim-controller`, a
-// re-claim that registers the same session) whose registration names another list ends with
-// exactly that list's topics subscribed: once the claim is done, its task closes each watched topic
-// of the earlier list that the new list leaves out, through Envoy's bridge, and then subscribes the
-// new list as the first claim did. A topic both lists name is not closed.
-test("watched workflows: a later claim of the same session with another list unsubscribes the topics the new list leaves out, and subscribes those it adds", async () => {
+// re-claim that registers the same session) whose registration names another list subscribes the
+// list the first registration named, once the claim is done, as the first claim did. No topic of
+// the new list is asked for and none is closed: the stand-in bridge instance has no unsubscribe.
+// The log says the changed list takes effect at the next launch, and the session is told nothing.
+test("watched workflows: a later claim of the same session whose registration names another list subscribes the first list again, asks for no topic of the new list, unsubscribes nothing, and logs one line naming the next launch", async () => {
   const lists = [
     [NIGHTLY, RELEASE],
     [RELEASE, DEPLOY],
@@ -616,10 +615,9 @@ test("watched workflows: a later claim of the same session with another list uns
     await until("the first claim's watched subscriptions", () => asked(run, RELEASE_PUSH));
     const firstClaim = run.order.length;
     await run.controller.claim(run.context);
-    await until("the second claim's watched subscriptions", () => asked(run, DEPLOY_PUSH));
+    await until("the second claim's watched subscriptions", () => asked(run, RELEASE_PUSH) === 2);
     await settled();
 
-    expect(run.unsubscriptions).toEqual([NIGHTLY_SCHEDULE, NIGHTLY_DISPATCH]);
     expect(run.order.slice(firstClaim)).toEqual([
       "post /healthz",
       "post /legion/v1/claims/register",
@@ -627,62 +625,25 @@ test("watched workflows: a later claim of the same session with another list uns
       `subscribe ${NOTICE_TOPIC}`,
       `subscribe ${SLACK_TOPIC}`,
       "post /legion/v1/claims/ready",
-      `unsubscribe ${NIGHTLY_SCHEDULE}`,
-      `unsubscribe ${NIGHTLY_DISPATCH}`,
+      `subscribe ${NIGHTLY_SCHEDULE}`,
+      `subscribe ${NIGHTLY_DISPATCH}`,
       `subscribe ${RELEASE_PUSH}`,
-      `subscribe ${DEPLOY_PUSH}`,
     ]);
+    expect(asked(run, DEPLOY_PUSH)).toBe(0);
     expect(run.exits).toEqual([]);
-    expect(run.lines).toEqual([]);
+    expect(run.lines).toEqual([{ level: "warn", message: expect.stringContaining(NEXT_LAUNCH) }]);
+    expect(run.lines[0]?.message).toContain("acme/gizmos/deploy.yml");
     expect(run.told).toEqual([]);
   } finally {
     run.stopSink();
   }
 });
 
-// The earlier claim's subscription of a topic the new list leaves out can still be on the wire when
-// the re-claim of the same session comes: the session still ends with the new list alone, so a
-// subscription of that topic that lands after the re-claim is closed too.
-test("watched workflows: a later claim of the same session closes a topic its list leaves out whose subscription was still on the wire", async () => {
-  const held = Promise.withResolvers<void>();
-  const lists = [[NIGHTLY, RELEASE], [RELEASE]];
-  let registrations = 0;
-  const landedOrClosed: string[] = [];
-  const run = watchingController({
-    register: () => registeredWith(lists[registrations++] ?? [])(),
-    subscribe: async (topic) => {
-      if (topic === NIGHTLY_SCHEDULE && registrations === 1) await held.promise;
-      landedOrClosed.push(`landed ${topic}`);
-    },
-    unsubscribe: async (topic) => {
-      landedOrClosed.push(`closed ${topic}`);
-    },
-  });
-  try {
-    await run.controller.handleSessionStart(run.context);
-    await until("the first claim's subscription of the nightly schedule topic, on the wire", () =>
-      asked(run, NIGHTLY_SCHEDULE)
-    );
-    await run.controller.claim(run.context);
-    await settled();
-    held.resolve();
-    await until("the second claim's watched subscription", () => asked(run, RELEASE_PUSH));
-    await settled();
-    await settled();
-
-    const nightly = landedOrClosed.filter((call) => call.endsWith(` ${NIGHTLY_SCHEDULE}`));
-    expect(nightly.at(-1)).toBe(`closed ${NIGHTLY_SCHEDULE}`);
-    expect(run.exits).toEqual([]);
-  } finally {
-    held.resolve();
-    run.stopSink();
-  }
-});
-
-// A `/new` or `/resume` leaves the role behind, and every subscription bound to it closed with it:
-// the session change's re-claim registers the new session, closes none of the earlier session's
-// watched topics, and subscribes its own list.
-test("watched workflows: a later claim that registers another session unsubscribes nothing and subscribes its list", async () => {
+// A `/new`, `/resume`, `/fork` or `/branch` leaves the role behind, and every subscription bound to
+// it closed with it: the session change's re-claim registers the new session and subscribes the
+// list the process's first registration named for that session, whatever its own registration
+// names.
+test("watched workflows: a later claim that registers another session subscribes the first list for that session, whatever list its registration names", async () => {
   const lists = [
     [NIGHTLY, RELEASE],
     [RELEASE, DEPLOY],
@@ -691,67 +652,65 @@ test("watched workflows: a later claim that registers another session unsubscrib
   const run = watchingController({
     register: () => registeredWith(lists[registrations++] ?? [])(),
   });
+  const after = "ses_controller_after_new";
   const moved = {
     ...run.context,
-    sessionManager: { getSessionId: () => "ses_controller_after_new" },
+    sessionManager: { getSessionId: () => after },
   } as unknown as SessionContext;
   try {
     await run.controller.handleSessionStart(run.context);
     await until("the first claim's watched subscriptions", () => asked(run, RELEASE_PUSH));
-    const firstClaim = run.subscriptions.length;
+    const firstClaim = run.subscribedFor.length;
     await run.controller.reclaimAfterSessionChange(moved);
-    await until("the re-claim's watched subscriptions", () => asked(run, DEPLOY_PUSH));
+    await until("the re-claim's watched subscriptions", () => asked(run, RELEASE_PUSH) === 2);
     await settled();
 
     expect(run.claims).toEqual(["legion-legion-controller", "legion-legion-controller"]);
-    expect(run.unsubscriptions).toEqual([]);
-    expect(run.subscriptions.slice(firstClaim)).toEqual([
-      NOTICE_TOPIC,
-      SLACK_TOPIC,
-      RELEASE_PUSH,
-      DEPLOY_PUSH,
+    expect(run.subscribedFor.slice(firstClaim)).toEqual([
+      `${after} ${NOTICE_TOPIC}`,
+      `${after} ${SLACK_TOPIC}`,
+      `${after} ${NIGHTLY_SCHEDULE}`,
+      `${after} ${NIGHTLY_DISPATCH}`,
+      `${after} ${RELEASE_PUSH}`,
     ]);
+    expect(asked(run, DEPLOY_PUSH)).toBe(0);
     expect(run.exits).toEqual([]);
-    expect(run.lines).toEqual([]);
+    expect(run.lines).toEqual([{ level: "warn", message: expect.stringContaining(NEXT_LAUNCH) }]);
     expect(run.told).toEqual([]);
   } finally {
     run.stopSink();
   }
 });
 
-// Closing a topic the new list leaves out is no part of the claim either: Envoy's refusal of one
-// is one log line naming the topic and Envoy's answer, and the claim, its ready, the other topic
-// closed and the new list's subscriptions all go on.
-test("watched workflows: an unsubscribe Envoy refuses is one log line and the claim and the other topics go on", async () => {
-  const refusal = "POST /v1/interests/unsubscribe failed with 500: the registry is down";
+// A list is the topics it names: a later registration that names the first list's topics in
+// another order names no other list, so nothing is logged, and the claim subscribes the first
+// list as the first registration named it.
+test("watched workflows: a later registration whose list names the same topics in another order logs nothing", async () => {
   const lists = [
     [NIGHTLY, RELEASE],
-    [RELEASE, DEPLOY],
+    [RELEASE, { ...NIGHTLY, events: ["workflow_dispatch", "schedule"] }],
   ];
   let registrations = 0;
   const run = watchingController({
     register: () => registeredWith(lists[registrations++] ?? [])(),
-    unsubscribe: (topic) =>
-      topic === NIGHTLY_SCHEDULE ? Promise.reject(new Error(refusal)) : Promise.resolve(),
   });
   try {
     await run.controller.handleSessionStart(run.context);
     await until("the first claim's watched subscriptions", () => asked(run, RELEASE_PUSH));
+    const firstClaim = run.subscriptions.length;
     await run.controller.claim(run.context);
-    await until(
-      "the second claim's watched subscriptions, or an exit",
-      () => asked(run, DEPLOY_PUSH) > 0 || run.exits.length > 0
-    );
+    await until("the second claim's watched subscriptions", () => asked(run, RELEASE_PUSH) === 2);
     await settled();
 
+    expect(run.subscriptions.slice(firstClaim)).toEqual([
+      NOTICE_TOPIC,
+      SLACK_TOPIC,
+      NIGHTLY_SCHEDULE,
+      NIGHTLY_DISPATCH,
+      RELEASE_PUSH,
+    ]);
     expect(run.exits).toEqual([]);
-    expect(run.claims).toEqual(["legion-legion-controller", "legion-legion-controller"]);
-    expect(run.posted.filter((route) => route === "/legion/v1/claims/ready")).toHaveLength(2);
-    expect(run.unsubscriptions).toEqual([NIGHTLY_SCHEDULE, NIGHTLY_DISPATCH]);
-    expect(asked(run, RELEASE_PUSH)).toBe(2);
-    expect(asked(run, DEPLOY_PUSH)).toBe(1);
-    expect(run.lines).toEqual([{ level: "warn", message: expect.stringContaining(refusal) }]);
-    expect(run.lines[0]?.message).toContain(NIGHTLY_SCHEDULE);
+    expect(run.lines).toEqual([]);
     expect(run.told).toEqual([]);
   } finally {
     run.stopSink();

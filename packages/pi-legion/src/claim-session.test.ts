@@ -158,7 +158,6 @@ function pane(
       throw options.claimError?.(role) ?? new RoleClaimStoppingError(role);
     },
     subscribe: async () => undefined,
-    unsubscribe: async () => undefined,
     sessionID: () => PANE_SESSION,
   });
   const exits: number[] = [];

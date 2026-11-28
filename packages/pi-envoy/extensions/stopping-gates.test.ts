@@ -585,9 +585,6 @@ test("a claim for a session whose stop ended is refused naming the stop, and no 
     subscribe: async (target, topic) => {
       asked.push(`subscribe ${target} ${topic}`);
     },
-    unsubscribe: async (target, topic) => {
-      asked.push(`unsubscribe ${target} ${topic}`);
-    },
     sessionID: () => "ses_other_live",
   };
   const { instances } = legionRoleClaimBridge();

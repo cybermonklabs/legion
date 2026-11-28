@@ -14,12 +14,11 @@ body: |-
   the topic and Envoy's answer, and once more when Envoy takes it. A topic Envoy refuses for
   another reason is logged, told to the session and given up, and the other topics go on. The
   session is told as Envoy tells it its own notices, with no turn of its own, and a notice the
-  session refuses is logged and fails nothing. A later claim in the same session whose
-  registration names another list unsubscribes the watched topics the new list leaves out, through
-  the plugin interface and before anything else in that task, and subscribes those it adds, so the
-  session hears exactly the new list; an unsubscription Envoy refuses is one log line and fails
-  nothing. A claim of another session (after a `/new` or `/resume`) unsubscribes nothing: the
-  earlier session's topics closed with the role it left. Every controller process sets the plugin
+  session refuses is logged and fails nothing. A controller process keeps the list of its first
+  registration for as long as it lives, as it keeps its Slack channels: each later claim, after a
+  `/new`, `/resume`, `/fork` or `/branch` too, subscribes that same list again for its own
+  session, and a later registration that names another list is one log line saying that the
+  changed list takes effect at the controller's next launch. Every controller process sets the plugin
   interface's `watchedWorkflowsRoleOwned`, so a resumed controller drops the watched topics its
   stored interest row holds before it claims. Plugin interface version 7: install this release
   with the `@sjawhar/pi-envoy` released beside it.

@@ -28,7 +28,6 @@ function instance(sessionID: string, claims: string[]): LegionRoleClaimInstance 
       claims.push(role);
     },
     subscribe: async () => undefined,
-    unsubscribe: async () => undefined,
     sessionID: () => sessionID,
   };
 }

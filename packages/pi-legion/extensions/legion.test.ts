@@ -7153,7 +7153,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // `repositories_unknown`) is named to the session and registered again after a growing wait. A
   // resumed controller drops every such topic its stored row holds before it claims, since the
   // edge judges that row's GitHub topics at each registration: a restored one would refuse the
-  // role claim and the notice lane through such an outage.
+  // role claim and the notice lane through such an outage. A process keeps the list its first
+  // registration names for its whole life, as it keeps its Slack channels.
   describe("watched workflows", () => {
     const lane = "notifications.legion.omp.controller";
     const mention = slackMentionTopic("C00000000");
@@ -7394,10 +7395,11 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     });
 
     // A later claim in the same process and the same session, here `/legion-claim-controller`
-    // typed in the daemon's controller, whose registration names another list: through the real
-    // Envoy plugin, the topic the new list leaves out leaves the listener's row and what the
-    // session follows, the topic it adds is registered, and the topic both lists name stays.
-    test("watched workflows: a later claim of the same session whose registration names another list unregisters the topic it leaves out and registers the one it adds", async () => {
+    // typed in the daemon's controller, whose registration names another list: the process keeps
+    // the list its first registration named. Through the real Envoy plugin, the later claim's
+    // watched task registers the first list's topics again, no registration carries a topic only
+    // the new list names, and no watched topic leaves the listener's row.
+    test("watched workflows: a later claim of the same session whose registration names another list registers the first list's topics again, never the new list's own, and unregisters nothing watched", async () => {
       const session = "ses_controller_watched_relisted";
       let typed = false;
       const controller: LaunchedController = await daemonController(session, "", {
@@ -7417,23 +7419,42 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       );
 
       typed = true;
+      const requestsBefore = controller.requests.length;
       const claimCommand = controller.commands.find(
         (command) => command.name === "legion-claim-controller"
       );
       if (claimCommand === undefined)
         throw new Error("controller claim command was not registered");
       await claimCommand.handler("", commandContext(context));
-      await until("the later claim's watched registration", () =>
-        registeredTopics(controller.requests, session).includes(pushed)
+      // The registrations after the later claim's ready: its watched task's, one per topic.
+      const watchedRegistrations = () => {
+        const requests = controller.requests.slice(requestsBefore);
+        const ready = requests.findIndex((request) => request.path === "/legion/v1/claims/ready");
+        if (ready === -1) return [];
+        return interestTopics(requests.slice(ready + 1), "/v1/interests/subscribe", session);
+      };
+      await until(
+        "the later claim's two watched registrations",
+        () => watchedRegistrations().length >= 2
       );
 
       expect(controller.exits).toEqual([]);
       expect(controller.holder()).toBe(session);
-      expect(unregisteredTopics(controller.requests, session)).toEqual([[dispatched]]);
-      const registered = registeredTopics(controller.requests, session);
-      expect(watchedAmong(registered)).toEqual([scheduled, pushed]);
-      expect(registered).toContain(lane);
-      expect(watchedAmong(await followedTopics(controller, context))).toEqual([scheduled, pushed]);
+      for (const topics of watchedRegistrations()) {
+        expect(watchedAmong(topics)).toEqual([scheduled, dispatched]);
+      }
+      for (const topics of interestTopics(
+        controller.requests,
+        "/v1/interests/subscribe",
+        session
+      )) {
+        expect(topics).not.toContain(pushed);
+      }
+      expect(watchedAmong(unregisteredTopics(controller.requests, session).flat())).toEqual([]);
+      expect(watchedAmong(await followedTopics(controller, context))).toEqual([
+        scheduled,
+        dispatched,
+      ]);
       expect(toldWatched(controller)).toEqual([]);
     });
 

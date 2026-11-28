@@ -3,11 +3,7 @@ import type { LegionControllerRegistration } from "@legion/contracts/legion-api"
 import { messageFor } from "@legion/envoy-client/errors";
 import { claimRoleAgainOnBusy } from "@legion/pi-shared/legion-claim-core";
 import type { PiApi, SessionContext } from "@legion/pi-shared/pi-types";
-import {
-  refusedForRoleNotHeld,
-  subscribeLegionNotice,
-  unsubscribeLegionNotice,
-} from "@legion/pi-shared/role-claim-bridge";
+import { refusedForRoleNotHeld, subscribeLegionNotice } from "@legion/pi-shared/role-claim-bridge";
 import { claimRefusedForStop } from "@legion/pi-shared/role-claim-stopping";
 import { logger } from "@oh-my-pi/pi-utils";
 
@@ -42,7 +38,7 @@ interface WatchedClaim {
 /** The watched workflows `registration` names (`watchedWorkflows`), one topic per event of each
  * entry, in the registration's order: none from a daemon whose answer does not carry it, which is
  * one before its contract entry. */
-export function watchedWorkflowsOf(registration: LegionControllerRegistration): WatchedTopic[] {
+function watchedWorkflowsOf(registration: LegionControllerRegistration): WatchedTopic[] {
   const topics: WatchedTopic[] = [];
   for (const watchedWorkflow of registration.watchedWorkflows ?? []) {
     const entry = `${watchedWorkflow.owner}/${watchedWorkflow.repo}/${watchedWorkflow.workflow}`;
@@ -60,23 +56,54 @@ export function watchedWorkflowsOf(registration: LegionControllerRegistration): 
   return topics;
 }
 
+/** `topics` as a log line names them: each entry with its event, or "none". */
+function listed(topics: readonly WatchedTopic[]): string {
+  if (topics.length === 0) return "none";
+  return topics.map(({ entry, event }) => `${entry} (${event})`).join(", ");
+}
+
+/**
+ * The watched workflows a claim subscribes. `kept` is the list this process's first registration
+ * named, and undefined until that registration. A process keeps one list for its whole life, as
+ * it keeps its Slack channels. So the first registration's own list is the answer once, and `kept`
+ * is the answer for every later registration. A later registration that names another list changes
+ * nothing in this process. It writes one warning line, which says that the changed list takes
+ * effect at the controller's next launch. The session is told nothing of it. A list is the topics
+ * it names: the same topics in another order are the same list.
+ */
+export function watchedWorkflowsKept(
+  kept: readonly WatchedTopic[] | undefined,
+  registration: LegionControllerRegistration
+): readonly WatchedTopic[] {
+  const named = watchedWorkflowsOf(registration);
+  if (kept === undefined) return named;
+  const keptTopics = new Set(kept.map(({ topic }) => topic));
+  const namedTopics = new Set(named.map(({ topic }) => topic));
+  if (
+    namedTopics.size !== keptTopics.size ||
+    [...namedTopics].some((topic) => !keptTopics.has(topic))
+  ) {
+    logger.warn(
+      `[legion] the daemon's registration names another watched-workflows list; the changed list takes effect at the controller's next launch, and until then this process follows the list its first registration named. Followed: ${listed(kept)}. Named now: ${listed(named)}.`
+    );
+  }
+  return kept;
+}
+
 /** Tells `pi`'s session `content` as Envoy tells it its own notices (`handNotice` in
- * pi-envoy's envoy.ts): shown in the transcript, and no turn starts for it. Answers whether the
- * session took it. A session that refuses it (`pi.sendMessage` throws) is not told: the refusal
- * is logged with the notice, and the caller hears only `false`, so no notice of a watched topic
- * fails the claim. */
-function tellWatched(pi: PiApi, content: string): boolean {
+ * pi-envoy's envoy.ts): shown in the transcript, and no turn starts for it. A session that
+ * refuses it (`pi.sendMessage` throws) is not told: the refusal is logged with the notice, so no
+ * notice of a watched topic fails the claim. */
+function tellWatched(pi: PiApi, content: string): void {
   try {
     pi.sendMessage(
       { customType: WATCHED_WORKFLOWS_NOTICE, content, display: true },
       { deliverAs: "steer", triggerTurn: false }
     );
-    return true;
   } catch (error) {
     logger.warn(
       `[legion] the session refused this notice of its watched workflows, so it is not told: ${messageFor(error)}. The notice: ${content}`
     );
-    return false;
   }
 }
 
@@ -148,67 +175,21 @@ async function subscribeWatchedTopic(
 }
 
 /**
- * Closes `topic`, a watched topic asked for an earlier claim of the claim's session that this
- * claim's list leaves out, through Envoy's bridge (`unsubscribeLegionNotice`), and answers whether
- * Envoy closed it. Envoy's refusal is one log line and fails nothing: the topic's runs reach the
- * session until its controller role ends, or until a later claim whose list leaves it out closes
- * it.
- */
-async function unsubscribeWatchedTopic(
-  { sessionID, envoyContext }: WatchedClaim,
-  topic: string
-): Promise<boolean> {
-  try {
-    await unsubscribeLegionNotice(sessionID, topic, envoyContext);
-    return true;
-  } catch (error) {
-    logger.warn(
-      `[legion] Envoy refused to unsubscribe topic ${topic}, which this controller's registration no longer names among its watched workflows, so its runs reach this session until its controller role ends or a later claim closes it: ${messageFor(error)}`
-    );
-    return false;
-  }
-}
-
-/**
- * The watched workflows of a claim that has just finished, in a task of its own that the claim
- * does not wait for: nothing Envoy answers about a watched topic reaches the claim, so none exits
- * the process, costs the role or another topic, or holds back the daemon's ready, whose
- * registration deadline would retire a controller that never reported ready while an edge
- * listener withheld its GitHub topics. Answers that task, which never rejects.
- *
- * `earlier` is the task of the claim of the same session before this one. The task waits for it
- * to end before it closes or asks for anything. The caller has aborted the earlier task's signal,
- * so that task asks for nothing more, but the abort does not cancel an Envoy call it has in
- * flight. The wait lasts until that call returns. Without the wait, the earlier task's
- * subscription of a topic could land after this task closed that topic, and its close of a topic
- * could land after this task subscribed it.
- *
- * `open` holds the watched topics asked for the claim's session and not closed since, which
- * earlier claims of that session left. The topics of `open` that `topics` leaves out are read
- * before the wait, and `topics` joins `open` then too. After the wait, the task closes each topic
- * left out (`unsubscribeWatchedTopic`), so the session ends with exactly this claim's list. Then
- * it subscribes `topics`, each after the one before it (`subscribeWatchedTopic`). A topic Envoy
- * closes leaves `open`, unless `signal` aborted meanwhile: the later claim then reads `open` as it
- * stands. A failure the task did not expect ends it with one error line, and reaches the claim no
- * more than the notices do (`tellWatched`). Once `signal` aborts, no further topic is closed or
- * asked for.
+ * Subscribes the watched workflows of a claim that has just finished, in a task of its own that
+ * the claim does not wait for. Nothing Envoy answers about a watched topic reaches the claim. So
+ * no answer exits the process, costs the role or another topic, or holds back the daemon's ready.
+ * The daemon's registration deadline would retire a controller that never reported ready while
+ * an edge listener withheld its GitHub topics. The task subscribes `topics` one after the other
+ * (`subscribeWatchedTopic`). A failure the task did not expect ends it with one error line, and
+ * reaches the claim no more than the notices do (`tellWatched`). Once `signal` aborts, no further
+ * topic is asked for.
  */
 export function subscribeWatchedTopics(
   claim: WatchedClaim,
-  open: Set<string>,
   topics: readonly WatchedTopic[],
-  signal: AbortSignal,
-  earlier: Promise<void>
-): Promise<void> {
-  const listed = new Set(topics.map(({ topic }) => topic));
-  const dropped = [...open].filter((topic) => !listed.has(topic));
-  for (const topic of listed) open.add(topic);
-  return (async () => {
-    await earlier;
-    for (const topic of dropped) {
-      if (signal.aborted) return;
-      if ((await unsubscribeWatchedTopic(claim, topic)) && !signal.aborted) open.delete(topic);
-    }
+  signal: AbortSignal
+): void {
+  void (async () => {
     for (const watchedTopic of topics) {
       if (signal.aborted) return;
       if (!(await subscribeWatchedTopic(claim, watchedTopic, signal))) return;

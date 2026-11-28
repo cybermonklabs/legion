@@ -34,7 +34,11 @@ import {
 } from "./classify";
 import { exitAfterHostStop, type HostStopExit } from "./host-stop";
 import { daemonControllerSlackChannels, daemonLaunchedController } from "./slack-channels";
-import { subscribeWatchedTopics, type WatchedTopic, watchedWorkflowsOf } from "./watched-workflows";
+import {
+  subscribeWatchedTopics,
+  type WatchedTopic,
+  watchedWorkflowsKept,
+} from "./watched-workflows";
 
 /** The daemon API contract this build speaks, which the controller's registration states as
  * `pluginContract` (`daemonContract`, read once as the module loads). */
@@ -143,29 +147,19 @@ export function createControllerSession(
   // Aborts as the session's stop begins (`stop`): the role claim's signal, and what tells a claim
   // the stop overtook to end quietly (`claimOnce`).
   const stopped = new AbortController();
-  // The watched topics asked for the session `watchedOpen.sessionID` and not closed since, whichever
-  // claim of that session asked for them (`subscribeWatchedTopics`): a later claim of that session
-  // closes those its list leaves out. A claim of another session starts from none: a `/new` or
-  // `/resume` left the role behind, and every subscription bound to it closed with it. `task` is the
-  // watched task of the last claim of that session. A later claim of that session waits for it to
-  // end before its own task closes or asks for anything, so no Envoy call of the earlier task lands
-  // after one of its own. A claim of another session waits for nothing: the earlier task's calls
-  // name the earlier session.
-  let watchedOpen:
-    | { readonly sessionID: string; readonly topics: Set<string>; task: Promise<void> }
-    | undefined;
+  // The watched workflows this process follows: the list its first registration named. The process
+  // keeps it for its whole life, as it keeps its Slack channels (`watchedWorkflowsKept`). It is
+  // undefined until that registration.
+  let watchedWorkflows: readonly WatchedTopic[] | undefined;
   // The watched subscriptions of the last claim that finished, which a later registration aborts:
   // the claim they were made for is replaced, and a claim of the new one makes its own.
   let watchedSubscriptions: AbortController | undefined;
 
   /**
-   * The watched workflows of a claim that has just finished (`claimWith`), in a task the claim
-   * does not wait for (`subscribeWatchedTopics`), which a later registration or the session's
-   * stop ends. The task first waits for the watched task of the earlier claim of the same session
-   * to end (`watchedOpen.task`), which the registration aborted, so no Envoy call of that task
-   * lands after one of its own. The session ends with exactly this claim's list: the task then
-   * closes each watched topic an earlier claim of the same session asked for that this list leaves
-   * out, then subscribes this list.
+   * Subscribes this process's watched workflows for the session of a claim that has just finished
+   * (`claimWith`), in a task the claim does not wait for (`subscribeWatchedTopics`). Each claim
+   * subscribes the same list for its own session, as each claim subscribes the Slack channels. A
+   * later registration or the session's stop ends the task.
    */
   const subscribeWatchedWorkflows = (
     sessionID: string,
@@ -173,17 +167,12 @@ export function createControllerSession(
     envoyContext: SessionContext | undefined,
     topics: readonly WatchedTopic[]
   ): void => {
-    if (watchedOpen?.sessionID !== sessionID) {
-      watchedOpen = { sessionID, topics: new Set(), task: Promise.resolve() };
-    }
     const subscriptions = new AbortController();
     watchedSubscriptions = subscriptions;
-    watchedOpen.task = subscribeWatchedTopics(
+    subscribeWatchedTopics(
       { pi, sessionID, claimToken, envoyContext, stopHeard: () => stopped.abort() },
-      watchedOpen.topics,
       topics,
-      AbortSignal.any([stopped.signal, subscriptions.signal]),
-      watchedOpen.task
+      AbortSignal.any([stopped.signal, subscriptions.signal])
     );
   };
 
@@ -281,13 +270,16 @@ export function createControllerSession(
    * other, which needs the capability and stops before any daemon call without it.
    *
    * Either launch form, once its claim is done (the daemon's controller after its ready), follows
-   * the project's watched workflows its registration names (`watchedWorkflows`): one
+   * the project's watched workflows (`watchedWorkflows`) for as long as it holds the role: one
    * default-branch topic for each event of each entry, the completed runs of that workflow on its
-   * repository's default branch, for as long as it holds the role. They are subscribed in a task
-   * the claim does not wait for (`subscribeWatchedWorkflows`), so nothing Envoy answers about one
-   * of them fails the claim or exits the process. A later claim of the same session whose
-   * registration names another list closes, in that task and first, each watched topic the new
-   * list leaves out, so the session ends with exactly the new list's topics.
+   * repository's default branch. The list is the one the process's first registration names. The
+   * process keeps that list for its whole life, as it keeps its Slack channels. Each later claim
+   * subscribes it for its own session, a claim after `/new`, `/resume`, `/fork` or `/branch` and a
+   * claim of the same session again included. A later registration that names another list
+   * changes nothing but one log line: the changed list takes effect at the controller's next
+   * launch (`watchedWorkflowsKept`). The topics are subscribed in a task the claim does not wait
+   * for (`subscribeWatchedWorkflows`), so nothing Envoy answers about one of them fails the claim
+   * or exits the process.
    *
    * One claim runs at a time, in the order they were asked for: each registration replaces the
    * controller secret the daemon holds, so two claims racing could leave this session holding the
@@ -442,11 +434,12 @@ export function createControllerSession(
     controllerTranscript = launched ? sessionFile : undefined;
     progress.registered = true;
     // The registration replaces the one the watched subscriptions running now were made for. The
-    // abort ends their asking, but not an Envoy call they have in flight: a later watched task of
-    // the same session waits for that call (`subscribeWatchedWorkflows`).
+    // abort ends their asking, and this claim makes its own once it is done. The list stays the
+    // one the process's first registration named (`watchedWorkflowsKept`).
     watchedSubscriptions?.abort();
     watchedSubscriptions = undefined;
-    const watched = watchedWorkflowsOf(registration);
+    const watched = watchedWorkflowsKept(watchedWorkflows, registration);
+    watchedWorkflows = watched;
     const envoyContext = "setInterval" in context ? context : undefined;
     // Once per process, ever, and before the role claim and the subscription below, so no card on
     // the role's lane and no wake on the controller topic can race the start turn for the one
