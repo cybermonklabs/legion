@@ -1,14 +1,15 @@
 kind: Changed
 body: |-
-  The worker image's and CI's jj is now `v0.46.0-sami.20261128-055031` (built from `sjawhar/jj`
-  commit `58dbe018f0c5`), in place of `v0.46.0-sami.20261127-111037`. It keeps `sjawhar/jj#3`,
-  `#4`, `#5`, and `#6` and adds `sjawhar/jj#7` and `#8`, which create each new file once with its
-  mode and read and write files across the process's available CPUs with bounded bytes in flight,
-  symlink-safe bounded directory opens, serialized non-ASCII paths, and preserved `AccessDenied`
-  skips. In the gVisor issue-pod end-to-end proof on `rust-lang/crates.io-index` (389,633 files,
-  4 CPUs), `workspace-init` fell from 151 s at the base to 66 s at the head (ratio 0.44), with the
-  `checkout` step taking 48.3 s (against 180.0 s on the unpinned build with step timing); on
-  `tmux/tmux`, `workspace-init` stayed at 3 s against 3 s at the base.
+  The worker image's and CI's jj is now `v0.46.0-sami.20261128-120945` (built from `sjawhar/jj`
+  commit `bafe29d7455c`), in place of `v0.46.0-sami.20261127-111037`. It keeps `sjawhar/jj#3`,
+  `#4`, `#5`, and `#6` and adds `sjawhar/jj#7`, `#8`, and `#9`, which create each new file once
+  with its mode and read and write files across the process's available CPUs with bounded bytes in
+  flight, symlink-safe bounded directory opens and empty-parent clean-ups, serialized paths a file
+  system may alias beyond ASCII case, and preserved `AccessDenied` skips. In the gVisor issue-pod
+  end-to-end proof on `rust-lang/crates.io-index` (389,633 files, 4 CPUs), `workspace-init` fell
+  from 151 s at the base to 66 s at the head (ratio 0.44), with the `checkout` step taking 48.3 s
+  (against 180.0 s on the unpinned build with step timing); on `tmux/tmux`, `workspace-init`
+  stayed at 3 s against 3 s at the base.
 time: 2026-11-28T01:52:38Z
 custom:
     Issue: INFRA-4133

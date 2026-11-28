@@ -111,16 +111,17 @@ ARG MISE_SHA256=0c782233b97745fd3ed317ba3acbfd7d256e6268470373757f0cc48d57bb87e6
 # many commits take 0.6 to 1.2 s, where 0.46.0-sami.20261120-120102 takes 15 to 27 s and the
 # builds with #4 alone, 0.46.0-sami.20261125-112159 and 20261125-125342, take about an hour
 # (INFRA-5926). Only the fork's tests hold #5's change: no Legion test bounds the import's time.
-# sjawhar/jj#6 keeps the fork's own CI green. sjawhar/jj#7 and #8 make a checkout create each new
-# file once, with its mode, and read and write files across the process's available CPUs with a
-# bound on the bytes in flight (keeping each worker's directory opens symlink-safe and bounded,
-# serializing non-ASCII paths and preserving AccessDenied skips), so a checkout of a large tree
-# under gVisor takes a fifth to a half of the time 0.46.0-sami.20261127-111037 takes, depending on
-# the node's machine family and disk.
-# A later pin must carry all six, or one jj command on a large pack fills an issue pod again, a
+# sjawhar/jj#6 keeps the fork's own CI green. sjawhar/jj#7, #8 and #9 make a checkout create each
+# new file once, with its mode, and read and write files across the process's available CPUs with
+# a bound on the bytes in flight (keeping each worker's directory opens and empty-parent clean-ups
+# symlink-safe and bounded, serializing paths a file system may alias beyond ASCII case and
+# preserving AccessDenied skips), so a checkout of a large tree under gVisor takes a fifth to a
+# half of the time 0.46.0-sami.20261127-111037 takes, depending on the node's machine family and
+# disk.
+# A later pin must carry all seven, or one jj command on a large pack fills an issue pod again, a
 # role's merge silently reverts work, a fresh workspace's import takes about an hour, or a large
 # tree's checkout takes two to five times as long again.
-ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261128-055031
+ARG JJ_TOOL=github:sjawhar/jj@0.46.0-sami.20261128-120945
 ARG GH_TOOL=gh@2.98.0
 # github/gh-stack, the `gh stack` extension (GitHub's stacked pull requests), at the release this
 # pin names, as a `github:<owner>/<repo>@<version>` pin the tools stage reads as it reads .omp-pin.
@@ -137,7 +138,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # and its digest move in one commit: a bump of .omp-pin, ARG JJ_TOOL or ARG GH_TOOL that leaves its
 # digest fails the tools stage's sha256sum check in that pull request's own worker-image build.
 # Oh My Pi's was read on 2026-11-27 at its 18.18.6-sami.20261127-055727 pin, jj's on 2026-11-28 at
-# its 0.46.0-sami.20261128-055031 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
+# its 0.46.0-sami.20261128-120945 pin and gh's on 2026-11-22 at 2.98.0, each as the `digest`
 # GitHub's API gives the release asset (`gh api repos/<owner>/<repo>/releases/tags/<tag> --jq
 # '.assets[]'`), and each equals the sha256 of the archive downloaded from the address the tools
 # stage reads. gh's is also its line in the release's gh_<version>_checksums.txt, and `gh
@@ -147,7 +148,7 @@ ARG GH_STACK_TOOL=github:github/gh-stack@0.3.0
 # cybermonklabs/oh-my-pi`); the jj release carries no attestation (the command answers 404). A
 # bump repeats those reads.
 ARG OMP_SHA256=e17f13c83beb6ccc86820fb9517e4be2011d045739900fa23830aef1b466c830
-ARG JJ_SHA256=a2e28283f4685498e3984288c67874d36ddd158e03d598b72523ddf396d8a216
+ARG JJ_SHA256=7de9194d37b14ff2c1dc9271fbfb1f72622653a686feb7f83e80c229d207e565
 ARG GH_SHA256=3b8ac6b30336802fc1a858d7c084e11cdf24ac1a761ca90b68022d7d729208de
 # The SHA-256 of the linux-amd64 binary of the gh-stack release ARG GH_STACK_TOOL names (the release
 # ships bare binaries, `linux-amd64`, no archive). Read on 2026-11-22 as the `digest` GitHub's API

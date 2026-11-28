@@ -36,7 +36,7 @@ func binary(t *testing.T, dir, name string) string {
 }
 
 // currentJJ is what the worker image's jj prints for `jj --version`.
-const currentJJ = "jj 0.46.0-sami.20261128-055031-58dbe018f0c5512389298f6e8cd46b051ea6dafa"
+const currentJJ = "jj 0.46.0-sami.20261128-120945-bafe29d7455ccc5594e3adb9f40f7fea9b4c3651"
 
 // fakeJJ is an executable jj in dir whose `jj --version` prints version.
 func fakeJJ(t *testing.T, dir, version string) string {
