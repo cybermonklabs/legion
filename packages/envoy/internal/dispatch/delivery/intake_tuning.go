@@ -54,9 +54,10 @@ type intakeTuning struct {
 	// createDurable creates the durable a take-over configured on the notification stream
 	// (heldDurable.finishTakeOver): addDurable, unless a test fails the create after its delete.
 	createDurable func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error)
-	// callWait is how long callNATS waits for a call's answer, in nanoseconds: bus.ConnLockWait.
-	// A test sets it to 0, so the timer is ready at once and a call may outlive the wait, to show
-	// the bookkeeping inside each call completes either way.
+	// callWait is how long callNATS waits for a call's answer, in nanoseconds, on the intake's clock
+	// (intakeDelivery.clock): bus.ConnLockWait. A test sets it to 0, so the timer is ready at once and
+	// a call may outlive the wait, to show the bookkeeping inside each call completes either way, or
+	// to no bound (math.MaxInt64), so each call is waited for whatever its time.
 	callWait atomic.Int64
 	// drainWait is how long the stop waits for its subscription's drain once the last handler
 	// returned, in nanoseconds (intakeDelivery.stop), read on the intake's clock

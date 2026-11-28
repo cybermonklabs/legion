@@ -43,7 +43,8 @@ type intakeDelivery struct {
 	// gives up the handlers still running when its context ends.
 	handling context.Context
 	abandon  context.CancelFunc
-	// clock is the intake's own (heldDurable.clock), which the stop's wait for its drain reads.
+	// clock is the intake's own (heldDurable.clock), which the stop's wait for its drain and every
+	// call's wait for NATS (callNATS) read.
 	clock    intakeClock
 	stopping atomic.Bool
 	stopped  sync.Once
@@ -240,7 +241,8 @@ func stopContext(ctx context.Context, c intakeClock, budget time.Duration) (stop
 // up the subscription's registration on the client (bus.Client.DrainSubscription), so that no
 // reconnect binds it again and a later subscribe on the same client starts afresh. Every call to
 // NATS the stop waits for -- its own, and the answers of the handlers it waits for, hand-backs
-// included -- waits for NATS at most bus.ConnLockWait (callNATS): nats.go holds its connection
+// included -- waits for NATS at most the intake's callWait on the intake's clock (callNATS;
+// bus.ConnLockWait on the real clock outside tests): nats.go holds its connection
 // lock, which every call to NATS waits for, through a reconnect's dial and handshake. A hand-back
 // NATS has not taken by then is published later, and the hold is released only once every
 // hand-back has reached the server, renewing until then (publishHandBack, heldDurable.stop). Once
@@ -280,7 +282,7 @@ func (d *heldDurable) StopDelivering(ctx context.Context) {
 // nothing, and what the first takes goes to held (giveBack), which the once hands back.
 //
 // Every hand-back is withheld until the drain has answered, and for good when NATS did not take the
-// drain within bus.ConnLockWait, or took it with the link down, when DrainSubscription unsubscribes
+// drain within the intake's callWait, or took it with the link down, when DrainSubscription unsubscribes
 // on the client alone and hands no drain back: nothing then says when the server has the
 // subscription's interest gone, and a hand-back on a link that is down waits for the next attempt.
 //
@@ -303,7 +305,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		(*armed)()
 	}
 	d.stopped.Do(func() {
-		draining, answered := callNATS(d.tuning, "drain the intake's subscription", func() (*natsgo.Subscription, error) {
+		draining, answered := callNATS(d, "drain the intake's subscription", func() (*natsgo.Subscription, error) {
 			return d.nats.DrainSubscription(d.sub)
 		})
 		d.mu.Lock()
@@ -313,7 +315,7 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		d.mu.Unlock()
 		// Returns once every handler has, which a handler given up (abandon) does promptly: its
 		// GitHub calls and its writes run under its context, and its answer to NATS waits at most
-		// bus.ConnLockWait (handBack, acknowledge, handBackOwn).
+		// the intake's callWait (handBack, acknowledge, handBackOwn).
 		d.keys.wait()
 		d.mu.Lock()
 		d.released = true
@@ -323,27 +325,8 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		for _, msg := range held {
 			d.handBack(msg)
 		}
-		// nats.go ends a drain on a goroutine of its own, once the callback has run every message
-		// the client had buffered, and reports it only by the subscription turning invalid. It ends
-		// it under its connection lock, which a reconnect's dial and handshake hold, so the wait also
-		// reads whether NATS is connected, within bus.ConnLockWait, and a read that does not answer,
-		// or answers that it is not, ends the wait as the deadline does: the stop then waits out no
-		// reconnect attempt for a drain nats.go cannot end during it. The wait's span is read on the
-		// intake's clock (clock).
-		waitedFrom := d.clock.Now()
-		for draining != nil && draining.IsValid() {
-			connected, answered := callNATS(d.tuning, "read whether NATS is connected while the drain ends", func() (bool, error) {
-				return d.nats.Connected(), nil
-			})
-			lost := !answered || !connected
-			if waited := d.clock.Now().Sub(waitedFrom); lost || d.handling.Err() != nil || waited >= time.Duration(d.tuning.drainWait.Load()) {
-				d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", waited, "connection_lost", lost)
-				callNATS(d.tuning, "unsubscribe the intake's subscription", func() (struct{}, error) {
-					return struct{}{}, draining.Unsubscribe()
-				})
-				break
-			}
-			time.Sleep(10 * time.Millisecond)
+		if draining != nil {
+			d.awaitDrain(draining)
 		}
 		// An unsubscribe does not wait for a callback still running, which can be on its way to a
 		// hand-back of a message the client had buffered (giveBack). From here no hand-back
@@ -354,9 +337,71 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 	})
 }
 
-// callNATS makes call, one call to NATS named by what, where the stop waits for it -- a call of the
-// stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and waits for it
-// at most the intake's callWait (tuning; bus.ConnLockWait, 100 ms, outside tests). The call always
+// awaitDrain waits until nats.go has ended the drain of draining, the subscription the stop's drain
+// handed back, or unsubscribes it when it gives that wait up. nats.go ends a drain on a goroutine of
+// its own, once the callback has run every message the client had buffered, and reports the end by
+// closing the subscription (natsgo.SubscriptionClosed, on its StatusChanged channel, which nats.go
+// closes with the subscription), which the wait takes as the end; a subscription already closed
+// answers the channel at once. A connection that closes ends the subscription without that status,
+// and is a connection event of the client's.
+//
+// nats.go ends a drain under its connection lock, which a reconnect's dial and handshake and a write
+// to a link that does not move hold, so the wait also reads whether NATS is connected, within the
+// intake's callWait (callNATS), and a read that does not answer, or answers that it is not, gives the
+// wait up as the deadline (drainWait) and the given-up handlers (handling) do: the stop then waits
+// out no reconnect attempt, and no stalled write, for a drain nats.go cannot end during it. It reads
+// that as the wait begins, at each connection event of the client (bus.Client.ConnectionChanged: a
+// disconnect, a reconnect in place, a close, a replacement), and drainCheckEvery after each read,
+// since nothing reports a lock a write holds. The deadline, the spacing of the reads and each read's
+// own wait run on the intake's clock (clock), so a test moves a fake past each rather than waiting
+// it out.
+func (d *intakeDelivery) awaitDrain(draining *natsgo.Subscription) {
+	waitedFrom := d.clock.Now()
+	drained := draining.StatusChanged(natsgo.SubscriptionClosed)
+	bound := d.clock.NewTimer(time.Duration(d.tuning.drainWait.Load()))
+	defer bound.Stop()
+	expired := false
+	for {
+		// Taken before the reads, so an event between them and the wait still wakes it.
+		changed := d.nats.ConnectionChanged()
+		if !draining.IsValid() {
+			return
+		}
+		connected, answered := callNATS(d, "read whether NATS is connected while the drain ends", func() (bool, error) {
+			return d.nats.Connected(), nil
+		})
+		lost := !answered || !connected
+		if lost || expired || d.handling.Err() != nil {
+			d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", d.clock.Now().Sub(waitedFrom), "connection_lost", lost)
+			callNATS(d, "unsubscribe the intake's subscription", func() (struct{}, error) {
+				return struct{}{}, draining.Unsubscribe()
+			})
+			return
+		}
+		check := d.clock.NewTimer(drainCheckEvery)
+		select {
+		case <-drained:
+		case <-changed:
+		case <-d.handling.Done():
+		case <-bound.C():
+			expired = true
+		case <-check.C():
+		}
+		check.Stop()
+	}
+}
+
+// drainCheckEvery is how long the stop's wait for its drain leaves between its reads of whether NATS
+// is connected (awaitDrain), on the intake's clock: those reads are how the wait learns that a write
+// to a link that does not move holds nats.go's connection lock, under which nats.go ends no drain,
+// which no event of the client or of nats.go reports.
+const drainCheckEvery = 10 * time.Millisecond
+
+// callNATS makes call, one call to NATS named by what, where the stop of delivery d waits for it --
+// a call of the stop's own, or a handler's answer, which the stop waits for (keyedRunner.wait) -- and
+// waits for it at most the intake's callWait (tuning; bus.ConnLockWait, 100 ms, outside tests) on the
+// intake's clock (clock), the clock of the stop's other waits: the real one outside tests, and a
+// test's fake, which the test moves past the wait once callNATS has armed it. The call always
 // starts, on a goroutine of its own, so a caller that keeps a count across the call
 // (publishHandBack) sees the decrement when the call finishes, even when the goroutine is
 // descheduled past the wait. A call NATS has not answered by then goes on, with a WARN line
@@ -367,7 +412,8 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 // already closed is how a call that outlived the stop ends when the client closes at shutdown, and
 // is logged as that rather than as an error; a publish refused because the connection is
 // reconnecting (ErrReconnectBufExceeded) is logged at INFO.
-func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), attrs ...any) (value T, answered bool) {
+func callNATS[T any](d *intakeDelivery, what string, call func() (T, error), attrs ...any) (value T, answered bool) {
+	tuning := d.tuning
 	answers := make(chan T, 1)
 	go func() {
 		v, err := call()
@@ -383,12 +429,12 @@ func callNATS[T any](tuning *intakeTuning, what string, call func() (T, error), 
 		answers <- v
 	}()
 	wait := time.Duration(tuning.callWait.Load())
-	timer := time.NewTimer(wait)
+	timer := d.clock.NewTimer(wait)
 	defer timer.Stop()
 	select {
 	case value = <-answers:
 		return value, true
-	case <-timer.C:
+	case <-timer.C():
 		tuning.log.Warn(callLeftRunning, append(attrs, "call", what, "waited", wait)...)
 		return value, false
 	}
@@ -521,7 +567,7 @@ func (d *intakeDelivery) publishHandBack(msg *natsgo.Msg, after time.Duration) b
 	if hook := d.afterHandBackAdmitted.Load(); hook != nil {
 		(*hook)()
 	}
-	callNATS(d.tuning, "hand a message back for redelivery", func() (struct{}, error) {
+	callNATS(d, "hand a message back for redelivery", func() (struct{}, error) {
 		defer func() {
 			written()
 			d.mu.Lock()
@@ -609,7 +655,7 @@ func (d *intakeDelivery) handedBack() bool {
 }
 
 // mayHandBack reports whether a hand-back may be published now (handBack): outside any stop, always;
-// once the stop has begun, only while handBackAllowed and NATS answers within bus.ConnLockWait
+// once the stop has begun, only while handBackAllowed and NATS answers within the intake's callWait
 // that the connection is connected. A read that does not answer, or answers that the connection is
 // not connected, clears handBackAllowed.
 func (d *intakeDelivery) mayHandBack() bool {
@@ -622,7 +668,7 @@ func (d *intakeDelivery) mayHandBack() bool {
 	if !allowed {
 		return false
 	}
-	connected, answered := callNATS(d.tuning, "read whether NATS is connected before a hand-back", func() (bool, error) {
+	connected, answered := callNATS(d, "read whether NATS is connected before a hand-back", func() (bool, error) {
 		return d.nats.Connected(), nil
 	})
 	if answered && connected {
@@ -634,13 +680,13 @@ func (d *intakeDelivery) mayHandBack() bool {
 	return false
 }
 
-// acknowledge acknowledges msg, waiting for NATS at most bus.ConnLockWait (callNATS): the stop
+// acknowledge acknowledges msg, waiting for NATS at most the intake's callWait (callNATS): the stop
 // waits for the handler that makes it, whether that acknowledgement began before the stop or after.
 // An acknowledgement NATS has not taken by then goes on without the caller, which is sound whenever
 // it lands, since the message's handling is done; if it then fails, the message stays outstanding
 // for the ack wait. One NATS refused in time is handed back, under handBack's rule.
 func (d *intakeDelivery) acknowledge(msg *natsgo.Msg) {
-	failed, answered := callNATS(d.tuning, "acknowledge message", func() (bool, error) {
+	failed, answered := callNATS(d, "acknowledge message", func() (bool, error) {
 		err := msg.Ack()
 		return err != nil, err
 	}, "subject", msg.Subject)

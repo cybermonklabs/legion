@@ -472,6 +472,36 @@ func moveTicks(t *testing.T, c *clocktest.Fake, every time.Duration, done func()
 	}, failure)
 }
 
+// passNextWait moves c, an intake's own clock (heldDurable.clock) that a fake only the row moves, to
+// the earliest moment armed on it, when that moment is no further than callWait past the fake's
+// present, and does nothing otherwise: once a call to NATS that has not answered has armed its wait
+// there (callNATS, callWait past the moment the call began), or the stop's wait for its drain its
+// next read of the connection (awaitDrain, drainCheckEvery), the move fires it, and it never passes a
+// moment the code has not armed (clocktest.Fake.SetWhen). A row calls it only while NATS cannot answer
+// the intake's calls (a held handshake, a held write), so the move never comes ahead of an answer. A
+// callWait of no bound (math.MaxInt64), set by a row whose calls are each waited for, moves nothing.
+func passNextWait(c *clocktest.Fake, callWait time.Duration) {
+	if callWait == math.MaxInt64 {
+		return
+	}
+	c.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+		if len(armed) == 0 || armed[0].After(now.Add(callWait)) {
+			return time.Time{}, false
+		}
+		return armed[0], true
+	})
+}
+
+// passCallWait waits until a call of the intake whose own clock is c, a fake only the row moves, has
+// armed its wait for NATS on it, callWait past the fake's present (callNATS), and moves the fake
+// there, so the call goes on without NATS's answer. what names the call for the wait's give-up.
+func passCallWait(t *testing.T, c *clocktest.Fake, callWait time.Duration, what string) {
+	t.Helper()
+	at := c.Now().Add(callWait)
+	c.AwaitArmedAt(t, what+" to arm its wait for NATS on the intake's clock (callNATS)", at)
+	c.Set(at)
+}
+
 // loseHold moves holdClock, intake's hold clock (heldDurable.holdClock), a fake only the row moves,
 // to the loss deadline of the hold intake delivers under, once the hold has armed it there, and
 // fails the test unless the hold is lost at that moment. The row has cut the lease pool the hold is

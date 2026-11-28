@@ -7,10 +7,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -29,6 +31,10 @@ type stopRow struct {
 	// it directly rather than through the client.
 	conn    *natsgo.Conn
 	durable *heldDurable
+	// clock is the durable's own clock (heldDurable.clock), a fake only the row moves: each call's
+	// wait for NATS (callNATS) and the stop's wait for its drain (awaitDrain) run on it, so a call
+	// NATS does not answer is waited for until the row moves the fake past its wait.
+	clock   *clocktest.Fake
 	sub     *natsgo.Subscription
 	subject string
 	// reconnected takes one value per reconnect of the client.
@@ -42,7 +48,9 @@ type stopRow struct {
 // subject, creating the durable first when createDurable says so, and waits until the server counts
 // its subscriber. The row's client redials at once after its link drops (bus.WithPromptReconnect),
 // where a bus client otherwise waits a second (ReconnectWait), so a subtest that drops the link
-// through the hold reaches the attempt the hold holds without waiting out that second.
+// through the hold reaches the attempt the hold holds without waiting out that second. The durable
+// runs on a fake clock of the row's (stopRow.clock), which only a row whose calls NATS cannot answer
+// moves (stopPassingWaits, passCallWait).
 func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelope, bool), handle func(*intakeDelivery, intakeMessage), createDurable bool) *stopRow {
 	t.Helper()
 	server, uri := testnats.Start(t)
@@ -67,11 +75,13 @@ func startStopRow(t *testing.T, key func(*natsgo.Msg) (string, *contracts.Envelo
 		}
 	}
 	durable := newHeldDurable(tuningFor(t), client, nil, func(*intakeTuning) natsgo.ConsumerConfig { return wanted }, key, handle)
+	clock := fakeIntakeClock()
+	durable.clock = clock
 	sub, err := durable.subscribe(wanted.DeliverSubject)
 	if err != nil {
 		t.Fatalf("subscribe at %s: %v", wanted.DeliverSubject, err)
 	}
-	row := &stopRow{server: server, uri: uri, hold: hold, client: client, conn: client.Connection(), durable: &durable, sub: sub, subject: wanted.DeliverSubject, reconnected: reconnected}
+	row := &stopRow{server: server, uri: uri, hold: hold, client: client, conn: client.Connection(), durable: &durable, clock: clock, sub: sub, subject: wanted.DeliverSubject, reconnected: reconnected}
 	waitFor(t, func() bool { return row.subscribers(t) == 1 }, func() string {
 		return fmt.Sprintf("control: the server reports %d subscriber(s) on the deliver subject before the hold, want 1", row.subscribers(t))
 	})
@@ -104,15 +114,47 @@ func (r *stopRow) publishPullRequestSeven(t *testing.T) {
 // stopUnder starts a StopDelivering of the row's durable under ctx, and returns a call that waits
 // for it to return, for AnswersWithinAttempt or answersWhileWriteHeld.
 func (r *stopRow) stopUnder(ctx context.Context) func() error {
+	stopped := r.startStop(ctx)
+	return func() error {
+		<-stopped
+		return nil
+	}
+}
+
+// stopPassingWaits starts a StopDelivering of the row's durable under ctx, and returns a call that
+// waits for it to return while it moves the row's clock past each wait the stop arms there within
+// the intake's callWait (passNextWait): a call's wait for NATS (callNATS) and the drain's next read
+// of the connection (awaitDrain). A row calls it only while a held handshake or a held write keeps
+// NATS from answering, so no move comes ahead of an answer. The call waits through the shared wait's
+// form for a helper, since it runs on a goroutine of its own (testnats.Answers), and answers that
+// wait's give-up.
+func (r *stopRow) stopPassingWaits(ctx context.Context) func() error {
+	stopped := r.startStop(ctx)
+	return func() error {
+		return testwait.InHelper("stopRow.stopPassingWaits", "the stop to return, its clock moved past each wait for NATS it armed", func() bool {
+			if closedChannel(stopped) {
+				return true
+			}
+			passNextWait(r.clock, time.Duration(r.durable.tuning.callWait.Load()))
+			return false
+		})
+	}
+}
+
+// startStop starts a StopDelivering of the row's durable under ctx, and returns a channel closed
+// once it has returned.
+func (r *stopRow) startStop(ctx context.Context) <-chan struct{} {
 	stopped := make(chan struct{})
 	go func() {
 		r.durable.StopDelivering(ctx)
 		close(stopped)
 	}()
-	return func() error {
-		<-stopped
-		return nil
-	}
+	return stopped
+}
+
+// callWait is the intake's callWait (callNATS) for the intakes t builds.
+func callWait(t *testing.T) time.Duration {
+	return time.Duration(tuningFor(t).callWait.Load())
 }
 
 // cancelled is a context that has already ended: a stop under it gives its handlers up at once.
@@ -228,7 +270,12 @@ func (r *stopRow) reconnect(t *testing.T) {
 // timeout of the test's own (HoldReconnectUntilEnded), and the row's client redials at once after its
 // link drops (startStopRow). One that holds a write has them answer while the write is still held;
 // the write never ends on its own. Each stop's context has already ended, or never ends, so no stop
-// answers by its own deadline:
+// answers by its own deadline. Each call the stop waits for waits for NATS at most the intake's
+// callWait on the durable's own clock (callNATS), a fake of the row's (startStopRow): a subtest whose
+// stop meets the held lock waits until the fake reports the first such call's wait armed, moves the
+// fake there (passCallWait), and moves it past each wait the stop arms after while it waits for the
+// stop's answer (stopPassingWaits). The stop's wait for its drain is on that fake too: its deadline
+// (drainWait) and its reads of the connection, drainCheckEvery apart (awaitDrain):
 //
 //   - a drain NATS has not taken: two calls at once during a held handshake, under contexts that
 //     never end; once the hold is released the subscription is drained all the same: the server
@@ -254,8 +301,9 @@ func (r *stopRow) reconnect(t *testing.T) {
 //   - a drain the lock holds: the stop drained on a moving link and waits for its drain to end, with
 //     a message still buffered, under a context that never ends; a write then holds nats.go's lock,
 //     under which nats.go ends no drain, and the stop and a second StopDelivering return while it is
-//     held. The drain's own wait (intakeTuning.drainWait) reads a fake the row never moves, so it
-//     ends nothing;
+//     held. The row moves the fake to the drain's next read of the connection and past that read's
+//     wait for NATS; the drain's deadline (drainWait), further on, is never reached, so it ends
+//     nothing;
 //   - a given-up handler woken as the give-up is armed: as the second, with one stop, whose
 //     give-up runs at once under its ended context; the stop waits, once its give-up is armed
 //     (intakeTuning.stopArmed), for the handler it woke to decide its hand-back, and the server is sent
@@ -268,13 +316,16 @@ func (r *stopRow) reconnect(t *testing.T) {
 // answer begun before the stop with no bound, in the fifth to seventh; a hand-back published inline,
 // in the ninth; a wait for the drain that reads nothing of the connection, in the tenth; and a stop
 // that sets stopping only after its give-up is armed, in the eleventh, whose woken handler publishes
-// the hand-back the stop withholds.
+// the hand-back the stop withholds. A callNATS that waits on the real clock (time.NewTimer) arms no
+// wait on the fake, and fails each subtest that waits for one (passCallWait) by name.
 func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 	t.Parallel()
 	t.Run("a drain NATS has not taken", func(t *testing.T) {
 		row := startStopRow(t, intakeKey, func(*intakeDelivery, intakeMessage) {}, false)
 		row.hold.HoldReconnectUntilEnded(t, row.conn)
-		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(context.Background()), row.stopUnder(context.Background()))
+		first, second := row.stopPassingWaits(context.Background()), row.stopPassingWaits(context.Background())
+		passCallWait(t, row.clock, callWait(t), "the stop's drain")
+		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", first, second)
 		row.reconnect(t)
 		waitFor(t, func() bool { return !row.sub.IsValid() && row.subscribers(t) == 0 }, func() string {
 			return fmt.Sprintf("after the reconnect the stopped subscription is still valid = %t and the server reports %d subscriber(s) on its deliver subject, want neither: the stop left it subscribed",
@@ -287,7 +338,9 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		naks := watchHandBacks(t, row.uri)
 		delivery := row.delivery()
 		row.hold.HoldReconnectUntilEnded(t, row.conn)
-		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(cancelled()), row.stopUnder(cancelled()))
+		first, second := row.stopPassingWaits(cancelled()), row.stopPassingWaits(cancelled())
+		passCallWait(t, row.clock, callWait(t), "the stop's drain")
+		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", first, second)
 		row.reconnect(t)
 		row.requireNoHandBack(t, delivery, naks)
 	})
@@ -371,7 +424,9 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			row.hold.HoldReconnectUntilEnded(t, row.conn)
 			goOn()
 			testwait.Receive(t, "the handler to begin its answer (control)", answering)
-			row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", row.stopUnder(cancelled()), row.stopUnder(cancelled()))
+			first, second := row.stopPassingWaits(cancelled()), row.stopPassingWaits(cancelled())
+			passCallWait(t, row.clock, callWait(t), "the handler's answer or the stop's drain")
+			row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", first, second)
 		})
 	}
 
@@ -380,10 +435,11 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		defer release()
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		stopped := row.stopUnder(ctx)
+		stopped := row.stopPassingWaits(ctx)
 		awaitDrainWait(t, row)
 		row.hold.HoldWriteLock(t, row.conn)
 		cancel()
+		passCallWait(t, row.clock, callWait(t), "the drain's read of the connection")
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
 	})
 
@@ -406,20 +462,21 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		}
 		row.delivery().beforeHandBackPublish.Store(&hook)
 		// The stop gives the handler up at its start, and the handler hands its message back.
-		stopped := row.stopUnder(cancelled())
+		stopped := row.stopPassingWaits(cancelled())
 		if err := testwait.Receive(t, "a hand-back to reach its publish (control)", taken); err != nil {
 			t.Fatalf("the hook could not hold the write before the hand-back's publish: %v", err)
 		}
+		passCallWait(t, row.clock, callWait(t), "the hand-back's publish")
 		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped)
 	})
 
 	t.Run("a drain the lock holds", func(t *testing.T) {
 		row, release := startBufferedDrainRow(t)
 		defer release()
-		// The drain's own wait reads the delivery's clock (intakeTuning.drainWait), a fake the row
-		// never moves, so nothing but the drain's end or the stop's context ends that wait.
-		row.delivery().clock = fakeIntakeClock()
-		stopped := row.stopUnder(context.Background())
+		// The drain's wait reads the connection drainCheckEvery on the row's clock (awaitDrain), and
+		// its deadline (drainWait) is further on that clock than the row moves it, so nothing but the
+		// drain's end, a read of the connection or the stop's context ends that wait.
+		stopped := row.stopPassingWaits(context.Background())
 		awaitDrainWait(t, row)
 		delivery := row.delivery()
 		delivery.mu.Lock()
@@ -429,7 +486,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 			t.Fatal("control: the stop's drain was not taken on a moving link")
 		}
 		row.hold.HoldWriteLock(t, row.conn)
-		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped, row.stopUnder(context.Background()))
+		answersWhileWriteHeld(t, row.conn, "StopDelivering", stopped, row.stopPassingWaits(context.Background()))
 	})
 
 	t.Run("a given-up handler woken as the give-up is armed", func(t *testing.T) {
@@ -455,10 +512,11 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		tuning := tuningFor(t)
 		tuning.stopArmed.Store(&armed)
 		row.hold.HoldReconnectUntilEnded(t, row.conn)
-		stopped := row.stopUnder(cancelled())
+		stopped := row.stopPassingWaits(cancelled())
 		testwait.Receive(t, "the stop to arm its give-up (control)", reached)
 		testwait.Receive(t, "the given-up handler to decide its hand-back once the give-up ran (control)", row.decided)
 		close(proceed)
+		passCallWait(t, row.clock, callWait(t), "the stop's drain")
 		row.hold.AnswersWithinAttempt(t, row.conn, "StopDelivering", stopped)
 		tuning.stopArmed.Store(nil)
 		row.reconnect(t)
@@ -467,11 +525,12 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 }
 
 // A hand-back outside any stop is sent and reaches the server, even while a write holds nats.go's
-// lock past ConnLockWait. The handler waits until the write is held, then calls handBack. The
-// connected read that follows the hand-back rule runs only during a stop (mayHandBack), so it
-// never blocks the hand-back here, and the publish is left running (callNATS's bound expires).
-// Once the lock is released the hand-back reaches the server. The negative control is
-// a mayHandBack that makes the connected read outside any stop.
+// lock past the intake's callWait. The handler waits until the write is held, then calls handBack.
+// The connected read that follows the hand-back rule runs only during a stop (mayHandBack), so it
+// never blocks the hand-back here, and the publish is left running: the row moves the intake's
+// clock past the publish's wait once it is armed (callNATS, passCallWait). Once the lock is released
+// the hand-back reaches the server. The negative control is a mayHandBack that makes the connected
+// read outside any stop.
 func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing.T) {
 	t.Parallel()
 	handlerReady := make(chan struct{}, 1)
@@ -495,6 +554,7 @@ func TestAHandBackOutsideAStopReachesTheServerWhileAWriteHoldsTheLock(t *testing
 	waitFor(t, func() bool { return delivery.handedBack() }, func() string {
 		return "the hand-back was withheld while a write held nats.go's lock: a connected read outside any stop blocked it"
 	})
+	passCallWait(t, row.clock, callWait(t), "the hand-back's publish")
 	testnats.RequireLockHeld(t, row.conn)
 	releaseWrite()
 	testwait.Receive(t, "the hand-back to land once the lock was let go", delivery.handBacksLanded())

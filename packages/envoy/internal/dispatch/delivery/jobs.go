@@ -157,10 +157,10 @@ func (j *JobIntake) deliver(d *intakeDelivery, message intakeMessage) {
 		d.giveBack(msg)
 		return
 	}
-	// The acknowledgement waits for NATS at most bus.ConnLockWait (callNATS): a stop waits for this
-	// handler. One NATS has not taken by then goes on without it, and a failure is logged, as
-	// before: the event's read below does not depend on it.
-	callNATS(d.tuning, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
+	// The acknowledgement waits for NATS at most the intake's callWait (callNATS; bus.ConnLockWait
+	// outside tests): a stop waits for this handler. One NATS has not taken by then goes on without
+	// it, and a failure is logged, as before: the event's read below does not depend on it.
+	callNATS(d, "acknowledge job message", func() (struct{}, error) { return struct{}{}, msg.Ack() }, "subject", msg.Subject)
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
 		d.tuning.log.Error("dispatch delivery: decode job envelope", "subject", msg.Subject, "error", err)
