@@ -25,12 +25,13 @@ import (
 // deadline of its own can check that deadline against it, as Dispatch's membership test does.
 const TokenTimeout = 10 * time.Second
 
-// tokenClient is the HTTP client every call that carries the client's credentials is made with:
-// the code flow's own calls to the token and revocation endpoints, and CheckClient's discovery
+// tokenClient is the HTTP client every call that carries the client's credentials is made with,
+// but a revocation: the code flow's own calls to the token endpoint, and CheckClient's discovery
 // read and token request. A redirect is answered as it stands: following a 307 or 308 would
 // re-send the form, and with it a code, a refresh token or the client's secret, to wherever the
-// redirect points. Its Timeout, TokenTimeout on the wall clock, bounds each call but a revocation,
-// which Revoke bounds on the code flow's clock instead (revocationClient).
+// redirect points. Its Timeout, TokenTimeout on the wall clock, bounds each of those calls. Revoke
+// sends with revocationClient, which answers a redirect the same way, and bounds the revocation on
+// the code flow's clock instead.
 func tokenClient() *http.Client {
 	client := revocationClient()
 	client.Timeout = TokenTimeout

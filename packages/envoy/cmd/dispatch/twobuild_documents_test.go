@@ -31,7 +31,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	gws "github.com/gorilla/websocket"
 	"github.com/jackc/pgx/v5"
@@ -518,7 +517,8 @@ func corpusFiles(t *testing.T, dir string) []string {
 // A document either build wrote reads and edits on the other. For each writer X and each file of
 // X's own corpus: a document created on X answers /text on Y and takes an append edit there, and X
 // then renders it as its first render with the appended paragraph after it; on Y, a document socket
-// opened with X's page parameters is admitted writable and stays open. A version X wrote holding
+// opened with X's page parameters is admitted writable, its room answers its sync step 1, and it
+// is still open once every socket's room has answered. A version X wrote holding
 // every typed block of X's manifest is approved, the answer to its decision block makes Y write the
 // next version, and the approval is carried to it. A body holding every reference form of X's
 // text/testdata that Y's own table holds too keeps its refs rows after Y rewrites it, but for the
@@ -552,21 +552,6 @@ func TestTwoBuildsReadAndEditEachOthersDocuments(t *testing.T) {
 		})
 	}
 }
-
-// socketOpenFor is how long every socket the corpus row opened must stay open once each one's room
-// has answered it (documentSocket.awaitRoomAnswer): a span of the row's own, for a close the
-// server makes on a timer of its own after that answer (socketsStayOpenWhy).
-const socketOpenFor = 3 * time.Second
-
-// socketsStayOpenWhy is why the corpus row holds socketOpenFor as a span once every room has
-// answered its socket: what is left is a close the server makes on a timer of its own after that
-// answer - its re-check of each writable socket against the live fleet (docs'
-// Service.RunSchemaAdmission, every processes.LiveWindow) or its heartbeat's re-check of the
-// socket's credential - which it records nowhere the row can read before it closes, in a child
-// process synctest does not reach.
-const socketsStayOpenWhy = "a close the server makes on a timer of its own after the room answered - its re-check of " +
-	"the writable sockets against the live fleet, or its heartbeat's re-check of the credential - is recorded nowhere " +
-	"the row can read before it closes, and both builds are child processes synctest does not reach"
 
 // corpusSkipped are the corpus files this row leaves out, each with why. A corpus file is
 // markdown for the parsers' fixtures, which a server does not have to be able to store.
@@ -620,11 +605,13 @@ func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader 
 		sockets = append(sockets, socket)
 	}
 	// A close the server makes as it loads a socket's room, or as it takes the socket's first
-	// frames, comes before the room's answer to the socket's sync step 1.
+	// frames, comes before the room's answer to the socket's sync step 1, so once every room has
+	// answered, a socket still open was not closed on its admission. A close on a server timer after
+	// that (the re-check of the writable sockets against the live fleet, every
+	// processes.LiveWindow) is twobuild_transition_test.go's row, which waits a whole re-check out.
 	for _, socket := range sockets {
 		socket.awaitRoomAnswer(t)
 	}
-	testwait.Span(t, socketOpenFor, socketsStayOpenWhy)
 	for _, socket := range sockets {
 		if socket.closed() {
 			t.Errorf("the %s closed the socket it admitted for document %s: %v", reader.name, socket.artifactID, socket.endErr)

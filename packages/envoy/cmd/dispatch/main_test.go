@@ -33,7 +33,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -2750,11 +2749,14 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 // table makes its field some and leaves the cursor's none, and the cursor's row alone does the
 // reverse. A table the read cannot read, here the keyword table dropped, makes its field unknown
 // with the read's error, and the cursor's field still reads. The steps run in order on one
-// database, each on what the one before left.
+// database, each on what the one before left. The client's deadline of each read is on a fake
+// clock the row never moves, so no clock ends a read here and the shared wait's end
+// (testwait.Context) bounds one that hangs.
 func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
+	unmoved := clocktest.New(time.Now())
 	for _, step := range []struct {
 		name       string
 		statements []string
@@ -2777,7 +2779,7 @@ func TestTheKeywordFillDeferralSaysWhetherEachTableHoldsARow(t *testing.T) {
 				t.Fatalf("%s: %s: %v", step.name, statement, err)
 			}
 		}
-		if got := deferralFields(searchFillTableRows(ctx, database.Pool, clock.Real(), searchFillBounds(0))); got != step.want {
+		if got := deferralFields(searchFillTableRows(testwait.Context(t), database.Pool, unmoved, searchFillBounds(0))); got != step.want {
 			t.Errorf("%s: the deferral's fields are\n  %s\nwant\n  %s", step.name, got, step.want)
 		}
 	}
