@@ -2104,11 +2104,6 @@ func (s *Postgres) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree stri
 	if err := s.forgetKept(ctx, tx, tree, "", forget, describe); err != nil {
 		return nil, err
 	}
-	tag, err := tx.Exec(ctx, `update issues set tree_generation = generation where key = $1 and tree = key`, tree)
-	if err != nil {
-		return nil, fmt.Errorf("%s: raise its tree generation: %w", describe, err)
-	}
-	noteRowsWritten(ctx, tag)
 	return s.clearGeneration(ctx, tx, clearedTree, tree, describe)
 }
 
