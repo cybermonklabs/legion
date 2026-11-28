@@ -3021,8 +3021,26 @@ carries a Postgres service.
 
 `envoy-go-postgres16` runs three tests of the Dispatch delivery package against PostgreSQL 16, on a
 runner of its own: every other job runs PostgreSQL 18, where a read of a catalog column that 16
-lacks and the places 16 keeps in a function's stored body both pass unseen. The steps' comment
-says which tests and why.
+lacks and the places 16 keeps in a function's stored body both pass unseen.
+
+The three tests are POSTGRES16_TESTS of .github/scripts/ci_job_reads.py, the ones whose subject
+differs between PostgreSQL 16 and 18. The attribution's database guard (migration
+20261117111040's attribution_database_refusal) reads pg_database's locale fields, and `datlocale`
+is a column of 17 and later: read as a column, it fails on 16 with `record "db" has no field
+"datlocale"` before the guard can refuse, which TestPrepareAttributionRefusesADatabaseItCannotRead
+fails, and which 18 cannot show. The reading's identity digests the stored body of
+attribution_keys, where 16 keeps each node's place in the source text and 17 and later write -1,
+so a restore changes the stored body on 16 alone; the two identity tests hold the identity to
+that. Every other test of the package runs on 18 under the race detector, in envoy-go-race's leg
+4 (.github/go-legs.yaml), and in no leg of envoy-go. The step runs them with -v, so the log
+prints each test's verdict. Each opens the store or a database of its own from
+DISPATCH_TEST_DATABASE_URL (internal/dispatch/store/storetest/storetest.go, delivery's
+attribution_locale_test.go) and skips without it, and a skip is a pass, so without the service
+the step would be green and test nothing on 16. The job's limit of 20 minutes is go test's default
+-timeout of 10, which must fire before the runner cancels the job so that a hung test prints the
+dump that names it, and ten minutes of checkout, setup, cache restore and the package's test
+build. It restores go-envoy-test, which .github/workflows/ci-caches.yaml fills with the test
+binary of every package of the envoy module, and saves none.
 
 It is a job of ci-job-envoy-go.yaml beside envoy-go's legs, and it has no caller, no file and no
 filter of its own: ci.yaml already calls as many reusable workflows as check-workflow-files.sh
