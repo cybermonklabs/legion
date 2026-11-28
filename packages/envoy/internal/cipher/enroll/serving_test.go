@@ -26,7 +26,7 @@ import (
 const servingInterval = 10 * time.Minute
 
 // notServingAfter is the threshold every clock in this file records unless a test says otherwise,
-// three intervals as cmd/broker records three sweeps: a gap after the latest beat longer than this
+// three intervals as cmd/cipherd records three sweeps: a gap after the latest beat longer than this
 // is time no broker was serving. The gap it is compared with is PostgreSQL's own (now() less
 // last_serving_at, migration 0024's rule), so no clock of Envoy's can stand in for it, and no row
 // lets real time make one or close one: a row that needs a gap past it makes one in SQL
@@ -377,7 +377,7 @@ func TestTwoBeatsAtOnceGiveTheTimeBackOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	for range 2 {
-		if err := <-done; err != nil {
+		if err := testwait.Receive(t, "both beats to return once the serving lock is let go", done); err != nil {
 			t.Fatalf("Beat: %v", err)
 		}
 	}
@@ -575,7 +575,7 @@ func TestAHeldServingLockFailsTheBeatAndAnotherBrokerKeepsTheGuardOff(t *testing
 	live := r.live(t, id)
 	ended := r.endLapsed(t)
 	cancel()
-	wg.Wait()
+	testwait.Returns(t, "both brokers' Run to return once their context ended", wg.Wait)
 
 	if live {
 		t.Fatal("Lookup answered live a lease that ran out while another broker was serving")

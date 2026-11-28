@@ -64,6 +64,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -85,11 +86,11 @@ const (
 	// step 11.
 	otherPerson = "ben@example.com"
 
-	// reloadInterval is policy.NewCurrent's own ticker period for this test: short enough that
-	// step 8's wait sees the real reload path run several times without slowing the suite down.
-	// It paces the broker's own goroutine, which this test reads through the route the reload
-	// changes, and the wait for that change takes no bound of its own.
-	reloadInterval = 40 * time.Millisecond
+	// reloadInterval is the policy's reload period for this test, as a deployment's: its ticker
+	// runs on the broker's reload clock, a fake that step 8 moves to each next tick
+	// (awaitStatus), so the real reload path runs at the moments the test chooses and no real
+	// time passes for it.
+	reloadInterval = 5 * time.Minute
 )
 
 // --- harness ---
@@ -110,6 +111,9 @@ type e2eServer struct {
 	uiToken string
 	// issuer is the provider people sign in to the broker's approval page at.
 	issuer *oidctest.Issuer
+	// reloads is the clock the policy's reload ticker and each reload's bound run on
+	// (policy.NewCurrentOn), which only the test moves.
+	reloads *clocktest.Fake
 }
 
 // e2eOptions are what a test points the broker's upstreams at, each what main.go reads from a
@@ -179,9 +183,10 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	if o.profiles != "" {
 		loader.Profiles = policytest.Profiles(t, o.profiles)
 	}
-	current, err := policy.NewCurrent(ctx, loader, reloadInterval)
+	reloads := clocktest.New(time.Now())
+	current, err := policy.NewCurrentOn(ctx, loader, reloadInterval, reloads)
 	if err != nil {
-		t.Fatalf("policy.NewCurrent: %v", err)
+		t.Fatalf("policy.NewCurrentOn: %v", err)
 	}
 
 	reqMachine := &requests.Machine{
@@ -234,7 +239,7 @@ func newE2EServerWith(t *testing.T, o e2eOptions) *e2eServer {
 	callerClaims["iat"] = time.Now().Add(-5 * time.Second).Unix()
 	return &e2eServer{
 		URL: srv.URL, Store: st, Secrets: local, Log: logged, Groups: reader,
-		uiToken: issuer.Mint(t, issuerKey, callerClaims), issuer: issuer,
+		uiToken: issuer.Mint(t, issuerKey, callerClaims), issuer: issuer, reloads: reloads,
 	}
 }
 
@@ -792,11 +797,14 @@ func TestEndToEnd(t *testing.T) {
 	})
 }
 
-// awaitStatus asks for name from a fresh session until the create route answers status (and, for
-// an error, code): the reload ticker applies a tag edit on its next tick.
+// awaitStatus moves the policy's reload clock to its next tick, which reloads the policy and so
+// applies a tag edit, and asks for name from a fresh session until the create route answers status
+// (and, for an error, code).
 func (s *e2eServer) awaitStatus(t *testing.T, name string, status int, code string) {
 	t.Helper()
 	enrollmentID, key := s.loginAndEnroll(t, testApprover, "e2e-reload-"+uuid.NewString()[:8])
+	tick := s.reloads.AwaitArmed(t, "the policy's next reload tick", 1)
+	s.reloads.Set(tick[0])
 	testwait.Until(t, fmt.Sprintf("POST /v1/requests (%s) to answer %d %s once the reload has run", name, status, code), func() (string, bool) {
 		got, body := s.session(t, key, enrollmentID, http.MethodPost, "/v1/requests",
 			map[string]any{"request": signAgentSecretRequest(t, key, s.URL, "reload", name), "session_id": nil})

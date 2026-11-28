@@ -40,11 +40,14 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// newHoldServer is a test server on fake (newTestServerOn), with every other dependency as
-// newTestServer wires it.
-func newHoldServer(t *testing.T, fake *clocktest.Fake) *testServer {
+// newHoldServer is a test server, every dependency wired as newTestServer wires it, on the
+// clocktest.Fake it answers beside it: the clock the answer recorder reads each request's arrival
+// on and the server counts a held read's wait on (newTestServerOf). The fake stands at the wall
+// clock's present until the row moves it.
+func newHoldServer(t *testing.T) (*testServer, *clocktest.Fake) {
 	t.Helper()
-	return newTestServerOn(t, fake, func(*api.Deps) {})
+	fake := clocktest.New(time.Now())
+	return newTestServerOf(t, "", fake, func(*api.Deps) {}), fake
 }
 
 // otherBroker is a second broker process on ts's database, as the broker's second replica is: a
@@ -137,22 +140,27 @@ func (ts *testServer) startRead(t *testing.T, key *ecdsa.PrivateKey, enrollmentI
 	return heldRead{answered: answered, cut: cut}
 }
 
-// answer waits for the read's answer, failing t unless the broker wrote one.
-func (r heldRead) answer(t *testing.T, what string) heldAnswer {
+// answerAtStep waits for read's answer, failing t if read armed another step instead, which a
+// read still held does, or ended without the broker's answer.
+func answerAtStep(t *testing.T, fake *clocktest.Fake, read heldRead, what string) heldAnswer {
 	t.Helper()
-	got := testwait.Receive(t, what, r.answered)
-	if got.err != nil {
-		t.Fatalf("%s: the read ended with %v, want the broker's answer", what, got.err)
+	next := nextOf(t, fake, read)
+	switch {
+	case next.answer == nil:
+		t.Fatalf("%s: the read armed another step, at %s, want its answer", what, next.step)
+	case next.answer.err != nil:
+		t.Fatalf("%s: the read ended with %v, want the broker's answer", what, next.answer.err)
 	}
-	return got
+	return *next.answer
 }
 
 // gaveUp ends the read as a caller that gives up does, and fails t unless the call ended with its
-// caller, before the broker answered it.
+// caller, before the broker answered it: a response the call read, whole or cut off by the end of
+// its context, is an answer the broker wrote first.
 func (r heldRead) gaveUp(t *testing.T, what string) {
 	t.Helper()
 	r.cut()
-	if got := testwait.Receive(t, what+" to end with its caller", r.answered); got.err == nil {
+	if got := testwait.Receive(t, what+" to end with its caller", r.answered); got.status != 0 {
 		t.Fatalf("%s answered %d %s before its caller went away, want the read still running", what, got.status, got.body)
 	}
 }
@@ -236,8 +244,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
-			fake := clocktest.New(time.Now())
-			ts := newHoldServer(t, fake)
+			ts, fake := newHoldServer(t)
 			enrollmentID, key, asked := ts.pendingRequest(t)
 			other := ts.otherBroker(t)
 
@@ -251,7 +258,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 				t.Fatalf("GET /v1/requests/{id}?wait=10 reads again %s after the decision, want under 1 s", lag)
 			}
 			fake.Set(step)
-			got := read.answer(t, "GET /v1/requests/{id}?wait=10 to answer the decision at its next step")
+			got := answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait=10 to answer the decision at its next step")
 			if got.status != http.StatusOK {
 				t.Fatalf("GET /v1/requests/{id}?wait=10 = %d: %s", got.status, got.body)
 			}
@@ -267,8 +274,7 @@ func TestReadRequestWaitsForTheDecision(t *testing.T) {
 // request again at each step, until two seconds after it arrived, and then answers pending: its
 // last step is armed for that moment and none for later.
 func TestReadRequestWaitEndsPending(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	arrived := fake.Now()
 	read := ts.startRead(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait=2")
@@ -288,8 +294,7 @@ func TestReadRequestWaitEndsPending(t *testing.T) {
 // than at the end of its wait. The hold is judge_until, which PostgreSQL reads on its own clock
 // (now()), so the row ends it in SQL while the read waits for its next step.
 func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	if _, err := ts.Store.Pool.Exec(context.Background(), `update requests set judge_until = now() + interval '1 hour' where id=$1`, asked.RequestID); err != nil {
 		t.Fatalf("hold the request for the judge: %v", err)
@@ -301,7 +306,7 @@ func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
 		t.Fatalf("end the judge's hold: %v", err)
 	}
 	fake.Set(step)
-	got := read.answer(t, "GET /v1/requests/{id}?wait=4 to answer at the step after the judge's hold ran out")
+	got := answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait=4 to answer at the step after the judge's hold ran out")
 	if got.status != http.StatusOK {
 		t.Fatalf("GET /v1/requests/{id}?wait=4 = %d: %s", got.status, got.body)
 	}
@@ -317,12 +322,11 @@ func TestReadRequestWaitEndsAtTheJudgesHandOver(t *testing.T) {
 // record.MaxRequestWaitSeconds is refused 400 REQUEST_WAIT_INPUT, at once, for a request that is
 // pending: answered with the server's clock never moved and no step armed on it.
 func TestReadRequestWaitRefusesBadInput(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	for _, wait := range []string{strconv.Itoa(record.MaxRequestWaitSeconds + 1), "x", "0", "-1", "1.5"} {
 		read := ts.startRead(t, key, enrollmentID, "/v1/requests/"+asked.RequestID, "wait="+wait)
-		got := read.answer(t, "GET /v1/requests/{id}?wait="+wait+" to be refused")
+		got := answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait="+wait+" to be refused")
 		if got.status != http.StatusBadRequest || decode[wireError](t, got.body).Code != "REQUEST_WAIT_INPUT" {
 			t.Errorf("GET /v1/requests/{id}?wait=%s = %d %s, want 400 REQUEST_WAIT_INPUT", wait, got.status, got.body)
 		}
@@ -339,8 +343,7 @@ func TestReadRequestWaitRefusesBadInput(t *testing.T) {
 // schema (storetest). Once the table is back, the request is still pending, and a new held read
 // answers its decision at its next step.
 func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	ctx := context.Background()
 	path := "/v1/requests/" + asked.RequestID
@@ -351,7 +354,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 		t.Fatalf("rename the requests table away: %v", err)
 	}
 	fake.Set(step)
-	got := read.answer(t, "GET /v1/requests/{id}?wait=10 to answer the store's failure at its next step")
+	got := answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait=10 to answer the store's failure at its next step")
 	if got.status != http.StatusServiceUnavailable || decode[wireError](t, got.body).Code != "DATABASE_UNAVAILABLE" {
 		t.Fatalf("GET /v1/requests/{id}?wait=10 while the store fails = %d %s, want 503 DATABASE_UNAVAILABLE", got.status, got.body)
 	}
@@ -365,7 +368,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 		t.Fatalf("approve the request once the store is back: %v", err)
 	}
 	fake.Set(step)
-	got = read.answer(t, "GET /v1/requests/{id}?wait=10 to answer the approval once the store is back")
+	got = answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait=10 to answer the approval once the store is back")
 	if got.status != http.StatusOK || decode[wireRequestStatus](t, got.body).State != "granted" {
 		t.Fatalf("GET /v1/requests/{id}?wait=10 once the store is back = %d %s, want 200 granted", got.status, got.body)
 	}
@@ -376,8 +379,7 @@ func TestReadRequestWaitAnswersAFailedStoreUnavailable(t *testing.T) {
 // answered 403 NOT_YOURS at the next step, as a new read of it is, and not the request's state at
 // the end of its wait.
 func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 	successor, _ := ts.newSessionEnrollment(t, "successor-"+t.Name(), testApprover)
 
@@ -388,7 +390,7 @@ func TestReadRequestWaitEndsWhenTheRequestMoves(t *testing.T) {
 		t.Fatalf("move the request to the successor: %v", err)
 	}
 	fake.Set(step)
-	got := read.answer(t, "GET /v1/requests/{id}?wait=5 to answer at the step after the move")
+	got := answerAtStep(t, fake, read, "GET /v1/requests/{id}?wait=5 to answer at the step after the move")
 	if got.status != http.StatusForbidden || decode[wireError](t, got.body).Code != "NOT_YOURS" {
 		t.Fatalf("GET /v1/requests/{id}?wait=5 of a request moved away = %d %s, want 403 NOT_YOURS", got.status, got.body)
 	}
@@ -420,8 +422,7 @@ func (ts *testServer) lockHeld(t *testing.T, table string) (holder pgx.Tx, relea
 	if err != nil {
 		t.Fatalf("begin the lock of the %s table: %v", table, err)
 	}
-	var once sync.Once
-	release = func() { once.Do(func() { _ = tx.Rollback(context.Background()) }) }
+	release = sync.OnceFunc(func() { _ = tx.Rollback(context.Background()) })
 	t.Cleanup(release)
 	if _, err := tx.Exec(testwait.Context(t), "lock table "+table+" in access exclusive mode"); err != nil {
 		t.Fatalf("lock the %s table: %v", table, err)
@@ -464,8 +465,7 @@ func requireFailed(t *testing.T, ts *testServer, capture *logtest.Recorder, fail
 func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	arrived := fake.Now()
@@ -498,8 +498,7 @@ func TestReadRequestWaitEndedByItsCallerIsNoFailure(t *testing.T) {
 func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	arrived := fake.Now()
@@ -520,8 +519,7 @@ func TestReadRequestWaitStalledPastItsWaitIsAFailure(t *testing.T) {
 func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, _ := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	holder, _ := ts.lockHeld(t, "requests")
@@ -536,8 +534,7 @@ func TestReadRequestWithNoWaitEndedByItsCallerIsAFailure(t *testing.T) {
 // stalls for a second, a lock on the enrollments table, is held to two seconds after it arrived,
 // as it asked, and not to three.
 func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	holder, release := ts.lockHeld(t, "enrollments")
@@ -562,8 +559,7 @@ func TestReadRequestWaitCountsFromItsArrival(t *testing.T) {
 func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, fake := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	requestsHolder, _ := ts.lockHeld(t, "requests")
@@ -587,8 +583,7 @@ func TestReadRequestOwedTimeCountsFromItsArrival(t *testing.T) {
 func TestReadRequestWaitEndedDuringItsProofCheckIsAFailure(t *testing.T) {
 	capture := &logtest.Recorder{}
 	logtest.SetDefault(t, capture)
-	fake := clocktest.New(time.Now())
-	ts := newHoldServer(t, fake)
+	ts, _ := newHoldServer(t)
 	enrollmentID, key, asked := ts.pendingRequest(t)
 
 	holder, _ := ts.lockHeld(t, "enrollments")

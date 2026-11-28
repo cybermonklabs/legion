@@ -619,7 +619,7 @@ func TestGCPReadCachesARefusalAndCoalescesConcurrentChecks(t *testing.T) {
 			}
 		})
 	}
-	wg.Wait()
+	testwait.Returns(t, "the eight concurrent releases to return", wg.Wait)
 	if got := f.reads() - before; got != 1 {
 		t.Fatalf("eight concurrent releases of a cold secret cost %d metadata reads, want 1", got)
 	}

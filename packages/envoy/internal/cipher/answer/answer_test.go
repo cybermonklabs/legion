@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // idPattern is an answer id: 16 random bytes in hex.
@@ -963,6 +964,12 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer conn.Close()
+	// The read below takes the shared wait's moment as its deadline (testwait.GiveUpAt).
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		if err := conn.SetReadDeadline(end); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := io.WriteString(conn, "GET / HTTP/1.1\r\nHost: example\r\n\r\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -970,7 +977,7 @@ func TestARecordedAnswerStillStreamsFlushesAndHijacks(t *testing.T) {
 	if err != nil || status != "HTTP/1.1 101 Switching Protocols\r\n" {
 		t.Fatalf("the hijacked connection answered %q, %v", status, err)
 	}
-	<-returned
+	testwait.Receive(t, "the recorder to return from the hijacked answer", returned)
 	if got := hijacked.count(t, `outcome="served",code="HTTP_101",caller_class="public"`); got != "1" {
 		t.Errorf("a hijacked answer counted %s served HTTP_101 answers, want 1", got)
 	}

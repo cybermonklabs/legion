@@ -42,6 +42,22 @@ func age(t *testing.T, m *Machine, grantID string, elapsed time.Duration) {
 	}
 }
 
+// grantLifetime is how long grant grantID lasts from its making: its expires_at less its
+// created_at, which insertGrant stamps from one now() of its transaction, so it is the lifetime
+// the grant was given however long the test took to read it. A grant with no expiry fails t.
+func grantLifetime(t *testing.T, m *Machine, grantID string) time.Duration {
+	t.Helper()
+	var created time.Time
+	var expires *time.Time
+	if err := m.Store.Pool.QueryRow(context.Background(), `select created_at, expires_at from grants where id=$1`, grantID).Scan(&created, &expires); err != nil {
+		t.Fatalf("read grant %s's creation and expiry: %v", grantID, err)
+	}
+	if expires == nil {
+		t.Fatalf("grant %s has no expiry, want one", grantID)
+	}
+	return expires.Sub(created)
+}
+
 // TestATTLGrantEndsAfterItsLifetime is `--ttl 2m` at the broker: a request that signs a lifetime of
 // 120 seconds gets a grant that releases its values until two minutes have passed and refuses them
 // after, while its session is still live, for an automatic grant and an approved one alike. Its
@@ -332,10 +348,8 @@ func TestAHumanTierRequestNamingALongerTTLKeepsIt(t *testing.T) {
 	if err != nil || approved.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v; want a grant", approved, err)
 	}
-	var expires *time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `select expires_at from grants where id=$1`, approved.GrantID).Scan(&expires); err != nil ||
-		expires == nil || time.Until(*expires) < 7*time.Hour || time.Until(*expires) > 9*time.Hour {
-		t.Fatalf("grant expires_at = %v, %v; want about 8 hours from now", expires, err)
+	if lifetime := grantLifetime(t, m, approved.GrantID); lifetime != 8*time.Hour {
+		t.Fatalf("the grant lasts %s from its making, want 8h, the lifetime its request signed", lifetime)
 	}
 }
 
@@ -451,10 +465,8 @@ func TestAPendingSessionLengthRequestApprovedAfterItsTagGoesGetsTheHumanDefault(
 	if err != nil || approved.GrantID == "" {
 		t.Fatalf("ApplyDecision = %+v, %v", approved, err)
 	}
-	var expires *time.Time
-	if err := m.Store.Pool.QueryRow(ctx, `select expires_at from grants where id=$1`, approved.GrantID).Scan(&expires); err != nil ||
-		expires == nil || time.Until(*expires) > DefaultHumanGrantLifetime || time.Until(*expires) < DefaultHumanGrantLifetime-2*time.Minute {
-		t.Fatalf("grant expires_at = %v, %v; want about %s from now", expires, err, DefaultHumanGrantLifetime)
+	if lifetime := grantLifetime(t, m, approved.GrantID); lifetime != DefaultHumanGrantLifetime {
+		t.Fatalf("the grant lasts %s from its making, want %s", lifetime, DefaultHumanGrantLifetime)
 	}
 	if release, err := m.Values(ctx, approved.GrantID, enr, ReleaseCall{}); err != nil || len(release.Values) != 1 {
 		t.Fatalf("Values under max-grant 24h = %v, %v; want the value", release.Values, err)

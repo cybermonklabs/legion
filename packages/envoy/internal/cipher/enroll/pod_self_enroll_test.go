@@ -702,23 +702,17 @@ func TestTheNextReleasesIndexDropWaitsForALoginInFlight(t *testing.T) {
 			_, err := pool.Exec(context.Background(), `drop index `+legacySubjectIndex)
 			dropped <- err
 		}()
-		pid := int32(tx.Conn().PgConn().PID())
-		testwait.Until(t, "the index drop to wait behind the login in flight, or to finish without waiting", func() (int, bool) {
+		pid := tx.Conn().PgConn().PID()
+		testwait.Until(t, "the index drop to wait behind the login in flight, or to finish without waiting", func() ([]int32, bool) {
 			select {
 			case err := <-dropped:
 				dropped <- err // the drop did not wait; the login below meets the schema it left
-				return 0, true
+				return nil, true
 			default:
 			}
-			var waiters int
-			if err := pool.QueryRow(context.Background(),
-				`select count(*) from pg_stat_activity where $1 = any(pg_blocking_pids(pid))`,
-				pid).Scan(&waiters); err != nil {
-				t.Errorf("read the backends waiting behind the login: %v", err)
-				return 0, true
-			}
-			waited = waiters > 0
-			return waiters, waited
+			waiting := storetest.LockWaitersBehind(t, pool, pid)
+			waited = len(waiting) > 0
+			return waiting, waited
 		})
 	}
 

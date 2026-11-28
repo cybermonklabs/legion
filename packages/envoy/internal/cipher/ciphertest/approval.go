@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
 
@@ -51,6 +52,12 @@ type ApprovalOption func(*approval.Config)
 // BROKER_PROJECT_ACCESS_URL is set; a nil gate holds nobody.
 func WithApprovalHold(gate *hold.Gate) ApprovalOption {
 	return func(c *approval.Config) { c.Hold = gate }
+}
+
+// WithApprovalClock gives the page's sign-in c to space its failed discovery reads on
+// (approval.Config.Clock); nil keeps the wall clock.
+func WithApprovalClock(c clock.Clock) ApprovalOption {
+	return func(cfg *approval.Config) { cfg.Clock = c }
 }
 
 // NewApprovalPage builds the broker's approval page as cmd/cipherd/main.go does, for a broker at

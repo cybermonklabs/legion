@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/metrics"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // retryClock is the clock a test sets for a Retry: Sleep records each wait and moves the clock on
@@ -367,6 +368,9 @@ func TestMintCallRetriesATransportFailure(t *testing.T) {
 func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
+	// bound is the test's own context (testwait.Context), which ends a handler whose client never
+	// hangs up.
+	bound := testwait.Context(t)
 	var tokenCalls atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet {
@@ -376,12 +380,12 @@ func TestMintCallTriesACancelledContextOnce(t *testing.T) {
 		tokenCalls.Add(1)
 		// Every token request carries a body (secrets' accessTokensBody), and the server notices
 		// the client hang up, which ends r.Context(), only once the handler has read the body
-		// whole; unread, the handler would wait out its own ten seconds.
+		// whole; unread, the handler would wait until the test's own bound.
 		_, _ = io.Copy(io.Discard, r.Body)
 		cancel()
 		select {
 		case <-r.Context().Done():
-		case <-time.After(10 * time.Second):
+		case <-bound.Done():
 		}
 	}))
 	defer server.Close()
@@ -600,7 +604,7 @@ func TestRetryBudgetStopsManyMintsFailingAtOnce(t *testing.T) {
 			}
 		})
 	}
-	wg.Wait()
+	testwait.Returns(t, "the fifty mints against a 503 to return", wg.Wait)
 	if got, want := calls.Load(), int64(mints+60); got != want {
 		t.Fatalf("%d mints failing at once made %d calls; want %d, their first attempts and the budget's 60 retries", mints, got, want)
 	}

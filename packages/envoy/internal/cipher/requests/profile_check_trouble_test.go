@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 )
 
 // failingSecretRead is the broker's secrets reader with one source's read failing, which is the
@@ -108,7 +109,8 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		// profile_check.go writes it.
 		reason string
 		// releaseBound bounds the release as the broker bounds every call it serves
-		// (requestDeadline, cmd/cipherd/main.go); zero leaves it the test's own context.
+		// (requestDeadline, cmd/cipherd/main.go), on the machine's Clock, which a row that sets
+		// it gives the machine; zero leaves it the test's own context.
 		releaseBound time.Duration
 		// want is the refusal the release answers, and nil an error this package refuses with
 		// none of its own, which the route answers 500 INTERNAL.
@@ -138,21 +140,26 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 		{
 			name: "the verdict mint answers after the check's own bound",
 			trouble: func(t *testing.T, f *profileFixture) {
-				// The stand-in holds every token request until the case ends, so the check's
-				// mint bound and the release's bound always end first, however slow the
-				// machine. The hold is let go at cleanup, before the stand-in's own close,
+				// The check's mint bound and the release's bound run on a fake clock the stand-in
+				// moves by an hour, the length of each, once it holds a token request: the check's
+				// verdict mint first, the release's mint second. The check's budget is two hours,
+				// so the move ends the mint's own bound and not the budget. The stand-in holds every
+				// token request until the case ends, so the bound is what ends each call, however
+				// slow the machine. The hold is let go at cleanup, before the stand-in's own close,
 				// which the fixture registered earlier (cleanups run last first).
-				f.NarrowingCheckMint = 50 * time.Millisecond
+				fake := clocktest.New(time.Now())
+				f.Clock, f.NarrowingCheckBudget, f.NarrowingCheckMint = fake, 2*time.Hour, time.Hour
 				held := make(chan struct{})
 				t.Cleanup(func() { close(held) })
 				f.stand.answersTokensWith(func(w http.ResponseWriter, _ int) bool {
+					fake.Advance(time.Hour)
 					<-held
 					w.WriteHeader(http.StatusInternalServerError)
 					return true
 				})
 			},
 			reason:       "the check's time ran out, or its caller went away, before GitHub answered",
-			releaseBound: 500 * time.Millisecond,
+			releaseBound: time.Hour,
 			want:         requests.ErrMintFailed,
 			status:       "502 MINT_FAILED",
 		},
@@ -262,7 +269,7 @@ func TestNarrowingCheckTroubleLetsTheRequestThroughAndTheReleaseRefuses(t *testi
 
 			ctx := t.Context()
 			if tc.releaseBound > 0 {
-				bounded, cancel := context.WithTimeout(ctx, tc.releaseBound)
+				bounded, cancel := f.Clock.WithTimeout(ctx, tc.releaseBound)
 				defer cancel()
 				ctx = bounded
 			}
@@ -294,8 +301,11 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 		// refuseEveryToken puts the stand-in on its ordinary refusal instead of installing a
 		// hook: the control row, whose search meets no trouble at all.
 		refuseEveryToken bool
-		// budget bounds the whole check, zero leaving it the default.
-		budget time.Duration
+		// outrunsBudget has the stand-in hold every probe until the case ends, once it has moved
+		// the check's clock, a fake, past its budget of an hour: the budget is what ends the
+		// search, however slow the machine. A probe's own bound, two hours, is past the budget, so
+		// the move ends the budget and not that bound.
+		outrunsBudget bool
 		// probe answers every token request after the verdict mint, which the hook below refuses
 		// with GitHub's own 422.
 		probe func(w http.ResponseWriter) bool
@@ -303,14 +313,9 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 		mentions []string
 	}{
 		{
-			name:   "the search runs out of the check's budget",
-			budget: 400 * time.Millisecond,
-			probe: func(w http.ResponseWriter) bool {
-				time.Sleep(2 * time.Second)
-				w.WriteHeader(http.StatusUnprocessableEntity)
-				return true
-			},
-			mentions: []string{"the narrowing cannot be served", "APP_KEY", "did not find which one", "accounts " + standInOwner, "missing", standInRepository},
+			name:          "the search runs out of the check's budget",
+			outrunsBudget: true,
+			mentions:      []string{"the narrowing cannot be served", "APP_KEY", "did not find which one", "accounts " + standInOwner, "missing", standInRepository},
 		},
 		{
 			name: "the search meets a rate limit",
@@ -329,7 +334,21 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newProfileFixture(t, map[string]int64{standInOwner: 7}, profiles)
-			f.NarrowingCheckBudget = tc.budget
+			probe := tc.probe
+			if tc.outrunsBudget {
+				// The hold is let go at cleanup, before the stand-in's own close, which the
+				// fixture registered earlier (cleanups run last first).
+				fake := clocktest.New(time.Now())
+				f.Clock, f.NarrowingCheckBudget, f.NarrowingCheckMint = fake, time.Hour, 2*time.Hour
+				held := make(chan struct{})
+				t.Cleanup(func() { close(held) })
+				probe = func(w http.ResponseWriter) bool {
+					fake.Advance(time.Hour)
+					<-held
+					w.WriteHeader(http.StatusUnprocessableEntity)
+					return true
+				}
+			}
 			if tc.refuseEveryToken {
 				f.stand.Answers(proxyrulestest.GitHubAnswer{Mode: proxyrulestest.GitHubTokensRefused})
 			} else {
@@ -340,7 +359,7 @@ func TestNarrowingCheckTroubleInTheCauseSearchStillRefusesTheRequest(t *testing.
 						w.WriteHeader(http.StatusUnprocessableEntity)
 						return true
 					}
-					return tc.probe(w)
+					return probe(w)
 				})
 			}
 

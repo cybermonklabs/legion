@@ -316,8 +316,8 @@ func TestAPodExchangesItsTokenForOneThatIntrospects(t *testing.T) {
 	if !reflect.DeepEqual(answer, want) {
 		t.Errorf("Introspect = %+v, want %+v", answer, want)
 	}
-	if answer.ExpiresAt <= time.Now().Unix() {
-		t.Errorf("the token expires at %d, which is not in the future", answer.ExpiresAt)
+	if expires := f.storedExpiry(t, token); answer.ExpiresAt != expires.Unix() {
+		t.Errorf("the token's introspection expires at %d, want the expiry its session is stored with, %d (%s): the one fosite judged it live by", answer.ExpiresAt, expires.Unix(), expires)
 	}
 }
 
@@ -329,6 +329,34 @@ func (f *exchangeFixture) introspected(t *testing.T, token string) oauthwire.Int
 		t.Fatalf("Introspect: %v", err)
 	}
 	return answer
+}
+
+// storedExpiry is the expiry the store keeps for access token token, read from the token's own row
+// (oauthstore's insertAccessToken writes it from the token's session): the moment fosite judges the
+// token's liveness against, on its own clock.
+func (f *exchangeFixture) storedExpiry(t *testing.T, token string) time.Time {
+	t.Helper()
+	_, signature, _ := strings.Cut(token, ".")
+	var expires time.Time
+	if err := f.pool.QueryRow(context.Background(), `select expires_at from oauth_access_tokens where signature = $1`, signature).Scan(&expires); err != nil {
+		t.Fatalf("read the stored expiry of the access token: %v", err)
+	}
+	return expires
+}
+
+// expire ends access token token's life in the store, as its lifetime running out does: its
+// session's access-token expiry, which fosite judges the token by on its own clock, and its row's
+// expiry, both set to a moment long past on every clock, so no clock has to move for the token to
+// read as lapsed.
+func (f *exchangeFixture) expire(t *testing.T, token string) {
+	t.Helper()
+	_, signature, _ := strings.Cut(token, ".")
+	tag, err := f.pool.Exec(context.Background(), `update oauth_access_tokens set expires_at = timestamptz '2000-01-01 00:00:00+00',
+		request = jsonb_set(request, '{session,expires_at,access_token}', to_jsonb(timestamptz '2000-01-01 00:00:00+00'))
+		where signature = $1`, signature)
+	if err != nil || tag.RowsAffected() != 1 {
+		t.Fatalf("expire the access token = %v, %v; want its one row updated", tag, err)
+	}
 }
 
 // readPodForm is an exchange request of a pod of the read entry's account, naming no session and
@@ -348,13 +376,14 @@ func (f *exchangeFixture) readPodForm(t *testing.T) url.Values {
 func TestAReadEntrysPodExchangesForATokenThatOnlyReads(t *testing.T) {
 	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
-	answer := f.introspected(t, f.exchanged(t, f.readPodForm(t), key))
+	token := f.exchanged(t, f.readPodForm(t), key)
+	answer := f.introspected(t, token)
 	want := oauthwire.Introspection{Active: true, Scope: "read", ClientID: oauthwire.ExchangeClientID, Thumbprint: thumbprint(t, key), Session: readSession, Service: readService, ProjectScope: "none", ExpiresAt: answer.ExpiresAt}
 	if !reflect.DeepEqual(answer, want) {
 		t.Errorf("Introspect = %+v, want %+v", answer, want)
 	}
-	if answer.ExpiresAt <= time.Now().Unix() {
-		t.Errorf("the token expires at %d, which is not in the future", answer.ExpiresAt)
+	if expires := f.storedExpiry(t, token); answer.ExpiresAt != expires.Unix() {
+		t.Errorf("the token's introspection expires at %d, want the expiry its session is stored with, %d (%s): the one fosite judged it live by", answer.ExpiresAt, expires.Unix(), expires)
 	}
 	if rows := f.count(t, "oauth_pod_sessions"); rows != 0 {
 		t.Errorf("oauth_pod_sessions holds %d rows, want none: a read entry fixes its session and registers nothing", rows)
@@ -972,21 +1001,22 @@ func TestAMachineExchangeHoldsItsCredentialAgainstARevoke(t *testing.T) {
 		}
 		revoked <- tx.Commit(ctx)
 	}()
-	pid, ok := <-pids
-	if !ok {
-		t.Fatalf("begin the revoke: %v", <-revoked)
+	// No backend has pid 0, so a 0 is the close that says the revoke's transaction did not begin.
+	pid := testwait.Receive(t, "the revoke's transaction to begin", pids)
+	if pid == 0 {
+		t.Fatalf("begin the revoke: %v", testwait.Receive(t, "the revoke's failure to begin", revoked))
 	}
 	waitForWaiting(t, f.pool, pid, "%from launcher_credentials%", revoked)
 
 	if err := holder.Rollback(ctx); err != nil {
 		t.Fatalf("release oauth_access_tokens: %v", err)
 	}
-	answer := <-exchanged
+	answer := testwait.Receive(t, "the exchange to answer once oauth_access_tokens is let go", exchanged)
 	if answer.err != nil {
 		t.Fatalf("the exchange: %v", answer.err)
 	}
 	token := accessTokenOf(t, answer.status, answer.body)
-	if err := <-revoked; err != nil {
+	if err := testwait.Receive(t, "the revoke to return behind the exchange", revoked); err != nil {
 		t.Fatalf("the revoke: %v", err)
 	}
 
@@ -1149,22 +1179,15 @@ func TestAnUnregisteredPodSessionIsRetryable(t *testing.T) {
 // same session and is refused, because the lapse of a token hands no name over. The first pod's
 // next renewal is answered under its own person and project.
 func TestAnotherPrincipalIsRefusedANameAfterItsHoldersTokenLapses(t *testing.T) {
-	// A second, because fosite's own clock decides when an access token has lapsed and no
-	// clock of Envoy's reaches it: the row waits for the lapse itself below rather than for a
-	// quarter of an hour of the production lifetime.
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
+	// The token lapses in the store (expire), which is what fosite reads its life from, so the row
+	// waits for no clock to pass its expiry.
+	f := newExchangeFixture(t, func(*oauth.Config) {})
 	key := newKey(t)
 	const role = "019a-role-session"
 	f.registers(t, account, "pod-uid-1", role)
 	f.registers(t, otherAccount, "pod-uid-other", role)
 	first := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
-	testwait.Until(t, "the holder's access token to lapse (its active flag)", func() (bool, bool) {
-		answer, err := f.provider.Introspect(context.Background(), first)
-		if err != nil {
-			t.Fatalf("Introspect of the holder's token: %v", err)
-		}
-		return answer.Active, !answer.Active
-	})
+	f.expire(t, first)
 	status, body := f.exchange(t, exchangeForm(f.podTokenOf(t, otherAccount, "pod-uid-other"), oauthwire.SubjectTokenTypeKubernetes, role), key)
 	refusedTheName(t, status, body, role)
 	renewed := f.exchanged(t, exchangeForm(f.podToken(t, "pod-uid-1", nil), oauthwire.SubjectTokenTypeKubernetes, role), key)
@@ -1290,9 +1313,10 @@ func TestAPrincipalReclaimsItsOwnNameAsOftenAsItLikes(t *testing.T) {
 
 // TestIntrospectingATokenTheBrokerCannotStandBehind: a token it never minted, one it has revoked
 // and one whose life has passed are each answered as simply not live, with no error and nothing
-// else disclosed. The expired case is why the access lifetime is a setting: a second proves it.
+// else disclosed. The expired one's life is ended in the store (expire), as its lifetime running
+// out ends it, since that is what fosite reads it from.
 func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
+	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)
 	f.registers(t, account, "pod-uid-1", "implementer-g1")
@@ -1305,7 +1329,7 @@ func TestIntrospectingATokenTheBrokerCannotStandBehind(t *testing.T) {
 	if err != nil || !live.Active {
 		t.Fatalf("Introspect of a fresh token = %+v, %v, want it live", live, err)
 	}
-	time.Sleep(time.Second + 100*time.Millisecond)
+	f.expire(t, expired)
 	for name, token := range map[string]string{
 		"one the broker never minted": "a-token-nobody-issued",
 		"a revoked one":               revoked,
@@ -1365,7 +1389,7 @@ func TestIntrospectingALiveTokenWithACharacterAddedIsNotLive(t *testing.T) {
 // that access token has expired. It is answered as simply not live — both while the access token
 // issued beside it is live and once that access token has expired.
 func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
-	f := newExchangeFixture(t, func(c *oauth.Config) { c.AccessLifetime = time.Second })
+	f := newExchangeFixture(t, func(*oauth.Config) {})
 	ctx := context.Background()
 	key := newKey(t)
 	deviceCode, userCode := f.authorize(t, key)
@@ -1374,7 +1398,7 @@ func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
 		t.Fatalf("ApproveDevice: %v", err)
 	}
 	status, body := f.poll(t, deviceCode, key)
-	accessTokenOf(t, status, body)
+	access := accessTokenOf(t, status, body)
 	refreshToken, _ := body["refresh_token"].(string)
 	if refreshToken == "" {
 		t.Fatalf("the machine login's poll answered %v, which carries no refresh token", body)
@@ -1389,8 +1413,11 @@ func TestIntrospectionAnswersOnlyAnAccessToken(t *testing.T) {
 			t.Fatalf("Introspect of a refresh token = %+v, want not live and nothing else", answer)
 		}
 	}
+	if !f.introspected(t, access).Active {
+		t.Fatal("the access token issued beside the refresh token introspects not live; want it live, so the first check is made while it is")
+	}
 	t.Run("while the access token issued beside it is live", check)
-	time.Sleep(time.Second + 100*time.Millisecond)
+	f.expire(t, access)
 	t.Run("once that access token has expired", check)
 }
 

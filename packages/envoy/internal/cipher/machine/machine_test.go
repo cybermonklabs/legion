@@ -715,7 +715,7 @@ func TestASweepWhileADecisionHoldsItsRowLockCommits(t *testing.T) {
 	if swept != nil {
 		t.Fatalf("ExpirePending while a decision holds the record's row lock = %v, want it to commit", swept)
 	}
-	if err := <-decided; !errors.Is(err, ErrLoginExpired) {
+	if err := testwait.Receive(t, "the decision to return once the sweep committed", decided); !errors.Is(err, ErrLoginExpired) {
 		t.Fatalf("ApplyDecision once the sweep committed = %v, want ErrLoginExpired", err)
 	}
 	if state, _, err := svc.recordState(ctx, view.RecordID); err != nil || state != "expired" {

@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -84,6 +85,14 @@ func (m *Machine) narrowingCheckMintBound() time.Duration {
 	return cmp.Or(m.NarrowingCheckMint, DefaultNarrowingCheckMint)
 }
 
+// checkTimers is the clock the check's bounds run on: Clock, or the wall clock when it is nil.
+func (m *Machine) checkTimers() clock.Clock {
+	if m.Clock == nil {
+		return clock.Real()
+	}
+	return m.Clock
+}
+
 // gitHubProfile reports whether served is a profile with a github block, which the check mint
 // is made of.
 func gitHubProfile(served policy.Secret) bool {
@@ -140,7 +149,7 @@ func (m *Machine) checkProfiles(ctx context.Context, enr enrollmentRow, names []
 		skippedNarrowingCheck(enr.ID, "", "this enrollment has made more checks than its bound allows", nil)
 		return nil
 	}
-	budget, cancel := context.WithTimeout(ctx, m.narrowingCheckBudget())
+	budget, cancel := m.checkTimers().WithTimeout(ctx, m.narrowingCheckBudget())
 	defer cancel()
 	// Every GitHub profile of the request in turn, since the release mints for each of them and
 	// one refusal refuses the release. The first refusal ends the check: the caller has its
@@ -288,7 +297,7 @@ func (m *Machine) checkMint(ctx context.Context, mint Minter, name string, serve
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	bounded, cancel := context.WithTimeout(ctx, m.narrowingCheckMintBound())
+	bounded, cancel := m.checkTimers().WithTimeout(ctx, m.narrowingCheckMintBound())
 	defer cancel()
 	// The request the release of this name would make, of the name's own type, which its minter
 	// counts this attempt under.

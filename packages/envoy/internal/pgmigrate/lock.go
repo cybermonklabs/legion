@@ -201,7 +201,9 @@ func RetryVersionTableLockTimeouts(ctx context.Context, table string, attempt fu
 }
 
 // retryLockTimeouts is RetryLockTimeouts' loop for what, named name under the log key key, retried
-// while timedOut says its error is a lock timeout.
+// while timedOut says its error is a lock timeout. Each WARN it writes names the lock_timeout the
+// runner set for the attempt (Pin's lockTimeoutSetting, LockTimeout), which a migration that sets
+// its own replaces for its statements.
 func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut func(error) bool, attempt func(context.Context) error) error {
 	for n := 1; ; n++ {
 		err := attempt(ctx)
@@ -209,10 +211,10 @@ func retryLockTimeouts(ctx context.Context, what, key, name string, timedOut fun
 			return err
 		}
 		if n == LockTimeoutAttempts {
-			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "reason", err.Error())
+			slog.Warn("pgmigrate: "+what+" gave up waiting for a lock on its last attempt; the runner fails", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "lock_timeout", lockTimeoutSetting, "reason", err.Error())
 			return fmt.Errorf("after %d attempts: %w", n, err)
 		}
-		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "pause", LockTimeoutRetryPause, "reason", err.Error())
+		slog.Warn("pgmigrate: "+what+" gave up waiting for a lock; the runner tries it again", key, name, "attempt", n, "attempts", LockTimeoutAttempts, "lock_timeout", lockTimeoutSetting, "pause", LockTimeoutRetryPause, "reason", err.Error())
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("after %d attempts: %w", n, err)

@@ -38,13 +38,16 @@ func clientOf(server *projectaccesstest.Server) *projectaccess.Client {
 // does not (GET /api/v1/access/projects/{key}).
 func TestAccessReadsTheK3Answer(t *testing.T) {
 	client := clientOf(standIn(t))
-	before := time.Now()
+	// The client reads AskedAt on its own clock (UseClock), so the moment it stamps is the one
+	// the row set.
+	clock := &fakeClock{now: time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC)}
+	client.UseClock(clock.read)
 	got, err := client.Access(t.Context(), "PRIV", "carol@example.com")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.AskedAt.Before(before) || got.AskedAt.After(time.Now()) {
-		t.Fatalf("Access(PRIV, carol).AskedAt = %v, want the moment the question was asked", got.AskedAt)
+	if !got.AskedAt.Equal(clock.read()) {
+		t.Fatalf("Access(PRIV, carol).AskedAt = %v, want %v, the client's clock when the question was asked", got.AskedAt, clock.read())
 	}
 	got.AskedAt = time.Time{}
 	want := projectaccess.Answer{
@@ -586,7 +589,7 @@ func TestAnOlderAnswerDoesNotReplaceANewerOne(t *testing.T) {
 		t.Fatalf("the later question = %+v, %v; want not visible", answer, err)
 	}
 	free()
-	if err := <-first; err != nil {
+	if err := testwait.Receive(t, "the first question to answer once it is let go", first); err != nil {
 		t.Fatal(err)
 	}
 	if answer, err := client.Access(t.Context(), "PRIV", "carol@example.com"); err != nil || answer.Visible {
@@ -637,7 +640,7 @@ func TestOnePersonsMemberKindReadsInFlightTogetherShareOneCall(t *testing.T) {
 	})
 	free()
 	for range readers {
-		if got := <-reads; got.err != nil || got.kind != projectaccess.MemberRestricted {
+		if got := testwait.Receive(t, "a read in flight with others to answer", reads); got.err != nil || got.kind != projectaccess.MemberRestricted {
 			t.Fatalf("a read in flight with others = %q, %v; want restricted", got.kind, got.err)
 		}
 	}
@@ -705,9 +708,9 @@ func TestOnePersonsCallInFlightIsNoOtherPersonsAnswer(t *testing.T) {
 		return fmt.Sprintf("calls: bob %d, carol %d; joined %d", called("bob@example.com"), called("carol@example.com"), joined.Load()), carolAnswered || joined.Load() > 0
 	})
 	free()
-	bobRead := <-bob
+	bobRead := testwait.Receive(t, "bob's read to answer once his call is let go", bob)
 	if !carolAnswered {
-		carolRead = <-carol
+		carolRead = testwait.Receive(t, "carol's read to answer", carol)
 	}
 	if bobRead.err != nil || bobRead.kind != projectaccess.MemberRestricted || carolRead.err != nil || carolRead.kind != projectaccess.MemberFull ||
 		joined.Load() != 0 || called("bob@example.com") != 1 || called("carol@example.com") != 1 {

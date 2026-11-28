@@ -678,7 +678,7 @@ func (h *hangingLister) ListSecrets(ctx context.Context, _ *secretsmanager.ListS
 }
 
 // hangingLoader is the loader of an empty namespace whose listing lister answers.
-func hangingLoader(t *testing.T) (*hangingLister, policy.Loader) {
+func hangingLoader(t testing.TB) (*hangingLister, policy.Loader) {
 	t.Helper()
 	store := secrets.NewLocal()
 	page, err := store.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{})
@@ -694,10 +694,10 @@ func hangingLoader(t *testing.T) (*hangingLister, policy.Loader) {
 // TestAReloadGivesUpWithinItsInterval pins that a periodic reload whose Secrets Manager stops
 // answering fails once its interval has passed, logging LoadFailedMessage, rather than holding the
 // writer lock every reread waits on for as long as the process lives. It runs in a synctest
-// bubble, which waits for the reload goroutine to return, so none of its lines reach a later
-// test's capture.
+// bubble (testwait.Bubble), which waits for the reload goroutine to return, so none of its lines
+// reach a later test's capture.
 func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
+	testwait.Bubble(t, func(t testing.TB) {
 		lister, loader := hangingLoader(t)
 		logged := policytest.CaptureLog(t)
 		cur, err := policy.NewCurrent(t.Context(), loader, 50*time.Millisecond)
@@ -706,7 +706,10 @@ func TestAReloadGivesUpWithinItsInterval(t *testing.T) {
 		}
 		lister.hang()
 		const failed = "ERROR " + policy.LoadFailedMessage + " error=\"list secrets under " + policytest.Prefix + ": context deadline exceeded\"\n"
-		await(t, func() bool { return strings.Contains(logged.String(), failed) })
+		awaitQuiet(t, "the hung reload's failure line", func() (string, bool) {
+			log := logged.String()
+			return log, strings.Contains(log, failed)
+		})
 		lister.unhang()
 		// On this goroutine: a RefreshOne still waiting on the writer lock the hung reload
 		// held would leave every goroutine of the bubble blocked, which synctest reports.

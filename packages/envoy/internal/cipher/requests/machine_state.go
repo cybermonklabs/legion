@@ -55,6 +55,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
@@ -324,6 +325,9 @@ type Machine struct {
 	// DefaultNarrowingCheckBudget and DefaultNarrowingCheckMint.
 	NarrowingCheckBudget time.Duration
 	NarrowingCheckMint   time.Duration
+	// Clock is what NarrowingCheckBudget and NarrowingCheckMint run on; nil is the wall clock
+	// (clock.Real), and a test hands it a clocktest.Fake it moves past a bound.
+	Clock clock.Clock
 	// NarrowingChecks bounds, per enrollment, the checks that reach GitHub; nil means
 	// DefaultNarrowingChecks. An enrollment past the bound has the GitHub part of its check
 	// skipped and its request goes to its approver, as it did before the check existed.

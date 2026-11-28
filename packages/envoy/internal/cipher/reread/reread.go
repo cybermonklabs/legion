@@ -44,8 +44,8 @@ const refreshTimeout = 30 * time.Second
 // CauseFanOut the cause it names. A pod reads a secret again for one of two reasons - this
 // fan-out, or its own policy reload, which logs no line and counts as a read="list" in
 // broker_policy_store_reads_total (policy.NewStoreReads) - and the line and that count are what
-// tell a reader (and cmd/broker's fan-out rows) which of them a read came from. Nothing but the
-// cause is new: the read itself is the Refresh above.
+// tell a reader (and cmd/cipherd's fan-out rows) which of them a read came from. Nothing but the
+// cause is new: the read itself is the Listener's Refresh.
 const (
 	ReadMessage = "broker: reread a secret a peer fanned out"
 	CauseFanOut = "fan-out"

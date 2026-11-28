@@ -47,7 +47,7 @@ func listener(t *testing.T, sender string) (*store.Store, <-chan string) {
 	go func() { defer close(stopped); l.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-stopped
+		testwait.Receive(t, "the listener to return once its context ended", stopped)
 	})
 
 	testwait.Receive(t, "the listener to listen on its channel", listening)

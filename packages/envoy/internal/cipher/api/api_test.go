@@ -43,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -127,14 +128,6 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	return newProfiledTestServer(t, "", adjust)
 }
 
-// newTestServerOn is newTestServerWith on clk: the clock the answer recorder reads each request's
-// arrival on (answer.MiddlewareOn) and the server counts a held read's wait on (api.Deps.Clock),
-// nil for clock.Real(). A test of the hold hands it a clocktest.Fake.
-func newTestServerOn(t *testing.T, clk clock.Clock, adjust func(*api.Deps)) *testServer {
-	t.Helper()
-	return newTestServerOf(t, "", clk, adjust)
-}
-
 // newProfiledTestServer is newTestServerWith whose deployment's profiles file is file, or that has
 // none for "", as the broker's BROKER_PROFILES_FILE is set or not.
 func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *testServer {
@@ -142,7 +135,10 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps)) *t
 	return newTestServerOf(t, file, nil, adjust)
 }
 
-// newTestServerOf is newProfiledTestServer on clk (newTestServerOn).
+// newTestServerOf is newProfiledTestServer on clk: the clock the answer recorder reads each
+// request's arrival on (answer.MiddlewareOn) and the server counts a held read's wait on
+// (api.Deps.Clock), nil for clock.Real(). A test of the hold hands it a clocktest.Fake
+// (newHoldServer).
 func newTestServerOf(t *testing.T, file string, clk clock.Clock, adjust func(*api.Deps)) *testServer {
 	t.Helper()
 	st := storetest.Open(t)
@@ -740,7 +736,10 @@ func TestLauncherProofRejectedOnSessionAuthRoute(t *testing.T) {
 // approveRecord dispatching to the machine kind (refusing any login but the record's approver),
 // createEnrollment, and deleteEnrollment.
 func TestMachineLoginApprovalMintsAKeyBoundLauncherCredentialForEnrollment(t *testing.T) {
-	ts := newTestServer(t)
+	// The approval stamps the credential's expiry from the machine-login service's clock, a fake
+	// standing at a moment Postgres keeps whole (microseconds), so the expiry is read exactly.
+	approvals := clocktest.New(time.Now().Truncate(time.Microsecond))
+	ts := newTestServerWith(t, func(d *api.Deps) { d.MachineLogin.Clock = approvals })
 	machineKey := newSigningKey(t)
 	login := struct{ Code string }{ts.openMachineLogin(t, machineKey, testApprover, "example-host-devbox")}
 
@@ -785,8 +784,8 @@ func TestMachineLoginApprovalMintsAKeyBoundLauncherCredentialForEnrollment(t *te
 	if err := ts.Store.Pool.QueryRow(context.Background(), `select expires_at from launcher_credentials where id=$1`, credentialID).Scan(&minted); err != nil {
 		t.Fatalf("read the minted credential's expiry: %v", err)
 	}
-	if want := time.Now().Add(7 * 24 * time.Hour); minted.Before(want.Add(-time.Minute)) || minted.After(want) {
-		t.Fatalf("minted credential expires %s, want CredentialLifetime from the approval, about %s", minted, want)
+	if want := approvals.Now().Add(7 * 24 * time.Hour); !minted.Equal(want) {
+		t.Fatalf("minted credential expires %s, want CredentialLifetime from the approval on the service's clock, %s", minted, want)
 	}
 	if decided := ts.record(t, looked.RecordID).Decided; decided == nil || decided.CredentialID != credentialID {
 		t.Fatalf("decided machine record = %+v, want its decision to name credential %s", decided, credentialID)
@@ -1012,8 +1011,10 @@ func TestAgentSecretRequestLifecycle(t *testing.T) {
 	if listed.DecidedBy == nil || *listed.DecidedBy != testApprover {
 		t.Fatalf("listed grant decided_by = %v, want %s, who approved it", listed.DecidedBy, testApprover)
 	}
-	if listed.ExpiresAt == nil || listed.ExpiresAt.Sub(time.Now()) > 15*time.Minute || listed.ExpiresAt.Sub(time.Now()) < 13*time.Minute {
-		t.Fatalf("listed grant expires_at = %v, want about 15 minutes from now, the default for a human-tier request naming no lifetime", listed.ExpiresAt)
+	// Judged on the clock that stamped it: the grant's created_at and expires_at come from one
+	// now() of the transaction that wrote it (requests' insertGrant), and the listing carries both.
+	if listed.ExpiresAt == nil || !listed.ExpiresAt.Equal(listed.CreatedAt.Add(15*time.Minute)) {
+		t.Fatalf("listed grant expires_at = %v, want 15 minutes after the grant was made at %s, the default for a human-tier request naming no lifetime", listed.ExpiresAt, listed.CreatedAt)
 	}
 
 	// Revoking by approver takes the grant's approver or its enrollment's operator (both

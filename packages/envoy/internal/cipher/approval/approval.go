@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/hold"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/store"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -107,6 +108,10 @@ type Config struct {
 	// Hold is the check of whether Dispatch holds a person's credentials until they sign in
 	// again (hold.Gate.Decide). Nil is a broker with no Dispatch to ask, which holds nobody.
 	Hold *hold.Gate
+	// Clock is what the sign-in spaces two failed reads of the provider's discovery document on
+	// (oidc.CodeFlow.SpaceFailuresOn); nil is the wall clock, as cmd/cipherd leaves it, and a test
+	// hands it a clocktest.Fake it moves past that wait.
+	Clock clock.Clock
 }
 
 // Page is the approval page and its sign-in, whose methods are the broker's routes for them.
@@ -136,9 +141,13 @@ func New(cfg Config) (*Page, error) {
 	if cfg.Store == nil || cfg.Machine == nil {
 		return nil, errors.New("approval: the page needs the store and the request machine")
 	}
+	signIn := oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain)
+	if cfg.Clock != nil {
+		signIn.SpaceFailuresOn(cfg.Clock)
+	}
 	return &Page{
 		cfg: cfg, origin: originOf(u), redirectURL: strings.TrimRight(cfg.PublicURL, "/") + "/signin/callback",
-		signIn: oidc.NewCodeFlow(cfg.SignIn.Issuer, cfg.SignIn.ClientID, cfg.SignIn.ClientSecret, cfg.SignIn.Domain),
+		signIn: signIn,
 	}, nil
 }
 
