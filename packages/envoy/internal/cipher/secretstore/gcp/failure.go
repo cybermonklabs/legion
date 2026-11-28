@@ -25,7 +25,7 @@ import (
 )
 
 // storeInterceptor is the gRPC interceptor every Secret Manager call this client makes goes
-// through (gcpClientDial installs it): a call's failure is storeFailure's, named by the call's
+// through (dialClient installs it): a call's failure is storeFailure's, named by the call's
 // method, so no call site wraps a refusal by hand, and a call a later change adds cannot forget
 // to. It asks gRPC for the call's peer (grpc.Peer), which gRPC fills only once the call went out
 // on a connection it made, so storeFailure knows whether anything answered.

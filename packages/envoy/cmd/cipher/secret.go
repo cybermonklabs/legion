@@ -1,8 +1,8 @@
 // packages/envoy/cmd/cipher/secret.go
 //
-// The secret forms: a person or an agent reads and writes agent secrets in the broker's own secret
-// store - AWS Secrets Manager (secretstore/aws) or GCP Secret Manager (secret_gcp.go), chosen by the
-// broker's `store` setting - under the cloud credential its environment gives it, whatever kind of
+// The secret forms: a person or an agent reads and writes agent secrets in the store the broker's
+// `store` setting names, opened from the store registry (AWS Secrets Manager, GCP Secret Manager or
+// a local stack's memory store), under the credential its environment gives it, whatever kind of
 // identity that is, then asks the broker to reread each one written, so the change is served at
 // once. The broker is asked only for its settings (GET /v1/settings: the namespace, key and which
 // store it uses) and for the reread; every read and write is the caller's own call to the store,

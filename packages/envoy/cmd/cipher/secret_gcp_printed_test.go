@@ -330,9 +330,9 @@ func TestGCPPrintedCommandsCarryTheCredentialsFileItSignedInWith(t *testing.T) {
 }
 
 // useProductionShapedDial serves fake over TLS on loopback (HTTP/2, as gRPC needs) for the rest of
-// t, and points gcpClientDial at it the way the real gcpClientDial dials Secret Manager: through
-// option.WithCredentials, so the credential's token source is spent by Google's own transport
-// (cloud.google.com/go/auth and its oauth2adapt), not by the test's bearerOf.
+// t, and points the GCP writer's dial at it (gcptest.UseDial) as the writer's own dial does it:
+// through option.WithCredentials, so the credential's token source is spent by Google's own
+// transport (cloud.google.com/go/auth and its oauth2adapt), not by the test's bearerOf.
 func useProductionShapedDial(t *testing.T, fake *gcptest.FakeSecretManager) {
 	t.Helper()
 	server := grpc.NewServer(grpc.UnaryInterceptor(fake.Intercept))
