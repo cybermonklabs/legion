@@ -119,7 +119,11 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 		}
 		// The trade stand-in answers membership_held while held is set, and mints otherwise.
 		trader := http.NewServeMux()
-		trades := serveTokenExchange(t, f, trader, thumbprint)
+		// The helper reads each credential's expiry on its clock, the expiry watch's fake, so the
+		// stand-in mints each on that clock too: one minted on the wall clock after the fake has
+		// moved to the first credential's expiry would already have lapsed.
+		var expiries *expiryWatch
+		trades := serveTokenExchange(t, f, trader, thumbprint, func() time.Time { return expiries.fake.Now() })
 		var held atomic.Bool
 		var refusals atomic.Int32
 		mux := http.NewServeMux()
@@ -154,7 +158,7 @@ func TestMembershipHeldHelperKeepsItsLogin(t *testing.T) {
 			Log:          slog.New(slog.NewJSONHandler(&out, nil)),
 		}
 		t.Cleanup(b.Close)
-		expiries := installExpiryTimers(b)
+		expiries = installExpiryTimers(b)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		if err := b.Start(ctx); err != nil {

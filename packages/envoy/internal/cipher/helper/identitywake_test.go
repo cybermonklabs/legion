@@ -33,8 +33,9 @@ import (
 // serveTokenExchange adds the broker's token endpoint to f, minting a launcher credential of
 // its own for each trade, for the machine key the helper proves. The credential of an earlier
 // trade stays in f.credentials, so a proof signed with it still verifies and only the broker's
-// scripted refusal refuses it. It answers how many trades have been made.
-func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string) func() int {
+// scripted refusal refuses it. Each credential expires an hour after now, the clock the helper
+// reads its expiry on. It answers how many trades have been made.
+func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbprint string, now func() time.Time) func() int {
 	t.Helper()
 	var mu sync.Mutex
 	trades := 0
@@ -48,7 +49,7 @@ func serveTokenExchange(t *testing.T, f *enrolBroker, mux *http.ServeMux, thumbp
 		f.mu.Unlock()
 		writeJSON(w, 200, map[string]any{
 			"acc" + "ess_token": "access-token", "token_type": "DPoP", "expires_in": 3600,
-			"credential_id": id, "credential_expires_at": time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			"credential_id": id, "credential_expires_at": now().Add(time.Hour).UTC().Format(time.RFC3339),
 		})
 	})
 	return func() int {
@@ -74,7 +75,7 @@ func TestADroppedCredentialInIdentityModeIsTradedAgainAtOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	trades := serveTokenExchange(t, f, mux, thumbprint)
+	trades := serveTokenExchange(t, f, mux, thumbprint, time.Now)
 	// The enrolment routes stay f's own; this mux only adds the token endpoint in front of them.
 	mux.Handle("/", f.srv.Config.Handler)
 	f.srv.Config.Handler = mux

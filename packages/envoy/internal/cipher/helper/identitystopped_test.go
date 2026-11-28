@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
@@ -60,7 +61,9 @@ func newStoppedLoopRig(t *testing.T, first *stopAnswer) *stoppedLoopRig {
 		t.Fatal(err)
 	}
 	trader := http.NewServeMux()
-	r.trades = serveTokenExchange(t, r.broker, trader, thumbprint)
+	// The helper reads each credential's expiry on its clock, the expiry watch's fake once
+	// installExpiryTimers has set it, so the stand-in mints each on that clock too.
+	r.trades = serveTokenExchange(t, r.broker, trader, thumbprint, func() time.Time { return r.expiry.fake.Now() })
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/oauth/token", func(w http.ResponseWriter, request *http.Request) {
 		r.requests.Add(1)
