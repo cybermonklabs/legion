@@ -1929,6 +1929,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
 
 - A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
   At that deadline pgx closes the connection and asks the server to cancel the statement.
+  `DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT` replaces that deadline for an end-to-end test with one past the statement timeout, and a deployment never sets it.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
 `DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT` replaces the 5 s lock timeout for an end-to-end test with one of at least 1 ms (the reads send it to Postgres in whole milliseconds, and Postgres reads a `lock_timeout` of `0ms` as none), the statement timeout staying 1 s past it and the client deadline 4 s past that, and a deployment never sets it.
@@ -5332,9 +5333,10 @@ go run ./cmd/dispatch-route-adopt -C <the branch's worktree>             # merge
 go run ./cmd/dispatch-route-adopt -C <the branch's worktree> <revision>  # or merges that revision
 ```
 
-It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge or holds a change, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent) and what they cost.
-It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go` and `routes_shapes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
-The list below is a summary.
+It makes the merge itself, so do not merge first: it refuses a tree that is mid-merge, naming the commands that return it (`git merge --abort`; under jj `jj abandon @`, then `jj edit` of the merge's first parent, or `jj new` on it where it holds work) and what they cost, and refuses a tree that holds changes, saying to commit them or stash them with `git stash -u` under git, or to describe them and run `jj new` under jj.
+Each command it names carries the tree it adopts (`git -C <tree>`, `jj -R <tree>`).
+It reads both sides and the merge base before it merges, writes the branch's route changes into route files, takes `routes_table.go`, `routes_shapes.go` and `read_classes.go` from main, and lists what is left for the person; its package comment (`cmd/dispatch-route-adopt/main.go`) gives every step.
+The route list further below (each path with its method, identity and purpose) is a summary; `GET /api/v1` lists every `/api/v1` route in full.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz` is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1 lists every route"}`, never the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
@@ -5539,8 +5541,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   What this process did with the document since the process started, and what its room holds now:
-  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
-  not ygo's idle retirement), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
+  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "notified_head": n, "swept_head": n, "listen_stands": n, "notified_issue_closes": n, "rechecked_issue_closes": n, "relayed_awareness": {"<client>": {"states": n, "removals": n, "expired": n}, ...}, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
+  not ygo's idle retirement), the highest version its room of the document held every update through after a catch-up another process's notification asked for, or its retry (not a room's start, the retry of a catch-up nothing notified, or a catch-up asked again after a replaced history), and after the sweep each `LISTEN` that stands runs, the `LISTEN`s its listener has stood up (one at start, one more for each redial; the same for every document), the notifications that the document's issue closed or reopened that its issue-open lane applied (not the recheck after a `LISTEN`, nor the append gate's close of a room whose append it refused) and, apart from them, the closes of its room the recheck after a `LISTEN` made (not a recheck that found the room's record matching the issue), per awareness client the states and removals of that client its room took from other processes' notifications (not an entry it dropped as stale, nor a change the room made itself) and, apart from them, the room's removals, with no notification, of a client it took from another process (its expiry of that client, or a local peer's frame that removes it), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/hold-persistence` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)

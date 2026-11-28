@@ -165,7 +165,7 @@ own `github-app` secrets mint at, and this script points nothing at that one. It
 profiles file (`BROKER_PROFILES_FILE`, in the kinds form: a `kinds` list of a test kind for each
 stand-in and the `anthropic` kind as the deployment writes it, the `github-app` secret's profile,
 `AIRLOCK_PLAIN_GITHUB` of an untagged copy of that App, and the narrowed anthropic secret's
-profile) and a fake Secrets Manager whose secrets each name their kind in a `proxy` tag, gives the
+profile) and a memory store whose secrets each name their kind in a `proxy` tag, gives the
 `ca` stand the profiles file's hosts as its policy, starts **two** broker processes on a database
 of their own with the whole `BROKER_AIRLOCK_*` block and the proxy chain's settings, puts one TCP
 front
@@ -407,7 +407,7 @@ curl reads the proxy from a config (`-K`) and the header from standard input; an
 git step reads the proxy from `GIT_CONFIG_*`. Each file is a `<(printf …)` path.
 
 Where a check needs a secret the stack does not hold, the run extends the stack's own
-fake Secrets Manager and makes every broker reread it. A control that needs other
+memory store and makes every broker reread it. A control that needs other
 profiles or another proxy setting — `k4`'s, which turns the refusal of a loopback address
 off for one host — is a second broker process on the stack's own database, authority
 and stand-ins with that one setting changed, and the step's `HTTPS_PROXY` pointed at
@@ -808,6 +808,39 @@ the 10 minutes in its time budget.
 The log shows Go's verbose output. Only `go test -json` stdout goes into the events file.
 CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
 the temporary events file on exit.
+
+## store-live-check.sh
+
+Runs one secret store's live contract tests against that store's real service and counts
+what they did, so a live run that ran nothing cannot read as a pass. Run it from
+`packages/envoy`, where its `go test` finds the store's package:
+
+```bash
+BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
+  scripts/store-live-check.sh gcp
+```
+
+The store is named by its registry id. Today the one store with live tests is `gcp`
+(`go test -tags gcplive -run Live ./internal/cipher/secretstore/gcp/`), whose
+`TestGCPLiveRunsTheStoreContract` makes each contract case's fixtures under a random
+`broker-live-<hex>-` prefix of that project and deletes them when the case ends.
+
+It prints `passed=N skipped=M failed=K`, each skipped or failed test's name, how many cases
+of the store's live contract passed, and where the event stream is kept
+(`STORE_LIVE_CHECK_EVENTS`, else a file of its own). It exits 0 only when N is above zero, M
+and K are both zero, and the live contract itself (`TestGCPLiveRunsTheStoreContract` for
+`gcp`) passed with its store's level and at least one case, so a run of some other live test
+alone, the contract renamed or deleted, is no pass. A skip counts as a failure because a
+live test skips when its variables are unset, which is the shape a live run fails in: the
+tests pass, nothing ran, and the run looks green. A run that wrote no event at all prints
+`UNKNOWN: go test wrote no events` and exits 1, so an empty set is never read as a pass, and
+a run whose store variables are unset is refused by name before go test runs.
+`store-live-check.test.sh` holds it to its rows behind a stub `go` on `PATH`, which
+`envoy-go-checks` runs as "Isolation test for store-live-check.sh": a run whose tests all
+passed, with its cases counted and its events kept, also with no events path set; one of
+another live test alone; one of the contract with no case; one with a skip; one with a failed
+case; one that wrote no event; one with the store's variables unset; one naming no store;
+and one naming a store with no live tests.
 
 ## aws-moto-check.sh
 

@@ -796,6 +796,17 @@ export function linkWordsAt(
   return { formatting: wordsFormatting(pieces), words };
 }
 
+/** The number an item of an ordered list opens on, as a rendered body draws it: the list's
+ *  `order`, 1 where its reading leaves that out (its schema's default), plus the item's place in
+ *  the list (`index`), then a full stop and a space; after `within`, the numbers of the items it
+ *  stands in that no words follow yet, so an item that opens on a list of its own reads both. The
+ *  projection writes it before the first words the item holds (`plainLines`), and so does a line
+ *  read from a reading no engine draws (`issue-page/node-references/references-list.ts`'s
+ *  `blockLine`), by this one rule. */
+export function listItemNumber(order: unknown, index: number, within = ""): string {
+  return `${within}${(typeof order === "number" ? order : 1) + index}. `;
+}
+
 /** The words a parsed document renders, line by line, each line with the references it read:
  *  text as it reads (references named, `nameReferences`), a link as it reads (`linkDrawn`), raw
  *  inline HTML as the literal characters a body shows for it, and every leaf but a hard break a
@@ -803,11 +814,11 @@ export function linkWordsAt(
  *  HTML value - which is where a code block's lines end, and a block of HTML's, which the engine
  *  draws as one `html` node holding all of its lines. A table's row is the exception: it reads as
  *  one line, every boundary or break inside it a space, so its cells read in a row. An item of an
- *  ordered list opens on its number, as a rendered body draws it: the list's `order` and the
- *  item's place in it, written before the first words the item holds, wherever they stand, so
- *  `1. Stand the harness up.` keeps its `1.` and `1. - a` reads `1. a`, never a line of `1.`
- *  alone. A link's words name no reference of their own, as a rendered body links none there,
- *  and a link a hard break cuts is read once, as the one link it is (`linkWordsAt`). */
+ *  ordered list opens on its number (`listItemNumber`), as a rendered body draws it: the list's
+ *  `order` and the item's place in it, written before the first words the item holds, wherever
+ *  they stand, so `1. Stand the harness up.` keeps its `1.` and `1. - a` reads `1. a`, never a
+ *  line of `1.` alone. A link's words name no reference of their own, as a rendered body links
+ *  none there, and a link a hard break cuts is read once, as the one link it is (`linkWordsAt`). */
 function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
   const lines: ProjectedText[] = [];
   let words = "";
@@ -891,10 +902,11 @@ function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedTex
         rowEnd = position + node.nodeSize;
       }
       if (node.type.name === "list_item" && parent?.type.name === "ordered_list") {
-        const order = parent.attrs.order;
-        const number = `${(typeof order === "number" ? order : 1) + index}. `;
         const within = numbers !== undefined && position < numbers.end ? numbers.text : "";
-        numbers = { end: position + node.nodeSize, text: `${within}${number}` };
+        numbers = {
+          end: position + node.nodeSize,
+          text: listItemNumber(parent.attrs.order, index, within),
+        };
       }
     } else if (node.isLeaf) {
       words += " ";
