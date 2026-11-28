@@ -39,6 +39,7 @@ func (s *server) listPending(w http.ResponseWriter, r *http.Request, _ string) {
 		entries[i] = wire.PendingEntry{
 			RecordID: row.RecordID, Kind: row.Kind, Identifiers: row.Identifiers, RequestedAt: row.RequestedAt,
 			Session: sessionResp(row.Session), State: row.State, ExpiresAt: row.ExpiresAt,
+			DispatchScopes: row.DispatchScopes, Reason: row.Reason,
 		}
 		if row.Kind == record.KindAgentSecret {
 			entries[i].ApproveURL = s.approveURL(row.RecordID)

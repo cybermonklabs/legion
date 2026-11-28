@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The plugin interface's `startupTurn` mark is cleared on every fact that says the controller's
+  start is not coming. A start message whose send Oh My Pi fails clears the mark it set, since no
+  run starts to clear it, so no later check of `@sjawhar/pi-envoy` holds the session's startup
+  cards for that start; a check that read the sent mark before Oh My Pi's rejection keeps the cards
+  it saw until 30 s after the send, or until the next card, since clearing the mark schedules no
+  check. A `/legion-claim-controller` claim (or a re-claim after a session change) refused before
+  the send clears the unsent mark, as a refused `/legion-controller-start` claim already did, so
+  pi-envoy, which reads an unsent mark again every second for up to 30 s, wakes for the session's
+  startup cards at its next read rather than at that cap. A claim refused while another claim
+  waits behind it leaves the mark for that claim, which may still send the start.
