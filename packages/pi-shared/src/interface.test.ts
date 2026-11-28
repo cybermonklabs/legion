@@ -42,6 +42,7 @@ function foreignInterface(version: number, from: string): EnvoyPluginInterface {
       managedSessions: new Set(),
       regained: undefined,
       slackRoleOwned: false,
+      watchedWorkflowsRoleOwned: false,
     },
     injectedUserTurns: new Map(),
     bootstrappedSession: { file: undefined },

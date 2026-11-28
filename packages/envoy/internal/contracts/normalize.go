@@ -62,6 +62,13 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 		// as poison.
 		return nil
 	}
+	if copied, ok := githubDefaultBranchWorkflowCopy(input, item); ok {
+		// The copy goes first and keeps the envelope's dedupe key, as a mention copy does below: a
+		// session that follows both topics takes the copy first, and its client writes one event id
+		// and dedupe key once, so the session is handed the run once, on the topic that names its
+		// event.
+		return []Envelope{copied, item}
+	}
 	if !githubCommentEvent(input.Event) {
 		return []Envelope{item}
 	}
@@ -91,6 +98,41 @@ func GithubEnvelopes(input GithubEnvelopeInput, trigger string) []Envelope {
 	mention.Topic = GithubSubject(owner, repo, githubMentionKind)
 	mentions = append(mentions, mention)
 	return append(mentions, item)
+}
+
+// githubDefaultBranchWorkflowCopy is item, the envelope of a workflow_run, on its default-branch
+// topic (GithubDefaultBranchWorkflowSubject), and whether the run has one. It has one when the run's
+// event, its head branch, the repository's default branch and the run's head repository are all
+// named, the head branch is the default branch exactly, and the head repository is the repository
+// itself, compared without case as GitHub compares names: a fork's run on a branch of the fork
+// named as the default branch (a pull_request run that names no pull request) is no run of the
+// default branch. A copy whose topic is past SubjectMaxBytes is dropped with one line naming the
+// run: the webhook handler publishes a delivery's envelopes in order and stops at the first that
+// fails, so a copy the bus refuses, which goes first, would keep the workflow envelope from the bus
+// on every redelivery.
+func githubDefaultBranchWorkflowCopy(input GithubEnvelopeInput, item Envelope) (Envelope, bool) {
+	if input.Event != "workflow_run" {
+		return Envelope{}, false
+	}
+	body := input.Body
+	event := nestedString(body, "workflow_run", "event")
+	headBranch := nestedString(body, "workflow_run", "head_branch")
+	defaultBranch := nestedString(body, "repository", "default_branch")
+	headRepository := nestedString(body, "workflow_run", "head_repository", "full_name")
+	if event == "" || headBranch == "" || defaultBranch == "" || headRepository == "" ||
+		headBranch != defaultBranch || !strings.EqualFold(headRepository, nestedString(body, "repository", "full_name")) {
+		return Envelope{}, false
+	}
+	owner, repo := githubRepo(body)
+	filename := githubWorkflowFilename(body)
+	topic := GithubDefaultBranchWorkflowSubject(owner, repo, filename, stringValue(body["action"]), event)
+	if len(topic) > SubjectMaxBytes {
+		log.Printf("github default branch workflow copy dropped: its subject is past the subject limit repo=%s/%s run_id=%s workflow=%q event=%q subject_bytes=%d subject_max_bytes=%d",
+			owner, repo, nestedNumberString(body, "workflow_run", "id"), first(filename, 100), first(event, 100), len(topic), SubjectMaxBytes)
+		return Envelope{}, false
+	}
+	item.Topic = topic
+	return item, true
 }
 
 // CIHead names one pull request head of the CI state aggregator: the identity a record's key is
@@ -488,6 +530,7 @@ func SlackEnvelopes(input SlackEnvelopeInput) []Envelope {
 // Push to branch main:    push.branch.main
 // Push to tag v1.0.0:     push.tag.v1_0_0 (dots sanitized to underscores)
 // workflow_run:            workflow.<filename>.<action>
+// Its default-branch copy: default_branch.workflow.<filename>.<action>.<event> (GithubEnvelopes)
 // Actions job finished:   job.<run_id>.completed (a check_run on the default branch, of a run with no pull request)
 // Returns empty string for events that should not be routed (e.g. push to refs that aren't heads or tags).
 func githubTopic(owner string, repo string, event string, body map[string]any) string {
@@ -610,14 +653,18 @@ const githubJobKind = "job"
 // the mentioning resource.
 const githubMentionKind = "mention"
 
+// githubDefaultBranchKind is the token a run's default-branch copy is published under after the
+// repository (GithubDefaultBranchWorkflowSubject, githubDefaultBranchWorkflowCopy).
+const githubDefaultBranchKind = "default_branch"
+
 // GithubTopicKinds are the tokens that follow a GitHub topic's owner and name, sorted: every kind
-// and parent kind the two tables name, githubMentionKind and githubJobKind (the push, workflow and
-// checks topics begin `push`, `workflow` and `pr`). A token there that is none of these is not a
-// GitHub topic kind.
+// and parent kind the two tables name, githubMentionKind, githubJobKind and githubDefaultBranchKind
+// (the push, workflow and checks topics begin `push`, `workflow` and `pr`). A token there that is
+// none of these is not a GitHub topic kind.
 var GithubTopicKinds = githubTopicKinds()
 
 func githubTopicKinds() []string {
-	kinds := []string{githubMentionKind, githubJobKind}
+	kinds := []string{githubMentionKind, githubJobKind, githubDefaultBranchKind}
 	for _, kind := range githubEventKinds {
 		kinds = append(kinds, kind)
 	}
@@ -1108,6 +1155,7 @@ func githubPayload(event string, body map[string]any) string {
 			"head_branch":    headBranch,
 			"status":         nestedString(body, "workflow_run", "status"),
 			"conclusion":     nestedString(body, "workflow_run", "conclusion"),
+			"event":          nestedString(body, "workflow_run", "event"),
 			"run_id":         nestedNumberString(body, "workflow_run", "id"),
 			"run_attempt":    nestedNumberString(body, "workflow_run", "run_attempt"),
 			"head_sha":       nestedString(body, "workflow_run", "head_sha"),

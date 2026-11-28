@@ -38,6 +38,7 @@ export function useNodeLine(
   }: {
     readonly surface:
       | "issue-pin"
+      | "issue-page-history-block"
       | "node-row-first-line"
       | "node-row-parent-line"
       | "outline-crumb"

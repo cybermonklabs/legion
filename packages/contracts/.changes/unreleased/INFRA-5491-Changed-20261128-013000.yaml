@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `GET /api/v1/whoami`'s `WhoamiUser` and `WhoamiAgent` schemas, and `GET /auth/whoami`'s
+  `AuthenticatedUser`, gain the optional `origins` array of strings: the server's origins, the
+  canonical one first, then its served addresses and its former addresses, absent where neither
+  list is configured, so the `dispatch` command and the web page read dashboard links at served
+  and former addresses from the server they call.
+time: 2026-11-28T01:30:00Z
+custom:
+    Issue: INFRA-5491

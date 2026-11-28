@@ -8,16 +8,18 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // stopGrace is how long Dispatch's runtime lets it run after SIGTERM before killing it: ECS's
 // default stop timeout, which Dispatch's task definition leaves unset, the compose file's
-// stop_grace_period, and the pod the gcp:Dispatch component renders, whose
-// terminationGracePeriodSeconds is this value plus its pre-stop wait, since the kubelet spends
-// that wait inside the same period (pod_grace_period_test.go fails when the pod's budget stops
-// covering it).
+// stop_grace_period, and the pod the gcp:Dispatch component renders, whose grace period is its
+// terminationGracePeriodSeconds input, 35 s by default, this value plus the default of its
+// preStopSeconds wait (5 s), since the kubelet spends that wait inside the same period; the
+// component refuses a grace period under the wait plus this value (pod_grace_period_test.go fails
+// when the pod's budget stops covering it).
 const stopGrace = 30 * time.Second
 
 // documentShutdownTimeout is the document service's own budget: docs.Service.Shutdown spends up to
@@ -31,7 +33,11 @@ const stopGrace = 30 * time.Second
 // 4.5 s at load 90 against a 5 s budget, a 3.4 s overrun past it - is what the reserve is sized to
 // outlast; a worker still running once this whole timeout ends makes Shutdown return the
 // settlements-unconfirmed error instead of reading back what committed.
-const documentShutdownTimeout = docs.ShutdownDrainBudget + 5*time.Second
+const documentShutdownTimeout = docs.ShutdownDrainBudget + documentShutdownReserve
+
+// documentShutdownReserve is how far past its drain budget the document service's own budget
+// runs (documentShutdownTimeout says what it is for).
+const documentShutdownReserve = 5 * time.Second
 
 // httpDrainBeforeDocuments is how long the document service waits for the requests in flight to
 // finish before it settles the documents owed with requests still running, so that its budget ends
@@ -100,7 +106,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 		cancel()
 	}
 	slog.Info("dispatch: shutting down")
-	shutdown(server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain)
+	shutdown(clock.Real(), server, documentService, pool, waitBackground, waitIntakes, deregister, outboxStopped, httpDrain)
 	select {
 	case err := <-serveErr:
 		return err
@@ -148,9 +154,12 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 // that has stopped answering (silentProbes) holds its connections forever, so Dispatch exits
 // without them, and the database rolls back whatever they held open; it deregisters nothing then,
 // since the delete would wait on that database too, and its row's heartbeat stops with the process
-// instead.
-func shutdown(server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration) {
-	started := time.Now()
+// instead. The HTTP drain's share (httpDrain), the document service's timeout and the wait for
+// the outbox run on c, the wall clock in production (serveUntilStopped), so a test moves a fake
+// clock through them (TestShutdownGivesUpOnAnOutboxThatNeverStopsAtItsBudget); the health probes
+// and the pauses between them (waitUntilIdle, closePool) run on the wall clock.
+func shutdown(c clock.Clock, server *http.Server, documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), outboxStopped <-chan struct{}, httpDrain time.Duration) {
+	started := c.Now()
 	drained := make(chan struct{})
 	go func() {
 		defer close(drained)
@@ -160,10 +169,10 @@ func shutdown(server *http.Server, documentService *docs.Service, pool *store.Po
 	}()
 	select {
 	case <-drained:
-	case <-time.After(httpDrain):
+	case <-c.After(httpDrain):
 		slog.Warn("dispatch: settle documents with requests still in flight")
 	}
-	documentCtx, cancelDocuments := context.WithTimeout(context.Background(), documentShutdownTimeout)
+	documentCtx, cancelDocuments := c.WithTimeout(context.Background(), documentShutdownTimeout)
 	defer cancelDocuments()
 	if err := documentService.Shutdown(documentCtx); err != nil {
 		slog.Warn("dispatch: shutdown document service", "error", err)
@@ -171,23 +180,23 @@ func shutdown(server *http.Server, documentService *docs.Service, pool *store.Po
 	waitBackground()
 	waitIntakes()
 	if waitUntilIdle(drained, pool) {
-		waitForOutbox(outboxStopped, started.Add(outboxStopBudget))
+		waitForOutbox(c, outboxStopped, started.Add(outboxStopBudget))
 		deregister()
 		closePool(pool)
 	}
 }
 
-// waitForOutbox waits until outboxStopped closes or by passes, whichever comes first; a nil
+// waitForOutbox waits until outboxStopped closes or by passes on c, whichever comes first; a nil
 // outboxStopped is no outbox, and nothing to wait for.
-func waitForOutbox(outboxStopped <-chan struct{}, by time.Time) {
+func waitForOutbox(c clock.Clock, outboxStopped <-chan struct{}, by time.Time) {
 	if outboxStopped == nil {
 		return
 	}
-	timer := time.NewTimer(time.Until(by))
+	timer := c.NewTimer(by.Sub(c.Now()))
 	defer timer.Stop()
 	select {
 	case <-outboxStopped:
-	case <-timer.C:
+	case <-timer.C():
 		slog.Warn("dispatch: close the pool with the events outbox still stopping", "budget", outboxStopBudget)
 	}
 }

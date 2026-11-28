@@ -110,7 +110,7 @@ function renderPage(
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <OutlineWriterProvider issueKey={KEY}>
+            <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
               <IssueScope />
               <PageBody held={held} root={root} />
             </OutlineWriterProvider>

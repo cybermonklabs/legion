@@ -4841,8 +4841,8 @@ var (
 // The daemon holds its own copy of this rule (packages/daemon/internal/record/project.go,
 // OutOfWorkflow): the two are separate values in separate Go modules that have to be changed
 // together, not one shared list, as the `legion` label already is (api/issue_parent.go). It is
-// named here because a write's advice reads it, to say whether a design gate recorded on an
-// issue holds any READY back (api.supersededApprovalGates).
+// named here because an issue's status write reads it, to say which statuses the owning
+// architect may write (api.statusChangeOptions.architectWrites).
 var IssueStatusesOutOfWorkflow = []string{IssueStatusTriage, "icebox", "backlog", "done"}
 
 var issueStatusSet = func() map[string]struct{} {

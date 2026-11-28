@@ -35,7 +35,7 @@ Each item below names a variable, then its purpose.
   The first is the current value; the API accepts every value, comparing a bearer with each in constant time.
   The document websocket takes no bearer at all: it is a person's cookie connection only.
   Whitespace at either end is ignored; startup refuses an empty entry (two whitespace characters in a row, a CR LF among them) or a repeated one, naming its position, never its value.
-  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the rightmost `X-Forwarded-For` entry, which is the load balancer's view of the caller, or the connection's own address without one), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
+  A request that authenticates with a value after the first logs one WARN line, `dispatch: request authenticated with a previous shared agent token`, with `entry` (the value's position), `address` (the caller's address, `auth.ForwardedAddress`: the rightmost `X-Forwarded-For` entry, or the connection's own address without one, and from a proxy that `DISPATCH_TRUSTED_PROXY_RANGES` lists the client entry that proxy appended, below), `user_agent` and `path`, at most once per address and User-Agent every 10 minutes, and never a token.
   Each field keeps its first 256 bytes, and the server remembers up to 10,000 callers; one past that is logged on each request.
   Callers that share an address and User-Agent share a line, so the log says whether a value on its way out is still in use, not who uses it.
 
@@ -168,9 +168,113 @@ A boot that still sets one of the two settings that did is refused, naming what 
 
 Every project has an owner, and a boot over a project with none refuses to serve until `DISPATCH_PROJECT_OWNER_FALLBACK` names a full member to own it, or an operator gives it one (Giving a project to another owner, below).
 
-Where browser sign-in is configured, `DISPATCH_SERVER_URL` IS the sign-in callback origin:
-it must equal the URL humans type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL.
+`DISPATCH_SERVER_URL` is Dispatch's canonical address, the first of the addresses it serves.
+`DISPATCH_SERVED_ORIGINS` lists the others (below).
+Where browser sign-in is configured, `DISPATCH_SERVER_URL` is a sign-in callback origin:
+it must be a URL people type into their browser, and the sign-in pool's app client must list `<DISPATCH_SERVER_URL>/auth/callback` as a callback URL, beside the callback of each served address.
 With no `DISPATCH_SIGNIN_*` setting nobody signs in through a browser, and the variable is the origin Dispatch builds its own links from and nothing more.
+
+`DISPATCH_SERVED_ORIGINS` lists, comma-separated, the other addresses Dispatch serves beside `DISPATCH_SERVER_URL`, which stays the canonical address.
+Dispatch picks the address of a request by the request's `Host` alone, in one table of its addresses (`hostOrigins`, `internal/dispatch/routes/host_origins.go`).
+A `Host` names a served address when its host name is the address's, without regard to case or a trailing dot, and its port is the address's port as a number (`weborigin.SameHost`).
+A `Host` that names the scheme's default port, 443 for `https` and 80 for `http`, is equal to one that names no port.
+So `B.EXAMPLE.TEST`, `b.example.test.` and `b.example.test:443` name `https://b.example.test`, and `b.example.test:8443` does not.
+A forwarded header, such as `X-Forwarded-Host`, picks no address.
+A request to a served address is answered as that address:
+
+- A browser write that carries a session cookie or an Identity-Aware Proxy assertion passes the origin check only with that address's `Origin`, or with no `Origin` and `Sec-Fetch-Site: same-origin` (`enforceCookieOrigin`).
+  So a page at one address cannot write as a person signed in at another.
+
+- `GET /auth/start` sends the issuer the callback `<address>/auth/callback`, and `/auth/callback` names that URL in its code exchange.
+  So the sign-in client lists the callback of each served address beside `<DISPATCH_SERVER_URL>/auth/callback`.
+
+- The session cookie that the sign-in issues is `dsession`, the cookie the canonical address issues, host-only on the served address's host.
+  So a person signed in at one address is not signed in at another.
+
+- A broker token's DPoP proof may name the address in its `htu`, at any `Host` (below).
+
+A request to any other `Host`, the same host name at another port included, is answered as `DISPATCH_SERVER_URL`, as before.
+
+`DISPATCH_FORMER_ORIGINS` lists, comma-separated, the addresses Dispatch served before and serves no more.
+A request whose `Host` names a former address's host name, at any port (`weborigin.SameHostName`), is not served, because a sign-in or a write that started there would end at another host:
+
+- `GET /auth/start` and `GET /auth/callback` answer the `404` that a path no route serves answers.
+
+- Every unsafe request that carries a session cookie or an Identity-Aware Proxy assertion and no `Authorization` header answers `403` "invalid request origin", whatever its `Origin` and `Sec-Fetch-Site` say.
+
+- A document socket (`GET /ws/doc/{room}`) opened with a session cookie or an Identity-Aware Proxy assertion answers the same `403`, whatever `Authorization` header it carries, because the socket carries the person's edits on that credential alone (`opensDocumentSocket`).
+
+- A broker token's proof that names a former address is refused at every `Host`.
+
+So a former address passes no cookie origin check, no sign-in and no proof check.
+A read at a former address, and a write whose `Authorization` header makes it an agent's, are answered as at the canonical address.
+
+A dashboard URL at the canonical address, at a served address or at a former address is a reference to what its path names, wherever the server reads a Dispatch link:
+the reference index (Reference graph, below), `rebuild-refs`, the document service's reconciliations, the form of The Spec (`api.NewSpecForm`) with the two backfill commands that build it, and the API's URL parameters (`to=` and `from=` of `GET /api/v1/references`, `ref=` of `GET /api/v1/reference-targets`, `from=` and `to=` of `GET /api/v1/block-links`).
+Each of them reads one list of the server's origins, which `text.ServerOrigins` builds.
+The link's scheme and host are compared without regard to case, with the scheme's default port dropped, as the web page compares them.
+So a link written at an address keeps its target after the address moves to the former list.
+The web page reads the list from `GET /auth/whoami` when it starts (`web/src/api/origins.ts`), and opens such a link at the page's own origin.
+The `dispatch` command reads the same list from `GET /api/v1/whoami` (Routes, below).
+
+Each entry of the two lists is an absolute `http` or `https` URL with no path, user, query or fragment, written as a browser writes an origin: a lowercase scheme and host, and no default port (`parseOriginList`, `weborigin.Parse`).
+One trailing slash is trimmed.
+The origin check compares a browser's `Origin` with the entry as a string, so any other spelling refuses the start.
+Dispatch picks an address by its `Host`, so no two addresses may share a host name.
+The start refuses each of these, naming the setting, with host names compared at any port:
+
+- An entry that is empty or spelt otherwise, named by its position (`parseOriginList`).
+
+- A served or a former address on the host name of `DISPATCH_SERVER_URL`, or of an address listed before it in either list, named by its position (`checkServedOrigins`).
+
+- A former address on the host name of a `DISPATCH_PROOF_ORIGINS` entry, because a former address passes no proof check, named by its position (`checkServedOrigins`).
+
+- Either list with no `DISPATCH_SERVER_URL` (or `dispatch.serverUrl` in `envoy.json`).
+
+- Either list with `DISPATCH_DEV_SIGNIN=1`, whose fence answers every other `Host` `421 HOST_MISMATCH`.
+
+`rebuild-refs`, `backfill-block-ids` and `backfill-anchor-blocks` read both lists and run the same checks before they open the database.
+A server with both lists empty answers as before, and its `GET /auth/whoami` and `GET /api/v1/whoami` name no `origins`.
+
+A deployment that moves from its tailnet address to a load balancer's address serves both addresses for a while, and then the load balancer's address alone:
+
+1. Serve both addresses.
+   Set `DISPATCH_SERVER_URL` to the load balancer's address, which makes it the canonical address.
+   Set `DISPATCH_SERVED_ORIGINS` to the tailnet address, which keeps that address served.
+   List the callback of each address in the sign-in client before the deploy.
+   Behind an internal Application Load Balancer, set `DISPATCH_TRUSTED_PROXY_RANGES` to its proxy-only subnet (below).
+
+2. Read the access log's `host` field (Access log, below) until no caller that matters uses the tailnet address.
+
+3. Serve the load balancer's address alone.
+   Move the tailnet address from `DISPATCH_SERVED_ORIGINS` to `DISPATCH_FORMER_ORIGINS`.
+   A link written at the tailnet address keeps its target, and the tailnet address passes no cookie origin check, no sign-in and no proof check.
+
+Under `envoy-infra`'s `gcp:Dispatch`, step 1 sets `publicOrigin` to the load balancer's address and keeps the tailnet inputs, and the component renders the tailnet name as the first entry of `DISPATCH_SERVED_ORIGINS`.
+Step 3 unsets the tailnet inputs and lists the tailnet name in `formerOrigins` (`packages/envoy/infra/README.md`, "Moving from the tailnet address to a load balancer's address").
+Where the load balancer needs more than 5 seconds to stop sending requests to a stopping pod, raise `preStopSeconds` and `terminationGracePeriodSeconds` (Running more than one process, below).
+
+`DISPATCH_TRUSTED_PROXY_RANGES` lists the proxies whose `X-Forwarded-For` Dispatch trusts: comma-separated CIDRs, IPv4 or IPv6, each written as the network it names (`10.129.0.0/23`, not `10.129.0.5/23`).
+It is empty by default, so Dispatch trusts no proxy.
+An entry that is empty, no CIDR, an IPv4-mapped IPv6 prefix, not written as its network, or of length 0 refuses the start, named by its position (`parseTrustedProxyRanges`, through `netaddr.TrustedRange`, which `gcp:Dispatch` judges its `trustedProxyRanges` with too).
+A range of length 0 (`0.0.0.0/0`, `::/0`) would trust every peer, so that any caller could pick the address it is logged and rate limited by.
+An IPv4-mapped IPv6 prefix (`::ffff:10.129.0.0/119`) would trust no peer, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix.
+One function reads the setting, `auth.ForwardedAddress`, and its answer is the caller address of a request:
+the key of the broker token check's per-address introspection bucket, the access log's `address` (Access log, below) and the previous-shared-token line's `address` (`DISPATCH_AGENT_TOKEN`, above).
+One middleware around the router reads that address once for each request, before any check reads it (`resolveClientAddress`):
+
+- A connection from a peer inside a listed range is read as a proxy such as Google's internal Application Load Balancer writes the header: the client it saw, then the address of its forwarding rule.
+  The caller address is the second entry from the right of the one `X-Forwarded-For` line, and for an IPv6 client the /64 that holds it (`netaddr.ForwardedClient`, which the listener's edge reads Google's balancer with too).
+  Dispatch never reads an entry to its left, because the caller wrote it.
+
+- Such a request whose header that proxy could not have written is answered `400 FORWARDED_FOR_INVALID` before any credential is read: a request with other than one `X-Forwarded-For` line, a line of fewer than two entries, or a second entry from the right that is no IP address.
+  The broker is asked nothing for it, and its access-log line names the connection's own address (`refused`, Access log, below).
+  So a proxy that appends the client alone cannot be listed.
+
+- A peer outside every range, and every peer while the list is empty, keeps the rule Dispatch always had: the rightmost `X-Forwarded-For` entry, or the connection's own address when the header names none.
+  So a forged line of two entries never makes its second entry from the right the key.
+
+`/healthz`, `/livez` and `/metrics` are served above the router (`dispatchHandler`, `cmd/dispatch/main.go`), so they read no caller address and never answer `400 FORWARDED_FOR_INVALID`.
 
 `DISPATCH_ALLOWED_LOGINS`, `DISPATCH_APP_CLIENT_SECRET` and `DISPATCH_ASSET_STORE_BUCKET` are removed:
 a boot that still sets any of them is refused, naming what replaced it.
@@ -196,10 +300,11 @@ The server asks the broker what the token is (RFC 7662 introspection on `/v1/oau
 A revoked token therefore stops resolving within five seconds of the introspection that last called it live, not of the revocation:
 an introspection already in flight when the token is revoked is remembered from the moment it completes, and it may take up to five seconds to complete.
 The proof's `htu` must name one of the origins Dispatch is reached at, plus the request's path:
-`DISPATCH_SERVER_URL`'s origin, or one `DISPATCH_PROOF_ORIGINS` adds, a comma-separated list of origins such as the in-cluster address pods and daemons call, since a client signs the URL it calls.
-Unset, `DISPATCH_SERVER_URL`'s origin is the only one.
-An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin or to another entry is taken once.
-A proof naming an origin neither setting names is refused as any wrong target is, and a proof is spent once whichever origin it names.
+`DISPATCH_SERVER_URL`'s origin, a served address (`DISPATCH_SERVED_ORIGINS`, above), or one `DISPATCH_PROOF_ORIGINS` adds, a comma-separated list of origins such as the in-cluster address pods and daemons call, since a client signs the URL it calls.
+A proof may name any of them at any `Host`, so an agent whose Dispatch URL is a served address signs for that address.
+With neither `DISPATCH_PROOF_ORIGINS` nor `DISPATCH_SERVED_ORIGINS` set, `DISPATCH_SERVER_URL`'s origin is the only one.
+An entry that is not an absolute http(s) URL with no path, query, fragment or user refuses the start, naming it, and an entry equal to `DISPATCH_SERVER_URL`'s origin, to a served address or to another entry is taken once.
+A proof naming an origin that none of these settings names, a former address included, is refused as any wrong target is, and a proof is spent once whichever origin it names.
 That list is the one setting of its own this credential takes.
 A verified caller acts as the session the token names, for the person it names, or, where the broker names none, for the service it names (the fleet of the machine holding it, the service a read entry names, or the identity a job entry lists), and `actor` in the body does not decide that session:
 absent is accepted, one naming the same session is accepted and its `origin` kept, and one naming any other writer is `403 ACTOR_SESSION_MISMATCH` naming the session the token carries.
@@ -213,7 +318,7 @@ Each refusal is its own code and none repeats the token:
 `401 BROKER_TOKEN_NOT_ACTIVE` (the broker does not hold the token live), `401 BROKER_TOKEN_PROOF_INVALID` (the proof did not meet RFC 9449 Section 4.3, a proof presented twice included
 — a proof is single use by its `jti` and target URI), `401 BROKER_TOKEN_KEY_MISMATCH` (a sound proof signed by a key that is not the token's), `401 BROKER_TOKEN_NOT_A_SESSION` (the token is live but is no session's credential:
 it names no session, it names neither a person nor a service, it was issued to a client other than the exchange a session's token comes from, which a machine login's own access token is, or its project scope and its OAuth scope are a shape no broker mints (the scope `read` or a cut beside the project scope `named` or `person`, the project scope `public` beside a person, without a service or beside any OAuth scope or a cut, the project scope `named` beside no person and any OAuth scope, the project scope `none` or a narrowed one in any shape but a read-only token's, or the scope `approve` in any shape but an approve-only token's; `ciphertoken.ErrNotASession` holds the whole list)
-— Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (this source address's introspection bucket is empty;
+— Dispatch records a write under the session its credential proved, so it acts on none of these rather than letting a body name a session for a credential that names none), `429 BROKER_TOKEN_RATE_LIMITED` (the introspection bucket of this caller address, `auth.ForwardedAddress` under `DISPATCH_TRUSTED_PROXY_RANGES` (above), is empty;
 nothing was asked of the broker) and `503 BROKER_UNAVAILABLE` (the broker answered nothing, so the token was never judged
 — a 503 for the reason `OIDC_ISSUER_UNAVAILABLE` is one).
 The live socket (`GET /ws/live`) re-resolves its caller every heartbeat from the request that opened it, and for this credential that re-resolution is the broker's introspection answer alone:
@@ -783,15 +888,15 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   A callback whose code exchange the issuer's token endpoint answers `5xx`, `408` or `429`, whatever OAuth error its body names, answers with a body cut off before it arrives whole, or does not answer, is `503 SIGNIN_UNAVAILABLE` too: that closed set is the issuer down.
   Every other answer is the endpoint answering, and the sign-in fails `502`: a `4xx` with or without an OAuth error, a `2xx` that names an error or holds no token, and a `3xx`.
   A sign-in in flight (its state, its nonce, the page it returns to and when it lapses, ten minutes after it started) travels in the browser's `dispatch_oauth_state` cookie, signed under a key derived from the current signing key for that purpose alone, and no process keeps it:
-  a sign-in one process started completes on whichever process the issuer's redirect reaches, given one `DISPATCH_SERVER_URL` on every process:
-  the exchange must send the callback URL the sign-in started with, and each process builds it from that setting, or without one from the request's `Host`.
+  a sign-in one process started completes on whichever process the issuer's redirect reaches, given the same `DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS` on every process:
+  the exchange must send the callback URL the sign-in started with, and each process builds it from the address the request's `Host` names among those settings (Required configuration, above), or without `DISPATCH_SERVER_URL` from the request's `Host`.
   The callback clears the cookie first, and answers `400` "invalid or expired state" to a cookie that does not verify under a key of the set, has lapsed, or names a state other than the one the issuer returned.
   Each sign-in completes at most once: the issuer's code is single-use, and the exchange accepts only an ID token carrying the cookie's nonce.
 
 - Through a shared Cognito sign-in pool (`DISPATCH_SIGNIN_GROUP`), the callback names the person by the email in their pool username (`<provider>_<email>`, for a provider the ID token's `identities` names), never by the `email` claim, which a person can write, and signs in only a member of `DISPATCH_SIGNIN_GROUP`;
   anyone else gets a 403 page naming them.
 
-  With Google directly (`DISPATCH_SIGNIN_DOMAIN`, under Google's issuer and a Google web client whose redirect URI is `<DISPATCH_SERVER_URL>/auth/callback`), the authorization request asks for offline access with `prompt=consent`, so every exchange returns a refresh token, and names the domain as `hd`, a hint only.
+  With Google directly (`DISPATCH_SIGNIN_DOMAIN`, under Google's issuer and a Google web client whose redirect URIs are `<DISPATCH_SERVER_URL>/auth/callback` and `<address>/auth/callback` for each served address), the authorization request asks for offline access with `prompt=consent`, so every exchange returns a refresh token, and names the domain as `hd`, a hint only.
   The callback signs in a person whose ID token's `hd` is the domain and whose `email_verified` is true (the JSON `true` or the string `"true"`;
   any other value is false), named by that `email`, lowercased; the token's `hd` decides, never the email's own domain.
   Anyone else gets a 403 page with the reason: not in the domain, email not verified, or no email.
@@ -872,7 +977,7 @@ The Go tests start one (`internal/tests3`, SeaweedFS in a container, since MinIO
   Only an assertion IAP signed counts as expired: one past its `exp` whose ES256 signature IAP's key set verifies, for this audience, with an `exp` and an `iat` that hold, and whose person the rule admits (`oidc.IAPExpiredError`, `identity.ErrCredentialExpired`).
   An expired assertion that is wrong in any other way (a signature IAP's keys do not verify, another key id, RS256, an account the rule refuses, no `iat`) is refused for that, with its WARN line, as a fresh one is: the verifier checks the algorithm, signature, issuer and audience first, with go-oidc's own expiry check off, and reads `exp`, `iat` and `nbf` itself only from a payload that passed them.
   A key set that cannot be read reaches no verdict, and the request is `503 SIGNIN_UNAVAILABLE`.
-  An unsafe request that carries an assertion is held to Dispatch's origin as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
+  An unsafe request that carries an assertion is held to the origin of the address its `Host` names as one with a session cookie is (`enforceCookieOrigin`), since a browser sends IAP's cookie with another site's request and IAP adds an assertion to it.
   Dispatch runs no sign-in of its own, so `/auth/start` answers `503 SIGNIN_UNCONFIGURED`, and `POST /auth/logout` signs nobody out of IAP: the next request carries IAP's next assertion.
 
 - Under `iap`, a websocket is the one request whose assertion ages: the live socket and the document socket re-check the assertion their upgrade carried on every heartbeat (15 seconds, `api.whileCallerResolves`), and Google gives an assertion at most ten minutes and the skew.
@@ -1367,7 +1472,7 @@ What the two processes share, and what each keeps to itself:
   Operator subcommands never register.
 
 - A sign-in started on one process completes on the other:
-  its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
+  its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given the same `DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS` on every process.
 
 - `server.started` names the build every live process serves, once each time that build changes.
   A process that finds every live process serving one stamped, non-empty commit that is its own and that the latest row of `server_build_announcements` does not name inserts a row, with `tuple_kinds` the relation kinds its build writes as tuples of the node and tuple store (`refs.TupleKinds`, the kinds `graph_edges`' tuple arm renders);
@@ -1545,6 +1650,24 @@ a closed connection makes the client open a new one, which kube-proxy spreads ac
 Shutdown needs none of this: once `Server.Shutdown` begins, Go's server already writes every response with `Connection: close` and closes the connection after it.
 One race remains: a client can write a request onto an idle pooled connection at the instant the server closes it.
 Clients retry an idempotent request on a new connection, but a proxied `POST` can come back as a `502`.
+
+**The server keeps an idle client connection open for 650 seconds** (`idleTimeout`, `cmd/dispatch/main.go`, which `newHTTPServer` in `cmd/dispatch/conn_age.go` sets as the server's `IdleTimeout`).
+An internal Application Load Balancer keeps an idle connection to a backend for 600 seconds, a value Google fixes, and Google asks for a backend idle timeout above it ("Backend HTTP keepalive timeout" on Google's internal Application Load Balancer page).
+A server that closes an idle connection first can close it at the instant the balancer sends a request on it, and that request fails with a `502`.
+`TestTheServerKeepsAnIdleConnectionOpenPastTheLoadBalancersBackendKeepalive` fails when the timeout is 600 seconds or less.
+`maxConnAge` does not change: it closes a connection that is 60 seconds old after its next response, and it never closes an idle one.
+
+**A stopping process has 30 seconds from its SIGTERM** (`stopGrace`, `cmd/dispatch/shutdown.go`).
+It closes its listener when the signal arrives, so it accepts no new connection after the signal, and it then answers the requests in flight and stops.
+Under `envoy-infra`'s `gcp:Dispatch` the app pod also waits before the signal, and two inputs set that drain:
+
+- `preStopSeconds`, 5 by default and at least 1, is the sleep of the `envoy-dispatch` container's `preStop` hook.
+  The kubelet sends the signal only once the hook returns, so the process still answers while the pod's removal from its Service's endpoints reaches every node's proxy, the front door and any load balancer that sends to it.
+
+- `terminationGracePeriodSeconds`, 35 by default, is the pod's grace period.
+  The kubelet spends the wait and then the process's 30 seconds inside it, so the component refuses one under `preStopSeconds` plus 30, set or defaulted, naming `terminationGracePeriodSeconds`.
+
+A load balancer that takes longer than 5 seconds to stop sending requests to a stopping pod needs a longer wait, and a grace period raised with it (`packages/envoy/infra/README.md`, "gcp:Dispatch").
 
 ### Two builds at once
 
@@ -1946,6 +2069,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
 
 - A client deadline of 10 s for each table, which also covers taking a connection from the pool, a dial or a wait for a free one included.
   At that deadline pgx closes the connection and asks the server to cancel the statement.
+  `DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT` replaces that deadline for an end-to-end test with one past the statement timeout, and a deployment never sets it.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
 `DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT` replaces the 5 s lock timeout for an end-to-end test with one of at least 1 ms (the reads send it to Postgres in whole milliseconds, and Postgres reads a `lock_timeout` of `0ms` as none), the statement timeout staying 1 s past it and the client deadline 4 s past that, and a deployment never sets it.
@@ -4681,7 +4805,7 @@ A paragraph whose text holds a `-protect` value (repeatable) is never edited, so
 
 ## Reference graph
 
-Mentions (`dispatch://` references and same-origin dashboard URLs) in document versions, ask questions, comment bodies, and issue messages are indexed into `refs` on every write;
+Mentions (`dispatch://` references, and dashboard URLs at an address of the server's: `DISPATCH_SERVER_URL`, a served address or a former address) in document versions, ask questions, comment bodies, and issue messages are indexed into `refs` on every write;
 migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `source_seq` (the `events.id` that introduced it), and creates the `graph_edges` view, which unions those mentions with the structural relations already stored on the node tables (`child_of`, `attached_to`, `anchored_to`, `owned_by`, `replies_to`, `followed_by`).
 A tab of an issue that is a view of the issue, as the dashboard's pages file (`packages/contracts/src/dashboard-pages.json`, which the server embeds as the copy `internal/dispatch/text/dashboard-pages.json`) names them, is a mention of the issue: its page (`/issues/<KEY>/activity`) and its reference (`dispatch://<KEY>/activity`, and `dispatch://<KEY>/log` for the Conversation tab) are each an edge to the issue, and a document's page by the singular `/issues/<KEY>/artifact/<slug>` names the document as the plural does.
 The name of a typed block's `block[]` attribute is an edge kind too:
@@ -4756,7 +4880,8 @@ DATABASE_URL=postgres://... envoy-dispatch rebuild-refs
 
 reparses every source and reconciles the index with the text (surviving edges keep their provenance, edges of deleted sources are removed), marks every document owed a block index and every comment, message and ask owed a block index of its own blocks, an ask's parts included, which the server's block-index reconciliation then indexes, and prints `rebuild-refs: documents=N asks=N comments=N messages=N orphans=N edges=N blocks_owed=N items_owed=N`, `blocks_owed` being the documents it marked and `items_owed` the comments, messages and asks.
 It reads `dispatch.server_url` from the envoy config the same way the server does and refuses an empty value:
-dashboard-URL mentions are recognised only against it, so an empty URL would drop them all.
+dashboard-URL mentions are recognised only against it and the addresses beside it, so an empty URL would drop them all.
+It reads `DISPATCH_SERVED_ORIGINS` and `DISPATCH_FORMER_ORIGINS` too, and refuses before it opens the database what the server refuses at its start (`rebuildRefsOrigins`), so a link at a served or a former address keeps its edge.
 
 A picture in a message, comment, reply, ask question, answer or resolution reason is CommonMark's image syntax whose address is the picture's own Dispatch reference, versioned:
 `![<file name>](dispatch://<owner>/artifact/<slug>@v<N>)`, where the owner is an issue key, a project key, or `agent/<session id>` for an agent's conversation.
@@ -5230,7 +5355,7 @@ Dispatch writes one line per served request, always, with no setting to turn it 
 It is written at INFO when the request ends, through the process's own logger:
 
 ```
-time=2026-10-25T05:55:15.446Z level=INFO msg="dispatch: request" method=POST route=/api/v1/issues path=/api/v1/issues caller_kind=session caller=session-0123456789abcdef address=203.0.113.9 user_agent=dispatch-cli/1.0 status=201 elapsed_ms=10 bytes=412 credential=shared-token
+time=2026-10-25T05:55:15.446Z level=INFO msg="dispatch: request" method=POST route=/api/v1/issues path=/api/v1/issues caller_kind=session caller=session-0123456789abcdef host=a.example.test address=203.0.113.9 user_agent=dispatch-cli/1.0 status=201 elapsed_ms=10 bytes=412 credential=shared-token
 ```
 
 Each item below names a field of the line, then what it holds.
@@ -5243,6 +5368,9 @@ Each item below names a field of the line, then what it holds.
 
   The route's own pattern (`/api/v1/issues/{key}`), so one route's requests group together whatever ids their paths carry;
   `unmatched` for a path under `/api`, `/v1`, `/auth`, `/ws` or `/healthz` that no route answers.
+  `/auth/start` and `/auth/callback` answer a former address's host with the `404` of a path no route serves, and log that request under their own pattern, once.
+  `refused` is the route of a request that the router refuses before any route reads it: the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written (`accesslog.Refused`).
+  Its line holds the same fields as every other line, its `caller_kind` is `anonymous`, and its `address` is the connection's own address.
 
 - `path`
 
@@ -5250,16 +5378,28 @@ Each item below names a field of the line, then what it holds.
 
 - `caller_kind`
 
-  How the caller authenticated: `user` (a signed-in person), `session` (the session a bearer named in its `actor`, or the one a broker-issued token proved), `token` (a personal agent token with no session named), `service` (a verified service-account token), `broker-token` (an access token the secrets broker issued, on a line no session was named on), `shared-token` (`DISPATCH_AGENT_TOKEN` with no session named), or `anonymous` (a public route, a request whose credential was refused, or an `unmatched` path).
+  How the caller authenticated: `user` (a signed-in person), `session` (the session a bearer named in its `actor`, or the one a broker-issued token proved), `token` (a personal agent token with no session named), `service` (a verified service-account token), `broker-token` (an access token the secrets broker issued, on a line no session was named on), `shared-token` (`DISPATCH_AGENT_TOKEN` with no session named), or `anonymous` (a public route, a request whose credential was refused, an `unmatched` path, or a `refused` request).
 
 - `caller`
 
   Who that is: the person's lowercase email, the session id, the personal token's owner, the service-account subject, or the person a broker-issued token acts for.
   `shared-token` and `anonymous` name nobody.
 
+- `host`
+
+  The `Host` the request was sent to, as the client wrote it, with its case and its port.
+  It says which of the server's addresses the caller uses: `DISPATCH_SERVER_URL`, a served address or a former address.
+  So an operator moves an address to `DISPATCH_FORMER_ORIGINS`, and later removes it, only when no caller that matters still uses it.
+  A forwarded header changes nothing here.
+  The line of a Google sign-in callback names the person (`caller`) and the address the sign-in came back to (`host`).
+
 - `address`
 
-  The rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
+  The caller's address, `auth.ForwardedAddress`, which one middleware around the router reads once for each request under `DISPATCH_TRUSTED_PROXY_RANGES`.
+  On a connection from a peer in a listed range, it is the second entry from the right of the one `X-Forwarded-For` line, the client address that a proxy such as Google's internal Application Load Balancer appends before the address of its forwarding rule, and for an IPv6 client the /64 that holds it.
+  An entry to the left of that one is text the caller wrote, and the line never names it.
+  A request from such a peer whose header that proxy could not have written is answered `400 FORWARDED_FOR_INVALID`, and its line names the connection's own address, under the route `refused`.
+  On any other connection it is the rightmost `X-Forwarded-For` entry, the address the load balancer in front of Dispatch saw, or the connection's own address when there is none.
 
 - `peer`
 
@@ -5316,7 +5456,7 @@ Each item below names a field of the line, then what it holds.
   The line is still written, and the panic still reaches the server.
 
 The line never carries a token, a cookie, a query string, a request body or a response body; a search's line carries `search_key` in place of its query.
-The text in it a caller wrote, `method`, `path`, a session's `caller`, `address` and `user_agent`, is each cut to 256 bytes.
+The text in it a caller wrote, `method`, `path`, a session's `caller`, `host`, `address` and `user_agent`, is each cut to 256 bytes.
 
 A websocket resolves its caller again on every heartbeat, and that resolution does not change the line: it names the caller the connection was admitted as.
 
@@ -5325,7 +5465,8 @@ every `/api/v1` route, the document websocket and the live socket (`/ws/live`), 
 The dashboard's own pages and assets write none, so a browser's page loads do not bury the callers.
 `/healthz`, which a load balancer calls every few seconds, `/livez`, which a liveness or startup probe calls, and `/metrics`, which a scraper calls, write none either.
 Three answers are given before any route runs and write none:
-the `403` a cookie request from another origin gets, the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
+the `403` a cookie request from another origin gets (a cookie write at a former address included), the `421` a request for another host gets on a server with local sign-in, and the `307` redirect Go's router gives an unclean path (`/api/v1//issues`) or a prefix route called without its trailing slash (`/api/github/rest`).
+A fourth answer, the `400 FORWARDED_FOR_INVALID` of a request from a peer in `DISPATCH_TRUSTED_PROXY_RANGES` whose `X-Forwarded-For` that proxy could not have written, is given before any route runs and writes one line, with the route `refused`.
 Match the line as `msg="dispatch: request"`: the previous-shared-token warning's message starts with the same words.
 The line is one synchronous write to stderr per request, so a log pipe that blocks stalls requests.
 
@@ -5638,8 +5779,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   Start Google sign-in at the sign-in issuer:
   the Cognito sign-in pool, or Google itself for `DISPATCH_SIGNIN_DOMAIN`, asking for offline access with `prompt=consent` and the domain as `hd`, with the sign-in's state in the signed `dispatch_oauth_state` cookie.
+  The issuer sends the browser back to the callback of the address the sign-in started at: `DISPATCH_SERVER_URL`'s, or a served address's when the request's `Host` names that address (`DISPATCH_SERVED_ORIGINS`).
   `503 SIGNIN_UNCONFIGURED` on a server with no `DISPATCH_SIGNIN_*`;
   `503 SIGNIN_UNAVAILABLE`, and no cookie, while the issuer's discovery document has not been read.
+  At a former address's host, at any port, it answers the `404` a path no route serves answers, since a sign-in that started there would end at another host.
 
 - `/auth/callback` (GET; sign-in state)
 
@@ -5648,6 +5791,8 @@ Each item below names a path with its method and identity, then its purpose.
   under a domain, named by the verified `email` of a Google account whose `hd` is the domain, anyone else refused with a 403 page giving the reason.
   Record the person and the refresh token (and, under a domain, the account's `sub`, ending the address's sessions when another account held it), issue the cookie.
   Any process holding a key of the set completes a sign-in another process started.
+  The code exchange names the callback URL of the address the request came to, the one `/auth/start` sent the issuer from that address.
+  At a former address's host, at any port, it answers the `404` a path no route serves answers.
   `400` "invalid or expired state" when the state cookie is missing, does not verify, has lapsed or names another state;
   `400` "missing code or state in callback", or "the callback's code is longer than 2048 bytes", before any request to the issuer, when the callback carries no code or state or a code longer than 2048 bytes;
   `503 SIGNIN_UNAVAILABLE` while this process has not read the issuer's discovery document, or when the issuer's token endpoint answers the exchange `5xx`, `408` or `429`, answers with a body cut off before it arrives whole, or does not answer;
@@ -5662,6 +5807,10 @@ Each item below names a path with its method and identity, then its purpose.
 
   Return the resolved person, `{kind: "user", login, event_head}` with `login` their lowercase email and `event_head` an event id at or below which every event is final, read when the sign-in check answered.
   The page starts its events subscription from that id.
+  `origins`, only where the server is configured with a served or a former address, names the server's origins: `DISPATCH_SERVER_URL`'s origin, then each served address, then each former address.
+  A server with neither list answers the three keys above alone, as before.
+  The page reads this list when it starts (`web/src/api/origins.ts`): a link at any address in it is a reference, and the page opens it at the page's own origin.
+  Where the answer has no `origins`, the page reads links at its own origin alone.
   The sign-in check comes first: a caller who is not signed in is `401 NO_IDENTITY` and the head is never read.
   A signed-in caller is `503 EVENT_HEAD_UNAVAILABLE` while no event id is proven final yet, which ends on its own and which the page asks again for, and `503 EVENT_HEAD_READ_FAILED` when the head cannot be read, which the page retries twice and then shows as an error.
 
@@ -5813,8 +5962,8 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/artifacts/{id}/_test/room-counters` (GET; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
 
   What this process did with the document since the process started, and what its room holds now:
-  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
-  not ygo's idle retirement), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
+  `{"room_failures": n, "lock_waiting_compactions": n, "room_closes": n, "notified_head": n, "swept_head": n, "listen_stands": n, "notified_issue_closes": n, "rechecked_issue_closes": n, "relayed_awareness": {"<client>": {"states": n, "removals": n, "expired": n}, ...}, "settlement_resumptions": [RFC 3339 time, ...], "awareness_clients": n}` - its room failures, lock-waiting compactions, closes of a room of the document by the service (a replaced history, an issue's close or reopen, a failed room's eviction, shutdown;
+  not ygo's idle retirement), the highest version its room of the document held every update through after a catch-up another process's notification asked for, or its retry (not a room's start, the retry of a catch-up nothing notified, or a catch-up asked again after a replaced history), and after the sweep each `LISTEN` that stands runs, the `LISTEN`s its listener has stood up (one at start, one more for each redial; the same for every document), the notifications that the document's issue closed or reopened that its issue-open lane applied (not the recheck after a `LISTEN`, nor the append gate's close of a room whose append it refused) and, apart from them, the closes of its room the recheck after a `LISTEN` made (not a recheck that found the room's record matching the issue), per awareness client the states and removals of that client its room took from other processes' notifications (not an entry it dropped as stale, nor a change the room made itself) and, apart from them, the room's removals, with no notification, of a client it took from another process (its expiry of that client, or a local peer's frame that removes it), the time of each settlement-resumption pass that armed the document's owed settlement, and the awareness client entries its room of the document holds now (0 with no room here), which `maxAwarenessClientsPerRoom` bounds.
   Not mounted otherwise.
 
 - `/api/v1/artifacts/{id}/_test/hold-persistence` (POST; cookie, trusted header, or bearer; `DISPATCH_TEST_HOOKS=1`)
@@ -6173,6 +6322,9 @@ Each item below names a path with its method and identity, then its purpose.
   A read-only token that carries a cut is answered here.
   A route that answers `as_of` answers such a token as of its cut, and every other read refuses it `403 AS_OF_TOKEN_NOT_SERVED` (Reads at a past time, above).
   A Legion daemon's own broker token answers `["legion-status"]`: with `DISPATCH_LEGION_STATUS_SCOPE` on, that scope or `person` lets a credential make the three writes of a Legion issue that `/api/v1/issues/{key}` (PATCH) and `/api/v1/issues/{key}/status-change` (POST) refuse to any other, but for the owning architect's status write (`/api/v1/issues/{key}` (PATCH), below).
+  Either shape carries `origins` too, the list `GET /auth/whoami` names (`hostOrigins`), absent where the server has neither list.
+  The `dispatch` command reads it: a link at any of those addresses is the reference its path names, whatever address the command is configured with.
+  A failed call, or an answer with no `origins`, leaves the command reading its own configured address alone.
 
 - `/api/v1/dashboard/builds` (GET; cookie, trusted header, or bearer)
 
@@ -6538,7 +6690,7 @@ Each item below names a path with its method and identity, then its purpose.
   A keyed call keeps its progress in its request key's recovery point, so a repeat finishes what its first attempt left (Keyed writes, above).
   A refused write stops the call, and no later write runs.
   Each refusal that the route answers carries `changed` beside its `code` and `error`: the entries of the writes that committed before it, `[]` when none did.
-  Two refusals of the router come before the route and carry no `changed`: the `421 HOST_MISMATCH` of a server with the dev sign-in on, and the `403` of an unsafe request that carries a session cookie or an IAP assertion and no `Authorization`, from another origin (`enforceCookieOrigin`).
+  Three refusals of the router come before the route and carry no `changed`: the `400 FORWARDED_FOR_INVALID` of a request from a trusted proxy whose `X-Forwarded-For` that proxy could not have written, the `421 HOST_MISMATCH` of a server with the dev sign-in on, and the `403` of an unsafe request that carries a session cookie or an IAP assertion and no `Authorization`, from another origin or at a former address (`enforceCookieOrigin`).
   With the setting off, the options, `dry_run` and the `403`s below work as they do with it on.
   The refusals are these:
 
@@ -7614,7 +7766,7 @@ Each item below names a path with its method and identity, then its purpose.
     So Dispatch carries no approval to a version whose text breaks the form.
     It answers no request that names a document whose text breaks the form either.
     The person's own Approve then gets the refusal.
-    `backfill-block-ids` and `backfill-anchor-blocks` read `DISPATCH_SPEC_ROOTS` and the server's address as the server does (`api.NewSpecForm`).
+    `backfill-block-ids` and `backfill-anchor-blocks` read `DISPATCH_SPEC_ROOTS` and the server's origins (`DISPATCH_SERVER_URL`, `DISPATCH_SERVED_ORIGINS` and `DISPATCH_FORMER_ORIGINS`) as the server does (`api.NewSpecForm`).
     So a carry in a settlement that they run passes the same gate.
     An approval given outside a root was never judged, and it stays when its issue moves under the root.
 

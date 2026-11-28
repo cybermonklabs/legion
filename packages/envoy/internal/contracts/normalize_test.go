@@ -1,17 +1,21 @@
 package contracts
 
 //ci:reads packages/contracts/fixtures/github-envelopes/* TestGithubTopicKindsHoldEveryTokenAfterTheRepository
-//ci:reads packages/envoy/scripts/fixtures/github/* TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload and TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold
+//ci:reads packages/envoy/scripts/fixtures/github/* TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload and TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold; githubFixture reads workflow-run-default-branch-schedule.json, workflow-run-default-branch-push.json, workflow-run-other-branch-dispatch.json and workflow-run-fork-pull-request.json for the TestGithubEnvelopesDefaultBranchWorkflow tests
 
 import (
 	"encoding/json"
+	"log/slog"
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 func decodePayload(t *testing.T, raw string) map[string]string {
@@ -739,6 +743,9 @@ func TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment(t *testing.T) {
 		{GithubResourceSubject("acme", "a.b", "pr", "7"), "notifications.github.acme.a_b.pr.7"},
 		{GithubPushSubject("my-org", "a_b.c", "branch", "legion/X-1"), "notifications.github.my-org.a_b_c.push.branch.legion/X-1"},
 		{GithubWorkflowSubject("acme", "site.io", "ci.yml", "completed"), "notifications.github.acme.site_io.workflow.ci_yml.completed"},
+		// The TypeScript row of githubDefaultBranchWorkflowSubject (envelope.test.ts) names the same
+		// subject from the same values.
+		{GithubDefaultBranchWorkflowSubject("acme.co", "site.io", "ci.yml", "completed", "workflow_dispatch"), "notifications.github.acme_co.site_io.default_branch.workflow.ci_yml.completed.workflow_dispatch"},
 		{GithubJobSubject("acme", "site.io", "500", "completed"), "notifications.github.acme.site_io.job.500.completed"},
 		{GithubSubject("acme", "widgets", "pr.7.checks"), "notifications.github.acme.widgets.pr.7.checks"},
 	} {
@@ -751,7 +758,7 @@ func TestGithubSubjectsWriteADottedOwnerOrNameAsOneSegment(t *testing.T) {
 // The listener reads GithubTopicKinds as where a repository name ends in a topic, so every token
 // Envoy publishes right after a repository's owner and name is one: the kind and parent kind of
 // every event the two tables name (an event they do not name is published nowhere), the mention,
-// push, workflow, job and checks topics, and every golden envelope's topic.
+// push, workflow, default-branch workflow, job and checks topics, and every golden envelope's topic.
 func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 	t.Parallel()
 	const prefix = "notifications.github.example-org.example-repo."
@@ -759,6 +766,7 @@ func TestGithubTopicKindsHoldEveryTokenAfterTheRepository(t *testing.T) {
 		GithubSubject("example-org", "example-repo", "mention"),
 		GithubPushSubject("example-org", "example-repo", "branch", "main"),
 		GithubWorkflowSubject("example-org", "example-repo", "ci.yml", "completed"),
+		GithubDefaultBranchWorkflowSubject("example-org", "example-repo", "ci.yml", "completed", "schedule"),
 		GithubJobSubject("example-org", "example-repo", "500", "completed"),
 		GithubSubject("example-org", "example-repo", "pr.7.checks"),
 	}
@@ -993,6 +1001,16 @@ func TestJobIsAGithubTopicKind(t *testing.T) {
 	t.Parallel()
 	if !slices.Contains(GithubTopicKinds, "job") {
 		t.Fatalf("GithubTopicKinds = %v, want it to hold job", GithubTopicKinds)
+	}
+}
+
+// A default-branch copy's token after the repository is default_branch, so the listener reads a
+// subscription to the family as the repository the topic names (cmd/listener's
+// parseGithubRepositoryTopic), not as a repository whose name holds a dot.
+func TestDefaultBranchWorkflowIsAGithubTopicKind(t *testing.T) {
+	t.Parallel()
+	if !slices.Contains(GithubTopicKinds, "default_branch") {
+		t.Fatalf("GithubTopicKinds = %v, want it to hold default_branch", GithubTopicKinds)
 	}
 }
 
@@ -1730,6 +1748,250 @@ func TestGithubEnvelopesWorkflowRunMissingPathDropsEnvelope(t *testing.T) {
 	}, "@legion")
 	if len(items) != 0 {
 		t.Fatalf("expected 0 envelopes (missing path), got %d", len(items))
+	}
+}
+
+// githubFixture is a GitHub webhook body captured from GitHub (scripts/fixtures/github/<name>.json:
+// the run of `gh api repos/<owner>/<repo>/actions/runs/<id>` and the repository of
+// `gh api repos/<owner>/<repo>`, cut to the fields the normalizer reads), decoded as the listener
+// decodes a delivery. Each call reads the file again, so a test may change the body it is given.
+func githubFixture(t *testing.T, name string) map[string]any {
+	t.Helper()
+	raw, err := os.ReadFile(filepath.Join("..", "..", "scripts", "fixtures", "github", name+".json"))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	body := map[string]any{}
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("decode fixture %s: %v", name, err)
+	}
+	return body
+}
+
+// workflowRunEnvelopes is what the listener publishes for a workflow_run webhook body, in the order
+// it publishes them.
+func workflowRunEnvelopes(body map[string]any) []Envelope {
+	return GithubEnvelopes(GithubEnvelopeInput{Event: "workflow_run", Delivery: "d-run", EventID: "e-run", TraceID: "t-run", Body: body}, "@legion")
+}
+
+func envelopeTopics(items []Envelope) []string {
+	topics := make([]string, 0, len(items))
+	for _, item := range items {
+		topics = append(topics, item.Topic)
+	}
+	return topics
+}
+
+// A completed scheduled run of cybermonklabs/legion's e2e.yaml on main, the repository's default
+// branch, of the repository's own head and with no pull request, is published twice: on its
+// default-branch topic, which names the run's event, and on its workflow topic. The copy goes first
+// and differs from the workflow envelope in its topic alone, so it carries the same event id and
+// dedupe key. The listener relays a session both stored messages, and the session's client writes
+// one event id and dedupe key once (alreadyWritten in packages/envoy-client), so a session that
+// follows both topics is shown the run once, on the copy's topic, and one that follows the
+// workflow topic alone still hears it there.
+func TestGithubEnvelopesDefaultBranchWorkflowRunCopyGoesFirst(t *testing.T) {
+	t.Parallel()
+	items := workflowRunEnvelopes(githubFixture(t, "workflow-run-default-branch-schedule"))
+	want := []string{
+		"notifications.github.cybermonklabs.legion.default_branch.workflow.e2e_yaml.completed.schedule",
+		"notifications.github.cybermonklabs.legion.workflow.e2e_yaml.completed",
+	}
+	if got := envelopeTopics(items); !slices.Equal(got, want) {
+		t.Fatalf("topics = %q, want %q: the default-branch copy first, then the workflow envelope", got, want)
+	}
+	for _, item := range items {
+		if err := item.Validate(); err != nil {
+			t.Fatalf("the envelope on %s does not validate: %v", item.Topic, err)
+		}
+	}
+	copied, workflow := items[0], items[1]
+	if copied.DedupeKey != "github.d-run" || workflow.DedupeKey != "github.d-run" {
+		t.Fatalf("dedupe keys = %q and %q, want github.d-run for both", copied.DedupeKey, workflow.DedupeKey)
+	}
+	equalised := copied
+	equalised.Topic = workflow.Topic
+	if !reflect.DeepEqual(equalised, workflow) {
+		t.Fatalf("the copy differs from the workflow envelope in more than its topic:\ncopy     %+v\nworkflow %+v", copied, workflow)
+	}
+}
+
+// The copy's topic ends in the run's trigger event, so a session hears only the runs of the events
+// it follows: a scheduled run's copy is on ….completed.schedule and a push run's on
+// ….completed.push. The envelope on each of the two topics gives the event in its payload too.
+func TestGithubEnvelopesDefaultBranchWorkflowRunCopyNamesItsEvent(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ fixture, event, copyTopic, workflowTopic string }{
+		{
+			fixture:       "workflow-run-default-branch-schedule",
+			event:         "schedule",
+			copyTopic:     "notifications.github.cybermonklabs.legion.default_branch.workflow.e2e_yaml.completed.schedule",
+			workflowTopic: "notifications.github.cybermonklabs.legion.workflow.e2e_yaml.completed",
+		},
+		{
+			fixture:       "workflow-run-default-branch-push",
+			event:         "push",
+			copyTopic:     "notifications.github.cybermonklabs.legion.default_branch.workflow.release-envoy-listener_yaml.completed.push",
+			workflowTopic: "notifications.github.cybermonklabs.legion.workflow.release-envoy-listener_yaml.completed",
+		},
+	} {
+		t.Run(tc.event, func(t *testing.T) {
+			items := workflowRunEnvelopes(githubFixture(t, tc.fixture))
+			if got, want := envelopeTopics(items), []string{tc.copyTopic, tc.workflowTopic}; !slices.Equal(got, want) {
+				t.Fatalf("topics = %q, want %q", got, want)
+			}
+			for _, item := range items {
+				if got := decodePayload(t, item.Payload)["event"]; got != tc.event {
+					t.Errorf("the payload on %s gives event %q, want %q", item.Topic, got, tc.event)
+				}
+			}
+		})
+	}
+}
+
+// A run that a pull request names is published nowhere, on neither topic, whatever branch it ran
+// on: the pull request's checks settlement carries it.
+func TestGithubEnvelopesDefaultBranchWorkflowRunWithAPullRequestHasNeither(t *testing.T) {
+	t.Parallel()
+	body := githubFixture(t, "workflow-run-default-branch-schedule")
+	mapValue(body["workflow_run"])["pull_requests"] = []any{map[string]any{"number": float64(7)}}
+	if items := workflowRunEnvelopes(body); len(items) != 0 {
+		t.Fatalf("a run that names a pull request published on %q, want nothing", envelopeTopics(items))
+	}
+}
+
+// A run on another branch than the default one, here a workflow_dispatch run of cybermonklabs/legion
+// on a branch of its own, is published on its workflow topic alone, with its event in its payload.
+func TestGithubEnvelopesDefaultBranchWorkflowRunOnAnotherBranchHasNoCopy(t *testing.T) {
+	t.Parallel()
+	items := workflowRunEnvelopes(githubFixture(t, "workflow-run-other-branch-dispatch"))
+	want := []string{"notifications.github.cybermonklabs.legion.workflow.dispatch-browser-nightly_yaml.completed"}
+	if got := envelopeTopics(items); !slices.Equal(got, want) {
+		t.Fatalf("topics = %q, want %q", got, want)
+	}
+	if got := decodePayload(t, items[0].Payload)["event"]; got != "workflow_dispatch" {
+		t.Fatalf("payload event = %q, want workflow_dispatch", got)
+	}
+}
+
+// A fork's pull_request run on a branch of the fork named as the repository's default branch names
+// no pull request (cli/cli run 42749312158, on a fork's trunk), so it is published on its workflow
+// topic as every such run is. Its head is the fork's, not the repository's, so it is no run of the
+// default branch and has no copy. The head repository is compared with the repository without case,
+// as GitHub compares names, so the repository's own head spelled in other capitals has its copy.
+func TestGithubEnvelopesDefaultBranchWorkflowRunOfAForkHasNoCopy(t *testing.T) {
+	t.Parallel()
+	items := workflowRunEnvelopes(githubFixture(t, "workflow-run-fork-pull-request"))
+	want := []string{"notifications.github.cli.cli.workflow.lint_yml.completed"}
+	if got := envelopeTopics(items); !slices.Equal(got, want) {
+		t.Fatalf("a fork's run on trunk published on %q, want %q alone", got, want)
+	}
+	body := githubFixture(t, "workflow-run-default-branch-schedule")
+	mapValue(nested(body, "workflow_run", "head_repository"))["full_name"] = "CyberMonkLabs/Legion"
+	if items := workflowRunEnvelopes(body); len(items) != 2 || !strings.HasPrefix(items[0].Topic, "notifications.github.cybermonklabs.legion.default_branch.") {
+		t.Fatalf("a run whose head repository is the repository in other capitals published on %q, want its copy first", envelopeTopics(items))
+	}
+}
+
+// A copy's topic names the workflow's file and the run's event, and the bus refuses a subject past
+// SubjectMaxBytes. The webhook handler publishes a delivery's envelopes in order and stops at the
+// first that fails, so a copy the bus would refuse, which goes first, would keep the workflow
+// envelope from the bus on every redelivery: such a copy is dropped here, with one line naming the
+// run, and the workflow envelope still goes out. A copy of exactly SubjectMaxBytes is published and
+// logs nothing.
+func TestGithubEnvelopesDefaultBranchWorkflowCopyPastTheSubjectBoundIsLoggedAndDropped(t *testing.T) {
+	// Not parallel: it reads what the default logger writes (logtest.SetDefault).
+	var logged logtest.Buffer
+	logtest.SetDefault(t, slog.NewTextHandler(&logged, nil))
+	shortest := len(GithubDefaultBranchWorkflowSubject("cybermonklabs", "legion", "", "completed", "schedule"))
+	for _, tc := range []struct {
+		name    string
+		bytes   int
+		dropped bool
+	}{
+		{name: "a copy of exactly SubjectMaxBytes", bytes: SubjectMaxBytes},
+		{name: "a copy one byte past SubjectMaxBytes", bytes: SubjectMaxBytes + 1, dropped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := logged.Len()
+			file := strings.Repeat("a", tc.bytes-shortest)
+			body := githubFixture(t, "workflow-run-default-branch-schedule")
+			mapValue(body["workflow_run"])["path"] = ".github/workflows/" + file
+			copyTopic := GithubDefaultBranchWorkflowSubject("cybermonklabs", "legion", file, "completed", "schedule")
+			workflowTopic := GithubWorkflowSubject("cybermonklabs", "legion", file, "completed")
+			if len(copyTopic) != tc.bytes || len(workflowTopic) > SubjectMaxBytes {
+				t.Fatalf("the copy's topic is %d bytes and the workflow's %d, want %d and at most %d", len(copyTopic), len(workflowTopic), tc.bytes, SubjectMaxBytes)
+			}
+			items := workflowRunEnvelopes(body)
+			written := logged.String()[before:]
+			if !tc.dropped {
+				if got, want := envelopeTopics(items), []string{copyTopic, workflowTopic}; !slices.Equal(got, want) {
+					t.Fatalf("published on %d topics of %v bytes, want the copy and the workflow envelope", len(got), topicLengths(got))
+				}
+				if written != "" {
+					t.Fatalf("logged %q, want nothing: the copy went out", written)
+				}
+				return
+			}
+			if got := envelopeTopics(items); !slices.Equal(got, []string{workflowTopic}) {
+				t.Fatalf("published on %d topics of %v bytes, want the workflow envelope alone", len(got), topicLengths(got))
+			}
+			lines := strings.Split(strings.TrimSpace(written), "\n")
+			if written == "" || len(lines) != 1 {
+				t.Fatalf("logged %q, want one line naming the run", written)
+			}
+			for _, want := range []string{"cybermonklabs/legion", "46014564776", "subject"} {
+				if !strings.Contains(lines[0], want) {
+					t.Errorf("logged %q, want a line naming %q", lines[0], want)
+				}
+			}
+		})
+	}
+}
+
+// topicLengths is each topic's length in bytes, for a failure that would otherwise print topics of
+// thousands of bytes.
+func topicLengths(topics []string) []int {
+	lengths := make([]int, 0, len(topics))
+	for _, topic := range topics {
+		lengths = append(lengths, len(topic))
+	}
+	return lengths
+}
+
+// The copy needs the run's event, its head branch, the repository's default branch and the run's
+// head repository, each from the webhook's body: without one of them the run cannot be shown to be
+// the default branch's own, or its topic would end in an empty token, so the run is published on
+// its workflow topic alone. The whole body has its copy, and two empty values that are equal are
+// still empty.
+func TestGithubEnvelopesDefaultBranchWorkflowRunMissingAFieldHasNoCopy(t *testing.T) {
+	t.Parallel()
+	const workflowTopic = "notifications.github.cybermonklabs.legion.workflow.e2e_yaml.completed"
+	if items := workflowRunEnvelopes(githubFixture(t, "workflow-run-default-branch-schedule")); len(items) != 2 {
+		t.Fatalf("the whole body published on %q, want its copy and its workflow envelope", envelopeTopics(items))
+	}
+	for name, change := range map[string]func(run, repository map[string]any){
+		"no event":           func(run, _ map[string]any) { delete(run, "event") },
+		"no default_branch":  func(_, repository map[string]any) { delete(repository, "default_branch") },
+		"no head_branch":     func(run, _ map[string]any) { delete(run, "head_branch") },
+		"no head_repository": func(run, _ map[string]any) { delete(run, "head_repository") },
+		// GitHub sends a null head repository once a fork is deleted.
+		"a null head_repository": func(run, _ map[string]any) { run["head_repository"] = nil },
+		"an empty head_branch and default_branch": func(run, repository map[string]any) {
+			run["head_branch"], repository["default_branch"] = "", ""
+		},
+		"no head_repository and no repository full_name": func(run, repository map[string]any) {
+			delete(run, "head_repository")
+			delete(repository, "full_name")
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := githubFixture(t, "workflow-run-default-branch-schedule")
+			change(mapValue(body["workflow_run"]), mapValue(body["repository"]))
+			if got := envelopeTopics(workflowRunEnvelopes(body)); !slices.Equal(got, []string{workflowTopic}) {
+				t.Fatalf("topics = %q, want %q alone", got, workflowTopic)
+			}
+		})
 	}
 }
 
@@ -2547,7 +2809,7 @@ func TestGithubPayloadFields(t *testing.T) {
 			want: map[string]string{"head_repo": "stranger/example-repo", "head_sha": "fork-sha"},
 		},
 		{
-			name:  "workflow run carries branch and pull request facts",
+			name:  "workflow run carries branch, trigger event and pull request facts",
 			event: "workflow_run",
 			body: map[string]any{
 				"action":     "completed",
@@ -2555,6 +2817,7 @@ func TestGithubPayloadFields(t *testing.T) {
 				"workflow_run": map[string]any{
 					"id":             float64(25),
 					"run_attempt":    float64(2),
+					"event":          "pull_request",
 					"head_sha":       "workflow-sha",
 					"head_branch":    "feature/payloads",
 					"pull_requests":  []any{map[string]any{"number": float64(12)}, map[string]any{"number": float64(34)}},
@@ -2563,7 +2826,7 @@ func TestGithubPayloadFields(t *testing.T) {
 				},
 			},
 			want: map[string]string{
-				"run_id": "25", "run_attempt": "2", "head_sha": "workflow-sha", "branch": "feature/payloads",
+				"run_id": "25", "run_attempt": "2", "event": "pull_request", "head_sha": "workflow-sha", "branch": "feature/payloads",
 				"head_branch": "feature/payloads", "pr_numbers": "12,34", "run_started_at": "2026-09-07T10:00:00Z",
 				"updated_at": "2026-09-07T10:01:00Z",
 			},

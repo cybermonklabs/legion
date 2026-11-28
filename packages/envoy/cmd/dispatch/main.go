@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"os/signal"
@@ -29,7 +30,9 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture"
@@ -60,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/dispatch/textversions"
 	"github.com/sjawhar/envoy/internal/envconf"
@@ -80,7 +84,13 @@ const (
 	// defaultEnvoyURL is the Envoy listener when ENVOY_URL is unset: this machine's.
 	defaultEnvoyURL   = "http://127.0.0.1:9020"
 	readHeaderTimeout = 10 * time.Second
-	idleTimeout       = 2 * time.Minute
+	// idleTimeout is how long the server keeps an idle client connection open. An internal
+	// Application Load Balancer keeps an idle connection to a backend for 600 seconds, a value
+	// Google fixes, and asks for a backend idle timeout above it ("Backend HTTP keepalive timeout"
+	// on Google's internal Application Load Balancer page): a server that closes first can close a
+	// connection the balancer has just sent a request on, and that request fails with a 502. So
+	// this is 650 seconds, above the balancer's 600 (conn_age_test.go holds it there).
+	idleTimeout = 650 * time.Second
 )
 
 // buildCommit is the legion commit this binary was built from. Only the image build stamps it
@@ -201,6 +211,13 @@ type bootConfig struct {
 	// keeps its ratio of three beats to it, since no process-level test can wait a live window
 	// and a heartbeat for a refusal to stand.
 	ProcessHeartbeat time.Duration
+	// SearchFillReadTimeout is the client's own deadline on each read of the keyword fill's
+	// deferral line (searchFillTableHoldsRow), zero for the one searchFillBounds gives, four seconds
+	// past the statement timeout; only DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT, under the test hooks,
+	// sets it, so an end-to-end test can stage it past its run and leave each read to Postgres's own
+	// timeouts, however slowly a loaded machine dials. resolveBootConfig refuses one that is not
+	// past the statement timeout, so no setting orders the client's deadline before Postgres's.
+	SearchFillReadTimeout time.Duration
 	// CoverageFillTimeout bounds the whole fill of the search coverage counts in place of
 	// embedqueue's own, zero for that; only DISPATCH_TEST_COVERAGE_FILL_TIMEOUT, under the test
 	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
@@ -274,6 +291,22 @@ type bootConfig struct {
 	// reached at beside DISPATCH_SERVER_URL's, each written scheme://host, which a broker token's
 	// proof may name in its 'htu' (proofOrigins). Empty, unset, adds none.
 	ProofOrigins []string
+	// ServedOrigins is DISPATCH_SERVED_ORIGINS, the other addresses the server serves beside the
+	// canonical origin, and FormerOrigins is DISPATCH_FORMER_ORIGINS, the addresses it served
+	// before, each entry as weborigin.Parse returns it; nil for none (parseAddressLists,
+	// checkServedOrigins). The router answers by both (routes.AppContextOptions), every reader of a
+	// dashboard link reads a link at either as a reference (text.ServerOrigins: the document
+	// service, the API, the form of The Spec, rebuild-refs and the backfill commands), and the
+	// broker token check takes each served address as an origin a proof may name
+	// (brokerTokenVerifier, proofOrigins).
+	ServedOrigins []string
+	FormerOrigins []string
+	// TrustedProxyRanges is DISPATCH_TRUSTED_PROXY_RANGES, the proxies whose X-Forwarded-For
+	// Dispatch trusts (parseTrustedProxyRanges): the caller address the router resolves for every
+	// request is read under them (routes.AppContextOptions, auth.ResolveForwardedAddress), which
+	// the access log, the previous-token line and the broker token check's bucket key on
+	// (auth.ForwardedAddress). nil when unset, which trusts none.
+	TrustedProxyRanges []netip.Prefix
 	// FileStoreBucket is DISPATCH_FILE_STORE_BUCKET: the bucket uploaded files are stored in,
 	// gs://<bucket> for Cloud Storage or an S3 bucket's name (files.Open). Empty keeps them in
 	// Postgres.
@@ -374,6 +407,14 @@ func main() {
 	serverURL := ""
 	if envoyConfig.Dispatch != nil {
 		serverURL = envoyConfig.Dispatch.ServerURL
+	}
+	// The served and the former addresses are beside the canonical origin: their own spellings
+	// were judged with the rest of the settings (parseAddressLists), and their hosts against the
+	// canonical origin's, the proof origins' and each other's only now that the canonical origin
+	// is read.
+	if err := checkServedOrigins(boot, serverURL); err != nil {
+		slog.Error("dispatch: resolve boot config", "error", err)
+		os.Exit(1)
 	}
 	// The App credentials are read before anything connects, so the dev sign-in fence refuses a
 	// key it will not sign with before NATS or Postgres is dialled.
@@ -610,7 +651,7 @@ func main() {
 		slog.Error("dispatch: load signing key", "error", err)
 		os.Exit(1)
 	}
-	retirePlainRefreshTokens(ctx, people, plainRefreshTokenRetireTimeout)
+	retirePlainRefreshTokens(ctx, people, clock.Real(), plainRefreshTokenRetireTimeout)
 	sessions := store.NewPgSessionStore(database.Pool)
 
 	if boot.IdentityHeader != "" {
@@ -622,17 +663,17 @@ func main() {
 	requestIdentity := requestIdentityFor(boot, signingKey, people, sessions, signIn)
 
 	broker := events.NewBroker()
-	documentService := newDocumentService(boot, docs.Deps{
+	documentService, documentOrigins := newDocumentService(boot, serverURL, docs.Deps{
 		Store:       database,
 		Events:      broker,
 		Identity:    requestIdentity,
-		ServerURL:   serverURL,
 		BuildCommit: buildCommit,
 	})
 	// The restoration below schedules settlements, whose version writes carry approvals, before
 	// the API is built: the form of The Spec is built first, and sets its gate on the service, so
-	// no carry passes it (api.NewSpecForm). The API judges with this same form.
-	specForm, err := api.NewSpecForm(boot.SpecRoots, serverURL, documentService)
+	// no carry passes it (api.NewSpecForm). The form reads links against the service's own list of
+	// origins. The API judges with this same form.
+	specForm, err := api.NewSpecForm(boot.SpecRoots, documentOrigins, documentService)
 	if err != nil {
 		slog.Error("dispatch: read the roots of The Spec", "error", err)
 		os.Exit(1)
@@ -1414,8 +1455,12 @@ func main() {
 	fillStopped := make(chan struct{})
 	if boot.SearchFillOff {
 		close(fillStopped)
+		bounds := searchFillBounds(boot.SearchFillLockTimeout)
+		if boot.SearchFillReadTimeout > 0 {
+			bounds.client = boot.SearchFillReadTimeout
+		}
 		slog.Info(searchFillDeferredLine, append([]any{"setting", "DISPATCH_SEARCH_FILL", "value", "off"},
-			searchFillTableRows(ctx, database.Pool, searchFillBounds(boot.SearchFillLockTimeout))...)...)
+			searchFillTableRows(ctx, database.Pool, clock.Real(), bounds)...)...)
 	} else {
 		go func() {
 			defer close(fillStopped)
@@ -1870,6 +1915,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT", &boot.CoverageFillTimeout},
 		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -1882,6 +1928,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if lock := boot.SearchFillLockTimeout; lock > 0 && lock < searchFillTableLockTimeoutFloor {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT=%q (expected at least %s: the reads send their lock timeout to Postgres in whole milliseconds, and Postgres reads 0ms as no lock timeout)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT")), searchFillTableLockTimeoutFloor)
+	}
+	if read, statement := boot.SearchFillReadTimeout, searchFillBounds(boot.SearchFillLockTimeout).statement; read > 0 && read <= statement {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
 	}
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
@@ -2011,6 +2061,13 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	}
 	boot.ProofOrigins, err = proofOriginEntries(env.get("DISPATCH_PROOF_ORIGINS"))
 	if err != nil {
+		return bootConfig{}, err
+	}
+	// Their hosts beside the canonical origin's are checked once it is read (checkServedOrigins).
+	if boot.ServedOrigins, boot.FormerOrigins, err = parseAddressLists(env); err != nil {
+		return bootConfig{}, err
+	}
+	if boot.TrustedProxyRanges, err = parseTrustedProxyRanges(env.get("DISPATCH_TRUSTED_PROXY_RANGES")); err != nil {
 		return bootConfig{}, err
 	}
 	boot.Embedder, err = resolveEmbedder(env)
@@ -2214,15 +2271,20 @@ func devSignInSharedSigningKey(shared string) string {
 
 // newDocumentService is the document service main serves the document websocket and the API's
 // documents from: built, what main made from the rest of the configuration, with every setting the
-// service takes from boot filled in (documentDeps).
-func newDocumentService(boot bootConfig, built docs.Deps) *docs.Service {
-	return docs.New(documentDeps(boot, built))
+// service takes from boot filled in and its origins beside serverURL (documentDeps). It answers
+// those origins too, so the form of The Spec reads links against the same list (api.NewSpecForm).
+func newDocumentService(boot bootConfig, serverURL string, built docs.Deps) (*docs.Service, text.Origins) {
+	deps := documentDeps(boot, serverURL, built)
+	return docs.New(deps), deps.Origins
 }
 
-// documentDeps is built with every setting the document service takes from boot filled in. The
-// settings tests read its answer, as they build the router through appContextOptions, so dropping
-// a hand-off here fails a case (TestDocumentDepsCarryEveryBootSetting).
-func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
+// documentDeps is built with every setting the document service takes from boot filled in, and
+// its origins: serverURL, the canonical origin, then boot's served addresses and former addresses,
+// built by the constructor api.NewDeps builds the API's with (text.ServerOrigins), so the document
+// service and the API read one list and a server URL ending in `//` alike. The settings tests read
+// its answer, as they build the router through appContextOptions, so dropping a hand-off here
+// fails a case (TestDocumentDepsCarryEveryBootSetting, TestDocumentDepsReadLinksAsTheAPIDoes).
+func documentDeps(boot bootConfig, serverURL string, built docs.Deps) docs.Deps {
 	built.Settle = boot.SettleDelay
 	built.MarkWait = boot.MarkWait
 	built.UnrecordedMarkTTL = boot.UnrecordedMarkTTL
@@ -2230,6 +2292,7 @@ func documentDeps(boot bootConfig, built docs.Deps) docs.Deps {
 	built.MaxLiveRooms = boot.MaxLiveRooms
 	built.MaxDocConnections = boot.MaxDocConnections
 	built.TestHooks = boot.TestHooksEnabled
+	built.Origins = text.ServerOrigins(serverURL, boot.ServedOrigins, boot.FormerOrigins)
 	return built
 }
 
@@ -2321,7 +2384,7 @@ func readRenames(ctx context.Context, pool *store.Pool, timeout time.Duration) (
 // or runs out of time is logged and the start goes on, since each document's next settlement
 // restores its own asks.
 func restoreDecidedWordings(ctx context.Context, documents *docs.Service, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: restore decided asks' wordings", "dispatch: restored decided asks' wordings",
 		func(ctx context.Context) ([]any, error) {
 			restored, copies, err := documents.RestoreDecidedWordings(ctx)
 			if err != nil {
@@ -2335,7 +2398,7 @@ const reviewContentHashFillTimeout = 30 * time.Second
 
 // fillReviewContentHashes pins reviews from before the hash columns were added.
 func fillReviewContentHashes(ctx context.Context, pool *store.Pool, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: fill reviews' content hashes", "dispatch: filled reviews' content hashes",
 		func(ctx context.Context) ([]any, error) {
 			result, err := docs.FillReviewContentHashes(ctx, pool)
 			return []any{"filled", result.Filled, "unhashable", result.Unhashable}, err
@@ -2358,7 +2421,7 @@ const repoRenamePassTimeout = 30 * time.Second
 // next boot tries again.
 func renameRepositories(ctx context.Context, pool *store.Pool, pairs []store.RepoRename, readErr error, timeout time.Duration) {
 	const summary = "dispatch: rewrote renamed repositories' old names"
-	bootTask(ctx, timeout, summary, summary, func(ctx context.Context) ([]any, error) {
+	bootTask(ctx, clock.Real(), timeout, summary, summary, func(ctx context.Context) ([]any, error) {
 		pass := store.RewriteRenamedRepositories(ctx, pool, pairs)
 		if readErr != nil {
 			pass.Failures++
@@ -2382,7 +2445,7 @@ const issueAskRepairBootTimeout = 30 * time.Second
 // runs out of time is logged and the start goes on, since api.RunIssueAskRepair repairs the rest
 // every api.IssueAskRepairInterval.
 func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) {
-	bootTask(ctx, timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
+	bootTask(ctx, clock.Real(), timeout, "dispatch: repair the asks of closed and reopened issues", "dispatch: repaired the asks of closed and reopened issues",
 		func(ctx context.Context) ([]any, error) {
 			markedSince := time.Now().Add(-api.IssueAskRepairInterval)
 			repair, err := api.RepairIssueAsks(ctx, deps, &markedSince)
@@ -2390,11 +2453,11 @@ func repairIssueAsks(ctx context.Context, deps api.Deps, timeout time.Duration) 
 		})
 }
 
-// bootTask runs task, a repair the boot makes before it serves, bounded by timeout, and logs what
-// it reports: the counts task returns under done at INFO, or, when task fails or runs out of time,
-// those counts and the error under failed at ERROR. Either way the start goes on.
-func bootTask(ctx context.Context, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
-	taskCtx, cancel := context.WithTimeout(ctx, timeout)
+// bootTask runs task, a repair the boot makes before it serves, bounded by timeout on clk, and logs
+// what it reports: the counts task returns under done at INFO, or, when task fails or runs out of
+// time, those counts and the error under failed at ERROR. Either way the start goes on.
+func bootTask(ctx context.Context, clk bootClock, timeout time.Duration, failed, done string, task func(context.Context) ([]any, error)) {
+	taskCtx, cancel := clk.WithTimeout(ctx, timeout)
 	defer cancel()
 	counts, err := task(taskCtx)
 	if err != nil {
@@ -2402,6 +2465,13 @@ func bootTask(ctx context.Context, timeout time.Duration, failed, done string, t
 		return
 	}
 	slog.Info(done, counts...)
+}
+
+// bootClock is the clock a boot task's bound runs on, and each read of the keyword fill's deferral
+// line (searchFillTableHoldsRow), a narrowing of clock.Clock: clock.Real in main, and a
+// clocktest.Fake in a test, which moves a bound or never moves it.
+type bootClock interface {
+	WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc)
 }
 
 // appContextOptions is what main hands routes.BuildAppContext: built, what main made from the
@@ -2412,6 +2482,9 @@ func appContextOptions(boot bootConfig, built routes.AppContextOptions) routes.A
 	built.AgentTokens = boot.AgentTokens
 	built.NewIssueLabel = boot.NewIssueLabel
 	built.NewIssueSession = boot.NewIssueSession
+	built.ServedOrigins = boot.ServedOrigins
+	built.FormerOrigins = boot.FormerOrigins
+	built.TrustedProxyRanges = boot.TrustedProxyRanges
 	built.InsecureCookie = boot.InsecureCookie
 	built.EnvoyURL = boot.EnvoyURL
 	built.EnvoyToken = boot.EnvoyToken
@@ -2487,7 +2560,8 @@ var searchFillTables = [...]string{"search_text_versions", "search_text_versions
 // the client's own deadline for each table, for a server that answers nothing: pgx then closes the
 // connection and asks the server to cancel the statement. The two reads run one after the other
 // before the server listens, so they delay the boot by at most twice client in all; a lock on a
-// table alone delays it by about lock for that table.
+// table alone delays it by about lock for that table. A test process may stage client past its run
+// instead (bootConfig.SearchFillReadTimeout).
 type searchFillReadBounds struct{ lock, statement, client time.Duration }
 
 // A deployment's lock timeout of the reads, and the margins the other two bounds keep past it. The
@@ -2523,15 +2597,15 @@ func searchFillBounds(lock time.Duration) searchFillReadBounds {
 
 // searchFillTableRows answers the deferral line's fields that say whether each of
 // searchFillTables holds a row: <table>_rows=none or some, read by searchFillTableHoldsRow within
-// bounds. A read that fails, a timeout included, gives <table>_rows=unknown and the error in
-// <table>_rows_error, and the boot goes on: the line reports the tables and never decides whether
-// the process starts. The line is how a deployment learns, from the boot log alone, that a process
-// booted with the fill off found both tables empty.
-func searchFillTableRows(ctx context.Context, pool *store.Pool, bounds searchFillReadBounds) []any {
+// bounds, the client's deadline armed on clk. A read that fails, a timeout included, gives
+// <table>_rows=unknown and the error in <table>_rows_error, and the boot goes on: the line reports
+// the tables and never decides whether the process starts. The line is how a deployment learns,
+// from the boot log alone, that a process booted with the fill off found both tables empty.
+func searchFillTableRows(ctx context.Context, pool *store.Pool, clk bootClock, bounds searchFillReadBounds) []any {
 	fields := make([]any, 0, 4*len(searchFillTables))
 	for _, table := range searchFillTables {
 		key := table + "_rows"
-		holdsRow, err := searchFillTableHoldsRow(ctx, pool, table, bounds)
+		holdsRow, err := searchFillTableHoldsRow(ctx, pool, clk, table, bounds)
 		switch {
 		case err != nil:
 			fields = append(fields, key, "unknown", key+"_error", err.Error())
@@ -2548,13 +2622,14 @@ func searchFillTableRows(ctx context.Context, pool *store.Pool, bounds searchFil
 // `select exists(select 1 from public.<table>)`, which reads no column and stops at the first
 // visible row; it may scan dead rows before that one, which the statement timeout bounds. It reads
 // in a read-only transaction of its own that first sets bounds' lock and statement timeouts, local
-// to that transaction, under bounds' client deadline. The read takes ACCESS SHARE on the table and
-// holds it until that transaction rolls back (the deferred Rollback) or its connection ends,
-// normally milliseconds after the read; no statement timeout bounds how long it holds it. Row
-// writes go on beside it, but a TRUNCATE or another statement that wants ACCESS EXCLUSIVE waits
-// behind it for that long.
-func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, table string, bounds searchFillReadBounds) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, bounds.client)
+// to that transaction, under bounds' client deadline armed on clk: clock.Real in main, and a test's
+// clocktest.Fake that the test never moves, so only Postgres's own timeouts end the read. The read
+// takes ACCESS SHARE on the table and holds it until that transaction rolls back (the deferred
+// Rollback) or its connection ends, normally milliseconds after the read; no statement timeout
+// bounds how long it holds it. Row writes go on beside it, but a TRUNCATE or another statement that
+// wants ACCESS EXCLUSIVE waits behind it for that long.
+func searchFillTableHoldsRow(ctx context.Context, pool *store.Pool, clk bootClock, table string, bounds searchFillReadBounds) (bool, error) {
+	ctx, cancel := clk.WithTimeout(ctx, bounds.client)
 	defer cancel()
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -2767,10 +2842,13 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 // the RFC 9449 DPoP scheme. It is built from the broker DISPATCH_AGENT_SECRETS_URL names, which
 // the approval relays already call, Dispatch's own projected ServiceAccount token from
 // DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, which it already presents there, and the origins a
-// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, and each one
-// DISPATCH_PROOF_ORIGINS adds, which is the one setting of its own, since a pod or a daemon calls
-// Dispatch at an in-cluster address and signs the URL it calls. Spent proofs are recorded in
-// Dispatch's own database (store.DPoPProofs), which the maintenance pass sweeps.
+// proof's 'htu' may name (proofOrigins): DISPATCH_SERVER_URL's, each one DISPATCH_PROOF_ORIGINS
+// adds, which is the one setting of its own, since a pod or a daemon calls Dispatch at an
+// in-cluster address and signs the URL it calls, and each served address
+// (DISPATCH_SERVED_ORIGINS), so an agent whose Dispatch URL is a served address signs for it,
+// whatever Host its request arrives under. A former address (DISPATCH_FORMER_ORIGINS) is never
+// one, so a proof naming it is refused everywhere. Spent proofs are recorded in Dispatch's own
+// database (store.DPoPProofs), which the maintenance pass sweeps.
 //
 // It serves a read-only token (ciphertoken.Options.ServesReadOnly): one that holds read, which
 // the broker mints from a read entry or narrows when a trade asks for read. Dispatch is the one
@@ -2796,11 +2874,12 @@ func brokerTokenVerifier(boot bootConfig, database *store.Store, serverURL strin
 	return ciphertoken.New(ciphertoken.Options{
 		BrokerURL: boot.AgentSecretsURL,
 		Account:   ciphertoken.NewAccountToken(dispatchcipher.TokenFileSetting, boot.AgentSecretsTokenFile),
-		Origins:   proofOrigins(serverURL, boot.ProofOrigins),
+		Origins:   proofOrigins(serverURL, boot.ProofOrigins, boot.ServedOrigins),
 		Replay:    store.NewDPoPProofs(database.Pool),
 		// Dispatch's own rule for which address a request came from, the one its access log and
 		// its other buckets read; the check itself has none, so this says whose proxy header is
-		// trusted here (auth.ForwardedAddress).
+		// trusted here: the address the router resolved under DISPATCH_TRUSTED_PROXY_RANGES
+		// (auth.ForwardedAddress).
 		Address: auth.ForwardedAddress,
 		// The read class, the results list, the approve list and their gate are Dispatch's own
 		// (internal/dispatch/api), so a read-only token reaches the reads of that class, a results
@@ -2839,14 +2918,48 @@ func proofOriginEntries(value string) ([]string, error) {
 	return origins, nil
 }
 
+// parseTrustedProxyRanges reads DISPATCH_TRUSTED_PROXY_RANGES: each comma-separated entry,
+// trimmed, a range netaddr.TrustedRange takes: a CIDR, IPv4 or IPv6 but no IPv4-mapped IPv6 prefix,
+// which no peer's address is ever inside, written as the network it names (10.129.0.0/23, not
+// 10.129.0.5/23, so the setting trusts what it says), with a prefix longer than /0, since
+// 0.0.0.0/0 or ::/0 would trust every peer's X-Forwarded-For and let any caller pick the address
+// it is logged and rate limited by. A value of nothing but whitespace is unset. It refuses an
+// empty entry and any other, naming the entry by its position; nil for none.
+func parseTrustedProxyRanges(value string) ([]netip.Prefix, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	entries := strings.Split(value, ",")
+	ranges := make([]netip.Prefix, len(entries))
+	for index, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is empty", index+1, len(entries))
+		}
+		prefix, err := netaddr.TrustedRange(entry)
+		switch {
+		case errors.Is(err, netaddr.ErrRangeNotCIDR):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be a CIDR such as 192.0.2.0/24 or 2001:db8::/64", index+1, len(entries))
+		case errors.Is(err, netaddr.ErrRangeMapped):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d is an IPv4-mapped IPv6 prefix, which no peer's address is ever inside, since the server reads each peer's address as the IPv4 address it holds: write it as an IPv4 prefix", index+1, len(entries))
+		case errors.Is(err, netaddr.ErrRangeNotNetwork):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d must be written as the network it names, %s", index+1, len(entries), prefix.Masked())
+		case errors.Is(err, netaddr.ErrRangeEveryPeer):
+			return nil, fmt.Errorf("DISPATCH_TRUSTED_PROXY_RANGES entry %d of %d trusts every peer's X-Forwarded-For, so any caller would pick the address it is logged and rate limited by: name the proxies' own ranges", index+1, len(entries))
+		}
+		ranges[index] = prefix
+	}
+	return ranges, nil
+}
+
 // proofOrigins is every origin a broker token's proof may name in its 'htu': DISPATCH_SERVER_URL's
-// first, the one a proof naming none of them is checked against, then each origin added names. An
-// origin equal to one before it, compared without case as an origin's scheme and host are, is
-// taken once rather than refused: a deployment lists the public origin again beside the
-// in-cluster one.
-func proofOrigins(serverURL string, added []string) []string {
-	origins := append(make([]string, 0, 1+len(added)), strings.TrimSuffix(serverURL, "/"))
-	for _, origin := range added {
+// first, the one a proof naming none of them is checked against, then each origin of each list
+// added names, in order. An origin equal to one before it, compared without case as an origin's
+// scheme and host are, is taken once rather than refused: a deployment lists the public origin
+// again beside the in-cluster one, or a served address in DISPATCH_PROOF_ORIGINS too.
+func proofOrigins(serverURL string, added ...[]string) []string {
+	origins := []string{strings.TrimSuffix(serverURL, "/")}
+	for _, origin := range slices.Concat(added...) {
 		if !slices.ContainsFunc(origins, func(taken string) bool { return strings.EqualFold(taken, origin) }) {
 			origins = append(origins, origin)
 		}

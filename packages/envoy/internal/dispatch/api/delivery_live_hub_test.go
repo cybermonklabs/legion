@@ -2269,7 +2269,7 @@ func TestAnEventAnotherTaskCommittedReachesThisHub(t *testing.T) {
 
 	// Another task: its own broker and documents, on the same database.
 	other := events.NewBroker()
-	documents := docs.New(docs.Deps{Store: rig.database, Events: other, ServerURL: "https://dispatch.example", Settle: 20 * time.Millisecond})
+	documents := docs.New(docs.Deps{Store: rig.database, Events: other, Origins: testOrigins, Settle: 20 * time.Millisecond})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	deps, err := NewDeps(DepsInput{
 		Store: rig.database, Identity: headerIdentity(rig.database), AgentTokens: sharedAgentTokens(t, "agent-token"),

@@ -1,11 +1,7 @@
 import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
-import { messageFor } from "@legion/envoy-client/errors";
 import {
   EnvoyApiError,
   type EnvoyClient,
-  expandSubscriptionTopics,
-  type Interest,
-  isBusUnanswered,
   newClientInstanceID,
   roleHeldBy,
   type SubscribeInput,
@@ -45,12 +41,6 @@ import { createQueue, type RunningTask, refuseStep, type TaskQueue } from "./tas
  * a module of their own, {@link createHandBackLedger}, which this one holds and nothing else
  * reaches.
  */
-
-/** Whether a topic served the session's role, and how many roles had ended, at one moment. */
-export interface RoleSnapshot {
-  readonly roleBound: boolean;
-  readonly endsBefore: number;
-}
 
 /** What a registration carries, less the client instance id this module mints and sends itself. */
 export type RegistrationInput = Omit<SubscribeInput, "clientInstanceID">;
@@ -396,8 +386,6 @@ export interface RegistrationState {
   /** Every notice subject a plugin marked for the held role, in the order they were marked. The
    *  deployment's role topics are not among them: no plugin owns those. */
   readonly pluginRoleSubjects: () => readonly string[];
-  /** Whether `topic` serves the role this session holds, and how many roles had ended, at once. */
-  readonly roleSnapshot: (topic: string) => RoleSnapshot;
   /** The role the listener refused to this session's automatic claim, if any. */
   readonly refusalFor: (sessionID: string) => string | undefined;
   /** How many roles have ended, which a role-bound subscribe compares against. */
@@ -981,10 +969,6 @@ export function createRegistrationState(deps: RegistrationStateDeps): Registrati
     holdSessionID: () => claimedRoleSessionID,
     isRoleBound,
     pluginRoleSubjects: () => [...roleNoticeSubjects],
-    roleSnapshot: (topic) => ({
-      roleBound: expandSubscriptionTopics([topic]).some(isRoleBound),
-      endsBefore: roleEnds,
-    }),
     refusalFor: (sessionID) => refusedRoles.get(sessionID),
     roleEndCount: () => roleEnds,
     holdIsUnconfirmed: () => holdUnconfirmed,
