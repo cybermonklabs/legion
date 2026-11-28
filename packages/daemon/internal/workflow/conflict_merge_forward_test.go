@@ -82,6 +82,18 @@ func confirmsConflict(t *testing.T, pool *pgxpool.Pool, rules *record.BaseRules)
 	applyRefusingNothing(t, pool, readsAfter(conflictConfirmWait), conflictingRead(rules))
 }
 
+// approvesAsTheReviewer is the reviewer's own approval of head with review id id, submitted at
+// submitted and applied by engine: a review of the review App whose Legion footer names head and
+// the session the reviewer's claim records, which it seeds (seedClaimSession). The reviewer of
+// these tests approves and does not complete, and only its own approval ends a round with no
+// completion: a person's waits for the completion (reviewRound).
+func approvesAsTheReviewer(t *testing.T, pool *pgxpool.Pool, engine *Engine, id int64, head string, submitted time.Time) {
+	t.Helper()
+	seedClaimSession(t, pool, reviewClaim, "ses-reviewer")
+	applyRefusingNothing(t, pool, engine, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: id, State: "approved",
+		CommitID: head, HeadSHA: head, Author: testReviewApp, Body: reviewBody("ship it", head), SubmittedAt: submitted})
+}
+
 // mergeForwardMessages is every merge-forward message the outbox holds, in the order written, each
 // decoded as the outbox decodes it (queuedRows).
 func mergeForwardMessages(t *testing.T, pool *pgxpool.Pool) []record.MergeForwardMessage {
@@ -519,8 +531,7 @@ func TestAConflictAfterTheReviewLandsThroughTheMerger(t *testing.T) {
 		}
 	}
 
-	apply(2*time.Minute, intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1, State: "approved", CommitID: conflictHead,
-		HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it", SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(2*time.Minute), 1, conflictHead, firstConflictRead.Add(2*time.Minute))
 	nothingAskedIn(phase.Accepting)
 	// The architect's sign-off names the claim, the generation and the run of accepting its route
 	// read, which the workflow judges again (rootsSignOff).
@@ -706,9 +717,7 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Reviewing, "needs_review", settledGreen("ci", "pr-title"))
 		confirmsConflict(t, pool, every)
 		assertNothingActed(t, pool, phase.Reviewing)
-		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-			State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-			SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+		approvesAsTheReviewer(t, pool, readsAfter(2*time.Minute), 1, conflictHead, firstConflictRead.Add(2*time.Minute))
 		if got := issuePhase(t, pool); got != phase.Accepting {
 			t.Fatalf("after the approval the issue is in %s, want accepting: an approval of a conflicting head ends its round", got)
 		}

@@ -269,9 +269,7 @@ func TestAnApprovalOfAConflictingHeadLeavesTheMergeToTheMerger(t *testing.T) {
 			pool := plannedConflictIssue(t, phase.Reviewing, settledGreen("lint"), tc.steps...)
 			confirmsConflict(t, pool, every)
 			assertNothingActed(t, pool, phase.Reviewing)
-			applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-				State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-				SubmittedAt: firstConflictRead.Add(2 * time.Minute)})
+			approvesAsTheReviewer(t, pool, readsAfter(2*time.Minute), 1, conflictHead, firstConflictRead.Add(2*time.Minute))
 			if got := issuePhase(t, pool); got != tc.next {
 				t.Fatalf("after the approval the issue is in %s, want %s: an approval of a conflicting head ends its round", got, tc.next)
 			}

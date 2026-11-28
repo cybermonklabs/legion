@@ -761,7 +761,8 @@ func (e *Engine) RefusesRound(review intake.PullRequestReview, pr record.PullReq
 //     is the review's own word for the code it read, written in the body it was submitted with; no
 //     clock answers for a force push that puts an earlier head back, and GitHub's commit_id for
 //     the review moves with the pull request.
-//   - Every other review - a person's, delivered by its webhook - decides as it did before.
+//   - Every other review - a person's, delivered by its webhook - decides as it did before, save
+//     that its approval ends the round only once the reviewer has completed it (reviewRound).
 func (e *Engine) refusesRound(review intake.PullRequestReview, pr record.PullRequest) RoundRefusal {
 	if !e.byReviewApp(review.Author) {
 		if review.ReadFromList {
@@ -937,11 +938,13 @@ func (e *Engine) review(ctx context.Context, tx pgx.Tx, fact intake.PullRequestR
 	// every question about where an issue stands is written over), since the retry puts it back
 	// there with the reviewer's work kept. A review outside the round decides nothing and counts
 	// no round. An approval is judged against the head it names when the review ends
-	// (classify.ApprovalStands).
+	// (classify.ApprovalStands). Every review that gets here decides the round, and the only
+	// review-App review that does is the reviewer's own (RefusesRound), so a review the review App
+	// did not submit is a person's, whose approval waits for the reviewer's completion (reviewRound).
 	if !record.StandsIn(*issue, phase.Reviewing) {
 		return intake.Result{}, nil
 	}
-	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact)}
+	reviewer.Decision = &record.ReviewDecision{State: state, Body: fact.Body, Head: e.reviewHead(fact), Person: !byApp}
 	// The commit the reviewer's own review read outlives the round, where the decision does not
 	// (record.PhaseRow.ReviewedHead): the task of the reviewer's next round names it
 	// (namingTheReviewRound). Only the reviewer's own review moves it: a review-App review whose
@@ -1119,8 +1122,9 @@ const (
 	// while GitHub has answered its `mergeable` null past classify's floor or bound. Nothing the
 	// daemon does moves it: GitHub's answer is about the head on the branch, and only a push that
 	// earns the answer the base wants, the review GitHub asked for, or GitHub's own computation
-	// changes it. This cause alone does not wait for the reviewer's completion: the approval has
-	// already decided the round, and the completion is no part of what holds it.
+	// changes it. This cause alone does not wait for the reviewer's completion, save for a person's
+	// approval (record.ReviewDecision.Person), which waits for it first: the reviewer's approval
+	// has already decided the round, and the completion is no part of what holds it.
 	stuckMergeState
 )
 
@@ -1232,6 +1236,18 @@ func stuckMergeStateReason(pr record.PullRequest, outcome classify.MergeOutcome)
 // architect and the reviewer once for each head and finding (record.ReviewDecision.ToldStuck),
 // since the checks that would have cleared it are over and nothing else is on its way to move the
 // issue.
+// A person's approval (record.ReviewDecision.Person) ends the round only once the reviewer has
+// completed it at the approved head, whatever the pull request's state: an agent can submit an
+// approval on a person's account, and nothing in the review tells it from the person's own, so a
+// round it ended could take a head the reviewer never approved to acceptance, or to the retro and
+// the merge where no acceptance step follows. Until the completion the round waits, and the
+// reviewer's own review, submitted after the person's, is the newest deciding review and decides
+// the round in its place (review). A completion that names the approved head
+// (record.PhaseRow.HandoffCommit) with no review of the reviewer's own ends the round on the
+// person's approval, by the rules above. A completion at another head, or at none, leaves the
+// round stuck (stuckApprovedOtherCode, personApprovalUnreadReason): the reviewer has not read the
+// approved code, so the architect asks it for a review of the head. While the round waits for the
+// completion, the merge-state reads of the head go on as for any approval of it.
 // The round reads no CI verdict: what a check concluded moves nothing and
 // decides no round - only whether every check reported has concluded, which is what GitHub's own
 // state is waiting for - and the reviewer reads the head's checks on GitHub itself. A completed round
@@ -1256,6 +1272,14 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	}
 	switch {
 	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
+		if row.Decision.Person {
+			if !completed {
+				return round{waitsOnMergeState: classify.RoundWaitsOnMergeState(issue, row, pr)}
+			}
+			if row.HandoffCommit != row.Decision.Head {
+				return round{outcome: roundStuck, cause: stuckApprovedOtherCode, head: pr.HeadSHA, reason: personApprovalUnreadReason(row, *pr)}
+			}
+		}
 		switch pr.State {
 		case record.PullRequestClosed:
 			// A closed pull request merges nothing until a reopen, and the architect decides what
@@ -1295,6 +1319,19 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 				row.Decision.Head, pr.Number, pr.HeadSHA, pr.HeadSHA)}
 	}
 	return round{}
+}
+
+// personApprovalUnreadReason is what the architect is told of a round a person's approval of the
+// head decides (record.ReviewDecision.Person) once the reviewer has completed at another head, or
+// at none: the reviewer has not read the code the person approved, so the completion does not end
+// the round on that approval (reviewRound).
+func personApprovalUnreadReason(row record.PhaseRow, pr record.PullRequest) string {
+	completedAt := row.HandoffCommit
+	if completedAt == "" {
+		completedAt = "no head"
+	}
+	return fmt.Sprintf("a person approved head %s on pull request #%d, and the reviewer completed its round at %s, so it has not read the approved code: only the reviewer's own APPROVE of %s or a REQUEST_CHANGES ends the round",
+		row.Decision.Head, pr.Number, completedAt, pr.HeadSHA)
 }
 
 // undecidedReason is what the architect is told of a round its reviewer completed with no review

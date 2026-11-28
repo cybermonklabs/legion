@@ -13,6 +13,7 @@ import (
 // StartClusterConfig gives every member the configuration it is passed: each admits a user its
 // authorization holds and refuses one it does not, and its no_auth_user lets the cluster start.
 func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	stranger, _ := User(t)
 	_, fallback := User(t)
@@ -32,6 +33,7 @@ func TestEveryClusterMemberTakesTheConfigItIsGiven(t *testing.T) {
 // A three-copy stream on the cluster keeps a leader and takes a publish with the member that led
 // it stopped, and that member, started again on its own store and URLs, rejoins and catches up.
 func TestAThreeCopyStreamKeepsALeaderAndTakesAPublishWithOneMemberStopped(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	conn := connectCluster(t, cluster)
 	js, err := conn.JetStream(MaxWait(t))
@@ -120,6 +122,7 @@ type clientPlace struct {
 // forces on every session. The client knows only the URLs it was given, since the members
 // advertise none of their own.
 func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
+	t.Parallel()
 	cluster := StartCluster(t, 3)
 	// The client is on the first URL's member, as DontRandomize dials the list in order; a dial that
 	// ran out on it before landing on another is made again.
@@ -154,6 +157,7 @@ func TestALameDuckMemberSendsItsClientsToAnotherMember(t *testing.T) {
 // by any other. The routes are frozen while the first request through member n1 makes its
 // wildcard, so the other members cannot have heard it.
 func TestTheClusterIsNotReadyUntilEveryMembersReplyWildcardIsRouted(t *testing.T) {
+	t.Parallel()
 	cluster := startCluster(t, 3, "")
 	cluster.awaitMeta(t)
 	if err := cluster.replyRoutesReady(); err == nil || !strings.Contains(err.Error(), "member n1 has no reply wildcard") {
