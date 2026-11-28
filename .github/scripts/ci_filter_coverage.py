@@ -1726,11 +1726,34 @@ def squash(text: str) -> str:
     return " ".join(text.split())
 
 
+GOTESTSUM_RUN = re.compile(
+    r'(?<![^ \t\n])gotestsum[ \t]+--jsonfile[ \t]+"\$RUNNER_TEMP/go-test-events/[A-Za-z0-9._-]+\.jsonl"'
+    r'[ \t]+--format[ \t]+standard-(?:quiet|verbose)[ \t]+--raw-command[ \t]+--'
+    r'[ \t]+go[ \t]+test[ \t]+-json(?=[ \t\n]|$)'
+)
+
+
+def as_go_test(text: str) -> str:
+    """Read the CI gotestsum form as `go test`, without its added `-json`.
+
+    Keep the command's arguments and anything before the prefix, such as assignments or xargs.
+    Leave other forms alone for the caller to read or refuse.
+    """
+    return GOTESTSUM_RUN.sub("go test", text)
+
+
+def gotestsum_prefix(name: str, verbose: bool = False) -> str:
+    """The CI gotestsum command through `go test -json`, before the test arguments."""
+    format_ = "standard-verbose" if verbose else "standard-quiet"
+    return (f'gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/{name}.jsonl" '
+            f'--format {format_} --raw-command -- go test -json')
+
+
 def script_lines(text: str) -> list:
     """The lines of a run: script as bash splits them (at \\n alone), stripped of spaces and tabs,
-    comments and blank lines aside."""
+    comments and blank lines aside, with CI gotestsum commands read as their go test."""
     stripped = (line.strip(" \t") for line in text.split("\n"))
-    return [line for line in stripped if line and not line.startswith("#")]
+    return [as_go_test(line) for line in stripped if line and not line.startswith("#")]
 
 
 @functools.lru_cache(maxsize=None)
@@ -1930,6 +1953,7 @@ def reduce_line(line: str) -> tuple:
     with -race, the directory its `go -C` names or "", ""), any other as (None, None, None, None,
     None, the first reason it is not one of them)."""
     unreduced = (None, None, None, None, None)
+    line = as_go_test(line)
     special = next((c for c in line if c in NOT_SIMPLE), None)
     if special:
         return *unreduced, f"it has `{special}`"
@@ -2475,7 +2499,7 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
             mine = [r for (j, ref), rs in claims.items() if j == own and step_matches(step, ref) for r in rs]
             for line in go_lines(script):
                 where = f"{where_job(path, name_there, own)} step \"{step_label(step)}\" runs `{line}`"
-                pinned = [r for r in mine if squash(r.text) in squash(line)]
+                pinned = [r for r in mine if squash(as_go_test(r.text)) in squash(line)]
                 if not pinned:
                     problems.append(error(path, f"{where}, which no Run of a gate in {GATES_DIR} lists; add it "
                                                  f"to the job's gate so its closure is computed"))
@@ -2520,9 +2544,9 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                                                  f"which is not one run: step of it; update or remove the entry"))
     for (job_id, ref), rs in claims.items():
         steps = [s for s in owner_steps(units, job_id) if step_matches(s, ref)]
-        text = squash(" ".join(str(s.get("run", "")) for s in steps))
+        text = squash(" ".join(as_go_test(str(s.get("run", ""))) for s in steps))
         for r in rs:
-            if not steps or squash(r.text) not in text:
+            if not steps or squash(as_go_test(r.text)) not in text:
                 problems.append(error(GATES_DIR, f"job {job_id} step \"{ref}\" no longer runs `{r.text}`; update or "
                                                  f"remove the Run"))
     check_script_steps(data, units, caller_jobs, inputs_of, excluded, problems)
@@ -3031,7 +3055,8 @@ def step_go_lines(document: dict, job: dict, step: dict) -> list:
     read out of it, whose SHA-256 the expansion harness checks. No script is read here: what a
     script runs depends on its control flow, which a line-by-line reading cannot see. Raises
     audited_scripts.Unreadable for a run: that names such a script in a form no entry reads."""
-    run = str(step.get("run", ""))
+    # An events filename is not a reference to an audited script, even if it shares its name.
+    run = as_go_test(str(step.get("run", "")))
     reading = reading_of(step_workdir(document, job, step), run)
     return [line for line in script_lines(run if reading is None else reading.script) if TAG_RUN_TEST.search(line)]
 

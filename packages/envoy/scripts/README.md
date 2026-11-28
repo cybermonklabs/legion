@@ -639,6 +639,8 @@ cannot stand in for a new test's.
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
 step skips them by name (`BACKEND_COUNT_TESTS` in `.github/scripts/ci_job_reads.py`).
+On CI the counter also keeps its report in `$RUNNER_TEMP/go-test-events/backend-count-*.jsonl`,
+one file per run for the job's artifact. Locally it deletes the temporary report on exit.
 
 ## database-skips.sh
 
@@ -682,6 +684,9 @@ leg. Any other `-run` shape (`^(.*)$`, `^(A)|(B)$`, a bare name) is refused as a
 before any test runs. `--report` reads a `go test -json` report instead and runs nothing, and
 refuses the six options that shape a run (`--var`, `--race`, `--timeout`, `--skip`,
 `--count-table`, `-run`).
+On CI each test run also keeps an exact copy of its report in
+`$RUNNER_TEMP/go-test-events/database-skips-*.jsonl` for the job's artifact. Locally the
+temporary report is deleted on exit. `--report` writes no events file.
 
 It names the packages as `go list` does under the run's own flags, so a pattern spelled
 `./cmd/./cipherd/` counts the package it runs. It prints `SKIP PACKAGE TEST` for each skip of a
@@ -782,12 +787,15 @@ fails waiting for its hold, and with `-drop server.shutdown` the test that stops
 fails at its own deadline, since the stop then waits for the parked goroutine. A name no hook of
 that version reports is refused before anything is built, so a mistyped point cannot fail a test
 on a compile error. It fails, naming the package, when a package declares no `TestForcedOrder`
-test, or runs none because every one skipped (that package's `ok` line is printed as a `FAIL`
-line).
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` holds it to five of
-those refusals (a package whose tests all skip, a `-drop` name that is no point, an empty `-server`,
-an empty `-C`, a module that replaces nats-server), with the fixture package
-`internal/testnats/hooktest/skiponly`.
+test, or runs none because every one skipped. The script reads each package's verdict from its own
+events and replaces a skip-only package's `ok` with `FAIL`.
+
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks nine cases:
+five refusals (a package whose tests all skip, an unknown `-drop` point, an empty `-server`, an empty
+`-C`, and a module that replaces nats-server), verbose test output with no gotestsum summary, two
+passing packages with interleaved events, a skip-only package whose `ok` event follows another
+package's output chunk with no newline, and a failing package whose `--- FAIL` event follows
+another package's output chunk with no newline.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`
@@ -796,6 +804,10 @@ skipped. Its
 `daemon-go` job runs it with `-C packages/daemon` and no `-server`. So when `go.mod` moves to a
 nats-server with no hooks, both unversioned steps fail until the hooks are ported. Each job counts
 the 10 minutes in its time budget.
+
+The log shows Go's verbose output. Only `go test -json` stdout goes into the events file.
+CI keeps the events in `$RUNNER_TEMP/go-test-events/forced-order-*.jsonl`. A local run deletes
+the temporary events file on exit.
 
 ## store-live-check.sh
 

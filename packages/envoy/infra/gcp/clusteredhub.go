@@ -212,22 +212,40 @@ func (t *ClusteredHubTailnetArgs) Annotate(a infer.Annotator) {
 
 // ClusteredHubListenerArgs are the session listener the hub runs as a workload of its own, which
 // the tailnet hosts forward the Tailscale Service's port 9020 to and the pods of
-// clientNamespaces reach at its cluster Service: its image, its machine id, the public key of its
-// NATS user's seed, and the existing Kubernetes Secret in the hub's namespace, and the key in it,
-// holding that seed, which the component mounts by reference and never reads. The hub renders
-// the listener's user itself, named after the machine id and granted core.ListenerPermissions
-// for it, as gcp:NatsHub renders its own listener's. Declared as the hub's own listener input, or
-// with clientNamespaces, the listener requires a credential of every caller (oidcIssuer,
-// oidcAudience, oidcAccounts); a tailnet.listener without clientNamespaces serves the tailnet
-// hosts with none, as it always has.
+// clientNamespaces reach at its cluster Service: its image, its machine id, and the NATS identity
+// it connects with, one of two. In the seeded mode, natsAudience unset, that is the public key of
+// its NATS user's seed, and the existing Kubernetes Secret in the hub's namespace, and the key in
+// it, holding that seed, which the component mounts by reference and never reads; the hub renders
+// the listener's user itself, named after the machine id and granted core.ListenerPermissions for
+// it, as gcp:NatsHub renders its own listener's. In the token mode, natsAudience set beside
+// authCallout, it is a projected token of the listener's own ServiceAccount for natsAudience,
+// which the auth service admits it by: the hub renders no user for the listener and mounts no
+// Secret. Declared as the hub's own listener input, or with clientNamespaces, the listener
+// requires a credential of every caller (oidcIssuer, oidcAudience, oidcAccounts); a
+// tailnet.listener without clientNamespaces serves the tailnet hosts with none, as it always has.
 type ClusteredHubListenerArgs struct {
 	Image string `pulumi:"image"` // pinned: <name>@sha256:<digest>
 	// The listener's machine id: tailnet.serviceName by default with tailnet, and required
-	// without it.
-	MachineID      *string `pulumi:"machineId,optional"`
-	NKey           string  `pulumi:"nkey"` // the seed's public key; never the seed
-	SeedSecretName string  `pulumi:"seedSecretName"`
-	SeedSecretKey  string  `pulumi:"seedSecretKey"`
+	// without it. In the seeded mode it names the listener's NATS user, so a dotted one is refused;
+	// in the token mode it names no user, so a dotted one is taken, and one holding a space, '*',
+	// '>', '/', '=' or a control character, or the id '-', which no BROKER_NATS_SERVICES entry can
+	// name, is refused.
+	MachineID *string `pulumi:"machineId,optional"`
+	// The seeded mode's NATS user: the seed's public key, never the seed, and the Secret in the
+	// hub's namespace, and the key in it, holding the seed. Each is required without natsAudience
+	// and refused beside it.
+	NKey           string `pulumi:"nkey,optional"`
+	SeedSecretName string `pulumi:"seedSecretName,optional"`
+	SeedSecretKey  string `pulumi:"seedSecretKey,optional"`
+	// The token mode: the audience of the projected ServiceAccount token the listener presents to
+	// the auth service as its NATS credential, from the file NATS_SERVICE_TOKEN_FILE names. It is
+	// the broker's BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists the listener's
+	// account, system:serviceaccount:<namespace>:<name>-listener, as a listener of its machine id.
+	// Refused without authCallout, beside nkey, seedSecretName or seedSecretKey, holding whitespace
+	// or a control character anywhere (the broker trims its own audience, so one with leading or
+	// trailing whitespace would never verify), and equal to oidcAudience or oidcIssuer. Unset, the
+	// listener runs in the seeded mode, as it always has.
+	NatsAudience string `pulumi:"natsAudience,optional"`
 	// The namespaces whose pods reach the listener's port at its cluster Service,
 	// <name>-listener.<namespace>.svc.cluster.local, which the listener then serves beside the
 	// tailnet hosts: none when unset, and at least one without tailnet, where no tailnet host
@@ -428,7 +446,8 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 			return
 		}
 		fields = append(fields, field{path + ".image", l.Image},
-			field{path + ".seedSecretName", l.SeedSecretName}, field{path + ".seedSecretKey", l.SeedSecretKey})
+			field{path + ".seedSecretName", l.SeedSecretName}, field{path + ".seedSecretKey", l.SeedSecretKey},
+			field{path + ".natsAudience", l.NatsAudience})
 		opt(path+".machineId", l.MachineID)
 		opt(path+".cpu", l.Cpu)
 		opt(path+".memory", l.Memory)
@@ -457,7 +476,9 @@ func clusteredHubSeededInput(args *ClusteredNatsHubArgs) (string, bool) {
 }
 
 // newClusteredHubSettings validates args and renders what the plain inputs alone decide. Every
-// refusal is a core.InputError naming the input, a seed in any plain string input first.
+// refusal is a core.InputError naming the input, a seed in any plain string input first. Beside
+// privateProjects a session listener in the token mode that serves /v1 with no credential is
+// refused (openListenerBesidePrivateProjects), as the monitoring port open to a namespace is.
 func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, error) {
 	if input, ok := clusteredHubSeededInput(args); ok {
 		return clusteredHubSettings{}, core.InputErrorf(seedInput(input), "%w", core.SeedRefusal(input))
@@ -551,6 +572,9 @@ func newClusteredHubSettings(args *ClusteredNatsHubArgs) (clusteredHubSettings, 
 	if s.listener, listener, err = newClusteredHubListenerSettings(args, listenerArgs, listenerPath, s); err != nil {
 		return clusteredHubSettings{}, err
 	}
+	if args.PrivateProjects && s.listener != nil && s.listener.natsAudience != "" && s.listener.credential == nil {
+		return clusteredHubSettings{}, openListenerBesidePrivateProjects()
+	}
 	auth, err := authorization(args.Users, listener, args.SessionUser, args.AuthCallout, args.PrivateProjects)
 	if err != nil {
 		return clusteredHubSettings{}, err
@@ -580,6 +604,22 @@ func monitorBesidePrivateProjects(namespaces []string) error {
 	return core.InputErrorf("monitorNamespaces", "monitorNamespaces and privateProjects: nats-server's monitoring port, 8222, answers /connz, /subsz and /jsz with no authentication, "+
 		"naming the subjects, connections and consumers of every client, a private project's among them, to every pod of %q; "+
 		"leave monitorNamespaces empty: the kubelet's probes, the exporter in each pod, kubectl port-forward and exec, and Managed Prometheus need none of it", namespaces)
+}
+
+// openListenerBesidePrivateProjects refuses privateProjects beside a session listener in the token
+// mode that requires no credential on /v1: a tailnet.listener with no clientNamespaces
+// (clusteredHubListenerCredentialFor), which renders ENVOY_API_ALLOW_UNAUTHENTICATED
+// (clusteredHubListenerEnv). Its /v1 serves the sessions and messages of every project, a private
+// project's among them, to every caller that reaches it with no credential at all, and what keeps
+// it to the tailnet hosts is its NetworkPolicy alone, as the monitoring port's reach is
+// (monitorBesidePrivateProjects). A token-mode listener that requires a credential of every
+// caller, the hub's own listener input or a tailnet.listener with clientNamespaces, is accepted.
+// The seeded listener is core's to refuse beside privateProjects, for the user whose seed the hub
+// stores, so this refusal reads the token mode alone.
+func openListenerBesidePrivateProjects() error {
+	return core.InputErrorf("tailnet.listener", "tailnet.listener and privateProjects: a tailnet.listener with no clientNamespaces serves /v1 with no credential (ENVOY_API_ALLOW_UNAUTHENTICATED), "+
+		"answering the sessions and messages of every project, a private project's among them, to every caller the tailnet hosts forward; "+
+		"declare it as listener, or give it clientNamespaces with oidcIssuer, oidcAudience and oidcAccounts: either way the listener requires every caller's projected ServiceAccount token")
 }
 
 // hubSizing resolves each hub pod's volume (diskSizeGb), JetStream's file store within it

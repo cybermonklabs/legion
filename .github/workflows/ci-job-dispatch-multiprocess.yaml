@@ -72,6 +72,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -93,8 +95,16 @@ jobs:
       - name: Two-process tests of the Dispatch server
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh multiprocess ./cmd/dispatch)
-          go test -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch
+          gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/dispatch-multiprocess.jsonl" --format standard-verbose --raw-command -- go test -json -tags multiprocess -count=1 -timeout 45m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

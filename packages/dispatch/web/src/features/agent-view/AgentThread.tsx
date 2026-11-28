@@ -11,7 +11,7 @@ import {
   unstable_useTriggerPopoverScopeContext,
   useAuiState,
 } from "@assistant-ui/react";
-import { type AgentStreamCommand, dispatchWritingBox } from "@legion/contracts";
+import type { AgentStreamCommand } from "@legion/contracts";
 import { type ReactNode, type RefObject, useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { ChevronIcon } from "../../components/DisclosureToggle";
@@ -52,7 +52,7 @@ import { PHONE_VIEWPORT_QUERY, useMediaQuery } from "../shell/useDialog";
 import { readDispatchMarks, turnKey } from "./dispatch-marks";
 import type { LivePlace } from "./live-views";
 import { type ReferenceKeys, ReferenceTriggers } from "./ReferenceTriggers";
-import { BOX_WITH_KEYBOARD, HIDDEN_WITH_KEYBOARD } from "./use-keyboard-overlay";
+import { BOX_WITH_KEYBOARD } from "./use-keyboard-overlay";
 import { useLiveFollow } from "./use-live-follow";
 import { useFrameCoalesced } from "./useFrameCoalesced";
 
@@ -63,10 +63,6 @@ import { useFrameCoalesced } from "./useFrameCoalesced";
  */
 
 const preClasses = `mt-2 max-h-64 overflow-auto rounded-md p-2 text-xs whitespace-pre-wrap ${surfaceMutedBg} ${textMutedOnSurfaceMuted}`;
-
-/** This box's row of the writing list: one box, one write - a message to this session - so the
- *  line under the box is read once (`DISPATCH_WRITING_BOXES`). */
-const WRITING = dispatchWritingBox("agent-live-composer", "agent-message");
 
 /** A tool call and, once it lands, its result. Folded by default: tool traffic is the bulk of a
  *  session's output and a viewer is usually reading the prose around it. */
@@ -630,8 +626,8 @@ export function AgentThread({
       </ErrorBoundary>
       {/* The trigger root always wraps the composer, so commands arriving or going never
           remounts the input under the person's caret. The form stays the composer's one box,
-          `relative`, so the command list is anchored to it and the whole composer, hint line
-          included, is what a layout measures. */}
+          `relative`, so the command list is anchored to it and the whole composer is what a
+          layout measures. */}
       <ComposerPrimitive.Unstable_TriggerPopoverRoot>
         <ComposerPrimitive.Root
           className={`relative mt-3 flex flex-col gap-1 border-t pt-3 ${borderDefault}`}
@@ -706,14 +702,6 @@ export function AgentThread({
             id={hintId}
           >
             {held ? placeholder : shownRefusal}
-          </p>
-          {/* What a pick does here, in the writing list's own words, so the line under the box
-              and the list that drives the browser rows cannot drift apart. */}
-          <p
-            className={`text-xs ${textMutedOnCanvas} ${HIDDEN_WITH_KEYBOARD}`}
-            data-testid="agent-message-hint"
-          >
-            {WRITING.hint}
           </p>
         </ComposerPrimitive.Root>
       </ComposerPrimitive.Unstable_TriggerPopoverRoot>

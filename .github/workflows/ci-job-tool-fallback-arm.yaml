@@ -57,8 +57,8 @@ jobs:
     # a stand-in curl shortens that job's arranged refusals, and this job, whose measured runs
     # drive no such ladder, must not move.
     # That paragraph is about the two Bun halves, which run first, behind no stand-in curl.
-    # The cases after them are the arm64 rows of crane, changie, mise, jj and elan, installed once
-    # from their release assets and once more under the fault, where each must read its ghcr copy;
+    # The other cases are the arm64 installs of crane, changie, gotestsum, jj and elan, once
+    # from their release assets and once more under the fault, from their ghcr copies;
     # those faulted installs try their primary first, as every install action does, so they run
     # behind the stand-in curl the tool-fallback job uses, which ends each arranged refusal in
     # about a second, and the Bun halves above it are left as they were measured.
@@ -70,29 +70,31 @@ jobs:
     # install is refused at once by the fault and cut to about a second by the stand-in, and the
     # slow source left is its ghcr copy. install-jj makes two fetches each time, mise's archive
     # and jj itself (mise's own download on the healthy half, the jj copy on the faulted half), so
-    # the four healthy and four faulted installs make ten: 10 × 124 s, 21 minutes (21). The four
-    # probes, each two requests bounded at 15 s (2). The rest of these cases as measured, the
-    # readings, the stand-in and the removals, 25 s in all in run 44073112404 (1). That is 24,
-    # and with the Bun halves' 15 it is 39, so the limit is the next minute up, 40. A limit any
-    # lower is reached during that outage by a run that would pass, and a job its own limit cuts
+    # the five healthy and five faulted installs make (5 + 1) × 2 = 12 fetches: 12 × 124 s,
+    # 24.8 minutes (25). The five probes that mark the log before these faulted installs each
+    # make two requests bounded at 15 s (3). The probe that reads the fault before any install
+    # meets it is already in the Bun halves' 15. The rest of these cases, the readings, the
+    # stand-in and the removals, took 2 s in run 44073112404 and 1 s in the every-job run
+    # 46131305951 at 8cc4da41 (1). That is 29, and with the Bun halves' 15 it is 44, so the limit
+    # is the next minute up, 45.
+    # A lower limit can end a run that would pass during that outage. A job its own limit cuts
     # off reports `cancelled`, which ci-ok fails on exactly the day the copies are doing their
     # work.
     # Measured, this job sits far inside that budget: in run 44073112404 (2026-11-17) the whole
     # job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s
-    # and 33 s, as before them.
+    # and 33 s, as before them. In run 46131305951 the whole job took 72 s.
     # Each install step declares `timeout-minutes: 11`, for the reason
     # .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
     # gives. None of them carries
     # `continue-on-error`, so a held install here is loud by itself: the bound fails the job at
     # about 11.5 minutes, the steps after it are skipped, and the job uploads its log. The last
-    # install of the job started 72 s into that measured run, so its bound ends near 12.7 minutes
-    # in, and the limit of 40 is reached first only when the steps before an install take more
-    # than about 28 minutes, which is a run already near the worst case above. The reading either
-    # way is a job with a log, which is what the twenty-six installs of tool-fallback cannot give
-    # and why their clock exists.
-    timeout-minutes: 40
+    # install of the job started 72 s into run 44073112404, so its bound ends near 12.7 minutes
+    # in, and the limit of 45 is reached first only when the steps before an install take more
+    # than about 33 minutes. Either way this job has a log. The twenty-nine
+    # timed installs of tool-fallback need their own clock to distinguish a timeout from a refusal.
+    timeout-minutes: 45
     env:
-      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 45 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -126,6 +128,9 @@ jobs:
         uses: ./.github/actions/install-changie
 
       - timeout-minutes: 11
+        uses: ./.github/actions/install-gotestsum
+
+      - timeout-minutes: 11
         uses: ./.github/actions/install-jj
 
       - timeout-minutes: 11
@@ -142,6 +147,7 @@ jobs:
           wrong=""
           "$proof" version-answers crane-aarch64 "$(crane version)" || wrong="$wrong crane-aarch64"
           "$proof" version-answers changie-aarch64 "$(changie --version)" || wrong="$wrong changie-aarch64"
+          "$proof" version-answers gotestsum-aarch64 "$(gotestsum --version)" || wrong="$wrong gotestsum-aarch64"
           "$proof" version-answers mise-aarch64 "$(mise --version)" || wrong="$wrong mise-aarch64"
           "$proof" version-answers jj-aarch64 "$(jj --version)" || wrong="$wrong jj-aarch64"
           "$proof" version-answers elan-aarch64 "$(elan --version)" || wrong="$wrong elan-aarch64"
@@ -215,6 +221,20 @@ jobs:
           proof=.github/scripts/ci-tools-proof.sh
           "$proof" version-answers changie-aarch64 "$(changie --version)" ||
             { echo "::error::the changie the copy served does not answer the changie-aarch64 row's version" >&2; exit 1; }
+          "$proof" refusals github.com
+
+      - name: Mark the fault's log before the faulted gotestsum install
+        run: .github/scripts/ci-tools-proof.sh probe github.com
+
+      - timeout-minutes: 11
+        uses: ./.github/actions/install-gotestsum
+
+      - name: Read the gotestsum the copy served
+        run: |
+          set -euo pipefail
+          proof=.github/scripts/ci-tools-proof.sh
+          "$proof" version-answers gotestsum-aarch64 "$(gotestsum --version)" ||
+            { echo "::error::the gotestsum the copy served does not answer the gotestsum-aarch64 row's version" >&2; exit 1; }
           "$proof" refusals github.com
 
       - name: Mark the fault's log before the faulted jj install

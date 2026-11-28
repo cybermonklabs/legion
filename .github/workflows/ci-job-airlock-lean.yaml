@@ -50,9 +50,12 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
-      # No Go cache family: the proxyrules package imports the standard library and internal/fold,
-      # which imports nothing, so this job downloads no module and compiles no third-party code,
-      # as envoy-go-race-api does.
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
+      # No Go test cache family: the proxyrules package imports only the standard library and
+      # internal/fold, which imports only the standard library. The job downloads no Go module.
+      # The gotestsum install uses no Actions cache.
+      # It fetches the release tarball its .github/ci-tools.yaml row pins.
       #
       # elan and the Lean toolchain it installs, under the ELAN_HOME
       # .github/actions/install-elan sets ($RUNNER_TEMP/elan, under the runner's work directory),
@@ -83,11 +86,19 @@ jobs:
       # a host-less entry, which both validations refuse and a proxy request for which both
       # refuse as a secret not behind the airlock.
       - name: Compare the Go airlock with the model over the seed corpus
-        run: go test -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/airlock-seed.jsonl" --format standard-verbose --raw-command -- go test -json -v -run '^(FuzzAirlock|TestModelAgreesOnHostShapes|TestTheModelRefusesAHostlessEntry)$' ./internal/cipher/proxyrules/
         working-directory: packages/envoy
       - name: Fuzz the Go airlock against the model
-        run: go test -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/airlock-fuzz.jsonl" --format standard-quiet --raw-command -- go test -json -fuzz FuzzAirlock -fuzztime=120s -run FuzzAirlock ./internal/cipher/proxyrules/
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

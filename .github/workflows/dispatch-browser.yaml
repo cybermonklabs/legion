@@ -24,12 +24,13 @@ on:
         description: >-
           The id of the job that calls this file: dispatch-browser, dispatch-browser-pr or
           dispatch-references of ci.yaml, or dispatch-browser of the nightly. GitHub names each
-          job of this file `<that id> / <job>`, so the merge job reads only the jobs under it;
-          every artifact name starts with it, so ci.yaml's callers that share a run - a pull
-          request labelled full-ci runs dispatch-browser beside dispatch-browser-pr, and one that
-          changes what the reference rows test runs dispatch-references beside it - upload and
-          download none of each other's; and the merge job's ci-ok report, where its caller asks
-          for one, names it.
+          job of this file `<that id> / <job>`, or `<outer> / <that id> / <job>` where ci.yaml is
+          itself called (`.github/workflows/large-pr-lanes.yaml#approval`), so the merge job reads
+          only the jobs under it; every artifact name starts with it, so ci.yaml's callers that
+          share a run - a pull request labelled full-ci runs dispatch-browser beside
+          dispatch-browser-pr, and one that changes what the reference rows test runs
+          dispatch-references beside it - upload and download none of each other's; and the merge
+          job's ci-ok report, where its caller asks for one, names it.
         type: string
         required: true
       ci-ok-changes:

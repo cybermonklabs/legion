@@ -3,6 +3,7 @@
     "daemon": false,
     "dispatch": true,
     "edge-listener": true,
+    "jsread": false,
     "listener": true,
     "measure": false,
     "operator": false,

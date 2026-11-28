@@ -80,6 +80,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -105,8 +107,16 @@ jobs:
           DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@${{ steps.service-address.outputs.address }}:5432/postgres?sslmode=disable
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/dispatch-memory.jsonl" --format standard-verbose --raw-command -- go test -json -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      # Keep each Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -152,6 +162,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      - name: Install gotestsum
+        uses: ./.github/actions/install-gotestsum
       # The settings the service's command: line asks for, read back from the server; why each one
       # is .github/scripts/postgres-service-settings.sh's header.
       - name: Read the service's settings back
@@ -165,8 +177,16 @@ jobs:
           consts: |
             packages/envoy/cmd/dispatch/agent_memory_group_test.go memoryGroupImage
       - name: The server ends its agent before the kernel
-        run: go test -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch
+        run: gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/dispatch-memory-group.jsonl" --format standard-verbose --raw-command -- go test -json -count=1 -timeout 15m -v -run '^TestTheServerEndsTheAgentBeforeTheKernel$' ./cmd/dispatch
         working-directory: packages/envoy
+
+      # Keep the Go run's test2json events, including on failure.
+      # why: docs/testing.md#which-tests-a-ci-job-ran
+      - name: Upload the go test events
+        if: always()
+        uses: ./.github/actions/go-test-events-upload
+        with:
+          check-run-id: ${{ job.check_run_id }}
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

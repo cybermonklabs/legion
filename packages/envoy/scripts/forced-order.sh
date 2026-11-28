@@ -41,6 +41,9 @@
 # CI jobs that run this script count in their time budgets. The copies of go.mod and go.sum, or of
 # go.work and go.work.sum, may gain the checksums the build needs; the repository's own files are
 # never written. scripts/forced-order.test.sh holds it to these refusals.
+# The log shows Go's verbose output. The script keeps stdout from go test -json in
+# $RUNNER_TEMP/go-test-events/forced-order-*.jsonl for the job's artifact, or in its temporary
+# directory, removed on exit.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -232,26 +235,71 @@ empty="$(awk '
 ' "$work/list")"
 [ -z "$empty" ] || die "no TestForcedOrder test in: $empty"
 
-# Every package named must also run one. go test -v prints `--- PASS:` or `--- FAIL:` at the start
-# of a line for each top-level test that ran (`--- SKIP:` for one that skipped), and ends each
-# package's output, which it prints as one block, with that package's own `ok` or `FAIL` line. A
-# package whose every forced-order test skipped would end in `ok`: its line is printed as a FAIL
-# line instead, and the run fails. The go command stays a line of its own, the text
-# .github/scripts/ci_job_reads.py pins.
+# Every package named must also run one. A package whose forced-order tests all skip would end
+# in `ok`: the script prints a FAIL line instead and fails the run.
+events_dir="$work"
+if [ -n "${RUNNER_TEMP:-}" ]; then
+  events_dir="$RUNNER_TEMP/go-test-events"
+  mkdir -p "$events_dir"
+fi
+events=$(mktemp --suffix=.jsonl "$events_dir/forced-order-XXXXXX")
 run_forced_order_tests() {
-  "${go_cmd[@]}" test "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
+  # Keep the command on one line for ci_job_reads.py's FORCED_ORDER_GO_TEST pin.
+  "${go_cmd[@]}" test -json "${flags[@]}" -count=1 -v -timeout "${GO_TEST_TIMEOUT:-10m}" -run '^TestForcedOrder' "$@"
 }
-run_forced_order_tests "$@" 2>&1 | awk '
-  /^--- (PASS|FAIL): TestForcedOrder/ { ran++ }
-  /^(ok|FAIL)[ \t]+[^ \t]/ {
-    if ($1 == "ok" && ran == 0) {
-      print "FAIL\t" $2 "\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)"
-      fflush()
-      skipped = skipped " " $2
-      next
-    }
-    ran = 0
+
+# Follow each package's events independently: another package's output may interrupt a line.
+# Merge stderr into the log outside the pipeline so it never enters the events file.
+{
+  run_forced_order_tests "$@" |
+    tee --output-error=exit "$events" |
+    jq --unbuffered -nRj '
+      def start_line: if .open_source == null then "" else "\n" end;
+
+      # The output of a package (source "" for an event with no Package) can leave a line open, and
+      # text from another source then starts a new line. A non-JSON line (source false) and the
+      # verdict this script writes (source null) always end their line.
+      def emit($text; $source):
+        if $text == "" then .text = ""
+        else
+          .text = (if .open_source == $source then $text else start_line + $text end)
+          | .open_source = (if $text | endswith("\n") then null else $source end)
+        end;
+
+      # Raw inputs are strings. Null marks the end of the stream.
+      foreach (inputs, null) as $line (
+        {ran: {}, refused: [], text: "", open_source: null};
+        if $line == null then .
+        else
+          ($line | fromjson? // null) as $event
+          | if ($event | type) != "object" then emit($line + "\n"; false)
+            else
+              ($event.Package // "") as $package
+              | ($event.Output // "") as $output
+              | if $package == "" then emit($output; $package)
+                elif ($event.Action == "pass" or $event.Action == "fail")
+                  and ($event.Test // "" | test("^TestForcedOrder[^/]*$")) then
+                  .ran[$package] = true | emit($output; $package)
+                elif $event.Action == "output" and $event.Test == null
+                  and ($output | test("^ok[[:blank:]]")) and (.ran[$package] | not) then
+                  .refused += [$package]
+                  | emit("FAIL\t\($package)\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n"; null)
+                else emit($output; $package) end
+            end
+        end;
+        if $line != null then .text
+        elif .refused != [] then
+          (start_line + "forced-order.sh: no TestForcedOrder test ran in: \(.refused | join(" "))\n"),
+          ("" | halt_error(1))
+        else empty end
+      )
+    ' || {
+    statuses=("${PIPESTATUS[@]}")
+    # Keep the first failure, in pipeline order: Go, tee, then jq.
+    for status in "${statuses[@]}"; do
+      if [ "$status" -ne 0 ]; then
+        exit "$status"
+      fi
+    done
   }
-  { print; fflush() }
-  END { if (skipped != "") { print "forced-order.sh: no TestForcedOrder test ran in:" skipped; exit 1 } }
-'
+} 2>&1
