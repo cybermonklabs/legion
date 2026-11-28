@@ -96,6 +96,7 @@ import {
   serverLines,
   shown,
   sleep,
+  splitOf,
   type View,
   type ViewState,
 } from "./lib";
@@ -323,7 +324,7 @@ const paintedCheck = `(() => { const r = window.__evalbench; if (!r) return fals
   return !want.includes("ci") || (lists.length >= 2 && lists.every((one) => one.painted !== undefined)); })()`;
 
 async function openTab(name: string, browser: Browser): Promise<TabPage> {
-  const context = await readerContext(browser, base, login);
+  const context = await readerContext(browser, base, login, split);
   const page = await context.newPage();
   const log = new LiveLog(false);
   const tab: TabPage = { name, context, page, log, replay: new Replay(log), watch: null };
@@ -951,7 +952,7 @@ async function judge(
   const uses = new Map<Write, Map<string, Use>>();
   for (const write of usable) {
     const use = new Map<string, Use>();
-    for (const [view, { count, own }] of leaves(write.family) ?? new Map()) {
+    for (const [view, { count, own }] of leaves(write.family) ?? (new Map() as Leaves)) {
       const start = watch.start.get(view) ?? new Map<string, unknown>();
       const end = final.get(view) ?? new Map<string, unknown>();
       const c = count

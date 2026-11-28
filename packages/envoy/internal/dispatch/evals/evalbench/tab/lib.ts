@@ -9,6 +9,18 @@
 // The split's instruments (each step's `--split 1`) explain a run's numbers and cost the page and
 // the server time of their own: a plain run, which judges every bound, runs none of them (the
 // architect's ruling on T33's split, dispatch://INFRA-2918/comment/b286546b-9d3c-4361-a987-dc1b3fdc4018).
+//
+// The rule the times are judged by is INFRA-979's ruling on the first screen and the machine
+// (dispatch://INFRA-2918/comment/75af800e-9db9-47d9-9c4d-427b0cff36c0), as k4 and k19 of the
+// Verification document (v23) state it. Every page is 1440×900 at device scale 1, at the top of
+// the page (VIEWPORT), and the first paint ends at its first screen (screenPaint): each section
+// with any part in the viewport has drawn its numbers and charts, each other section its header and
+// its box. The browser's work is judged at the speed of a reader's computer, a Lighthouse
+// BenchmarkIndex of 1500 (REFERENCE_INDEX), and the server's time as measured: each run measures
+// the host's index in the same Chromium (benchmarkIndex); above 1500 it slows the page's CPU at
+// index ÷ 1500 (throttle) and judges each time as measured, and at or below 1500 it runs
+// unthrottled and judges each time as its waits plus its main-thread time × index ÷ 1500 (speedOf,
+// judge), the main-thread time read from a trace of the paint (mainThreadTasks, busyIn).
 import { readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
@@ -67,6 +79,13 @@ export function result(line: string): void {
 export function fail(line: string): void {
   failures++;
   console.log(`FAIL ${line}`);
+}
+
+/** Prints one measurement over a budget no check gates at the run's rate, as a RECORD line, which
+ *  fails nothing (run.sh's header): at ten times the stated rate, the first paint's database time,
+ *  which counts inside the judged 0.4 s there. */
+export function recordLine(line: string): void {
+  console.log(`RECORD ${line}`);
 }
 
 /** Prints what the step did, for the reader of the log. */
@@ -131,10 +150,16 @@ export interface Browser {
 export interface BrowserContext {
   addInitScript(script: { content: string }): Promise<void>;
   newPage(): Promise<Page>;
+  /** A Chrome DevTools Protocol session attached to one page of the context (Chromium alone). */
+  newCDPSession(page: Page): Promise<CDPSession>;
   request: {
     get(url: string, options: Record<string, unknown>): Promise<{ status(): number }>;
   };
   close(): Promise<void>;
+}
+
+export interface CDPSession {
+  send(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
 
 export interface WebSocketHandle {
@@ -178,11 +203,256 @@ export async function launchChromium(): Promise<Browser> {
   });
 }
 
+// ---------------------------------------------------------------------------------------------
+// The machine (INFRA-979's ruling, part B: the header)
+
+/** The Lighthouse BenchmarkIndex a reader's computer is taken to have: the low end of Lighthouse's
+ *  "High-End Desktop" class (Lighthouse's docs/throttling.md), the ruling's reference. */
+export const REFERENCE_INDEX = 1500;
+
+/**
+ * Lighthouse's computeBenchmarkIndex, verbatim but for its comments, from Lighthouse v13.6.0's
+ * core/lib/page-functions.js
+ * (https://github.com/GoogleChrome/lighthouse/blob/v13.6.0/core/lib/page-functions.js), which
+ * Lighthouse evaluates in the page under test before it throttles it (getBenchmarkIndex of
+ * core/gather/driver/environment.js): the mean of a GC-heavy index (a string of 10,000 characters
+ * built in a loop for 500 ms) and an array copy index (100,000 integers copied from one array to
+ * another for 500 ms), each the loops a second ÷ 10.
+ */
+const BENCHMARK_INDEX = `(function computeBenchmarkIndex() {
+  function benchmarkIndexGC() {
+    const start = Date.now();
+    let iterations = 0;
+
+    while (Date.now() - start < 500) {
+      let s = '';
+      for (let j = 0; j < 10000; j++) s += 'a';
+      if (s.length === 1) throw new Error('will never happen, but prevents compiler optimizations');
+
+      iterations++;
+    }
+
+    const durationInSeconds = (Date.now() - start) / 1000;
+    return Math.round(iterations / 10 / durationInSeconds);
+  }
+
+  function benchmarkIndexNoGC() {
+    const arrA = [];
+    const arrB = [];
+    for (let i = 0; i < 100000; i++) arrA[i] = arrB[i] = i;
+
+    const start = Date.now();
+    let iterations = 0;
+
+    while (iterations % 10 !== 0 || Date.now() - start < 500) {
+      const src = iterations % 2 === 0 ? arrA : arrB;
+      const tgt = iterations % 2 === 0 ? arrB : arrA;
+
+      for (let j = 0; j < src.length; j++) tgt[j] = src[j];
+
+      iterations++;
+    }
+
+    const durationInSeconds = (Date.now() - start) / 1000;
+    return Math.round(iterations / 10 / durationInSeconds);
+  }
+
+  return (benchmarkIndexGC() + benchmarkIndexNoGC()) / 2;
+})()`;
+
+/** The host's BenchmarkIndex, measured as Lighthouse measures it in a blank page of `browser`, in
+ *  a context of its own so no instrument runs beside it; null where the page answered no positive
+ *  number or the measurement failed. */
+export async function benchmarkIndex(browser: Browser): Promise<number | null> {
+  const context = await browser.newContext({});
+  try {
+    const page = await context.newPage();
+    const index = await page.evaluate<number>(BENCHMARK_INDEX);
+    return typeof index === "number" && Number.isFinite(index) && index > 0 ? index : null;
+  } catch (error) {
+    mark(`the BenchmarkIndex was not measured: ${String(error).slice(0, 200)}`);
+    return null;
+  } finally {
+    await context.close();
+  }
+}
+
+/** How a host's times are judged at the reference's speed (the ruling's B4): above
+ *  REFERENCE_INDEX the page's CPU is throttled at `throttle`, index ÷ 1500, and each time is judged
+ *  as measured (`scale` null); at or below it the page runs unthrottled (`throttle` null) and each
+ *  time's main-thread part is judged at `scale`, index ÷ 1500. */
+export interface Speed {
+  index: number;
+  throttle: number | null;
+  scale: number | null;
+}
+
+/** The Speed of a host whose index is `index`; null where no index was read. */
+export function speedOf(index: number | null): Speed | null {
+  if (index === null || !Number.isFinite(index) || index <= 0) return null;
+  const ratio = index / REFERENCE_INDEX;
+  return index > REFERENCE_INDEX
+    ? { index, throttle: ratio, scale: null }
+    : { index, throttle: null, scale: ratio };
+}
+
+/** One moment's time from the navigation, in milliseconds: as measured (`raw`) and as judged, and
+ *  where the page ran unthrottled the two parts it is judged from: its waits (the raw time less the
+ *  main thread's busy time before the moment) and its main-thread time. */
+export interface Judged {
+  raw: number;
+  judged: number;
+  waits: number | null;
+  main: number | null;
+}
+
+/** Judges a moment `raw` ms after the navigation whose main thread was busy `main` ms before it, on
+ *  a host of `speed`: throttled, as measured; unthrottled, its waits plus its main-thread time ×
+ *  index ÷ 1500. Null where the moment, the speed or, unthrottled, the main-thread time is unread. */
+export function judge(raw: number | null, main: number | null, speed: Speed | null): Judged | null {
+  if (raw === null || !Number.isFinite(raw) || speed === null) return null;
+  if (speed.scale === null) return { raw, judged: raw, waits: null, main: null };
+  if (main === null || !Number.isFinite(main)) return null;
+  const waits = raw - main;
+  return { raw, judged: waits + main * speed.scale, waits, main };
+}
+
+/** A moment's fields on a RESULT line, each named `<name>_<part>_ms`: its raw time, its judged
+ *  time (`none` where it was not judged), and its waits and main-thread time (`none` where the page
+ *  was throttled or the moment was not judged). */
+export function judgedFields(name: string, raw: number | null, moment: Judged | null): string {
+  return (
+    `${name}_raw_ms=${ms(raw)} ${name}_judged_ms=${ms(moment?.judged)} ` +
+    `${name}_waits_ms=${ms(moment?.waits)} ${name}_main_ms=${ms(moment?.main)}`
+  );
+}
+
+/** The speed's fields on a RESULT line: the index, the throttling rate or the scale, each in full
+ *  so index ÷ 1500 can be checked, and the node with its machine type (job.sh), `unread` where the
+ *  run read none. */
+export function speedFields(speed: Speed | null, node: string, instanceType: string): string {
+  return (
+    `index=${speed?.index ?? "none"} reference_index=${REFERENCE_INDEX} ` +
+    `throttle_rate=${speed?.throttle ?? "none"} scale=${speed?.scale ?? "none"} ` +
+    `node=${node === "" ? "unnamed" : node} instance_type=${instanceType === "" ? "unread" : instanceType}`
+  );
+}
+
+/** Slows `page`'s CPU at `rate` before its navigation through a DevTools session, as Lighthouse's
+ *  DevTools throttling does (core/lib/emulation.js of v13.6.0: `Emulation.setCPUThrottlingRate`).
+ *  The session holds the throttling for as long as it is attached, so its caller keeps it until the
+ *  page closes; null where Chromium refused it. */
+export async function throttle(
+  context: BrowserContext,
+  page: Page,
+  rate: number
+): Promise<CDPSession | null> {
+  try {
+    const session = await context.newCDPSession(page);
+    await session.send("Emulation.setCPUThrottlingRate", { rate });
+    return session;
+  } catch (error) {
+    mark(`Emulation.setCPUThrottlingRate ${rate} was refused: ${String(error).slice(0, 200)}`);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// The first screen (INFRA-979's ruling, part A: the header)
+
+/** The reader's viewport: 1440×900 at device scale 1, the page at its top. */
+export const VIEWPORT = { width: 1440, height: 900 } as const;
+
+/** Where an element lies in the viewport, in CSS pixels from its top left corner. */
+export interface Rect {
+  top: number;
+  bottom: number;
+  left: number;
+  right: number;
+}
+
+/** Whether any part of `rect` lies in the first screen. */
+export function inFirstScreen(rect: Rect): boolean {
+  return (
+    rect.bottom > rect.top &&
+    rect.right > rect.left &&
+    rect.top < VIEWPORT.height &&
+    rect.bottom > 0 &&
+    rect.left < VIEWPORT.width &&
+    rect.right > 0
+  );
+}
+
+/** One section's moments, in milliseconds from the navigation: when its header and its box were
+ *  first presented (`shown`, null where the page set no box mark) and when its numbers and charts
+ *  were, its job lists' among them (`drawn`); and whether it lies in the first screen. */
+export interface SectionPaint {
+  id: string;
+  shown: number | null;
+  drawn: number | null;
+  inView: boolean;
+}
+
+/** The first paint and the moment every section was drawn: the first paint ends once each section
+ *  in the first screen is drawn and each other section shows its box (or, with no box mark, is
+ *  drawn). Each is null while a section has not, or where there is no section. */
+export function screenPaint(sections: readonly SectionPaint[]): {
+  firstPaint: number | null;
+  everySection: number | null;
+} {
+  const latest = (times: readonly (number | null)[]) =>
+    times.length === 0 || times.some((at) => at === null) ? null : Math.max(...(times as number[]));
+  return {
+    firstPaint: latest(sections.map((one) => (one.inView ? one.drawn : (one.shown ?? one.drawn)))),
+    everySection: latest(sections.map((one) => one.drawn)),
+  };
+}
+
+/** One size the page's ResizeObserver reported of a section's element, its border box in CSS
+ *  pixels, at its moment in milliseconds since the epoch. */
+export interface Size {
+  at: number;
+  width: number;
+  height: number;
+}
+
+/** A section box's size when first presented (`shown`) and when its drawing was (`drawn`), each
+ *  the last size the page reported by then, and whether it changed between them: whether any size
+ *  reported after `shown` and by `drawn` is not the shown one. A size reported in a frame comes
+ *  before that frame's presentation (the instrument's `painted`), so the last size by a moment is
+ *  the size the browser presented then. The sizes are null where the page reported none by a
+ *  moment, and `changed` is null where either moment or either size is unread. */
+export function boxChange(
+  sizes: readonly Size[],
+  shown: number | undefined,
+  drawn: number | undefined
+): { shown: Size | null; drawn: Size | null; changed: boolean | null } {
+  const by = (moment: number | undefined) =>
+    moment === undefined ? null : (sizes.filter((one) => one.at <= moment).at(-1) ?? null);
+  const first = by(shown);
+  const last = by(drawn);
+  if (shown === undefined || drawn === undefined || first === null || last === null)
+    return { shown: first, drawn: last, changed: null };
+  const changed = sizes.some(
+    (one) =>
+      one.at > shown &&
+      one.at <= drawn &&
+      (one.width !== first.width || one.height !== first.height)
+  );
+  return { shown: first, drawn: last, changed };
+}
+
 /** The instrument each page of the tab runs before any of the app's own scripts. A plain run's
- *  records what the bounds are judged by: when each section of the first paint (`[data-section]`,
- *  the timeline's left out) first reads `data-state="painted"`, when each of the CI section's job
- *  lists (`[data-job-list]`) first holds no loading line, when the narrowed cards' loading mark
- *  (`[data-narrowing="loading"]`) shows and when it gives way to the narrowed values, and for every
+ *  records what the bounds are judged by. For each section (`[data-section]`): when it first reads
+ *  `data-state="painted"` or `"failed"` (the section's own `at` and `painted`); when the app first
+ *  marks its header and its box shown (`box`: the mark `dispatch:evals-section-box:<id>`) and its
+ *  numbers and charts drawn (`drawn`: the mark `dispatch:evals-section:<id>`), each mark set in
+ *  the commit that draws what it names (useDrawnMark.ts) and stamped as the app sets it, through
+ *  `performance.mark`; and each size of its element's border box that a ResizeObserver reports
+ *  (`sizes`), which the browser reports after its own layout of a frame, so the observer forces
+ *  no layout. When each of the CI section's job lists (`[data-job-list]`) first holds no loading
+ *  line, and the section it lies in; when the narrowed cards' loading mark
+ *  (`[data-narrowing="loading"]`) shows and when it gives way to the narrowed values; and for every
  *  frame of the page's live socket (`/ws/live`), when it arrived and when the page had painted
  *  after it. A split run's (`split`) records besides: when the page made each live socket and when
  *  it opened (`opened`); when the page sent each subscribe frame, by its sub (`sends`); every
@@ -194,8 +464,8 @@ export async function launchChromium(): Promise<Browser> {
  *  page's own handlers of each live frame ran (each frame's `handled`, the app's `message`
  *  listeners of the socket, timed around each call); and the moment each React commit ended
  *  (`commits`), through the hook React's production build calls at the end of every commit, which
- *  React's developer tools install. Every time of a DOM change is read twice: `at`, the change,
- *  and `painted`, two animation frames later, once the browser has presented it. Times are
+ *  React's developer tools install. Every time of a DOM change or a mark is read twice: `at`, the
+ *  change, and `painted`, two animation frames later, once the browser has presented it. Times are
  *  milliseconds since the epoch, so they compare with the database's commit timestamps and the
  *  server's log; the navigation's own start is `start`. */
 export function instrument(split: boolean): string {
@@ -281,20 +551,51 @@ export function instrument(split: boolean): string {
     }
   }
   window.WebSocket = Measured;${splitParts}
+  const sectionOf = (id) => record.sections[id] || (record.sections[id] = { state: null, sizes: [] });
+  const BOX = "dispatch:evals-section-box:";
+  const DRAWN = "dispatch:evals-section:";
+  const setMark = performance.mark;
+  performance.mark = function (name, options) {
+    const entry = setMark.call(this, name, options);
+    if (typeof name === "string") {
+      const box = name.startsWith(BOX);
+      if (box || name.startsWith(DRAWN)) {
+        const section = sectionOf(name.slice(box ? BOX.length : DRAWN.length));
+        const key = box ? "box" : "drawn";
+        if (section[key] === undefined) section[key] = stamp({});
+      }
+    }
+    return entry;
+  };
+  const sized = new ResizeObserver((entries) => {
+    const at = now();
+    for (const entry of entries) {
+      const id = entry.target.getAttribute("data-section");
+      if (id === null) continue;
+      const border = entry.borderBoxSize && entry.borderBoxSize[0];
+      sectionOf(id).sizes.push({ at, width: border ? border.inlineSize : entry.contentRect.width,
+        height: border ? border.blockSize : entry.contentRect.height });
+    }
+  });
+  const watched = new WeakSet();
   const check = () => {
     for (const element of document.querySelectorAll("[data-section]")) {
-      const id = element.getAttribute("data-section");
+      const section = sectionOf(element.getAttribute("data-section"));
       const state = element.getAttribute("data-state");
-      const seen = record.sections[id];
-      if (seen === undefined) record.sections[id] = { state };
-      else seen.state = state;
-      if ((state === "painted" || state === "failed") && record.sections[id].at === undefined) stamp(record.sections[id]);
+      section.state = state;
+      if (!watched.has(element)) {
+        watched.add(element);
+        sized.observe(element);
+      }
+      if ((state === "painted" || state === "failed") && section.at === undefined) stamp(section);
     }
     for (const element of document.querySelectorAll("[data-job-list]")) {
       const id = element.getAttribute("data-job-list");
       if (record.jobLists[id] !== undefined) continue;
       if (element.querySelector('[role="status"]') !== null) continue;
-      record.jobLists[id] = stamp({ failed: (element.textContent || "").includes("could not load") });
+      const owner = element.closest("[data-section]");
+      record.jobLists[id] = stamp({ failed: (element.textContent || "").includes("could not load"),
+        section: owner === null ? null : owner.getAttribute("data-section") });
     }
     const loading = document.querySelector('[data-narrowing="loading"]') !== null;
     if (loading && record.narrowing.loading === undefined) record.narrowing.loading = stamp({});
@@ -321,8 +622,14 @@ export interface Mark {
 /** What the instrument holds of one page; the split's records are empty in a plain run. */
 export interface Instrumented {
   start: number;
-  sections: Record<string, Stamp & { state: string }>;
-  jobLists: Record<string, Stamp & { failed: boolean }>;
+  /** Each section: its state and when it first read painted or failed (the stamp), when its box
+   *  and its drawing were first marked, and each size its element reported (instrument). */
+  sections: Record<
+    string,
+    Stamp & { state: string | null; box?: Stamp; drawn?: Stamp; sizes: Size[] }
+  >;
+  /** Each CI job list: when it first held no loading line, whether it failed, and its section. */
+  jobLists: Record<string, Stamp & { failed: boolean; section: string | null }>;
   narrowing: { loading?: Stamp; narrowed?: Stamp };
   /** Each live frame: its socket and place, and in a split run how long the page's own handlers of
    *  it ran (`handled`, ms). */
@@ -391,6 +698,17 @@ export const TRACE_CATEGORIES: readonly string[] = [
   "disabled-by-default-devtools.timeline",
   "blink.user_timing",
 ];
+
+/** What a plain run traces where its host's index is at or below 1500, so that each moment's
+ *  main-thread time can be judged (judge): the tasks each thread runs (`toplevel`) and the user
+ *  timing marks, among them the navigation's start, which is all mainThreadTasks and busyIn read.
+ *  The DevTools `Performance` domain's task durations would cost less still, but they are a running
+ *  total read when asked, which cannot tell the time before a moment from the time after it. This
+ *  trace costs the page little beside the split's: Chromium writes the events of a task as the
+ *  task begins and ends, into a buffer of the thread that runs it, and none of what the task ran
+ *  (no event of script, style, layout or paint, none with arguments to serialise), so the split's
+ *  per-call detail, its costly part, is left out. */
+export const LIGHT_TRACE_CATEGORIES: readonly string[] = ["toplevel", "blink.user_timing"];
 
 /** What a task of the main thread spent its time on: the page's script (event handlers, timers,
  *  animation frame callbacks, microtasks, compiles), style and layout, paint (pre-paint, paint,
@@ -627,9 +945,9 @@ export function busyIn(
   return { ms: busy, parts };
 }
 
-/** A signed-in reader's browser context: the instrument on every page it opens, a split run's where
- *  `split`, and the session cookie of the server's dev sign-in (signIn), so no page loads before
- *  the tab. */
+/** A signed-in reader's browser context: pages of the reader's viewport (VIEWPORT, at device scale
+ *  1), the instrument on every page it opens, a split run's where `split`, and the session cookie
+ *  of the server's dev sign-in (signIn), so no page loads before the tab. */
 export async function readerContext(
   browser: Browser,
   base: string,
@@ -638,7 +956,8 @@ export async function readerContext(
 ): Promise<BrowserContext> {
   const context = await browser.newContext({
     baseURL: base,
-    viewport: { width: 1440, height: 1000 },
+    viewport: { width: VIEWPORT.width, height: VIEWPORT.height },
+    deviceScaleFactor: 1,
   });
   await context.addInitScript({ content: instrument(split) });
   await signIn(context, base, login);

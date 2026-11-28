@@ -14,10 +14,16 @@
 # server's requests are its limits, the kernel holds the server's container to those limits, and
 # the machine's CPUs beside the pod's CPU request are fewer than the server's, so no pod of the
 # server's size runs beside it; record otherwise, with the reasons. Beside that word it prints the
-# node, the machine's CPUs, CPU model and memory, each container's requests and limits as the API
-# server gave them (EVALBENCH_PODINFO) and the limits the kernel holds the server's container to
-# (supervise.sh's container file). The machine type is a label of the node, which a pod with no
-# API access cannot read: the CPUs, the CPU model and the memory are what the run itself sees.
+# node, its machine type, the machine's CPUs, CPU model and memory, each container's requests and
+# limits as the API server gave them (EVALBENCH_PODINFO) and the limits the kernel holds the
+# server's container to (supervise.sh's container file). The machine type is the node's label
+# node.kubernetes.io/instance-type, which a pod with no API access (job.yaml) cannot read: the run
+# takes it from EVALBENCH_INSTANCE_TYPE where that is set, else from the GCE metadata server where
+# it answers the machine's type (GKE's own metadata server does not), and else prints it `unread`
+# beside the node's name, and the run's reader records it from outside
+# (`kubectl get node <node> -L node.kubernetes.io/instance-type`). The tab's cases print it beside
+# every judged time (run.sh's tab). The CPUs, the CPU model and the memory are what the run itself
+# sees.
 #
 #   job.sh head    this head's first paint, EVALBENCH_PAINT_RUNS times (8), each after a fresh
 #                  start of the server, with the median and the maximum of the runs, and k2, k13
@@ -73,6 +79,8 @@
 #                          /usr/lib/postgresql/*/bin)
 #   EVALBENCH_NODE         the node the run is on (job.yaml sets it from the pod's spec.nodeName),
 #                          printed with the machine's CPUs and memory
+#   EVALBENCH_INSTANCE_TYPE  the node's node.kubernetes.io/instance-type where the run knows it;
+#                          unset, read from the GCE metadata server where it answers (the header)
 #   EVALBENCH_CONTROL      the supervisors' directory (supervise.sh) where the pod runs them in
 #                          containers of their own and holds their driver lock (job.yaml); unset,
 #                          job.sh runs them beside itself, under EVALBENCH_WORK
@@ -122,8 +130,28 @@ if [ "$mode" = tab ] && [ "$one_project" = 1 ]; then
 fi
 mark "job.sh $mode: source $source_dir at $commit, scale ${EVALBENCH_SCALE:-1}, ten times ${EVALBENCH_TEN_TIMES:-0}, one project $one_project, now $now"
 # The machine the times are measured on: k8 and k16 hold the reads to their budgets on the node the
-# Job runs on, so the log names it.
+# Job runs on, so the log names it, with its machine type where the run can read it (the header):
+# EVALBENCH_INSTANCE_TYPE, else the last part of the GCE metadata server's instance/machine-type,
+# kept only where it reads as a machine type's name; run.sh's tab prints it beside each judged time.
+instance_type_from=environment
+if [ -z "${EVALBENCH_INSTANCE_TYPE:-}" ]; then
+  instance_type_from=metadata
+  EVALBENCH_INSTANCE_TYPE=$(curl -fsS -m 3 -H 'Metadata-Flavor: Google' \
+    http://metadata.google.internal/computeMetadata/v1/instance/machine-type 2>/dev/null || true)
+  EVALBENCH_INSTANCE_TYPE=${EVALBENCH_INSTANCE_TYPE##*/}
+  case "$EVALBENCH_INSTANCE_TYPE" in '' | *[!a-z0-9-]*)
+    EVALBENCH_INSTANCE_TYPE=""
+    instance_type_from=none
+    ;;
+  esac
+fi
+export EVALBENCH_INSTANCE_TYPE
 mark "machine: node ${EVALBENCH_NODE:-unnamed}, $(nproc) CPUs, $(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo), $(awk '/^MemTotal/ { printf "%.1f GiB", $2 / 1048576 }' /proc/meminfo) of memory"
+if [ -n "$EVALBENCH_INSTANCE_TYPE" ]; then
+  mark "machine type: $EVALBENCH_INSTANCE_TYPE (from $instance_type_from)"
+else
+  mark "machine type: unread: the pod reads no node label and the metadata server answered none; read it from outside: kubectl get node ${EVALBENCH_NODE:-<node>} -L node.kubernetes.io/instance-type"
+fi
 
 # The supervisors of Postgres and of the server: the pod's, or two started here, which serve this
 # script for as long as it holds their driver lock, so they end once it exits (supervise.sh). Each
@@ -182,7 +210,7 @@ shape() {
   esac
   [ "${#reasons[@]}" -eq 0 ] || word=record
   echo "SHAPE $word compute_class=${EVALBENCH_COMPUTE_CLASS:-none} gating_class=${EVALBENCH_GATING_CLASS:-none}" \
-    "runtime_class=${EVALBENCH_RUNTIME_CLASS:-none} node=${EVALBENCH_NODE:-unnamed} machine_cpus=$cpus" \
+    "runtime_class=${EVALBENCH_RUNTIME_CLASS:-none} node=${EVALBENCH_NODE:-unnamed} instance_type=${EVALBENCH_INSTANCE_TYPE:-unread} machine_cpus=$cpus" \
     "machine_memory_gib=$(awk '/^MemTotal/ { printf "%.1f", $2 / 1048576 }' /proc/meminfo)" \
     "cpu_model=\"$(awk -F': *' '/^model name/ { print $2; exit }' /proc/cpuinfo)\"$resources server_kernel=[$kernel]" \
     "pod_cpu_request=${pod}m reasons=\"$(IFS=';'; echo "${reasons[*]:-none}")\""

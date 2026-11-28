@@ -1,21 +1,45 @@
 // The Evals tab's first paint in a browser that has loaded the app's JavaScript, against a server
-// just restarted (dispatch://INFRA-2918, T27, checks k4 and k19, measured as the ruling of ledger
-// item 62 says): run by evalbench/run.sh's `tab` command, once per case. A signed-in reader's
-// Chromium context first opens the tab once on the server the script has just started, which loads
-// the app's JavaScript into the context's cache: that navigation's time to every section painted
-// (the cold-browser time), the bundle's size and its load time are recorded. The script then
-// restarts the server (the handshake below), and a new page of the same context, its JavaScript
-// cached, is timed from its navigation to each first-paint section's `data-state="painted"`
-// (lib.ts's instrument); its live frames give the first payload, the four evals snapshots, the CI
-// section's two items snapshots and the header's legion-read snapshot, compressed; and
-// pg_stat_statements, reset before the navigation and read once every section has painted, gives
-// the paint's database time, less the statements a quiet window before it shows the server's
-// background loops run (measure paint's catalogue). The page's boot, from its navigation to its
-// first subscribe, is one `RESULT tab paint boot` line a case, read from the browser's own
-// navigation and resource timings once the paint is done, which cost the paint nothing: when the
-// document's response ended, when the document was interactive and its DOMContentLoaded handlers
-// had run, when each script the page loaded ended loading, the route's chunk (ProjectPage's) among
-// them, and each API request it made before its first frame with when it began and ended.
+// just restarted (dispatch://INFRA-2918, T27, checks k4 and k19 of the Verification document's
+// v23, measured as INFRA-979's ruling on the first screen and the machine says,
+// dispatch://INFRA-2918/comment/75af800e-9db9-47d9-9c4d-427b0cff36c0, with the restart of the
+// ruling of ledger item 62): run by evalbench/run.sh's `tab` command, once per case. The script
+// first measures the host's Lighthouse BenchmarkIndex in its own Chromium (lib.ts's
+// benchmarkIndex), which sets how each time of the case is judged (lib.ts's header and speedOf):
+// above 1500 every page of the case runs with its CPU throttled at index ÷ 1500 and each time is
+// judged as measured; at or below 1500 the pages run unthrottled, the timed navigation is traced
+// (lib.ts's LIGHT_TRACE_CATEGORIES in a plain run, the split's trace in a split run), and each time
+// is judged as its waits plus its main-thread time × index ÷ 1500 (lib.ts's judge). A signed-in
+// reader's Chromium context, every page 1440×900 at device scale 1 and never scrolled, then opens
+// the tab once on the server the script has just started, which loads the app's JavaScript into
+// the context's cache: that navigation's first paint and its time to every section drawn (the
+// cold-browser times), the bundle's size and its load time are recorded. The script then restarts
+// the server (the handshake below), and a new page of the same context, its JavaScript cached, is
+// timed from its navigation to its first paint, to every section drawn and, in the author case, to
+// the narrowed cards drawn. The first paint ends at the first screen (lib.ts's screenPaint): once
+// each section with any part in the viewport has drawn its numbers and charts (the app's mark
+// `dispatch:evals-section:<id>`, with the CI section's job lists drawn) and each other section
+// shows its header and its box (the mark `dispatch:evals-section-box:<id>`, or the drawing's where
+// the app sets none), each time the browser presented it (lib.ts's instrument); which sections lie
+// in the first screen is read once every section is drawn, when no box moves any more. Each
+// section's box is held to one size from when it is first shown to when its section is drawn
+// (lib.ts's boxChange, over the sizes the page's ResizeObserver reported). The page's live frames
+// give the first payload, the four evals snapshots, the CI section's two items snapshots and the
+// header's legion-read snapshot, compressed; and pg_stat_statements, reset before the navigation
+// and read once every section is drawn, gives the paint's database time, less the statements a
+// quiet window before it shows the server's background loops run (measure paint's catalogue). The
+// page's boot, from its navigation to its first subscribe, is one `RESULT tab paint boot` line a
+// case, read from the browser's own navigation and resource timings once the paint is done, which
+// cost the paint nothing: when the document's response ended, when the document was interactive
+// and its DOMContentLoaded handlers had run, when each script the page loaded ended loading, the
+// route's chunk (ProjectPage's) among them, and each API request it made before its first frame
+// with when it began and ended.
+//
+// Each case's `RESULT tab paint machine` line, and every line that states a judged time, carries
+// the index, the throttling rate (index ÷ 1500, above 1500) or the scale (index ÷ 1500, at or
+// below 1500), each in full, the node (--node) and its node.kubernetes.io/instance-type
+// (--instance-type, `unread` where the run read none: its reader records the type from outside).
+// Each moment is stated as `<moment>_raw_ms`, `<moment>_judged_ms` and, unthrottled, the two parts
+// it is judged from, `<moment>_waits_ms` and `<moment>_main_ms`, each rounded to 0.1 ms.
 //
 // A split run (`--split 1`, run.sh's EVALBENCH_SPLIT=1) explains the numbers a plain run judges,
 // and runs instruments that cost the page and the server time of their own (lib.ts's instrument,
@@ -31,16 +55,18 @@
 // encode its snapshot frame and to compress and write it and when the write ended, when the frame
 // arrived at the page's handler and when its parse ended, how long the page's long tasks ran
 // between the frame's write and that arrival (`busy_before_arrival_ms`), and its size; for each
-// section and CI job list, when its drawing committed and when the browser presented it; and every
-// long task of the page from the navigation to the paint, its start and its length. The server's
-// times are its debug lines (lib.ts's LOGGED) in the log --server-log names.
+// section and CI job list, when its drawing committed and when the browser presented it, and for
+// each section when its box was presented; and every long task of the page from the navigation to
+// the paint, its start and its length. The server's times are its debug lines (lib.ts's LOGGED) in
+// the log --server-log names.
 //
-// A split run also traces Chromium from the timed navigation to the paint (to the narrowed cards'
-// drawing, in the author case), and its `RESULT tab paint main` line splits the page's main
-// thread from the navigation to the paint, every task of it however short, where the long tasks
-// show none under 50 ms; it tests whether the page's handling and drawing of each frame, each
-// under 50 ms, holds the next frame's message event back (T33): how long the thread was busy and
-// how long idle, by part (script, style and layout, paint, garbage collection, parse, other);
+// A split run also traces Chromium from the timed navigation until every section is drawn (and the
+// narrowed cards, in the author case), with the split's categories, and its `RESULT tab paint main`
+// line splits the page's main thread from the navigation to the first paint, every task of it
+// however short, where the long tasks show none under 50 ms; it tests whether the page's handling
+// and drawing of each frame, each under 50 ms, holds the next frame's message event back (T33): how
+// long the thread was busy and how long idle, by part (script, style and layout, paint, garbage
+// collection, parse, other);
 // every React commit's moment; for each frame of the first payload, in the order they arrived, how
 // long the page's own handlers of it ran, how long the thread was busy, by part, between its write
 // and its arrival, and, from its arrival to the next frame's (the paint's, for the last), the time
@@ -50,6 +76,7 @@
 //
 //   bun paint.ts --url <server> --database <url> --project INFRA --case <84d-compare|28d|84d-author> \
 //     [--warmed <file> --restarted <file>] [--split 1 --server-log <file>] [--rate stated|ten] \
+//     [--node <node>] [--instance-type <machine type>] \
 //     [--quiet 30] [--catalog 65] [--timeout 120] [--author <login>] \
 //     [--sections cards,legion,ci,deploys,logged] [--login alice]
 //
@@ -78,17 +105,27 @@
 // delivery view's snapshot arrived and was parsed), the server's time for its read and its
 // snapshot's (its statements and the server's own work between them, from the snapshot's begin to
 // its commit), and when its snapshot arrived and was parsed (the ruling's item 3).
-// Budgets (spec R4, R17): every section painted within 400 ms of the navigation, the first payload
-// at most 300 KB compressed, at most 150 ms of database time at 84 days with a compare range and
-// 60 ms at 28 days with none, and the narrowed cards drawn within 2 s of the navigation. A bundle
-// load alone over 400 ms fails nothing: its line goes to the architect with its numbers (ledger
-// item 62). Each line is a RESULT, each missed budget a FAIL, and the step exits 1 when any FAIL
-// was printed; the boot's, the split's and the narrowed read's fields judge nothing.
+// Budgets (spec R4, R17; k4 and k19), each time the judged one: the first paint within 400 ms of
+// the navigation; every section drawn within 2 s of it, with no scroll; the narrowed cards drawn
+// within 2 s of it; no section's box a size other than the one it was first shown at by the time
+// its section is drawn; the first payload at most 300 KB compressed; and, at the stated rate, at
+// most 150 ms of database time at 84 days with a compare range and 60 ms at 28 days with none, as
+// measured. At ten times the stated rate (--rate ten) the database time counts inside the judged
+// 0.4 s and has no bound of its own: over 150 or 60 ms it prints a RECORD line, which fails
+// nothing. A case fails besides when it has no index, a page refused its throttling rate, a moment
+// has no judged time, or the page was not 1440×900 at device scale 1 at its top; an unread machine
+// type fails nothing. A bundle load alone over 400 ms fails nothing: its line goes to the architect
+// with its numbers (ledger item 62). Each line is a RESULT, each missed budget a FAIL, and the step
+// exits 1 when any FAIL was printed; the boot's, the split's and the narrowed read's fields judge
+// nothing.
 import { existsSync, writeFileSync } from "node:fs";
 
 import {
+  benchmarkIndex,
+  boxChange,
   busyIn,
   busyWithin,
+  type CDPSession,
   type Counted,
   counted,
   database,
@@ -100,6 +137,10 @@ import {
   frameKey,
   gzipBytes,
   type Instrumented,
+  inFirstScreen,
+  judge,
+  judgedFields,
+  LIGHT_TRACE_CATEGORIES,
   LiveLog,
   LOGGED,
   type Logged,
@@ -112,19 +153,29 @@ import {
   numberOf,
   OWN,
   type Page,
+  REFERENCE_INDEX,
+  type Rect,
   readerContext,
   readInstrument,
   recomputes,
+  recordLine,
   resetStatements,
   result,
+  type SectionPaint,
+  type Size,
+  screenPaint,
   serverLines,
   signIn,
   sleep,
+  speedFields,
+  speedOf,
   splitOf,
   TASK_PARTS,
   type Task,
   type TaskPart,
   TRACE_CATEGORIES,
+  throttle,
+  VIEWPORT,
   type View,
 } from "./lib";
 
@@ -142,6 +193,8 @@ const warmedFile = given.get("warmed");
 const restartedFile = given.get("restarted");
 const split = splitOf(given);
 const serverLog = given.get("server-log");
+const node = given.get("node") ?? "";
+const instanceType = given.get("instance-type") ?? "";
 if ((warmedFile === undefined) !== (restartedFile === undefined))
   throw new Error(
     "--warmed and --restarted name the handshake's two files, together or not at all"
@@ -152,6 +205,7 @@ if (serverLog !== undefined && !split)
   );
 
 const BUDGET_PAINT_MS = 400;
+const BUDGET_EVERY_SECTION_MS = 2000;
 const BUDGET_GZIP = 300 * 1000;
 const BUDGET_NARROWED_MS = 2000;
 /** How long the step waits for run.sh to restart the server: its start_server waits up to 900 s. */
@@ -182,26 +236,67 @@ if (chosen.narrowed) {
 }
 const path = `/projects/${encodeURIComponent(project)}/evals?${query}`;
 
-const expected = JSON.stringify(sections);
-const painted = (want: string) =>
-  `(() => { const r = window.__evalbench; if (!r) return false;
-     const want = ${want};
-     if (!want.every((id) => r.sections[id] && r.sections[id].painted !== undefined)) return false;
+// Every section drawn (its drawing marked and presented) or refused, and with the CI section the
+// two job lists drawn.
+const drawnAll = `(() => { const r = window.__evalbench; if (!r) return false;
+     const want = ${JSON.stringify(sections)};
+     const done = (s) => s !== undefined && ((s.drawn !== undefined && s.drawn.painted !== undefined)
+       || (s.state === "failed" && s.painted !== undefined));
+     if (!want.every((id) => done(r.sections[id]))) return false;
      const lists = Object.values(r.jobLists);
      return !want.includes("ci") || (lists.length >= 2 && lists.every((one) => one.painted !== undefined)); })()`;
 
-/** The times of a page's first paint, each from the navigation's start (performance.timeOrigin)
- *  to its presentation: each section's, each CI job list's, and the paint's, the latest of them,
- *  null while one of them has not painted. */
-function paintTimes(record: Instrumented) {
+/** The page's viewport, device scale and scroll, and where each section lies in the viewport,
+ *  read once every section is drawn, after the moments the case judges, so the read costs them
+ *  nothing. */
+interface Screen {
+  width: number;
+  height: number;
+  scale: number;
+  scrollX: number;
+  scrollY: number;
+  rects: Record<string, Rect>;
+}
+
+function screenOf(page: Page): Promise<Screen> {
+  return page.evaluate<Screen>(
+    `(() => ({ width: innerWidth, height: innerHeight, scale: devicePixelRatio, scrollX, scrollY,
+       rects: Object.fromEntries([...document.querySelectorAll("[data-section]")].map((element) => {
+         const r = element.getBoundingClientRect();
+         return [element.getAttribute("data-section"), { top: r.top, bottom: r.bottom, left: r.left, right: r.right }];
+       })) }))()`
+  );
+}
+
+/** The times of a page's paint, each from the navigation's start (performance.timeOrigin) to its
+ *  presentation: each section's box and drawing, its CI job lists' drawing counted in its own, and
+ *  whether it lies in the first screen (`perSection`); each CI job list's (`listTimes`); and the
+ *  first paint and the moment every section was drawn (lib.ts's screenPaint), null while one of
+ *  them has not been presented. */
+function paintTimes(record: Instrumented, screen: Screen | null) {
   const since = (at: number | undefined) => (at === undefined ? null : at - record.start);
-  const sectionTimes = sections.map((id) => [id, since(record.sections[id]?.painted)] as const);
   const listTimes = Object.entries(record.jobLists).map(
     ([id, one]) => [id, since(one.painted), one.failed] as const
   );
-  const times = [...sectionTimes.map(([, at]) => at), ...listTimes.map(([, at]) => at)];
-  const firstPaint = times.some((at) => at === null) ? null : Math.max(...(times as number[]));
-  return { firstPaint, listTimes, sectionTimes, since };
+  const perSection: SectionPaint[] = sections.map((id) => {
+    const one = record.sections[id];
+    const lists = Object.values(record.jobLists)
+      .filter((list) => list.section === id)
+      .map((list) => since(list.painted));
+    const own = since(one?.drawn?.painted);
+    const drawn =
+      own === null || lists.some((at) => at === null)
+        ? null
+        : Math.max(own, ...(lists as number[]));
+    const rect = screen?.rects[id];
+    return {
+      id,
+      shown: since(one?.box?.painted),
+      drawn,
+      inView: rect !== undefined && inFirstScreen(rect),
+    };
+  });
+  return { listTimes, perSection, since, ...screenPaint(perSection) };
 }
 
 /** The app's JavaScript a page loaded, from its resource timings: how many files, their bytes
@@ -251,32 +346,72 @@ function bootOf(page: Page): Promise<Boot> {
 }
 
 const browser = await launchChromium();
+// The host's speed, measured in this Chromium before the case (the ruling's B4), which sets how
+// every time of the case is judged (the header).
+const speed = speedOf(await benchmarkIndex(browser));
+const machine = speedFields(speed, node, instanceType);
+const traceCategories = split
+  ? TRACE_CATEGORIES
+  : speed !== null && speed.scale !== null
+    ? LIGHT_TRACE_CATEGORIES
+    : null;
 mark(
-  `paint case=${which}: Chromium ${browser.version()}, ${base}${path}${split ? " (a split run)" : ""}`
+  `paint case=${which}: Chromium ${browser.version()}, ${base}${path}${split ? " (a split run)" : ""}, ${machine}`
 );
+result(
+  `tab paint machine case=${which} rate=${rate} ${machine} ` +
+    `cpu=${speed === null ? "none" : speed.throttle !== null ? "throttled" : "unthrottled"} ` +
+    `main_thread_from=${speed === null || speed.scale === null ? "none" : split ? "split_trace" : "light_trace"}`
+);
+if (speed === null)
+  fail(
+    `tab paint case=${which} rate=${rate}: the host's BenchmarkIndex was not measured, so no time of the case is judged`
+  );
 const context = await readerContext(browser, base, login, split);
+// The DevTools sessions that hold each page's CPU throttling, kept until the pages close.
+const sessions: CDPSession[] = [];
+
+/** Throttles `one`'s CPU at index ÷ 1500 where the host is above the reference: whether its
+ *  times are judged as measured, false (and a FAIL) where Chromium refused the rate. */
+async function throttled(one: Page, what: string): Promise<boolean> {
+  if (speed === null || speed.throttle === null) return true;
+  const session = await throttle(context, one, speed.throttle);
+  if (session !== null) {
+    sessions.push(session);
+    return true;
+  }
+  fail(
+    `tab paint case=${which} rate=${rate}: Chromium refused the CPU throttling rate ${speed.throttle} (index ${speed.index} ÷ ${REFERENCE_INDEX}) on the ${what} page, so its times are not judged`
+  );
+  return false;
+}
 
 // The cold navigation: the tab opened once in the new context, which loads the app's JavaScript
-// into the context's cache, its time to every section painted, the bundle's size and its load
-// time recorded (ledger item 62).
+// into the context's cache, its first paint and its time to every section drawn, the bundle's size
+// and its load time recorded (ledger item 62), throttled as the timed page is.
 const cold = await context.newPage();
+await throttled(cold, "cold");
 await cold.goto(`${base}${path}`, { waitUntil: "commit", timeout: timeoutMs });
-let coldPaint: number | null = null;
+let coldPaint: { firstPaint: number | null; everySection: number | null } = {
+  firstPaint: null,
+  everySection: null,
+};
 try {
-  await cold.waitForFunction(painted(expected), undefined, { polling: 25, timeout: timeoutMs });
-  coldPaint = paintTimes(await readInstrument(cold)).firstPaint;
+  await cold.waitForFunction(drawnAll, undefined, { polling: 25, timeout: timeoutMs });
+  coldPaint = paintTimes(await readInstrument(cold), await screenOf(cold));
 } catch (error) {
   fail(
-    `tab paint case=${which} rate=${rate}: the cold browser's sections did not all paint within ${timeoutMs} ms: ${String(error).slice(0, 200)}`
+    `tab paint case=${which} rate=${rate}: the cold browser's sections did not all draw within ${timeoutMs} ms: ${String(error).slice(0, 200)}`
   );
 }
 const coldBundle = await bundleOf(cold);
 await cold.close();
 const bundleOver = coldBundle.loadedMs !== null && coldBundle.loadedMs > BUDGET_PAINT_MS;
 result(
-  `tab paint case=${which} rate=${rate} cold_first_paint_ms=${ms(coldPaint)} bundle_files=${coldBundle.files} ` +
+  `tab paint case=${which} rate=${rate} cold_first_paint_raw_ms=${ms(coldPaint.firstPaint)} ` +
+    `cold_every_section_raw_ms=${ms(coldPaint.everySection)} bundle_files=${coldBundle.files} ` +
     `bundle_bytes=${coldBundle.decoded} bundle_encoded_bytes=${coldBundle.encoded} bundle_transfer_bytes=${coldBundle.transfer} ` +
-    `bundle_load_ms=${ms(coldBundle.loadedMs)} bundle_load_over_${BUDGET_PAINT_MS}_ms=${bundleOver} server_restarted_after=${warmedFile !== undefined}`
+    `bundle_load_ms=${ms(coldBundle.loadedMs)} bundle_load_over_${BUDGET_PAINT_MS}_ms=${bundleOver} server_restarted_after=${warmedFile !== undefined} ${machine}`
 );
 if (bundleOver)
   mark(
@@ -296,6 +431,8 @@ if (warmedFile !== undefined && restartedFile !== undefined) {
 }
 
 const page = await context.newPage();
+// A page above the reference whose throttling Chromium refused has no judged time.
+const judgedSpeed = (await throttled(page, "timed")) ? speed : null;
 const live = new LiveLog(true);
 live.listen(page);
 const requests: { url: string; at: number }[] = [];
@@ -312,26 +449,30 @@ result(
   `tab paint case=${which} rate=${rate} catalog_statements=${catalog.size} catalog_calls=${background.reduce((n, one) => n + one.calls, 0)} catalog_db_ms=${ms(background.reduce((n, one) => n + one.ms, 0))}`
 );
 
-// The paint: pg_stat_statements reset, the navigation in the warm browser, every first-paint
-// section painted, and pg_stat_statements read then; the server's log is read from here on. A
-// split run traces Chromium from just before the navigation (TRACE_CATEGORIES) until the paint, or
-// the narrowed cards' drawing in the author case, has been read.
+// The paint: pg_stat_statements reset, the navigation in the warm browser, every section drawn,
+// and pg_stat_statements read then; the server's log is read from here on. Where the page runs
+// unthrottled, or in a split run, Chromium is traced (traceCategories) from just before the
+// navigation until every section, and in the author case the narrowed cards, have been drawn.
 const logFrom = serverLog === undefined ? 0 : logSize(serverLog);
 await resetStatements(db);
-if (split) await browser.startTracing(page, { categories: TRACE_CATEGORIES, screenshots: false });
+if (traceCategories !== null)
+  await browser.startTracing(page, { categories: traceCategories, screenshots: false });
 const called = Date.now();
 await page.goto(`${base}${path}`, { waitUntil: "commit", timeout: timeoutMs });
+// When the step saw every section drawn: the first payload and the paint's database time are cut
+// there.
 let paintedAt = 0;
 try {
-  await page.waitForFunction(painted(expected), undefined, { polling: 25, timeout: timeoutMs });
+  await page.waitForFunction(drawnAll, undefined, { polling: 25, timeout: timeoutMs });
   paintedAt = Date.now();
 } catch (error) {
   fail(
-    `tab paint case=${which} rate=${rate}: the sections did not all paint within ${timeoutMs} ms: ${String(error).slice(0, 200)}`
+    `tab paint case=${which} rate=${rate}: the sections did not all draw within ${timeoutMs} ms: ${String(error).slice(0, 200)}`
   );
 }
 const paintReadAt = Date.now();
 const atPaint = await counted(db);
+const screen = await screenOf(page);
 let atNarrowed: Counted[] | null = null;
 if (chosen.narrowed && paintedAt > 0) {
   try {
@@ -343,11 +484,11 @@ if (chosen.narrowed && paintedAt > 0) {
     atNarrowed = await counted(db);
   } catch (error) {
     fail(
-      `tab paint case=${which} rate=${rate}: the narrowed cards did not draw within ${timeoutMs} ms of the first paint: ${String(error).slice(0, 200)}`
+      `tab paint case=${which} rate=${rate}: the narrowed cards did not draw within ${timeoutMs} ms of every section's drawing: ${String(error).slice(0, 200)}`
     );
   }
 }
-const trace = split ? await browser.stopTracing() : null;
+const trace = traceCategories === null ? null : await browser.stopTracing();
 const record: Instrumented = await readInstrument(page);
 const warmBundle = await bundleOf(page);
 const boot = await bootOf(page);
@@ -355,14 +496,39 @@ const timelineState = await page.evaluate<string | null>(
   `(() => { const e = document.querySelector('[data-section="timeline"]'); return e ? e.getAttribute("data-state") : null; })()`
 );
 
-const { firstPaint, listTimes, sectionTimes, since } = paintTimes(record);
+const { firstPaint, everySection, listTimes, perSection, since } = paintTimes(record, screen);
+// The page's main thread from the navigation, from the trace, and each moment judged by it
+// (lib.ts's judge): its busy time before the moment is the moment's main-thread time.
+const main = trace === null ? null : mainThreadTasks(JSON.parse(trace.toString("utf8")), path);
+const judgedAt = (moment: number | null) =>
+  judge(
+    moment,
+    moment === null || main === null ? null : busyIn(main.tasks, 0, moment).ms,
+    judgedSpeed
+  );
+const firstPaintJudged = judgedAt(firstPaint);
+const everySectionJudged = judgedAt(everySection);
+// Each section's box, from when it was first shown (its drawing, where the app set no box mark)
+// to when its section was drawn, in the page's own moments (lib.ts's boxChange).
+const boxes = perSection.map((one) => {
+  const marked = record.sections[one.id];
+  return {
+    id: one.id,
+    marked: marked?.box !== undefined,
+    ...boxChange(
+      marked?.sizes ?? [],
+      marked?.box?.painted ?? marked?.drawn?.painted,
+      one.drawn === null ? undefined : record.start + one.drawn
+    ),
+  };
+});
 const failedSections = Object.entries(record.sections)
   .filter(([, one]) => one.state === "failed")
   .map(([id]) => id);
 
 // The first payload: the first snapshot of each of the tab's unnarrowed evals views, of the CI
 // section's two items views (pr-ci's job lists) and of the header's legion-read view (plan D23),
-// heard before the paint was complete. A snapshot of another view heard by then (the narrowed
+// heard before every section was drawn. A snapshot of another view heard by then (the narrowed
 // delivery view, a declared eval's items view) is counted beside it, outside the budget.
 const FACET_KEYS = [
   "parent_agent",
@@ -550,12 +716,25 @@ const detailReads = apiRequests.filter((one) => {
     !p.slice(detailPrefix.length).includes("/")
   );
 });
+const sizeText = (size: Size | null) => (size === null ? "none" : `${size.width}x${size.height}`);
 result(
-  `tab paint case=${which} rate=${rate} path=${path} first_paint_ms=${ms(firstPaint)} budget_ms=${BUDGET_PAINT_MS} ` +
-    `navigation_called_before_start_ms=${ms(record.start - called)} ` +
-    `sections=[${sectionTimes.map(([id, at]) => `${id}=${ms(at)}`).join(" ")}] ` +
+  `tab paint case=${which} rate=${rate} path=${path} ${judgedFields("first_paint", firstPaint, firstPaintJudged)} ` +
+    `budget_ms=${BUDGET_PAINT_MS} ${judgedFields("every_section", everySection, everySectionJudged)} ` +
+    `budget_every_section_ms=${BUDGET_EVERY_SECTION_MS} ${machine} ` +
+    `first_screen=[${perSection
+      .filter((one) => one.inView)
+      .map((one) => one.id)
+      .join(" ")}] viewport=${screen.width}x${screen.height} device_scale=${screen.scale} ` +
+    `scroll=${screen.scrollX},${screen.scrollY} navigation_called_before_start_ms=${ms(record.start - called)} ` +
+    `sections=[${perSection.map((one) => `${one.id}=${ms(one.shown)}/${ms(one.drawn)}${one.inView ? "(first screen)" : ""}`).join(" ")}] ` +
     `job_lists=[${listTimes.map(([id, at, bad]) => `${id}=${ms(at)}${bad ? "(failed)" : ""}`).join(" ")}] timeline=${timelineState} ` +
-    `warm_bundle_transfer_bytes=${warmBundle.transfer} warm_bundle_load_ms=${ms(warmBundle.loadedMs)} cold_first_paint_ms=${ms(coldPaint)}`
+    `warm_bundle_transfer_bytes=${warmBundle.transfer} warm_bundle_load_ms=${ms(warmBundle.loadedMs)} ` +
+    `cold_first_paint_raw_ms=${ms(coldPaint.firstPaint)} cold_every_section_raw_ms=${ms(coldPaint.everySection)}`
+);
+result(
+  `tab paint boxes case=${which} rate=${rate} box_marks=${boxes.filter((one) => one.marked).length} ` +
+    `resized=${boxes.filter((one) => one.changed === true).length} unread=${boxes.filter((one) => one.changed === null).length} ` +
+    `sections=[${boxes.map((one) => `${one.id}:${sizeText(one.shown)}->${sizeText(one.drawn)}${one.marked ? "" : "(no box mark)"}`).join(" ")}]`
 );
 result(
   `tab paint case=${which} rate=${rate} payload_gzip_bytes=${gzip} payload_raw_bytes=${raw} budget_gzip_bytes=${BUDGET_GZIP} ` +
@@ -613,7 +792,8 @@ result(
 // section and CI job list, then the page's long tasks to the paint.
 if (split) {
   const fields = [
-    `first_paint_ms=${ms(firstPaint)}`,
+    `first_paint_raw_ms=${ms(firstPaint)}`,
+    `every_section_raw_ms=${ms(everySection)}`,
     `server_log=${serverLog !== undefined}`,
     `server_lines=${logged.length}`,
   ];
@@ -629,11 +809,12 @@ if (split) {
       `${one.name}.gzip_bytes=${gzipBytes(one.frame.text)}`
     );
   }
-  for (const [id, presented] of sectionTimes) {
-    const committed = fromStart(firstMark(record, `dispatch:evals-section:${id}`));
+  for (const one of perSection) {
+    const committed = fromStart(firstMark(record, `dispatch:evals-section:${one.id}`));
     fields.push(
-      `section.${id}.committed_ms=${ms(committed)}`,
-      `section.${id}.presented_ms=${ms(presented)}`
+      `section.${one.id}.committed_ms=${ms(committed)}`,
+      `section.${one.id}.box_presented_ms=${ms(one.shown)}`,
+      `section.${one.id}.presented_ms=${ms(one.drawn)}`
     );
   }
   for (const [id, presented] of listTimes) {
@@ -650,10 +831,9 @@ if (split) {
   );
   result(`tab paint split case=${which} rate=${rate} ${fields.join(" ")}`);
 
-  // The page's main thread to the paint, from the trace (the header): each frame of the first
-  // payload in the order it arrived, then every task of 2 ms or more, named by the frame whose
+  // The page's main thread to the first paint, from the trace (the header): each frame of the
+  // first payload in the order it arrived, then every task of 2 ms or more, named by the frame whose
   // handler it ran or the commit it ended, else by what started it.
-  const main = trace === null ? null : mainThreadTasks(JSON.parse(trace.toString("utf8")), path);
   const mainFields = [
     `trace_events=${main?.events ?? 0}`,
     `main_thread=${main === null ? "none" : "found"}`,
@@ -720,14 +900,15 @@ if (split) {
   result(`tab paint main case=${which} rate=${rate} ${mainFields.join(" ")}`);
 }
 
-let narrowedAt: number | null = null;
+const narrowedAt = chosen.narrowed ? since(record.narrowing.narrowed?.painted) : null;
+const narrowedJudged = judgedAt(narrowedAt);
 if (chosen.narrowed) {
-  narrowedAt = since(record.narrowing.narrowed?.painted);
-  const cardsAt = since(record.sections.cards?.painted);
+  const cardsAt = since(record.sections.cards?.drawn?.painted);
   const minus = (a: number | null, b: number | null) => (a === null || b === null ? null : a - b);
   const throughNarrowed = atNarrowed === null ? null : total(own(atNarrowed));
   const judged =
-    `tab paint case=${which} rate=${rate} narrowed_cards_ms=${ms(narrowedAt)} budget_narrowed_ms=${BUDGET_NARROWED_MS} ` +
+    `tab paint case=${which} rate=${rate} ${judgedFields("narrowed_cards", narrowedAt, narrowedJudged)} ` +
+    `budget_narrowed_ms=${BUDGET_NARROWED_MS} ${machine} ` +
     `narrowed_after_first_paint_ms=${ms(minus(narrowedAt, firstPaint))} narrowed_after_cards_painted_ms=${ms(minus(narrowedAt, cardsAt))} ` +
     `loading_mark_seen=${record.narrowing.loading !== undefined} db_ms_through_narrowed=${ms(throughNarrowed)} ` +
     `db_ms_after_first_paint_through_narrowed=${ms(throughNarrowed === null ? null : throughNarrowed - dbMs)} ` +
@@ -755,27 +936,59 @@ if (chosen.narrowed) {
   );
 }
 
-if (firstPaint === null || firstPaint > BUDGET_PAINT_MS) {
-  fail(
-    `tab paint case=${which} rate=${rate}: the first paint took ${ms(firstPaint)} ms, over its ${BUDGET_PAINT_MS} ms`
-  );
+/** Fails a judged moment that is unread or over its budget. */
+function judgedBound(
+  what: string,
+  raw: number | null,
+  moment: { judged: number } | null,
+  budget: number
+) {
+  if (moment === null)
+    fail(
+      `tab paint case=${which} rate=${rate}: ${what} has no judged time (raw ${ms(raw)} ms; ${machine})`
+    );
+  else if (moment.judged > budget)
+    fail(
+      `tab paint case=${which} rate=${rate}: ${what} took ${ms(moment.judged)} ms judged (${ms(raw)} ms raw), over its ${budget} ms`
+    );
 }
+judgedBound("the first paint", firstPaint, firstPaintJudged, BUDGET_PAINT_MS);
+judgedBound("every section's drawing", everySection, everySectionJudged, BUDGET_EVERY_SECTION_MS);
+if (chosen.narrowed)
+  judgedBound("the narrowed cards' drawing", narrowedAt, narrowedJudged, BUDGET_NARROWED_MS);
+for (const one of boxes) {
+  if (one.changed === null)
+    fail(
+      `tab paint case=${which} rate=${rate}: the box of section ${one.id} has no size read when it was first shown and when its section was drawn`
+    );
+  else if (one.changed)
+    fail(
+      `tab paint case=${which} rate=${rate}: the box of section ${one.id} changed its size when its section drew (${sizeText(one.shown)} shown, ${sizeText(one.drawn)} drawn, or another between)`
+    );
+}
+if (
+  screen.width !== VIEWPORT.width ||
+  screen.height !== VIEWPORT.height ||
+  screen.scale !== 1 ||
+  screen.scrollX !== 0 ||
+  screen.scrollY !== 0
+)
+  fail(
+    `tab paint case=${which} rate=${rate}: the page was ${screen.width}x${screen.height} at device scale ${screen.scale}, scrolled to ${screen.scrollX},${screen.scrollY}, not ${VIEWPORT.width}x${VIEWPORT.height} at device scale 1 at its top`
+  );
 if (gzip > BUDGET_GZIP || gzip === 0) {
   fail(
     `tab paint case=${which} rate=${rate}: the first payload is ${gzip} bytes compressed, over its ${BUDGET_GZIP} (or none was heard)`
   );
 }
 // The author case's 150 ms judges the first paint's own reads, the narrowed read's set apart (the
-// ruling's item 4); every other case's, every statement of the paint.
+// ruling's item 4); every other case's, every statement of the paint. The bound holds at the stated
+// rate; at ten times the database time counts inside the judged 0.4 s, and a time over 150 or 60 ms
+// is a RECORD line.
 const judgedDbMs = chosen.narrowed ? firstPaintReadsDbMs : dbMs;
 if (judgedDbMs === null || judgedDbMs > chosen.budgetDbMs) {
-  fail(
+  (rate === "ten" ? recordLine : fail)(
     `tab paint case=${which} rate=${rate}: the first paint's reads took ${ms(judgedDbMs)} ms of database time, over its ${chosen.budgetDbMs} ms`
-  );
-}
-if (chosen.narrowed && (narrowedAt === null || narrowedAt > BUDGET_NARROWED_MS)) {
-  fail(
-    `tab paint case=${which} rate=${rate}: the narrowed cards drew ${ms(narrowedAt)} ms after the navigation, over their ${BUDGET_NARROWED_MS} ms`
   );
 }
 if (

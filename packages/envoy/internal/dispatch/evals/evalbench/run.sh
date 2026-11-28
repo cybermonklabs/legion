@@ -69,6 +69,21 @@
 # recomputes, and each frame a socket writes, which the paint's split and the drive's trace of its
 # slowest writes state.
 #
+# The tab's browser times are judged by INFRA-979's ruling on the first screen and the machine
+# (dispatch://INFRA-2918/comment/75af800e-9db9-47d9-9c4d-427b0cff36c0; k4 and k19 of the
+# Verification document's v23; tab/lib.ts's header): every page is 1440×900 at device scale 1, at
+# the top of the page; the first paint ends at the first screen, within 0.4 s, and every section is
+# drawn within 2 s, with no scroll, each box at one size from when it is shown to when its section
+# draws. Each paint case first measures the host's Lighthouse BenchmarkIndex in its own Chromium:
+# above 1500 its pages run with the CPU throttled at index ÷ 1500 and each time is judged as
+# measured, and at or below 1500 they run unthrottled and each time is judged as its waits plus its
+# main-thread time × index ÷ 1500, from a trace of the paint. The server's time (the waits, the
+# database time, the payload, the narrowed read and the recompute) counts as measured, so the
+# drive is not throttled. Each case's lines carry the index, the throttling rate or the scale, the
+# node (EVALBENCH_NODE) and its machine type (EVALBENCH_INSTANCE_TYPE, `unread` where job.sh read
+# none, whose type the run's reader records from outside). At ten times the stated rate the first
+# paint's database time counts inside the judged 0.4 s and over 150 or 60 ms prints a RECORD line.
+#
 # capture-base is k22's capture at the base head (legion/INFRA-978 82380570f8) over the
 # one-project fixture: once the consumers have caught up, GET /api/v1/delivery/timeline for the 84
 # days before EVALBENCH_NOW, written to EVALBENCH_BASE_TIMELINE. pages is k22's read at this head
@@ -109,8 +124,10 @@
 #                         k8's base control, print RECORD lines there, not FAIL lines
 #   EVALBENCH_SCALE       the share of INFRA's rate the fixture is loaded at, measure's -scale,
 #                         which k14's lines name
-#   EVALBENCH_NODE        the node the run is on, measure's -node, which its k16 lines name (job.yaml
-#                         sets it from the pod's spec.nodeName)
+#   EVALBENCH_NODE        the node the run is on, measure's -node, which its k16 lines name, and
+#                         tab/paint.ts's --node (job.yaml sets it from the pod's spec.nodeName)
+#   EVALBENCH_INSTANCE_TYPE   tab: the node's node.kubernetes.io/instance-type, tab/paint.ts's
+#                         --instance-type (job.sh reads it); unset, each case prints it `unread`
 #   EVALBENCH_TAB_QUIET, EVALBENCH_TAB_CATALOG   tab/paint.ts's --quiet and --catalog, seconds (30, 65)
 #   EVALBENCH_TAB, EVALBENCH_DISPATCH_DIR, EVALBENCH_WEB_DIST   tab: the evalbench/tab directory,
 #                         packages/dispatch, and the built web app the server serves
@@ -357,7 +374,7 @@ if [ "$command" = tab ]; then
     fi
     bun "$EVALBENCH_TAB/paint.ts" --url "$url" --database "$database_url" --project INFRA --case "$paint_case" --rate "$mode" \
       --quiet "${EVALBENCH_TAB_QUIET:-30}" --catalog "${EVALBENCH_TAB_CATALOG:-65}" --warmed "$warmed" --restarted "$restarted" \
-      "${split_flags[@]}" &
+      --node "${EVALBENCH_NODE:-}" --instance-type "${EVALBENCH_INSTANCE_TYPE:-}" "${split_flags[@]}" &
     paint_pid=$!
     # The cold navigation loads the app into the browser; then the server starts again under it.
     until [ -e "$warmed" ] || ! kill -0 "$paint_pid" 2>/dev/null; do sleep 0.2; done
