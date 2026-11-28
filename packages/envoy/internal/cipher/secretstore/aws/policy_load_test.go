@@ -2,8 +2,7 @@ package aws_test
 
 // This file holds the loader's reads of the AWS store that are the AWS store's own: the forms
 // Secrets Manager reports a secret's key in, KMS aliases, ListSecrets pages and filters, and the
-// version stages of a listing. They moved here from internal/cipher/policy's load_test.go, their
-// assertions unchanged, when the policy's other tests moved onto the memory store.
+// version stages of a listing.
 
 import (
 	"context"

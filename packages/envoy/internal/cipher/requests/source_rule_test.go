@@ -13,12 +13,9 @@ import (
 // between two projects reaches.
 const movedOtherProject = "projects/111111111111/secrets/cipher-"
 
-// TestSourceRuleOnSecretManagerSourcesIsMains holds sourceRule.counts, built as the broker builds it
-// on Google Cloud Secret Manager (gcpRule), on Secret Manager resource names alone
-// (projects/<number>/secrets/<id>: the sources a GCP deployment serves and its Postgres holds),
-// to the answers main gave: every row passed against the requests package of main
-// aa3eaba7c3b2, whose counts cut the configured prefix from the start of the served source. The
-// rows are TestSourceCountsThroughTheSecondPrefix's own, which this table took over, and five more.
+// TestSourceRuleOnSecretManagerSources holds sourceRule.counts, built as the broker builds it on
+// Google Cloud Secret Manager (gcpRule), on Secret Manager resource names alone
+// (projects/<number>/secrets/<id>: the sources a GCP deployment serves and its Postgres holds).
 //
 // It counts as the policy's source when the two are equal, with the second prefix set or not; and,
 // with the second prefix set, a stored source under the second prefix with the same remainder, a
@@ -32,10 +29,10 @@ const movedOtherProject = "projects/111111111111/secrets/cipher-"
 // prefix itself where the policy serves the configured prefix itself, which leaves no remainder
 // after either, and a source under the configured prefix whose id holds the second prefix's id.
 //
-// The named reverts, each run against main's counts: replace the prefix in both directions, and
-// the "configured against second" row counts; drop the guard against an empty remainder, and the
-// two rows of the bare prefixes count; compare no type, and the rows of another type count.
-func TestSourceRuleOnSecretManagerSourcesIsMains(t *testing.T) {
+// The named reverts: replace the prefix in both directions, and the "configured against second"
+// row counts; drop the guard against an empty remainder, and the two rows of the bare prefixes
+// count; compare no type, and the rows of another type count.
+func TestSourceRuleOnSecretManagerSources(t *testing.T) {
 	moved := gcpRule(t, movedConfigured, movedSecond)
 	unset := gcpRule(t, movedConfigured, "")
 	acrossProjects := gcpRule(t, movedConfigured, movedOtherProject)
@@ -92,8 +89,8 @@ func TestSourceRuleOnSecretManagerSourcesIsMains(t *testing.T) {
 // second's, and the bare prefixes do not.
 //
 // The named reverts: have the memory store answer its prefixes without the lead, and no move
-// counts; find the prefix where it first appears in the source, with the prefixes as given (the
-// rule this replaced), and the moves between the prefixes that spell part of the lead do not count.
+// counts; find the prefix where it first appears in the source, with the prefixes as given, and the
+// moves between the prefixes that spell part of the lead do not count.
 func TestSourceRuleOnMemorySources(t *testing.T) {
 	app := func(store string) string { return policy.TypeSource(policy.TypeGitHubApp, store) }
 	for _, pair := range []struct{ configured, second string }{

@@ -8,11 +8,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 )
 
-// TestParseConfigKeepsMainsChecks: the GCP store's entry refuses what config.Load refused for it on
-// main, with main's messages - no key name, a prefix that names the project by its id, an AWS
-// prefix or one with no trailing dash, a regional key - and answers the key's name and the
-// project the prefix names as its settings fields.
-func TestParseConfigKeepsMainsChecks(t *testing.T) {
+// TestParseConfigRefusesWhatTheStoreCannotRead: the GCP store's entry refuses no key name, a prefix
+// that names the project by its id, an AWS prefix or one with no trailing dash, and a regional key,
+// each naming the variable, and answers the key's name and the project the prefix names as its
+// settings fields.
+func TestParseConfigRefusesWhatTheStoreCannotRead(t *testing.T) {
 	const prefix = "projects/000000000000/secrets/agent-secrets-"
 	key := map[string]string{"BROKER_SECRETS_KMS_KEY_NAME": fakeKey}
 	getenv := func(vars map[string]string) func(string) string {

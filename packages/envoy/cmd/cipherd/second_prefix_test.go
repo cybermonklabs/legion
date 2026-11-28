@@ -83,7 +83,7 @@ const (
 // memory:<name> (memory.Source), whose name opens with the prefix behind the store's own lead, as
 // a Secret Manager source is the resource name the prefix opens; the broker hands the rule both
 // prefixes in that form (secretstore.Config.SourcePrefixes).
-// TestSourceRuleOnSecretManagerSourcesIsMains, in internal/cipher/requests, holds the rule's
+// TestSourceRuleOnSecretManagerSources, in internal/cipher/requests, holds the rule's
 // answers on Secret Manager's own names.
 //
 // The named reverts: compare a frozen source with the policy's by string alone, and step 1's

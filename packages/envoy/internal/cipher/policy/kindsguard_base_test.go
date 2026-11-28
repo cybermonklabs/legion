@@ -17,8 +17,7 @@ package policy_test
 // The merge base holds no secretstore/memory package. Its store is the fake AWS one out of
 // internal/cipher/secrets: secrets.Local, holding secrets.LocalSecret, built by secrets.NewLocal;
 // its policytest.Secret answers a secrets.LocalSecret and its policytest.Loader takes a
-// *secrets.Local (checked at 233828e4aeb: packages/envoy/internal/cipher/secrets/local.go and
-// packages/envoy/internal/cipher/policy/policytest/policytest.go). So the copy run there imports
+// *secrets.Local. So the copy run there imports
 // internal/cipher/secrets in place of internal/cipher/secretstore/memory, and spells this file's
 // memory.Secret, memory.New and *memory.Store as secrets.LocalSecret, secrets.NewLocal and
 // *secrets.Local.

@@ -39,7 +39,7 @@ func (r *bodyRecorder) Do(request *http.Request) (*http.Response, error) {
 // TestTheStoresClientsSendEachBodyThroughAWSBody: the Secrets Manager and KMS clients of the store
 // the broker opens (storeOn) hand net/http each request body with only Read and Close, as
 // awsbody.Client does, so an answered call over HTTP/1.1 is not failed by smithy-go closing the body
-// early. cmd/cipherd built both clients so on main (#5804) before the store's open moved here.
+// early.
 //
 // The named revert: build either client without awsbody.Client, and its call's body has a WriteTo.
 func TestTheStoresClientsSendEachBodyThroughAWSBody(t *testing.T) {

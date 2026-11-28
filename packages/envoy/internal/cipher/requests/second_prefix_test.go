@@ -51,7 +51,7 @@ const (
 // source is held to (sourceRule), on Secret Manager sources of the form
 // projects/000000000000/secrets/<id>: a stored secret, and a profile whose source secret moved,
 // under the second prefix, with the setting empty, and under a prefix that is neither. The rule's
-// own rows, on Secret Manager sources alone, are TestSourceRuleOnSecretManagerSourcesIsMains'.
+// own rows, on Secret Manager sources alone, are TestSourceRuleOnSecretManagerSources'.
 //
 // The policy rows load a real policy through the loader on Secret Manager resource names (the
 // memory store through resourceNamed), and hold stillAllowed, the re-check of a release and of a

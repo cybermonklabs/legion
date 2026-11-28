@@ -15,8 +15,8 @@ package aws_test
 //	cp <tmp>/main/packages/envoy/internal/cipher/secrets/testdata/source-recorded-on-main-aws.json packages/envoy/internal/cipher/secretstore/aws/testdata/
 //	git worktree remove --force <tmp>/main
 //
-// This file is that file's AWS half, moved here with the store, and it writes no record: a record
-// written by the code it checks compares that code with itself and proves nothing. A change to main
+// This file writes no record: a record written by the code it checks compares that code with
+// itself and proves nothing. A change to main
 // that adds, drops or changes a source fails this test in its own pull request: that change edits
 // the record there, in the form -record wrote it (json.MarshalIndent with two-space indents and a
 // closing newline), which the test holds the file to, and names itself here with the lines of the

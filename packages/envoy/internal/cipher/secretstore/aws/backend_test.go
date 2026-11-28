@@ -19,11 +19,10 @@ func env(vars map[string]string) func(string) string {
 	return func(name string) string { return vars[name] }
 }
 
-// TestParseConfigKeepsMainsChecks: the AWS store's entry refuses what config.Load refused for it on
-// main, with main's messages - no key, a prefix that is no Secrets Manager name prefix ending in
-// "/", a key named any way but by its ARN - and answers the key's ARN, account and region as its
-// settings fields.
-func TestParseConfigKeepsMainsChecks(t *testing.T) {
+// TestParseConfigRefusesWhatTheStoreCannotRead: the AWS store's entry refuses no key, a prefix
+// that is no Secrets Manager name prefix ending in "/" and a key named any way but by its ARN, each
+// naming the variable, and answers the key's ARN, account and region as its settings fields.
+func TestParseConfigRefusesWhatTheStoreCannotRead(t *testing.T) {
 	const prefix = "example/agent-secrets/"
 	if _, err := (aws.Backend{}).ParseConfig(prefix, env(nil)); err == nil || err.Error() != "BROKER_SECRETS_KMS_KEY_ARN is required" {
 		t.Fatalf("ParseConfig with no key = %v, want BROKER_SECRETS_KMS_KEY_ARN is required", err)
