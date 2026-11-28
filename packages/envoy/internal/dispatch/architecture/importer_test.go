@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -1509,17 +1510,34 @@ func TestComponentFactsRecordWhenAComponentWasMadeAndChanged(t *testing.T) {
 // lands the deadline on the row (and emits one sync_failed), so the Settings
 // row and the ticker's next tick both see why nothing imported. Only the
 // process stopping suppresses the record.
+//
+// The deadline runs on the importer's clock (Importer.Clock), a fake of each half's own that the
+// test moves past syncTimeout only once the sync is held at its blob read and the flight has armed
+// the deadline. A deadline of real time could pass while the sync still loads its source row, as
+// it did on a loaded machine: the load then fails with the deadline, and the sync returns it
+// unrecorded, since no row was loaded to record it on. Held at the blob read, the sync has its
+// row, so the deadline it meets there is the one this test is about.
 func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
-	// Not parallel: it writes the package variable syncTimeout, which every sync of the parallel
-	// tests reads; and it holds the cancelled caller's answer to a second of the cancel.
-	previous := syncTimeout
-	syncTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { syncTimeout = previous })
+	t.Parallel()
+	// It runs beside the package's other tests: syncTimeout keeps production's value, each half's
+	// deadline runs on a fake clock of its own and each database is its own, so it writes nothing
+	// another test reads. Its one bound of wall time, the cancelled caller's answer within a second
+	// of the cancel, measures an answer that syncAfter gives from a select on the caller's own
+	// context, with no query and no GitHub read in it, so the tests running beside it do not delay
+	// that answer by anything near a second.
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
 
 	fake := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer, database := newImporterFixture(t, fake)
+	deadlines := clocktest.New(start)
+	importer.Clock = deadlines
 
-	source, err := importer.Sync(context.Background(), "CORE", archRepo)
+	answered := syncInBackground(importer)
+	fake.blobs.waitHeld(t)
+	deadlines.AwaitArmedAt(t, "the flight's deadline, syncTimeout after it began", start.Add(syncTimeout))
+	deadlines.Advance(syncTimeout)
+	answer := waitForSync(t, answered, "the sync held past its deadline")
+	source, err := answer.source, answer.err
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("held blob: err=%v, want the deadline", err)
 	}
@@ -1531,34 +1549,48 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	}
 
 	// A caller that goes away is answered at once with its own cancellation,
-	// and the flight it left behind still records the deadline it meets.
+	// and the flight it left behind still records the deadline it meets. The
+	// caller hangs up once its flight is held at the blob read, and its answer
+	// is waited for before the fake moves, so the flight's deadline cannot have
+	// ended the flight and answered the caller in its place.
 	fake2 := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer2, database2 := newImporterFixture(t, fake2)
+	deadlines2 := clocktest.New(start)
+	importer2.Clock = deadlines2
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelled := make(chan time.Time, 1)
+	// returned is written before the answer is sent and read after it is received, so the channel
+	// orders the two.
+	var returned time.Time
+	answered2 := make(chan syncAnswer, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-		cancelled <- time.Now()
+		source, err := importer2.Sync(ctx, "CORE", archRepo)
+		returned = time.Now()
+		answered2 <- syncAnswer{source: source, err: err}
 	}()
-	_, err = importer2.Sync(ctx, "CORE", archRepo)
-	returned := time.Now()
+	fake2.blobs.waitHeld(t)
+	cancel()
+	cancelled := time.Now()
+	err = waitForSync(t, answered2, "the cancelled caller").err
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled caller: err=%v, want its own cancellation", err)
 	}
-	if waited := returned.Sub(<-cancelled); waited > time.Second {
+	if waited := returned.Sub(cancelled); waited > time.Second {
 		t.Fatalf("the cancelled caller returned %v after the cancel; want it answered at once", waited)
 	}
 	// Close would cancel the flight, which is the one thing that suppresses
 	// the record, so wait for the record first and let Close wait the flight
-	// out before reading what it wrote.
-	var lastError *string
-	for until := time.Now().Add(10 * time.Second); lastError == nil && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+	// out before reading what it wrote. The flight is still held at its blob
+	// read, and meets its deadline once the fake passes it.
+	deadlines2.AwaitArmedAt(t, "the abandoned flight's deadline, syncTimeout after it began", start.Add(syncTimeout))
+	deadlines2.Advance(syncTimeout)
+	lastError := testwait.Until(t, "the abandoned flight to record the deadline it met", func() (*string, bool) {
+		var recorded *string
 		if err := database2.Pool.QueryRow(context.Background(),
-			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
+			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&recorded); err != nil {
 			t.Fatalf("read row: %v", err)
 		}
-	}
+		return recorded, recorded != nil
+	})
 	importer2.Close()
 	if err := database2.Pool.QueryRow(context.Background(),
 		`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
