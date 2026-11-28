@@ -314,6 +314,8 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
             .filter((entry) => (entry as PerformanceMeasure).detail === "reading").length,
         HEADER_LABELS_MEASURE
       );
+    // The first second after the load, in which the reading and its one re-reading are taken; a
+    // line that has not settled by then keeps reading in every frame, which the next second sees.
     await page.waitForTimeout(1_000);
     const readings = await countReadings();
     const samples = await page.evaluate(() => {
