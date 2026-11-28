@@ -24,6 +24,8 @@ import { stubDeviceLoginBroker } from "@legion/cipher-client/test/device-logins"
 import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispatch";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { activeDispatchSettings } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
@@ -116,11 +118,14 @@ function dispatchAnswer(call: FakeDispatchCall): Response {
     return Response.json(READ_ONLY_REFUSAL, { status: 403 });
   }
   if (call.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-    return Response.json({
-      id: "message-1",
-      issue_key: "DSP-1",
-      advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
-    });
+    return Response.json(
+      routeAnswer("POST /api/v1/issues/{key}/messages", {
+        id: "message-1",
+        issue_key: "DSP-1",
+        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+      }),
+      { status: 201 }
+    );
   }
   return Response.json(
     { code: "NOT_FOUND", error: `the stand-in serves no ${call.method} ${pathname}` },
@@ -132,9 +137,14 @@ function dispatchAnswer(call: FakeDispatchCall): Response {
 function standInDispatch(): { readonly url: string; readonly presented: Presented[] } {
   const presented: Presented[] = [];
   const server = startFakeDispatch({
+    // Behind Dispatch's keyed layer: the message's 201 names the write's key back; the read-only
+    // refusal is the token check's, before the layer, and names none.
     handler: (call) => {
       presented.push(presentedOf(call));
-      return dispatchAnswer(call);
+      return keyedLayer((_url: string, _init: RequestInit) => dispatchAnswer(call))(
+        String(call.url),
+        { headers: call.headers }
+      );
     },
   });
   servers.push(server);

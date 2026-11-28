@@ -8,23 +8,28 @@ Each entry of PROGRAMS is (filter, project, why):
   filter   a filter of the changes job, the gate of the job whose typecheck this program is
   project  what `bunx tsc -p` takes: the directory holding the tsconfig.json the job's typecheck
            reads, or the project file itself where the job's step names another one
-  why      the step the pair stands for, read from that job's own steps and named with the file
-           that holds them — ci.yaml's job of that id keeps the gate and calls it — which the
-           failure message carries so the reader knows which typecheck holds the file
+  why      the step the pair stands for, read from the steps of the job that runs it and named
+           with the file that holds them — ci.yaml's job of the filter's gate keeps the gate and
+           calls that file, which holds the step in a job of the caller's id or in another job of
+           the same file — which the failure message carries so the reader knows which
+           typecheck holds the file
 
 The pairs are hand-kept and few; the files of each program are derived, which is the point. A
-job that typechecks a second project is a second entry (the dispatch-ui job typechecks the proof
-editor beside the dashboard, and the tooling-checks job the five script directories that are no
-workspace).
+job that typechecks a second project is a second entry (dispatch_ui's two programs, the
+dashboard's, which dispatch-ui-harness typechecks, and the proof editor's, which dispatch-ui
+typechecks, both jobs of the file ci.yaml's dispatch-ui calls; and the tooling-checks job's five
+script directories that are no workspace).
 """
 
 
 def at(job: str, step: str, held_by: str = "") -> str:
-    """A `why` naming a step of a ci.yaml job, in the file that holds it: ci.yaml's job of that
-    id keeps the gate and calls .github/workflows/ci-job-<id>.yaml, where the steps are, or, for
-    the half of a split job, the file of the other half, `held_by` (ci_job_reads.py's
-    SHARED_FILE). A job whose steps are in a file of another name writes its own `why`, as the
-    docs row does."""
+    """A `why` naming a step of `job`, in the file that holds it:
+    .github/workflows/ci-job-<id>.yaml, whose id is `held_by` where that is given and `job` where
+    it is not. ci.yaml's job of that id keeps the gate and calls the file. `held_by` names it for a
+    job whose steps are in a file of another job's id: a half of a split job (ci_job_reads.py's
+    SHARED_FILE), or another job of a called file, as dispatch-ui-harness is of
+    ci-job-dispatch-ui.yaml. A job whose steps are in a file of another name writes its own `why`,
+    as the docs row does."""
     return f"ci-job-{held_by or job}.yaml's {job} job: {step}"
 
 
@@ -40,7 +45,7 @@ PROGRAMS = [
     ("pi_envoy", "packages/pi-envoy", at("pi-envoy", "Typecheck pi-envoy")),
     ("pi_legion_build", "packages/pi-legion", at("pi-legion-build", "Typecheck pi-legion", "pi-legion")),
     ("claude_envoy", "packages/claude-envoy", at("claude-envoy", "Typecheck Claude Envoy plugin")),
-    ("dispatch_ui", "packages/dispatch", at("dispatch-ui", "Typecheck dispatch dashboard")),
+    ("dispatch_ui", "packages/dispatch", at("dispatch-ui-harness", "Typecheck dispatch dashboard", "dispatch-ui")),
     # The proof editor's and the docs site's steps run the same `bun run typecheck`, whose recipe
     # names a project file of its own rather than the directory's tsconfig.json.
     ("dispatch_ui", "packages/proof-editor/tsconfig.check.json",
@@ -107,7 +112,9 @@ LISTED = [
      "the dashboard's and the proof editor's typechecks, tests and SPA build compile the contracts modules "
      'these two programs import and what those import, and no other: `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`, '
      '`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"` '
-     'and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the four entries the dashboard imports to the same sources'),
+     'and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias four of the entries the dashboard imports to the same sources, '
+     "and the dashboard imports a fifth, ./legion-api, which its tsc program compiles: the SPA's sources take its types alone, "
+     "and the e2e seed takes `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` as a value, which Playwright's Node run reads from dist/legion-api.js"),
     # The browser suite has no tsc program of its own. Its rows drive the SPA built from
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles: that
@@ -118,12 +125,13 @@ LISTED = [
     # loads are its bundle's, which BUNDLES pairs with dispatch_two_builds_go, so the block is
     # the union of the two sets: a module only the command loads is one the suite loads too.
     # Its jobs' `Build contracts for dispatch e2e` step runs packages/contracts' `build:dispatch`,
-    # which bundles the four entries the dashboard imports (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
+    # which bundles the five entries the dashboard imports: the four vite aliases (`packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-snippet"`,
     # `packages/dispatch/web/vite.config.ts#"@legion/contracts/dispatch-tools"`, `packages/dispatch/web/vite.config.ts#"@legion/contracts/http-status"`
-    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and so compiles nothing outside dispatch_ui's set: not
-    # packages/contracts/src/legion-api.ts, which neither Dispatch nor the command imports. A
-    # change that breaks the package's full `build` fails the contracts job's own
-    # `Build contracts` step, whose filter takes the whole tree.
+    # and `packages/dispatch/web/vite.config.ts#"@legion/contracts"` alias the same four) and ./legion-api, whose types the
+    # SPA's sources import and whose `packages/dispatch/e2e/dashboard-seed.ts#LEGION_CLAIM_STATES` the e2e seed imports as a
+    # value, read from dist/legion-api.js by Playwright's Node run; the dashboard's tsc program compiles it, and so the build
+    # compiles nothing outside dispatch_ui's set. A change that breaks the package's full `build` fails the contracts
+    # job's own `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its rows spawn "
@@ -144,9 +152,9 @@ LISTED = [
      "the contracts modules that entry's bundle loads and no other"),
     # The two-build job runs that Go step and a browser half, which is dispatch_browser's case: it
     # builds the SPA from packages/dispatch and runs the Playwright config and the e2e helpers of
-    # packages/dispatch/e2e (`bun run e2e:multiprocess -- cross-build.multiprocess`), and its
-    # `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's row
-    # says. Its block is the union of the two, so it holds every file the Go step's block holds.
+    # packages/dispatch/e2e (`build:web`, then `e2e:multiprocess:run -- cross-build.multiprocess`),
+    # and its `Build contracts for dispatch e2e` step runs `build:dispatch`, as dispatch_browser's
+    # row says. Its block is the union of the two, so it holds every file the Go step's block holds.
     ("dispatch_two_builds", "packages/contracts/src", ("dispatch_ui", "dispatch_two_builds_go"),
      "the job's browser half runs the SPA built from packages/dispatch and the Playwright config and e2e helpers "
      "of packages/dispatch/e2e, which load the contracts modules dispatch_ui's programs compile, and its Go step "

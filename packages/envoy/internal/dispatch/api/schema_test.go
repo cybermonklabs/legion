@@ -34,8 +34,8 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	for index, typ := range schema.Types {
 		names[index] = typ.Name
 	}
-	if schema.Version != 6 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
-		t.Fatalf("schema = version %d, types %v; want version 6 and callout, ask, requirement, plan_task, check", schema.Version, names)
+	if schema.Version != 7 || !slices.Equal(names, []string{"callout", "ask", "requirement", "plan_task", "check"}) {
+		t.Fatalf("schema = version %d, types %v; want version 7 and callout, ask, requirement, plan_task, check", schema.Version, names)
 	}
 	if ciCheck, declared := schema.Types[4].Attributes.Lookup("ci_check"); !declared || ciCheck.Kind != pmdoc.BlockAttributeString {
 		t.Fatalf("check attribute ci_check = %+v (declared %v), want a string", ciCheck, declared)
@@ -49,5 +49,8 @@ func TestBlockSchemaRouteServesEmbeddedSchema(t *testing.T) {
 	}
 	if program, declared := schema.Types[4].Attributes.Lookup("program"); !declared || program.Kind != pmdoc.BlockAttributeString || program.Since != 6 || program.CreatableSince != 7 {
 		t.Fatalf("check attribute program = %+v (declared %v), want a string read from version 6 and created from 7", program, declared)
+	}
+	if parent, declared := schema.Types[3].Attributes.Lookup("parent"); !declared || parent.Kind != pmdoc.BlockAttributeBlockList || parent.Since != 7 || parent.CreatableSince != 8 {
+		t.Fatalf("plan_task attribute parent = %+v (declared %v), want a block[] read from version 7 and created from version 8", parent, declared)
 	}
 }

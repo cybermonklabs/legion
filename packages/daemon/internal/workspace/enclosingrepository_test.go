@@ -34,6 +34,7 @@ import (
 // runs once per way the state directory is reached, because the path the operator names and the
 // path the child stands in need not be the same one.
 func TestProvisionLeavesTheEnclosingRepositoryUntouched(t *testing.T) {
+	// Not parallel: the rows change the process working directory with t.Chdir.
 	t.Run("a state directory outside it", func(t *testing.T) {
 		run := newLocalRunner(t)
 		decoy := enclosingRepository(t)
@@ -213,6 +214,7 @@ func assertEnclosingRepositoryUnchanged(t *testing.T, decoy string, before enclo
 // and a relative Dir resolves against that same directory, so either way the child would run
 // somewhere its caller never chose.
 func TestTheRunnerRefusesACommandWithNoAbsoluteWorkingDirectory(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		dir string
 		// own is a directory of the command's own, the test's temporary one, in place of dir.
@@ -259,6 +261,7 @@ func TestTheRunnerRefusesACommandWithNoAbsoluteWorkingDirectory(t *testing.T) {
 // purely the working directory, so the two commands that create a repository of their own open no
 // workspace however the caller names their directory.
 func TestJJWorkspaceRootIsTheRepositoryFlagAlone(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		command Command
 		want    string
@@ -299,6 +302,7 @@ func TestJJWorkspaceRootIsTheRepositoryFlagAlone(t *testing.T) {
 // well as creating its own, and writes it when that repository still holds a legacy
 // `.jj/repo/config.toml` to migrate.
 func TestAJJThatCreatesARepositoryIsRefusedInsideOne(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		// plant builds the tree below root and returns the directory the command would run in.
 		plant func(t *testing.T, root string) string
