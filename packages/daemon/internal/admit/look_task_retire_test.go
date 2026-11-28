@@ -2,7 +2,6 @@ package admit
 
 import (
 	"context"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"testing"
@@ -68,27 +67,11 @@ func TestAReadmissionQueuesTheRetirementOfItsLooksTask(t *testing.T) {
 		t.Fatalf("root after re-admission = gen %d phase %s, want gen 2 phase admitted", readmitted.Generation, readmitted.Phase)
 	}
 
-	rows, err := pool.Query(context.Background(),
-		`select payload from outbox where issue = $1 and kind = 'supervise' and payload->>'op' = 'retire_look' order by id`,
-		root.Key)
-	if err != nil {
-		t.Fatalf("read retire_look rows of %s: %v", root.Key, err)
-	}
-	defer rows.Close()
 	var got []record.SuperviseRequest
-	for rows.Next() {
-		var raw []byte
-		if err := rows.Scan(&raw); err != nil {
-			t.Fatalf("scan retire_look row: %v", err)
+	for _, req := range superviseRequests(t, pool, root.Key) {
+		if req.Op == "retire_look" {
+			got = append(got, req)
 		}
-		var req record.SuperviseRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			t.Fatalf("decode retire_look row %s: %v", raw, err)
-		}
-		got = append(got, req)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate retire_look rows: %v", err)
 	}
 	if len(got) != 1 {
 		t.Fatalf("root re-admission queued %d retire_look row(s) (%+v), want 1 (Reported false)", len(got), got)

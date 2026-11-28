@@ -178,10 +178,15 @@ function daemonFixture(name: string): Record<string, unknown> {
 
 /** The real daemon client over a daemon that answers each route of `answers` with that golden,
  * or, for a list, each call of the route with the next golden of the list, under `status`, and
- * records what reached it. A tool call over it goes through the contract's request and answer
- * schemas, as it does in a session, and states this build's own contract, as the extension's
- * client does (`extensions/legion.ts`). */
-function goldenDaemon(answers: Readonly<Record<string, string | readonly string[]>>, status = 200) {
+ * records what reached it. An answer no golden holds is given whole, with its own status. A tool
+ * call over it goes through the contract's request and answer schemas, as it does in a session,
+ * and states this build's own contract, as the extension's client does (`extensions/legion.ts`). */
+function goldenDaemon(
+  answers: Readonly<
+    Record<string, string | readonly string[] | { readonly status: number; readonly body: unknown }>
+  >,
+  status = 200
+) {
   const posted: Array<readonly [string, unknown]> = [];
   const calls = new Map<string, number>();
   const stub = (async (input, init) => {
@@ -190,6 +195,9 @@ function goldenDaemon(answers: Readonly<Record<string, string | readonly string[
     const call = calls.get(route) ?? 0;
     calls.set(route, call + 1);
     const answer = answers[route];
+    if (answer !== undefined && typeof answer === "object" && "body" in answer) {
+      return Response.json(answer.body, { status: answer.status });
+    }
     const golden = typeof answer === "string" ? answer : answer?.[call];
     return golden === undefined
       ? Response.json({ error: `no golden answers call ${call + 1} of ${route}` }, { status: 404 })
@@ -2181,48 +2189,21 @@ test("a report on its closed issue's production check carries a verdict and no c
   ]);
 });
 
-/** The stand-in daemon of c-tool (dispatch://INFRA-3518), behind the real daemon client: its
- * record of LEGION-208 stands at `phase` with the tester's production check open on it, a grant
- * is the daemon's golden, and a completion is answered `answer`, the golden success unless given.
- * `requests` is the route and the body of each request that reached it, and `report` runs the
- * tester's `handoff_complete` with `parameters`. */
-function lookDaemon(
-  phase: LegionPhase,
-  answer: { readonly status: number; readonly body: unknown } = {
-    status: 200,
-    body: daemonFixture("handoff-complete.json"),
-  }
-) {
-  const requests: Array<readonly [string, unknown]> = [];
-  const record = { key: "LEGION-208", phase, check: { ...openCheck, role: "tester" } };
-  const stub = (async (input, init) => {
-    const route = new URL(input.toString()).pathname;
-    requests.push([route, init?.body == null ? undefined : JSON.parse(init.body.toString())]);
-    if (route === "/legion/v1/grants") return Response.json(daemonFixture("grant.json"));
-    if (route === "/legion/v1/issues/LEGION-208/record") return Response.json(record);
-    if (route === "/legion/v1/handoff/complete") {
-      return Response.json(answer.body, { status: answer.status });
-    }
-    return Response.json({ error: `no route for ${route}` }, { status: 404 });
-  }) as typeof fetch;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: PLUGIN_CONTRACT,
-    fetch: stub,
-  });
+/** The tester's `handoff_complete` with `parameters`, over `daemon`. A report resolves no handoff
+ * record and no commit: the report is never asked. */
+function testerReport(daemon: () => LegionDaemonClient) {
   const tool = createLegionTool({
     pi,
-    daemon: () => client,
+    daemon,
     controllerGrant: noControllerGrant,
     onUpdateAnswered: () => undefined,
-    // A report resolves no handoff record and no commit: the report is never asked.
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,
     dispatch: noDispatch,
     session: () => claimSession("tester"),
   });
-  const report = (parameters: Record<string, unknown>) =>
+  return (parameters: Record<string, unknown>) =>
     tool.execute("", { op: "handoff_complete", ...parameters }, undefined, undefined, context());
-  return { requests, report };
 }
 
 /** The grant request of the tester's claim on LEGION-208, as it reaches the daemon. */
@@ -2234,35 +2215,37 @@ const TESTER_GRANT = {
 };
 
 // c-tool (dispatch://INFRA-3518): the real handoff_complete operation sends the report's
-// check_opened_at as checkOpenedAt and its look_id as lookId, through the real client, to the
-// stand-in daemon. The daemon holds LEGION-208 done, and then running again in implementing with
-// its check still open, as a child's re-entry keeps it. The report reads no record in either, so
-// the body is the same in both.
+// check_opened_at as checkOpenedAt and its look_id as lookId, through the real client, to a
+// daemon that answers with its goldens. The report asks the daemon for the grant and the
+// completion alone, and reads no record and no state, so what it sends does not depend on the
+// issue's phase: it is the same on a done issue and on an issue that runs again, as a child's
+// re-entry leaves it with its check open.
 test("a look's report sends check_opened_at and look_id as checkOpenedAt and lookId, on a done issue and on an issue that runs again", async () => {
-  for (const phase of ["done", "implementing"] as const) {
-    const { requests, report } = lookDaemon(phase);
-    await expect(
-      report({
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/grants": "grant.json",
+    "/legion/v1/handoff/complete": "handoff-complete.json",
+  });
+  await expect(
+    testerReport(daemon)({
+      summary: "Look 2: pass.",
+      verdict: "pass",
+      check_opened_at: openCheck.openedAt,
+      look_id: LOOK_ID,
+    })
+  ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+  expect(posted).toEqual([
+    ["/legion/v1/grants", TESTER_GRANT],
+    [
+      "/legion/v1/handoff/complete",
+      {
+        grantId: "grant-for-one-command",
         summary: "Look 2: pass.",
         verdict: "pass",
-        check_opened_at: openCheck.openedAt,
-        look_id: LOOK_ID,
-      })
-    ).resolves.toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-    expect(requests, phase).toEqual([
-      ["/legion/v1/grants", TESTER_GRANT],
-      [
-        "/legion/v1/handoff/complete",
-        {
-          grantId: "grant-for-one-command",
-          summary: "Look 2: pass.",
-          verdict: "pass",
-          checkOpenedAt: openCheck.openedAt,
-          lookId: LOOK_ID,
-        },
-      ],
-    ]);
-  }
+        checkOpenedAt: openCheck.openedAt,
+        lookId: LOOK_ID,
+      },
+    ],
+  ]);
 });
 
 // c-tool (dispatch://INFRA-3518): a report that gives check_opened_at and no look_id is sent as
@@ -2272,12 +2255,19 @@ test("a look's report sends check_opened_at and look_id as checkOpenedAt and loo
 test("a report that gives check_opened_at and no look_id reaches the daemon, and the daemon's answer comes back unchanged", async () => {
   const sentence =
     "This report on LEGION-208's production check gives no lookId. The current look of the check is look 2. A report gives check_opened_at and look_id from the task of its look. Nothing was recorded. Send the report again with the look id from the task of look 2.";
-  const { requests, report } = lookDaemon("done", {
-    status: 400,
-    body: { code: "CHECK_LOOK_ID_REQUIRED", error: sentence },
+  const { posted, daemon } = goldenDaemon({
+    "/legion/v1/grants": "grant.json",
+    "/legion/v1/handoff/complete": {
+      status: 400,
+      body: { code: "CHECK_LOOK_ID_REQUIRED", error: sentence },
+    },
   });
   await expect(
-    report({ summary: "Look 2: pass.", verdict: "pass", check_opened_at: openCheck.openedAt })
+    testerReport(daemon)({
+      summary: "Look 2: pass.",
+      verdict: "pass",
+      check_opened_at: openCheck.openedAt,
+    })
   ).resolves.toEqual({
     content: [
       {
@@ -2288,7 +2278,7 @@ test("a report that gives check_opened_at and no look_id reaches the daemon, and
     details: {},
     isError: true,
   });
-  expect(requests).toEqual([
+  expect(posted).toEqual([
     ["/legion/v1/grants", TESTER_GRANT],
     [
       "/legion/v1/handoff/complete",

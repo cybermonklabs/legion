@@ -43,20 +43,6 @@ func putProductionCheck(t *testing.T, pool *pgxpool.Pool, check record.Productio
 	seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutProductionCheck(t.Context(), tx, check) })
 }
 
-// outboxKindsAfter is the kind of every outbox row queued after the row after, in queue order.
-func outboxKindsAfter(t *testing.T, pool *pgxpool.Pool, after int64) []string {
-	t.Helper()
-	rows, err := pool.Query(t.Context(), "select kind from outbox where id > $1 order by id", after)
-	if err != nil {
-		t.Fatalf("read the rows queued after row %d: %v", after, err)
-	}
-	kinds, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		t.Fatalf("collect the rows queued after row %d: %v", after, err)
-	}
-	return kinds
-}
-
 // lookBootOpened is when the check of each row of the boot's look tests opened, and
 // lookBootWoken when its look 2 started, under an older daemon: the boot comes half an hour into
 // that look.
@@ -174,12 +160,12 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 			}
 			before := productionCheck(t, rig.pool, child.Key)
 			olderStarts := lookStarts(t, rig.pool, child.Key)
-			after := lastOutboxID(t, rig.pool)
+			held := len(outboxKinds(t, rig.pool))
 			mark := rig.logged.Len()
 
 			looks, generations := repairOpenChecks(t, rig.pool, rig.engine)
 			check := productionCheck(t, rig.pool, child.Key)
-			queued := outboxKindsAfter(t, rig.pool, after)
+			queued := outboxKinds(t, rig.pool)[held:]
 			if !tc.reissues {
 				if looks != 0 || generations != 0 || !reflect.DeepEqual(check, before) || len(queued) != 0 {
 					t.Fatalf("the boot gave %d looks an id and %d checks a generation, left the check %+v and queued %q; want nothing changed: %+v",
@@ -222,7 +208,7 @@ func TestTheBootGivesEachOpenLookWithoutItsOwnIDAnIDAndATask(t *testing.T) {
 					t.Fatalf("the boot's task =\n%s\nwant it to say %q", start.Task, line)
 				}
 			}
-			if tc.older != "" && (len(olderStarts) != 1 || olderStarts[0].Task != tc.older || olderStarts[0].LookID != "" || start.Task == tc.older) {
+			if tc.older != "" && (len(olderStarts) != 1 || olderStarts[0].Task != tc.older || olderStarts[0].LookID != "") {
 				t.Fatalf("the older start row = %+v, want it kept with the older task and no look id beside the boot's own task", olderStarts)
 			}
 			journal := rig.logged.String()[mark:]
@@ -297,7 +283,7 @@ func TestTheBootGivesEveryOpenCheckItsGeneration(t *testing.T) {
 			seedIssue(t, rig.pool, tc.issue)
 			putProductionCheck(t, rig.pool, seeded)
 			before := productionCheck(t, rig.pool, tc.issue.Key)
-			after := lastOutboxID(t, rig.pool)
+			held := len(outboxKinds(t, rig.pool))
 			mark := rig.logged.Len()
 
 			looks, generations := repairOpenChecks(t, rig.pool, rig.engine)
@@ -311,7 +297,7 @@ func TestTheBootGivesEveryOpenCheckItsGeneration(t *testing.T) {
 			if got := ranAgain(tc.issue, *check); got != tc.ranAgain {
 				t.Fatalf("%s at generation %d ran again since its check opened at generation %d: %t, want %t", tc.issue.Key, tc.issue.Generation, check.OpenedGeneration, got, tc.ranAgain)
 			}
-			if queued := outboxKindsAfter(t, rig.pool, after); len(queued) != 0 {
+			if queued := outboxKinds(t, rig.pool)[held:]; len(queued) != 0 {
 				t.Fatalf("rows the boot queued = %q, want none", queued)
 			}
 			given := strings.Contains(rig.logged.String()[mark:], `msg="workflow: the boot gave an open production check the generation it opened at" issue=`+tc.issue.Key)

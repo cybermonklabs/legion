@@ -6,9 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -258,13 +256,11 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	firstOpened := checkOpened.Add(-24 * time.Hour)
-	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
-			Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
-			OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
-			LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
-			LookID: "LOOKIDOFTHEREPLACEDCHECKAA", LookIDLook: 1, LookIDOpenedAt: firstOpened, OpenedGeneration: 6,
-		})
+	putProductionCheck(t, rig.pool, record.ProductionCheck{
+		Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
+		OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
+		LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
+		LookID: "LOOKIDOFTHEREPLACEDCHECKAA", LookIDLook: 1, LookIDOpenedAt: firstOpened, OpenedGeneration: 6,
 	})
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 	if check := productionCheck(t, rig.pool, "LEGION-209"); check == nil || !check.Open() || !check.OpenedAt.Equal(checkOpened) || check.Looks != 1 || !check.LookOpen {
@@ -288,24 +284,24 @@ func TestAFactOfAReplacedCheckChangesNothingOfItsSuccessor(t *testing.T) {
 	}
 }
 
-// A report of a check that a later merge replaced — the route read the first check, and the
-// rerun's merge opened the second before the report's fact applied — names the first check's
-// OpenedAt, and is refused CHECK_NOT_OPEN: the second check, which counts its looks from one
-// again, is not changed in any field, no claim is closed and nothing is suspended. The refusal
-// names the second check's current look and the rule, and holds no look id. The same report
-// naming the second check is recorded on it.
+// A report of a check that a later merge replaced — the route read the first check, which
+// outlived the child's re-entry open at its look 1, and the rerun's merge closed it as not run and
+// opened the second before the report's fact applied — names the first check's OpenedAt, and is
+// refused CHECK_NOT_OPEN: the second check, which counts its looks from one again, is not changed
+// in any field, no claim is closed and nothing is suspended. The refusal names the second check's
+// current look and the rule, and holds neither check's look id. The same report naming the second
+// check is recorded on it.
 func TestAReportOfAReplacedCheckIsNotRecordedOnItsSuccessor(t *testing.T) {
 	t.Parallel()
 	rig := newCheckRig(t)
 	seedMergingChild(t, rig.pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 7, Status: "in_progress", Rank: "U", LastDispatchSeq: 1})
 	firstOpened := checkOpened.Add(-24 * time.Hour)
-	firstClosed := firstOpened.Add(2 * time.Hour)
-	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-		return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
-			Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41",
-			OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookWakeAt: &firstOpened,
-			LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened, ClosedAt: &firstClosed, Outcome: record.CheckNotRun,
-		})
+	const firstLookID = "LOOKIDOFTHEREPLACEDCHECKAA"
+	putProductionCheck(t, rig.pool, record.ProductionCheck{
+		Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion", Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
+		OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound), Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
+		LastWakeKind: "merge", LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
+		LookID: firstLookID, LookIDLook: 1, LookIDOpenedAt: firstOpened, OpenedGeneration: 6,
 	})
 	rig.apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge-43"})
 	successor := productionCheck(t, rig.pool, "LEGION-209")
@@ -324,8 +320,10 @@ func TestAReportOfAReplacedCheckIsNotRecordedOnItsSuccessor(t *testing.T) {
 			t.Fatalf("the refusal is %q, want it to say %q", result.Refusal.Message, want)
 		}
 	}
-	if strings.Contains(result.Refusal.Message, successor.LookID) {
-		t.Fatalf("the refusal is %q, which holds the second check's look id", result.Refusal.Message)
+	for _, id := range []string{firstLookID, successor.LookID} {
+		if strings.Contains(result.Refusal.Message, id) {
+			t.Fatalf("the refusal is %q, which holds the look id %q", result.Refusal.Message, id)
+		}
 	}
 	if after := productionCheck(t, rig.pool, "LEGION-209"); !reflect.DeepEqual(after, successor) {
 		t.Fatalf("the second check after the first check's report = %+v, want it unchanged: %+v", after, successor)
@@ -719,22 +717,12 @@ func TestReenterChildKeepsItsOpenCheckAndItsLook(t *testing.T) {
 	if got := superviseRequests(t, rig.pool, "issue_close"); got["LEGION-209/tester"] != 0 {
 		t.Fatalf("issue_close rows = %v, want none for the tester the rerun reuses", got)
 	}
+	if got := len(lookStarts(t, rig.pool, "LEGION-209")); got != looks {
+		t.Fatalf("look start rows after the re-entry = %d, want %d: the re-entry starts no look", got, looks)
+	}
 
 	rig.clock.now = checkOpened.Add(CheckLookBound)
-	rig.apply("look-bound", intake.CheckLookEnded{Issue: "LEGION-209", Look: 1, Cause: "look bound", OpenedAt: checkOpened})
-	check = productionCheck(t, rig.pool, "LEGION-209")
-	if !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil {
-		t.Fatalf("the check after its look's bound while the child runs = %+v, want open at look 1, the look ended and a wake named", check)
-	}
-	wake := *check.WakeAt
-	rig.clock.now = wake
-	rig.apply("wake", intake.CheckWakeDue{Issue: "LEGION-209", Look: 1, OpenedAt: checkOpened, WakeAt: wake, Reason: "the retry of a look nobody reported: look bound"})
-	if check = productionCheck(t, rig.pool, "LEGION-209"); !check.Open() || check.Looks != 1 || check.LookOpen || check.WakeAt == nil || !check.WakeAt.After(wake) {
-		t.Fatalf("the check at its wake while the child runs = %+v, want look 1 still ended and the wake deferred past %s", check, wake)
-	}
-	if got := len(lookStarts(t, rig.pool, "LEGION-209")); got != looks {
-		t.Fatalf("look start rows = %d, want %d: no look starts while the child runs", got, looks)
-	}
+	lookWaitsWhileTheChildRuns(t, rig)
 	if suspends := superviseRowsOf(t, rig.pool, "LEGION-209", "suspend"); len(suspends) != 0 {
 		t.Fatalf("suspend rows = %+v, want none while the child is back in the workflow", suspends)
 	}
@@ -768,7 +756,7 @@ func TestAReplacedOpenCheckClosesNotRunNamingTheMergeThatReplacedIt(t *testing.T
 	}
 	rig, rows, retires := merge(t, true)
 	_, twin, _ := merge(t, false)
-	if !slices.Equal(rows, twin) {
+	if len(rows) == 0 || !slices.Equal(rows, twin) {
 		t.Fatalf("rows the rerun's merge queued = %q, want those of a twin with no earlier check %q: the replaced check's close queues none of its own", rows, twin)
 	}
 	if got := superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look")[retires:]; len(got) != 1 || got[0].Role != claim.RoleTester ||
@@ -1457,12 +1445,13 @@ func TestTheCheckTaskAsksForARecordedResultAndNoRetiredLine(t *testing.T) {
 }
 
 // Each look of a check gets a look id of its own when it starts: crypto/rand's Text, 26 base32
-// characters. The record holds the id with the look and the check instance it was made for, so
-// the id is the check's CurrentLookID while its look is current, and the look's start row carries
-// it, as the task on that row gives it. The next look of the same check gets another id. Neither
-// id is a form of the check's OpenedAt, which every state and read_record body shows (R3 of
-// dispatch://INFRA-3518): not RFC 3339, not the check's ID (its microseconds) and not its Unix
-// seconds. The engine's journal carries neither id.
+// characters (lookIDForm). The record holds the id with the look and the check instance it was
+// made for, so the id is the check's CurrentLookID while its look is current, and the look's start
+// row carries it, as the task on that row gives it. The next look of the same check gets another
+// id. The form keeps each id apart from the check's OpenedAt, which every state and read_record
+// body shows (R3 of dispatch://INFRA-3518): the base32 alphabet holds no '-', no ':' and no digit
+// 0, 1, 8 or 9, so no id holds the time in RFC 3339, the check's ID (its microseconds) or its Unix
+// seconds, both of which begin with 1 until 2033. The engine's journal carries neither id.
 func TestEachLookGetsALookIDOfItsOwn(t *testing.T) {
 	t.Parallel()
 	rig := childCheckRig(t)
@@ -1476,15 +1465,12 @@ func TestEachLookGetsALookIDOfItsOwn(t *testing.T) {
 	if first == nil || second == nil || len(starts) != 2 {
 		t.Fatalf("the check = %+v then %+v with start rows %+v, want two looks, each with its start row", first, second, starts)
 	}
-	base32 := regexp.MustCompile(`^[A-Z2-7]{26}$`)
-	opened := first.OpenedAt
-	forms := []string{opened.UTC().Format(time.RFC3339Nano), opened.Format(time.RFC3339Nano), first.ID(), strconv.FormatInt(opened.Unix(), 10)}
 	for i, look := range []struct {
 		check *record.ProductionCheck
 		start record.SuperviseRequest
 	}{{first, starts[0]}, {second, starts[1]}} {
 		n, id := i+1, look.check.LookID
-		if look.check.Looks != n || !base32.MatchString(id) || look.check.LookIDLook != n || !look.check.LookIDOpenedAt.Equal(look.check.OpenedAt) ||
+		if look.check.Looks != n || !lookIDForm.MatchString(id) || look.check.LookIDLook != n || !look.check.LookIDOpenedAt.Equal(look.check.OpenedAt) ||
 			look.check.CurrentLookID() != id {
 			t.Fatalf("the check at look %d = look %d with look id %q made for look %d of the check opened %s (current %q), want 26 base32 characters made for look %d of the check opened %s",
 				n, look.check.Looks, id, look.check.LookIDLook, look.check.LookIDOpenedAt, look.check.CurrentLookID(), n, look.check.OpenedAt)
@@ -1492,16 +1478,11 @@ func TestEachLookGetsALookIDOfItsOwn(t *testing.T) {
 		if look.start.CheckLook != n || look.start.LookID != id || !strings.Contains(look.start.Task, "look id `"+id+"`") {
 			t.Fatalf("look %d's start row = look %d with look id %q, want the look id the check holds for it on the row and in its task", n, look.start.CheckLook, look.start.LookID)
 		}
-		for _, form := range forms {
-			if strings.Contains(id, form) {
-				t.Fatalf("look %d's look id %q holds %q, a form of the check's opening time", n, id, form)
-			}
-		}
 		if strings.Contains(rig.logged.String(), id) {
 			t.Fatalf("the engine's journal carries look %d's look id", n)
 		}
 	}
-	if first.LookID == second.LookID || second.CurrentLookID() == first.LookID {
+	if first.LookID == second.LookID {
 		t.Fatalf("look 2's look id is look 1's, want an id of its own")
 	}
 }

@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -171,7 +169,7 @@ func TestEveryEndOfALooksTaskQueuesItsRetirement(t *testing.T) {
 					t.Fatalf("move root back into workflow: %v", err)
 				}
 				if _, err := rig.pool.Exec(context.Background(),
-					"update production_checks set look_open = false, opened_generation = 7 where issue = 'LEGION-208'"); err != nil {
+					"update production_checks set look_open = false where issue = 'LEGION-208'"); err != nil {
 					t.Fatalf("mark check look closed for bound test: %v", err)
 				}
 				rig.clock.now = checkOpened.Add(checkBound)
@@ -201,16 +199,14 @@ func TestEveryEndOfALooksTaskQueuesItsRetirement(t *testing.T) {
 				})
 				// Seed an open production check from an earlier merge of LEGION-209 (generation 6),
 				// so merging PR #43 at generation 7 replaces it.
-				seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
-						Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion",
-						Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
-						OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound),
-						Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
-						LastWakeKind: wakeMerge, LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
-						LookID: "LOOKIDREPLACEDCHECK0000001", LookIDLook: 1, LookIDOpenedAt: firstOpened,
-						OpenedGeneration: 6,
-					})
+				putProductionCheck(t, rig.pool, record.ProductionCheck{
+					Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion",
+					Number: 41, MergeSHA: "merge-41", Role: claim.RoleTester,
+					OpenedAt: firstOpened, BoundAt: firstOpened.Add(checkBound),
+					Looks: 1, LookOpen: true, LookWakeAt: &firstOpened,
+					LastWakeKind: wakeMerge, LastWakeDetail: "merge-41", LastWakeAt: &firstOpened,
+					LookID: "LOOKIDREPLACEDCHECK0000001", LookIDLook: 1, LookIDOpenedAt: firstOpened,
+					OpenedGeneration: 6,
 				})
 				before := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
 				if res := rig.apply("later-merge", intake.PullRequestMerged{
@@ -246,16 +242,14 @@ func TestEveryEndOfALooksTaskQueuesItsRetirement(t *testing.T) {
 				})
 				// Seed an open production check opened at generation 7; LEGION-209 is now running
 				// again at generation 8 and leaves with no merge (parked in backlog).
-				seedRecord(t, rig.pool, func(tx pgx.Tx) error {
-					return record.NewStore().PutProductionCheck(t.Context(), tx, record.ProductionCheck{
-						Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion",
-						Number: 43, MergeSHA: "merge-43", Role: claim.RoleTester,
-						OpenedAt: checkOpened, BoundAt: checkOpened.Add(checkBound),
-						Looks: 1, LookOpen: true, LookWakeAt: &checkOpened,
-						LastWakeKind: wakeMerge, LastWakeDetail: "merge-43", LastWakeAt: &checkOpened,
-						LookID: "LOOKIDLEAVENOMERGE00000001", LookIDLook: 1, LookIDOpenedAt: checkOpened,
-						OpenedGeneration: 7,
-					})
+				putProductionCheck(t, rig.pool, record.ProductionCheck{
+					Issue: "LEGION-209", Project: "LEGION", Tree: "LEGION-208", Repo: "sjawhar/legion",
+					Number: 43, MergeSHA: "merge-43", Role: claim.RoleTester,
+					OpenedAt: checkOpened, BoundAt: checkOpened.Add(checkBound),
+					Looks: 1, LookOpen: true, LookWakeAt: &checkOpened,
+					LastWakeKind: wakeMerge, LastWakeDetail: "merge-43", LastWakeAt: &checkOpened,
+					LookID: "LOOKIDLEAVENOMERGE00000001", LookIDLook: 1, LookIDOpenedAt: checkOpened,
+					OpenedGeneration: 7,
 				})
 				before := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
 				if res := rig.apply("parked", intake.DispatchIssue{
@@ -276,14 +270,8 @@ func TestEveryEndOfALooksTaskQueuesItsRetirement(t *testing.T) {
 			wantReported: []bool{false},
 			run: func(t *testing.T) (checkRig, int) {
 				rig := childCheckRig(t)
-				seedSlot(t, rig.pool, record.Slot{Issue: "LEGION-208", Index: 0})
 				before := len(superviseRowsOf(t, rig.pool, "LEGION-209", "retire_look"))
-				if res := rig.apply("todo", intake.DispatchIssue{
-					Key: "LEGION-209", Seq: 3, Type: "issue.updated", Status: "todo",
-					Title: "child", Parent: "LEGION-208", Rank: "V",
-				}); res.Refusal != nil {
-					t.Fatalf("child re-entry refused: %+v", res.Refusal)
-				}
+				reenterChild(t, rig)
 				return rig, before
 			},
 		},
