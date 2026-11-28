@@ -14,7 +14,6 @@ import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
-import { waitingPressOf } from "../waiting";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
 
@@ -23,7 +22,7 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // The Decisions view (part Q's R1): the issue's asks and decisions as one list in parts, drawn
   // from the issue's one tree as the Decisions view leaves it. The stage draws this slot only
   // where the address opens Decisions (`slots/stage.tsx`).
-  const { hash, search, state } = useLocation();
+  const { hash, search } = useLocation();
   const specSlug = primarySpec(issue)?.slug;
   const address = issueAddress(route, search, hash, specSlug);
   // The tree, the line of each read it is built from that stands refused, and whether every one
@@ -81,9 +80,6 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         reveal={reveal?.at(-1)?.id}
         root={root}
         view={view.root}
-        // The press of the header's count of what waits on the reader, left in the history
-        // entry (part P): each press goes to the next thing that waits (the tester's F12).
-        waitingPress={waitingPressOf(state)}
       />
     </NoTooltips>
   );

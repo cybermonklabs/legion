@@ -378,10 +378,12 @@ export const DISPATCH_APPROVE_ONLY_TOKEN = "APPROVE_ONLY_TOKEN";
 
 /**
  * The code of the `403` for a request by a read-only token that carries a cut (the broker's
- * `as_of`: the past time the token reads at) to a read route other than `GET /api/v1/whoami`.
- * No build serves a read at a past time yet, so Dispatch refuses the request before the route's
- * handler runs, and names the cut, rather than answer it with the present. On a route outside
- * the read class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
+ * `as_of`: the past time the token reads at) to a read that holds no past answer: `GET /ws/live`,
+ * and each read route that does not answer `as_of` except `GET /api/v1/whoami`. A route that
+ * answers `as_of` answers such a token as of its cut, whatever `as_of` the request sends, and
+ * `GET /api/v1/whoami` names the cut. Dispatch refuses the request before the route's handler
+ * runs, and names the cut, rather than answer it with the present. On a route outside the read
+ * class the same token is refused `DISPATCH_READ_ONLY_TOKEN`.
  */
 export const DISPATCH_AS_OF_TOKEN_NOT_SERVED = "AS_OF_TOKEN_NOT_SERVED";
 
@@ -628,6 +630,68 @@ export type SessionAnswerRelation = (typeof SESSION_ANSWER_RELATIONS)[number];
  *  something in front of Dispatch, an authenticating proxy among them, and says nothing about
  *  the session: a sign-out answered that way did not go through. */
 export const AUTH_NO_IDENTITY = "NO_IDENTITY";
+
+/**
+ * The code of the `400` for an `as_of` that a route cannot answer. A route that holds no history
+ * answers only the present, and it refuses every `as_of` with this code. A route that answers
+ * `as_of` refuses with this code a filter parameter that it cannot evaluate at that time. The
+ * message names that parameter.
+ */
+export const DISPATCH_AS_OF_NOT_SERVED = "AS_OF_NOT_SERVED";
+
+/**
+ * The code of the `400` for an `as_of` that Dispatch cannot read: a value that is not an RFC 3339
+ * time, a time later than the server's present time, or an `as_of` that the request sends more
+ * than once.
+ */
+export const DISPATCH_INVALID_AS_OF = "INVALID_AS_OF";
+
+/**
+ * The code of the `409` for a search at a past time that the fill of the keyword table has not
+ * reached. That table holds each past version of the text of issues, comments, messages and asks.
+ * Where the fill has reached a time, the message and `DISPATCH_AS_OF_FILLED_THROUGH_HEADER` name
+ * that time. Where the fill has reached no time yet, the message says so and the answer has no
+ * such header.
+ */
+export const DISPATCH_AS_OF_SEARCH_NOT_FILLED = "AS_OF_SEARCH_NOT_FILLED";
+
+/**
+ * The response header on every answer that Dispatch gives as of a past time (the cut). Dispatch
+ * gives such an answer for an `as_of` in the request and for a token that carries a cut. The
+ * value is the cut in RFC 3339, with six fractional digits, in UTC: `2026-11-19T22:06:00.000000Z`.
+ * A server older than `as_of` ignores the parameter and sends no such header. So when a request
+ * sends `as_of` and its answer has no such header, the answer is not an answer as of that time.
+ */
+export const DISPATCH_AS_OF_HEADER = "Dispatch-As-Of";
+
+/**
+ * The response header that names each member that a past-time answer omits because the records
+ * at the cut (`DISPATCH_AS_OF_HEADER`) cannot give it. The value is a comma-separated list of
+ * RFC 6901 JSON Pointers into the answer's body, such as `/route_status`. A pointer segment `*`
+ * stands for every member of an array. Dispatch omits such a member and never writes it as
+ * `null`, because `null` already means "none". `parseAsOfAbsent` reads the value.
+ */
+export const DISPATCH_AS_OF_ABSENT_HEADER = "Dispatch-As-Of-Absent";
+
+/**
+ * The response header on a `409 AS_OF_SEARCH_NOT_FILLED` (`DISPATCH_AS_OF_SEARCH_NOT_FILLED`) when
+ * the fill of the keyword table has reached a time. The value is that time, in RFC 3339. A search
+ * at that time or at an earlier time does not get that refusal. When the fill has reached no time
+ * yet, the refusal has no such header.
+ */
+export const DISPATCH_AS_OF_FILLED_THROUGH_HEADER = "Dispatch-As-Of-Filled-Through";
+
+/**
+ * The JSON Pointers that a `DISPATCH_AS_OF_ABSENT_HEADER` value names, in the order of the header.
+ * It splits the value at each comma, trims each part and removes each empty part. A missing or
+ * empty header names no pointer.
+ */
+export function parseAsOfAbsent(header: string | null | undefined): string[] {
+  return (header ?? "")
+    .split(",")
+    .map((pointer) => pointer.trim())
+    .filter((pointer) => pointer !== "");
+}
 
 /**
  * The close code the document websocket (`/ws/doc/{room}`) refuses a room with when the tree it

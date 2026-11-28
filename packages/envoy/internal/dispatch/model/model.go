@@ -25,7 +25,8 @@ const (
 	ScopeApprove = "approve"
 	// ScopeP0 is the right to make an issue's own priority 0 (P0): a write that names a priority
 	// of 0 on an issue whose own priority is not 0 needs it. A person's own sign-in holds it; a
-	// personal token holds it only where its maker gave it.
+	// personal token holds it only where its maker gave it, and a Dispatch sign-in's broker token
+	// only where its person ticked it.
 	ScopeP0 = "p0"
 )
 
@@ -39,8 +40,9 @@ const (
 // It is not in Scopes, and it must stay out. The browser's credential and the words a personal
 // token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
 // broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
-// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// (brokerPersonScopes), the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), and a Dispatch sign-in's token the ones of ScopePerson and ScopeP0
+// its person approved, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -102,10 +104,12 @@ type Credential struct {
 	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
 	// none. A broker-issued token acting for its person holds ScopePerson alone
 	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
-	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
-	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
-	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
-	// credential holds ScopeLegionStatus beside ScopePerson.
+	// (brokerApproveOnlyScopes), and a Dispatch sign-in's token, which holds the ones of
+	// ScopePerson and ScopeP0 its person approved, possibly none (ciphertoken.Caller.Consented);
+	// no other broker-issued token holds ScopeP0. A named broker token (one the secrets broker
+	// scoped to a project) holds ScopeLegionStatus alone where the broker granted it, which the
+	// broker does for a Legion daemon's own token only (brokerTokenActor). No credential holds
+	// ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
@@ -1720,6 +1724,11 @@ type ArtifactApproval struct {
 	// is the request's own list (AskApprovalDocument), carried to the reader of a document
 	// rather than copied into a shape of its own.
 	Documents []AskApprovalDocument `json:"documents,omitempty"`
+	// DocumentsUnknown is set by a read of the approval at a past time, where the open request
+	// was written before requests held their documents: a migration filled them with no event,
+	// so no record at that time gives them, and the read leaves Documents out and names it
+	// absent. It is never sent.
+	DocumentsUnknown bool `json:"-"`
 }
 
 // ArtifactReviewEventPayload is the payload of artifact.approved and
@@ -2776,6 +2785,15 @@ func NewIssueEventPayload(issue Issue, changes ReferenceChanges) IssueEventPaylo
 // (events.Broker.QueueAppend) and no writer counts the events queued before its own.
 func (p IssueEventPayload) WithOwnerLastSeq(seq int) any {
 	p.LastSeq = seq
+	return p
+}
+
+// WithOwnerClosedAt is the payload carrying closedAt as the issue's closed_at. A close stamps the
+// row's closed_at again after it read the row back (api/issue_patch.go), so the append of its
+// issue.closed takes closed_at from the row, as it takes last_seq (events.Broker.QueueAppend), and
+// the payload records the stamp that the row keeps.
+func (p IssueEventPayload) WithOwnerClosedAt(closedAt *time.Time) any {
+	p.ClosedAt = closedAt
 	return p
 }
 

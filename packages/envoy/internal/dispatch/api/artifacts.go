@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -70,6 +71,7 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -1221,6 +1223,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
 	reader.resolve()
+	approvalAtTheCut(r.Context(), artifact.Approval, "")
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -1312,9 +1315,14 @@ func readsAsks(r *http.Request) bool {
 // beside them for a request that asked for them with ?blocks=true. The markdown, the token and the
 // blocks come from one rendering of one tree, so a write by another session cannot leave a
 // listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// that asked for none, which pays for none of that rendering. At a cut they come from the
+// document's newest version then, in the same form, and the live document is not read
+// (artifactTextAtTheCut).
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (docs.AskedText, *[]model.ArtifactBlock, error) {
 	withBlocks := r.URL.Query().Get("blocks") == "true"
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		return s.artifactTextAtTheCut(r.Context(), artifactID, withBlocks, !readsAsks(r))
+	}
 	read := s.deps.Docs.TextWithAsks
 	if !readsAsks(r) {
 		// kept for one release: stored-ask-state
@@ -1347,6 +1355,17 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	// At a cut the blocks are those of the document's newest version then, and the live document
+	// is not read (artifactBlocksAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		blocks, err := s.artifactBlocksAtTheCut(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, blocks)
 		return
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
@@ -2106,7 +2125,8 @@ func listedArtifacts(ctx context.Context, q queryer, query string, args ...any) 
 // as a read shape carrying the display trees the caller asked for. A list route is therefore its
 // own authorization, its own statement and this call: a project's list and an agent
 // conversation's differ in nothing else, and a route added later says what it reads and who may
-// read it rather than repeating how a list is read.
+// read it rather than repeating how a list is read. At a cut each artifact's approval leaves out
+// what the records at the cut do not give of it (approvalsAtTheCut); at no cut that names nothing.
 func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
 	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
 	if err != nil {
@@ -2116,6 +2136,7 @@ func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
@@ -2160,15 +2181,16 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 // (readIssueDetails), and a read of its own sends them as a batch of its own (loadArtifactDetails).
 // The apply fills the versions first, since an approval's state reads them (applyApprovals), and
 // leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
-// nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing and its apply fills nothing. ctx is the read's: a read at a cut reads the open approval
+// requests as they stood then (queueApprovals).
+func queueArtifactDetails(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
 		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
-	approvals := queueApprovals(b, artifacts)
+	approvals := queueApprovals(ctx, b, artifacts)
 	return func() {
 		applyVersions(artifacts, versions)
 		approvals()
@@ -2182,7 +2204,7 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}

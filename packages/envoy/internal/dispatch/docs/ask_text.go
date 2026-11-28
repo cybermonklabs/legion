@@ -164,16 +164,39 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 	if err != nil {
 		return AskedText{}, unloadable
 	}
+	return s.servedText(ctx, artifactID, stored, tree, kept)
+}
+
+// VersionAskedText is markdown, the text of a version of document artifactID, as the text routes
+// serve a document (TextWithAsks, or KeptText where kept): read back into a tree
+// (pmdoc.ParseRendering), rendered again only where an ask block of it held an attribute the read
+// takes off (servedAskTree), with the asks of the tree it serves (textAsks). The token is the
+// caller's. The text route reads a version so at a cut (api's artifactTextAtTheCut), where every
+// statement reads the asks as the shadows give them at the cut, so each ask reads its answer as
+// the ask's newest state event at the cut carries it.
+func (s *Service) VersionAskedText(ctx context.Context, artifactID, markdown string, kept bool) (AskedText, error) {
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return AskedText{}, fmt.Errorf("read a version of document %s back into a tree: %w", artifactID, err)
+	}
+	return s.servedText(ctx, artifactID, AskedText{Markdown: markdown}, tree, kept)
+}
+
+// servedText is text, whose markdown tree was read back from, as the text routes serve it: its
+// markdown rendered from tree again only where an ask block of it held an attribute the read
+// takes off (servedAskTree), and the asks of the tree it serves.
+func (s *Service) servedText(ctx context.Context, artifactID string, text AskedText, tree *pmdoc.Node, kept bool) (AskedText, error) {
 	served, took := servedAskTree(tree, kept)
+	var err error
 	if took {
-		if stored.Markdown, err = documentMarkdown(served); err != nil {
+		if text.Markdown, err = documentMarkdown(served); err != nil {
 			return AskedText{}, err
 		}
 	}
-	if stored.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
+	if text.Asks, err = s.textAsks(ctx, artifactID, served); err != nil {
 		return AskedText{}, err
 	}
-	return stored, nil
+	return text, nil
 }
 
 // textAsks is the asks member of tree, a tree of document artifactID as the text routes serve it

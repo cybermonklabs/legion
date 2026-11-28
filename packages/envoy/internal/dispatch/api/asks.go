@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
@@ -751,12 +752,25 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		since = &value
 	}
 
+	// At a cut the answer stands at the cut: as_of is the cut, and each ask's age counts from it
+	// (decision 12 of INFRA-4620's plan).
+	clock, args := `statement_timestamp()`, []any{sessionID, since, project}
+	cut, atCut := asof.CutFrom(r.Context())
+	if atCut {
+		clock, args = `$4::timestamptz`, append(args, cut.Time())
+	}
 	var asOf time.Time
 	var openedSince bool
 	var rawAsks []byte
+	// mine names the ask columns active and the count read: a.* would compute every column for
+	// every ask of the scope, which at a cut includes the asks shadow's search vector, about
+	// 0.7 ms an ask on a copy of production's event log. node_kind is among them because the
+	// open test reads the ask's node where its row names one (askOpenOf).
 	err := s.deps.Store.Pool.QueryRow(r.Context(), `
 		with mine as (
-			select a.* from asks a
+			select a.id, a.issue_key, a.artifact_id, a.question, a.kind, a.urgency, a.state, a.created_at,
+				a.approval, a.asked_of, a.handed_back_reply_id, a.node_kind
+			from asks a
 			left join issues i on i.key = a.issue_key
 			left join artifacts ar on ar.id = a.artifact_id
 			where
@@ -770,7 +784,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				a.kind,
 				a.urgency,
 				a.created_at,
-				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
+				greatest(0, floor(extract(epoch from (`+clock+` - a.created_at))))::bigint as age_seconds,
 				i.priority,
 				-- The issue's own assignee beside its key and title, which is not the person the
 				-- question reaches: a question on an issue nobody holds carries a null assignee
@@ -794,10 +808,10 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 			where `+askOpenOf("a")+` and (i.key is null or i.closed_at is null)
 		)
 		select
-			statement_timestamp(),
+			`+clock+`,
 			exists (select 1 from mine where $2::timestamptz is not null and created_at >= $2),
 			coalesce((select jsonb_agg(to_jsonb(active) order by priority asc nulls last, created_at asc, id) from active), '[]'::jsonb)
-	`, sessionID, since, project).Scan(&asOf, &openedSince, &rawAsks)
+	`, args...).Scan(&asOf, &openedSince, &rawAsks)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -826,6 +840,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	response.Count = len(response.Asks)
+	openAsksAtTheCut(r.Context(), asks)
 	WriteJSON(w, http.StatusOK, response)
 }
 
@@ -843,9 +858,10 @@ type issueAskRow struct {
 // so a client can order by it. Without order the list is unpaged, and three surfaces read it.
 // Only the surface that draws threads asks for them with ?thread=1, so other readers do not
 // pay to build them. That parameter batches thread reads over the whole answer, and under
-// order=activity only the page's asks are built (readAskThreadPage).
+// order=activity only the page's asks are built (readAskThreadPage). At a cut the list answers
+// no page (refuseThreadPageAtCut), and its rows leave out what issueAsksAtTheCut names.
 func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	if !s.requireAuthenticated(w, r) || refuseThreadPageAtCut(w, r) {
 		return
 	}
 	state, err := parseAskListState(r)
@@ -881,8 +897,13 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, wantsDisplayTrees(r))
+	trees := wantsDisplayTrees(r)
+	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, trees)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := s.issueAsksAtTheCut(r.Context(), asks, rows, trees); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -968,10 +989,26 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask.AnchorPosition, err = s.anchorBlock(r.Context(), ask.Anchor)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// At a cut the read leaves out what the records at the cut do not give of the ask
+	// (askFieldsAtTheCut), and of its thread what threadsAtTheCut names. askFieldsAtTheCut answers
+	// whether no record gives the block id of the ask's anchor at the cut, which anchorAtTheCut
+	// takes to leave out the place of the ask's block.
+	trees := wantsDisplayTrees(r)
+	_, atCut := asof.CutFrom(r.Context())
+	var undatedBlocks map[string]bool
+	if atCut {
+		undatedBlocks, err = s.askFieldsAtTheCut(r.Context(), []model.Ask{ask}, func(int) string { return "/ask" }, trees)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	if !anchorAtTheCut(r.Context(), ask.Anchor, "/ask", undatedBlocks[ask.ID]) {
+		ask.AnchorPosition, err = s.anchorBlock(r.Context(), ask.Anchor)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "ask_id", ask.ID)
 	if err != nil {
@@ -1003,7 +1040,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	//
 	// The ask, its replies, the wordings it went through and every answer it was given are one
 	// read of the table: the whole page the dashboard draws from this route in one query.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reader := s.readDisplayTrees(r.Context(), trees)
 	read := askRead{askThread: askThread{
 		Replies:   shapedComments(replies, reader),
 		Edits:     askEditReads(edits, reader),
@@ -1014,6 +1051,12 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	read.Ask.Ask = ask
 	read.Ask.shape(reader)
 	reader.resolve()
+	if atCut {
+		if err := s.threadsAtTheCut(r.Context(), []*askThread{&read.askThread}, []string{""}, trees); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	WriteJSON(w, http.StatusOK, read)
 }
 

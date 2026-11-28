@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Handler:     (*server).getLiveAskAttributes,
 	TestHook:    true,
 	ID:          &idRoute{Reason: "a test hook's document id, naming a live room rather than a stored document"},
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: liveAskAttributes{}},
 })
