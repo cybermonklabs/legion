@@ -99,7 +99,7 @@ import { asUser } from "./users";
  * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
  * check owes on a part not yet under this part's head is a row of its own beside its check's
  * rows, skipped with an annotation naming that part and tagged `@owed`: two of c-replies, one
- * of c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
+ * of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
@@ -1363,21 +1363,13 @@ test("the box at the foot is never drawn in Threads, and Conversation draws it a
   });
 });
 
-// c-box, the half owed on INFRA-3948 (decision 127): the panel's Reply on a turn of its history
-// and its Edit on the reader's own comment set no target in Threads, and Conversation opened
-// after them draws the box at rest, with no target line. Until INFRA-3948 is under this part's
-// head Details draws no history and no focused node (`DetailsHistory` and `DetailsFocusedNode`
-// in `details-more.tsx` draw nothing), so the panel has neither control, and the reading is
-// skipped with an annotation naming that part and tagged `@owed`, which the check's run leaves
-// out (decision 135). The round that brings INFRA-3948 under the head takes the skip and the tag
-// off.
-test.skip("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone @owed", {
-  annotation: {
-    description:
-      "Owed on dispatch://INFRA-3948 (decision 127): Details draws no history and no focused node until that part is under this part's head (DetailsHistory and DetailsFocusedNode in details-more.tsx draw nothing), so the panel has no Reply on a turn of its history and no Edit, and this reading is skipped until then.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// c-box, the half that waited on INFRA-3948 (decision 127): the panel's Reply on a turn of its
+// history and its Edit on the reader's own comment set no target in Threads, and Conversation
+// opened after them draws the box at rest, with no target line. The panel has both controls:
+// INFRA-3948's history and focused node in Details are under this part's head.
+test("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width}x${size.height}`;

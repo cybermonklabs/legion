@@ -1840,13 +1840,9 @@ test("an agent's note and a thread between agents are drawn in Threads and nowhe
   });
 });
 
-test.skip("an agent's note and a thread between agents are drawn in Threads and nowhere else on the page: the history in Details @owed", {
-  annotation: {
-    description:
-      "Owed on dispatch://INFRA-3948: the history in Details is a stub on the base (DetailsHistory in details-more.tsx draws nothing) until that part is on it, so this reading is skipped until then.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+test("an agent's note and a thread between agents are drawn in Threads and nowhere else on the page: the history in Details", async ({
+  browser,
+}) => {
   await phase(browser, seedThreads, async (page, seed) => {
     await gotoIssue(page, presetPath(seed.key, "conversation"));
     await expectIssuePageDrawn(page);
