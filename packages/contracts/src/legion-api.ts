@@ -2156,9 +2156,9 @@ export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 export const LEGION_MAX_MODEL_REQUESTS = 200;
 
 /** A text field of a model request the daemon requires, named `field`: refused where Go's
- * strings.TrimSpace empties it (`goBlankPattern`), as `modelRequestsProblem` in
- * `packages/daemon/internal/api/model_requests.go` refuses it, with a 400 for the whole report, so
- * one blank request would cost every request of its batch. The value is sent as the host gave it,
+ * strings.TrimSpace empties it (`goBlankPattern`), as `claim.ModelRequestProblem` in
+ * `packages/daemon/internal/claim/wire.go` refuses it, with a 400 for the whole report, so one
+ * blank request would cost every request of its batch. The value is sent as the host gave it,
  * never trimmed. */
 function modelRequestField(field: string): z.ZodString {
   return z.string().refine((text) => !goBlankPattern.test(text), { error: `${field} is required` });
@@ -2169,10 +2169,11 @@ const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
 
 /** A model request's `endedAt`, as the daemon reads it, so that one bad request does not cost its
  * batch (`modelRequestField`): a `LegionInstant`, since Go's `time.Time` decode refuses a time with
- * no seconds, which `timestamp` alone takes, and never Go's zero time, which `modelRequestsProblem`
- * refuses through `EndedAt.IsZero()`: that instant at any offset, where the fraction's first nine
- * digits are zeros or there is none, whatever digits follow, since Go's decode keeps nanoseconds
- * and drops every digit after the ninth. Either refusal is a 400 for the whole report. */
+ * no seconds, which `timestamp` alone takes, and never Go's zero time, which
+ * `claim.ModelRequestProblem` refuses through `EndedAt.IsZero()`: that instant at any offset, where
+ * the fraction's first nine digits are zeros or there is none, whatever digits follow, since Go's
+ * decode keeps nanoseconds and drops every digit after the ninth. Either refusal is a 400 for the
+ * whole report. */
 const modelRequestEndedAt = LegionInstant.refine(
   (text) =>
     /\.\d{0,8}[1-9]/.test(text) || Date.parse(text.replace(/\.\d+/, "")) !== GO_ZERO_TIME_MS,

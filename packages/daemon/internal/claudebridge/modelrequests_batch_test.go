@@ -105,7 +105,7 @@ func (r *modelRequestRig) expectBatch(t *testing.T, want []string) {
 }
 
 // expectChunks reads the reports of one send of ids, more of them than one report holds: the send
-// puts every chunk of at most claim.MaxModelRequests on its way at once (windowDueLocked), so the
+// puts every chunk of at most claim.MaxModelRequests on its way at once (modelRequests' doc), so the
 // chunks reach the daemon in either order. It fails unless the next
 // ⌈len(ids)/claim.MaxModelRequests⌉ reports each hold at most claim.MaxModelRequests requests and
 // together hold ids, each once.
@@ -170,7 +170,7 @@ func (r *modelRequestRig) moveTo(t *testing.T, to time.Time) {
 
 // advance moves the clock on by d, which fires each window due by then, and, where the window
 // armed was due by then, waits until the reporter has acted on it: a window that is due closes
-// every open request and sends what is pending (flushLocked), and an early one only arms again. A
+// every open request and flushes (flushLocked), and an early one only arms again. A
 // firing of a replaced (armAtLocked) or a cancelled (flushLocked) window is neither waited on nor
 // counted: the reporter does nothing when it fires. It answers whether the reporter acted on the
 // armed window.
@@ -192,8 +192,8 @@ func (r *modelRequestRig) advance(t *testing.T, d time.Duration) bool {
 }
 
 // fireWindow moves the clock on to to, where the one window armed fires, and waits until the
-// reporter has acted on it (advance): a window that is due closes every open request and sends
-// what is pending, and an early one only arms again. It counts that window's firing alone: the
+// reporter has acted on it (advance): a window that is due closes every open request and flushes
+// (flushLocked), and an early one only arms again. It counts that window's firing alone: the
 // timer of a replaced or a cancelled window may fire too, and counts for nothing.
 func (r *modelRequestRig) fireWindow(t *testing.T, to time.Time) {
 	t.Helper()
@@ -489,7 +489,7 @@ func TestModelRequestsSendsALateBlockOfAFailedReportOnce(t *testing.T) {
 
 // A daemon slow to answer one report must not delay a later request's report past requestWindow
 // after its end: the report a window sends while another is on its way goes at once
-// (windowDueLocked), carrying only the request no report on its way carries. The stand-in holds
+// (modelRequests' doc), carrying only the request no report on its way carries. The stand-in holds
 // the first report unanswered until the second has come, across a 6-second move of the rig's
 // window clock in which a request read late falls due, so a second report that waited for the
 // first's answer never comes and the row fails on the test binary's deadline.
@@ -549,10 +549,10 @@ func TestModelRequestsReadsFullMaxBatchKeptAnswer(t *testing.T) {
 }
 
 // A daemon that fails a send of more requests than one report holds fails every chunk of it in
-// one window, and the requests, taken (pendingRequest), go again at the next window, never sooner:
-// no answer sends, and their own deadlines, past already, do not make that window due. That
-// window carries one chunk of them, the oldest ends first (windowDueLocked), and the rest wait the
-// window after it, again no sooner than requestDueAfter after it.
+// one window, and the requests, put back (pendingRequest), go again at the window requestWindow
+// after those calls ended, never sooner: no answer sends, and their own deadlines, past already, do
+// not make that window due. That window carries one chunk of them, the oldest ends first, and the
+// rest wait requestLeftDueAfter after it (modelRequests' doc).
 func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
@@ -589,15 +589,15 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 				t.Fatalf("sent %d IDs without waiting for a retry window", len(extra))
 			default:
 			}
-			// The retry window comes no sooner than requestDueAfter after the failed reports' flush,
-			// and carries the oldest chunk.
-			retry := r.clock.Now().Add(requestDueAfter)
+			// The retry window comes requestWindow after the failed calls ended, and carries the
+			// oldest chunk.
+			retry := r.clock.Now().Add(requestWindow)
 			r.moveTo(t, retry.Add(-time.Millisecond))
 			r.fireWindow(t, retry)
 			r.expectBatch(t, ids[:claim.MaxModelRequests])
 			r.awaitAnswer(t)
-			// The rest wait the next window, no sooner than requestDueAfter after the retry's flush.
-			next := r.clock.Now().Add(requestDueAfter)
+			// The rest wait requestLeftDueAfter after the retry's flush.
+			next := r.clock.Now().Add(requestLeftDueAfter)
 			r.moveTo(t, next.Add(-time.Millisecond))
 			r.fireWindow(t, next)
 			r.expectBatch(t, ids[claim.MaxModelRequests:])
@@ -606,7 +606,7 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 }
 
 // A send of more requests no report carried than one report holds puts every chunk of them on its
-// way at once, none waiting for another's answer (windowDueLocked). The stand-in holds the first
+// way at once, none waiting for another's answer (modelRequests' doc). The stand-in holds the first
 // call it takes until the second has come, so a chunk that waited for an answer never comes and
 // the row fails on the test binary's deadline.
 func TestModelRequestsSendsEveryChunkAtOnce(t *testing.T) {
@@ -640,15 +640,15 @@ func (c timeoutClock) After(d time.Duration) <-chan time.Time { return c.window(
 // The deep review's long stall, on the bridge: a daemon that takes each report's connection and
 // never answers, so each call ends at its timeout (requestReportTimeout) on the rig's clock, while
 // the role's session ends a request every tick of 200 ms and a turn's result comes every 30 s, for
-// 3 minutes, so the taken requests (pendingRequest) pile up past several chunks. A window or a
-// result flushes: it sends every untaken request, and at most one chunk of taken ones, none while
-// another is on its way, and the taken requests it leaves wait the next window (windowDueLocked).
-// So the most calls open at once in the stall's last minute is no more than in its first, and
-// every untaken request goes at its window or result, within requestWindow of its end. On a bridge
-// whose flush sends a chunk of taken requests while another is on its way, the open calls grow with
-// the backlog. A call's timeout and a window never fall in one tick, so the calls a flush makes are
-// the reports on their way it adds, and the calls open at once are the reports on their way just
-// after it.
+// 3 minutes, so the put-back requests (pendingRequest) pile up past several chunks. A window or a
+// result flushes: it sends every fresh request, and at most one chunk of put-back ones, none while
+// another is on its way, and the put-back requests it leaves wait requestLeftDueAfter
+// (modelRequests' doc). So the most calls open at once in the stall's last minute is no more than
+// in its first, and every fresh request goes at its window or result, within requestWindow of its
+// end. On a bridge whose flush sends a chunk of put-back requests while another is on its way, the
+// open calls grow with the backlog. A call's timeout and a window never fall in one tick, so the
+// calls a flush makes are the reports on their way it adds, and the calls open at once are the
+// reports on their way just after it.
 func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 	t.Parallel()
 	stalled := make(chan struct{})
@@ -740,13 +740,13 @@ func TestModelRequestsOpenCallsStayBoundedThroughALongStall(t *testing.T) {
 	}
 }
 
-// A chunk of taken requests does not leave while another chunk of them is on its way, and the
-// taken requests that wait for it make the window due for nothing meanwhile; once that chunk's call
-// ends, a chunk of taken requests whose window fell due meanwhile goes at once, sooner than the
-// window armed for a later request (windowDueLocked). A chunk's call ends by its timeout as a rule,
-// before the window is due for the others: here the rig's clock fires no timeout, and the stand-in
-// holds the answer to the first chunk until the row lets it go, 29 s after it left, past the window
-// of the request whose report failed beside it.
+// A chunk of put-back requests does not leave while another chunk of them is on its way, and the
+// put-back requests that wait for it make the window due for nothing meanwhile; once that chunk's
+// call ends, a chunk of put-back requests whose window fell due meanwhile goes at once, sooner than
+// the window armed for a later request (modelRequests' doc). A chunk's call ends by its timeout as
+// a rule, before the window is due for the others: here the rig's clock fires no timeout, and the
+// stand-in holds the answer to the first chunk until the row lets it go, 29 s after it left, past
+// the window of the request whose report failed beside it.
 func TestModelRequestsTakenChunkWaitsForTheOneOnItsWay(t *testing.T) {
 	t.Parallel()
 	release := make(chan struct{})
@@ -772,10 +772,10 @@ func TestModelRequestsTakenChunkWaitsForTheOneOnItsWay(t *testing.T) {
 	t.Cleanup(free)
 	start := r.clock.Now()
 	at := func(d time.Duration) time.Time { return start.Add(d) }
-	state := func() (posting int, windows uint64, flushed time.Time) {
+	state := func() (posting int, windows uint64) {
 		r.reporter.mu.Lock()
 		defer r.reporter.mu.Unlock()
-		return r.reporter.posting, r.reporter.windows, r.reporter.flushed
+		return r.reporter.posting, r.reporter.windows
 	}
 	reports := func(n int) [][]string {
 		var got [][]string
@@ -790,13 +790,13 @@ func TestModelRequestsTakenChunkWaitsForTheOneOnItsWay(t *testing.T) {
 		return got
 	}
 
-	// a's report fails at the result at 0 s, and a is put back, taken.
+	// a's report fails at the result at 0 s, and a is put back.
 	r.assistant("a", start)
 	r.result()
 	r.expectBatch(t, []string{"a"})
 	r.awaitAnswer(t)
-	// At 1 s a result sends b in a report of its own, which fails, and a again, in a chunk of taken
-	// requests the stand-in holds: b, taken, is due at +15.75 s, and waits for that chunk.
+	// At 1 s a result sends b in a report of its own, which fails, and a again, in a chunk of
+	// put-back requests the stand-in holds: b, put back, is due at +16 s, and waits for that chunk.
 	r.moveTo(t, at(time.Second))
 	r.assistant("b", at(time.Second))
 	r.result()
@@ -804,19 +804,18 @@ func TestModelRequestsTakenChunkWaitsForTheOneOnItsWay(t *testing.T) {
 		t.Fatalf("the result at +1s sent %q, want %q", got, want)
 	}
 	testwait.Eventually(t, "b's report to fail while a's chunk is held", func() bool {
-		posting, _, _ := state()
+		posting, _ := state()
 		return posting == 1
 	})
-	_, windowsBefore, flushedBefore := state()
+	_, windowsBefore := state()
 	// c, read at 25 s, arms the window for its own deadline, +39.75 s. Through 30 s no window comes
 	// and nothing goes: the window c armed is the only one armed in the wait.
 	r.moveTo(t, at(25*time.Second))
 	r.assistant("c", at(25*time.Second))
 	r.moveTo(t, at(30*time.Second))
 	r.noBatch(t)
-	if _, windows, flushed := state(); windows-windowsBefore != 1 || !flushed.Equal(flushedBefore) {
-		t.Fatalf("in the wait the bridge armed %d windows and last flushed at +%s, want the 1 c armed and no flush since +%s",
-			windows-windowsBefore, flushed.Sub(start), flushedBefore.Sub(start))
+	if _, windows := state(); windows-windowsBefore != 1 {
+		t.Fatalf("in the wait the bridge armed %d windows, want the 1 c armed", windows-windowsBefore)
 	}
 	// The daemon answers a's chunk at 30 s: the window is armed again at once, for b, and b's chunk
 	// goes then, beside c's report.
@@ -846,4 +845,159 @@ func TestModelRequestsDropsRequestsPastKeepWindow(t *testing.T) {
 	if n := strings.Count(r.logged.String(), `dropped model request "old"`); n != 1 {
 		t.Fatalf("logged %d drops, want one: %s", n, r.logged)
 	}
+}
+
+// A chunk aborted at its timeout (requestReportTimeout) is put back due requestWindow after its
+// call ended, not after the flush that sent it (modelRequests' doc). The stand-in takes the first
+// report's connection and never answers, and the rig's clock ends that call at its timeout, 10 s
+// after the result sent it: no window comes before that end plus requestWindow, 25 s after the
+// result, and the request goes again then.
+func TestModelRequestsAChunkAbortedAtItsTimeoutIsDueAWindowAfterItsCallEnded(t *testing.T) {
+	t.Parallel()
+	stalled := make(chan struct{})
+	r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
+		if attempt == 1 {
+			<-stalled
+		}
+		_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
+	})
+	t.Cleanup(func() { close(stalled) })
+	r.reporter.clock = timeoutClock{r.clock}
+	start := r.clock.Now()
+	r.assistant("a", start)
+	r.result()
+	r.expectBatch(t, []string{"a"})
+	ended := start.Add(requestReportTimeout)
+	r.moveTo(t, ended)
+	r.awaitAnswer(t)
+	due := ended.Add(requestWindow)
+	r.moveTo(t, due.Add(-time.Millisecond))
+	r.noBatch(t)
+	r.fireWindow(t, due)
+	r.expectBatch(t, []string{"a"})
+	r.awaitAnswer(t)
+}
+
+// A report answered with a 408 or a 429 failed, from the daemon or a proxy and whatever its body,
+// and its request is put back, due requestWindow after the call; any other 4xx, the daemon's
+// refusal or a proxy's page, drops it with a line (modelRequests' doc).
+func TestModelRequestsPutsBackA408OrA429AndDropsAnyOther4xx(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name   string
+		status int
+		body   string
+		again  bool
+	}{
+		{"the daemon's 408", http.StatusRequestTimeout, `{"error":"the daemon gave up on the body"}`, true},
+		{"a proxy's 408", http.StatusRequestTimeout, "<html><body><h1>408 Request Timeout</h1></body></html>", true},
+		{"the daemon's 429", http.StatusTooManyRequests, `{"error":"too many reports"}`, true},
+		{"a proxy's 429", http.StatusTooManyRequests, "<html><body><h1>429 Too Many Requests</h1></body></html>", true},
+		{"the daemon's 409", http.StatusConflict, `{"error":"the claim's launch generation 4 is not its current one"}`, false},
+		{"a proxy's 403", http.StatusForbidden, "<html><body><h1>403 Forbidden</h1></body></html>", false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			r := newModelRequestRig(t, func(w http.ResponseWriter, ids []string, attempt int) {
+				if attempt == 1 {
+					w.WriteHeader(row.status)
+					_, _ = io.WriteString(w, row.body)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(claim.ModelRequestsResponse{Kept: ids})
+			})
+			r.assistant("a", r.clock.Now())
+			r.result()
+			r.expectBatch(t, []string{"a"})
+			r.awaitAnswer(t)
+			if row.again {
+				r.fireWindow(t, r.clock.Now().Add(requestWindow))
+				r.expectBatch(t, []string{"a"})
+				return
+			}
+			r.result()
+			r.noBatch(t)
+			if !strings.Contains(r.logged.String(), "they go unreported") {
+				t.Fatalf("the bridge logged %q, want the report dropped with a line", r.logged)
+			}
+		})
+	}
+}
+
+// A call that fails before it leaves failed, and its request is put back (modelRequests' doc):
+// the bridge cannot build the call, as a daemon URL Go's parser refuses makes it, or cannot encode
+// the report, as an end past the year 9999 makes it. The request is pending again, put back, due
+// requestWindow after the call; once the bridge can build the call again, it goes then.
+func TestModelRequestsPutsBackACallThatFailsBeforeItLeaves(t *testing.T) {
+	t.Parallel()
+	putBack := func(t *testing.T, r *modelRequestRig, due time.Time) {
+		t.Helper()
+		r.reporter.mu.Lock()
+		pending, armed, at := slices.Clone(r.reporter.pending), r.reporter.window != 0, r.reporter.windowDue
+		r.reporter.mu.Unlock()
+		if len(pending) != 1 || pending[0].ID != "a" || !pending[0].taken || !armed || !at.Equal(due) {
+			t.Fatalf("the bridge holds %+v, its window armed (%t) for %s, want a put back and the window armed for %s",
+				pending, armed, at.Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
+		}
+		if !strings.Contains(r.logged.String(), "they go again") {
+			t.Fatalf("the bridge logged %q, want the report put back with a line", r.logged)
+		}
+	}
+	t.Run("the call cannot be built", func(t *testing.T) {
+		t.Parallel()
+		r := newModelRequestRig(t, nil)
+		url := r.reporter.url
+		r.reporter.url = url + "\x7f"
+		start := r.clock.Now()
+		r.assistant("a", start)
+		r.result()
+		r.awaitAnswer(t)
+		r.noBatch(t)
+		due := start.Add(requestWindow)
+		putBack(t, r, due)
+		r.reporter.url = url
+		r.moveTo(t, due.Add(-time.Millisecond))
+		r.fireWindow(t, due)
+		r.expectBatch(t, []string{"a"})
+	})
+	t.Run("the report cannot be encoded", func(t *testing.T) {
+		t.Parallel()
+		r := newModelRequestRig(t, nil)
+		far := time.Date(10_000, time.January, 1, 0, 0, 0, 0, time.UTC)
+		r.clock.set(far)
+		r.assistant("a", far)
+		r.result()
+		r.awaitAnswer(t)
+		r.noBatch(t)
+		putBack(t, r, far.Add(requestWindow))
+	})
+}
+
+// A request the daemon would refuse (claim.ModelRequestProblem) is dropped where the bridge reads
+// it, with a line naming its id and the reason, so it never shares a report (modelRequests' doc):
+// the three the tester measured on the real bridge, a model of spaces, a model of U+0085 and an id
+// of spaces, and an empty model, each a request of the role's own session beside a valid one. The
+// valid one goes alone at its window; sent with them, the daemon's 400 would drop it too.
+func TestModelRequestsDropsARequestTheDaemonRefusesWhereItReadsIt(t *testing.T) {
+	t.Parallel()
+	r := newModelRequestRig(t, nil)
+	start := r.clock.Now()
+	r.assistant("valid", start)
+	for _, refused := range []struct{ id, model, reason string }{
+		{"model-of-spaces", "  ", "model is required"},
+		{"model-of-nel", "\u0085", "model is required"},
+		{"   ", capturedModel, "id is required"},
+		{"model-empty", "", "model is required"},
+	} {
+		r.reporter.read(streamLine{
+			kind: "assistant", session: capturedSession, timestamp: start.Format(time.RFC3339Nano),
+			message: json.RawMessage(fmt.Sprintf(`{"id":%q,"model":%q,"usage":{"input_tokens":1}}`, refused.id, refused.model)),
+		})
+		if want := fmt.Sprintf("dropped model request %q: the daemon refuses it: %s", refused.id, refused.reason); !strings.Contains(r.logged.String(), want) {
+			t.Errorf("the bridge logged %q, want the line %q", r.logged, want)
+		}
+	}
+	r.fireWindow(t, start.Add(requestDueAfter))
+	r.expectBatch(t, []string{"valid"})
+	r.awaitAnswer(t)
 }

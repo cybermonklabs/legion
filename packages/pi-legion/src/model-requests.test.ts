@@ -1,15 +1,12 @@
 import { expect, test } from "bun:test";
-import { LEGION_MAX_MODEL_REQUESTS } from "@legion/contracts/legion-api";
-import { createLegionDaemonClient, type LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import type { AgentEndEvent, AgentEndMessage } from "@legion/pi-shared/pi-types";
 import {
-  createModelRequestsReporter,
   MODEL_REQUEST_DUE_AFTER_MS,
   MODEL_REQUEST_REPORT_BOUND_MS,
   MODEL_REQUEST_REPORT_TIMEOUT_MS,
   MODEL_REQUEST_SEND_MARGIN_MS,
   type ModelRequestCredential,
-  type ModelRequestsReporter,
 } from "./model-requests";
 import {
   answered,
@@ -17,9 +14,9 @@ import {
   CONTROLLER_SESSION,
   controller,
   credentialOf,
-  fakeClock,
   implementer,
   ROLE_SESSION,
+  rig,
   role,
   START,
   SUBAGENT_SESSION,
@@ -27,130 +24,6 @@ import {
 import { createTurnOutcomeReporter } from "./turn-outcome";
 
 const OTHER_SESSION = "ses_person_pane";
-
-/** More warnings than any case writes (the rig's `log`). */
-const WARNINGS_OF_A_LOOP = 1_000;
-
-interface Posted {
-  readonly route: string;
-  readonly body: Record<string, unknown>;
-}
-
-interface LoggedWarning {
-  readonly message: string;
-  readonly context: Record<string, unknown> | undefined;
-}
-
-interface Rig {
-  readonly reporter: ModelRequestsReporter;
-  /** Every body posted to the daemon, in the order it received them, by route. */
-  readonly posted: Posted[];
-  readonly warned: string[];
-  readonly warnings: LoggedWarning[];
-  /** The batches posted to `claims/model-requests`. */
-  readonly batches: () => Record<string, unknown>[];
-  /** Moves the clock on by `ms`, firing each timer that falls due, and waits for the sends they
-   * start to be answered and handled; while the daemon holds an answer on the rig's clock
-   * (`hold`), which only this moves, it lets every callback already queued run instead. */
-  readonly advance: (ms: number) => Promise<void>;
-  readonly now: () => number;
-}
-
-/**
- * The reporter over a stub daemon. `answer` answers each report of model requests, by the order it
- * arrived in, with the ids the daemon keeps, and defaults to every id of the batch; it may hold its
- * answer back by returning a promise, and `hold(ms)` resolves once `advance` has moved the clock
- * `ms` on, which holds the answer that long on the rig's clock, or rejects with the abort's reason
- * once the report's request is aborted, as `fetch` does. The clock and the timers are the rig's
- * (`fakeClock`): nothing waits on the wall clock.
- */
-function rig(
-  options: {
-    readonly answer?: (
-      body: Record<string, unknown>,
-      attempt: number,
-      hold: (ms: number) => Promise<void>
-    ) => Promise<Response> | Response;
-    readonly credential?: (sessionID: string) => ModelRequestCredential | undefined;
-    readonly daemon?: () => LegionDaemonClient;
-  } = {}
-): Rig {
-  const posted: Posted[] = [];
-  const warned: string[] = [];
-  const warnings: LoggedWarning[] = [];
-  const clock = fakeClock();
-  let attempts = 0;
-  let nextId = 0;
-  const stub = (async (input, init) => {
-    const route = new URL(input.toString()).pathname;
-    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    posted.push({ route, body });
-    if (route === "/legion/v1/claims/turn-outcome") {
-      return Response.json({ refusedRun: 1, failed: false });
-    }
-    if (route !== "/legion/v1/claims/model-requests") throw new Error(`unexpected route ${route}`);
-    attempts += 1;
-    if (options.answer !== undefined) {
-      return options.answer(body, attempts, (ms) => clock.hold(ms, init?.signal));
-    }
-    const requests = body.requests as { id: string }[];
-    return Response.json({ kept: requests.map((request) => request.id) });
-  }) as typeof fetch;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: stub,
-  });
-  const reporter = createModelRequestsReporter({
-    daemon: options.daemon ?? (() => client),
-    credential:
-      options.credential ??
-      ((sessionID) => (sessionID === implementer.sessionID ? implementer : undefined)),
-    paneSession: () => ROLE_SESSION,
-    log: {
-      debug: () => undefined,
-      warn: (message, context) => {
-        warned.push(message);
-        warnings.push({ message, context });
-        // No case warns this often: a reporter that does is calling in a loop, and the throw ends
-        // the loop, so the case fails rather than hang.
-        if (warned.length > WARNINGS_OF_A_LOOP) {
-          throw new Error(`the reporter warned ${warned.length} times: it is calling in a loop`);
-        }
-      },
-    },
-    now: clock.now,
-    schedule: clock.schedule,
-    newId: () => `req-${++nextId}`,
-  });
-  /** Waits until every report on its way is answered and handled, but while the daemon holds an
-   * answer on the rig's clock: that answer waits for `advance`, so this lets every callback
-   * already queued run instead. */
-  const handled = async (): Promise<void> => {
-    if (clock.holding() === 0) return reporter.settled();
-    const turn = Promise.withResolvers<void>();
-    setImmediate(turn.resolve);
-    await turn.promise;
-  };
-  const advance = async (ms: number) => {
-    await clock.advance(ms, async (fire) => {
-      fire();
-      await handled();
-    });
-    await handled();
-  };
-  return {
-    reporter,
-    posted,
-    warned,
-    warnings,
-    batches: () =>
-      posted
-        .filter((post) => post.route === "/legion/v1/claims/model-requests")
-        .map((post) => post.body),
-    advance,
-    now: clock.now,
-  };
-}
 
 /** The provider's text of a 429. */
 const RATE_LIMITED_TEXT = "429 Too Many Requests: rate limit exceeded";
@@ -279,7 +152,8 @@ test("a request read late goes by its own deadline, before the armed timer", asy
   expect(batches()).toHaveLength(1);
 });
 
-// The turn's end sends what is pending at once and the timer it had armed sends nothing more.
+// The turn's end sends the fresh request pending at once, and the timer it had armed sends nothing
+// more.
 test("turn end flush", async () => {
   const { reporter, batches, advance, now } = rig();
 
@@ -518,9 +392,10 @@ test("a request no call carried goes by its own deadline even while a failed cal
   ]);
 });
 
-// A run's end (`agent_end`, and `session_shutdown`) makes a send at once and drops the timer,
-// whatever failed before: both a fresh request and a put-back request leave immediately, each in a
-// report of its own, the earliest deadline's first.
+// A run's end (`agent_end`) makes a send at once and drops the timer, whatever failed before: a
+// fresh request leaves, and a put-back request rides in its owner's one report of put-back requests
+// ("When it is sent" in `./model-requests.ts`), each in a report of its own, the earliest
+// deadline's first.
 test("a run's end sends what is pending at once even while a failed call's request waits", async () => {
   const sentAt: { ids: string[]; at: number }[] = [];
   const { reporter, advance, now } = rig({
@@ -552,18 +427,18 @@ test("a run's end sends what is pending at once even while a failed call's reque
     { ids: ["req-2"], at: firstTurnEnd },
   ]);
 
-  // Even with only a put-back request pending (as at `session_shutdown`), a run's end sends it at
-  // once instead of leaving it on an unref'd timer.
+  // Even with only a put-back request pending, a run's end sends it at once, in its owner's one
+  // report of put-back requests, instead of leaving it on an unref'd timer.
   reporter.messageEnded(role, answered(now()));
   reporter.turnEnded();
   await reporter.settled();
   expect(sentAt).toHaveLength(4);
   await advance(2_000);
-  const shutdownAt = now();
+  const endAt = now();
   reporter.turnEnded();
   await reporter.settled();
   expect(sentAt).toHaveLength(5);
-  expect(sentAt[4]).toEqual({ ids: ["req-3"], at: shutdownAt });
+  expect(sentAt[4]).toEqual({ ids: ["req-3"], at: endAt });
 
   await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
   expect(sentAt).toHaveLength(5);
@@ -647,319 +522,47 @@ test("a request the contract refuses is dropped at messageEnded with a warning, 
   }
 });
 
-// The 4xx rule, each branch. A proxy in front of the daemon that answers 429 with a page of its
-// own is not the daemon's refusal (`daemonUnreachable` names it an outage): a failed call, whose
-// request goes again after the hold. The daemon's own 409, in its refusal shape, will not pass on
-// a retry: its request goes once and is dropped with a warning.
-test("a proxy's 429 goes again after the hold, and the daemon's own 409 is dropped", async () => {
-  const proxied = rig({
-    answer: (body, attempt) =>
-      attempt === 1
-        ? new Response("<html><body><h1>429 Too Many Requests</h1></body></html>", {
-            status: 429,
-            headers: { "Content-Type": "text/html" },
-          })
-        : Response.json({ kept: (body.requests as { id: string }[]).map(({ id }) => id) }),
-  });
-  const proxiedIds = () =>
-    proxied.batches().map((batch) => (batch.requests as { id: string }[]).map(({ id }) => id));
-  proxied.reporter.messageEnded(role, answered(proxied.now()));
-  proxied.reporter.turnEnded();
-  await proxied.reporter.settled();
-  expect(proxiedIds()).toEqual([["req-1"]]);
-  expect(proxied.warned).toEqual([
-    "legion: a report of model requests did not reach the daemon; it goes again",
-  ]);
-  await proxied.advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
-  expect(proxiedIds()).toEqual([["req-1"]]);
-  await proxied.advance(1);
-  expect(proxiedIds()).toEqual([["req-1"], ["req-1"]]);
-  expect(proxied.warned).toHaveLength(1);
-
-  const refused = rig({
-    answer: () =>
-      Response.json(
-        { error: "the claim's launch generation 3 is not its current one" },
-        { status: 409 }
-      ),
-  });
-  refused.reporter.messageEnded(role, answered(refused.now()));
-  refused.reporter.turnEnded();
-  await refused.reporter.settled();
-  expect(refused.batches()).toHaveLength(1);
-  expect(refused.warned).toEqual([
-    "legion: the daemon refused a report of model requests; they go unreported",
-  ]);
-  await refused.advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
-  expect(refused.batches()).toHaveLength(1);
-  expect(refused.warned).toHaveLength(1);
-});
-
-// S1 against a daemon that takes each report's connection and never answers, as a stalled or
-// restarting one does: each report's call is aborted `MODEL_REQUEST_REPORT_TIMEOUT_MS` after it
-// left, a failed call, while requests no call carried keep their own deadlines. A turn runs on for
-// two minutes, a request ending every 5 s. The first request after a deadline's send sets the next
-// deadline, a period after the one before: the bound less the margin rounded up to the 5 s between
-// requests, 15 s, so every third request. Each call aborts 5 s before the next deadline, and in
-// this row the requests it put back go with that deadline's send, in its one report of put-back
-// requests beside the report of the requests no call carried ("When it is sent" in
-// `./model-requests.ts`): so from the second deadline on two calls are open at once, until a run's
-// end fires halfway through the last deadline's calls, where three are. Once no new requests
-// arrive, the put-back requests wait a full bound after their abort before going again: a stalled
-// daemon is never called in a loop, and open calls do not grow with the stall.
-test("a report the daemon never answers is aborted at its timeout and goes again after the hold", async () => {
-  /** Each call: the ids it carries, when it left and was aborted on the rig's clock, and how many
-   * calls were open once it left. */
-  const calls: { ids: string[]; sent: number; aborted?: number; open: number }[] = [];
-  let open = 0;
-  const { reporter, advance, now, warned } = rig({
-    answer: async (body, _attempt, hold) => {
-      open += 1;
-      const call: (typeof calls)[number] = {
-        ids: (body.requests as { id: string }[]).map(({ id }) => id),
-        sent: now(),
-        open,
-      };
-      calls.push(call);
-      // The daemon never answers: only the request's abort ends the hold, and rejects it.
-      await hold(Number.POSITIVE_INFINITY).catch((reason: unknown) => {
-        open -= 1;
-        call.aborted = now();
-        throw reason;
-      });
-      throw new Error("a daemon that never answers answered");
-    },
-  });
-
-  // The request that sets each deadline (at 0, 15 s, ..., 105 s) falls due a period after the one
-  // before; a run ends halfway through the last deadline's call, after a 25th request at 120 s;
-  // then with no more requests, the put-back batch goes again a full bound after that call aborts.
-  const requestEvery = 5_000;
-  const period = Math.ceil(MODEL_REQUEST_DUE_AFTER_MS / requestEvery) * requestEvery;
-  const deadlines = Array.from(
-    { length: 8 },
-    (_, index) => START + MODEL_REQUEST_DUE_AFTER_MS + index * period
-  );
-  const lastDeadline = deadlines.at(-1) ?? Number.NaN;
-  const whileOpen = lastDeadline + MODEL_REQUEST_REPORT_TIMEOUT_MS / 2;
-  const retryAfterAbort =
-    lastDeadline + MODEL_REQUEST_REPORT_TIMEOUT_MS + MODEL_REQUEST_REPORT_BOUND_MS;
-  const events = [
-    ...Array.from({ length: 25 }, (_, index) => ({
-      at: START + index * requestEvery,
-      happen: (at: number) => reporter.messageEnded(role, answered(at)),
-    })),
-    { at: whileOpen, happen: () => reporter.turnEnded() },
-  ].sort((a, b) => a.at - b.at);
-  for (const { at, happen } of events) {
-    await advance(at - now());
-    happen(at);
-  }
-  // Wait through the abort of the open calls, the put-back hold, and the retry's abort.
-  await advance(retryAfterAbort + MODEL_REQUEST_REPORT_TIMEOUT_MS - now());
-
-  // Each call left as the schedule says, two at each deadline after the first, one at the run's end
-  // while the last deadline's calls were open, and one again only once the put-back hold ended.
-  expect(calls.map(({ sent }) => sent)).toEqual([
-    deadlines[0],
-    ...deadlines.slice(1).flatMap((deadline) => [deadline, deadline]),
-    whileOpen,
-    retryAfterAbort,
-  ]);
-  expect(calls.map(({ open }) => open)).toEqual([
-    1, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 3, 1,
-  ]);
-  // Each call was aborted at its limit, a failed call whose requests go again.
-  expect(calls.map(({ sent, aborted }) => (aborted ?? Number.NaN) - sent)).toEqual(
-    calls.map(() => MODEL_REQUEST_REPORT_TIMEOUT_MS)
-  );
-  expect(warned).toEqual(
-    calls.map(() => "legion: a report of model requests did not reach the daemon; it goes again")
-  );
-  // At each deadline, the first report carries the requests that ended since the deadline before,
-  // which no call carried, and from the second deadline on the other carries every id the deadline
-  // before carried; the run-end call carries only the request that ended while the last deadline's
-  // calls were open; the retry carries all 25.
-  const perPeriod = period / requestEvery;
-  const byDeadline = deadlines.map((deadline) => calls.filter(({ sent }) => sent === deadline));
-  for (const [index, [fresh, putBack]] of byDeadline.entries()) {
-    expect(fresh?.ids).toEqual(
-      Array.from({ length: perPeriod }, (_, next) => `req-${index * perPeriod + next + 1}`)
-    );
-    const before = byDeadline[index - 1]?.flatMap(({ ids }) => ids) ?? [];
-    expect(putBack?.ids.sort() ?? []).toEqual(before.sort());
-  }
-  expect(calls.at(-2)?.ids).toEqual(["req-25"]);
-  expect(calls.at(-1)?.ids).toHaveLength(25);
-});
-
-// The deep review's long stall (review round 8 of cybermonklabs/legion#5603): a daemon that takes
-// each report's connection and never answers, a request every 2 s alternating the role's claim and
-// the controller's, and a run's end every 30 s, for 90 minutes on the clock. Each call is aborted
-// at its 10 s limit, so the requests calls put back pile up to hundreds of each owner, which only
-// the hour's keep window caps. A send takes, per owner, the reports of the requests no call carried
-// and at most one report of put-back requests, none while another is on its way, and the put-back
-// requests it leaves wait `MODEL_REQUEST_LEFT_DUE_AFTER_MS` ("When it is sent" in
-// `./model-requests.ts`): so the most calls open at once in the last 5 minutes is no more than in
-// the first 5, while the calls of the last 5 minutes carry hundreds of requests that ended before
-// them, and every request no call carried still goes by its own deadline. On a reporter whose send
-// takes every put-back request, the open calls grow with the backlog.
-test("the open calls of a long stall do not grow with the requests calls put back", async () => {
-  const clock = fakeClock();
-  /** Each call: when it left, the ids it carries, and how many calls were open once it left. */
-  const calls: { readonly sent: number; readonly ids: readonly string[]; readonly open: number }[] =
-    [];
-  let open = 0;
-  let nextId = 0;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: (async (_input, init): Promise<Response> => {
-      open += 1;
-      const ids = (JSON.parse(String(init?.body)).requests as { id: string }[]).map(({ id }) => id);
-      calls.push({ sent: clock.now(), ids, open });
-      // The daemon never answers: only the call's abort ends the hold, and rejects it.
-      await clock.hold(Number.POSITIVE_INFINITY, init?.signal, () => {
-        open -= 1;
-      });
-      throw new Error("a daemon that never answers answered");
-    }) as typeof fetch,
-  });
-  const reporter = createModelRequestsReporter({
-    daemon: () => client,
-    credential: credentialOf,
-    paneSession: () => ROLE_SESSION,
-    log: { debug: () => undefined, warn: () => undefined },
-    now: clock.now,
-    schedule: clock.schedule,
-    newId: () => `req-${++nextId}`,
-  });
-  /** Lets the calls a hook call or a firing made reach the daemon, and the aborted ones end. */
-  const turn = async (): Promise<void> => {
-    const turned = Promise.withResolvers<void>();
-    setImmediate(turned.resolve);
-    await turned.promise;
-  };
-  const advance = (ms: number): Promise<void> =>
-    clock.advance(ms, async (fire) => {
-      fire();
-      await turn();
+// The 4xx rule ("When it is sent" in `./model-requests.ts`), each branch. A 408 or a 429 is a
+// failed call whoever sent it and whatever its body, the daemon's refusal shape or a proxy's page:
+// its request goes again after the hold. Any other 4xx will not pass on a retry, the daemon's own
+// (a 409 in its refusal shape) or a proxy's (a 403 page): its request goes once and is dropped
+// with a warning.
+test("a 408 or a 429 goes again after the hold whoever sent it, and any other 4xx is dropped", async () => {
+  const goesAgain = "legion: a report of model requests did not reach the daemon; it goes again";
+  const unreported = (status: number) =>
+    `legion: a report of model requests was refused with ${status}; they go unreported`;
+  const daemonRefusal = (status: number) =>
+    Response.json({ error: `the daemon answers ${status}` }, { status });
+  const proxyPage = (status: number) =>
+    new Response(`<html><body><h1>${status}</h1></body></html>`, {
+      status,
+      headers: { "Content-Type": "text/html" },
     });
-  const controllerPane = { session: CONTROLLER_SESSION, subagent: false } as const;
-  const stall = 90 * 60_000;
-  const window = 5 * 60_000;
-  /** Each request's end, by its id. */
-  const ended = new Map<string, number>();
-  for (let at = START; at < START + stall; at += 2_000) {
-    await advance(at - clock.now());
-    reporter.messageEnded((at - START) % 4_000 === 0 ? role : controllerPane, answered(at));
-    ended.set(`req-${nextId}`, at);
-    if ((at - START) % 30_000 === 0) reporter.turnEnded();
-    await turn();
-  }
-  // The last requests' deadlines.
-  await advance(MODEL_REQUEST_REPORT_BOUND_MS);
-
-  const last = START + stall - window;
-  const retried = new Set(
-    calls
-      .filter(({ sent }) => sent >= last)
-      .flatMap(({ ids }) => ids.filter((id) => (ended.get(id) ?? Number.NaN) < last))
-  );
-  expect(retried.size).toBeGreaterThan(2 * LEGION_MAX_MODEL_REQUESTS);
-  const most = (from: number, until: number): number =>
-    Math.max(...calls.filter(({ sent }) => from <= sent && sent < until).map(({ open }) => open));
-  expect(most(last, START + stall)).toBeLessThanOrEqual(most(START, START + window));
-  const first = new Map<string, number>();
-  for (const { sent, ids } of calls) {
-    for (const id of ids) if (!first.has(id)) first.set(id, sent);
-  }
-  const late = [...ended].filter(
-    ([id, end]) => (first.get(id) ?? Number.POSITIVE_INFINITY) > end + MODEL_REQUEST_DUE_AFTER_MS
-  );
-  expect(late).toEqual([]);
-});
-
-// A report of put-back requests does not leave while another report of its owner's put-back
-// requests is on its way, and the put-back requests that wait for it arm no timer meanwhile; once
-// that report's call ends, a put-back report that fell due meanwhile goes at once ("When it is
-// sent" in `./model-requests.ts`). A call ends within its 10 s limit as a rule, and a put-back
-// request is then not due yet, so here the daemon answers the first put-back report 19 s after it
-// left, past a limit whose abort this stand-in does not honor, as a transport slow to end the call
-// would not: the put-back request that fell due at 16 s waits for that answer, and no longer.
-test("a put-back report due while another of its owner's is on its way waits for that one's end and goes at once then", async () => {
-  const clock = fakeClock();
-  /** Each report the daemon took: the ids it carries, and when it left. */
-  const sent: { readonly ids: string[]; readonly at: number }[] = [];
-  const seen = new Set<string>();
-  const released = Promise.withResolvers<void>();
-  let fired = 0;
-  let nextId = 0;
-  const client = createLegionDaemonClient("http://daemon.test", {
-    pluginContract: CONTRACT,
-    fetch: (async (_input, init): Promise<Response> => {
-      const ids = (JSON.parse(String(init?.body)).requests as { id: string }[]).map(({ id }) => id);
-      const again = ids.some((id) => seen.has(id));
-      for (const id of ids) seen.add(id);
-      sent.push({ ids, at: clock.now() });
-      // A request's first report fails; req-1's put-back report is answered once the row lets it.
-      if (!again) return Response.json({ error: "unavailable" }, { status: 503 });
-      if (ids.includes("req-1")) await released.promise;
-      return Response.json({ kept: ids });
-    }) as typeof fetch,
-  });
-  const reporter = createModelRequestsReporter({
-    daemon: () => client,
-    credential: credentialOf,
-    paneSession: () => ROLE_SESSION,
-    log: { debug: () => undefined, warn: () => undefined },
-    now: clock.now,
-    schedule: (callback, delayMs) =>
-      clock.schedule(() => {
-        fired += 1;
-        callback();
-      }, delayMs),
-    newId: () => `req-${++nextId}`,
-  });
-  /** Lets what a hook call, a firing or an answer set off run. */
-  const turn = async (): Promise<void> => {
-    const turned = Promise.withResolvers<void>();
-    setImmediate(turned.resolve);
-    await turned.promise;
-  };
-  const advance = (ms: number): Promise<void> =>
-    clock.advance(ms, async (fire) => {
-      fire();
-      await turn();
+  for (const { name, status, first, again } of [
+    { name: "the daemon's 408", status: 408, first: daemonRefusal, again: true },
+    { name: "the daemon's 429", status: 429, first: daemonRefusal, again: true },
+    { name: "a proxy's 429", status: 429, first: proxyPage, again: true },
+    { name: "the daemon's 409", status: 409, first: daemonRefusal, again: false },
+    { name: "a proxy's 403", status: 403, first: proxyPage, again: false },
+  ]) {
+    const { reporter, batches, warned, advance, now } = rig({
+      answer: (body, attempt) =>
+        attempt === 1
+          ? first(status)
+          : Response.json({ kept: (body.requests as { id: string }[]).map(({ id }) => id) }),
     });
-
-  // req-1's report fails at 0 s, and req-1 is put back, due at 15 s. At 1 s a run's end sends
-  // req-1 again, in a report of put-back requests the daemon holds, and req-2 in a report of its
-  // own, which fails: req-2 is put back, due at 16 s, and waits for req-1's report.
-  reporter.messageEnded(role, answered(START));
-  reporter.turnEnded();
-  await turn();
-  await advance(1_000);
-  reporter.messageEnded(role, answered(clock.now()));
-  reporter.turnEnded();
-  await turn();
-  expect(sent).toEqual([
-    { ids: ["req-1"], at: START },
-    { ids: ["req-1"], at: START + 1_000 },
-    { ids: ["req-2"], at: START + 1_000 },
-  ]);
-
-  // Through 19 s nothing goes, and the one timer that fires is the put-back report's own abort at
-  // its limit: none fires for req-2, due at 16 s.
-  const firedBefore = fired;
-  await advance(19_000);
-  expect(sent).toHaveLength(3);
-  expect(fired - firedBefore).toBe(1);
-
-  // The daemon answers req-1's report at 20 s, and req-2's put-back report goes then.
-  released.resolve();
-  await turn();
-  await advance(0);
-  expect(sent.slice(3)).toEqual([{ ids: ["req-2"], at: START + 20_000 }]);
+    reporter.messageEnded(role, answered(now()));
+    reporter.turnEnded();
+    await reporter.settled();
+    expect(warned, name).toEqual([again ? goesAgain : unreported(status)]);
+    await advance(MODEL_REQUEST_REPORT_BOUND_MS - 1);
+    expect(batches(), name).toHaveLength(1);
+    await advance(1);
+    expect(batches(), name).toHaveLength(again ? 2 : 1);
+    await advance(MODEL_REQUEST_REPORT_BOUND_MS * 2);
+    expect(batches(), name).toHaveLength(again ? 2 : 1);
+    expect(warned, name).toHaveLength(1);
+  }
 });
 
 test("an unanswered request expires without blocking fresh requests", async () => {

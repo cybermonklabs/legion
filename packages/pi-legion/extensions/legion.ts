@@ -859,8 +859,10 @@ export default function legionExtension(pi: PiApi): void {
     clearStartupTurn(context.sessionManager.getSessionId());
     // Whatever this session had open is not this watch's business any more.
     stallWatch?.sessionChanged();
-    // What the session's requests left pending goes now, before the process can exit.
-    modelRequests.turnEnded();
+    // No later send comes: every request the session left pending goes now, put-back requests
+    // included, without waiting for a report on its way (`src/model-requests.ts`, "When it is
+    // sent").
+    modelRequests.shutdown();
   });
   // Every provider request of this session passes here, which makes it one of the triggers of the
   // model fallback's return; `ModelFallback.maybeRestore` (src/model-fallback.ts) states the rule.
@@ -992,9 +994,9 @@ export default function legionExtension(pi: PiApi): void {
   });
 
   // Each model request this process's sessions make ends in one assistant `message_end`, a
-  // subagent's included (`context.agent.kind === "sub"`), and is reported within the bound of its
-  // end (`src/model-requests.ts`, which says what was measured); every run's end, a subagent's too,
-  // sends what is pending at once. Neither hook waits on a report.
+  // subagent's included (`context.agent.kind === "sub"`), which hands it to the reporter
+  // (`src/model-requests.ts`, which says what was measured); every run's end, a subagent's too,
+  // makes a send ("When it is sent" there). Neither hook waits on a report.
   pi.on("message_end", async (event, context) => {
     modelRequests.messageEnded(
       { session: context.sessionManager.getSessionId(), subagent: subagentEvent(context) },

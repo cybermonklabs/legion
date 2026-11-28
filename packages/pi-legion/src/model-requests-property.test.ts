@@ -1,8 +1,7 @@
 import { expect, test } from "bun:test";
 import { LEGION_MAX_MODEL_REQUESTS } from "@legion/contracts/legion-api";
-import { createLegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
 import {
-  createModelRequestsReporter,
   MODEL_REQUEST_DUE_AFTER_MS,
   MODEL_REQUEST_LEFT_DUE_AFTER_MS,
   MODEL_REQUEST_REPORT_BOUND_MS,
@@ -11,16 +10,16 @@ import {
 import {
   answered,
   type ClockFiring,
-  CONTRACT,
   CONTROLLER_SESSION,
   controller,
-  credentialOf,
+  daemonOver,
   fakeClock,
   implementer,
-  ROLE_SESSION,
+  reporterOn,
   role,
   START,
   SUBAGENT_SESSION,
+  turn,
 } from "./model-requests-test-support";
 
 /** How long the reporter keeps a request for a retry, an hour (`MODEL_REQUEST_KEEP_MS` in
@@ -31,24 +30,29 @@ const KEEP_MS = 60 * 60_000;
 const SEEDS = 200;
 
 const GOES_AGAIN = "legion: a report of model requests did not reach the daemon; it goes again";
-const UNREPORTED = "legion: the daemon refused a report of model requests; they go unreported";
+/** The warning of a report refused with `status`, a 4xx other than 408 or 429. */
+const unreported = (status: number): string =>
+  `legion: a report of model requests was refused with ${status}; they go unreported`;
 const EXPIRED = "legion: dropped a model request past the daemon's keep window";
 const DROPPED_INVALID = "legion: dropped a model request the contract refuses";
+
+/** The statuses a random run's call refused for good is answered with: a 4xx other than 408 or
+ * 429. */
+const REFUSED_STATUSES = [400, 401, 403, 404, 409, 422] as const;
 
 /** What makes a tick of a random run: a hook call, at a run's end or at a request's end, or a
  * firing of the run's clock, the reporter's timer or the end of an answer the daemon held. */
 type TickCause = "a run's end" | "a request's end" | ClockFiring;
 
 /** Each way a call of a random run can end, and how long the daemon or a proxy takes to answer it
- * on the run's clock (`ms`), always within the 10 s limit. */
+ * on the run's clock (`ms`), always within the 10 s limit; an answer with a status is in the
+ * daemon's refusal shape or a proxy's page (`shaped`). */
 type Fate =
   | { readonly kind: "client throws" }
   | { readonly kind: "client refuses" }
   | { readonly kind: "connection drops"; readonly ms: number }
-  | { readonly kind: "daemon refuses"; readonly ms: number; readonly status: number }
-  | { readonly kind: "proxy outage"; readonly ms: number; readonly status: number }
   | {
-      readonly kind: "server error";
+      readonly kind: "4xx refused" | "408 or 429" | "server error";
       readonly ms: number;
       readonly status: number;
       readonly shaped: boolean;
@@ -57,9 +61,9 @@ type Fate =
   | { readonly kind: "answer"; readonly ms: number; readonly keepsAll: boolean };
 
 /** Whether a call that ends so failed, so that the requests it put back wait a bound: every way
- * but the daemon's own refusal (a 4xx in its refusal shape) and its answer. */
+ * but a 4xx other than 408 or 429 and an answer ("When it is sent" in `./model-requests.ts`). */
 function failedCall(fate: Fate): boolean {
-  return fate.kind !== "daemon refuses" && fate.kind !== "answer";
+  return fate.kind !== "4xx refused" && fate.kind !== "answer";
 }
 
 /** A seeded PRNG (mulberry32): the same seed draws the same numbers, each in [0, 1). */
@@ -74,15 +78,14 @@ function seeded(seed: number): () => number {
 }
 
 /** A request of a random run: its owner's claim token, when it ended and when the host read it,
- * its current deadline on the run's clock, when a call last put it back (if any), and how the run
- * is done with it — the daemon kept it, refused its report, or the reporter dropped it past the
- * keep window — when, and in which tick. */
+ * when a call last put it back (if any), and how the run is done with it — the daemon kept it, its
+ * report was refused with a 4xx, or the reporter dropped it past the keep window — when, and in
+ * which tick. */
 interface RunRequest {
   readonly id: string;
   readonly owner: string;
   readonly ended: number;
   readonly read: number;
-  due: number;
   lastPutBack?: number;
   gone?: {
     readonly how: "kept" | "refused" | "expired";
@@ -93,16 +96,15 @@ interface RunRequest {
 
 /** A tick of a random run, one hook call or one timer firing: what made it, when, the requests
  * pending as it began (none done with, none an open call carries), those of them a call had put
- * back, those of these that wait for a report of their owner's put-back requests open then, and
- * whether one of the others was due then; what it threw, if it did; and, where it made a send,
- * each put-back request it left pending behind its report. */
+ * back, and those of these that wait for a report of their owner's put-back requests open then;
+ * what it threw, if it did; and, where it made a send, each put-back request it left pending behind
+ * its report. */
 interface RunTick {
   readonly by: TickCause;
   readonly at: number;
   readonly pending: readonly string[];
   readonly putBack: readonly string[];
   readonly waiting: readonly string[];
-  readonly due: boolean;
   threw?: string;
   left?: readonly string[];
 }
@@ -181,7 +183,6 @@ async function randomRun(seed: number): Promise<RunRecord> {
   let callsEnded = 0;
   let callsHandled = 0;
   let invalid = 0;
-  let nextId = 0;
 
   const finish = (call: RunCall): void => {
     call.end = clock.now();
@@ -189,13 +190,9 @@ async function randomRun(seed: number): Promise<RunRecord> {
     callsEnded += 1;
   };
   const putBack = (ids: readonly string[]): void => {
-    const now = clock.now();
     for (const id of ids) {
       const request = requests.get(id);
-      if (request !== undefined && request.gone === undefined) {
-        request.due = now + MODEL_REQUEST_REPORT_BOUND_MS;
-        request.lastPutBack = now;
-      }
+      if (request !== undefined && request.gone === undefined) request.lastPutBack = clock.now();
     }
   };
   const done = (ids: readonly string[], how: "kept" | "refused" | "expired"): void => {
@@ -261,9 +258,14 @@ async function randomRun(seed: number): Promise<RunRecord> {
       case 2:
         return { kind: "connection drops", ms };
       case 3:
-        return { kind: "daemon refuses", ms, status: pick([400, 401, 403, 404, 409, 422]) };
+        return {
+          kind: "4xx refused",
+          ms,
+          status: pick(REFUSED_STATUSES),
+          shaped: random() < 0.5,
+        };
       case 4:
-        return { kind: "proxy outage", ms, status: pick([408, 429]) };
+        return { kind: "408 or 429", ms, status: pick([408, 429]), shaped: random() < 0.5 };
       case 5:
         return {
           kind: "server error",
@@ -307,27 +309,21 @@ async function randomRun(seed: number): Promise<RunRecord> {
         case "connection drops":
           putBack(ids);
           throw new TypeError("fetch failed");
-        case "daemon refuses":
-          done(ids, "refused");
-          return Response.json(
-            { error: "the daemon refuses this report" },
-            { status: fate.status }
-          );
-        case "proxy outage":
-          putBack(ids);
-          return new Response(`<html><body><h1>${fate.status}</h1></body></html>`, {
-            status: fate.status,
-            headers: { "Content-Type": "text/html" },
-          });
+        case "4xx refused":
+        case "408 or 429":
         case "server error":
-          putBack(ids);
+          // A 4xx other than 408 or 429 drops the report's requests, and any other status puts
+          // them back, in the daemon's refusal shape or a proxy's page alike.
+          if (fate.kind === "4xx refused") done(ids, "refused");
+          else putBack(ids);
           return fate.shaped
             ? Response.json(
-                { error: "report of model requests failed: the daemon could not keep it" },
+                { error: "the daemon did not take this report" },
                 { status: fate.status }
               )
-            : new Response("<html><body><h1>Bad Gateway</h1></body></html>", {
+            : new Response(`<html><body><h1>${fate.status}</h1></body></html>`, {
                 status: fate.status,
+                headers: { "Content-Type": "text/html" },
               });
         case "answer": {
           const kept = fate.keepsAll ? ids : ids.filter(() => random() < 0.5);
@@ -341,123 +337,119 @@ async function randomRun(seed: number): Promise<RunRecord> {
           throw new Error(`a call whose fate is "${fate.kind}" reached the daemon`);
       }
     }) as typeof fetch;
-  const reporter = createModelRequestsReporter({
-    daemon: () => {
-      if (current === undefined) {
-        throw new Error(`seed ${seed}: the reporter called the daemon outside a tick`);
-      }
-      let send = sends.get(tick);
-      if (send === undefined) {
-        send = { at: clock.now(), calls: 0, ...callBoundFor(pendingNow()) };
-        sends.set(tick, send);
-      }
-      send.calls += 1;
-      // Past the bound, the send took again a batch a call put back before it left (check 1): from
-      // then on the tick's calls are answered, ending any loop.
-      const looping = send.calls > send.bound;
-      const drawn = !draining && !looping;
-      const fate: Fate = drawn ? drawFate() : { kind: "answer", ms: 0, keepsAll: true };
-      const call: RunCall = {
-        tick,
-        by: current.by,
-        start: clock.now(),
-        fate,
-        drawn,
-        place: send.calls,
-        bound: send.bound,
-        reached: false,
-      };
-      calls.push(call);
-      const client = createLegionDaemonClient("http://daemon.test", {
-        pluginContract: CONTRACT,
-        fetch: fetchFor(call),
-      });
-      if (looping) {
-        // Answer asynchronously keeping every id without parsing the body, so a reporter that
-        // loops on a synchronous refusal cannot keep putting the same batch back.
-        return {
-          ...client,
-          modelRequests: async (input) => {
-            const kept = input.requests.map(({ id }) => id);
-            carries(call, kept);
-            call.kept = new Set(kept);
-            done(kept, "kept");
-            finish(call);
-            return { kept };
-          },
-        };
-      }
-      if (fate.kind === "client throws") {
-        return {
-          ...client,
-          // A throw before anything leaves, which the reporter meets inside the call's `try` before
-          // its first `await`, as it meets one from `deps.daemon()`.
-          modelRequests: (input) => {
-            const ids = input.requests.map(({ id }) => id);
-            carries(call, ids);
-            finish(call);
-            putBack(ids);
-            throw new Error("the daemon client threw");
-          },
-        };
-      }
-      if (fate.kind === "client refuses") {
-        return {
-          ...client,
-          // A body the contract refuses: its requests name no session.
-          modelRequests: (input, options) => {
-            const ids = input.requests.map(({ id }) => id);
-            carries(call, ids);
-            finish(call);
-            putBack(ids);
-            const requests = input.requests.map((request) => ({ ...request, session: "" }));
-            return client.modelRequests({ ...input, requests }, options);
-          },
-        };
-      }
+  /** The client each call of the reporter goes through: it records the call and draws how it
+   * ends, but answers every call of a send past its bound and every call of the drain. */
+  const daemon = (): LegionDaemonClient => {
+    if (current === undefined) {
+      throw new Error(`seed ${seed}: the reporter called the daemon outside a tick`);
+    }
+    let send = sends.get(tick);
+    if (send === undefined) {
+      send = { at: clock.now(), calls: 0, ...callBoundFor(pendingNow()) };
+      sends.set(tick, send);
+    }
+    send.calls += 1;
+    // Past the bound, the send took again a batch a call put back before it left (check 1): from
+    // then on the tick's calls are answered, ending any loop.
+    const looping = send.calls > send.bound;
+    const drawn = !draining && !looping;
+    const fate: Fate = drawn ? drawFate() : { kind: "answer", ms: 0, keepsAll: true };
+    const call: RunCall = {
+      tick,
+      by: current.by,
+      start: clock.now(),
+      fate,
+      drawn,
+      place: send.calls,
+      bound: send.bound,
+      reached: false,
+    };
+    calls.push(call);
+    const client = daemonOver(fetchFor(call));
+    if (looping) {
+      // Answer asynchronously keeping every id without parsing the body, so a reporter that loops
+      // on a synchronous refusal cannot keep putting the same batch back.
       return {
         ...client,
-        modelRequests: (input, options) => {
-          try {
-            return client.modelRequests(input, options).catch((error: unknown) => {
-              if (call.end === undefined) finish(call);
-              throw error;
-            });
-          } catch (error) {
-            if (call.end === undefined) finish(call);
-            throw error;
-          }
+        modelRequests: async (input) => {
+          const kept = input.requests.map(({ id }) => id);
+          carries(call, kept);
+          call.kept = new Set(kept);
+          done(kept, "kept");
+          finish(call);
+          return { kept };
         },
       };
-    },
-    credential: credentialOf,
-    paneSession: () => ROLE_SESSION,
-    log: {
-      debug: () => {
-        callsHandled += 1;
-      },
-      warn: (message, context) => {
-        warnings.push(message);
-        if (message === DROPPED_INVALID) return;
-        if (message !== EXPIRED) {
-          callsHandled += 1;
-          return;
+    }
+    if (fate.kind === "client throws") {
+      return {
+        ...client,
+        // A throw before anything leaves, which the reporter meets inside the call's `try` before
+        // its first `await`, as it meets one from `deps.daemon()`.
+        modelRequests: (input) => {
+          const ids = input.requests.map(({ id }) => id);
+          carries(call, ids);
+          finish(call);
+          putBack(ids);
+          throw new Error("the daemon client threw");
+        },
+      };
+    }
+    if (fate.kind === "client refuses") {
+      return {
+        ...client,
+        // A body the contract refuses: its requests name no session.
+        modelRequests: (input, options) => {
+          const ids = input.requests.map(({ id }) => id);
+          carries(call, ids);
+          finish(call);
+          putBack(ids);
+          const requests = input.requests.map((request) => ({ ...request, session: "" }));
+          return client.modelRequests({ ...input, requests }, options);
+        },
+      };
+    }
+    return {
+      ...client,
+      modelRequests: (input, options) => {
+        try {
+          return client.modelRequests(input, options).catch((error: unknown) => {
+            if (call.end === undefined) finish(call);
+            throw error;
+          });
+        } catch (error) {
+          if (call.end === undefined) finish(call);
+          throw error;
         }
-        const id = String(context?.id);
-        expired.push({ id, at: clock.now() });
-        done([id], "expired");
       },
-    },
-    now: clock.now,
-    schedule: clock.schedule,
-    newId: () => `req-${++nextId}`,
-  });
+    };
+  };
+  const { reporter, ids: given } = reporterOn(
+    clock,
+    { daemon },
+    {
+      log: {
+        debug: () => {
+          callsHandled += 1;
+        },
+        warn: (message, context) => {
+          warnings.push(message);
+          if (message === DROPPED_INVALID) return;
+          if (message !== EXPIRED) {
+            callsHandled += 1;
+            return;
+          }
+          const id = String(context?.id);
+          expired.push({ id, at: clock.now() });
+          done([id], "expired");
+        },
+      },
+    }
+  );
   /** Waits until the reporter has handled the end of each call that ended, one log line each. */
   const quiet = async (): Promise<void> => {
-    for (let turn = 0; turn < 1_000; turn += 1) {
-      const turned = Promise.withResolvers<void>();
-      setImmediate(turned.resolve);
-      await turned.promise;
+    for (let turns = 0; turns < 1_000; turns += 1) {
+      await turn();
       if (callsHandled === callsEnded) return;
     }
     throw new Error(
@@ -467,11 +459,9 @@ async function randomRun(seed: number): Promise<RunRecord> {
   /** Runs one hook call or timer firing as a tick of its own, records it and what it threw, and
    * waits for what it set off. It records the put-back requests that wait as it begins for a report
    * of their owner's put-back requests open then, and, where it made a send, each other put-back
-   * request the send left pending, which is due no sooner than `MODEL_REQUEST_LEFT_DUE_AFTER_MS`
-   * from then. */
+   * request the send left pending, which `deadlines` reads. */
   const hook = async (by: TickCause, run: () => void): Promise<void> => {
     tick += 1;
-    const now = clock.now();
     const pending = pendingNow();
     const owners = retrying();
     const waiting = pending.filter(
@@ -479,11 +469,10 @@ async function randomRun(seed: number): Promise<RunRecord> {
     );
     const record: RunTick = {
       by,
-      at: now,
+      at: clock.now(),
       pending: pending.map(({ id }) => id),
       putBack: pending.flatMap(({ id, lastPutBack }) => (lastPutBack === undefined ? [] : [id])),
       waiting: waiting.map(({ id }) => id),
-      due: pending.some((request) => request.due <= now && !waiting.includes(request)),
     };
     ticks.set(tick, record);
     current = record;
@@ -498,16 +487,9 @@ async function randomRun(seed: number): Promise<RunRecord> {
     if (made.length === 0) return;
     const carried = new Set(made.flatMap((call) => call.ids ?? []));
     const waits = new Set(record.waiting);
-    const left = record.putBack.filter(
+    record.left = record.putBack.filter(
       (id) => !carried.has(id) && !waits.has(id) && requests.get(id)?.gone === undefined
     );
-    record.left = left;
-    for (const id of left) {
-      const request = requests.get(id);
-      if (request !== undefined) {
-        request.due = Math.max(request.due, now + MODEL_REQUEST_LEFT_DUE_AFTER_MS);
-      }
-    }
   };
   /** Moves the clock on by `ms`, each timer that falls due firing as a tick of its own. */
   const advance = (ms: number): Promise<void> => clock.advance(ms, (fire, by) => hook(by, fire));
@@ -519,22 +501,16 @@ async function randomRun(seed: number): Promise<RunRecord> {
     ended: number
   ): Promise<void> => {
     await hook("a request's end", () => {
-      const before = nextId;
+      const before = given();
       reporter.messageEnded(where, answered(ended));
-      if (nextId === before) return;
+      if (given() === before) return;
       if (where.session === "") {
         invalid += 1;
         return;
       }
-      const id = `req-${nextId}`;
+      const id = `req-${given()}`;
       const owner = where === controllerPane ? controller : implementer;
-      requests.set(id, {
-        id,
-        owner: owner.claimToken,
-        ended,
-        read: clock.now(),
-        due: ended + MODEL_REQUEST_DUE_AFTER_MS,
-      });
+      requests.set(id, { id, owner: owner.claimToken, ended, read: clock.now() });
     });
   };
 
@@ -616,24 +592,68 @@ function callsByRequest(calls: readonly RunCall[]): Map<string, RunCall[]> {
 /** How a request is done with, as a problem says it. */
 const WHY_GONE = {
   kept: "the daemon kept it",
-  refused: "the daemon refused its report",
+  refused: "its report was refused with a 4xx other than 408 or 429",
   expired: "the reporter dropped it past the keep window",
 } as const;
+
+/** A request's deadline at a tick of `run`, from the record alone ("When it is sent" in
+ * `./model-requests.ts`): its end plus `MODEL_REQUEST_DUE_AFTER_MS`, or its read where that came
+ * later; once a call that carried it was made before the tick, a bound after the last such call's
+ * end; and `MODEL_REQUEST_LEFT_DUE_AFTER_MS` after each send of an earlier tick that left it pending
+ * since, where later. Checks 1 and 3 both judge a tick by it. */
+function deadlines(run: RunRecord): (id: string, tick: number) => number {
+  const byRequest = callsByRequest(run.calls);
+  /** Each send that left a request pending, by the request's id, in the order they were made. */
+  const leftBy = new Map<string, { readonly tick: number; readonly at: number }[]>();
+  for (const [tick, { at: time, left = [] }] of run.ticks) {
+    for (const id of left) {
+      const sends = leftBy.get(id) ?? [];
+      sends.push({ tick, at: time });
+      leftBy.set(id, sends);
+    }
+  }
+  return (id, tick) => {
+    const request = run.requests.get(id);
+    if (request === undefined) return Number.NaN;
+    let due = Math.max(request.ended + MODEL_REQUEST_DUE_AFTER_MS, request.read);
+    let lastCall = Number.NEGATIVE_INFINITY;
+    for (const call of byRequest.get(id) ?? []) {
+      if (call.tick >= tick) break;
+      due = (call.end ?? Number.POSITIVE_INFINITY) + MODEL_REQUEST_REPORT_BOUND_MS;
+      lastCall = call.tick;
+    }
+    for (const left of leftBy.get(id) ?? []) {
+      if (left.tick >= tick) break;
+      if (left.tick > lastCall) due = Math.max(due, left.at + MODEL_REQUEST_LEFT_DUE_AFTER_MS);
+    }
+    return due;
+  };
+}
 
 /** Check 1. Each hook call and timer firing returns, makes per owner at most the reports of the
  * pending requests no call carried (`ceil(count / LEGION_MAX_MODEL_REQUESTS)`) and one report of
  * those calls put back, and that one only while no other report of the owner's put-back requests
- * is open; and only a run's end or a timer with a due request (a fresh deadline, a put-back's due,
- * or the due of a request a send left, but none that waits for its owner's report) makes a send: a
- * failing daemon is never called in a loop. */
+ * is open; and only a run's end or a timer with a request due (`deadlines`), but none that waits
+ * for its owner's report, makes a send: a failing daemon is never called in a loop. */
 function sendsReturnAndNeverLoop(run: RunRecord): string[] {
   const problems: string[] = [];
+  const deadline = deadlines(run);
+  /** Whether a request pending as `tick` began, but none that waited, was due then. */
+  const dueAt = (tick: number): boolean => {
+    const record = run.ticks.get(tick);
+    if (record === undefined) return false;
+    const waiting = new Set(record.waiting);
+    return record.pending.some((id) => !waiting.has(id) && deadline(id, tick) <= record.at);
+  };
   for (const { by, at: time, threw } of run.ticks.values()) {
     if (threw !== undefined) problems.push(`${by} at ${at(time)} threw: ${threw}`);
   }
   for (const call of run.calls) {
-    const due = run.ticks.get(call.tick)?.due === true;
-    if (call.place === 1 && call.by !== "a run's end" && (call.by !== "a timer" || !due)) {
+    if (
+      call.place === 1 &&
+      call.by !== "a run's end" &&
+      (call.by !== "a timer" || !dueAt(call.tick))
+    ) {
       problems.push(
         `${call.by} at ${at(call.start)} made a call when neither a run's end nor a due request triggered it`
       );
@@ -700,29 +720,24 @@ function openCallsEndAndStayBounded(run: RunRecord): string[] {
  * `MODEL_REQUEST_DUE_AFTER_MS`, within 15 s of its end, or at once where it was read later —
  * whatever calls failed; a request a call put back goes again no later than a bound after that
  * call ended, or `MODEL_REQUEST_LEFT_DUE_AFTER_MS` after the last send that left it pending, if
- * later; a send leaves a put-back request pending behind its report only where it carries a full
- * report of its owner's put-back requests, none of them ended after it; and a run's end sends at
- * once every request pending, but those it so leaves and those that wait for a report of their
- * owner's put-back requests, whatever failed before. A put-back request that waits keeps its due,
- * which in these runs comes after that report's end: it is a bound after a call that ended after
- * that report left, or after the send that left it behind that report or one before it. A request
- * goes no more once the daemon refused its report or once it was dropped past the keep window,
- * which happens only past it. Each failed call and each refusal warns once, and the run's end
- * finds each request kept, refused or dropped. */
+ * later (`deadlines`); a send leaves a put-back request pending behind its report only where it
+ * carries a full report of its owner's put-back requests, none of them ended after it; and a run's
+ * end sends at once every request pending, but those it so leaves and those that wait for a report
+ * of their owner's put-back requests, whatever failed before. A put-back request that waits keeps
+ * its due, which in these runs comes after that report's end: it is a bound after a call that ended
+ * after that report left, or after the send that left it behind that report or one before it. A
+ * request goes no more once its report was refused with a 4xx other than 408 or 429, or once it was
+ * dropped past the keep window, which happens only past it. Each failed call and each refusal warns
+ * once, a refusal naming its status, and the run's end finds each request kept, refused or
+ * dropped. */
 function requestsGoInTime(run: RunRecord): string[] {
   const problems: string[] = [];
   const byTick = callsByTick(run.calls);
+  const deadline = deadlines(run);
   const endOf = (id: string): number => run.requests.get(id)?.ended ?? Number.NaN;
   const ownerOf = (id: string): string | undefined => run.requests.get(id)?.owner;
-  /** Each send that left a request pending, by the request's id, in the order they were made. */
-  const leftBy = new Map<string, { readonly tick: number; readonly at: number }[]>();
   for (const [tick, { by, at: time, pending, putBack, waiting, left = [] }] of run.ticks) {
     const sent = new Set((byTick.get(tick) ?? []).flatMap((call) => call.ids ?? []));
-    for (const id of left) {
-      const sends = leftBy.get(id) ?? [];
-      sends.push({ tick, at: time });
-      leftBy.set(id, sends);
-    }
     for (const owner of new Set(left.map(ownerOf))) {
       const carried = putBack.filter((id) => sent.has(id) && ownerOf(id) === owner);
       const leftOf = left.filter((id) => ownerOf(id) === owner);
@@ -761,19 +776,7 @@ function requestsGoInTime(run: RunRecord): string[] {
   const byRequest = callsByRequest(run.calls);
   for (const request of run.requests.values()) {
     const { id, gone } = request;
-    // Its deadline: its end plus the due delay, or its read where that came later; once a call
-    // that carried it ended, a bound after that end, and once a send left it pending,
-    // `MODEL_REQUEST_LEFT_DUE_AFTER_MS` after that send, if later. No failed call of other requests
-    // excuses a missed deadline.
-    let due = Math.max(request.ended + MODEL_REQUEST_DUE_AFTER_MS, request.read);
-    const lefts = leftBy.get(id) ?? [];
-    let nextLeft = 0;
-    /** Moves `due` on past each send that left the request pending before `tick`. */
-    const leftBefore = (tick: number): void => {
-      for (; (lefts[nextLeft]?.tick ?? Number.POSITIVE_INFINITY) < tick; nextLeft += 1) {
-        due = Math.max(due, (lefts[nextLeft]?.at ?? Number.NaN) + MODEL_REQUEST_LEFT_DUE_AFTER_MS);
-      }
-    };
+    // No failed call of other requests excuses a missed deadline.
     for (const call of byRequest.get(id) ?? []) {
       if (gone !== undefined && call.tick > gone.tick) {
         // Going again once the daemon kept it is check 4's.
@@ -784,21 +787,20 @@ function requestsGoInTime(run: RunRecord): string[] {
         }
         break;
       }
-      leftBefore(call.tick);
+      const due = deadline(id, call.tick);
       if (call.start > due) {
         problems.push(`${id} went at ${at(call.start)}, past its deadline at ${at(due)}`);
       }
       if (call.start - request.ended > KEEP_MS) {
         problems.push(`${id} went at ${at(call.start)}, past the keep window of its end`);
       }
-      due = (call.end ?? Number.POSITIVE_INFINITY) + MODEL_REQUEST_REPORT_BOUND_MS;
     }
     if (gone === undefined) {
       problems.push(
         `${id}, which ended at ${at(request.ended)}, was neither kept, refused nor dropped by the run's end`
       );
     } else if (gone.how === "expired") {
-      leftBefore(gone.tick);
+      const due = deadline(id, gone.tick);
       if (gone.at > due) {
         problems.push(`${id} was dropped at ${at(gone.at)}, past its deadline at ${at(due)}`);
       }
@@ -807,16 +809,20 @@ function requestsGoInTime(run: RunRecord): string[] {
   const warned = (message: string): number =>
     run.warnings.filter((warning) => warning === message).length;
   const failed = run.calls.filter((call) => failedCall(call.fate)).length;
-  const refused = run.calls.filter((call) => call.fate.kind === "daemon refuses").length;
   if (warned(GOES_AGAIN) !== failed) {
     problems.push(
       `the reporter warned ${warned(GOES_AGAIN)} times that a report goes again, for ${failed} failed calls`
     );
   }
-  if (warned(UNREPORTED) !== refused) {
-    problems.push(
-      `the reporter warned ${warned(UNREPORTED)} times that a report goes unreported, for ${refused} refused calls`
-    );
+  for (const status of REFUSED_STATUSES) {
+    const refused = run.calls.filter(
+      (call) => call.fate.kind === "4xx refused" && call.fate.status === status
+    ).length;
+    if (warned(unreported(status)) !== refused) {
+      problems.push(
+        `the reporter warned ${warned(unreported(status))} times that a report refused with ${status} goes unreported, for ${refused} calls refused with ${status}`
+      );
+    }
   }
   if (warned(DROPPED_INVALID) !== run.invalid) {
     problems.push(
@@ -942,11 +948,12 @@ function cover(run: RunRecord, coverage: RunCoverage): void {
 // owner's, a few read so late that a retry finds them past the keep window, and every 20th seed a
 // burst past `LEGION_MAX_MODEL_REQUESTS` (200) of one owner; run ends at random times; and the
 // timer, firing as the clock moves. Each call ends in one way drawn at random: the client throws,
-// or refuses the body, before anything leaves; the connection drops; the daemon refuses with a 4xx
-// in its refusal shape; a proxy answers 408 or 429; a 5xx; the 10 s limit aborts it; or an answer
-// within the limit keeps every id or some. A run ends with a daemon that answers at once and keeps
-// every id, until each request is done with. Every run holds each check of `CHECKS`, whose function
-// states its rule, and across the seeds each case `RunCoverage` names occurs.
+// or refuses the body, before anything leaves; the connection drops; a 4xx other than 408 or 429
+// refuses it; a 408 or a 429 fails it; a 5xx fails it, each in the daemon's refusal shape or a
+// proxy's page; the 10 s limit aborts it; or an answer within the limit keeps every id or some. A
+// run ends with a daemon that answers at once and keeps every id, until each request is done
+// with. Every run holds each check of `CHECKS`, whose function states its rule, and across the
+// seeds each case `RunCoverage` names occurs.
 test("seeded random runs: each call returns, the open calls stay bounded, each request goes in time and again only on a retry", async () => {
   const problems: string[] = [];
   const coverage: RunCoverage = {
@@ -960,8 +967,8 @@ test("seeded random runs: each call returns, the open calls stay bounded, each r
       "client throws": 0,
       "client refuses": 0,
       "connection drops": 0,
-      "daemon refuses": 0,
-      "proxy outage": 0,
+      "4xx refused": 0,
+      "408 or 429": 0,
       "server error": 0,
       "no answer": 0,
       answer: 0,

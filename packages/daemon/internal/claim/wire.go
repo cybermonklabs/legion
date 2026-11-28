@@ -3,6 +3,7 @@ package claim
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -291,6 +292,28 @@ type ModelRequest struct {
 	Model               string    `json:"model"`
 	EndedAt             time.Time `json:"endedAt"`
 	UncachedInputTokens *int64    `json:"uncachedInputTokens,omitempty"`
+}
+
+// ModelRequestProblem is why the daemon cannot read request, "" where it can: it needs an id, a
+// session and a model, none of them empty once strings.TrimSpace has trimmed them, the moment it
+// ended, and its uncached input tokens absent or at least 0. The daemon refuses a report that holds
+// one such request whole (api's modelRequests), so a host drops such a request where it reads it,
+// and its owner's other requests still leave: the Claude Code bridge by this check (claudebridge's
+// assistant), the Oh My Pi plugin by the contract's (LegionModelRequest in
+// packages/contracts/src/legion-api.ts).
+func ModelRequestProblem(request ModelRequest) string {
+	for _, field := range []struct{ name, value string }{{"id", request.ID}, {"session", request.Session}, {"model", request.Model}} {
+		if strings.TrimSpace(field.value) == "" {
+			return field.name + " is required"
+		}
+	}
+	if request.EndedAt.IsZero() {
+		return "endedAt is required"
+	}
+	if request.UncachedInputTokens != nil && *request.UncachedInputTokens < 0 {
+		return fmt.Sprintf("uncachedInputTokens is %d; it counts tokens from 0", *request.UncachedInputTokens)
+	}
+	return ""
 }
 
 // ModelRequestsSpan is how far back a read of the provider's record of model requests reaches:

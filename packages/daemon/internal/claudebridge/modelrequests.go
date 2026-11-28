@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -13,9 +14,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
-// requestWindow is how long after a model request's end the bridge may hold its report: a quarter
-// of the minute the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests",
-// windowDueLocked).
+// requestWindow is how long after a model request's end the bridge may hold its report, and how
+// long after the end of the call that put a request back it is due again: a quarter of the minute
+// the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests", modelRequests'
+// doc).
 const requestWindow = 15 * time.Second
 
 // requestSendMargin is how much sooner than requestWindow after an end the window is due: room
@@ -30,6 +32,14 @@ const requestDueAfter = requestWindow - requestSendMargin
 // daemon that takes the connection and never answers costs the report its window, and the
 // requests go again under the same ids.
 const requestReportTimeout = 10 * time.Second
+
+// requestLeftDueAfter is how long after a flush the put-back requests it leaves past its one chunk
+// of them are due (modelRequests' doc): requestReportTimeout and then requestWindow, when the chunk
+// the flush took in their place is due again had its call failed at its timeout. So they make no
+// flush of their own before that chunk could go again, and the calls open at once stay flat
+// through a long stall. Oh My Pi waits as long, MODEL_REQUEST_LEFT_DUE_AFTER_MS in
+// packages/pi-legion/src/model-requests.ts.
+const requestLeftDueAfter = requestReportTimeout + requestWindow
 
 var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the report's bound of %s", requestReportTimeout)
 
@@ -69,14 +79,59 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // sent goes again under the same id with the later end, which the daemon moves the request to
 // (record.Store.KeepModelRequests). No block is left out of its request's end.
 //
-// One window serves the bridge, whatever session a request ran in, due when windowDueLocked
-// says, whose doc states how what is pending is sent. The first request arms it, and a request
-// whose own deadline comes before the window armed arms it again for that deadline. A window that
-// fires before it is due, since a block moved the oldest end on, is armed again for that end; one
-// that is due closes every open request and sends (flushLocked), as a result does. A failed or
-// incomplete report can retry at the next window or result; only IDs the daemon did not keep go
-// again. Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a
-// line. Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
+// When a request is sent. These are the rules of both hosts' reporters
+// (dispatch://INFRA-5899/artifact/reporter-rules-md@v6), as the bridge keeps them, stated here
+// once; every other comment of the bridge's model requests and of their tests points here.
+//
+//   - Words. A fresh request is one no call put back. A put-back request is one a call put back
+//     (pendingRequest's taken, post): every request of a call that failed, and each request an
+//     answer did not keep. A call fails on every ending but an answer and a 4xx other than 408 or
+//     429, whoever sent the 4xx (call): the bridge cannot encode the report or build its request,
+//     the connection is refused or drops, the call reaches requestReportTimeout (10 s), the answer
+//     cannot be read, or the answer is a 5xx, a 408 or a 429. A report is one call, a chunk of at
+//     most claim.MaxModelRequests (200) requests, all fresh or all put back; a report on its way
+//     is a call that has not ended yet.
+//   - A fresh request, open or pending, is due requestDueAfter after its end, requestSendMargin
+//     (250 ms) short of requestWindow (15 s), on the bridge's clock, and one the bridge reads after
+//     that moment is due at once. One window serves the bridge, whatever session a request ran in,
+//     armed for the earliest moment due (windowDueLocked): the first request arms it, and a request
+//     whose own moment comes before the window armed arms it again (armLocked). A window that
+//     fires before it is due, since a block moved the oldest end on, is armed again; one that is
+//     due closes every open request and flushes (flushLocked), as a turn's `result` does. A flush
+//     sends every fresh request pending at once, whatever report is on its way, in chunks of at
+//     most 200, each a call of its own that waits for no answer.
+//   - A put-back request is due requestWindow after the end of the call that put it back
+//     (windowDueLocked), and only a due put-back request makes a flush. Before it is due, it may
+//     ride in the one chunk of put-back requests of a flush that something else made: a fresh
+//     request's moment, a turn's `result`, or another put-back request that is due. So a daemon
+//     that fails, or that answers and keeps nothing, is not called in a loop: a call's end only
+//     arms the window. Each flush carries at most one chunk of put-back requests, the oldest end
+//     first, and the put-back requests it leaves past that chunk are due requestLeftDueAfter (25 s)
+//     after that flush, which keeps the calls open at once flat through a long stall. No chunk of
+//     put-back requests leaves while another is on its way (retrying): until that chunk's call
+//     ends, the other put-back requests make the window due for nothing and no flush takes them;
+//     its end, by its answer or its timeout, arms the window for them again (post), at once where
+//     one is due.
+//   - Answers. Reports cross, and their answers arrive in either order: each answer puts back only
+//     its own report's requests, and the daemon takes a request again by its id and keeps the later
+//     end (record.Store.KeepModelRequests), so a crossing changes nothing it decides.
+//   - Dropped. A report answered with a 4xx other than 408 or 429, by the daemon or a proxy, is
+//     dropped with a line, and its requests are not put back. A request the daemon would refuse
+//     (claim.ModelRequestProblem: a blank id, session or model) is dropped where the bridge reads
+//     it, with a line naming its id and the reason (assistant), so it never shares a report and
+//     the session's other requests still leave. A request past the daemon's keep window
+//     (claim.ModelRequestsSpan, an hour) is dropped with a line at a flush.
+//   - A turn's `result` closes every open request and flushes: every pending fresh request leaves
+//     at once, and put-back requests follow their rule.
+//   - The bridge has no send at its exit. When Claude Code exits or the bridge stops, every
+//     request it holds, open or pending, put-back requests included, is lost with the process, and
+//     so is every report on its way that the exit cuts short. A turn's `result` flushes, so what
+//     an exit loses is the put-back requests pending and what a turn cut short left open.
+//   - A stall or an outage of the daemon. Fresh requests still leave by their moments and each call
+//     ends by its timeout, so the calls open at once are no more than the fresh chunks of the last
+//     10 s and one chunk of put-back requests, whatever the length of the stall.
+//
+// Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
 	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
@@ -87,26 +142,24 @@ type modelRequests struct {
 	// open is each session's open request, by its session.
 	open map[string]*claim.ModelRequest
 	// pending holds requests not on their way, until they are kept or dropped. posting is how
-	// many reports are on their way, and retrying whether a chunk of taken requests is one of them
-	// (windowDueLocked).
+	// many reports are on their way, and retrying whether a chunk of put-back requests is one of
+	// them (windowDueLocked).
 	pending  []pendingRequest
 	posting  int
 	retrying bool
-	// flushed is when the bridge last closed every open request and sent what was pending, at a
-	// window or a result (flushLocked), on the bridge's clock.
-	flushed time.Time
 	// A firing with a different window number was canceled by a result, or by a window due before
 	// it (armLocked). windowDue is when the window armed is due to fire.
 	window, windows uint64
 	windowDue       time.Time
 }
 
-// pendingRequest is a request the bridge holds closed. taken is whether a report carried it: an
-// answer that failed or did not keep it puts it back taken (post), and it goes again at a
-// window's flush, never by a deadline of its own (windowDueLocked).
+// pendingRequest is a request the bridge holds closed. taken is whether it is a put-back request
+// (modelRequests' doc), which the end of a call put back (post), and again when it is due then
+// (windowDueLocked).
 type pendingRequest struct {
 	claim.ModelRequest
 	taken bool
+	again time.Time
 }
 
 // startModelRequests is the bridge's producer of model requests, its window on windows, or on the
@@ -130,8 +183,7 @@ type streamLine struct {
 }
 
 // read acts on one line of the stream, on the bridge's loop: it closes the open request of the
-// line's session, opens the next, and at a `result` closes every open request and sends what is
-// pending.
+// line's session, opens the next, and at a `result` flushes (flushLocked).
 func (r *modelRequests) read(line streamLine) {
 	if r == nil {
 		return
@@ -142,7 +194,7 @@ func (r *modelRequests) read(line streamLine) {
 	case "assistant":
 		r.assistant(line)
 	case "result":
-		// The turn is over, and each request a host reports is reported by its turn's end.
+		// The turn is over.
 		r.flushLocked()
 	default:
 		r.closeLocked(sessionOfLine(line))
@@ -150,7 +202,9 @@ func (r *modelRequests) read(line streamLine) {
 }
 
 // assistant reads the request's metadata. The synthetic answer Claude Code gives a request it
-// could not have answered is no request. The caller holds r.mu.
+// could not have answered is no request, and a request the daemon would refuse
+// (claim.ModelRequestProblem) is dropped here with a line naming its id and the reason, so it
+// never shares a report (modelRequests' doc). The caller holds r.mu.
 func (r *modelRequests) assistant(line streamLine) {
 	var m struct {
 		ID    string `json:"id"`
@@ -172,12 +226,13 @@ func (r *modelRequests) assistant(line streamLine) {
 		return
 	}
 	r.closeLocked(session)
-	if m.ID == "" || m.Model == "" {
-		return
-	}
 	request := claim.ModelRequest{ID: m.ID, Session: session, Model: m.Model, EndedAt: end}
 	if m.Usage != nil {
 		request.UncachedInputTokens = new(m.Usage.Input + m.Usage.CacheWrite)
+	}
+	if problem := claim.ModelRequestProblem(request); problem != "" {
+		r.log.Printf("dropped model request %q: the daemon refuses it: %s", m.ID, problem)
+		return
 	}
 	// A block of a request closed already (modelRequests' doc): the request opens again with this
 	// block's end, taken back from what is pending where it was not sent yet, and sent again
@@ -250,52 +305,34 @@ func earlier(a, b time.Time) time.Time {
 	return a
 }
 
-// windowDueLocked is when the window is due, and whether a request the bridge holds, open or
-// pending, makes it due. Each request held makes the window due requestDueAfter after a time of its
-// own: after its end, its deadline, where no report has carried it yet (pendingRequest; every open
-// request is one), and else after its end or the last flush, whichever is later. The window is due
-// at the earliest of these. So the windows send at most once each requestDueAfter, about four times
-// a minute, and a report the daemon failed goes again no sooner, but for a request that ended
-// before the last flush, which the bridge read only after it: its deadline can come sooner, and
-// it adds a send. A window or result sends at once, whatever report is on its way, every request
-// pending that no report carried, in chunks of at most claim.MaxModelRequests, and at most one
-// chunk of the taken requests, the oldest end first, but none while another chunk of taken
-// requests is on its way: each chunk is a call of its own, carries only requests no report on its
-// way carries, and keeps its own timeout (requestReportTimeout). The taken requests it leaves stay
-// pending, and the window is due for them no sooner than requestDueAfter after this flush, as it is
-// for the requests of a chunk that fails. While a chunk of taken requests is on its way (retrying),
-// the other taken requests wait for it: they make the window due for nothing, until that chunk's
-// call ends, by its answer or its timeout, and arms the window for them again, at once where it is
-// due (post, armLocked). So at most one chunk of taken requests is on its way at once, and the
-// calls open at once stay bounded whatever the backlog of taken requests: each ends by its
-// timeout, and a flush makes the chunks of its untaken requests and at most that one. Each request
-// the bridge read by its deadline leaves within requestWindow of its end on the bridge's clock, and
-// one it read later leaves at once. The caller holds r.mu.
+// windowDueLocked is when the window is due, and whether a request the bridge holds makes it due
+// (modelRequests' doc): requestDueAfter after the end of each fresh request, open or pending, and,
+// but while a chunk of put-back requests is on its way (retrying), when each put-back request is
+// due again (pendingRequest's again), whichever comes first. A put-back request is due
+// requestWindow after the end of its call, not requestDueAfter: requestDueAfter leaves room before
+// S1's bound of a fresh request's end for its report to leave, and S1 does not bound a put-back
+// request, the retry rule does, as on Oh My Pi (MODEL_REQUEST_REPORT_BOUND_MS). So a daemon that
+// failed a call is called again no sooner than a full window after that call ended. The caller
+// holds r.mu.
 func (r *modelRequests) windowDueLocked() (time.Time, bool) {
 	var due time.Time
 	for _, open := range r.open {
-		due = earlier(due, open.EndedAt)
+		due = earlier(due, open.EndedAt.Add(requestDueAfter))
 	}
 	for _, request := range r.pending {
-		from := request.EndedAt
-		if request.taken {
-			if r.retrying {
-				continue
-			}
-			from = later(from, r.flushed)
+		switch {
+		case !request.taken:
+			due = earlier(due, request.EndedAt.Add(requestDueAfter))
+		case !r.retrying:
+			due = earlier(due, request.again)
 		}
-		due = earlier(due, from)
 	}
-	if due.IsZero() {
-		return time.Time{}, false
-	}
-	return due.Add(requestDueAfter), true
+	return due, !due.IsZero()
 }
 
 // armLocked arms the window to fire when it is due (windowDueLocked), where a request makes it due
-// and no window is armed for that time or sooner: a request read after the last flush that ended
-// before it, or the taken requests a chunk on its way held back, can be due before the window
-// armed. The caller holds r.mu.
+// and no window is armed for that time or sooner: a request read late, or a put-back request a
+// chunk on its way held back, can be due before the window armed. The caller holds r.mu.
 func (r *modelRequests) armLocked() {
 	if due, held := r.windowDueLocked(); held && (r.window == 0 || due.Before(r.windowDue)) {
 		r.armAtLocked(due)
@@ -330,19 +367,18 @@ func (r *modelRequests) armAtLocked(due time.Time) {
 	}()
 }
 
-// flushLocked closes every open request and sends what windowDueLocked says, at a window that is
-// due or at a turn's result, and cancels the window armed: the next request arms the next. The
-// caller holds r.mu.
+// flushLocked closes every open request and sends (sendLocked), at a window that is due or at a
+// turn's result, and cancels the window armed: the next request arms the next. The caller holds
+// r.mu.
 func (r *modelRequests) flushLocked() {
 	r.closeOpenLocked()
 	r.window = 0
-	r.flushed = r.clock.Now()
 	r.sendLocked()
 }
 
-// sendLocked sends what windowDueLocked says a flush sends: every untaken request, in the order
-// they are pending, and one chunk of the taken requests, the oldest end first, leaving the rest
-// pending. It drops with a line each request past the daemon's keep window. The caller holds r.mu.
+// sendLocked sends what a flush sends, and leaves the other put-back requests pending as
+// modelRequests' doc says. It drops with a line each request past the daemon's keep window. The
+// caller holds r.mu.
 func (r *modelRequests) sendLocked() {
 	if len(r.pending) == 0 {
 		return
@@ -373,13 +409,18 @@ func (r *modelRequests) sendLocked() {
 		return
 	}
 	slices.SortStableFunc(taken, func(a, b pendingRequest) int { return a.EndedAt.Compare(b.EndedAt) })
-	again := taken[:min(len(taken), claim.MaxModelRequests)]
-	r.pending = taken[len(again):]
-	if len(again) == 0 {
+	retry := taken[:min(len(taken), claim.MaxModelRequests)]
+	left := taken[len(retry):]
+	leftDue := r.clock.Now().Add(requestLeftDueAfter)
+	for i := range left {
+		left[i].again = later(left[i].again, leftDue)
+	}
+	r.pending = left
+	if len(retry) == 0 {
 		return
 	}
-	batch := make([]claim.ModelRequest, len(again))
-	for i, request := range again {
+	batch := make([]claim.ModelRequest, len(retry))
+	for i, request := range retry {
 		batch[i] = request.ModelRequest
 	}
 	r.posting++
@@ -387,13 +428,12 @@ func (r *modelRequests) sendLocked() {
 	go r.post(batch, true)
 }
 
-// post makes one report and puts back every request of it the daemon did not say it holds, under
-// the same id and taken (pendingRequest), but for one a block of which opened it again while the
-// report was on its way (assistant), or an earlier report's answer already put back: that request
-// is open or pending already, with the later end. Two reports can cross and their answers can
-// arrive in either order; the daemon takes a request again by its id and keeps the later end
-// (record.Store.KeepModelRequests). Where batch is a chunk of taken requests (retrying), its end
-// lets the next chunk of them go (windowDueLocked).
+// post makes one report, and puts back under the same id each of its requests a put-back request
+// (modelRequests' doc), due requestWindow after the call ended (pendingRequest), but for one a
+// block of which opened it again while the report was on its way (assistant), or an earlier
+// report's answer already put back: that request is open or pending already, and takes the later
+// end and due (queuedLocked). Where batch is a chunk of put-back requests (retrying), its end lets
+// the next chunk of them go (windowDueLocked).
 func (r *modelRequests) post(batch []claim.ModelRequest, retrying bool) {
 	kept, retry := r.call(batch)
 	r.mu.Lock()
@@ -403,10 +443,11 @@ func (r *modelRequests) post(batch []claim.ModelRequest, retrying bool) {
 		r.retrying = false
 	}
 	if retry {
+		again := r.clock.Now().Add(requestWindow)
 		var unheld []pendingRequest
 		for _, request := range batch {
-			if _, ok := kept[request.ID]; !ok && !r.queuedLocked(request) {
-				unheld = append(unheld, pendingRequest{ModelRequest: request, taken: true})
+			if _, ok := kept[request.ID]; !ok && !r.queuedLocked(request, again) {
+				unheld = append(unheld, pendingRequest{ModelRequest: request, taken: true, again: again})
 			}
 		}
 		if len(unheld) != 0 {
@@ -417,21 +458,25 @@ func (r *modelRequests) post(batch []claim.ModelRequest, retrying bool) {
 }
 
 // queuedLocked says whether request's id is open or pending, and moves that entry's end to
-// request's where request's is later. The caller holds r.mu.
-func (r *modelRequests) queuedLocked(request claim.ModelRequest) bool {
+// request's where request's is later, and a pending put-back entry's due to again where again is
+// later. The caller holds r.mu.
+func (r *modelRequests) queuedLocked(request claim.ModelRequest, again time.Time) bool {
 	if open := r.open[request.Session]; open != nil && open.ID == request.ID {
 		open.EndedAt = later(open.EndedAt, request.EndedAt)
 		return true
 	}
 	if i := slices.IndexFunc(r.pending, func(p pendingRequest) bool { return p.ID == request.ID }); i >= 0 {
 		r.pending[i].EndedAt = later(r.pending[i].EndedAt, request.EndedAt)
+		if r.pending[i].taken {
+			r.pending[i].again = later(r.pending[i].again, again)
+		}
 		return true
 	}
 	return false
 }
 
-// call posts batch and answers the ids the daemon holds, and whether the rest go again: not for a
-// report the daemon refused, which no retry passes.
+// call posts batch and answers the ids the daemon holds, and whether the rest go again: all but a
+// report answered with a 4xx other than 408 or 429 (modelRequests' doc).
 func (r *modelRequests) call(batch []claim.ModelRequest) (map[string]struct{}, bool) {
 	body, err := json.Marshal(claim.ModelRequestsRequest{
 		BootCaller: claim.BootCaller{BootToken: r.bootToken},
@@ -439,21 +484,20 @@ func (r *modelRequests) call(batch []claim.ModelRequest) (map[string]struct{}, b
 		Requests:   batch,
 	})
 	if err != nil {
-		r.log.Printf("could not encode a report of %d model requests: %v", len(batch), err)
-		return nil, false
+		r.log.Printf("could not encode a report of %d model requests; they go again: %v", len(batch), err)
+		return nil, true
 	}
 	// The answer echoes IDs from this JSON body and no other request fields, so even a full
 	// batch of long IDs fits inside the body size. Keep room for ordinary refusals too.
 	bound := max(int64(len(body)), int64(maxAnswerBytes))
-	response, attempted, err := r.postJSON("/legion/v1/claims/model-requests", body, requestReportTimeout, errRequestReportTimeout, bound)
+	// A request the bridge could not build was never attempted, and answers no status, as a call
+	// that never reached the daemon.
+	response, _, err := r.postJSON("/legion/v1/claims/model-requests", body, requestReportTimeout, errRequestReportTimeout, bound)
 	switch {
-	case !attempted:
-		r.log.Printf("could not report %d model requests: %v", len(batch), err)
-		return nil, false
 	case response.statusCode == 0:
 		r.log.Printf("could not report %d model requests; they go again: %v", len(batch), err)
 		return nil, true
-	case response.statusCode/100 == 4:
+	case response.statusCode/100 == 4 && response.statusCode != http.StatusRequestTimeout && response.statusCode != http.StatusTooManyRequests:
 		r.log.Printf("the daemon refused a report of %d model requests; they go unreported: %s %s", len(batch), response.status, strings.TrimSpace(string(response.body)))
 		return nil, false
 	case response.statusCode/100 != 2 || err != nil:

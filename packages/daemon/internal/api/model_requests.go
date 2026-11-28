@@ -133,29 +133,21 @@ func (s *server) modelRequestsByController(w http.ResponseWriter, r *http.Reques
 }
 
 // modelRequestsProblem is why a batch of model requests cannot be read as one, "" where it can:
-// it holds 1 to claim.MaxModelRequests requests, each with an id no other request of it has, a
-// session, a model and the moment it ended, and its uncached input tokens absent or at least 0.
+// it holds 1 to claim.MaxModelRequests requests, each one the daemon can read
+// (claim.ModelRequestProblem) and with an id no other request of it has.
 func modelRequestsProblem(requests []claim.ModelRequest) string {
 	if len(requests) == 0 || len(requests) > claim.MaxModelRequests {
 		return fmt.Sprintf("requests holds %d requests; a report carries 1 to %d", len(requests), claim.MaxModelRequests)
 	}
 	seen := make(map[string]int, len(requests))
 	for i, request := range requests {
-		for _, f := range []field{{"id", request.ID}, {"session", request.Session}, {"model", request.Model}} {
-			if strings.TrimSpace(f.value) == "" {
-				return fmt.Sprintf("requests[%d].%s is required", i, f.name)
-			}
+		if problem := claim.ModelRequestProblem(request); problem != "" {
+			return fmt.Sprintf("requests[%d].%s", i, problem)
 		}
 		if first, twice := seen[request.ID]; twice {
 			return fmt.Sprintf("requests[%d].id %q is requests[%d]'s too: an id names one request", i, request.ID, first)
 		}
 		seen[request.ID] = i
-		if request.EndedAt.IsZero() {
-			return fmt.Sprintf("requests[%d].endedAt is required", i)
-		}
-		if request.UncachedInputTokens != nil && *request.UncachedInputTokens < 0 {
-			return fmt.Sprintf("requests[%d].uncachedInputTokens is %d; it counts tokens from 0", i, *request.UncachedInputTokens)
-		}
 	}
 	return ""
 }

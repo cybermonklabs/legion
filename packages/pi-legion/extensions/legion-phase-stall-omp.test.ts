@@ -52,9 +52,9 @@ interface StallPane extends LegionPane {
 const ACTIVITY_ROUTE = "/legion/v1/claims/activity";
 
 /** `POST /legion/v1/claims/model-requests`, the pane's report of the model requests its turns made
- * (src/model-requests.ts): it goes within fifteen seconds of a request's end or at the run's end,
- * so where it falls among the other routes is the host's timing, and no case here is about it.
- * What it holds is asserted in src/model-requests.test.ts. */
+ * (src/model-requests.ts), sent as "When it is sent" there says: where it falls among the other
+ * routes is the host's timing, and no case here is about it. What it holds is asserted in
+ * src/model-requests.test.ts. */
 const MODEL_REQUESTS_ROUTE = "/legion/v1/claims/model-requests";
 
 /** Every daemon route the pane called, in order, the activity heartbeat and the model requests'
