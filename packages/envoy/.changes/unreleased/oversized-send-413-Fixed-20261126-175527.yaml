@@ -1,0 +1,15 @@
+kind: Fixed
+body: |-
+  The listener answers a message too large for the bus with `413` whatever its request's deadline
+  has left. Before, `POST /v1/messages/send` and `POST /v1/messages/publish` found the size only at
+  the publish, after reads that share the request's 3.5 s budget. On a slow or loaded listener,
+  or with a large body read slowly, those reads spent the budget first, and the route answered
+  `503 envoy: the message bus did not answer: context deadline exceeded` with `Retry-After: 1`, so
+  the sender sent the same bytes again, to the same refusal. Both routes now refuse a payload past
+  the server's max payload before anything is read, waited for, reported or stored
+  (`bus.Client.EnvelopeRefusal`), and each publish that encodes an envelope (`PublishStoredAck`,
+  `PublishCoreContext`, `StartRequestStoredTo`) refuses an envelope past it as `bus.ErrTooLarge`
+  before it reads its context or waits for a reconnect.
+time: 2026-11-26T17:55:27Z
+custom:
+    Issue: oversized-send-413
