@@ -942,8 +942,8 @@ func TestTheCountNamesEachChangesPullRequest(t *testing.T) {
 // A reason that comes while a change is open starts no second generation: the read of an issue
 // whose change is open goes to the judge of that change (judgeOpenChange), which starts nothing,
 // so the reason waits for the change after it. And where a caller reaches StartNextChange itself
-// with such an issue, which each door of Task 13 can, its one hard guard holds the start: the
-// record keeps the generation and the count it had.
+// with such an issue, which startChangeIfDue, its one caller, does not check for, its one hard
+// guard holds the start: the record keeps the generation and the count it had.
 func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")

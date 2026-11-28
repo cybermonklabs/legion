@@ -254,9 +254,10 @@ func mergeReadLimit(err error) error {
 }
 
 // answerMergeRead carries the newest merge the read found back as one intake.MergeRead fact of the
-// row's issue and generation, and the row finishes: the workflow applies it under the fact lock.
-// A fact that does not apply leaves the progress saved, and the row fails with the apply's error
-// alone, so the outbox retries it as a failure and never reads it as the save's wait.
+// row's issue and generation, and the row finishes. No handler the outbox applies it with has a
+// case for a MergeRead, the workflow's included. A fact that does not apply leaves the progress
+// saved, and the row fails with the apply's error alone, so the outbox retries it as a failure and
+// never reads it as the save's wait.
 func (r *outbox) answerMergeRead(ctx context.Context, row record.OutboxRow, payload record.MergeRead, merge record.Merge, progress record.MergeReadProgress, now time.Time) error {
 	fact := intake.MergeRead{Issue: payload.Issue, Generation: payload.Generation, Merge: merge}
 	if _, err := intake.ApplyFact(ctx, r.pool, "outbox", fmt.Sprintf("merge-read:%s:%d:%d", row.Issue, row.ID, progress.Attempts), fact, r.handlers...); err != nil {

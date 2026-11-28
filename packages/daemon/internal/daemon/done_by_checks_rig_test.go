@@ -111,9 +111,6 @@ type doneByChecksIssueSpec struct {
 type doneByChecksRig struct {
 	*stepRecordsRig
 	standIn *doneByChecksGitHub
-	// controllerSession is the project's registered controller's session (registerController),
-	// which holds the controller's role at the listener.
-	controllerSession string
 }
 
 // newDoneByChecksRig is the rig of one issue, ACME-1, with doneByChecksVerification as its
@@ -163,7 +160,7 @@ func newDoneByChecksRigWith(t *testing.T, options doneByChecksOptions) *doneByCh
 	r.person(http.MethodPut, "/api/v1/projects/"+r.cfg.Project+"/default-repository", map[string]any{"repo": liveRepo}, http.StatusOK, nil)
 	// Dispatch's intake reads GitHub's events only while delivery settings name a deploy
 	// repository, and Dispatch saves them only once its App reads that repository. A Dispatch
-	// given no GitHub (Step 4's control) has neither, so it learns of no pull request.
+	// given no GitHub has neither, so it learns of no pull request.
 	if r.dispatch.github != "" {
 		r.person(http.MethodPut, "/api/v1/settings/delivery", map[string]any{
 			"deploy_repo": liveRepo, "deploy_workflow_path": ".github/workflows/deploy.yaml", "production_job_names": []string{"deploy"},
@@ -212,10 +209,10 @@ func (r *doneByChecksRig) registerController() {
 	if err := json.Unmarshal(body, &capability); err != nil {
 		t.Fatalf("decode the controller's boot secret %s: %v", body, err)
 	}
-	r.controllerSession = "ses_controller_" + randomSuffix(t)
+	session := "ses_controller_" + randomSuffix(t)
 	status, body = r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: capability.Secret, SessionID: r.controllerSession, OmpSessionFile: "/sessions/" + r.controllerSession + ".jsonl",
-		AgentID: r.controllerSession, PluginContract: api.DaemonAPIVersion(),
+		BootToken: capability.Secret, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
+		AgentID: session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
 		t.Fatalf("register the controller = %d %s, want 200", status, body)
@@ -224,8 +221,8 @@ func (r *doneByChecksRig) registerController() {
 	if err := json.Unmarshal(body, &registered); err != nil {
 		t.Fatalf("decode the controller's registration %s: %v", body, err)
 	}
-	r.notices.holds(string(claim.ControllerToken(r.project)), r.controllerSession)
-	t.Logf("the project's controller is registered as %s (claim %s) and holds its role at the listener", r.controllerSession, registered.ClaimToken)
+	r.notices.holds(string(claim.ControllerToken(r.project)), session)
+	t.Logf("the project's controller is registered as %s (claim %s) and holds its role at the listener", session, registered.ClaimToken)
 }
 
 // makeIssue makes issue in Dispatch, with its documents, its Verification document, and its status
@@ -390,6 +387,19 @@ func (r *doneByChecksRig) walkToMerging(number int, head string) {
 	r.walkRetro(head)
 }
 
+// walkToMergingPassingBefore is walkToMerging with a pass of doneByChecksBeforeCheck recorded at
+// head once testing ends, before the review.
+func (r *doneByChecksRig) walkToMergingPassingBefore(number int, head string) {
+	r.t.Helper()
+	r.walkPlanning()
+	r.walkImplementing(head)
+	r.walkTesting()
+	r.recordCheck(doneByChecksBeforeCheck, "pass", head)
+	r.walkReview(number, head)
+	r.walkSignOff()
+	r.walkRetro(head)
+}
+
 // walkPlanning is the planner taking its task and completing with a plan written to Dispatch.
 func (r *doneByChecksRig) walkPlanning() {
 	r.t.Helper()
@@ -456,21 +466,6 @@ func (r *doneByChecksRig) reviewOf(issue string, number int, head, state string,
 	c.endTurn()
 	r.publishReviewAt(number, head, state)
 	r.waitPhaseOf(issue, next)
-}
-
-// retroOf is the implementer's retro of issue, a child of the walk's tree, at head: it takes its
-// task and completes it, and the child reaches merging.
-func (r *doneByChecksRig) retroOf(issue, head string) {
-	t := r.t
-	t.Helper()
-	c := r.workerOf(issue, claim.RoleImplementer)
-	r.taskOf(c)
-	if status, body := r.complete(c, r.retroAt(head)); status != http.StatusOK {
-		t.Fatalf("the retro of %s = %d %s, want 200", issue, status, body)
-	}
-	c.endTurn()
-	r.waitPhaseOf(issue, phase.Merging)
-	t.Logf("the walk: the retro of %s at %s done; the daemon's state route shows it in %s", issue, head, r.d.state().Issues[issue].Phase)
 }
 
 // publishReviewAt is a person with write access submitting state on pull request number at head,
@@ -644,12 +639,6 @@ func (r *doneByChecksRig) awaitProcessed(source, event string) time.Time {
 	return processedAt
 }
 
-// publishPullRequest is publishPull of the walk's issue's pull request.
-func (r *doneByChecksRig) publishPullRequest(action string) string {
-	r.t.Helper()
-	return r.publishPull(r.number, action)
-}
-
 // publishPull publishes GitHub's pull_request event of action on pull request number, as the
 // stand-in holds it now, on notifications.github.acme.widgets.pr.<n>: the subject Dispatch's
 // intake and the daemon's both read. It carries the fields Envoy's listener relays
@@ -732,7 +721,7 @@ func (r *doneByChecksRig) agent(method, path string, body any) (int, []byte) {
 }
 
 // doneByChecksAnswer is the issue's check as GET /api/v1/issues/{key}/results answers it: what
-// Step 2's acceptance reads of it, and the parts the log shows as Dispatch wrote them (raw).
+// the tests read of it, and the parts the log shows as Dispatch wrote them (raw).
 type doneByChecksAnswer struct {
 	PassStands struct {
 		Answer   string                       `json:"answer"`
@@ -762,9 +751,6 @@ func (a doneByChecksAnswer) String() string {
 	}
 	return shown
 }
-
-// answer reads the issue's results from Dispatch and answers doneByChecksCheck (answerOf).
-func (r *doneByChecksRig) answer() (doneByChecksAnswer, error) { return r.answerOf(doneByChecksCheck) }
 
 // answerOf reads the walk's issue's results from Dispatch and answers check.
 func (r *doneByChecksRig) answerOf(check string) (doneByChecksAnswer, error) {
@@ -825,8 +811,8 @@ func (r *doneByChecksRig) awaitAnswerOf(check, what string, hold func(doneByChec
 	}
 }
 
-// passStandsAt is Step 2's acceptance of the answer after the pass at merge: the check answers yes,
-// and the compared_with entry of main names merge as its merge_commit.
+// passStandsAt is the rig's own acceptance of the answer after the pass at merge: the check
+// answers yes, and the compared_with entry of main names merge as its merge_commit.
 func passStandsAt(merge string) func(doneByChecksAnswer) error {
 	return func(answer doneByChecksAnswer) error {
 		if answer.PassStands.Answer != "yes" {
@@ -845,8 +831,8 @@ func passStandsAt(merge string) func(doneByChecksAnswer) error {
 	}
 }
 
-// failDecides is Step 2's acceptance of the answer after the fail recorded as result fail at
-// commit: the check answers no for reason fail, its results name the fail, and its commit is
+// failDecides is the rig's own acceptance of the answer after the fail recorded as result fail
+// at commit: the check answers no for reason fail, its results name the fail, and its commit is
 // commit.
 func failDecides(fail, commit string) func(doneByChecksAnswer) error {
 	return func(answer doneByChecksAnswer) error {
@@ -926,10 +912,10 @@ type doneByChecksEvent struct {
 	Payload json.RawMessage `json:"payload"`
 }
 
-// eventOf is the first event of issue's log after seq after that match holds for, and whether one
-// does.
-func (r *doneByChecksRig) eventOf(issue string, after int64, match func(doneByChecksEvent) bool) (doneByChecksEvent, bool, error) {
+// eventOf is the first event of issue's log that match holds for, and whether one does.
+func (r *doneByChecksRig) eventOf(issue string, match func(doneByChecksEvent) bool) (doneByChecksEvent, bool, error) {
 	const page = 200
+	var after int64
 	for {
 		var events []doneByChecksEvent
 		if err := r.personRead(fmt.Sprintf("/api/v1/issues/%s/events?after=%d&limit=%d", issue, after, page), &events); err != nil {
@@ -959,7 +945,7 @@ func (r *doneByChecksRig) awaitApplied(what, issue string, match func(doneByChec
 	var why error
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
 		if event.ID == 0 {
-			found, held, err := r.eventOf(issue, 0, match)
+			found, held, err := r.eventOf(issue, match)
 			if err != nil || !held {
 				why = fmt.Errorf("Dispatch's log of %s holds no such event yet: %v", issue, err)
 				return false
@@ -1057,9 +1043,9 @@ func mainMergeCommit(block dispatch.CheckBlock) string {
 	return ""
 }
 
-// subjectAt is block's subject whose basis names commit, and whether it has one.
-func subjectAt(block dispatch.CheckBlock, commit string) (dispatch.PassStandsSubject, bool) {
-	for _, subject := range block.PassStands.Subjects {
+// subjectAt is the subject of subjects whose basis names commit, and whether there is one.
+func subjectAt(subjects []dispatch.PassStandsSubject, commit string) (dispatch.PassStandsSubject, bool) {
+	for _, subject := range subjects {
 		if subject.Basis.Commit == commit {
 			return subject, true
 		}
@@ -1136,17 +1122,8 @@ func stateOf(issue api.Issue) string {
 
 // issueRow is issue as the daemon's store holds it.
 func (r *doneByChecksRig) issueRow(issue string) record.Issue {
-	t := r.t
-	t.Helper()
-	var held *record.Issue
-	if err := store.TransactWith(context.Background(), r.st.Pool(), pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
-		var err error
-		held, err = r.records.Issue(ctx, tx, issue)
-		return err
-	}); err != nil || held == nil {
-		t.Fatalf("read %s from the store: %v", issue, err)
-	}
-	return *held
+	r.t.Helper()
+	return recordOf(r.t, r.st.Pool(), r.records, issue)
 }
 
 // storedWait is the wait issue's row stores (issues.close_wait).
@@ -1226,9 +1203,9 @@ func (r *doneByChecksRig) reportRefused(c *stepClaimant, opened time.Time, look 
 	return fmt.Sprintf("%d %s", status, body)
 }
 
-// closeWaitVersions is each version of issue's close-wait.md in Dispatch, oldest first, as its
-// markdown: nil where the issue holds no such document.
-func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
+// documentListing is issue's document of slug in Dispatch: its id and the numbers of its
+// versions, sorted, or no id and no number where the issue holds no such document.
+func (r *doneByChecksRig) documentListing(issue, slug string) (string, []int, error) {
 	var artifacts []struct {
 		ID       string `json:"id"`
 		Slug     string `json:"slug"`
@@ -1237,10 +1214,10 @@ func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
 		} `json:"versions"`
 	}
 	if err := r.personRead("/api/v1/issues/"+issue+"/artifacts", &artifacts); err != nil {
-		return nil, err
+		return "", nil, err
 	}
 	for _, artifact := range artifacts {
-		if artifact.Slug != record.CloseWaitDocumentSlug {
+		if artifact.Slug != slug {
 			continue
 		}
 		numbers := make([]int, 0, len(artifact.Versions))
@@ -1248,19 +1225,20 @@ func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
 			numbers = append(numbers, version.Number)
 		}
 		slices.Sort(numbers)
-		texts := make([]string, 0, len(numbers))
-		for _, number := range numbers {
-			var version struct {
-				Markdown string `json:"markdown"`
-			}
-			if err := r.personRead(fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", artifact.ID, number), &version); err != nil {
-				return nil, err
-			}
-			texts = append(texts, version.Markdown)
-		}
-		return texts, nil
+		return artifact.ID, numbers, nil
 	}
-	return nil, nil
+	return "", nil, nil
+}
+
+// versionMarkdown is version number of the document whose id is id, as its markdown.
+func (r *doneByChecksRig) versionMarkdown(id string, number int) (string, error) {
+	var version struct {
+		Markdown string `json:"markdown"`
+	}
+	if err := r.personRead(fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", id, number), &version); err != nil {
+		return "", err
+	}
+	return version.Markdown, nil
 }
 
 // awaitCloseWaitDocument waits for issue's close-wait.md in Dispatch to name, in its newest
@@ -1268,32 +1246,50 @@ func (r *doneByChecksRig) closeWaitVersions(issue string) ([]string, error) {
 // first. It reads the values the daemon wrote and not the document's bytes, since Dispatch keeps
 // a document's markdown in its own form.
 //
-// A caller names the values the daemon has certainly written by then, and no more. A change of
-// the wait that finds a row of an earlier wait waiting writes no row of its own, and the row
-// renders the wait the record holds when it runs: where that row ran between the two changes,
-// the newer wait reaches Dispatch only at the change of the wait after it (the defect this lane
-// reported to the integrator).
+// A caller names values that a change of the wait committed before the call and that no later
+// change takes out: each change of the wait commits with a close_wait_publish row that renders
+// the record after that commit (workflow's publishWait: a waiting row is held until the change
+// commits, and a running row makes the change queue one of its own), so the newest version
+// comes to name them.
+//
+// Only the poll whose newest version names every value reads the older ones, so each poll of a
+// long wait reads one version.
 func (r *doneByChecksRig) awaitCloseWaitDocument(issue, what string, values ...string) []string {
 	t := r.t
 	t.Helper()
 	var versions []string
 	var why error
 	if !testwait.Holds(stepRecordsWait, 200*time.Millisecond, func() bool {
-		var err error
-		if versions, err = r.closeWaitVersions(issue); err != nil {
+		id, numbers, err := r.documentListing(issue, record.CloseWaitDocumentSlug)
+		if err != nil {
 			why = err
 			return false
 		}
-		if len(versions) == 0 {
+		if len(numbers) == 0 {
 			why = fmt.Errorf("Dispatch holds no close-wait.md of %s", issue)
 			return false
 		}
+		newest, err := r.versionMarkdown(id, numbers[len(numbers)-1])
+		if err != nil {
+			why = err
+			return false
+		}
 		for _, value := range values {
-			if !strings.Contains(versions[len(versions)-1], value) {
-				why = fmt.Errorf("version %d of %s's close-wait.md names no %q:\n%s", len(versions), issue, value, versions[len(versions)-1])
+			if !strings.Contains(newest, value) {
+				why = fmt.Errorf("version %d of %s's close-wait.md names no %q:\n%s", len(numbers), issue, value, newest)
 				return false
 			}
 		}
+		texts := make([]string, 0, len(numbers))
+		for _, number := range numbers[:len(numbers)-1] {
+			text, err := r.versionMarkdown(id, number)
+			if err != nil {
+				why = err
+				return false
+			}
+			texts = append(texts, text)
+		}
+		versions = append(texts, newest)
 		return true
 	}) {
 		t.Fatalf("close-wait.md of %s at %s: %v", issue, what, why)
@@ -1316,6 +1312,15 @@ func (r *doneByChecksRig) daemonMessages(issue string) int {
 		r.t.Fatalf("read the messages of %s: %v", issue, err)
 	}
 	return len(messages)
+}
+
+// dispatchStatus is issue's status as Dispatch shows it to the run's person.
+func (r *doneByChecksRig) dispatchStatus(issue string) (string, error) {
+	var shown struct {
+		Status string `json:"status"`
+	}
+	err := r.personRead("/api/v1/issues/"+issue, &shown)
+	return shown.Status, err
 }
 
 // controllerNotices is every notice of kind the daemon published to the project's controller's
@@ -1374,12 +1379,12 @@ func (r *doneByChecksRig) editDocument(issue string, c *stepClaimant, name, cont
 	})
 }
 
-// The rig's own acceptance (plan Task 11a, Step 2). One issue of the default steps walks to its
-// merge, M, and the daemon applies GitHub's merge. Then the test records a pass of the issue's
-// after-merge check at M, and reads Dispatch's answer: yes, with main's merge_commit M. Then a fail
-// at C1, a later commit of main that holds M, and the answer: no, for reason fail, naming the fail,
-// at C1. Dispatch reads GitHub at the rig's stand-in, and the log names each request the stand-in
-// was sent. When the issue closes is no part of it: the daemon of main closes it at its merge.
+// The rig's own acceptance drives one issue of the default steps to its merge, M, and the daemon
+// applies GitHub's merge. Then the test records a pass of the issue's after-merge check at M, and
+// reads Dispatch's answer: yes, with main's merge_commit M. Then a fail at C1, a later commit of
+// main that holds M, and the answer: no, for reason fail, naming the fail, at C1. Dispatch reads
+// GitHub at the rig's stand-in, and the log names each request the stand-in was sent. When the
+// issue closes is no part of it: the daemon of main closes it at its merge.
 func TestTheDoneByChecksRigDrivesAnIssueToItsMerge(t *testing.T) {
 	t.Parallel()
 	r := newDoneByChecksRig(t)

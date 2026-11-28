@@ -41,9 +41,9 @@ func ChangeInPlace(issue record.Issue) ChangePlace {
 }
 
 // StartNextChange is the one transition of new work on an issue whose work merged (D7): the next
-// generation of that issue, at admitted with its gate kept, carrying reasons. Its callers are the
-// judge of the close, for a reason found after the merge, and, from Task 13, each entry door of a
-// request for new work, each of which decides place first.
+// generation of that issue, at admitted with its gate kept, carrying reasons. Its one caller is
+// the judge of the close (startChangeIfDue), for a reason found after the merge, which starts the
+// change where the issue stands (ChangeInPlace).
 //
 // In order: an open production check of the issue is closed as not run, with no claim retirement
 // and no IssueSuspend, since the change's own roles work in that pod; the reasons are marked as
@@ -256,12 +256,7 @@ func failedInRead(view closeView, check string) bool {
 // waits for, in any state but a pass: a fail, no result, or unknown (record.CloseWaitOf lists every
 // check that does not pass). A check's reason of a next change resolves only once it is not listed.
 func waitsInRead(view closeView, check string) bool {
-	for _, waiting := range view.wait.Checks {
-		if waiting.Check == check {
-			return true
-		}
-	}
-	return false
+	return slices.ContainsFunc(view.wait.Checks, func(w record.CheckWait) bool { return w.Check == check })
 }
 
 // recordCheckReasons records a reason of the next change for each check the read answers as a
@@ -677,19 +672,25 @@ func (e *Engine) carryReturn(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	return carried, nil
 }
 
-// withCarried is reason, the move's own words for the start task, followed by what that task says
-// of the defects the return carried (carryReturn): each by id with what it says, which this
-// generation's work takes. The words reach the task alone: the move posts reason on the issue as it
-// was (moveReason), so no role's defect text is posted there.
-func withCarried(reason string, carried []record.Defect) string {
+// withNamed is reason, the move's own words for the start task, followed by lead and a line for
+// each of carried (reasonLines), or reason alone where carried is empty.
+func withNamed(reason, lead string, carried []record.Defect) string {
 	if len(carried) == 0 {
 		return reason
 	}
-	named := "This return carries these defects of the change, which your work takes:" + bulleted(reasonLines(carried))
+	named := lead + bulleted(reasonLines(carried))
 	if reason == "" {
 		return named
 	}
 	return sentence(reason) + " " + named
+}
+
+// withCarried is reason followed by what the start task says of the defects the return carried
+// (carryReturn): each by id with what it says, which this generation's work takes. The words reach
+// the task alone: the move posts reason on the issue as it was (moveReason), so no role's defect
+// text is posted there.
+func withCarried(reason string, carried []record.Defect) string {
+	return withNamed(reason, "This return carries these defects of the change, which your work takes:", carried)
 }
 
 // carriedByChange is each open reason the next change of issue carries (Defect.CarriedBy is the
@@ -712,18 +713,11 @@ func (e *Engine) carriedByChange(ctx context.Context, tx pgx.Tx, trigger Trigger
 	return carried, nil
 }
 
-// withChangeReasons is reason, the move's own words for the start task, followed by what the first
-// start task of a next change says of the reasons the change carries (carriedByChange): each by id,
-// kind and what it says, and a check's by its block id, which the change's work takes (D7).
+// withChangeReasons is reason followed by what the first start task of a next change says of the
+// reasons the change carries (carriedByChange): each by id, kind and what it says, and a check's
+// by its block id, which the change's work takes (D7).
 func withChangeReasons(reason string, carried []record.Defect) string {
-	if len(carried) == 0 {
-		return reason
-	}
-	named := "This next change carries these reasons, which its work takes:" + bulleted(reasonLines(carried))
-	if reason == "" {
-		return named
-	}
-	return sentence(reason) + " " + named
+	return withNamed(reason, "This next change carries these reasons, which its work takes:", carried)
 }
 
 // firstStartAt is where the working copy of issue's first start of a next change starts
