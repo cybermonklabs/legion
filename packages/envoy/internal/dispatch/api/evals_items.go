@@ -737,11 +737,14 @@ func (s *server) evalItemSources(ctx context.Context, tx pgx.Tx, project string,
 // stepBeforeRows is, for each of ranges, the readings of evalID's step series that its step lines
 // start the range at (evals.BeforeWindowIn): of each series a `curve: "step"` chart of the eval's
 // current charts draws over measured time (evals.StepsIn), the one series request names where it
-// names one, the newest standing reading of each group of the series before the range's first day,
-// a group being the series and its col, and further its row key or its row group where the chart
-// draws a line a row or a row group (dispatch://INFRA-2918, D20 (a)). Each is read through the
-// filters the range's readings are (row kind, row and repositories), and answered as its range's
-// row, marked before_window. A series no step chart draws has none.
+// names one, the newest standing reading of each group of the series before the range's start,
+// the `from` or `compare_from` the read names, a group being the series and its col, and further
+// its row key or its row group where the chart draws a line a row or a row group
+// (dispatch://INFRA-2918, D20 (a)). The bounded read takes the same start (bucketedItems), so a
+// paged read and a bounded read of one range start its step lines at one reading, whether or not
+// the range starts at a UTC midnight. Each is read through the filters the range's readings are
+// (row kind, row and repositories), and answered as its range's row, marked before_window. A
+// series no step chart draws has none.
 func stepBeforeRows(ctx context.Context, tx pgx.Tx, evalID string, request evalItemsRequest, repos []string, ranges []evalItemsRange) ([][]evalItemRow, error) {
 	rows := make([][]evalItemRow, len(ranges))
 	steps, err := itemSteps(ctx, tx, evalID, request)
@@ -753,7 +756,7 @@ func stepBeforeRows(ctx context.Context, tx pgx.Tx, evalID string, request evalI
 	}
 	befores := make([]time.Time, len(ranges))
 	for at, rng := range ranges {
-		befores[at] = rng.days.From
+		befores[at] = rng.start
 	}
 	readings, err := evals.BeforeWindowIn(ctx, tx, evalID, steps, request.rowKind, request.row, repos, befores)
 	if err != nil {

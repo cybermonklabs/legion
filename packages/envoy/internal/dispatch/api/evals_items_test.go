@@ -974,6 +974,49 @@ func TestTheItemsReadAnswersTheReadingBeforeTheWindowOfEachGroup(t *testing.T) {
 	t.Logf("the readings before the ranges %q; %d rows beside them, total %d; a page of one row answers %q beside it", before, len(rest), every.Total, pagedBefore)
 }
 
+// TestThePagedAndTheBoundedReadsAnswerOneReadingBeforeARange (dispatch://INFRA-2918, D20 (a),
+// D21): for a window and a compare range that start at no UTC midnight, the paged read and the
+// bounded read (buckets) answer as each range's reading before it the same reading, the newest of
+// each group measured before the instant the read names as the range's start (`from`,
+// `compare_from`), from which the bounded read cuts its spans. So a reading after the range's first
+// midnight and before its start is the one its step line starts at, in both reads.
+func TestThePagedAndTheBoundedReadsAnswerOneReadingBeforeARange(t *testing.T) {
+	t.Parallel()
+	handler, _ := newTestHandlerWithStore(t)
+	createTestProject(t, handler, "EVL")
+	from := measures.Midnight(time.Now().UTC()).AddDate(0, 0, -3).Add(15 * time.Hour)
+	window := evals.Range{From: from, To: from.Add(48 * time.Hour)}
+	compare := evals.Range{From: from.AddDate(0, 0, -7), To: from.AddDate(0, 0, -5)}
+	registerLastSeries(t, handler, "EVL", "steps", []string{"queue"}, chartList(stepChart("queue", "queue", "")))
+	measuredAt := func(rowKey string, value float64, at time.Time) map[string]any {
+		reading := stepReading("queue", "value", rowKey, new(value), at)
+		reading["measured_at"] = at.Format(time.RFC3339)
+		return reading
+	}
+	// Of each range: a reading the evening before its first midnight, one that morning before its
+	// start, and one inside it.
+	logReadings(t, handler, "EVL", "steps", "off-midnight-readings",
+		measuredAt("window-evening", 1, window.From.Add(-16*time.Hour)),
+		measuredAt("window-morning", 2, window.From.Add(-6*time.Hour)),
+		measuredAt("window-inside", 3, window.From.Add(time.Hour)),
+		measuredAt("compare-evening", 4, compare.From.Add(-16*time.Hour)),
+		measuredAt("compare-morning", 5, compare.From.Add(-6*time.Hour)),
+		measuredAt("compare-inside", 6, compare.From.Add(time.Hour)))
+	want := []string{"window queue/value/window-morning 2", "compare queue/value/compare-morning 5"}
+	for name, extra := range map[string]url.Values{
+		"paged":   {"limit": {"200"}},
+		"bounded": {"buckets": {"160"}, "series": {"queue"}},
+	} {
+		query := rangesQuery(window, compare)
+		maps.Copy(query, extra)
+		before, _, _ := stepItems(t, evalGet[evalItemsResponse](t, handler, evalItemsPath("EVL", "steps")+"?"+query.Encode()))
+		if !slices.Equal(before, want) {
+			t.Errorf("the %s read answers the readings before its ranges %q, want %q", name, before, want)
+		}
+	}
+	t.Logf("window %s to %s, compare %s to %s: both reads start them at %q", window.From, window.To, compare.From, compare.To, want)
+}
+
 // TestARowsReadOfReadingsAloneCountsReadings (dispatch://INFRA-2918, D21, `source`): the rows
 // behind a logged number read with source=readings answer the eval's readings alone, and their
 // total counts the readings of the window; source=days answers the day rows alone; naming both is
