@@ -1,5 +1,14 @@
 import { createIssue, createProject, getIssueEvents, patchIssue } from "./api";
-import { callTool, modelsLane, prose, runCalls, say, scriptChat } from "./fake-models-helpers";
+import {
+  callTool,
+  decided,
+  modelsLane,
+  prose,
+  runCalls,
+  say,
+  scriptChat,
+  scriptDecision,
+} from "./fake-models-helpers";
 import {
   answerPanel,
   answerText,
@@ -7,12 +16,14 @@ import {
   askTheAgent,
   bar,
   expectHandedToThePanel,
+  lineOnTop,
   newestRun,
   openBarOver,
   RUN_STEPS_MS,
+  searchBox,
   sidePanel,
 } from "./going-locators";
-import { countStartedRuns, plainWords, runFrames } from "./going-panel";
+import { countAskedRuns, countStartedRuns, plainWords, runFrames } from "./going-panel";
 import { expect, type Locator, test } from "./test";
 import { withAlice } from "./users";
 
@@ -28,6 +39,10 @@ import { withAlice } from "./users";
 // controls: a bar that opens the panel by the reply's length fails the long-reply card row; one
 // that starts a second run, or rewrites the long reply, fails that row's run count or its final
 // text; one that draws the numbers the model wrote shows the wrong number.
+//
+// The card is Ask's alone (R3): under the line Do no card shows, not even the answer the bar keeps
+// on the screen for words the person typed past. Negative control: a bar that draws the card under
+// Do as well (mutant m-card-do) keeps that answer under the line Do, which fails that row's card.
 
 /** The value the chart draws for the point of `status`, whether the chart writes it as stored
  *  (`in_progress`) or in words (`In progress`). */
@@ -77,6 +92,39 @@ for (const [kind, reply] of PREVIEWS) {
     });
   });
 }
+
+// SLOW(>=2s): two pauses, each with Jev's answer, and the first one's card.
+test("under the line Do no answer card shows above the hits, not even the answer the card showed for the words before", async ({
+  browser,
+}) => {
+  modelsLane();
+  await createProject({ key: "CORE", name: "Core" });
+  await createIssue({ project: "CORE", title: "Map the lunar craters" });
+  const earlier = "where are the lunar craters mapped";
+  const words = "mark the crater mapping as started";
+  const reply = "The craters are mapped in one place.";
+  // The fake writes the same short answer on every pause, so both words have one to show.
+  await scriptChat({ default: prose(reply) });
+  await scriptDecision({ default: decided("none", 0.99) });
+  await withAlice(browser, async (page) => {
+    const asked = countAskedRuns(page);
+    await openBarOver(page, "/projects/CORE/issues");
+    // Jev answers none: the line on top reads Ask, and the card above the hits shows the answer.
+    await askAndWait(page, earlier);
+    await expect(lineOnTop(page)).toHaveAttribute("data-line", "ask");
+    await expect(answerText(page)).toContainText(reply);
+    // Jev answers an action for the next words, so the line on top reads Do. The bar keeps the
+    // earlier words' answer until the new words have one of their own, and lets the new words'
+    // answer go as the line settles on Do, so the earlier answer is a card the bar still holds
+    // under Do: only the rule that the card is Ask's keeps it off the screen.
+    await scriptDecision({ default: decided("dispatch_issue_update", 0.99) });
+    await searchBox(page).fill(words);
+    await expect(lineOnTop(page)).toHaveAttribute("data-line", "do");
+    await expect(answerPanel(page)).toHaveCount(0);
+    // The pause asked a short answer for both words.
+    expect(asked.words).toEqual([earlier, words]);
+  });
+});
 
 // SLOW(>=2s): a run of two model calls and a read.
 test("Enter starts a run: each tool call is a step sent as it starts and again as it ends, and the answer links each item it read", async ({
