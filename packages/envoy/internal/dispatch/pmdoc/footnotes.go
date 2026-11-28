@@ -1,6 +1,8 @@
 package pmdoc
 
 import (
+	"math/bits"
+	"math/rand/v2"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -86,43 +88,108 @@ func FootnoteDefinitionLabels(doc *Node) []string {
 }
 
 // FootnoteLabelKeys is the labels a document defines, as FootnoteDefinitionLabels gives them, in
-// document order, each kept under its key as a call writes it, made once for the document
-// (KeyFootnoteLabels), so that the reading of each block of that document (Written) folds only the
-// calls the block writes and looks each up among those keys.
+// document order, each kept under its key as a call writes it, and each key under its byte length
+// and hash (footnoteKeyHash), made once for the document (KeyFootnoteLabels), so that the reading
+// of each block of that document (Written) folds only the calls the block writes and finds the key
+// a call folds to by the length and hash of its fold, at a cost the number of keys does not change.
 type FootnoteLabelKeys struct {
 	labels []string
-	// byKey is, for each key, the labels with that key.
-	byKey map[string]footnoteKeyLabels
+	// keys is each key once, with the labels under it, in the order of the first label under each.
+	keys []footnoteKey
+	// byHash is, for the byte length and hash of each key, the index in keys of the last key with
+	// them, from which sameHash reaches the others.
+	byHash map[footnoteKeyHash]int
 	// longest is the byte length of the longest key.
 	longest int
 }
 
-// footnoteKeyLabels is the index in a document's labels of each label with one key: first, that of
-// the first of them, and later, in order, those of the others, which equal it only up to case,
-// since FootnoteDefinitionLabels keeps apart labels that are not equal byte for byte.
-type footnoteKeyLabels struct {
-	first int
-	later []int
+// footnoteKey is a key of a document's labels with the index in those labels of each label under
+// it: first, that of the first of them, and later, in order, those of the others, which equal it
+// only up to case, since FootnoteDefinitionLabels keeps apart labels that are not equal byte for
+// byte. sameHash is the index in the document's keys of the key before it with its byte length and
+// hash, or -1 where none has them: two keys share both only by chance (footnoteHashBase).
+type footnoteKey struct {
+	key      string
+	first    int
+	later    []int
+	sameHash int
+}
+
+// footnoteKeyHash is the byte length of a folded string and its hash: the polynomial whose
+// coefficients are the string's bytes, the first byte the constant, taken at footnoteHashBase
+// modulo footnoteHashModulus. The hash of a string with a byte before it is the string's hash
+// times the base, plus the byte (footnoteHashStep), so a reading that walks a fold backwards has
+// the hash of each suffix it has read with one step for each byte. Two strings of one length n
+// that differ are two polynomials that differ, so they share a hash at n−1 of the bases at most.
+type footnoteKeyHash struct {
+	length int
+	hash   uint64
+}
+
+// footnoteHashModulus is the Mersenne prime 2^61 − 1, modulo which footnoteKeyHash takes hashes.
+const footnoteHashModulus = 1<<61 - 1
+
+// footnoteHashBase is the base of footnoteKeyHash, drawn once for the process at random from 2 to
+// footnoteHashModulus − 1, so that no document can be written whose calls fold to strings sharing
+// a key's hash and not its bytes but by chance: a string of n bytes shares the hash of a key of
+// its length at n−1 of the bases at most, a chance below n in 2^61.
+var footnoteHashBase = 2 + rand.Uint64N(footnoteHashModulus-2)
+
+// footnoteHashStep is the hash (footnoteKeyHash) of a string with b before it, where hash is the
+// string's: hash times footnoteHashBase, plus b, modulo footnoteHashModulus. The product of two
+// numbers under 2^61 is under 2^122, and 2^61 is 1 modulo the modulus, so the product's bits from
+// the 61st up, added to the 61 bits under them, are the product modulo the modulus but for at most
+// twice the modulus more.
+func footnoteHashStep(hash uint64, b byte) uint64 {
+	hi, lo := bits.Mul64(hash, footnoteHashBase)
+	hash = (hi<<3 | lo>>61) + lo&footnoteHashModulus + uint64(b)
+	for hash >= footnoteHashModulus {
+		hash -= footnoteHashModulus
+	}
+	return hash
+}
+
+// footnoteHash is the hash of key (footnoteKeyHash), read from its end, as a reading of a block's
+// calls reads their folds (footnoteCalls).
+func footnoteHash(key string) uint64 {
+	var hash uint64
+	for index := len(key) - 1; index >= 0; index-- {
+		hash = footnoteHashStep(hash, key[index])
+	}
+	return hash
 }
 
 // KeyFootnoteLabels is the FootnoteLabelKeys of labels, the labels a document defines as
 // FootnoteDefinitionLabels gives them: each label under the key of the label as a call writes it,
 // written as the renderer writes one (escapeFootnoteLabel) and folded (footnoteLabelKey), two
-// labels equal only up to case under the same key, and the byte length of the longest key. It
-// folds each label once, and is made once for the document, each block of which is read against
-// it (Written).
+// labels equal only up to case under the same key, each key under its byte length and hash
+// (footnoteKeyHash), and the byte length of the longest key. It folds and hashes each label once,
+// and is made once for the document, each block of which is read against it (Written).
 func KeyFootnoteLabels(labels []string) FootnoteLabelKeys {
-	keys := FootnoteLabelKeys{labels: labels, byKey: make(map[string]footnoteKeyLabels, len(labels))}
+	keys := FootnoteLabelKeys{
+		labels: labels,
+		keys:   make([]footnoteKey, 0, len(labels)),
+		byHash: make(map[footnoteKeyHash]int, len(labels)),
+	}
 	var keyer footnoteKeyer
 	for index, label := range labels {
 		key := keyer.key(escapeFootnoteLabel(label))
 		keys.longest = max(keys.longest, len(key))
-		if held, ok := keys.byKey[key]; ok {
-			held.later = append(held.later, index)
-			keys.byKey[key] = held
+		at := footnoteKeyHash{length: len(key), hash: footnoteHash(key)}
+		last, ok := keys.byHash[at]
+		if !ok {
+			last = -1
+		}
+		held := last
+		for held >= 0 && keys.keys[held].key != key {
+			held = keys.keys[held].sameHash
+		}
+		if held >= 0 {
+			keys.keys[held].later = append(keys.keys[held].later, index)
 			continue
 		}
-		keys.byKey[key] = footnoteKeyLabels{first: index}
+		keys.byHash[at] = len(keys.keys)
+		keys.keys = append(keys.keys, footnoteKey{key: key, first: index, sameHash: last})
 	}
 	return keys
 }
@@ -136,29 +203,46 @@ func KeyFootnoteLabels(labels []string) FootnoteLabelKeys {
 // one markdown defines itself, whose calls resolve to that definition. A stand-in definition of
 // either after markdown (WithStandInDefinitions) is one nothing in markdown refers to.
 //
-// It reads markdown in one pass, so its time grows with markdown's length and the calls markdown
-// writes, not with the labels of keys. Each `[^` opens a call whose label starts after the caret,
+// It reads markdown in one pass. Each `[^` opens a call whose label starts after the caret,
 // wherever the `[^` stands, after a backslash or inside the label of another call too. A backslash
 // takes the byte after it, so a `]` it takes closes nothing, and the first `]` no backslash takes
-// closes every call open, each label running up to that `]`. Each label is folded once and looked
-// up among the keys, but for a label of more than four bytes for each byte of the longest key,
-// which is not folded, since it folds to no key: a character is at most four bytes and folds to one
-// byte at least. Without that bound, `[^[^[^…]` would fold a label for each `[^`, each longer than
-// the last. That answers as a search of markdown folded for each label's call folded does: the
-// renderer writes each `]` of a label after an odd run of backslashes and doubles each backslash
-// that ends the label, so a label's call runs from its `[^` to the first `]` no backslash takes;
-// and folding maps markdown character by character and makes or removes no `[`, `^`, `]` or
-// backslash, so the fold of a call's label is the same span of markdown folded.
+// closes every call open, each label running up to that `]`. A label of more than four bytes for
+// each byte of the longest key folds to no key, since a character is at most four bytes and folds
+// to one byte at least, so the labels a `]` closes that can fold to a key are the last ones opened
+// within that bound, each the end of the label of the oldest of them. The reading folds that oldest
+// label once, which folds each of the others with it, and walks the fold backwards from the `]`
+// once, hashing each byte, so that at the start of each label it holds the hash of the label's fold
+// and looks the fold up among the keys by its byte length and hash, until the fold grows longer
+// than the longest key (footnoteCalls). It takes a key found so only where the fold equals it byte
+// for byte, so the answer is exact, and compares no key it has taken already, since that adds
+// nothing.
+//
+// That answers as a search of markdown folded for each label's call folded does: the renderer
+// writes each `]` of a label after an odd run of backslashes and doubles each backslash that ends
+// the label, so a label's call runs from its `[^` to the first `]` no backslash takes; and folding
+// maps markdown character by character and makes or removes no `[`, `^`, `]` or backslash, so the
+// fold of a call's label is the same span of markdown folded.
+//
+// Its time grows with markdown's length, whatever labels the document defines, and with one
+// comparison for each key it answers. A `]` closes every call open, so the spans two of them fold
+// do not overlap: each byte of markdown is folded once at most, each byte of a fold is hashed once
+// at most, and each label is looked up once at most, at a cost the number of keys does not change.
+// The comparisons cost the bytes of each key the reading takes, once, and those of a fold that
+// shares a key's length and hash and not its bytes, which the base drawn at random for the process
+// leaves to chance (footnoteHashBase). Every fold goes into one buffer the reading keeps, which a
+// fold all ASCII never outgrows and fills with nothing allocated, so the reading of a block all
+// ASCII makes no more allocations against the keys of the labels it calls among thousands of
+// others than against those keys alone.
 func (keys FootnoteLabelKeys) Written(markdown string) []string {
 	first := strings.Index(markdown, "[^")
 	if len(keys.labels) == 0 || first < 0 {
 		return nil
 	}
-	var (
-		keyer        footnoteKeyer
-		open, called []int
-	)
 	bound := 4 * keys.longest
+	// No label within the bound runs longer than the buffer, nor than markdown after its first
+	// `[^`, and a label all ASCII folds to as many bytes as it holds.
+	calls := footnoteCalls{keys: &keys, folded: make([]byte, 0, min(bound, len(markdown)-first))}
+	var open []int
 	for index := first; index < len(markdown); index++ {
 		if markdown[index] == '\\' {
 			// The byte a backslash takes closes nothing, but the bracket of a `[^` still opens a
@@ -173,26 +257,85 @@ func (keys FootnoteLabelKeys) Written(markdown string) []string {
 			open = append(open, index+2)
 			index++
 		case markdown[index] == ']':
-			// The calls opened last have the shortest labels, so the first one past the bound
-			// ends the calls to fold.
-			for each := len(open) - 1; each >= 0 && index-open[each] <= bound; each-- {
-				if held, ok := keys.byKey[keyer.key(markdown[open[each]:index])]; ok {
-					called = append(append(called, held.first), held.later...)
-				}
+			// The calls opened last have the shortest labels, so those within the bound are the
+			// last ones opened.
+			oldest := len(open)
+			for oldest > 0 && index-open[oldest-1] <= bound {
+				oldest--
+			}
+			if oldest < len(open) {
+				calls.close(markdown, open[oldest:], index)
 			}
 			open = open[:0]
 		}
 	}
-	if len(called) == 0 {
+	if len(calls.called) == 0 {
 		return nil
 	}
-	slices.Sort(called)
-	called = slices.Compact(called)
-	labels := make([]string, len(called))
-	for each, index := range called {
+	// Each key is taken once, and each label is under one key, so no label repeats.
+	slices.Sort(calls.called)
+	labels := make([]string, len(calls.called))
+	for each, index := range calls.called {
 		labels[each] = keys.labels[index]
 	}
 	return labels
+}
+
+// footnoteCalls is one reading of a block's calls against the keys of its document's labels
+// (FootnoteLabelKeys.Written): the keyer that folds the calls' labels, the buffer the labels each
+// `]` closes are folded into, the keys the reading has taken, by their index among the keys, and
+// the index in the document's labels of each label under them.
+type footnoteCalls struct {
+	keys   *FootnoteLabelKeys
+	keyer  footnoteKeyer
+	folded []byte
+	taken  map[int]struct{}
+	called []int
+}
+
+// close takes the keys that the labels a `]` at end closes fold to, of the labels markdown opens
+// at starts, in order, each the end of the first one's. It folds the first label once into the
+// buffer, a piece from the start of each label to that of the next and the last to end, which
+// folds each label whole, since folding maps a label character by character and each piece but the
+// last ends with a caret, and keeps in starts where the fold of each label starts in the buffer. It
+// then walks the fold backwards from its end once, hashing each byte (footnoteHashStep), so that at
+// the start of each label the hash is that of the label's fold, and looks up the fold's byte length
+// and hash among the keys, up to the first label whose fold is longer than the longest key, which
+// folds to no key, as do the longer ones before it. A key found so is taken where it equals the
+// fold byte for byte, and not compared where the reading has taken it already.
+func (calls *footnoteCalls) close(markdown string, starts []int, end int) {
+	keys := calls.keys
+	calls.folded = calls.folded[:0]
+	for each, start := range starts {
+		stop := end
+		if each+1 < len(starts) {
+			stop = starts[each+1]
+		}
+		starts[each] = len(calls.folded)
+		calls.folded = calls.keyer.appendKey(calls.folded, markdown[start:stop])
+	}
+	folded := calls.folded
+	var hash uint64
+	read := len(folded)
+	for each := len(starts) - 1; each >= 0 && len(folded)-starts[each] <= keys.longest; each-- {
+		start := starts[each]
+		for ; read > start; read-- {
+			hash = footnoteHashStep(hash, folded[read-1])
+		}
+		held, ok := keys.byHash[footnoteKeyHash{length: len(folded) - start, hash: hash}]
+		for ; ok && held >= 0; held = keys.keys[held].sameHash {
+			key := &keys.keys[held]
+			if _, done := calls.taken[held]; done || string(folded[start:]) != key.key {
+				continue
+			}
+			if calls.taken == nil {
+				calls.taken = map[int]struct{}{}
+			}
+			calls.taken[held] = struct{}{}
+			calls.called = append(append(calls.called, key.first), key.later...)
+			break
+		}
+	}
 }
 
 // footnoteKeyer makes the keys of footnote labels (footnoteLabelKey) with one caser lowering and
@@ -207,16 +350,46 @@ type footnoteKeyer struct {
 
 // key is label's footnoteLabelKey.
 func (keyer *footnoteKeyer) key(label string) string {
-	for index := range len(label) {
-		if label[index] < utf8.RuneSelf {
-			continue
-		}
-		if !keyer.made {
-			keyer.lower, keyer.upper, keyer.made = cases.Lower(language.Und), cases.Upper(language.Und), true
-		}
-		return keyer.upper.String(keyer.lower.String(label))
+	if !allASCII(label) {
+		return keyer.caseKey(label)
 	}
 	return strings.ToUpper(label)
+}
+
+// appendKey is dst with label's footnoteLabelKey appended: the ASCII upper case of a label all
+// ASCII, appended byte by byte, which allocates nothing while dst has room, and what the casers
+// make of any other label (caseKey).
+func (keyer *footnoteKeyer) appendKey(dst []byte, label string) []byte {
+	if !allASCII(label) {
+		return append(dst, keyer.caseKey(label)...)
+	}
+	for index := range len(label) {
+		char := label[index]
+		if 'a' <= char && char <= 'z' {
+			char -= 'a' - 'A'
+		}
+		dst = append(dst, char)
+	}
+	return dst
+}
+
+// caseKey is label lowered and then uppercased by the keyer's casers, which it makes on the first
+// label that needs them.
+func (keyer *footnoteKeyer) caseKey(label string) string {
+	if !keyer.made {
+		keyer.lower, keyer.upper, keyer.made = cases.Lower(language.Und), cases.Upper(language.Und), true
+	}
+	return keyer.upper.String(keyer.lower.String(label))
+}
+
+// allASCII reports whether every byte of value is ASCII.
+func allASCII(value string) bool {
+	for index := range len(value) {
+		if value[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // WithStandInDefinitions is markdown with a stand-in definition of each of labels after it: for
