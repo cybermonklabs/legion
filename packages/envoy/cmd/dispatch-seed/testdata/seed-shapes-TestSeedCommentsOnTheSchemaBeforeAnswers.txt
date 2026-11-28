@@ -1,9 +1,10 @@
 # The census (seedShapes) of TestSeedCommentsOnTheSchemaBeforeAnswers's seed at scale 0.01 (testScale), at
-# merge base 1a37a9ffe738c7e7053ce2f4e1c13ef78dd14d66: each shape that held rows there, a tab, and its count.
-# assertSeedKeepsItsShapes holds the test's seed at oldSchemaScale to a row of each name; it reads no count.
-# Captured with the test edited to seed at SEED_CENSUS_SCALE and to log formatShapes(seedShapes(t, database, run))
-# after its seed, keeping the lines whose count is above zero, by:
-#   SEED_CENSUS_SCALE=0.01 DISPATCH_TEST_DATABASE_URL=… go test -count=1 -v -run '^TestSeedCommentsOnTheSchemaBeforeAnswers$' ./cmd/dispatch-seed/
+# merge base 467dfdcae9cbb5d9d1c9b2eb34c48a5daac0c527 (main as #5987 merged it forward; the seed's own code
+# there is the head's but for the names of write_docs.go's size bands): each shape that held rows, a tab,
+# and its count. assertSeedKeepsItsShapes holds the test's seed at oldSchemaScale to a row of each name;
+# it reads no count. Captured with the test edited to seed at CENSUS_SCALE and to log
+# formatShapes(seedShapes(t, database, run)) after its seed, keeping the lines whose count is above zero, by:
+#   CENSUS_SCALE=0.01 DISPATCH_TEST_DATABASE_URL=… go test -count=1 -v -run '^TestSeedCommentsOnTheSchemaBeforeAnswers$' ./cmd/dispatch-seed/
 anchor paragraph in another document asks	45
 anchor paragraph in another document comments	528
 anchor paragraph in the anchored document asks	8
@@ -89,7 +90,9 @@ table projects	10
 table refs	1023
 table refs_forms_owed	4300
 table refs_grammar_owed	4700
-table schema_migrations	366
+table schema_migrations	374
+table search_coverage_deltas	10955
+table search_coverage_issues	200
 table search_term_stats	133034
 table search_term_totals	10
 table session_titles_backfill	1
