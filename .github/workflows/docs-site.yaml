@@ -200,9 +200,16 @@ jobs:
       # Generates the reference pages, then builds the site; starlight-links-validator fails it on a
       # broken internal link. The build writes dist/THIRD_PARTY_NOTICES.txt (docs/site/astro.config.mjs),
       # failing on a package whose license cannot be determined; the listing shows the site ships it.
+      # The repository variable DOCS_REPOSITORY, when set, names the <owner>/<name> the site's
+      # addresses and links are built for, so a fork that does not deploy the site builds it under
+      # the repository it was forked from: the site names its owner (its address, its image names
+      # and its edit links), and the private-names job below refuses a fork whose owner a rule
+      # matches.
       - name: Build the docs site
+        env:
+          DOCS_REPOSITORY: ${{ vars.DOCS_REPOSITORY }}
         run: |
-          bun run docs:build
+          GITHUB_REPOSITORY=${DOCS_REPOSITORY:-$GITHUB_REPOSITORY} bun run docs:build
           ls -l docs/site/dist/THIRD_PARTY_NOTICES.txt
       # The built site goes to the private-names job below, which checks it for private names:
       # that check reads the deployment's term list, and this job, which runs dependency code
