@@ -44,7 +44,10 @@
 #            delete of each counts 1; once P6 moves under OR1 through the PATCH, the read answers it
 #            under OR1, and that dry run counts 2.
 #   bands    after: null puts a node first in its own rank band, the memo first throughout.
-#   request  An open approval request on the spec query node names the version the drain writes.
+#   request  An open approval request on the spec query node names the version the drain writes:
+#            RQ, a requirement of the room's own fragment, moves from K1 under K2, which moves the
+#            spec query's record and no text of the spec, so the drain alone writes the spec's new
+#            version, holding the bytes of the version before it, and moves the request to it.
 #   delete   A criterion KD with a requirement RD under it, and a trade-off lens LD on KD with one
 #            finding: the dry run (dry_run=true) answers 200 with the count of the four the tree
 #            read returns and writes nothing; a comment is 400 NODE_NOT_DELETABLE; with no If-Match
@@ -1180,24 +1183,61 @@ pass "$section" "the first block of the notes stands first in band 5, before $no
 # --- request: the open request on the spec query names the drained version -------------------------------
 
 section=request
-with_vars "$section" "read the spec's newest version" "select max(number) from artifact_versions where artifact_id = :'doc'::uuid" doc="$spec_doc"
-readonly before_move="$answer"
+# The requirement this case moves, RQ, stands in the room's own fragment, its parent= naming K1: the
+# spec query takes every requirement of the issue's tree with its parent (docs' queryDefinitions),
+# while the spec's render prints only the blocks whose in_document names the spec (docs.RenderAt).
+# So the move of RQ from K1 under K2 moves the spec query's record and no text of the spec: the
+# parent= the move rewrites stands in the room's own fragment, whose version the route writes. The
+# version of the spec query the move causes is the drain's (docs.Service.DrainOwedQueries), a
+# version of the record moved alone, which stores the bytes of the version before it; no route
+# writes a version whose text did not change. The request on the spec query node names the version
+# it was opened at until a version of the spec moves it, so after the drain it names the drain's
+# version only where the drain moved it (finishRevision's docs.MoveApprovalAsk).
+rp_edit "$section" "alice writes RQ under K1 in the room's own fragment" "$tree_doc" "$(jq -cn --arg m ":::requirement{#rq parent=\"dispatch://$key/spec#b-k1\"}
+The requirement whose move the drain's version of the spec query records.
+:::" '[{op: "insert", after: "end", markdown: $m}]')"
+readonly rq="$(rp_block "$key" rq)"
+rp_wait_indexed "$section"
+rp_wait_drained "$section"
+rp_parents "$section" "$rq"
+[[ "$rp_parent" == "$k1" ]] || fail "$section" "RQ stands under K1, which its parent= names" "$rq stands under '$rp_parent', want $k1"
+with_vars "$section" "read the spec query node of $key and its newest version" \
+  "select a.ref_key || '|' || coalesce((select max(number) from artifact_versions where artifact_id = a.id), 0) from artifacts a where a.id = :'doc'::uuid" doc="$spec_doc"
+readonly query_node="artifact/${answer%%|*}" before_move="${answer#*|}"
 tree_person_send POST "/api/v1/artifacts/$spec_doc/approval-requests" '{}'
 [[ "$status" == 201 || "$status" == 200 ]] || fail "$section" "open an approval request on $key's spec query node" "it answered $status: $(body)"
 tree_field "$section" "open an approval request on $key's spec query node" .ask.id
 readonly request="$tree_value"
-rp_move "$section" person "$key" "$r4" "$k2"
+# rp_request_version SECTION: the version of the spec query the request names now, in answer: its
+# approval's entry for the spec (asks.approval's documents, migration
+# 20261102110100_asks_approval_documents), which a later version of the spec moves.
+rp_request_version() {
+  with_vars "$1" "read the version the request $request names of $query_node" \
+    "select coalesce((select d->>'version' from asks a, jsonb_array_elements(a.approval->'documents') d
+       where a.id = :'ask'::uuid and d->>'artifact_id' = :'doc' limit 1), '')" ask="$request" doc="$spec_doc"
+}
+rp_request_version "$section"
+[[ "$answer" == "$before_move" ]] ||
+  fail "$section" "the request $request on $query_node names its newest version when opened" "the request on $query_node names version '$answer' before the move, want $before_move"
+rp_move "$section" person "$key" "$rq" "$k2"
 rp_wait_drained "$section"
-# The version a request names now is its approval's version (asks.approval, migration
-# 20261102110100_asks_approval_documents), which a later settled version moves.
-with_vars "$section" "read the request and the spec's newest version" \
-  "select coalesce((select approval->>'version' from asks where id = :'ask'::uuid), '') || '|' || (select max(number) from artifact_versions where artifact_id = :'doc'::uuid)" \
-  ask="$request" doc="$spec_doc"
-IFS='|' read -r named newest <<<"$answer"
-((newest > before_move)) || fail "$section" "the drain writes a version of the spec query" "the spec query of $key stands at version $newest, $before_move before the move of $r4"
-[[ "$named" == "$newest" ]] ||
-  fail "$section" "the request on the spec query names the drained version" "the request on $spec_doc names version $named after the drain, want $newest"
-pass "$section" "the request $request names version $named, the newest, which the drain wrote after the move of $r4"
+rp_wait_indexed "$section"
+rp_wait_drained "$section"
+with_vars "$section" "read the newest version of $query_node and each version since $before_move whose bytes differ from it" \
+  "select coalesce(max(number), 0)::text || '|' || coalesce((select string_agg(v.number::text, ',' order by v.number) from artifact_versions v
+       where v.artifact_id = :'doc'::uuid and v.number > :'before'::int
+         and v.markdown is distinct from (select markdown from artifact_versions where artifact_id = :'doc'::uuid and number = :'before'::int)), '')
+     from artifact_versions where artifact_id = :'doc'::uuid" doc="$spec_doc" before="$before_move"
+drained="${answer%%|*}" rewritten="${answer#*|}"
+((drained > before_move)) ||
+  fail "$section" "the drain writes a version of the spec query" "the spec query $query_node of $key stands at version $drained, $before_move before the move of $rq"
+[[ -z "$rewritten" ]] ||
+  fail "$section" "the move of $rq writes no text of the spec, so the drain wrote its new version" "the versions $rewritten of $query_node store other bytes than version $before_move"
+pass "$section" "the drain wrote version $drained of $query_node after the move of $rq, with the bytes of version $before_move"
+rp_request_version "$section"
+[[ "$answer" == "$drained" ]] ||
+  fail "$section" "the request $request on the spec query names the version the drain wrote" "the request on $query_node names version $answer after the drain, want $drained"
+pass "$section" "the request $request on $query_node names version $answer after the drain, the version the drain wrote, $drained"
 
 # --- delete: preview and confirm a subtree removal --------------------------------------------------
 

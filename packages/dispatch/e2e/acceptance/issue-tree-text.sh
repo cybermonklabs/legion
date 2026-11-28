@@ -22,11 +22,12 @@
 # the first block and after the last move it reads no document_rooms row of the issue.
 #
 # A case that writes a version - rewritten, gained, dropped, list, order, callout, list paragraph -
-# has an approval request open on the document it writes before the move, and reads after it one
-# version more of that document, its artifact.version, the request naming the new version, the
-# version before still rendering the bytes it rendered before, and the move in both the new stored
-# version and the head render (GET /api/v1/artifacts/{id}/text), and the text_parent and text_rank
-# the version's index pass wrote:
+# opens an approval request on the document it writes right before the move, which names that
+# document's newest version, and reads after it one version more of that document, its
+# artifact.version, the request naming the new version, the version before still rendering the
+# bytes it rendered before, and the move in both the new stored version and the head render
+# (GET /api/v1/artifacts/{id}/text), and the text_parent and text_rank the version's index pass
+# wrote:
 #
 #   rewritten  a requirement whose parent= names K1 moves under K2, and its text names K2;
 #   gained     a check that names no parent, under its requirement by serves, moves under another
@@ -249,39 +250,51 @@ tt_request() {
   pass "$1" "opened the approval request $tt_ask on $2"
 }
 
-# tt_before SECTION DOC: what a move that writes a version of DOC is read against: the newest version
-# in tt_from and what the renderer answers for it in $work/before-render.
+# tt_before SECTION DOC: what a move that writes a version of DOC is read against. Right before the
+# move the agent opens an approval request on DOC (tt_request), as each move that writes a version
+# has one opened on the document it writes before it, and that request names the newest version of
+# DOC, which the move's version then moves it from: the request in tt_ask, the newest version in
+# tt_from, and what the renderer answers for it in $work/before-render.
 tt_before() {
   tt_quiet "$1"
+  tt_request "$1" "$2"
   tt_version "$1" "$2"
   tt_from="$tt_number"
+  tt_request_version "$1" "$2" "$tt_ask"
+  [[ "$answer" == "$tt_from" ]] ||
+    fail "$1" "the request $tt_ask on $2 names its newest version before the move" "the request $tt_ask on $2 names version '$answer' before the move, want $tt_from"
   tt_render "$1" "$2" "$tt_from" "$work/before-render"
 }
 
-# tt_after SECTION DOC ASK WHAT: WHAT, a move, wrote one version of DOC since tt_before: its
-# artifact.version stands, the request ASK names it, and the version before renders the bytes it
-# rendered before. The new version's stored markdown is left in $work/new.md and the head render in
-# $work/head.md.
+# tt_request_version SECTION DOC ASK: the version of DOC the request ASK names now, in answer.
+tt_request_version() {
+  with_vars "$1" "read the version the request $3 names of $2" \
+    "select coalesce((select d->>'version' from asks a, jsonb_array_elements(a.approval->'documents') d
+       where a.id = :'ask'::uuid and d->>'artifact_id' = :'doc' limit 1), '')" ask="$3" doc="$2"
+}
+
+# tt_after SECTION DOC WHAT: WHAT, a move, wrote one version of DOC since tt_before: its
+# artifact.version stands, the request tt_before opened names it, and the version before renders the
+# bytes it rendered before. The new version's stored markdown is left in $work/new.md and the head
+# render in $work/head.md.
 tt_after() {
   tt_quiet "$1"
   tt_version "$1" "$2"
   ((tt_number == tt_from + 1)) ||
-    fail "$1" "$4 writes one version of $2" "$4 left $2 at version $tt_number, want $((tt_from + 1))"
+    fail "$1" "$3 writes one version of $2" "$3 left $2 at version $tt_number, want $((tt_from + 1))"
   cp "$work/version.md" "$work/new.md"
   with_vars "$1" "read the artifact.version of version $tt_number of $2" \
     "select count(*) from events where type = 'artifact.version' and payload->>'artifact_id' = :'doc'
        and coalesce((payload->'version'->>'number')::int, (payload->>'version')::int) = :'n'::int" doc="$2" n="$tt_number"
   [[ "$answer" == 1 ]] || fail "$1" "version $tt_number of $2 appends its artifact.version" "it appended $answer artifact.version events, want 1"
-  with_vars "$1" "read the version the request $3 names of $2" \
-    "select coalesce((select d->>'version' from asks a, jsonb_array_elements(a.approval->'documents') d
-       where a.id = :'ask'::uuid and d->>'artifact_id' = :'doc' limit 1), '')" ask="$3" doc="$2"
+  tt_request_version "$1" "$2" "$tt_ask"
   [[ "$answer" == "$tt_number" ]] ||
-    fail "$1" "the request on $2 names the version $4 wrote" "the request $3 on $2 names version $answer after $4, want $tt_number"
+    fail "$1" "the request on $2 names the version $3 wrote" "the request $tt_ask on $2 names version $answer after $3, want $tt_number"
   tt_render "$1" "$2" "$tt_from" "$work/after-render"
   cmp -s "$work/before-render" "$work/after-render" ||
-    fail "$1" "version $tt_from of $2 still renders its original bytes" "after $4 it renders $(head -c 300 "$work/after-render")"
+    fail "$1" "version $tt_from of $2 still renders its original bytes" "after $3 it renders $(head -c 300 "$work/after-render")"
   tt_head "$1" "$2"
-  pass "$1" "$4 wrote version $tt_number of $2, with its artifact.version, the request naming it, and version $tt_from rendering as before"
+  pass "$1" "$3 wrote version $tt_number of $2, with its artifact.version, the request $tt_ask opened before it naming it, and version $tt_from rendering as before"
 }
 
 # tt_container FILE OPENER: the lines of the container block of FILE whose opening line, after its
@@ -545,10 +558,6 @@ tt_upload "$section" plan.md "$(tt_plan_markdown)"
 readonly plan_doc="$tree_value"
 pass "$section" "alice adds the plan of $key with its plan task"
 tt_quiet "$section"
-tt_request "$section" "$spec_doc"
-readonly spec_ask="$tt_ask"
-tt_request "$section" "$verification_doc"
-readonly verification_ask="$tt_ask"
 tt_typed "$section" "$spec_doc" tk1
 readonly tk1="$tt_node"
 tt_typed "$section" "$spec_doc" tk2
@@ -568,7 +577,7 @@ tree_node_far "$section" "$tr1" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$tr1" "$tk2"
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $tr1 under $tk2"
+tt_after "$section" "$spec_doc" "the move of $tr1 under $tk2"
 for file in "$work/new.md" "$work/head.md"; do
   line="$(tt_line "$file" "requirement{#tr1")"
   [[ "$line" != *"#b-tk1\""* ]] || fail "$section" "the text of $tr1 names its new parent" "the new spec version of $key still names the old parent $tk1: $line"
@@ -588,7 +597,7 @@ tt_version "$section" "$spec_doc"
 spec_version="$tt_number"
 tt_before "$section" "$verification_doc"
 tt_move "$section" person "$key" "$tc1" "$tr1"
-tt_after "$section" "$verification_doc" "$verification_ask" "the move of $tc1 under $tr1"
+tt_after "$section" "$verification_doc" "the move of $tc1 under $tr1"
 for file in "$work/new.md" "$work/head.md"; do
   line="$(tt_line "$file" "check{#tc1")"
   [[ "$line" == *"parent=\"dispatch://$key/spec#b-tr1\""* ]] ||
@@ -612,7 +621,7 @@ tree_node_far "$section" "$tr2" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$tr2" "$lens"
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $tr2 under $lens"
+tt_after "$section" "$spec_doc" "the move of $tr2 under $lens"
 for file in "$work/new.md" "$work/head.md"; do
   line="$(tt_line "$file" "requirement{#tr2")"
   [[ "$line" != *"parent="* ]] || fail "$section" "the text of $tr2 holds no parent=" "the new version of $key still names a parent for $tr2, which no attribute can name under a lens: $line"
@@ -645,7 +654,7 @@ tree_node_far "$section" "$second_item" text_parent
 text_before="$answer"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$second_item" "$first_item"
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $second_item under $first_item"
+tt_after "$section" "$spec_doc" "the move of $second_item under $first_item"
 for file in "$work/new.md" "$work/head.md"; do
   tt_depth "$file"
   [[ "$answer" == "$((depth_before + 1))" ]] ||
@@ -666,7 +675,7 @@ readonly second_paragraph="$tt_node"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$first_paragraph" "issue/$key" "$second_paragraph"
 expect "$section" "the move of $first_paragraph answers the sibling it now follows" "\"$second_paragraph\"" .after
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $first_paragraph after $second_paragraph"
+tt_after "$section" "$spec_doc" "the move of $first_paragraph after $second_paragraph"
 for file in "$work/new.md" "$work/head.md"; do
   text="$(<"$file")"
   [[ "$text" == *"The second paragraph of the order case"*"The first paragraph of the order case"* ]] ||
@@ -695,7 +704,7 @@ tt_typed "$section" "$spec_doc" tx
 readonly callout="$tt_node"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$callout_paragraph" "$callout"
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $callout_paragraph under $callout"
+tt_after "$section" "$spec_doc" "the move of $callout_paragraph under $callout"
 for file in "$work/new.md" "$work/head.md"; do
   last="$(tt_container "$file" "callout{#tx" | awk '{ previous = line; line = $0 } END { print previous }')"
   [[ "$last" == *"The paragraph that moves into the callout"* ]] ||
@@ -754,7 +763,7 @@ tt_block "$section" "$spec_doc" paragraph "The paragraph that moves into the lis
 readonly list_paragraph="$tt_node"
 tt_before "$section" "$spec_doc"
 tt_move "$section" person "$key" "$list_paragraph" "$list_item"
-tt_after "$section" "$spec_doc" "$spec_ask" "the move of $list_paragraph under $list_item"
+tt_after "$section" "$spec_doc" "the move of $list_paragraph under $list_item"
 for file in "$work/new.md" "$work/head.md"; do
   text="$(<"$file")"
   [[ "$text" == *"- The list item that holds one paragraph."$'\n\n'"  The paragraph that moves into the list item."* ]] ||
