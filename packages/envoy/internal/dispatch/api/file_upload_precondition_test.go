@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -73,7 +74,7 @@ var uploadOwners = []uploadOwner{
 		"project",
 		func(model.Issue) string { return "/api/v1/projects/TEST/artifacts" },
 		func(ctx context.Context, tx pgx.Tx, _ model.Issue) error {
-			return lockProjectArtifacts(ctx, tx, "TEST")
+			return docs.LockProjectArtifacts(ctx, tx, "TEST")
 		},
 	},
 	{

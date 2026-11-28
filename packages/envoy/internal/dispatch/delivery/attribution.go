@@ -73,17 +73,18 @@ import (
 // describe the stored head, the answer is the issue that the stored rows hold (attributedTerms).
 
 // AttributionRuleVersion is the rule the release before this one judges a pull request by and
-// stamps on pull_request_heads.attribution_rule as it reads GitHub: 6, its rule 2 with each merged
-// row's merge commit and merge time stored (it is 6, not 3, because cybermonklabs/legion#4230
-// numbers its own rules 3 to 5). This build judges no row by a number: the statement reads the
-// texts at each read (attributedTerms), and the column is that release's while it serves beside
-// this one. This build stamps it on one write alone, a read GitHub refused
-// (MarkPullRequestHeadChecked), as that release stamps one. So a merged row whose rule is below
-// this number is one that no read of a release that stores merge times has stamped, a row this
-// build inserted (rule 0) among them, and a results read that must order merges and finds such a
-// row with no merge time refreshes it (api's fillMergeTimes); a refused refresh stamps it, and no
-// later read asks GitHub for it again.
-const AttributionRuleVersion = 6
+// stamps on pull_request_heads.attribution_rule as it reads GitHub: 8, its rule 2 with each merged
+// row's merge commit and merge time stored (6) and with a tie between two candidates broken by
+// issue key in byte order, `collate "C"` (8), as this build's statement breaks one
+// (attributedTerms). It is 6, not 3, and 8, not 7, because cybermonklabs/legion#4230 numbers its
+// own rules 3 to 5 and 7. This build judges no row by a number: the statement reads the texts at
+// each read (attributedTerms), and the column is that release's while it serves beside this one.
+// This build stamps it on one write alone, a read GitHub refused (MarkPullRequestHeadChecked), as
+// that release stamps one. So a merged row whose rule is below this number is one that no read of
+// that release has stamped, a row this build inserted (rule 0) among them, and a results read that
+// must order merges and finds such a row with no merge time refreshes it (api's fillMergeTimes); a
+// refused refresh stamps it, and no later read asks GitHub for it again.
+const AttributionRuleVersion = 8
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string
@@ -504,6 +505,30 @@ func pullRequestIssuesStatement(schema string, renames refs.Renames) string {
 	where a.stored_repo is not null or a.timeline_repo is not null`
 }
 
+// resolvedCandidatesStatement is ResolvedCandidates' statement: for each key its caller gave
+// ($1 the repositories, $2 the numbers), matched under the renaming rule as PullRequestIssues
+// matches it, and whose texts are current, the statement's ranked candidates (attributedTerms'
+// candidates: the five sources, bounded at attributionCandidateBound, by rank, place and key in
+// byte order), each with what its holding is made of: its issue's project, the repository its own
+// chain names (repo.owned of refs.IssueRepoTerms, the walk the statement already makes over every
+// candidate key) under its canonical name, whether that is the pull request's repository as the
+// hold compares them (pr_held_as), whether the walk ran out of depth, and the source that named it.
+// A key whose texts are current and whose sources name nothing answers one row of no key, so a
+// reader can tell it from a key whose texts are not current, which answers no row.
+func resolvedCandidatesStatement(schema string, renames refs.Renames) string {
+	owned := refs.CanonicalRepoSQL(renames, "repo.owned")
+	return attributedTerms(schema, renames, pullRequestKeys) + `
+	select k.repo, k.number, c.key, i.project_key, coalesce(` + owned + `, ''),
+		coalesce(lower(` + owned + `) = c.pr_held_as, false), ` + refs.IssueRepoTooDeep + `, coalesce(c.source, '')
+	from (` + pullRequestKeys + `) k ` + renameJoin("key_rename", "k.repo") + `
+	join batch b on b.number = k.number and lower(` + canonicalOver("key_rename", "k.repo") + `) = lower(b.repo)
+	left join candidates c on c.pr_repo = b.repo and c.pr_number = b.number
+	left join issues i on i.key = c.key
+	` + refs.IssueRepoJoin + `
+	where b.texts_current
+	order by k.repo, k.number, c.rank, c.n, c.key collate "C"`
+}
+
 // attributionStatements are the texts of every reader of a pull request's issue, built for the
 // schema that holds the reading and the rename pairs of one Attributor.
 type attributionStatements struct {
@@ -519,6 +544,7 @@ type attributionStatements struct {
 	attributionCounts     string
 	factsLine             string
 	titleAndBranchAnswers string
+	resolvedCandidates    string
 }
 
 func attributionStatementsFor(schema string, renames refs.Renames) *attributionStatements {
@@ -536,6 +562,7 @@ func attributionStatementsFor(schema string, renames refs.Renames) *attributionS
 		attributionCounts:     attributedTerms(schema, renames, factsLineJudged) + attributionCountsSelect,
 		factsLine:             attributedTerms(schema, renames, factsLineJudged) + factsLineSelect,
 		titleAndBranchAnswers: attributedTermsOver(schema, renames, pullRequestKeys, titleAndBranchTexts) + titleAndBranchSelect,
+		resolvedCandidates:    resolvedCandidatesStatement(schema, renames),
 	}
 }
 
@@ -754,6 +781,81 @@ func (a *Attributor) pullRequestIssues(ctx context.Context, q Querier, keys []Pu
 		return nil, fmt.Errorf("read the issues of %d pull requests: %w", len(keys), err)
 	}
 	return answers, nil
+}
+
+// ResolvedCandidate is one issue a pull request's sources name, as ResolvedCandidates answers it:
+// the issue's key and its project ("" where no issue row holds the key); the repository the
+// issue's own chain names (repo.owned of refs.IssueRepoTerms: itself or the nearest ancestor that
+// names one), under its canonical name, "" where none does, so the issue resolves to its project's
+// default repository; whether that repository is the pull request's, as the statement's hold
+// compares them (both canonical, without case); whether the chain's walk ran out of depth, which
+// every reader of a resolved repository refuses; and the source that named it. The statement holds
+// a candidate of the source external_link, an issue whose link is the pull request's own URL, in
+// any repository (attributionHeldFor), so a reader holding the candidates to defaults of its own
+// holds such a candidate whatever its repository, as the statement does.
+type ResolvedCandidate struct {
+	Key, Project, Owned string
+	OwnedHere, TooDeep  bool
+	Source              string
+}
+
+// ResolvedCandidates reads through q, from the database alone, the ranked candidates of each of
+// pulls whose texts are current (resolvedCandidatesStatement), keyed by each key as the caller gave
+// it: every candidate the statement's five sources name, best first, with what its holding is made
+// of (ResolvedCandidate). They are the candidates the statement picks from at every read
+// (attributedTerms), read from the texts of the pull request's last read of GitHub
+// (pull_request_texts), so a change of the texts, a new link or a moved issue reaches them at the
+// next call. A pull request whose texts are current and whose sources name nothing has no
+// candidate. One whose texts are not current, or that no row holds, is not in the answer: the
+// statement's answer for it is then the issue its stored rows hold (PullRequestIssues), which a
+// reader reads there. The statement picks an issue against each project's current default
+// repository; ResolvedCandidates gives a caller what it needs to make the pick against a different
+// set of project defaults, writing nothing. One statement, whatever the number of pull requests:
+// one walk resolves every candidate's issue together. Like attributedIssues, it plans the
+// statement for the keys of each call (pgx.QueryExecModeCacheDescribe).
+func (a *Attributor) ResolvedCandidates(ctx context.Context, q Querier, pulls []PullRequestKey) (map[PullRequestKey][]ResolvedCandidate, error) {
+	resolved := map[PullRequestKey][]ResolvedCandidate{}
+	if len(pulls) == 0 {
+		return resolved, nil
+	}
+	statements, err := a.attribution()
+	if err != nil {
+		return nil, err
+	}
+	repos, numbers := make([]string, 0, len(pulls)), make([]int, 0, len(pulls))
+	named := make(map[PullRequestKey]bool, len(pulls))
+	for _, pull := range pulls {
+		if !named[pull] {
+			named[pull] = true
+			repos, numbers = append(repos, pull.Repo), append(numbers, pull.Number)
+		}
+	}
+	rows, err := q.Query(ctx, statements.resolvedCandidates, pgx.QueryExecModeCacheDescribe, repos, numbers)
+	if err != nil {
+		return nil, fmt.Errorf("read the candidates of %d pull requests: %w", len(repos), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var pull PullRequestKey
+		var key, project *string
+		var candidate ResolvedCandidate
+		if err := rows.Scan(&pull.Repo, &pull.Number, &key, &project, &candidate.Owned, &candidate.OwnedHere, &candidate.TooDeep, &candidate.Source); err != nil {
+			return nil, fmt.Errorf("read the candidates of %d pull requests: %w", len(repos), err)
+		}
+		if key == nil {
+			resolved[pull] = nil
+			continue
+		}
+		candidate.Key = *key
+		if project != nil {
+			candidate.Project = *project
+		}
+		resolved[pull] = append(resolved[pull], candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the candidates of %d pull requests: %w", len(repos), err)
+	}
+	return resolved, nil
 }
 
 // PullRequestIssue is the issue of one timeline row as its readers show it: Key is the

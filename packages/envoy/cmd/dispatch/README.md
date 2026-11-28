@@ -1934,6 +1934,7 @@ Each read runs in a read-only transaction of its own, under three bounds:
   At that deadline pgx closes the connection and asks the server to cancel the statement.
 
 The two reads run one after the other before the server listens, so they delay the boot by at most 20 s in all; a lock on a table alone delays it by about 5 s for that table.
+`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT` replaces the 5 s lock timeout for an end-to-end test with one of at least 1 ms (the reads send it to Postgres in whole milliseconds, and Postgres reads a `lock_timeout` of `0ms` as none), the statement timeout staying 1 s past it and the client deadline 4 s past that, and a deployment never sets it.
 The read takes ACCESS SHARE on its table and holds it until its transaction rolls back or its connection ends, normally milliseconds after the read; no statement timeout bounds how long it holds it.
 Row writes go on beside it, but a `TRUNCATE` or another statement that wants ACCESS EXCLUSIVE waits behind it for that long.
 A read that fails, a timeout included, gives `unknown` and the error in `search_text_versions_rows_error` or `search_text_versions_fill_rows_error`, and the boot goes on.
@@ -3263,6 +3264,12 @@ The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:n
 A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
 
+Migration `20261117100023_delivery_run_jobs_named` builds `delivery_run_jobs_named` on `delivery_run_jobs (repo, name, run_id)` with `include (started_at, completed_at, conclusion, apply_step, apply_step_conclusion)`.
+`delivery.ListRunJobsForRuns` reads deploy jobs by name through this index in an index-only scan, which skips heap pages that the visibility map marks all-visible.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), so ordinary reads and writes of jobs can continue.
+If a failed build leaves an INVALID index of that name on `delivery_run_jobs`, the runner drops it with `DROP INDEX CONCURRENTLY` before it builds the index again on the next attempt or boot.
+Its census answers `0`: this non-unique index refuses and rewrites no row.
+
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
 with this table it applies what changed and counts a project again only where no pass of this build has counted it.
@@ -3444,8 +3451,8 @@ Stored merges sort by `merged_at`, newest first, then number (`delivery.Attribut
 The results reader fills missing times before choosing a merge.
 If a needed time remains unknown, the merged set stays unordered.
 `event_at` records an attribution update, not a merge time.
-`delivery.AttributionRuleVersion` is 6, so reconciliation offers each stored merged row once more.
-Each pass offers at most `delivery.RejudgedHeadsPerPass` rows, whose refresh reads both columns from GitHub.
+`delivery.AttributionRuleVersion` is 8, the rule the release before this one stamps on the rows it reads: rule 6 stores each merged row's merge commit and merge time, and rule 8 breaks a tie between candidates by issue key in byte order, as this build's statement does.
+This build judges no row by that number; a results read that must order merges and finds a merged row stamped below it with no merge time reads that row from GitHub once (api's `fillMergeTimes`).
 `pull_request_heads_merged_head_ref` indexes `(lower(repo), head_ref)` for merged rows.
 It finds merged pull requests whose head was an integration branch, so the reader can follow its recorded landing.
 `commit_holds` records whether a commit holds a merge, keyed by lowercased `(repo, commit_sha, merge_sha)` (`delivery.Branches.CommitHolds`).

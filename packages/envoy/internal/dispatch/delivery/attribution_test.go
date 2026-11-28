@@ -311,6 +311,93 @@ func TestAttributionTakesALinkOverTheTitle(t *testing.T) {
 	}
 }
 
+// TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn: two issues whose
+// links both name one pull request are two candidates of one source and one place, and they rank
+// by key. A URL holds one link (issue_external_links_url), so the two links spell it two ways, as
+// GitHub spells the repository (upper case here) and lowercased, as Dispatch stores a GitHub link,
+// and the link source compares both lowercased. So the statement (attributedTerms) answers every
+// reader alike, the pull request's own answer, the list of an issue's heads and the full ranked
+// list (ResolvedCandidates), for two pull requests whose links were stored in opposite orders, as
+// two databases holding the same links may hold them: the issue whose key sorts first in byte order
+// credits both, and ranks first.
+func TestTwoIssuesLinkingOnePullRequestRankByKeyWhateverOrderTheirLinksWereStoredIn(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-251", "ACME-252")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 250, branch: "work/none", title: "no key", texts: readTexts("")},
+		statementRow{number: 255, branch: "work/none", title: "no key", texts: readTexts("")})
+	link := func(repo string, number int) string {
+		return "https://github.com/" + repo + "/pull/" + strconv.Itoa(number)
+	}
+	upper := strings.ToUpper(statementRepo)
+	// #250's links are stored ACME-252's first, #255's ACME-251's first.
+	changeIssueLink(t, ctx, pool, "ACME-252", link(statementRepo, 250), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-251", link(upper, 250), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-251", link(statementRepo, 255), "url", true)
+	changeIssueLink(t, ctx, pool, "ACME-252", link(upper, 255), "url", true)
+	for _, number := range []int{250, 255} {
+		wantAnswer(t, unrenamed(), ctx, pool, statementRepo, number, "ACME-251 from external_link")
+	}
+	wantListed(t, unrenamed(), ctx, pool, "ACME-251", "#255", "#250")
+	wantListed(t, unrenamed(), ctx, pool, "ACME-252")
+	pulls := []PullRequestKey{{Repo: statementRepo, Number: 250}, {Repo: statementRepo, Number: 255}}
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, pulls)
+	if err != nil {
+		t.Fatalf("read the candidates: %v", err)
+	}
+	for _, pull := range pulls {
+		var named []string
+		for _, candidate := range resolved[pull] {
+			named = append(named, candidate.Key+" from "+candidate.Source)
+		}
+		if want := []string{"ACME-251 from external_link", "ACME-252 from external_link"}; !slices.Equal(named, want) {
+			t.Errorf("#%d's candidates read %v, want %v", pull.Number, named, want)
+		}
+	}
+}
+
+// TestResolvedCandidatesReadTheTextsNotTheInputsAnOlderReleaseStored: ResolvedCandidates answers
+// from the texts of a pull request's last read of GitHub, as the statement does, and never from
+// the attribution inputs a release before this one stored on its timeline row, which no writer of
+// this build updates. #260's texts name ACME-261 in its title, and its timeline row holds inputs
+// naming ACME-262, as an older read left them: a reader of those columns answers ACME-262. #265's
+// texts describe another head, so its candidates are not read: it is absent, and its issue is the
+// one its stored rows hold (PullRequestIssues). #266 has no row at all and is absent too. #267's
+// texts are current and name nothing, so it is present with no candidate.
+func TestResolvedCandidatesReadTheTextsNotTheInputsAnOlderReleaseStored(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	statementIssues(t, ctx, pool, "ACME-261", "ACME-262")
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 260, branch: "work/none", title: "ACME-261: work", texts: readTexts("")},
+		statementRow{number: 267, branch: "work/none", title: "no key", texts: readTexts("")})
+	storeChangedPullRequests(t, ctx, pool, statementRepo, nil,
+		statementRow{number: 265, branch: "work/none", title: "ACME-261: work",
+			texts: &statementTexts{body: "", messages: []string{}, headSHA: strings.Repeat("e", 40)}},
+		statementRow{number: 268, branch: "work/none", title: "no key"})
+	if _, err := pool.Exec(ctx, `
+		update delivery_pull_requests set attribution_title_keys = array['ACME-262'], attribution_cited_issues = '{}',
+			attribution_branch_keys = '{}', attribution_commit_keys = '{}'
+		where repo = $1 and number in (260, 265)`, statementRepo); err != nil {
+		t.Fatalf("store the inputs an older release read: %v", err)
+	}
+	at := func(number int) PullRequestKey { return PullRequestKey{Repo: statementRepo, Number: number} }
+	resolved, err := unrenamed().ResolvedCandidates(ctx, pool, []PullRequestKey{at(260), at(265), at(266), at(267)})
+	if err != nil {
+		t.Fatalf("read the candidates: %v", err)
+	}
+	if want := []ResolvedCandidate{{Key: "ACME-261", Project: "ACME", Source: string(sourceTitleBody)}}; !slices.Equal(resolved[at(260)], want) {
+		t.Errorf("#260's candidates read %+v, want %+v: the texts' key, not the stored input's", resolved[at(260)], want)
+	}
+	for _, number := range []int{265, 266} {
+		if candidates, found := resolved[at(number)]; found {
+			t.Errorf("#%d is in the answer with %+v, want it absent", number, candidates)
+		}
+	}
+	if candidates, found := resolved[at(267)]; !found || len(candidates) != 0 {
+		t.Errorf("#267 reads %+v (in the answer: %t), want it present with no candidate", candidates, found)
+	}
+}
+
 // TestAttributionRefusesAKeyDispatchDoesNotHave: a key-shaped string in every source that names
 // no stored issue credits nothing.
 func TestAttributionRefusesAKeyDispatchDoesNotHave(t *testing.T) {

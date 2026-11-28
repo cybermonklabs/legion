@@ -286,7 +286,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "docs/new_document.go#QueueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
