@@ -36,6 +36,8 @@ It takes `store.SessionTitlesFillBatch` (1,000) sessions in each transaction, un
 The partial index `issues_open_p0` on `issues (project_key) where priority = 0 and status <> 'done'` (`20261117100010_issues_unowned_p0`, built `concurrently`) holds the open P0 issues alone.
 `delivery.ListUnownedP0`, `delivery.CountUnownedP0` and `delivery.OpenP0Keys` repeat its predicate, so each reads `issues` through that index and no other row of `issues`.
 
+The index `delivery_run_jobs_named` on `delivery_run_jobs (repo, name, run_id)` includes the job's other columns so `delivery.ListRunJobsForRuns` can read a deploy run's named jobs in an index-only scan (`20261117100023_delivery_run_jobs_named`, built `concurrently`).
+
 It holds the keyword table of each past version of the searchable text, in two tables with no foreign key (`20261120021308_search_text_versions`).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask; a new version is a new row.
 `search_text_versions_fill` holds the one cursor row of the keyword fill: every event at or below its `event_id` has its rows.

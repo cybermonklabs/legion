@@ -3086,6 +3086,12 @@ The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:n
 A failed build leaves an INVALID index of that name, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot.
 Its census answers `0`: an ordinary index refuses and rewrites no row.
 
+Migration `20261117100023_delivery_run_jobs_named` builds `delivery_run_jobs_named` on `delivery_run_jobs (repo, name, run_id)` with `include (started_at, completed_at, conclusion, apply_step, apply_step_conclusion)`.
+`delivery.ListRunJobsForRuns` reads deploy jobs by name through this index in an index-only scan, which skips heap pages that the visibility map marks all-visible.
+The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), so ordinary reads and writes of jobs can continue.
+If a failed build leaves an INVALID index of that name on `delivery_run_jobs`, the runner drops it with `DROP INDEX CONCURRENTLY` before it builds the index again on the next attempt or boot.
+Its census answers `0`: this non-unique index refuses and rewrites no row.
+
 Migration `20261101182508_search_term_queue` creates `search_term_queue`, the items whose search text has changed since each project's word counts were last written.
 The related-terms refresh counted every issue, document, comment, ask and message of every project every ten minutes, 1,882 s of database time in the 24 hours to 2026-10-30;
 with this table it applies what changed and counts a project again only where no pass of this build has counted it.
