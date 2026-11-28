@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -59,6 +60,7 @@ func TestAClosedAddressRefusesEveryDialWhileTheProcessStartsChildren(t *testing.
 				closeOne := closer.start(t)
 				stop := make(chan struct{})
 				var starting sync.WaitGroup
+				var started atomic.Int64
 				if children {
 					for range 4 {
 						starting.Add(1)
@@ -70,7 +72,9 @@ func TestAClosedAddressRefusesEveryDialWhileTheProcessStartsChildren(t *testing.
 									return
 								default:
 								}
-								_ = exec.Command("true").Run()
+								if exec.Command("true").Run() == nil {
+									started.Add(1)
+								}
 							}
 						}()
 					}
@@ -96,6 +100,9 @@ func TestAClosedAddressRefusesEveryDialWhileTheProcessStartsChildren(t *testing.
 						t.Fatalf("round %d: a dial of the closed address %s: %v, want connection refused", round, address, err)
 					}
 					reopen()
+				}
+				if children && started.Load() == 0 {
+					t.Errorf("no child process started beside the closes, so this row checked nothing")
 				}
 				if answered > 0 {
 					t.Errorf("%d of %d dials of a closed address were answered (connected or reset), want every one refused", answered, closer.rounds)
