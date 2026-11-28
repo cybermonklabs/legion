@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -509,6 +510,73 @@ func TestTheRenamePassAndARunsJobsWriteNeverDeadlock(t *testing.T) {
 		if err != nil || len(stored) != 2 || stored[0].CompletedAt == nil || stored[1].CompletedAt == nil {
 			t.Fatalf("jobs under the new name = %+v, %v; want both completed jobs", stored, err)
 		}
+	}
+}
+
+// TestAJobsWriteOfARunThatIsGoneAnswersAnError: the rename pass holds a run's row under the
+// repository's old name, and a jobs write of that run under the old name waits on that row. The
+// pass moves the run to the new name and commits first, so the write finds no row of the run: it
+// answers ErrRunGone, naming the run and the repository, and stores no job under either name.
+func TestAJobsWriteOfARunThatIsGoneAnswersAnError(t *testing.T) {
+	t.Parallel()
+	shared, ctx := deliveryTestPool(t)
+	pool := wideTestPool(t, shared)
+	const repo, renamed, runID = "acme/widgets", "acme/renamed", 817
+	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
+	if err := UpsertRun(ctx, pool, changeTestRun(runID, DeliveryRunKindDeploy, started, started)); err != nil {
+		t.Fatalf("UpsertRun: %v", err)
+	}
+	finished, success := started.Add(time.Minute), DeliveryJobConclusionSuccess
+	jobs := []DeliveryRunJob{
+		{Repo: repo, RunID: runID, Name: "build", StartedAt: &started, CompletedAt: &finished, Conclusion: &success},
+		{Repo: repo, RunID: runID, Name: "test", StartedAt: &started, CompletedAt: &finished, Conclusion: &success},
+	}
+	// Hold the pass at its copy of the run under the new name: by then its runs line has locked
+	// the run's row under the old name, and it deletes that row before it commits.
+	for _, sql := range []string{
+		`create function hold_rename_test_copy() returns trigger language plpgsql as $$
+		begin perform pg_advisory_xact_lock(817); return new; end $$`,
+		`create trigger hold_rename_test_copy before insert on delivery_runs for each row
+		when (new.repo = 'acme/renamed')
+		execute function hold_rename_test_copy()`,
+	} {
+		if _, err := pool.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer gate.Rollback(ctx)
+	if _, err := gate.Exec(ctx, `select pg_advisory_xact_lock(817)`); err != nil {
+		t.Fatal(err)
+	}
+	pass := goTimed(func() error {
+		return store.RewriteRenamedRepositories(ctx, pool, []store.RepoRename{{From: repo, To: renamed}}).Err()
+	})
+	storetest.WaitForLockWaiters(t, gate, 1)
+	write := goTimed(func() error { return UpsertRunJobs(ctx, pool, repo, runID, jobs, true) })
+	// The jobs write now waits on the run's row, which the held pass locked first.
+	storetest.WaitForLockWaiters(t, gate, 2)
+	if err := gate.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	requireNotDeadlocked(t, "the rename pass", testwait.Receive(t, "the rename pass to finish", pass).err)
+	err = testwait.Receive(t, "the old-name jobs write to finish", write).err
+	if !errors.Is(err, ErrRunGone) {
+		t.Errorf("the jobs write of a run the pass moved first answered %v; want ErrRunGone", err)
+	} else if message := err.Error(); !strings.Contains(message, repo) || !strings.Contains(message, fmt.Sprint(runID)) {
+		t.Errorf("the jobs write's error %q does not name both the run %d and the repository %s", message, runID, repo)
+	}
+	for _, name := range []string{repo, renamed} {
+		stored, err := ListRunJobs(ctx, pool, name, runID)
+		if err != nil || len(stored) != 0 {
+			t.Errorf("jobs of run %d under %s after the write = %+v, %v; want none", runID, name, stored, err)
+		}
+	}
+	if moved, err := RunTracked(ctx, pool, renamed, runID); err != nil || !moved {
+		t.Errorf("run %d stored under %s after the pass = %v, %v; want true", runID, renamed, moved, err)
 	}
 }
 

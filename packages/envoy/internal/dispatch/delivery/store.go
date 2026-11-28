@@ -692,9 +692,16 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 	return job, nil
 }
 
+// ErrRunGone is UpsertRunJobs' answer when no delivery_runs row has the run's repository and id,
+// as when the repository rename pass moves the run to the new name and commits while the write
+// waits on the run's row. The write then stores nothing, so its caller reports the listing as
+// lost rather than stored.
+var ErrRunGone = errors.New("the run is not stored")
+
 // UpsertRunJobs writes every job of one run, keyed on (repo, run_id, name): a job's own identity
 // is its name, since GitHub does not number jobs and a run never repeats one within the attempt
-// intake and reconcile keep. The run row itself must already exist (delivery_runs' foreign key).
+// intake and reconcile keep. The run's row must already be stored: where no delivery_runs row has
+// repo and runID, it writes nothing and answers ErrRunGone.
 // complete is whether this listing came from GitHub after every listed job finished: until a
 // complete listing lands, the backfill keeps listing the run's jobs (ListRunIDsSkippingJobs). A
 // complete listing with a running job is a caller bug and is refused before anything is written.
@@ -706,10 +713,11 @@ func ScanJob(row pgx.Row) (DeliveryRunJob, error) {
 // clears unfetchable_at/unfetchable_reason.
 //
 // One statement locks the run for no key update, then upserts its jobs in name order, then takes
-// the change log's advisory lock in its triggers (lockChangesStatement). The insert reads the
-// locked run so it cannot reach a job row first. Taking the run first keeps the order of the
-// previous release and of the repository rename pass. Sorting by name also keeps this write
-// from cycling with a transaction that locks job rows alone.
+// the change log's advisory lock in its triggers (lockChangesStatement). Its primary query, which
+// answers whether it found the run, reads the locked run, and Postgres runs it before the writes
+// of its WITH list. The insert reads the locked run too, so it cannot reach a job row first.
+// Taking the run first keeps the order of the previous release and of the repository rename pass.
+// Sorting by name also keeps this write from cycling with a transaction that locks job rows alone.
 func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64, jobs []DeliveryRunJob, complete bool) error {
 	if complete {
 		for _, job := range jobs {
@@ -761,7 +769,8 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 	}
 	// An empty listing (GitHub has not created a running run's jobs yet) writes the run row alone:
 	// its arrays are empty, and the jobs' upsert inserts nothing.
-	if _, err := pool.Exec(ctx, `
+	var found bool
+	if err := pool.QueryRow(ctx, `
 		with locked as materialized (
 			select repo, run_id from delivery_runs where repo = $1 and run_id = $2 for no key update
 		), run as (
@@ -769,21 +778,26 @@ func UpsertRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int
 			set jobs_unfetchable_at = null, jobs_unfetchable_reason = null, jobs_complete = r.jobs_complete or $9
 			from locked
 			where r.repo = locked.repo and r.run_id = locked.run_id
+		), job_rows as (
+			insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+			select locked.repo, locked.run_id, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
+			from locked cross join unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
+				as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
+			order by job.name collate "C"
+			on conflict (repo, run_id, name) do update set
+				started_at = excluded.started_at,
+				completed_at = excluded.completed_at,
+				conclusion = excluded.conclusion,
+				apply_step = excluded.apply_step,
+				apply_step_conclusion = excluded.apply_step_conclusion
+			where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
 		)
-		insert into delivery_run_jobs (repo, run_id, name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-		select locked.repo, locked.run_id, job.name, job.started_at, job.completed_at, job.conclusion, job.apply_step, job.apply_step_conclusion
-		from locked cross join unnest($3::text[], $4::timestamptz[], $5::timestamptz[], $6::text[], $7::text[], $8::text[])
-			as job (name, started_at, completed_at, conclusion, apply_step, apply_step_conclusion)
-		order by job.name collate "C"
-		on conflict (repo, run_id, name) do update set
-			started_at = excluded.started_at,
-			completed_at = excluded.completed_at,
-			conclusion = excluded.conclusion,
-			apply_step = excluded.apply_step,
-			apply_step_conclusion = excluded.apply_step_conclusion
-		where delivery_run_jobs.completed_at is null or excluded.completed_at is not null
-	`, repo, runID, names, started, completed, conclusions, steps, stepConclusions, complete); err != nil {
+		select exists (select 1 from locked)
+	`, repo, runID, names, started, completed, conclusions, steps, stepConclusions, complete).Scan(&found); err != nil {
 		return fmt.Errorf("write the jobs of run %d: %w", runID, err)
+	}
+	if !found {
+		return fmt.Errorf("write the jobs of run %d of %s: %w", runID, repo, ErrRunGone)
 	}
 	return nil
 }
