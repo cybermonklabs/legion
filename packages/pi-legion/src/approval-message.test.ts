@@ -198,12 +198,14 @@ interface Request {
 /** The model a fixture's request ran on, unless a row names another. */
 type Model = NonNullable<SessionContext["model"]>;
 
-/** How a row hands the module one recorded request: the messages edited first (`edit`), on a
- *  model the context names (`model`), or with the live compaction state the roster reports in
- *  place of the one recorded (`live`). */
+/** How a row hands the module one recorded request: the messages edited first (`edit`), going to
+ *  a model (`model`), with the live model the context names where it is another (`liveModel`: a
+ *  fallback return made in the `context` hook before this handler ran), or with the live
+ *  compaction state the roster reports in place of the one recorded (`live`). */
 interface RequestOptions {
   readonly edit?: (messages: unknown[]) => unknown[];
   readonly model?: Model;
+  readonly liveModel?: Model;
   readonly live?: Readonly<Record<string, unknown>>;
 }
 
@@ -221,8 +223,10 @@ interface Pane {
   /** The fixture's `context` event at `index`: its messages handed to the module at a clock just
    *  past the newest of them. */
   readonly request: (name: string, index: number, options?: RequestOptions) => Promise<Request>;
-  /** The fixture's `message_end` at `index`, on the model `model` where a row names one. */
-  readonly end: (name: string, index: number, model?: Model) => void;
+  /** The fixture's `message_end` at `index`: where a row names `model`, an answer of that model,
+   *  which the message names, with the live model on `liveModel` where a row names it and on
+   *  `model` otherwise. */
+  readonly end: (name: string, index: number, model?: Model, liveModel?: Model) => void;
   /** The fixture's `session_compact` at `index`. */
   readonly compact: (name: string, index: number) => void;
   /** The module's `before_provider_request` on `body`, as the fixture's request at `index` made
@@ -235,7 +239,8 @@ interface Pane {
     model: Model,
     agent?: { readonly kind: "main" | "sub"; readonly id: string }
   ) => unknown;
-  /** A saved answer `message` of the model `model`: the module's `message_end`. */
+  /** A saved answer `message` of the model `model`, which the message names, with the live model
+   *  on it too: the module's `message_end`. */
   readonly answer: (message: unknown, model: Model) => void;
 }
 
@@ -362,14 +367,20 @@ function pane(options: {
           String(item.session),
           item.agent,
           list(item.branch, "the branch"),
-          requestOptions.model
-        )
+          requestOptions.liveModel ?? requestOptions.model
+        ),
+        requestOptions.model
       );
       return { messages, original, changed };
     },
-    end: (name, index, model) => {
+    end: (name, index, model, liveModel = model) => {
       const item = recorded(name, index, "message_end");
-      approval.messageEnd(item.message, contextOf(String(item.session), item.agent, [], model));
+      // Oh My Pi's `message_end` names the model that wrote the answer.
+      const message =
+        model === undefined
+          ? item.message
+          : { ...record(item.message, "the answer"), provider: model.provider, model: model.id };
+      approval.messageEnd(message, contextOf(String(item.session), item.agent, [], liveModel));
     },
     compact: (name, index) => {
       const item = recorded(name, index, "session_compact");
@@ -393,7 +404,10 @@ function pane(options: {
         contextOf(options.session, agent, [], model)
       ),
     answer: (message, model) =>
-      approval.messageEnd(message, contextOf(options.session, MAIN, [], model)),
+      approval.messageEnd(
+        { ...record(message, "the answer"), provider: model.provider, model: model.id },
+        contextOf(options.session, MAIN, [], model)
+      ),
   };
 }
 
@@ -1357,6 +1371,53 @@ test("a placement whose request a model that takes no system message inside the 
   expect(isApprovalMessage(back.messages.at(-1))).toBe(true);
   expect(back.messages.slice(0, -1)).toEqual([...back.original]);
   expect(p.records()).toEqual([]);
+});
+
+// The fallback's return made in the `context` hook (src/model-fallback.ts) moves the live model to
+// claude-opus-5-5 before this handler runs, while Oh My Pi sends the request to gemini-4-neon,
+// which it read before it ran the hook; gemini's answer comes back with the live model still on
+// claude-opus-5-5.
+test("after a fallback return made in the context hook, the request to gemini-4-neon places nothing, its answer is marked and records nothing, and the next request to claude-opus-5-5 has the message last", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+
+  const request = await p.request(name, 4, { model: gemini.model, liveModel: OPUS });
+  expect(occurrences(p.send(gemini.payload, gemini.model), GOLDEN_TEXT)).toBe(1);
+  p.end(name, 8, gemini.model, OPUS);
+
+  expect(p.records()).toEqual([]);
+  expect(p.marks()).toEqual([
+    { version: 24, model: "model-gateway/gemini-4-neon", answer: answerKey(name, 8) },
+  ]);
+  expect(request.changed).toBe(false);
+  expect(request.messages).toEqual([...request.original]);
+  const back = await p.request(name, 13, { model: OPUS });
+  expect(approvalsIn(back.messages)).toHaveLength(1);
+  expect(isApprovalMessage(back.messages.at(-1))).toBe(true);
+  expect(back.messages.slice(0, -1)).toEqual([...back.original]);
+  expect(p.records()).toEqual([]);
+});
+
+// Oh My Pi's own fallback can send a provider request to another model than the one its `context`
+// handler saw (`SessionContext.model`). Once gemini-4-neon's mark of v24 is written, a request to
+// it carries nothing to mark, so only the placement's being given up keeps its answer unrecorded.
+test("a placement made for claude-opus-5-5 whose provider request goes to gemini-4-neon is given up there, and gemini's answer records nothing once the version is marked on it", async () => {
+  const name = "task-prompt";
+  const gemini = topLevelFixture("gemini-4-neon");
+  const p = pane({ session: sessionOf(name), route: { answer: GOLDEN } });
+  await p.start();
+  expect(p.send(gemini.payload, gemini.model)).toBeDefined();
+  p.answer(assistantAnswer(1), gemini.model);
+  expect(p.marks()).toHaveLength(1);
+
+  expect(isApprovalMessage((await p.request(name, 4, { model: OPUS })).messages.at(-1))).toBe(true);
+  expect(p.send(gemini.payload, gemini.model)).toBeDefined();
+  p.end(name, 8, gemini.model);
+
+  expect(p.records()).toEqual([]);
+  expect(p.marks()).toHaveLength(1);
 });
 
 test("S29: the answer of gemini-4-neon to its first request with v24's text is marked once for the version and model, and the mark rebuilds nothing", async () => {

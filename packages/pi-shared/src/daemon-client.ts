@@ -173,11 +173,12 @@ export interface LegionDaemonClient {
   readonly releaseRecords: (
     input: z.input<typeof LegionReleaseRecordsRequest>
   ) => Promise<z.output<typeof LegionReleaseRecordsResponse>>;
-  /** Whether a person's approval of a spec stands for the claim (contract 290): the document, the
-   * version approved and the approval message the plugin places as it is, or `approval: null`. It
-   * is authenticated by the claim, as `activity` is. `signal` aborts the request, its answer's
-   * body included: pi-legion reads it before a model call under a deadline of its own, and a
-   * daemon that does not answer in time is left no open request. */
+  /** Whether a person's approval of a spec stands for the claim (daemon API entry
+   * `20261126175637`): the document, the version approved and the approval message the plugin
+   * places as it is, or `approval: null`. It is authenticated by the claim, as `activity` is.
+   * `signal` aborts the request, its answer's body included: pi-legion reads it before a model
+   * call under a deadline of its own, and a daemon that does not answer in time is left no open
+   * request. */
   readonly approval: (
     input: z.input<typeof LegionClaimApprovalRequest>,
     options?: { readonly signal?: AbortSignal }

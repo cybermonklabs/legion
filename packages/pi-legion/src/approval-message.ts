@@ -1,4 +1,5 @@
 import { messageFor } from "@legion/envoy-client/errors";
+import { modelReference } from "@legion/pi-shared/agent-stream";
 import { APPROVAL_MESSAGE_TYPE, isApprovalMessage } from "@legion/pi-shared/approval-message";
 import {
   type Conversion,
@@ -48,9 +49,14 @@ import type {
  *   those rebuilds the copies whose answers it holds, so a remote compaction's two conversions
  *   count the same messages before its cut.
  * - **A model that takes no system message inside the conversation** (its
- *   `compat.supportsMidConversationSystem` is not set, which each handler reads from `ctx.model`:
- *   in `before_provider_request`, the model of that provider request): the `context` handler
- *   places no message and rebuilds no copy. The `before_provider_request` handler takes out any
+ *   `compat.supportsMidConversationSystem` is not set), read from the request's own model, never
+ *   the live one: a fallback return made in the `context` hook moves `ctx.model` to the next
+ *   request's model at once. The `context` handler decides on the model its caller read before
+ *   that return, the one Oh My Pi read for the request before it ran the `context` handlers;
+ *   `before_provider_request` on `ctx.model`, which is that provider request's; `message_end` on
+ *   the model the answer names. On such a model the `context` handler places no message and
+ *   rebuilds no copy, and a placement still waiting for its answer is given up there and in
+ *   `before_provider_request`, for no answer of such a model records it. That handler takes out any
  *   message whose text equals a text this plugin placed or stands for (a request built before a
  *   fallback switch still holds a copy), then puts the standing version's text at the end of the
  *   top-level system prompt: a new last text block of an Anthropic request's `system`; `\n\n` and
@@ -61,9 +67,10 @@ import type {
  *   subagent's does not. A server-side compaction request reaches no payload hook and holds none:
  *   the next request of the conversation does. A placement is made and recorded only on a model
  *   that takes one, and a return to it rebuilds each earlier copy at its place.
- * - **The mark.** When such a model's answer to the first request that carried a version's text is
- *   saved, one entry `APPROVAL_TOP_LEVEL_ENTRY` records the version, the model and the answer's
- *   key, once for each version and model. It rebuilds nothing.
+ * - **The mark.** When the answer to the first request that carried a version's text to such a
+ *   model is saved, and names that model as the one that wrote it, one entry
+ *   `APPROVAL_TOP_LEVEL_ENTRY` records the version, the model and the answer's key, once for each
+ *   version and model. It rebuilds nothing.
  *
  * The route is read at `session_start`, and again before the next request of the loop after an
  * entry that is not the model's or a tool's entered the session (a daemon task, an Envoy card, a
@@ -129,13 +136,19 @@ export interface ApprovalMessage {
   readonly sessionStart: (context: SessionContext) => Promise<void>;
   /** A `context` handler's work on `messages`, the array the host or the handler before handed
    *  on, edited in place: every copy rebuilt, and a new placement where one is due, on a model
-   *  that takes a system message inside the conversation; none of that on any other model. True
-   *  when it changed the array. */
-  readonly context: (messages: unknown[], context: SessionContext) => Promise<boolean>;
-  /** `message_end`: records a new placement once its answer is saved, marks a model's answer that
-   *  carried the text at the end of a top-level system prompt (`APPROVAL_TOP_LEVEL_ENTRY`), and
-   *  marks the route's answer stale when an entry that is not the model's or a tool's entered the
-   *  session. */
+   *  that takes a system message inside the conversation; none of that on any other model. It
+   *  decides on `model`, the request's own model, which Oh My Pi read before it ran the `context`
+   *  handlers: `context.model` is the live model, which a switch made since (a fallback return in
+   *  the same hook) has moved to the next request's. True when it changed the array. */
+  readonly context: (
+    messages: unknown[],
+    context: SessionContext,
+    model: SessionContext["model"]
+  ) => Promise<boolean>;
+  /** `message_end`: records a new placement once its answer is saved, marks the answer of a model
+   *  that carried the text at the end of a top-level system prompt (`APPROVAL_TOP_LEVEL_ENTRY`),
+   *  going by the model the answer names rather than the live one, and marks the route's answer
+   *  stale when an entry that is not the model's or a tool's entered the session. */
   readonly messageEnd: (message: unknown, context: SessionContext) => void;
   /** `session_compact`: a compaction summary entered the session. */
   readonly sessionCompact: (context: SessionContext) => void;
@@ -636,18 +649,12 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     return true;
   };
 
-  /** Marks `message`, the saved answer of `model`, which takes no system message inside the
-   *  conversation, as the first answer to a request that carried the standing version's text
-   *  there: one mark for each version and model. */
-  const markTopLevel = (
-    message: unknown,
-    context: SessionContext,
-    model: HostRequestModel
-  ): void => {
-    const carried = carrying;
-    if (carried === undefined || !survives(message)) return;
+  /** Marks `message`, a saved answer of the model `carried` names, which takes no system message
+   *  inside the conversation, as the first answer to a request that carried the standing
+   *  version's text there: one mark for each version and model. */
+  const markTopLevel = (message: unknown, context: SessionContext, carried: Carrying): void => {
+    if (!survives(message)) return;
     if (carried.session !== context.sessionManager.getSessionId()) return;
-    if (modelSelector(model) !== carried.model) return;
     carrying = undefined;
     const branch = context.sessionManager.getBranch?.() ?? [];
     if (markedOn(branch, carried.version, carried.model)) return;
@@ -669,7 +676,9 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
    * without any message that holds a text this plugin placed (a record of the branch, or the
    * placement waiting for its answer) or stands for, and with the standing version's text at the
    * end of the top-level system prompt. Undefined where the body is already so, or is none of the
-   * shapes of the three wire APIs.
+   * shapes of the three wire APIs. A placement of the session still waiting for its answer is
+   * given up, as the `context` handler gives it up on such a model: no answer of this model
+   * records it.
    */
   const topLevel = (
     payload: unknown,
@@ -678,12 +687,14 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
   ): object | undefined => {
     // Only the newest request of such a model counts: the answer that is saved next answers it.
     carrying = undefined;
+    const session = context.sessionManager.getSessionId();
+    const waiting = pending?.session === session ? pending : undefined;
+    if (waiting !== undefined) pending = undefined;
     const rewrite =
       model.api !== undefined && Object.hasOwn(TOP_LEVEL, model.api)
         ? TOP_LEVEL[model.api]
         : undefined;
     if (rewrite === undefined || !isBody(payload)) return undefined;
-    const session = context.sessionManager.getSessionId();
     const branch = context.sessionManager.getBranch?.() ?? [];
     const now = standing;
     const texts = new Set(
@@ -692,7 +703,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
         .map((sent) => sent.text)
     );
     if (now !== null) texts.add(now.text);
-    if (pending?.session === session) texts.add(pending.text);
+    if (waiting !== undefined) texts.add(waiting.text);
     const rewritten = rewrite(payload, texts, now?.text);
     if (rewritten === undefined) return undefined;
     if (now !== null) {
@@ -710,7 +721,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       if (claim !== undefined) await read(claim);
     },
 
-    context: async (messages, context) => {
+    context: async (messages, context, model) => {
       const claim = rootClaim(context);
       if (claim === undefined) return false;
       const session = context.sessionManager.getSessionId();
@@ -721,8 +732,9 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       // A model that takes no system message inside the conversation gets the text at the end of
       // its top-level system prompt, from `beforeProviderRequest`: nothing is placed or rebuilt
       // here, and a placement still waiting for its answer is given up, for no answer of this
-      // model records it.
-      if (refusingMidConversationSystem(context.model) !== undefined) {
+      // model records it. The request's own model decides, not `context.model`, which a fallback
+      // return made earlier in the same hook has already moved to the next request's.
+      if (refusingMidConversationSystem(model) !== undefined) {
         if (pending?.session === session) pending = undefined;
         return false;
       }
@@ -759,9 +771,16 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
         if (role !== "toolResult" && !isApprovalMessage(message)) stale = true;
         return;
       }
-      const refusing = refusingMidConversationSystem(context.model);
-      if (refusing !== undefined) {
-        markTopLevel(message, context, refusing);
+      // The model the answer names (`provider` and `model`, as Oh My Pi's `message_end` carries
+      // them) decides, not `context.model`, which a fallback return made in its request's
+      // `context` hook has already moved to the next request's.
+      const carried = carrying;
+      if (
+        carried !== undefined &&
+        isBody(message) &&
+        modelReference(message.provider, message.model) === carried.model
+      ) {
+        markTopLevel(message, context, carried);
         return;
       }
       const waiting = pending;

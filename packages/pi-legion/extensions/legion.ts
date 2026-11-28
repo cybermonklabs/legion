@@ -458,12 +458,13 @@ export default function legionExtension(pi: PiApi): void {
   // The approval message a root architect's own session carries while a person's approval of its
   // spec stands (`src/approval-message.ts`): the route is read at session_start and before the next
   // request after an entry that is not the model's or a tool's. On a model that takes a system
-  // message inside the conversation (`ctx.model.compat.supportsMidConversationSystem`), each
-  // request places or rebuilds the message in the `context` handler below, a saved answer records
-  // the copy it answered, and the `before_provider_request` handler moves Oh My Pi's date reminder
-  // off a new placement. On any other model, the `before_provider_request` handler puts the text
-  // at the end of the request's top-level system prompt, and a saved answer marks it. The host's
-  // roster tells a remote compaction's own conversions apart.
+  // message inside the conversation (`compat.supportsMidConversationSystem` of the request's own
+  // model), each request places or rebuilds the message in the `context` handler below, a saved
+  // answer records the copy it answered, and the `before_provider_request` handler moves Oh My
+  // Pi's date reminder off a new placement. On any other model, the `before_provider_request`
+  // handler puts the text at the end of the request's top-level system prompt, and a saved answer
+  // that names that model marks it. The host's roster tells a remote compaction's own conversions
+  // apart.
   const approvalMessage = createApprovalMessage({
     claim: (sessionID) => claimSession.capability(sessionID),
     daemon: roleDaemon,
@@ -877,8 +878,13 @@ export default function legionExtension(pi: PiApi): void {
   // every copy rebuilt before its answer and a new placement after every other message, and on
   // any other model nothing. It edits the array it is handed and hands that same array on, so a
   // later copy of pi-envoy still finds the request it decided; only the ladder's and the notice's
-  // removals make a new one.
+  // removals make a new one. It decides on the model the request goes to, which Oh My Pi read
+  // before it ran the `context` handlers: `context.model` is the live model, and a return made
+  // here moves it to the next request's at once, so the handler reads it first and hands it on.
+  // Handing it on keeps every step's order: the return still comes before the route read the
+  // approval message can wait on.
   pi.on("context", async (event, context) => {
+    const requestModel = context.model;
     const legionRole = await modelFallbackSession(context);
     const ladderKept = legionRole
       ? await cyberPolicyLadder.request(event.messages, context)
@@ -890,7 +896,7 @@ export default function legionExtension(pi: PiApi): void {
         ? undefined
         : withoutRepeatedWorkspaceRecreatedNotice(kept, resentNoticeId);
     const messages = withoutNotice ?? kept;
-    const placed = await approvalMessage.context(messages, context);
+    const placed = await approvalMessage.context(messages, context, requestModel);
     return ladderKept !== undefined || withoutNotice !== undefined || placed
       ? { messages }
       : undefined;
