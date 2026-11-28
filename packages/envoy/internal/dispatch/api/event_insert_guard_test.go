@@ -24,7 +24,9 @@ const brokerEventInserts = 1
 
 // legionTestEventInsert is the one non-_test.go fixture seeder allowed to bulk-insert events:
 // legionseed writes a synthetic Legion history into the database of a test (legiontest.Seed) or of
-// an eval loader's command (evals/evalfixture), and its one insert seeds that history.
+// an eval loader's command (evals/evalfixture), and its one insert (eventsInsert) seeds both that
+// history and the backdated events of the eval fixture loader's Failures mode issues
+// (WriteIssueEvents).
 const legionTestEventInsert = "internal/dispatch/legion/legionseed/legionseed.go"
 
 // legionTestEventInserts is how many event inserts legionTestEventInsert holds, checked for the

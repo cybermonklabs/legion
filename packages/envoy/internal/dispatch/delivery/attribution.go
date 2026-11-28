@@ -437,23 +437,27 @@ func attributionBatchQuery(renames refs.Renames) string {
 // resolvedCandidatesQuery is the statement ResolvedCandidates reads named stored rows' candidates
 // with: the same five sources over each row's own columns as attributionBatchQuery, of the rows
 // of the pull requests its two arrays name (repositories, then numbers) whose attribution inputs
-// are stored, and the same repository walk over every key they name. Where the batch holds each
-// candidate to the live default of its issue's project, this answers what that holding is made
-// of, so a reader can hold the candidates to the defaults it reads by: for each candidate, in rank
-// order, its issue's project, the repository its own chain names (repo.owned of
-// refs.IssueRepoTerms) under its canonical name, whether that repository is the pull request's,
-// compared as attributionHeld compares them (both canonical, without case), and whether the walk
-// ran out of depth. A row whose five sources name nothing answers one row of no key, the
-// lateral's null row, so a reader can tell a row whose inputs name no issue from one whose inputs
-// are not stored, which answers no row. NewAttributor builds it once, for the batch's reason.
+// are stored, and the same repository walk over every key they name. A row is matched by its
+// repository without case, which delivery_pull_requests_lower_repo serves: that table keeps
+// GitHub's spelling (`Acme/App`), and the record of production events names a pull request in
+// lower case (PullRequestName). Its candidates carry the repository as the arrays name it, so a
+// reader finds them under the name it asked by. Where the batch holds each candidate to the live
+// default of its issue's project, this answers what that holding is made of, so a reader can hold
+// the candidates to the defaults it reads by: for each candidate, in rank order, its issue's
+// project, the repository its own chain names (repo.owned of refs.IssueRepoTerms) under its
+// canonical name, whether that repository is the pull request's, compared as attributionHeld
+// compares them (both canonical, without case), and whether the walk ran out of depth. A row whose
+// five sources name nothing answers one row of no key, the lateral's null row, so a reader can tell
+// a row whose inputs name no issue from one whose inputs are not stored, which answers no row.
+// NewAttributor builds it once, for the batch's reason.
 func resolvedCandidatesQuery(renames refs.Renames) string {
 	owned := refs.CanonicalRepoSQL(renames, "repo.owned")
 	return `
 		with recursive batch as (
-			select pr.repo, pr.number, pr.url, pr.attribution_title_keys, pr.attribution_cited_issues,
+			select given.repo, pr.number, pr.url, pr.attribution_title_keys, pr.attribution_cited_issues,
 				pr.attribution_branch_keys, pr.attribution_commit_keys
 			from unnest($1::text[], $2::int[]) as given(repo, number)
-			join delivery_pull_requests pr on pr.repo = given.repo and pr.number = given.number
+			join delivery_pull_requests pr on lower(pr.repo) = lower(given.repo) and pr.number = given.number
 			where pr.attribution_title_keys is not null
 		), ` + attributionRowTerms(renames) + `
 		select c.pr_repo, c.pr_number, c.key, i.project_key, coalesce(` + owned + `, ''),
@@ -619,11 +623,12 @@ type ResolvedCandidate struct {
 }
 
 // ResolvedCandidates reads through q, from the database alone, the ranked candidates of each of
-// pulls whose attribution inputs are stored (resolvedCandidatesQuery), by pull request: every
-// candidate its five sources name, best first, with what its holding is made of
-// (ResolvedCandidate). A pull request whose inputs name nothing has no candidate, and one whose
-// inputs are not stored, or that no row holds, is not in the answer. It is the read the evals'
-// day rows attribute a pull request by (evals/delivery_days.go): the attribution AttributePullRequests
+// pulls whose attribution inputs are stored (resolvedCandidatesQuery), by pull request, under the
+// key pulls names it by, its stored row found by its repository without case: every candidate its
+// five sources name, best first, with what its holding is made of (ResolvedCandidate). A pull
+// request whose inputs name nothing has no candidate, and one whose inputs are not stored, or that
+// no row holds, is not in the answer. It is the read the evals' day rows attribute a pull request
+// by (evals/delivery_days.go): the attribution AttributePullRequests
 // writes holds each candidate to its project's default repository as it stands now, where the day
 // rows hold it, at read time, to the default the evals refresher publishes, so a move of a default
 // moves the pull requests it holds without a day row rewritten. One statement, whatever the

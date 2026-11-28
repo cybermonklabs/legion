@@ -78,8 +78,14 @@ test("a caption names the statistics the target judges, in the order the server 
     "deploys with a PR \u2265 20"
   );
   expect(
-    targetLabel(deploys({ value: 0.05, direction: "lower_better", judges: ["per_pr.rate"] }))
-  ).toBe("failure rate \u2264 5% per PR");
+    targetLabel(
+      deploys({
+        value: 0.05,
+        direction: "lower_better",
+        judges: ["per_deploy.rate", "per_deploy.failed"],
+      })
+    )
+  ).toBe("failure rate and deploys with a failure \u2264 5% per deploy");
 });
 
 test("a target judging its card's own figure alone names no statistic, and names it beside another", () => {
@@ -198,10 +204,10 @@ test("a caption writes its target exactly: a rate as its percentage, 0.755 as 75
   expect(targetLabel(failures(0.05, ["per_deploy.rate"]))).toBe("< 5% per deploy");
   expect(targetLabel(failures(0.0496, ["per_deploy.rate"]))).toBe("< 4.96% per deploy");
   // 0.07 x 100 is 7.000000000000001 in floating point: the noise is not the person's.
-  expect(targetLabel(failures(0.07, ["per_pr.rate"]))).toBe("failure rate < 7% per PR");
-  expect(targetWords(failures(0.035, ["upper_bound.rate"]))).toBe(
-    "failure rate's upper bound under 3.5% per deploy"
+  expect(targetLabel(failures(0.07, ["per_deploy.rate", "per_deploy.total"]))).toBe(
+    "failure rate and deploys < 7% per deploy"
   );
+  expect(targetWords(failures(0.035, ["per_deploy.rate"]))).toBe("under 3.5% per deploy");
   // Minutes, deploys a day and counts are written as the number the target holds, exact already.
   expect(targetLabel(minutes(["minutes.median"], { value: 44.5 }))).toBe("median < 44.5m");
   expect(targetWords(minutes(["minutes.max"], { value: 44.5 }))).toBe(
@@ -233,8 +239,14 @@ test("a caption writes a rate's target as the shortest text that reads back as i
     "\u2265 100%",
   ]);
   expect(
-    targetLabel(deploys({ value: 0.1 + 0.2, direction: "lower_better", judges: ["per_pr.rate"] }))
-  ).toBe("failure rate \u2264 30.000000000000004% per PR");
+    targetLabel(
+      deploys({
+        value: 0.1 + 0.2,
+        direction: "lower_better",
+        judges: ["per_deploy.rate", "per_deploy.total"],
+      })
+    )
+  ).toBe("failure rate and deploys \u2264 30.000000000000004% per deploy");
 });
 
 test("a caption's rate target, read as a decimal and divided by 100 exactly, is the stored target, in no more digits than its own shortest text, for doubles all over [0, 1]", () => {
@@ -358,7 +370,7 @@ test("ownVerdict: a day is judged only by a rate or a quantile of its samples, a
     ],
     ["runs.cancelled", minutes(["runs.cancelled"], { value: 2 }), 1, true],
     ["minutes.n", minutes(["minutes.n"], { value: 2, direction: "higher_better" }), 1, false],
-    ["per_deploy.confirmed", minutes(["per_deploy.confirmed"], { value: 1 }), 0, true],
+    ["per_deploy.failed", minutes(["per_deploy.failed"], { value: 1 }), 0, true],
   ];
   for (const [statistic, target, value, met] of counts) {
     expect([statistic, ownVerdict(target, statistic, "day", value)]).toEqual([statistic, null]);

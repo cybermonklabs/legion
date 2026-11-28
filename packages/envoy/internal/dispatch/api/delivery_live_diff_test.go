@@ -278,8 +278,8 @@ func liveTimelineOf(to time.Time, prs []delivery.DeliveryPRView, waiting []deliv
 func liveMeasuresOf(window delivery.DeliveryWindowView, computedAt time.Time, deploys int) deliveryMeasuresResponse {
 	return deliveryMeasuresResponse{
 		Window: window, ComputedAt: computedAt,
-		Measures:    measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}},
-		FlagsSource: deliveryFlagsSourceNone, UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
+		Measures:  deliveryMeasuresOf(measures.Result{DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: deploys}, Daily: []measures.DailyPoint{}}),
+		UnownedP0: []delivery.UnownedIssue{}, Targets: catalogueTargets(),
 		Status:    measures.Status{UnownedP0: new(true)},
 		Freshness: delivery.DeliveryFreshnessView{LastEventAt: &computedAt},
 	}
@@ -902,7 +902,7 @@ func TestAChangedMeasureSendsTheMeasuresWhole(t *testing.T) {
 	if set, items, mapNames, counts := liveSections(delta); !slices.Equal(set, []string{"measures"}) || len(items)+len(mapNames)+len(counts) != 0 {
 		t.Errorf("set %v, items %v, maps %v, counts %v; want the measures alone", set, items, mapNames, counts)
 	}
-	var sent measures.Result
+	var sent deliveryMeasures
 	if err := json.Unmarshal(delta.Set["measures"], &sent); err != nil || !reflect.DeepEqual(sent, nextBody.Measures) {
 		t.Errorf("set.measures = %s (%v), want the new measures whole", delta.Set["measures"], err)
 	}
@@ -1184,8 +1184,8 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 			Stale:     deliveryReconciledSources,
 		},
 		"error.json": LiveError{
-			Type: "error", Sub: "timeline-1", Code: "DELIVERY_NOT_CONFIGURED",
-			Message: "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery",
+			Type: "error", Sub: "timeline-1", Code: deliveryNotConfiguredCode,
+			Message: deliveryNotConfiguredMessage,
 		},
 		"events_start.json":   liveEventsStart("events-1", 41, true),
 		"event.json":          event,

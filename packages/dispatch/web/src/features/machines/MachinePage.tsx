@@ -2,8 +2,9 @@ import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useMemo } from "react";
 import { Link, useLocation } from "react-router-dom";
 
-import { inboxQuery, userAgentStateQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
+import { useInbox, useUserAgentState } from "../../hooks/useHoldsPersonScope";
 import { useCappedSearchParam } from "../../lib/query-param";
 import {
   borderDefault,
@@ -87,11 +88,13 @@ function MachineView({ host }: { host: string }): ReactNode {
   const [picked] = useCappedSearchParam("window");
   // What the viewer is owed, read once for the page from the two queries the shell already
   // makes - never once per pane - so a pane that needs them reads `needs-you`, the first of
-  // the four states, and the page adds no request of its own.
-  const inbox = useQuery(inboxQuery());
+  // the four states, and the page adds no request of its own. Both are read under the `person`
+  // scope (`useInbox`, `useUserAgentState`), as the Agents page reads them: a viewer whose
+  // credential lacks it is owed nothing here.
+  const inbox = useInbox();
   // Until `/auth/whoami` answers, no question is counted as the reader's.
   const viewer = useQuery(whoAmIQuery()).data?.login;
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const agentState = useUserAgentState().data;
   const counts = useMemo<PaneCounts>(
     () => ({
       asksForYou: tallyBySession(waitingOnYou(inbox.data ?? [], viewer)),

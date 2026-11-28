@@ -1345,9 +1345,9 @@ test("the view opened after the app's staleTime asks no read again, its rows' Ke
 // The same rule for who is reading (decision 369 (c)): the page read it as it loaded, and a
 // press of Decisions 31 s later asks it no second time, from any observer the view mounts. A row
 // that draws a thread's read mark (`outline-thread-read.tsx`) observes it through
-// `useMarkThreadRead`'s `useIsHuman`. The tester, at a381aa82 on a running build: Decisions
-// pressed 35 s after the load asked `/auth/whoami` once, and so did the conversation pressed 35 s
-// after that, with no other read.
+// `useMarkThreadRead`'s `useHoldsPersonScope`. The tester, at a381aa82 on a running build:
+// Decisions pressed 35 s after the load asked `/auth/whoami` once, and so did the conversation
+// pressed 35 s after that, with no other read.
 test("the view opened after the app's staleTime asks who is reading no second time", async () => {
   const who = spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
   try {

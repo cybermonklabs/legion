@@ -130,7 +130,7 @@ func (r *refresh) nameDelivery(days *pageDays, read deliveryRead, project string
 	}
 	days.add(&namedDay{
 		project: project, day: read.Day, raw: read.Rows(project),
-		zeros: read.zeros(*r.settings, project),
+		zeros: read.zeros(project),
 	})
 }
 
@@ -289,14 +289,15 @@ func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan,
 	covered = map[string]daySpan{}
 	before := make(map[string]time.Time, len(was))
 	for _, repo := range was {
-		before[repo.name] = repo.since
+		before[repo.rule.DeployRepo] = repo.since
 	}
 	for _, repo := range is {
-		since, held := before[repo.name]
+		name := repo.rule.DeployRepo
+		since, held := before[name]
 		span := daySpan{first: repo.since, last: reach}
 		if held {
 			if since.Equal(repo.since) {
-				delete(before, repo.name)
+				delete(before, name)
 				continue
 			}
 			span = daySpan{first: since, last: repo.since.AddDate(0, 0, -1)}
@@ -304,12 +305,12 @@ func keptSpans(was, is []keptRepo, reach time.Time) (covered map[string]daySpan,
 				span = daySpan{first: repo.since, last: since.AddDate(0, 0, -1)}
 			}
 		}
-		delete(before, repo.name)
+		delete(before, name)
 		if span.last.After(reach) {
 			span.last = reach
 		}
 		if !span.first.After(span.last) {
-			covered[repo.name] = span
+			covered[name] = span
 		}
 	}
 	return covered, slices.Sorted(maps.Keys(before))
@@ -463,7 +464,9 @@ func rowsOf(rows []DayRow, key evalKey) []DayRow {
 // are stored (stored), as they are built (members) and the days they are built of (memberDays);
 // the repositories that hold no run any more, whose every row and member goes (goneRepos, of
 // projects); the days whose stored figures it folds again, by project and eval, each run of them
-// apart (spans); and the days it wrote, for the pass's report.
+// apart (spans); the days it wrote, for the pass's report; and, where its rows and members that
+// moved stand staged aside (stageKept), their staging, which the commit writes them from, nil
+// where it sends them itself.
 type spanWrite struct {
 	family     dayFamily
 	build      string
@@ -477,6 +480,7 @@ type spanWrite struct {
 	projects   []string
 	spans      writtenSpans
 	report     []builtDay
+	staged     *ruleStaging
 }
 
 // widen adds the days first to last of project's eval evalID to those whose figures the span write
@@ -486,19 +490,25 @@ func (b *spanWrite) widen(project, evalID string, first, last time.Time) {
 }
 
 // writeRows writes the span write's day rows in tx: the named days', as writeProjectDays writes
-// them, then the span's moved rows (upsertDays) and the keys its days no longer hold, and every row
-// of a repository that holds no run any more, of its projects (every project and owner key, which
-// grow with the history) in statements of at most statementBytes, each with the evals of its
-// projects.
+// them, then the span's moved rows (upsertDays) and the keys its days no longer hold, or both from
+// their staging (ruleStaging.writeRows), and every row of a repository that holds no run any more,
+// of its projects (every project and owner key, which grow with the history) in statements of at
+// most statementBytes, each with the evals of its projects.
 func (b *spanWrite) writeRows(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayRowsIn(ctx, tx, b.days, b.family.slugs, b.build); err != nil {
 		return err
 	}
-	if err := upsertDays(ctx, tx, b.rows, b.build); err != nil {
-		return err
-	}
-	if err := deleteDayRows(ctx, tx, b.gone); err != nil {
-		return err
+	if b.staged != nil {
+		if err := b.staged.writeRows(ctx, tx); err != nil {
+			return err
+		}
+	} else {
+		if err := upsertDays(ctx, tx, b.rows, b.build); err != nil {
+			return err
+		}
+		if err := deleteDayRows(ctx, tx, b.gone); err != nil {
+			return err
+		}
 	}
 	if len(b.goneRepos) == 0 {
 		return nil
@@ -525,13 +535,18 @@ func (b *spanWrite) writeRows(ctx context.Context, tx pgx.Tx) error {
 }
 
 // writeMembers writes the span write's members in tx, after its rows: the named days', as
-// writeProjectDays writes them, the span's that moved (writeMovedMembers), and every member of a
-// repository that holds no run any more, of its projects in statements of at most statementBytes.
+// writeProjectDays writes them, the span's that moved (writeMovedMembers, or from their staging:
+// ruleStaging.writeMembers), and every member of a repository that holds no run any more, of its
+// projects in statements of at most statementBytes.
 func (b *spanWrite) writeMembers(ctx context.Context, tx pgx.Tx) error {
 	if err := writeDayMembersIn(ctx, tx, b.days, b.family.families); err != nil {
 		return err
 	}
-	if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
+	if b.staged != nil {
+		if err := b.staged.writeMembers(ctx, tx); err != nil {
+			return err
+		}
+	} else if err := writeMovedMembers(ctx, tx, b.stored, b.members, b.memberDays); err != nil {
 		return err
 	}
 	if len(b.goneRepos) == 0 {
@@ -580,10 +595,11 @@ func markCause(ctx context.Context, tx pgx.Tx, cause, what string) error {
 }
 
 // writeSpans writes spans in tx, a page's commit, before the page's cursors: marked a rebuild's
-// (MarkRebuild), every one's rows, then every one's members, then the stored figures, the order
-// every writer of the three takes them in. A span that finds a repository's runs gone begins the
-// rebuild that is building again (replaceRebuild): every day of the repository goes, and building
-// them all again before the flip would be a whole rebuild in the flip's pass.
+// (MarkRebuild), each staging of a span flipped (ruleStaging.flip), every one's rows, then every
+// one's members, then the stored figures, the order every writer of the three takes them in. A
+// span that finds a repository's runs gone begins the rebuild that is building again
+// (replaceRebuild): every day of the repository goes, and building them all again before the flip
+// would be a whole rebuild in the flip's pass.
 func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	if len(spans) == 0 {
 		return nil
@@ -594,6 +610,11 @@ func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	}
 	if err := MarkRebuild(ctx, tx); err != nil {
 		return err
+	}
+	for _, one := range spans {
+		if err := one.staged.flip(ctx, tx); err != nil {
+			return err
+		}
 	}
 	for _, one := range spans {
 		if err := one.writeRows(ctx, tx); err != nil {
@@ -614,6 +635,34 @@ func writeSpans(ctx context.Context, tx pgx.Tx, spans []*spanWrite) error {
 	}
 	if gone {
 		return replaceRebuild(ctx, tx, "", "", nil)
+	}
+	return nil
+}
+
+// stageKept stages aside, before the page's commit, the rows and members that moved of the
+// delivery family's span write (spans) where the page's kept repositories moved (work.kept,
+// syncKept: a repository's first rule, its first runs or a start that moved), whose span builds the
+// repository's days whole (ruleStaging: stageDayRows, stageMovedMembers, short transactions that
+// no reader reads). The page's commit, which records the rule beside them, then writes them from
+// the staging (writeSpans) and sends none of them: a repository's history reaches the readers in
+// the commit that records the rule it stands built under, in no transaction before it.
+// Every other span the commit writes itself.
+func (r *refresh) stageKept(ctx context.Context, work *pageWork, spans []*spanWrite) error {
+	if work.kept == nil {
+		return nil
+	}
+	for _, one := range spans {
+		if one.family.walk != walkDelivery {
+			continue
+		}
+		staging := &ruleStaging{build: one.build}
+		if _, err := staging.stageDayRows(ctx, r.store, one.rows, one.gone); err != nil {
+			return err
+		}
+		if err := staging.stageMovedMembers(ctx, r.store, one.stored, one.members, one.memberDays); err != nil {
+			return err
+		}
+		one.staged = staging
 	}
 	return nil
 }
@@ -689,12 +738,15 @@ func (r *refresh) writeNamed(ctx context.Context, days *pageDays, kept *keptMove
 	projects := days.projects()
 	if family.walk == walkDelivery {
 		// A deploy counts for the projects of the pull requests it ships and its repository's
-		// owner key, so the delivery days of one owner can move another's: every owner's are
-		// judged together, a repository's own owner key among them though the store holds no row
-		// of it yet (trackKept tracks it with the rest).
+		// owner keys, so the delivery days of one owner can move another's: every owner's are
+		// judged together, a repository's own plain owner key and its source key (sourceKey) among
+		// them though the store holds no row of either yet (trackKept tracks them with the rest).
 		if kept != nil {
 			for _, repo := range kept.is {
-				r.noteOwners([]string{OwnerKey(repo.name, nil, nil)})
+				r.noteOwners([]string{OwnerKey(repo.rule.DeployRepo, nil, nil)})
+				if !IsEventsRepo(repo.rule.DeployRepo) {
+					r.noteOwners([]string{sourceKey(repo.rule.DeployRepo)})
+				}
 			}
 		}
 		projects = r.owners
@@ -843,9 +895,12 @@ func firstOr(values []string, none string) string {
 func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered map[string]daySpan, firsts map[string]map[evalKey]time.Time) {
 	for _, repo := range slices.Sorted(maps.Keys(covered)) {
 		span := covered[repo]
-		// Each owner's, a repository's own owner key among them (writeNamed).
+		// The rule the repository's rows are built under (keptRepos): its source's, or the one
+		// recorded with its rows where no source reads it any more.
+		rule, _ := keptRule(r.deployRepos, repo)
+		// Each owner's, a repository's own owner keys among them (writeNamed).
 		for _, project := range r.owners {
-			for _, zero := range ZeroDeliveryDay(*r.settings, project, r.today, []string{repo}).Rows {
+			for _, zero := range ZeroDeliveryDay(project, r.today, []delivery.DeliverySettings{rule}).Rows {
 				key := keyOf(zero)
 				if key.deployRepo != repo {
 					continue
@@ -874,11 +929,11 @@ func (r *refresh) trackKept(tracked map[string]map[evalKey]*trackedKey, covered 
 // transaction, and records in b what moved: each built row of a span day whose stored row holds
 // other values or is missing, each stored row of a span day of its key that the day no longer
 // builds, and the stored members of the days whose members the span built (covered). It
-// widens b's figure spans and its report by the days whose rows moved. The refresher lease allows
-// one refresher pass at a time, but two writers outside it change rows and members and can commit
-// between this read and the span write: the boot's repository rename pass renames an owner key
-// (store.RewriteRenamedRepositories), and a project's delete deletes the project's rows
-// (eval_days_project_deleted, migration 20261117100006).
+// widens b's figure spans and its report by the days whose rows moved.
+// The refresher lease allows one refresher pass at a time, but two writers outside it change rows
+// and members and can commit between this read and the span write: the boot's repository rename
+// pass renames an owner key (store.RewriteRenamedRepositories), and a project's delete deletes the
+// project's rows (eval_days_project_deleted, migration 20261117100006).
 func (r *refresh) compareSpan(ctx context.Context, b *spanWrite, built spanBuilt, covered map[string]daySpan) error {
 	type scope struct {
 		evals, repos map[string]bool
@@ -998,7 +1053,8 @@ func diffDayRows(stored []DayRow, built ...[]DayRow) (moved []*DayRow, gone []Da
 func sameDayValues(built, stored *DayRow) bool {
 	return built.Listed == stored.Listed && built.N == stored.N && sameFloat(built.Sum, stored.Sum) && sameFloat(built.Num, stored.Num) &&
 		sameFloat(built.Den, stored.Den) && sameFloat(built.Max, stored.Max) && (built.Samples == nil) == (stored.Samples == nil) &&
-		slices.Equal(built.Samples, stored.Samples) && sameFloat(built.LastValue, stored.LastValue) && sameMoment(built.LastAt, stored.LastAt) &&
+		slices.Equal(built.Samples, stored.Samples) && (built.sampleKeys == nil) == (stored.sampleKeys == nil) &&
+		slices.Equal(built.sampleKeys, stored.sampleKeys) && sameFloat(built.LastValue, stored.LastValue) && sameMoment(built.LastAt, stored.LastAt) &&
 		sameMoment(built.LastRecordedAt, stored.LastRecordedAt) && built.LastReading == stored.LastReading &&
 		maps.Equal(NonNilCounts(built.Counts), NonNilCounts(stored.Counts)) && built.ViaRepository == stored.ViaRepository
 }
@@ -1047,20 +1103,19 @@ func deleteDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow) error {
 // deliverySpanInput is the input of the delivery days a span builds that no change names, read
 // once over the history as the settings rewrite reads it (rewriteSettings): every population pull
 // request and, for each repository a tracked key reads as the deploy repository, every deploy run
-// on main with its jobs of the names the production rule judges by and the deploy cards follow
-// (delivery.ReadHistoryRows), the attribution lists of the pull requests (readAttribution),
-// and containment over each repository's history (historyOf). A day's rows are each repository's
-// DeliveryDay of it as readDeliveryDays builds it from those rows (repoHistory.deliveryDay), and
-// the pull requests' alone where a key no deploy repository moves is active. The PR-checks runs,
-// which the history does not hold, are read of a day only where a pr-ci key is active on it and
-// the repository holds one that day (checkDays, one read of a repository's days), once, since a
-// span builds each day once (buildSpan), by the PR-checks read of a CI read (delivery.ReadCheckRows,
+// on main with its jobs of the names its rule judges by and its deploy cards follow
+// (delivery.ReadHistoryRows), the attribution lists of the pull requests (readAttribution), and
+// containment over each repository's history under its rule (historyOf); of an events
+// repository, its project's posted deploys from the span's start on (postedDeploys). A day's rows
+// are each repository's DeliveryDay of it as readDeliveryDays builds it from those rows
+// (repoHistory.deliveryDay, postedDayAs), each from its own repository's deploys alone, and the
+// pull requests' alone where a key no deploy repository moves is active. The PR-checks runs, which
+// the history does not hold, are read of a day only where a pr-ci key is active on it and the
+// repository holds one that day (checkDays, one read of a repository's days), once, since a span
+// builds each day once (buildSpan), by the PR-checks read of a CI read (delivery.ReadCheckRows,
 // ReadCIRows' Checks), with the attribution lists of their pull requests (readAttribution).
 func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[evalKey]*trackedKey, reach time.Time) (spanInput, error) {
 	pool := r.store.database.Pool
-	next := *r.settings
-	cards, production := measures.DeployCards(next), next.Production()
-	cardNames := measures.DeployCardJobNames(cards)
 	kept, err := r.keptRepos(ctx)
 	if err != nil {
 		return spanInput{}, err
@@ -1080,16 +1135,25 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 		}
 	}
-	var repos []keptRepo
+	var repos, events []keptRepo
+	var judged []string
 	for _, repo := range kept {
-		if needed[repo.name] {
-			repos = append(repos, repo)
+		if !needed[repo.rule.DeployRepo] {
+			continue
 		}
+		if IsEventsRepo(repo.rule.DeployRepo) {
+			events = append(events, repo)
+			continue
+		}
+		repos = append(repos, repo)
+		judged = append(judged, repo.rule.Production().JudgedJobNames()...)
+		judged = append(judged, measures.DeployCardJobNames(measures.DeployCards(repo.rule))...)
 	}
 	names := deployRepoNames(repos)
-	judged := slices.Compact(slices.Sorted(slices.Values(slices.Concat(production.JudgedJobNames(), cardNames))))
+	judged = slices.Compact(slices.Sorted(slices.Values(judged)))
 	var history delivery.HistoryRows
 	checkDays := map[string]map[time.Time]bool{}
+	posted := make([]postedRecord, len(events))
 	reads := []func(context.Context) error{
 		func(ctx context.Context) (err error) {
 			history, err = delivery.ReadHistoryRows(ctx, pool, names, judged, reach.AddDate(0, 0, 1))
@@ -1105,6 +1169,14 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 			return nil
 		},
+		func(ctx context.Context) (err error) {
+			for i, repo := range events {
+				if posted[i], err = postedDeploys(ctx, pool, repo.rule.Project, start); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
 	}
 	if err := store.ReadSideBySide(ctx, reads...); err != nil {
 		return spanInput{}, fmt.Errorf("read the delivery history for a span: %w", err)
@@ -1117,7 +1189,7 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 	}
 	histories := make(map[string]repoHistory, len(repos))
 	for _, repo := range repos {
-		histories[repo.name] = historyOf(repo, history.Deploys[repo.name], prs, production)
+		histories[repo.rule.DeployRepo] = historyOf(repo, history.Deploys[repo.rule.DeployRepo], prs)
 	}
 	raw := func(ctx context.Context, day time.Time, active map[string]map[evalKey]*trackedKey) (map[string]ProjectDay, error) {
 		alone, as, ci := false, map[string]bool{}, map[string]bool{}
@@ -1134,22 +1206,27 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 			}
 		}
 		read := deliveryRead{Day: day}
+		var merged []delivery.DeliveryPullRequest
+		for _, i := range prsByDay[day] {
+			merged = append(merged, prs[i])
+		}
 		if alone {
-			one := DeliveryDay{Day: day, cards: cards}
-			for _, i := range prsByDay[day] {
+			one := DeliveryDay{Day: day}
+			for _, pr := range merged {
 				// A partial row, whose opening is not known yet, as readDeliveryDays leaves it out.
-				if prs[i].CreatedAt != nil {
-					one.prs = append(one.prs, attribute.pullRequest(prs[i], nil, nil))
+				if pr.CreatedAt != nil {
+					one.prs = append(one.prs, attribute.pullRequest(pr, nil, nil))
 				}
 			}
 			read.days = append(read.days, one)
 		}
-		for _, name := range names {
+		for _, repo := range repos {
+			name := repo.rule.DeployRepo
 			if !as[name] {
 				continue
 			}
 			h := histories[name]
-			one := h.deliveryDay(day, cards, prs, prsByDay, attribute)
+			one := h.deliveryDay(day, prs, prsByDay, attribute)
 			if ci[name] {
 				checks, err := delivery.ReadCheckRows(ctx, pool, name, day, day.AddDate(0, 0, 1))
 				if err != nil {
@@ -1161,7 +1238,12 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 				}
 				one.checks, one.checkJobs = checkAttribute.checkRuns(checks.Runs), checks.Jobs
 			}
-			read.repos, read.days = append(read.repos, name), append(read.days, one)
+			read.rules, read.days = append(read.rules, repo.rule), append(read.days, one)
+		}
+		for i, repo := range events {
+			if as[repo.rule.DeployRepo] {
+				read.rules, read.days = append(read.rules, repo.rule), append(read.days, postedDayAs(day, merged, posted[i], repo))
+			}
 		}
 		rows := make(map[string]ProjectDay, len(active))
 		for project := range active {
@@ -1170,7 +1252,8 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		return rows, nil
 	}
 	// The zero rows of a project's day are built once for each deploy repository, and each key
-	// takes its own of them.
+	// takes its own of them, under the rule the repository's rows are built under (keptRule), as
+	// trackKept tracks them, or its live rule where the pass keeps no rows of it.
 	var zeroProject string
 	var zeroDay time.Time
 	zeroRows := map[string][]DayRow{}
@@ -1181,11 +1264,15 @@ func (r *refresh) deliverySpanInput(ctx context.Context, tracked map[string]map[
 		}
 		rows, built := zeroRows[key.deployRepo]
 		if !built {
-			var as []string
+			var as []delivery.DeliverySettings
 			if key.deployRepo != "" {
-				as = []string{key.deployRepo}
+				rule, held := keptRule(kept, key.deployRepo)
+				if !held {
+					rule, _ = r.ruleOf(key.deployRepo)
+				}
+				as = []delivery.DeliverySettings{rule}
 			}
-			rows = ZeroDeliveryDay(next, project, day, as).Rows
+			rows = ZeroDeliveryDay(project, day, as).Rows
 			zeroRows[key.deployRepo] = rows
 		}
 		return rowsOf(rows, key)

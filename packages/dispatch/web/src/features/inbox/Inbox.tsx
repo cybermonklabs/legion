@@ -13,12 +13,13 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { InboxRow, MyReplyRow } from "../../api/types";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, pillClassName } from "../../components/Pill";
 import { TruncatedText } from "../../components/TruncatedText";
+import { useHoldsPersonScope, useInbox } from "../../hooks/useHoldsPersonScope";
 import { capSearchQuery } from "../../lib/query-param";
 import {
   borderDefault,
@@ -707,10 +708,15 @@ export function Inbox({
   // place of the list; the drawer is the list of cards at every width.
   const wideEnoughForPane = useMediaQuery(READING_PANE_QUERY);
   const columns = pane && wideEnoughForPane;
+  const whoAmI = useQuery(whoAmIQuery());
+  // The reader's asks and credential requests are read under the `person` scope: they are asked
+  // for once a read says the viewer's credential holds it (`useInbox`, `useCredentialRequests`),
+  // so nothing is asked while whoami or its scopes load. What the Inbox draws is apart from that:
+  // for an agent it lists nothing (below).
+  const holdsPerson = useHoldsPersonScope();
   // One inbox query, shared with the nav badge, the sidebar, the agents page and the margin; the
   // list below is a client-side partition of it, so an answered row leaves every surface at once.
-  const inbox = useQuery(inboxQuery());
-  const whoAmI = useQuery(whoAmIQuery());
+  const inbox = useInbox();
   /** Which of the reader's two lists is showing: their Inbox, or what they have dismissed out of
    *  it. A thread stays in the Inbox, read or not, until it is dismissed. */
   const show: InboxShow = filter.show ?? "inbox";
@@ -1693,7 +1699,17 @@ export function Inbox({
     },
   ]);
 
-  if (inbox.isPending || whoAmI.isPending) {
+  if (whoAmI.data?.kind === "agent") {
+    return (
+      <p className={textMutedOnCanvas}>
+        The Inbox lists the asks, threads and credential requests that wait on a person, so an agent
+        has none.
+      </p>
+    );
+  }
+  // A whoami that failed names no reader and asks for no inbox, so the Inbox says it could not
+  // load (below) rather than waiting for a read it never makes.
+  if (whoAmI.isPending || (holdsPerson && inbox.isPending)) {
     return <LoadingSkeleton label="Loading your inbox" />;
   }
   if (inbox.isError || viewer === undefined || place === undefined) {

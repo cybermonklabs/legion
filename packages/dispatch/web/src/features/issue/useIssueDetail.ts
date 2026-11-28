@@ -3,7 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useLocation } from "react-router-dom";
 
 import { artifactAtAddress, primarySpec, roleDocument } from "../../api/issue-cache";
-import { issueQuery, userStateQuery } from "../../api/queries";
+import { issueQuery } from "../../api/queries";
+import { useUserState } from "../../hooks/useHoldsPersonScope";
 import { type IssueRoute, isPrimaryDocumentArtifactRoute, issueTabForRoute } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 
@@ -17,7 +18,9 @@ export function useIssueDetail(route: IssueRoute) {
   const askId = queryItem?.kind === "ask" ? queryItem.id : undefined;
   const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
   const issue = useQuery(issueQuery(route.key));
-  const state = useQuery(userStateQuery());
+  // The viewer's state of the issue, read under the `person` scope once a read says the viewer's
+  // credential holds it (`useUserState`).
+  const state = useUserState();
   const planArtifact = roleDocument(issue.data, "plan");
   const verificationArtifact = roleDocument(issue.data, "verification");
   const primaryArtifact = primarySpec(issue.data);

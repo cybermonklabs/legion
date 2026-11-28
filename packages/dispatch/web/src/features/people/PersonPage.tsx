@@ -8,6 +8,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
+import { PERSON_SCOPE_LACKING, usePersonScope } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   card,
@@ -41,17 +42,24 @@ const RELATION_LABELS: Record<string, string> = {
  *  as the deleted line in place of its title (`DeletedBody`), and one its author edited says
  *  ` · edited` after its kind in the row's byline (`EditedMark`), as every surface that prints a
  *  post marks it (dispatch://INFRA-1523, R2 and R3). A row with neither mark draws exactly what
- *  it drew before the marks. */
+ *  it drew before the marks. The route needs the `person` scope: the rows are asked for once a
+ *  read says the viewer's credential holds it (`usePersonScope`), and for a viewer whose
+ *  credential lacks it nothing is asked and the page says why it has no rows. */
 export function PersonPage(): ReactNode {
   const { login = "" } = useParams();
   useDocumentTitle(`${login} · Dispatch`);
+  const scope = usePersonScope();
   const nodes = useInfiniteQuery({
+    enabled: scope === "held",
     getNextPageParam: nextOffsetPage,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listPersonNodes(login, { limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["people", login, "nodes"],
   });
 
+  if (scope === "lacking") {
+    return <p className={dangerText}>Could not load this page: {PERSON_SCOPE_LACKING}</p>;
+  }
   if (nodes.isPending) return <LoadingSkeleton label="Loading this person's nodes" />;
   if (nodes.isError) {
     return <p className={dangerText}>Could not load this page: {nodes.error.message}</p>;

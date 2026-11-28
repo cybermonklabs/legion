@@ -58,6 +58,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents/signals"
 	"github.com/sjawhar/envoy/internal/dispatch/redeliver"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
@@ -745,23 +746,27 @@ func main() {
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
 	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
-	//     route by (delivery.SettingsChannel), the Legion settings, on whose every write the Legion
-	//     state intake checks each project's starting point (legion.SettingsChannel), the Legion
-	//     facts (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one that
-	//     failed and one soon after one whose safe horizon held an event back) and the eval day rows
+	//     route by (delivery.SettingsChannel, and api.EventsChannel for a moved default
+	//     repository), the Legion settings, on whose every write the Legion state intake checks
+	//     each project's starting point (legion.SettingsChannel), the Legion facts
+	//     (legionfacts.Run, whose due times are a pass legionfacts.PassRetry after one that failed
+	//     and one soon after one whose safe horizon held an event back), the eval day rows
 	//     (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel, whose
 	//     due time is evals.RefresherGap after the last pass that began a batch of the walks while a
 	//     walk has days left, else the earlier of the next UTC midnight and the next prune of the
 	//     change log, and one soon after a pass whose safe horizon held an event back,
-	//     evals.RefresherGap after one that failed).
-	//     Neither of those two holds a pass a change woke: it starts as soon as the pass running
+	//     evals.RefresherGap after one that failed), and the production signals (signals.Run, woken
+	//     by api.EventsChannel, delivery.ChangesChannel, delivery.SettingsChannel and
+	//     signals.RevertsChannel, whose due times are a pass signals.PassRetry after one that
+	//     failed and one soon after one whose safe horizon held an event back).
+	//     None of those three holds a pass a change woke: it starts as soon as the pass running
 	//     when the change came ends.
-	//     The four leased ones, reference-excerpts, edit-notices, legion-facts and eval-days, take
-	//     their lease with no period (duty.RunWoken): a process that finds it held retries until a
-	//     pass of its own runs, since the other process's pass may have read before the change
-	//     that woke this one. The suggestion-outcome loop takes none: each of its pages runs in a
-	//     transaction holding the suggestion_outcome_cursor row for update, which serialises two
-	//     processes woken by one commit, the first pass on a database included
+	//     The five leased ones, reference-excerpts, edit-notices, legion-facts, eval-days and
+	//     production-signals, take their lease with no period (duty.RunWoken): a process that finds
+	//     it held retries until a pass of its own runs, since the other process's pass may have read
+	//     before the change that woke this one. The suggestion-outcome loop takes none: each of its
+	//     pages runs in a transaction holding the suggestion_outcome_cursor row for update, which
+	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
 	//     their window, and the deliveries a process that died left owed - keeps a timer of its
 	//     own below, because no wake announces either: a death commits nothing.
@@ -911,6 +916,9 @@ func main() {
 	// connection and gives it back before the refresher's loop starts, so the two never hold it
 	// together.
 	evalDaysLeases := reserve("eval days")
+	// The production signals (signals.Run): a leased loop like the rest, reserved here so that this
+	// process's count is the same whatever work it finds.
+	productionSignalsLeases := reserve("production signals")
 	// The delivery intakes' six callers - a consumer lease, a hold and the hold's renewal per
 	// durable - whether or not this configuration starts them (delivery.ReserveIntakeLeases).
 	intakeLeases, err := delivery.ReserveIntakeLeases(leaseCallers)
@@ -1055,7 +1063,7 @@ func main() {
 			return database.Pool.Dedicated(ctx, docs.ListenerApplicationPrefix+documentService.ProcessID())
 		},
 	}
-	var embeddingsWake, settingsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
+	var embeddingsWake, settingsWake, settingsProjectsWake, legionSettingsWake, gitHubReadsWake <-chan struct{}
 	if embedder != nil {
 		embeddingsWake = listenerHub.Wake(embedqueue.WakeChannel)
 	}
@@ -1075,11 +1083,25 @@ func main() {
 	// (evals.Store.RunRefresher).
 	daysEventsWake := listenerHub.Wake(api.EventsChannel)
 	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The production signals' loop reads three feeds and a revert's record, each with a wake of its
+	// own (signals.Run): the events (a check result, a retraction, an incident's labels and links,
+	// and a project.updated whose default repository moved a deploy source), the delivery changes (a
+	// run, a job or a pull request write that can make a deploy), a save of a project's delivery
+	// settings, and a recorded revert.
+	signalsEventsWake := listenerHub.Wake(api.EventsChannel)
+	signalsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	signalsSettingsWake := listenerHub.Wake(delivery.SettingsChannel)
+	signalsRevertsWake := listenerHub.Wake(signals.RevertsChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
+	// The delivery settings cache both intakes route by reads two feeds, each with a wake of its
+	// own: a save of a project's delivery settings (delivery.SettingsChannel), and the events, among
+	// which a project.updated whose default repository moved moves the repository of each deploy
+	// source that names none (delivery.StartIntakes).
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
+		settingsProjectsWake = listenerHub.Wake(api.EventsChannel)
 	}
 	if natsClient != nil {
 		legionSettingsWake = listenerHub.Wake(legion.SettingsChannel)
@@ -1360,7 +1382,8 @@ func main() {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name),
 				bus.WithWriteDeadline(delivery.IntakeWriteDeadline))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, settingsWake, appCtx.Architecture(), attributor)
+		wakes := delivery.SettingsWakes{Settings: settingsWake, Projects: settingsProjectsWake}
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, database.Pool, intakeLeases, appCtx.GitHub(), broker, wakes, appCtx.Architecture(), attributor)
 		if err != nil {
 			slog.Error("dispatch delivery: connect NATS", "error", err)
 			os.Exit(1)
@@ -1512,6 +1535,22 @@ func main() {
 		Leases:     evalDaysLeases,
 		Events:     daysEventsWake,
 		Deliveries: daysChangesWake,
+	})
+	// dispatch://INFRA-978: the record's GitHub deploy rows and its three automatic failure signals
+	// (check_fail, revert, incident_issue). The loop writes the deploy row of each run of a deploy
+	// repository its owner's rule calls a deploy after the run write that made it one has committed,
+	// derives a repository's rows again when its rule moves, and writes each failure from the event
+	// log and the recorded reverts, each feed from a cursor of its own. It takes the
+	// production-signals lease, so two processes woken by one commit write each row once, and reads
+	// the event log up to the safe horizon of the same events.Horizon the facts consumer reads.
+	go signals.Run(ctx, signals.Deps{
+		Pool:       database.Pool,
+		Horizon:    background.EventHorizon(),
+		Leases:     productionSignalsLeases,
+		Events:     signalsEventsWake,
+		Deliveries: signalsChangesWake,
+		Settings:   signalsSettingsWake,
+		Reverts:    signalsRevertsWake,
 	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a

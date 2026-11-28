@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 )
 
 // schemaNames overrides the schema name a Go type is declared under. It exists so a Go type whose
@@ -120,10 +121,8 @@ var schemaNames = map[reflect.Type]string{
 	// (Status, Timing, Cell, Day) belong to delivery alone.
 	reflect.TypeOf(delivery.DeliveryComponentView{}):     "DeliveryComponent",
 	reflect.TypeOf(measures.DailyPoint{}):                "DeliveryDailyPoint",
-	reflect.TypeOf(measures.DeployFlagCounts{}):          "DeliveryDeployFlagCounts",
 	reflect.TypeOf(measures.DeployJobTiming{}):           "DeliveryDeployJobTiming",
 	reflect.TypeOf(measures.FailingJob{}):                "DeliveryFailingJob",
-	reflect.TypeOf(measures.FlagCounts{}):                "DeliveryFlagCounts",
 	reflect.TypeOf(measures.JobTiming{}):                 "DeliveryJobTiming",
 	reflect.TypeOf(measures.Status{}):                    "DeliveryKpiStatus",
 	reflect.TypeOf(measures.LeadTimeCell{}):              "DeliveryLeadTimeCell",
@@ -135,7 +134,8 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(delivery.DeliveryRunJobView{}):        "DeliveryRunJob",
 	reflect.TypeOf(delivery.DeliveryRunJobDetailView{}):  "DeliveryRunJobDetail",
 	reflect.TypeOf(delivery.DeliveryRunProductionView{}): "DeliveryRunProduction",
-	reflect.TypeOf(measures.Result{}):                    "DeliveryMeasures",
+	reflect.TypeOf(measures.Recovery{}):                  "DeliveryRecovery",
+	reflect.TypeOf(measures.ReworkRate{}):                "DeliveryReworkRate",
 	reflect.TypeOf(delivery.SessionGroup{}):              "DeliverySessionGroup",
 	reflect.TypeOf(measures.Spread{}):                    "DeliverySpread",
 	reflect.TypeOf(measures.Targets{}):                   "DeliveryTargets",
@@ -170,6 +170,14 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(evals.DayPoint{}):     "EvalDayPoint",
 	reflect.TypeOf(evals.Verdict{}):      "EvalVerdict",
 	reflect.TypeOf(evals.Judge{}):        "EvalJudge",
+
+	// The record of deploys and failed changes, whose one-word Go name the prodevents package can
+	// carry and which model.Event's schema, Event, already holds for a client.
+	reflect.TypeOf(prodevents.Event{}): "ProductionEvent",
+
+	// A refused save of a project's delivery settings, whose one-word Go name the delivery package
+	// carries: the client names it for what it refuses.
+	reflect.TypeOf(delivery.SettingsError{}): "DeliverySettingsRefusal",
 }
 
 // rawFieldKeyOf names one field of one Go type: the owner by its reflect.Type rather than by an
@@ -243,6 +251,12 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 		"description": "refused whenever present (400 INVALID_JSON): a broadcast's idempotency " +
 			"key is the Idempotency-Key header and never a body member",
 	}},
+	// The delivery settings' targets (project_settings_delivery.go): each named eval's target, a
+	// number or "off". A save's leaves a target it does not name as it is (parseDeliveryTargets),
+	// and the answer names each eval the project holds. The answer always carries the field, which
+	// its `required:"true"` says.
+	{reflect.TypeOf(projectDeliverySettingsInput{}), "targets"}: rawField{Fragment: openAPIDeliveryTargets},
+	{reflect.TypeOf(projectDeliverySettings{}), "targets"}:      rawField{Fragment: openAPIDeliveryTargets},
 	// GET /api/v1/issues/{key}/legion's waiting_on (legion_issue.go): null is an issue that waits
 	// on nothing, and an object is the daemon's own as the intake stored it, which the answer
 	// sends unparsed so that a field a later daemon adds reaches the page. The fragment names the
@@ -273,6 +287,21 @@ var (
 		"type":        "string",
 		"description": `a GitHub repository as "owner/name"`,
 	}
+	// openAPIDeliveryTargets is the delivery settings' targets: an object of the slugs of
+	// deliverySettingsTargetSlugs, each a number or "off" (deliveryTargetOff), and no other key.
+	openAPIDeliveryTargets = func() map[string]any {
+		properties := map[string]any{}
+		for _, slug := range deliverySettingsTargetSlugs {
+			properties[slug] = map[string]any{"anyOf": []any{
+				map[string]any{"type": "number"},
+				map[string]any{"type": "string", "enum": []any{deliveryTargetOff}},
+			}}
+		}
+		return map[string]any{
+			"type": "object", "properties": properties, "additionalProperties": false,
+			"description": `each eval's target, a number or "off" for none`,
+		}
+	}()
 	// The daemon's api.WaitingOnView (packages/daemon/internal/api/state.go), what a root in
 	// awaiting_person waits on from a person: kind is `ask`, with the ask's id, or `gate`, with the
 	// spec version of a document no person reviewed; since is when the wait began; answeredAt and

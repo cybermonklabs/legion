@@ -11,6 +11,7 @@ import { PinButton } from "../../components/PinButton";
 import { AgentListRefilling } from "../../components/QueryError";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useFootInset } from "../../hooks/useFootInset";
+import { useAgentMessages } from "../../hooks/useHoldsPersonScope";
 import {
   connectionDotConnecting,
   connectionDotFailed,
@@ -304,8 +305,10 @@ export function AgentConversationPage({
   // user turn from Envoy arrive as notices the stream has no frame for, and the session answers
   // them with a `dispatch message` command, which the stream shows only as a `bash` tool call whose
   // arguments hold that command. Without these the thread would show replies to messages the human
-  // cannot see, and no replies at all.
-  const stored = useQuery(agentMessagesQuery(sessionId));
+  // cannot see, and no replies at all. They are read under the `person` scope
+  // (`useAgentMessages`), so a viewer whose credential lacks it reads the stream alone, and marks
+  // nothing read (`useMarkRepliesRead` asks under the same gate).
+  const stored = useAgentMessages(sessionId);
   // Seeing them is reading them, so only the view the person is looking at marks them read, as
   // the Agents page's collapsed row does.
   useMarkRepliesRead(sessionId, front ? stored.data : undefined);

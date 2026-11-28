@@ -1753,7 +1753,7 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * delete of a comment or an issue message (its body, which a delete empties, and the marks the
  * read answers for the post, `edited_at`, `deleted_at` and `deleted_by`), an ask's edit (its
  * question) and a document's new version (its blocks' words), and none on any other event. The
- * issue page's names reads are kept fresh by events (`reference-target.ts`'s `EVENT_FRESH`),
+ * issue page's names reads are kept fresh by events (`query-refresh.ts`'s `EVENT_FRESH`),
  * never by their age, and a names read's key is the set of addresses it names, so a page that
  * comes to hold another set reads again under a key of its own: only a change of words under the
  * same address needs a rule.

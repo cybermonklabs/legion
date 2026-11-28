@@ -6,6 +6,7 @@ import { api } from "../../api/client";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import { PERSON_SCOPE_LACKING, usePersonScope } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   card,
@@ -23,14 +24,22 @@ import { Timestamp } from "../refs/Timestamp";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 
 /** Every broadcast this Dispatch has sent, newest first, so one sent minutes ago is reachable
- *  again after the sender navigated away from it. */
+ *  again after the sender navigated away from it. The list is read under the `person` scope,
+ *  which an agent viewer's bearer may not hold: it is asked for once a read says the viewer's
+ *  credential holds it (`usePersonScope`), and for a viewer whose credential lacks it nothing is
+ *  asked and the page says why it has no list. */
 export function BroadcastsPage(): ReactNode {
   useDocumentTitle("Broadcasts · Dispatch");
+  const scope = usePersonScope();
   const broadcasts = useQuery({
+    enabled: scope === "held",
     queryFn: () => api.listBroadcasts(),
     queryKey: ["broadcast", "list"],
   });
 
+  if (scope === "lacking") {
+    return <p className={dangerText}>Could not load broadcasts: {PERSON_SCOPE_LACKING}</p>;
+  }
   if (broadcasts.isPending) return <LoadingSkeleton label="Loading broadcasts" />;
   if (broadcasts.isError) {
     return (

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -43,6 +44,12 @@ type projectDefaultRepositoryInput struct {
 // changes no row and appends no event. A change appends project.updated with the project row, as
 // PUT /api/v1/projects/{key}/gated-steps does, commits, and then publishes it. The row is read in
 // the transaction that wrote it, so the event carries the row as this write left it.
+//
+// A github_workflow deploy source that names no repository reads the project's default
+// (delivery.SourceRepoOf), so a move of the default moves the source (dispatch://INFRA-978, D1):
+// for a delivery-on project holding such a source, the write is held to the rules the settings
+// save holds (delivery.MoveDefaultRepository), in its own transaction, before the row is written,
+// and a refusal names another project only where the request's caller sees it (requestViewer).
 func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Request) {
 	var input projectDefaultRepositoryInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -64,6 +71,11 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	repo = s.renamedRepo(repo)
+	viewer, err := s.requestViewer(r)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 
 	tx, err := s.begin(r.Context())
 	if err != nil {
@@ -74,10 +86,15 @@ func (s *server) putProjectDefaultRepository(w http.ResponseWriter, r *http.Requ
 	// The project's owner lock before its row's update, as every projects writer takes them
 	// (createIssue, putProjectGatedSteps, lockEventOwner): taking the row first and the lock at
 	// the append below would wait, holding the row, on an issue create that holds the lock in its
-	// read phase and waits for the row to number the issue. The lock assigns no transaction id;
-	// the update is the first statement that writes.
+	// read phase and waits for the row to number the issue. The lock assigns no transaction id,
+	// nor do the delivery locks delivery.MoveDefaultRepository takes after it; its clear of the
+	// reconcile progress, or else the update, is the first statement that writes.
 	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(r.PathValue("key"))); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if err := delivery.MoveDefaultRepository(r.Context(), tx, r.PathValue("key"), repo, viewer); err != nil {
+		s.writeSettingsRefusal(w, err)
 		return
 	}
 	written, err := tx.Exec(r.Context(), `

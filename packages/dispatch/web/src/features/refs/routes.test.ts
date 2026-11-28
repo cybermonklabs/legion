@@ -762,6 +762,13 @@ test("parses and builds project, documents, and document routes with version and
     kind: "documents",
     project: "CORE",
   });
+  // The project's own settings, its delivery settings among them, live at /settings.
+  expect(parseProjectPath("/projects/CORE/settings")).toEqual({
+    kind: "settings",
+    project: "CORE",
+  });
+  expect(buildProjectPath({ kind: "settings", project: "CORE" })).toBe("/projects/CORE/settings");
+  expect(parseProjectPath("/projects/CORE/settings/delivery")).toBeUndefined();
   expect(
     parseProjectPath("/projects/CORE/documents/design-notes", "?version=3&comment=note-1")
   ).toEqual({

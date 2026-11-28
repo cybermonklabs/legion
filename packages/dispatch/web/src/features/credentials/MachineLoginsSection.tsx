@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
 import type { LauncherCredentialResp } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { textSecondaryOnSurface } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { credentialGrantsQuery } from "./logic/grants";
@@ -85,7 +86,13 @@ const columns: readonly RevocableColumn<LauncherCredentialResp>[] = [
  */
 export function MachineLoginsSection(): ReactNode {
   const queryClient = useQueryClient();
-  const logins = useQuery({ ...machineLoginsQuery(), select: (data) => data.credentials ?? [] });
+  // Read under the `person` scope, once a read says the viewer's credential holds it
+  // (`useHoldsPersonScope`).
+  const logins = useQuery({
+    ...machineLoginsQuery(),
+    enabled: useHoldsPersonScope(),
+    select: (data) => data.credentials ?? [],
+  });
 
   return (
     <RevocableList

@@ -10,6 +10,7 @@ import {
   useState,
 } from "react";
 
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -21,7 +22,6 @@ import {
   sameStatement,
 } from "../conversation/send-request";
 import { type AgentText, useAgentText } from "../refs/AgentName";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import { wordsOf } from "../refs/tree-fragment";
 import type { TreeNode } from "./issue-tree";
@@ -212,7 +212,7 @@ export function OutlineWriterProvider({
   );
   const agentText = useAgentText();
   // The reads the outline is drawn from, under the keys it reads them by and kept fresh as it
-  // keeps them (`reference-target.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
+  // keeps them (`query-refresh.ts`'s `EVENT_FRESH`), so a reply's target costs no request of its
   // own, and a window focus past the app's 30 s `staleTime` reads none of them again.
   const asks = useQuery({ ...issueAsksQuery(issueKey), ...EVENT_FRESH });
   const comments = useQuery({ ...issueCommentsQuery(issueKey), ...EVENT_FRESH });

@@ -14,10 +14,10 @@ import {
   whoAmIQuery,
 } from "../../../api/queries";
 import type { Comment, IssueAskRow, IssueDecisions } from "../../../api/types";
-import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../../hooks/useHoldsPersonScope";
+import { useIsHuman } from "../../../hooks/useIsHuman";
 import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
-import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { presetPath } from "../issue-address";
@@ -475,23 +475,32 @@ async function requestsOf(
   return read.mock.calls.length;
 }
 
-/** Who is reading as a surface that calls `useIsHuman` with `options` reads it: the hook alone. */
-function ReadsWhoIsReading({ options }: { options?: EventFreshness }): ReactNode {
-  useIsHuman(options);
+/** Who is reading as a surface that reads it under the app's defaults (`useIsHuman`) reads it: the
+ *  hook alone. */
+function ReadsWhoIsReading(): ReactNode {
+  useIsHuman();
   return null;
 }
 
-// A surface that calls `useIsHuman` with no options reads who is reading under the app's
-// defaults, and asks for it again once it mounts past the app's `staleTime`, more than 30 s after
-// the answer. A surface that gives the tree's freshness (`EVENT_FRESH`) asks it no second time.
-test("who is reading, read with no options, is asked again after the app's staleTime, and read with the tree's freshness is not", async () => {
+/** Who is reading as the gate of the reads behind the `person` scope reads it
+ *  (`useHoldsPersonScope`), which a thread's read mark asks under: the hook alone. */
+function GatesOnPersonScope(): ReactNode {
+  useHoldsPersonScope();
+  return null;
+}
+
+// A surface that reads who is reading under the app's defaults asks for it again once it mounts
+// past the app's `staleTime`, more than 30 s after the answer. The gate of the reads behind the
+// `person` scope reads it with the tree's freshness (`EVENT_FRESH`), so a thread's read mark,
+// which asks under that gate, asks it no second time.
+test("who is reading, read under the app's defaults, is asked again after the app's staleTime, and read by the person-scope gate is not", async () => {
   // The stub `stubReads` set, which `spyOn` hands back: an answer that never comes, so no read
   // updates the hook after `requestsOf` has counted the requests.
   const who = spyOn(api, "whoAmI").mockReturnValue(Promise.withResolvers<never>().promise);
   expect(await requestsOf(who, <ReadsWhoIsReading />), "a surface that gives no options").toBe(1);
   expect(
-    await requestsOf(who, <ReadsWhoIsReading options={EVENT_FRESH} />),
-    "a surface that gives the tree's freshness"
+    await requestsOf(who, <GatesOnPersonScope />),
+    "the gate of the reads behind the person scope"
   ).toBe(0);
 });
 

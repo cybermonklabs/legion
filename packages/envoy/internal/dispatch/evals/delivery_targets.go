@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
@@ -15,7 +16,7 @@ import (
 // GET /api/v1/delivery/pipeline) show figures the delivery evals state, computed from the
 // deployment's population rather than read from one project's day rows. They judge them by those
 // evals' targets and rank the Pipeline's slowest jobs by pr-ci's min_n as a person sets them (R5):
-// the evals of the project whose default repository is the deploy repository (DeployRepoEvals),
+// the evals of the project whose deploy source reads the deploy repository (DeployRepoEvals),
 // each figure judged by the one rule an eval read judges by (VerdictOf), so a delivery answer's
 // verdict of a figure is its eval's verdict of the same figure. Each answer states every target
 // with its eval's direction and the statistics that verdict judges (JudgesOf), so its reader names
@@ -124,7 +125,7 @@ func VerdictOf(entry Entry, window map[string]Statistics) *Verdict {
 // delivery measures (measures.Compute), and unownedP0, the count of open P0 issues with no owner,
 // by slug and then by series: each figure under the name the eval's own fold gives it, read off
 // the folded value the fold reads it off (deployFrequencyOf, deployRunSuccessOf,
-// changeFailureRateOf, a lead time's spread and count), so a judge of the measures answer reads
+// changeFailRateOf, a lead time's spread and count), so a judge of the measures answer reads
 // the figure the eval's read of the same parts states. It states every statistic the eval route
 // states of those evals but one, unowned-p0's `n`, its count of the window's stored days, which a
 // count of the issues open now has no figure of; a register write refuses that one as a judge
@@ -135,7 +136,7 @@ func ResultStatistics(result measures.Result, unownedP0 int) map[string]map[stri
 	}
 	stats := map[string]map[string]Statistics{
 		SlugDeployFrequency:   {measures.SeriesDeploys: deployFrequencyOf(&result.DeployFrequency)},
-		SlugChangeFailRate:    changeFailureRateOf(result.ChangeFailureRate),
+		SlugChangeFailRate:    {measures.SeriesPerDeploy: changeFailRateOf(result.ChangeFailureRate)},
 		SlugMergeToProduction: {measures.SeriesMinutes: spread(result.LeadTime.MergeToProduction)},
 		SlugPROpenToMerge:     {measures.SeriesMinutes: spread(result.LeadTime.OpenedToMerge)},
 		SlugDeployRunSuccess:  {measures.SeriesRuns: deployRunSuccessOf(&result.DeployRunSuccess)},
@@ -169,19 +170,16 @@ var deliveryJudges = func() map[string][]string {
 // deliveryJudgeRanges is the range of targets each judge of deliveryJudges holds, by
 // `<series>.<stat>`: a target of a delivery eval that names its judges lies in the range of each
 // (CheckTarget, through rangedJudges) rather than in its unit's. A rate, a share of its own counts
-// (runs.rate, per_deploy.rate, per_pr.rate, upper_bound.rate), is from 0 to 1, as a ratio is; every
-// other judge, a count, a sum, a per-day count or a quantile in minutes, is 0 or more, as a count
-// is, whatever its eval's unit: deploy-run-success is in ratio, and a target of 300 judged by
-// runs.concluded is 300 concluded runs over the window. Each judge has its row by name, never by a
-// rule a new judge would fall under, and TestEveryDeliveryJudgeHasATargetRange holds every judge of
-// deliveryJudges to a row.
+// (runs.rate, per_deploy.rate), is from 0 to 1, as a ratio is; every other judge, a count, a sum, a
+// per-day count or a quantile in minutes, is 0 or more, as a count is, whatever its eval's unit:
+// deploy-run-success is in ratio, and a target of 300 judged by runs.concluded is 300 concluded runs
+// over the window. Each judge has its row by name, never by a rule a new judge would fall under,
+// and TestEveryDeliveryJudgeHasATargetRange holds every judge of deliveryJudges to a row.
 var deliveryJudgeRanges = func() map[string]targetRange {
 	share, count := targetRanges[unitRatio], targetRanges["count"]
 	return map[string]targetRange{
 		"deploys.deploys": count, "deploys.per_day": count, "deploys.with_prs": count, "deploys.with_prs_per_day": count,
-		"per_deploy.rate": share, "per_deploy.confirmed": count, "per_deploy.pending": count, "per_deploy.rejected": count, "per_deploy.total": count,
-		"per_pr.rate": share, "per_pr.confirmed": count, "per_pr.pending": count, "per_pr.rejected": count, "per_pr.reverts": count, "per_pr.total": count,
-		"upper_bound.rate": share, "upper_bound.confirmed_or_pending": count,
+		"per_deploy.rate": share, "per_deploy.failed": count, "per_deploy.total": count,
 		"minutes.n": count, "minutes.median": count, "minutes.p90": count, "minutes.max": count,
 		"runs.rate": share, "runs.concluded": count, "runs.reached_production": count, "runs.cancelled": count,
 		"issues.value": count,
@@ -200,33 +198,47 @@ func rangedJudges(definition Definition) []string {
 	return definition.TargetJudges
 }
 
-// DeployRepoEvals reads the current definition and series of each of slugs in the project of
-// deployRepo, by slug, in one snapshot. The deployment-wide answers count every project's rows, so
-// no row names their project; the one a repository names is the project whose published default
-// repository it is (eval_project_repos, the record the refresher's page commit moves in the
-// commit that makes the figures folded under it visible; owners.go), compared without case, so
-// the delivery routes and the Evals tab judge by one state and
-// a person's write of a default repository moves neither until that commit. Where no project
-// publishes deployRepo, or more than one does, no project is named, and where the project holds no
-// version of a slug yet, the slug's catalogue entry stands in: the definition and series the seed
-// writes, whose target is main's (measures.DefaultTargets). A slug neither holds is absent.
-func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []string) (map[string]Entry, error) {
+// CheckTargetOf refuses target as the target of the next version of definition, an eval's newest
+// version that a write carries every other field of forward: CheckTarget in the range the register
+// write judges that version by, its delivery judges' (rangedJudges) or else its unit's. A route
+// that sets an eval's target alone (the delivery settings route) calls it, so it refuses what the
+// register write would refuse, and nothing else.
+func CheckTargetOf(definition Definition, target *float64) error {
+	return CheckTarget(definition.Unit, target, rangedJudges(definition)...)
+}
+
+// DeployRepoEvals reads the current definition and series of each of slugs whose targets the
+// deployment-wide delivery answers judge by (dispatch://INFRA-978, D9), by slug, in one snapshot:
+// those of the project whose deploy sources read every deploy repository, where one delivery-on
+// project owns them all, and none of any project where two or more own them or none is read, since
+// no one project's targets judge figures of several projects. The delivery routes' measures,
+// timeline and Pipeline read their evals here (api's readDeliveryRows and readPipelinePopulation).
+// The deployment-wide answers count every project's rows, so no row names their project; the one
+// a repository names is its owner, the delivery-on project whose deploy source reads it
+// (delivery.DeployRules, compared without case; dispatch://INFRA-978, D1), where a source that
+// names no repository reads its project's published default repository (eval_project_repos, the
+// record the refresher's page commit moves in the commit that makes the figures folded under it
+// visible; owners.go), not the default under which those answers read their own rows (api's
+// readDeliveryRules). So the delivery routes and the Evals tab judge by one state, and a person's
+// write of a default repository moves neither until that commit: until then the project that owns
+// every repository under the published defaults judges, as it did before the write. Where no
+// project is named, and where the project holds no version of a slug yet, the slug's catalogue
+// entry stands in: the definition and series the seed writes, whose target is main's
+// (measures.DefaultTargets). A slug neither holds is absent.
+func (s *Store) DeployRepoEvals(ctx context.Context, slugs []string) (map[string]Entry, error) {
 	tx, err := s.BeginSnapshot(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", deployRepo, slugs, err)
+		return nil, fmt.Errorf("begin the read of the deploy repositories' evals %v: %w", slugs, err)
 	}
 	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx, `select project_key from eval_project_repos where lower(repo) = lower($1) order by project_key limit 2`, deployRepo)
+	projects, err := publishedSettingsIn(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the project whose published default repository is %s: %w", deployRepo, err)
+		return nil, fmt.Errorf("read the projects whose deploy sources read the deploy repositories: %w", err)
 	}
 	entries := make(map[string]Entry, len(slugs))
-	if len(projects) == 1 {
-		if entries, err = projectEntries(ctx, tx, projects[0], slugs); err != nil {
+	if rules := delivery.DeployRules(projects); len(rules) > 0 &&
+		!slices.ContainsFunc(rules, func(rule delivery.DeliverySettings) bool { return rule.Project != rules[0].Project }) {
+		if entries, err = projectEntries(ctx, tx, rules[0].Project, slugs); err != nil {
 			return nil, err
 		}
 	}
@@ -239,6 +251,54 @@ func (s *Store) DeployRepoEvals(ctx context.Context, deployRepo string, slugs []
 		}
 	}
 	return entries, nil
+}
+
+// publishedSettingsIn is every project's delivery settings read in q (delivery.ListProjectSettings)
+// with each project's default repository its published one (eval_project_repos), none where it
+// publishes none yet: the settings a source that names no repository is read under by a reader of
+// the published state (DeployRepoEvals).
+func publishedSettingsIn(ctx context.Context, q delivery.Querier) ([]delivery.ProjectSettings, error) {
+	projects, err := delivery.ListProjectSettings(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := q.Query(ctx, `select project_key, repo from eval_project_repos`)
+	if err != nil {
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
+	}
+	published := map[string]string{}
+	var project, repo string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &repo}, func() error {
+		published[project] = repo
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the published default repositories: %w", err)
+	}
+	withDefaults(projects, published)
+	return projects, nil
+}
+
+// withDefaults sets, in place, each of projects' default repository to the one defaults holds for
+// it (by project), none where defaults holds none.
+func withDefaults(projects []delivery.ProjectSettings, defaults map[string]string) {
+	for i := range projects {
+		projects[i].DefaultRepo = nil
+		if repo, held := defaults[projects[i].Project]; held {
+			projects[i].DefaultRepo = new(repo)
+		}
+	}
+}
+
+// ProjectEvals reads the current definition and series of each of slugs project holds, by slug,
+// in one snapshot (evals_current, eval_series_current): what the delivery settings route answers
+// the targets of (dispatch://INFRA-978, R3). A slug the project holds no version of is absent.
+func (s *Store) ProjectEvals(ctx context.Context, project string, slugs []string) (map[string]Entry, error) {
+	tx, err := s.BeginSnapshot(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin the read of %s's evals %v: %w", project, slugs, err)
+	}
+	defer tx.Rollback(ctx)
+	return projectEntries(ctx, tx, project, slugs)
 }
 
 // projectEntries reads each of slugs project holds as Eval reads one, by slug, in tx: its newest

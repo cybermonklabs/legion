@@ -8,6 +8,7 @@ import {
   projectsQuery,
   whoAmIQuery,
 } from "../../api/queries";
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Artifact, IssueChild, IssueDetails } from "../../api/types";
 import { approvalPillClassName } from "../../components/Pill";
 import {
@@ -34,7 +35,6 @@ import { PriorityEditor } from "../issue/PriorityControl";
 import { UnreachableRouteMarker } from "../issue/RouteReach";
 import type { IssuePriorityWrite } from "../issue/useIssuePriority";
 import { issueStatuses, openIssueStatuses, statusLabel } from "../project/board-model";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { APPROVAL_CHIP } from "./approval-chip-box";
 import { decisionsDocumentId } from "./decision-review";
 import { presetPath } from "./issue-address";
@@ -90,7 +90,7 @@ export function IssuePropertiesRow({
   // What the count counts, read from what the outline already reads under the same keys - the
   // reader's login, the decisions, the coverage's statements, the comments a Change is written
   // as, and the decisions document's blocks, whose sections say which decision a Change's anchor
-  // belongs to - and kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`):
+  // belongs to - and kept fresh by the outline's own rule (`query-refresh.ts`'s `EVENT_FRESH`):
   // events refresh them, never their age (decision 180). Staleness is per observer, so each read
   // here takes that rule too, and the count costs no request of its own (`waiting.ts`). Until
   // those blocks answer the count reads the Changes by their quotes, as `decision-review.ts` does

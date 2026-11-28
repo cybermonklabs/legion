@@ -1,5 +1,5 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two presses below land in one synchronous act, which user-event's awaited interactions cannot do
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -7,6 +7,7 @@ import type { ReactNode } from "react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -147,7 +148,7 @@ const sections: Section[] = [
 ];
 
 async function renderSection(section: Section): Promise<HTMLElement> {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
   const region = within(await screen.findByRole("region", { name: section.heading }));
   return region.findByRole("button", { name: "Revoke" });
@@ -234,7 +235,7 @@ for (const section of sections) {
       throw new ApiError(403, { code: "NOT_APPROVER", error: section.refusal });
     });
     const confirm = spyOn(window, "confirm").mockReturnValue(true);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = signedInQueryClient();
     try {
       render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
       const region = within(await screen.findByRole("region", { name: section.heading }));
@@ -281,7 +282,7 @@ for (const section of sections) {
       throw new NetworkError("/api/v1/revoke", new TypeError("Failed to fetch"));
     });
     const confirm = spyOn(window, "confirm").mockReturnValue(true);
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = signedInQueryClient();
     try {
       render(<QueryClientProvider client={queryClient}>{section.section()}</QueryClientProvider>);
       const region = within(await screen.findByRole("region", { name: section.heading }));

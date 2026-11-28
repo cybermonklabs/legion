@@ -43,6 +43,11 @@ test("a broadcast row draws its session sender outside the row's link", async ()
   };
   const listBroadcasts = spyOn(api, "listBroadcasts").mockResolvedValue([sent]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([planner]);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const view = render(
     <MemoryRouter>
       <QueryClientProvider
@@ -66,5 +71,38 @@ test("a broadcast row draws its session sender outside the row's link", async ()
     view.unmount();
     listAgents.mockRestore();
     listBroadcasts.mockRestore();
+    whoAmI.mockRestore();
+  }
+});
+
+// The list is read under the `person` scope: an agent viewer whose credential lacks it asks for
+// none, and the page says why it has no list rather than drawing one that is still loading.
+test("an agent viewer without the person scope is told why the broadcasts page has no list", async () => {
+  const listBroadcasts = spyOn(api, "listBroadcasts").mockResolvedValue([]);
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "agent",
+    login: "agent:planner-session",
+    session: "planner-session",
+  });
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <BroadcastsPage />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await screen.findByText(/Could not load broadcasts: .*person scope/);
+    expect(screen.queryByLabelText("Loading broadcasts")).toBeNull();
+    expect(listBroadcasts).not.toHaveBeenCalled();
+  } finally {
+    view.unmount();
+    listBroadcasts.mockRestore();
+    whoAmI.mockRestore();
+    whoAmIScopes.mockRestore();
   }
 });

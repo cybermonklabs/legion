@@ -2790,6 +2790,18 @@ After an operator changes an issue's phase, tree or wait, a slot or a claim by S
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
 Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
 
+#### Rolling out and rolling back the release that serves the project's controller to Dispatch
+
+This release's daemon serves `GET /legion/v1/controller` (daemon API entry `20261127150416` controller-route): the session registered as the project's controller, as `{"controllerLocator": {…}}` with the members of the state's own `controllerLocator`, or `{}` while no session is registered.
+Like `GET /legion/v1/state`, the route takes no credential, and no plugin reads it.
+The release adds no migration.
+Dispatch reads the route when a caller that is not a person rejects or re-counts a failure of a project's record of deploys and failed changes, and takes the write only from the session that the project's daemon names at that moment (dispatch://INFRA-978).
+It waits at most 2 seconds for the answer, and it reads no whole state for it.
+A daemon of an earlier release answers the route `404`, and Dispatch then refuses the controller's write `503 LEGION_CONTROLLER_UNREAD`, naming that answer.
+A person's reject and re-count do not read the daemon, so they work with a daemon of either release.
+So roll out the daemon before the controller is to reject or re-count, before or after Dispatch.
+A rollback of the daemon refuses only the controller's rejects and re-counts, which a person can make meanwhile.
+
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
 This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that carries the pod's account alone and that a token login which proved an account enrolled: to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).

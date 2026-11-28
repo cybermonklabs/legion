@@ -18,15 +18,20 @@ const backfillWindowsPerPass = 24
 // newest edge and skip its older runs after a rate limit. An hour holds about 30 PR-check runs.
 const backfillWindow = time.Hour
 
-// backfillStep names one workflow kind's head_branch and event backfill progress.
-func backfillStep(kind DeliveryRunKind) string {
-	return "backfill/runs/" + string(kind)
+// backfillStep names one source repository's head_branch and event backfill progress of one
+// workflow kind: backfill/runs/<kind>/<repo> (repoStep), so each repository's backfill finishes on
+// its own.
+func backfillStep(kind DeliveryRunKind, repo string) string {
+	return repoStep("backfill/runs/"+string(kind), repo)
 }
 
-// createdAtBackfillStep names the deploy runs' created_at backfill progress: a step of its own, so
-// a database whose backfill/runs/deploy finished before created_at was stored walks the window
-// again. Only deploy runs need it, since containment is the one reader of a run's creation.
-const createdAtBackfillStep = "backfill/created_at/" + string(DeliveryRunKindDeploy)
+// createdAtBackfillStep names one source repository's created_at backfill of its deploy runs,
+// backfill/created_at/deploy/<repo> (repoStep): a step of its own, so a database whose
+// backfill/runs/deploy finished before created_at was stored walks the window again. Only deploy
+// runs need it, since containment is the one reader of a run's creation.
+func createdAtBackfillStep(repo string) string {
+	return repoStep("backfill/created_at/"+string(DeliveryRunKindDeploy), repo)
+}
 
 // backfillRuns re-lists the last BackfillWindow of kind's runs once under step, so every stored
 // run carries what only the listing carries: GitHub's head_branch and event (backfillStep; a row

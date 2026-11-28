@@ -162,8 +162,8 @@ func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
 		{success, 0, []string{"runs.rate"}, ""}, {success, 1, []string{"runs.rate"}, ""}, {success, 0.9, []string{"runs.rate", "runs.concluded"}, ""},
 		{success, 1.0001, []string{"runs.rate"}, "runs.rate"}, {success, -0.1, []string{"runs.rate"}, "runs.rate"},
 		{success, -1, []string{"runs.concluded"}, "runs.concluded"},
-		{unitRatio, 0.3, []string{"per_pr.rate"}, ""}, {unitRatio, 2, []string{"per_deploy.rate"}, "per_deploy.rate"},
-		{unitRatio, 1.5, []string{"upper_bound.rate"}, "upper_bound.rate"}, {unitRatio, 12, []string{"per_pr.total"}, ""},
+		{unitRatio, 0.3, []string{"per_deploy.rate"}, ""}, {unitRatio, 2, []string{"per_deploy.rate"}, "per_deploy.rate"},
+		{unitRatio, 1.5, []string{"per_deploy.failed", "per_deploy.rate"}, "per_deploy.rate"}, {unitRatio, 12, []string{"per_deploy.total"}, ""},
 		{frequency, 1.5, []string{"per_deploy.rate"}, "per_deploy.rate"}, {frequency, 250, []string{"deploys.deploys"}, ""},
 		{frequency, -3, []string{"deploys.per_day"}, "deploys.per_day"},
 		{unitMinutes, 100, []string{"minutes.max", "minutes.median"}, ""}, {unitMinutes, -1, []string{"minutes.n"}, "minutes.n"},
@@ -205,7 +205,7 @@ func TestATargetLiesInTheRangeItsEvalsUnitHolds(t *testing.T) {
 // is nonnegative. Use an unbounded unit so a missing judge range cannot pass by fallback.
 func TestEveryDeliveryJudgeHasATargetRange(t *testing.T) {
 	t.Parallel()
-	rates := []string{"per_deploy.rate", "per_pr.rate", "runs.rate", "upper_bound.rate"}
+	rates := []string{"per_deploy.rate", "runs.rate"}
 	taken := map[string]bool{}
 	for _, slug := range slices.Sorted(maps.Keys(deliveryJudges)) {
 		for _, judge := range deliveryJudges[slug] {
@@ -771,7 +771,7 @@ func TestAListingChangeOfALoggedSeriesMovesItsStoredDayRows(t *testing.T) {
 	r.write(t, slug, alice, reading("c", 6))
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	for _, repos := range [][]string{nil, {"acme/web"}} {
-		days, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, r.entries(t, evalID), "", repos, window, nil)
+		days, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, r.entries(t, evalID), nil, repos, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of %v: %v", repos, err)
 		}

@@ -260,8 +260,9 @@ type viewReads int
 
 const (
 	// viewReadsDelivery is the deployment's delivery rows: a change of one can move the view
-	// (touchedBy), its read holds the delivery settings, its freshness is the hub's one verdict,
-	// and a deployment with no delivery settings is DELIVERY_NOT_CONFIGURED.
+	// (touchedBy), its read holds every delivery-on project's source rules (readDeliveryRules), its
+	// freshness is the hub's one verdict, and a deployment with no delivery-on project is
+	// DELIVERY_NOT_CONFIGURED.
 	viewReadsDelivery viewReads = iota + 1
 	// viewReadsLegion is one project's Legion daemon as the Legion intake recorded it, and for its
 	// board the stored per-issue facts of the issues the board shows: the view's spec holds that
@@ -349,6 +350,11 @@ type deliveryLiveClasses struct {
 	// project. A new version of one in any project marks the view (touchedBy), and so does the
 	// refresher's commit that moves which project that is (delivery.JudgingMoved).
 	evalVersions []string
+	// evalDays are the evals whose day rows the view's answer folds, by slug: the three failure
+	// measures the timeline's and the measures' answers read of the delivery-on project
+	// (evals.Store.DeploymentFailures), which no view names. A write of their day rows in any
+	// project marks the view (touchedBy).
+	evalDays []string
 	// parse reads a subscribed view's own fields into its spec, or refuses it: what the matching
 	// GET route reads of a query, including the key one view of this kind is held under.
 	parse func(spec *deliveryLiveSpec, view DeliveryLiveView) *LiveError
@@ -374,17 +380,19 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
+		evalDays:     evals.FailureDaySlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},
 	deliveryLiveMeasures: {
 		body:         reflect.TypeFor[deliveryMeasuresResponse](),
-		whole:        map[string][]string{"measures": nil, "flags_source": nil, "unowned_p0": nil, "targets": nil, "status": nil},
+		whole:        map[string][]string{"measures": nil, "unowned_p0": nil, "targets": nil, "status": nil},
 		withChanges:  []string{"window"},
 		out:          []string{"computed_at", "freshness"},
 		reads:        viewReadsDelivery,
 		unownedP0:    true,
 		evalVersions: evals.DeliveryTargetSlugs,
+		evalDays:     evals.FailureDaySlugs,
 		parse:        parseDeliveryWindowView,
 		read:         (*deliveryHub).readDeliveryView,
 	},

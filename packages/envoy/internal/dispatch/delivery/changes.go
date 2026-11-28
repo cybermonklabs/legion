@@ -35,15 +35,25 @@ import (
 // publishing of the default repositories (EvalDaysWrittenBySettingsRewrite,
 // EvalDaysWrittenByRebuild, EvalDaysWrittenByDefaults). An eval_days row of no eval, whose Repo
 // and Ref are empty, is the refresher's word that the day rows stand at the delivery settings in
-// the commit that moves the deploy repository recorded with them, or records them first in a page
-// that read a change of the settings row (SettingsApplied below): it carries the settings
-// rewrite's RunKind and no span.
+// the page's commit that moves the source repositories recorded with them (eval_days_rules), or
+// records them first in a page that read a change of the settings (SettingsApplied below): it
+// carries the settings rewrite's RunKind and no span. One of no project whose Ref is
+// SettingsRecordedRef is its word that it recorded the rules the rows stand built under
+// (SettingsRecorded below), with the same RunKind and no span.
 //
 // An issue_filings row holds none either: Repo carries the project key and Ref the filed issue's
 // key (migration 20261117100019). TOld and TNew are the filing's filed_at before and after: an
 // insert carries TNew alone, a delete TOld alone.
 //
-// A settings row is a write of the delivery settings: its Repo, Ref, TOld and TNew are empty.
+// A production_events row holds none either: Repo carries the project key of the record's row and
+// Ref its id (migration 20261123002037). TOld and TNew are the time the row counts on before and
+// after: a deploy's finished_at, or a failure's blamed deploy's; a failure whose restored_at moved
+// logs a second change, carrying its restored_at before and after.
+//
+// A settings row is a write of the delivery settings: its Repo carries the key of the project whose
+// settings were written (empty for the singleton row the release before writes), its Ref is
+// FailureFirstDayRef where the write moved the first day the project's failure evals measure and
+// empty otherwise, and its TOld and TNew are empty.
 type Change struct {
 	Seq     int64
 	At      time.Time
@@ -71,6 +81,9 @@ const (
 	ChangeKindEvalVersions = "eval_versions"
 	ChangeKindEvalDays     = "eval_days"
 	ChangeKindIssueFilings = "issue_filings"
+	// ChangeKindProductionEvents is a write of the record of deploys and failed changes
+	// (dispatch://INFRA-978, R13).
+	ChangeKindProductionEvents = "production_events"
 )
 
 // EvalDaysWrittenBySettingsRewrite is the RunKind of an eval_days change that the refresher's
@@ -82,14 +95,15 @@ const (
 // where every other change waits the quiet that gathers a burst into one recompute.
 //
 // It is also the RunKind of the eval_days change of no eval (SettingsApplied): the one change the
-// refresher logs where the commit that brings the day rows to the delivery settings moves the
-// deploy repository recorded with them, which a read of every project's evals chooses rows by, or
-// records them first: the rewrite's transaction where it rewrote rows, and the page's commit where
-// the change moved none. An evals view reads the deploy repository and the rows together, so it is
-// recomputed for this change, at once, and not for the change of the settings row itself, which it
-// would answer from rows not yet rewritten. A change that moves rows and not the deploy repository
-// logs none: the rewrite's own changes, each under the project of an eval it moved, wake the views
-// it moves.
+// refresher logs where the page's commit that brings the day rows to the delivery settings moves
+// the source repositories recorded with them (a repository gained or lost, eval_days_rules), which
+// a read of every project's evals chooses rows by (evals.DeployReposIn, evals.DeployRepoOf), or
+// records them first. An evals view reads those repositories and the rows together, so it is
+// recomputed for this change, at once, and not for the change of the settings itself, which it
+// would answer from rows not yet rewritten. A change that moves rows and no source repository logs
+// none: the rewrite's own changes, each under the project of an eval it moved, wake the views it
+// moves. And it is the RunKind of the change that says the rules are recorded (SettingsRecorded),
+// which every commit that moves a recorded rule logs.
 const EvalDaysWrittenBySettingsRewrite = "settings_rewrite"
 
 // EvalDaysWrittenByRebuild is the RunKind of an eval_days change that the refresher's rebuild of a
@@ -104,12 +118,13 @@ const EvalDaysWrittenByRebuild = "rebuild"
 // the commit that publishes the projects' default repositories (evals.syncDefaults), where a
 // person's write of a default repository moved one: one change of no eval for each project whose
 // published default it moves, Repo that project's key, which marks the evals views of the project;
-// and, where it moves the project whose published default is the deploy repository, whose evals
-// judge the delivery views' figures (evals.Store.DeployRepoEvals), one more whose Ref is
-// DefaultsJudgingRef and Repo the deploy repository, which marks every delivery view those evals
-// judge (JudgingMoved). The commit makes the defaults, the marks of every cut of the stored figures
-// the move moves rows into or out of, the project's own cut (repo "") as much as a repository's,
-// and the first paint of each marked cut, folded under the new defaults
+// and, for each deploy repository whose judging project it moves (the delivery-on project whose
+// deploy source reads the repository, a source that names none reading its project's published
+// default), whose evals judge the delivery views' figures (evals.Store.DeployRepoEvals), one more
+// whose Ref is DefaultsJudgingRef and Repo the deploy repository, which marks every delivery view
+// those evals judge (JudgingMoved). The commit makes the defaults, the marks of every cut of the
+// stored figures the move moves rows into or out of, the project's own cut (repo "") as much as a
+// repository's, and the first paint of each marked cut, folded under the new defaults
 // (evals.foldMarkedFirstPaints), visible together, so a view of them is recomputed at once.
 const EvalDaysWrittenByDefaults = "defaults"
 
@@ -121,26 +136,32 @@ const DefaultsJudgingRef = "judging"
 // settings the day rows stand built under (SettingsRecorded).
 const SettingsRecordedRef = "settings-recorded"
 
+// FailureFirstDayRef is the Ref of a settings change whose write moved the effective first day of
+// a project's failure evals (project_delivery_settings_changed, migration 20261123010254): it can
+// move their data_since with no day row, so the refresher announces it for the project
+// (evals.markFailureFirstDayMoved).
+const FailureFirstDayRef = "failure-first-day"
+
 // SettingsApplied reports whether change is the refresher's word that the day rows stand at the
 // delivery settings (EvalDaysWrittenBySettingsRewrite): an eval_days change of no eval.
 func SettingsApplied(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == ""
 }
 
-// SettingsRecorded reports whether change is the refresher's word that it recorded the delivery
-// settings the day rows stand built under (evals.recordBuiltUnder): an eval_days change of no
+// SettingsRecorded reports whether change is the refresher's word that it recorded the rules the
+// day rows stand built under (evals.recordRules, evals.recordRule): an eval_days change of no
 // project, Ref SettingsRecordedRef, carrying EvalDaysWrittenBySettingsRewrite, logged by every
-// commit that records them. The delivery routes and views answer under the recorded settings
+// commit that records them. The delivery routes and views answer under the recorded rules
 // (evals.BuiltSettingsIn), so it marks every delivery view; it names no project and is no
-// SettingsApplied, so it marks no evals view, whose answer only the deploy repository among those
-// settings moves.
+// SettingsApplied, so it marks no evals view, whose answer only the deploy repositories among those
+// settings move.
 func SettingsRecorded(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.Repo == "" && change.Ref == SettingsRecordedRef &&
 		change.RunKind == EvalDaysWrittenBySettingsRewrite
 }
 
-// JudgingMoved reports whether change is the refresher's word that the project whose published
-// default is the deploy repository moved (EvalDaysWrittenByDefaults, DefaultsJudgingRef).
+// JudgingMoved reports whether change is the refresher's word that the project judging a deploy
+// repository's delivery views moved (EvalDaysWrittenByDefaults, DefaultsJudgingRef).
 func JudgingMoved(change Change) bool {
 	return change.Kind == ChangeKindEvalDays && change.RunKind == EvalDaysWrittenByDefaults && change.Ref == DefaultsJudgingRef
 }
@@ -180,8 +201,27 @@ const ChangesChannel = "delivery_changes"
 // deadlock. The writers that take it, by position:
 //
 //   - Last, in one statement: every one-statement write of a delivery row (a pull request, a run,
-//     the settings), and a run's jobs write (UpsertRunJobs), which writes the run row and every job
-//     in one statement.
+//     the singleton's settings, PutSettings), and a run's jobs write (UpsertRunJobs), which writes
+//     the run row and every job in one statement.
+//   - In the triggers of its first statement that moves a logged column, then held through its
+//     later statements and its commit: a project's settings save (PutProjectSettings), which
+//     writes project_delivery_settings on every save, then the project's project_deploy_sources
+//     rows, then deletes their repositories' reconcile progress, under the project's lock and its
+//     repositories' (store.LockDeliveryProject, store.LockDeployRepositories), both taken before
+//     any of those writes; and each line of the boot's rename pass that writes either table
+//     (store's repoRenameLines), which locks rows of every project in several statements. Two
+//     saves of one project take turns on the project's lock, two that read one repository on that
+//     repository's lock, and any other two lock none of each other's rows. A line beside a save
+//     would hold a row the save waits for while it waits for the lock the save holds, so the line
+//     takes both tables' own locks first, before any row lock, in share row exclusive mode
+//     (store's deliverySettingsLock): it waits for each running save, which holds
+//     project_delivery_settings' row exclusive lock from its first write on, and a later save
+//     waits for the line before that write. The lines of projects.default_repo and
+//     project_deploy_sources.repo take before those, in the order a save takes its own before its
+//     writes, the lock of each project with a default repository or a source that names a pair's
+//     old name (store.LockDeliveryProject) and then the lock of each pair's old and new
+//     name (store.LockDeployRepositories), so each waits for a save of such a project or one that
+//     reads either name, and a later such save waits for it.
 //   - Last, in the statement that ends its transaction: the issue.deployed write
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
@@ -204,9 +244,18 @@ const ChangesChannel = "delivery_changes"
 // first, for the rest of its transaction, so those transactions are short and do their reads
 // before it.
 //
-// No eval, refresher or Legion facts write takes it: their changes wait in the outbox
-// (delivery_changes_pending, migration 20261117100001), and the drain moves them into the log in
-// a short transaction of its own after they commit.
+// No refresher, Legion facts or production event write takes it, and no eval write but one: their
+// changes wait in the outbox (delivery_changes_pending, migration 20261117100001), and the drain
+// moves them into the log in a short transaction of its own after they commit. The one is the
+// delivery settings save, an eval write (evals.Store.RegisterWith, api's settingsSave.write) whose
+// settings tables' triggers take this lock at the first write that moves a logged column
+// (delivery_change_log, migration 20261123010254) and hold it to the save's commit; its target
+// writes' changes wait in the outbox as every eval write's do. The production event writers
+// (dispatch://INFRA-978) write in transactions of their own that take no lock: the GitHub adapter
+// (prodevents/signals) reads the change a run, job or pull request write logged, once that write
+// has committed, and only then writes the deploy row, and the signals and the record's routes write
+// after their own causes committed. No transaction that takes the lock locks a production_events
+// row, so that table holds no position, and no path above writes one.
 const lockChangesStatement = `select pg_advisory_xact_lock(6900, 0)`
 
 // queueLockChanges queues the change log's lock (lockChangesStatement) into batch, so the

@@ -50,16 +50,6 @@ type fixtureDeploy struct {
 	DeployedAt *time.Time `json:"deployed_at"`
 }
 
-// fixtureFlags are the prototype fixture's four failed-change flags (web/fixtures/dataset.json
-// "flags"), names replaced as the fixture's are. The fixture file carries none, since slice 2
-// stores no flags (decision 1); these prove the change-failure formulas on the prototype's inputs.
-var fixtureFlags = []Flag{
-	{Broken: "acme/widgets#101", Fix: "acme/widgets#102", Kind: "fix", State: "confirmed"},
-	{Broken: "acme/widgets#104", Fix: "acme/widgets#105", Kind: "revert", State: "confirmed"},
-	{Broken: "acme/widgets#106", Fix: "acme/widgets#107", Kind: "fix", State: "pending"},
-	{Broken: "acme/widgets#111", Fix: "acme/widgets#112", Kind: "fix", State: "rejected"},
-}
-
 func readFixture(t *testing.T) fixtureFile {
 	t.Helper()
 	data, err := os.ReadFile("testdata/dora-fixture.json")
@@ -186,7 +176,7 @@ func assertDay(t *testing.T, point DailyPoint, deploys, concluded, reached, canc
 
 func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	prs, runs, window := loadFixture(t)
-	result := Compute(prs, runs, fixtureFlags, window)
+	result := Compute(prs, runs, FailureParts{}, window)
 
 	frequency := result.DeployFrequency
 	if frequency.SuccessfulDeploys != 5 || frequency.DeploysWithPRs != 5 {
@@ -200,20 +190,9 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 	assertSpread(t, "opened_to_production", result.LeadTime.OpenedToProduction, 210, 1416, 1500)
 	assertSpread(t, "opened_to_merge", result.LeadTime.OpenedToMerge, 330, 462, 1080)
 
-	perPR := result.ChangeFailureRate.PerPR
-	if perPR.Confirmed != 2 || perPR.Pending != 1 || perPR.Rejected != 1 || perPR.Reverts != 1 || perPR.Total != 14 {
-		t.Errorf("per_pr = %+v, want {confirmed 2, pending 1, rejected 1, reverts 1, total 14}", perPR)
+	if result.ChangeFailureRate != nil || result.FailedDeploymentRecovery != nil || result.DeploymentReworkRate != nil {
+		t.Errorf("the failure measures with no stored part = %+v, %+v, %+v, want no value", result.ChangeFailureRate, result.FailedDeploymentRecovery, result.DeploymentReworkRate)
 	}
-	assertOptional(t, "per_pr.rate", perPR.Rate, new(2.0/14))
-	perDeploy := result.ChangeFailureRate.PerDeploy
-	if perDeploy.Confirmed != 2 || perDeploy.Pending != 0 || perDeploy.Rejected != 1 || perDeploy.Reverts != 1 ||
-		perDeploy.Total != 5 || perDeploy.ConfirmedOrPending != 2 {
-		t.Errorf("per_deploy = %+v, want {confirmed 2, pending 0, rejected 1, reverts 1, total 5, confirmed_or_pending 2}", perDeploy)
-	}
-	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
-	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.4))
-
-	assertOptional(t, "time_to_restore.median_minutes", result.TimeToRestore.MedianMinutes, new(750.0))
 	assertFloat(t, "rework_share", result.ReworkShare, 4.0/14)
 
 	success := result.DeployRunSuccess
@@ -252,7 +231,7 @@ func TestComputeMatchesThePrototypeOnItsFixture(t *testing.T) {
 // from the prototype's web/), so Task 3's API test and this package agree on one set.
 func TestComputeOnStoredContainment(t *testing.T) {
 	prs, runs, window := storedFixture(t)
-	result := Compute(prs, runs, nil, window)
+	result := Compute(prs, runs, FailureParts{}, window)
 
 	if result.DeployFrequency.SuccessfulDeploys != 5 || result.DeployFrequency.DeploysWithPRs != 5 {
 		t.Errorf("deploy_frequency = %+v, want {5, 5}", result.DeployFrequency)
@@ -268,75 +247,58 @@ func TestComputeOnStoredContainment(t *testing.T) {
 	}
 }
 
-// TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime: with no failure source (nil
-// flags) the change failure rate is still the object a page of an earlier build reads, every
-// count 0 and every rate nil, which no target can judge, and time to restore holds no median;
-// with a source that holds no flag (an empty list) the rate is a measured 0 over the window's pull
-// requests and deploys, while a rate over none, a denominator of 0, reads no value: a window with
-// no deploy measured no per-deploy rate, and a 0 there would be judged met.
-func TestComputeWithNoFailureSourceReadsNoFailureRateAndNoRestoreTime(t *testing.T) {
+// TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds: the three failure measures are their
+// evals' stored parts folded by each eval's one fold, so the measures answer and an eval read of
+// the same parts agree. With no part (no row: before failures_measured_since, or a project with no
+// failure source) each reads no value, encoded null, which no target can judge; a day row with
+// deploys and no failure reads a measured 0, and one with one restored failure a value in all
+// three.
+func TestComputeAnswersTheFailureMeasuresByTheirEvalsFolds(t *testing.T) {
 	prs, runs, window := loadFixture(t)
-	result := Compute(prs, runs, nil, window)
-	if result.ChangeFailureRate != (ChangeFailureRate{}) {
-		t.Errorf("change_failure_rate = %+v with no failure source, want every count 0 and every rate nil", result.ChangeFailureRate)
-	}
-	encoded, err := json.Marshal(result.ChangeFailureRate)
+	unmeasured := Compute(prs, runs, FailureParts{}, window)
+	encoded, err := json.Marshal(struct {
+		ChangeFail any `json:"change_failure_rate"`
+		Recovery   any `json:"failed_deployment_recovery"`
+		Rework     any `json:"deployment_rework_rate"`
+	}{unmeasured.ChangeFailureRate, unmeasured.FailedDeploymentRecovery, unmeasured.DeploymentReworkRate})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const unmeasured = `{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
-		`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
-	if string(encoded) != unmeasured {
-		t.Errorf("change_failure_rate encodes %s with no failure source, want %s", encoded, unmeasured)
-	}
-	if result.TimeToRestore.MedianMinutes != nil {
-		t.Errorf("time_to_restore.median_minutes = %v, want nil", *result.TimeToRestore.MedianMinutes)
+	if want := `{"change_failure_rate":null,"failed_deployment_recovery":null,"deployment_rework_rate":null}`; string(encoded) != want {
+		t.Errorf("the failure measures with no stored part encode %s, want %s", encoded, want)
 	}
 
-	for _, measured := range []struct {
-		name                         string
-		got                          ChangeFailureRate
-		wantCounts                   ChangeFailureRate
-		perPR, perDeploy, upperBound *float64
-	}{
-		{"a source with no flag", Compute(prs, runs, []Flag{}, window).ChangeFailureRate,
-			ChangeFailureRate{PerPR: FlagCounts{Total: 14}, PerDeploy: DeployFlagCounts{FlagCounts: FlagCounts{Total: 5}}},
-			new(0.0), new(0.0), new(0.0)},
-		// Pull requests and no run: the per-PR rate is a measured 0, and the two over the deploys,
-		// of which there is none, read no value.
-		{"a source with no flag or run", Compute(prs, nil, []Flag{}, window).ChangeFailureRate,
-			ChangeFailureRate{PerPR: FlagCounts{Total: 14}}, new(0.0), nil, nil},
-		// Neither a pull request nor a run: every day's parts hold a zero denominator, so no rate
-		// was measured.
-		{"a source with no flag, pull request or run", Compute(nil, nil, []Flag{}, window).ChangeFailureRate,
-			ChangeFailureRate{}, nil, nil, nil},
-	} {
-		counts := measured.got
-		counts.PerPR.Rate, counts.PerDeploy.Rate, counts.PerDeploy.UpperBoundRate = nil, nil, nil
-		if counts != measured.wantCounts {
-			t.Errorf("%s: counts = %+v, want %+v", measured.name, counts, measured.wantCounts)
-		}
-		assertOptional(t, measured.name+": per_pr.rate", measured.got.PerPR.Rate, measured.perPR)
-		assertOptional(t, measured.name+": per_deploy.rate", measured.got.PerDeploy.Rate, measured.perDeploy)
-		assertOptional(t, measured.name+": per_deploy.upper_bound_rate", measured.got.PerDeploy.UpperBoundRate, measured.upperBound)
+	day := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
+	quiet := []FailureDeploy{{}, {}}
+	measured := Compute(prs, runs, FailureParts{
+		ChangeFail: ChangeFailRateDay(day, quiet), Recovery: RecoveryDay(day, nil, 0), Rework: ReworkRateDay(day, quiet),
+	}, window)
+	if rate := measured.ChangeFailureRate; rate == nil || rate.Failed != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
+		t.Errorf("change_failure_rate with deploys and no failure = %+v, want a measured 0 of 2", rate)
 	}
-}
+	if rate := measured.DeploymentReworkRate; rate == nil || rate.Restoring != 0 || rate.Total != 2 || rate.Rate == nil || *rate.Rate != 0 {
+		t.Errorf("deployment_rework_rate with deploys and no restore = %+v, want a measured 0 of 2", rate)
+	}
+	if recovery := measured.FailedDeploymentRecovery; recovery == nil || recovery.N != 0 || recovery.MedianMinutes != nil || recovery.NotRestored != 0 {
+		t.Errorf("failed_deployment_recovery with no restore = %+v, want no median and nothing left", recovery)
+	}
 
-// TestUpperBoundCountsEachDeployOnce is dora.test.ts:95-113: #108 shipped in run 504, which no
-// confirmed flag touches, so the bound gains a deploy; #105 shipped in run 503, already counted
-// through confirmed #104, so it does not count twice.
-func TestUpperBoundCountsEachDeployOnce(t *testing.T) {
-	prs, runs, window := loadFixture(t)
-	flags := append(append([]Flag{}, fixtureFlags...),
-		Flag{Broken: "acme/widgets#108", Fix: "acme/widgets#109", Kind: "fix", State: "pending"},
-		Flag{Broken: "acme/widgets#105", Fix: "acme/widgets#107", Kind: "fix", State: "pending"},
-	)
-	perDeploy := Compute(prs, runs, flags, window).ChangeFailureRate.PerDeploy
-	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.4))
-	if perDeploy.Pending != 2 || perDeploy.ConfirmedOrPending != 3 {
-		t.Errorf("per_deploy = {pending %d, confirmed_or_pending %d}, want {2, 3}", perDeploy.Pending, perDeploy.ConfirmedOrPending)
+	broken := []FailureDeploy{{Failures: 1}, {Restores: true}}
+	parts := FailureParts{
+		ChangeFail: ChangeFailRateDay(day, broken),
+		Recovery:   RecoveryDay(day, []RestoredFailure{{DeployFinishedAt: day.Add(9 * time.Hour), RestoredAt: day.Add(11 * time.Hour)}}, 0),
+		Rework:     ReworkRateDay(day, broken),
 	}
-	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.6))
+	failed := Compute(prs, runs, parts, window)
+	if rate, want := failed.ChangeFailureRate, FoldChangeFailRate(parts.ChangeFail); rate == nil || rate.Failed != want.Failed || rate.Total != want.Total || *rate.Rate != 0.5 {
+		t.Errorf("change_failure_rate = %+v, want FoldChangeFailRate's 1 of 2", rate)
+	}
+	if recovery := failed.FailedDeploymentRecovery; recovery == nil || recovery.MedianMinutes == nil || *recovery.MedianMinutes != 120 || recovery.N != 1 {
+		t.Errorf("failed_deployment_recovery = %+v, want FoldRecovery's 120-minute median of one restore", recovery)
+	}
+	if rate, want := failed.DeploymentReworkRate, FoldReworkRate(parts.Rework); rate == nil || rate.Restoring != want.Restoring || rate.Total != want.Total || *rate.Rate != 0.5 {
+		t.Errorf("deployment_rework_rate = %+v, want FoldReworkRate's 1 of 2", rate)
+	}
 }
 
 // TestACancelledRunWhoseProductionJobSucceededIsADeployButNotARunSuccess is dora.test.ts:122-137.
@@ -348,7 +310,7 @@ func TestACancelledRunWhoseProductionJobSucceededIsADeployButNotARunSuccess(t *t
 		Conclusion:        new(delivery.DeliveryRunConclusionCancelled),
 		ReachedProduction: true,
 	})
-	result := Compute(prs, runs, fixtureFlags, window)
+	result := Compute(prs, runs, FailureParts{}, window)
 	if result.DeployFrequency.SuccessfulDeploys != 6 {
 		t.Errorf("successful_deploys = %d, want 6", result.DeployFrequency.SuccessfulDeploys)
 	}
@@ -409,7 +371,7 @@ func TestDailySeriesFollowsABrushedWindow(t *testing.T) {
 	allPRs, allRuns, _ := loadFixture(t)
 	window := Window{From: time.Date(2026, 9, 5, 12, 30, 0, 0, time.UTC), To: time.Date(2026, 9, 9, 12, 0, 0, 0, time.UTC)}
 	prs, runs := windowed(allPRs, allRuns, window)
-	result := Compute(prs, runs, fixtureFlags, window)
+	result := Compute(prs, runs, FailureParts{}, window)
 	assertDayRows(t, result.Daily, []dayRow{
 		{"2026-09-05", true, 0},
 		{"2026-09-06", false, 1},
@@ -425,7 +387,7 @@ func TestAWindowEndingAtMidnightHasNoEmptyTrailingDay(t *testing.T) {
 	allPRs, allRuns, _ := loadFixture(t)
 	window := Window{From: time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC), To: time.Date(2026, 9, 9, 0, 0, 0, 0, time.UTC)}
 	prs, runs := windowed(allPRs, allRuns, window)
-	assertDayRows(t, Compute(prs, runs, fixtureFlags, window).Daily, []dayRow{
+	assertDayRows(t, Compute(prs, runs, FailureParts{}, window).Daily, []dayRow{
 		{"2026-09-06", false, 1},
 		{"2026-09-07", false, 0},
 		{"2026-09-08", false, 0},

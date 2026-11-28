@@ -84,10 +84,30 @@ const catalogueTargets: { [K in keyof Targets]: NonNullable<Targets[K]> } = {
   unowned_p0: { value: 0, inclusive: true, direction: "lower_better", judges: ["issues.value"] },
 };
 
-/** GET /api/v1/delivery/measures for the fixture window, as the server answers it with no flags
- *  stored (the reference request recorded on the slice 2 pull request): no failure source exists,
- *  so the change failure rate's counts are 0 and its rates null, and neither of its verdicts is
- *  reached. */
+/** The retired flag-count containers the server keeps with every leaf null for the Delivery page
+ *  of the previous build. */
+const retiredChangeFailLeaves = {
+  per_pr: {
+    confirmed: null,
+    pending: null,
+    rejected: null,
+    reverts: null,
+    total: null,
+    rate: null,
+  },
+  per_deploy: {
+    confirmed: null,
+    total: null,
+    rate: null,
+    confirmed_or_pending: null,
+    upper_bound_rate: null,
+  },
+};
+
+/** GET /api/v1/delivery/measures for the fixture window, as the server answers it while no day row
+ *  of the three failure measures' evals is stored (the reference request recorded on the slice 2
+ *  pull request): each failure measure reads no data, the retired containers keep every leaf null,
+ *  and the change failure rate's verdict is not reached. */
 const fixtureMeasures: DeliveryMeasuresResponse = {
   window: { from: "2026-08-30T00:00:00Z", to: "2026-09-27T20:00:00Z" },
   computed_at: "2026-10-09T04:33:22Z",
@@ -105,19 +125,14 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
       opened_to_merge: { median_minutes: 330, p90_minutes: 462.00000000000006, max_minutes: 1080 },
     },
     change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 0,
-        rate: null,
-        confirmed_or_pending: 0,
-        upper_bound_rate: null,
-      },
+      failed: null,
+      total: null,
+      rate: null,
+      ...retiredChangeFailLeaves,
     },
     time_to_restore: { median_minutes: null },
+    failed_deployment_recovery: null,
+    deployment_rework_rate: null,
     rework_share: 0.2857142857142857,
     deploy_run_success: {
       concluded: 7,
@@ -127,13 +142,11 @@ const fixtureMeasures: DeliveryMeasuresResponse = {
     },
     daily: fixtureDaily(),
   },
-  flags_source: "none",
   unowned_p0: [{ key: "ACME-103", title: "Production deploy gate flakes" }],
   targets: catalogueTargets,
   status: {
     deploys_per_day: false,
     change_failure_rate: null,
-    change_failure_rate_upper_bound: null,
     merge_to_production_median: false,
     merge_to_production: false,
     opened_to_merge: false,
@@ -265,20 +278,13 @@ function definition(title: string): Element {
   return found;
 }
 
-/** A change failure rate a stored failure source measured: 2% of deploys confirmed broken, 4% if
- *  every pending flag is confirmed, and 40% of pull requests. */
+/** A change failure rate the record of deploys and failures measured: 1 of 50 deploys with an
+ *  unrejected failure, 2%. */
 const measuredFailureRate: DeliveryMeasuresResponse["measures"]["change_failure_rate"] = {
-  per_pr: { confirmed: 2, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0.4 },
-  per_deploy: {
-    confirmed: 1,
-    pending: 1,
-    rejected: 0,
-    reverts: 0,
-    total: 50,
-    rate: 0.02,
-    confirmed_or_pending: 2,
-    upper_bound_rate: 0.04,
-  },
+  failed: 1,
+  total: 50,
+  rate: 0.02,
+  ...retiredChangeFailLeaves,
 };
 
 test("the panel shows the six KPI cards, each with its badge, number and target", () => {
@@ -299,9 +305,8 @@ test("the panel shows the six KPI cards, each with its badge, number and target"
   expect(cfr.getByText("no data")).toBeDefined();
   expect(cfr.queryByText("\u2713 met")).not.toBeInTheDocument();
   expect(cfr.queryByText("\u2717 missed")).not.toBeInTheDocument();
-  expect(cfr.queryByText("confirmed")).not.toBeInTheDocument();
-  expect(cfr.getByText("Flags arrive with flag confirmation")).toBeDefined();
-  expect(cfr.queryByText(/if every pending flag is confirmed/)).not.toBeInTheDocument();
+  expect(cfr.getByText("per deploy")).toBeDefined();
+  expect(cfr.getByText("No data for this window")).toBeDefined();
   expect(cfr.getByText("target < 5% per deploy")).toBeDefined();
 
   const merge = within(card("Merge \u2192 production"));
@@ -444,13 +449,13 @@ test("a lead-time card names the statistics its target judges and tones those fi
 });
 
 // R5, and review v2's R2-3: a figure takes a tone only where the card's target judges the
-// statistic it shows. The answer's verdicts of the merge median and of the failure rate's upper
-// bound are null where the target's judges leave that statistic out (api/delivery_measures.go
-// measuresStatus, deliveryJudgeVerdict), as these judges do, and the figure reads plain rather
-// than toned by its own value (dispatch://INFRA-2916: the testing round of 2026-11-18 at
-// 0ea9989f drove a median verdict under the longest change's judge from a server that then
-// judged the median whatever the judges, judges-median-W.r10.out).
-test("a figure whose statistic the target does not judge takes no tone, and the answer carries no verdict of it: the merge median under its longest change, the upper bound under the per-PR rate", () => {
+// statistic it shows. The answer's verdict of the merge median is null where the target's judges
+// leave that statistic out (api/delivery_measures.go measuresStatus, deliveryJudgeVerdict), as
+// these judges do, and the figure reads plain rather than toned by its own value
+// (dispatch://INFRA-2916: the testing round of 2026-11-18 at 0ea9989f drove a median verdict under
+// the longest change's judge from a server that then judged the median whatever the judges,
+// judges-median-W.r10.out).
+test("a figure whose statistic the target does not judge takes no tone, and the answer carries no verdict of it: the merge median under its longest change, the per-deploy rate under its count of deploys", () => {
   renderPanel({
     ...fixtureMeasures,
     targets: {
@@ -477,22 +482,9 @@ test("a figure whose statistic the target does not judge takes no tone, and the 
 
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "flags",
     measures: {
       ...fixtureMeasures.measures,
-      change_failure_rate: {
-        per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 5, rate: 0 },
-        per_deploy: {
-          confirmed: 0,
-          pending: 2,
-          rejected: 0,
-          reverts: 0,
-          total: 5,
-          rate: 0,
-          confirmed_or_pending: 2,
-          upper_bound_rate: 0.4,
-        },
-      },
+      change_failure_rate: { failed: 0, total: 5, rate: 0, ...retiredChangeFailLeaves },
     },
     targets: {
       ...catalogueTargets,
@@ -500,39 +492,38 @@ test("a figure whose statistic the target does not judge takes no tone, and the 
         value: 0.05,
         inclusive: false,
         direction: "lower_better",
-        judges: ["per_pr.rate"],
+        judges: ["per_deploy.total"],
       },
     },
-    status: {
-      ...fixtureMeasures.status,
-      change_failure_rate: true,
-      change_failure_rate_upper_bound: null,
-    },
+    status: { ...fixtureMeasures.status, change_failure_rate: false },
   });
   const failures = within(card("Change failure rate"));
-  expect(failures.getByText(/^target /).textContent ?? "").not.toContain("upper");
-  expect(failures.getByText("40.00%").className).not.toContain(dangerText);
-  expect(failures.getByText("40.00%").className).not.toContain(successText);
+  expect(failures.getByText(/^target /).textContent ?? "").not.toContain("failure rate");
+  expect(failures.getByText("0.00%").className).not.toContain(dangerText);
+  expect(failures.getByText("0.00%").className).not.toContain(successText);
 });
 
 // R5: a card's headline figure is one statistic of its eval and its badge the server's verdict of
 // every statistic the target judges: where a person judges another statistic, the badge follows
 // that verdict and the headline figure reads plain. Under the catalogue's judges each headline
 // figure is the statistic judged, and is toned by its own value.
-test("a headline figure its target does not judge takes no tone: the per-deploy rate judged by the per-PR rate, deploys a day judged by the deploys with a PR", () => {
+test("a headline figure its target does not judge takes no tone: the per-deploy rate judged by its count of deploys with a failure, deploys a day judged by the deploys with a PR", () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       ...catalogueTargets,
-      change_failure_rate: { ...catalogueTargets.change_failure_rate, judges: ["per_pr.rate"] },
+      change_failure_rate: {
+        ...catalogueTargets.change_failure_rate,
+        judges: ["per_deploy.failed"],
+      },
       deploys_per_day: {
         ...catalogueTargets.deploys_per_day,
         judges: ["deploys.with_prs_per_day"],
       },
     },
-    // The per-PR rate, 40%, misses under 5%, and 0.17 deploys with a PR a day miss at least 20.
+    // One deploy with a failure misses under 0.05, and 0.17 deploys with a PR a day miss at least
+    // 20.
     status: { ...fixtureMeasures.status, change_failure_rate: false, deploys_per_day: false },
   });
   const failures = within(card("Change failure rate"));
@@ -549,7 +540,6 @@ test("a headline figure its target does not judge takes no tone: the per-deploy 
   // under 5%; 0.17 deploys a day, 71.4% and one unowned P0 miss.
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     status: { ...fixtureMeasures.status, change_failure_rate: true },
   });
@@ -674,7 +664,6 @@ test("a bar is toned only where the target judges the statistic it draws: run su
 test("an eval with no target tones nothing: no figure, count, bar or per-day cell takes a tone, and no chart draws a target line", async () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       deploys_per_day: null,
@@ -687,7 +676,6 @@ test("an eval with no target tones nothing: no figure, count, bar or per-day cel
     status: {
       deploys_per_day: null,
       change_failure_rate: null,
-      change_failure_rate_upper_bound: null,
       merge_to_production_median: null,
       merge_to_production: null,
       opened_to_merge: null,
@@ -699,8 +687,8 @@ test("an eval with no target tones nothing: no figure, count, bar or per-day cel
     "Deploys a day": { "deploys.per_day": "plain", "deploys.deploys": "plain" },
     "Change failure rate": {
       "per_deploy.rate": "plain",
-      "upper_bound.rate": "plain",
-      "per_deploy.confirmed": "plain",
+      "per_deploy.failed": "plain",
+      "per_deploy.total": "plain",
     },
     "Merge \u2192 production": { "minutes.median": "plain", "minutes.max": "plain" },
     "PR open \u2192 merge": { "minutes.median": "plain", "minutes.p90": "plain" },
@@ -748,7 +736,6 @@ test("an eval with no target tones nothing: no figure, count, bar or per-day cel
 test("the badge is the server's verdict of the window and no figure takes it: each figure is toned by its own value where the two disagree", () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       ...catalogueTargets,
@@ -761,7 +748,6 @@ test("the badge is the server's verdict of the window and no figure takes it: ea
     status: {
       deploys_per_day: true,
       change_failure_rate: false,
-      change_failure_rate_upper_bound: false,
       merge_to_production_median: true,
       merge_to_production: true,
       opened_to_merge: false,
@@ -782,8 +768,8 @@ test("the badge is the server's verdict of the window and no figure takes it: ea
     "Deploys a day": { "deploys.per_day": "missed", "deploys.deploys": "plain" },
     "Change failure rate": {
       "per_deploy.rate": "met",
-      "upper_bound.rate": "plain",
-      "per_deploy.confirmed": "plain",
+      "per_deploy.failed": "plain",
+      "per_deploy.total": "plain",
     },
     "Merge \u2192 production": { "minutes.median": "missed", "minutes.max": "missed" },
     "PR open \u2192 merge": { "minutes.median": "met", "minutes.p90": "plain" },
@@ -795,12 +781,13 @@ test("the badge is the server's verdict of the window and no figure takes it: ea
     },
     "P0 issues with no owner": { "issues.value": "missed" },
   });
-  // The strip's figures too: its deploys a day and its merge median miss, and no judge names the
-  // per-PR rate. Its time to restore and its rework share are of no eval's statistic.
+  // The strip's figures too: its deploys a day and its merge median miss, and its per-deploy rate
+  // meets. Its recovery time, its deployment rework rate and its rework share are of no target's
+  // statistic.
   expect(tonesIn(screen.getByTestId("measures-strip"), "window")).toEqual({
     "deploys.per_day": "missed",
     "minutes.median": "missed",
-    "per_pr.rate": "plain",
+    "per_deploy.rate": "met",
   });
 });
 
@@ -810,7 +797,6 @@ test("the badge is the server's verdict of the window and no figure takes it: ea
 test("each fold figure of a statistic a delivery eval may judge is toned by its own value under that eval's target, and a figure of no eval's statistic by nothing", async () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       ...catalogueTargets,
@@ -825,22 +811,22 @@ test("each fold figure of a statistic a delivery eval may judge is toned by its 
         value: 1,
         inclusive: false,
         direction: "lower_better",
-        judges: ["per_pr.rate", "per_deploy.total"],
+        judges: ["per_deploy.rate", "per_deploy.total"],
       },
     },
   });
   await openFold();
   // At least 1: 0.17 deploys a day miss, 5 deploys with a PR meet. Under 600m: the merge median,
-  // 8.5h, meets, its longest change, 2.7d, misses, and no judge names its p90. Under 1: a 40%
-  // failure rate per PR meets, 50 deploys miss.
+  // 8.5h, meets, its longest change, 2.7d, misses, and no judge names its p90. Under 1: a 2%
+  // failure rate per deploy meets, 50 deploys miss, and no judge names the deploys with a failure.
   const titles = [
     "Deploy frequency",
     "Lead time (merge \u2192 prod)",
     "Lead time (first commit \u2192 prod)",
     "Lead time (PR opened \u2192 prod)",
-    "Change failure rate (per PR)",
     "Change failure rate (per deploy)",
-    "Time to restore",
+    "Failed deployment recovery time",
+    "Deployment rework rate",
     "Rework share",
   ];
   expect(
@@ -859,21 +845,13 @@ test("each fold figure of a statistic a delivery eval may judge is toned by its 
     },
     "Lead time (first commit \u2192 prod)": {},
     "Lead time (PR opened \u2192 prod)": {},
-    "Change failure rate (per PR)": {
-      "per_pr.rate": "met",
-      "per_pr.confirmed": "plain",
-      "per_pr.reverts": "plain",
-      "per_pr.pending": "plain",
-      "per_pr.rejected": "plain",
-      "per_pr.total": "plain",
-    },
     "Change failure rate (per deploy)": {
-      "per_deploy.rate": "plain",
-      "per_deploy.confirmed": "plain",
+      "per_deploy.rate": "met",
+      "per_deploy.failed": "plain",
       "per_deploy.total": "missed",
-      "upper_bound.rate": "plain",
     },
-    "Time to restore": {},
+    "Failed deployment recovery time": {},
+    "Deployment rework rate": {},
     "Rework share": {},
   });
   // Each names the eval whose target judges it.
@@ -883,27 +861,24 @@ test("each fold figure of a statistic a delivery eval may judge is toned by its 
     [],
     [],
     ["change-fail-rate"],
-    ["change-fail-rate"],
+    [],
     [],
     [],
   ]);
-  // The strip under the same targets: its deploys a day miss, and its merge median and its per-PR
-  // failure rate meet. The strip's per-PR rate is the one figure outside the fold that a judge of
-  // the per-PR rate tones.
+  // The strip under the same targets: its deploys a day miss, and its merge median and its
+  // per-deploy rate meet. Its recovery time, its deployment rework rate and its rework share are of
+  // no target's statistic.
   expect(tonesIn(screen.getByTestId("measures-strip"), "window")).toEqual({
     "deploys.per_day": "missed",
     "minutes.median": "met",
-    "per_pr.rate": "met",
+    "per_deploy.rate": "met",
   });
   // The cards' text reads as before.
   expect(definition("Deploy frequency").textContent).toBe(
     "Deploy frequency0.17/day5 successful (5 shipped a PR, 0.17/day)"
   );
-  expect(definition("Change failure rate (per PR)").textContent).toBe(
-    "Change failure rate (per PR)40.0%2 confirmed (0 reverts), 0 pending, 0 rejected of 5 PRs. Incidents: no source yet."
-  );
   expect(definition("Change failure rate (per deploy)").textContent).toBe(
-    "Change failure rate (per deploy)2.0%1 of 50 deploys; 4.0% if every pending flag is confirmed"
+    "Change failure rate (per deploy)2.0%1 of 50 deploys with an unrejected failure"
   );
 });
 
@@ -1043,13 +1018,12 @@ test("merge to production judged by its count of pull requests tones neither its
   }
 });
 
-// R5 (3) and (4): the change failure rate's breakdown counts the deploys with a confirmed break,
-// per_deploy.confirmed, and the deploys with only unreviewed flags, confirmed_or_pending less it,
-// which no judge names (per_deploy.pending counts every deploy with a pending flag).
-test("the change failure rate judged by its deploys with a confirmed break tones that count alone, and its deploys with only unreviewed flags by nothing", () => {
+// R5 (3) and (4): the change failure rate's breakdown counts the deploys with an unrejected
+// failure (per_deploy.failed) and every deploy (per_deploy.total), each a statistic a person may
+// name as a judge.
+test("the change failure rate judged by its deploys with a failure tones that count alone, and neither its rate nor its count of deploys", () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
     targets: {
       ...catalogueTargets,
@@ -1057,62 +1031,47 @@ test("the change failure rate judged by its deploys with a confirmed break tones
         value: 0,
         inclusive: true,
         direction: "lower_better",
-        judges: ["per_deploy.confirmed"],
+        judges: ["per_deploy.failed"],
       },
     },
     status: { ...fixtureMeasures.status, change_failure_rate: true },
   });
   const failures = within(card("Change failure rate"));
-  expect(
-    failures.getByText(
-      wholeText("1 deploy with a confirmed break; 1 more with only unreviewed flags")
-    )
-  ).toBeDefined();
-  // One deploy with a confirmed break misses none beside a met badge; the rates are not judged,
-  // and the deploys with only unreviewed flags name no statistic.
+  expect(failures.getByText(wholeText("1 of 50 deploys with a failure"))).toBeDefined();
+  // One deploy with a failure misses none beside a met badge; the rate and the count of deploys
+  // are not judged.
   expect(tones("Change failure rate")).toEqual({
     "per_deploy.rate": "plain",
-    "upper_bound.rate": "plain",
-    "per_deploy.confirmed": "missed",
+    "per_deploy.failed": "missed",
+    "per_deploy.total": "plain",
   });
 });
 
-// R5 (3): the failure rate's upper bound, drawn where a failure source stores flags, judged by
-// itself.
-test("the change failure rate judged by its upper bound tones that figure by its own value: met under the target, missed over it", () => {
-  // 4% if every pending flag is confirmed: under 5% meets and under 3% misses, each beside the
-  // other badge.
+// R5 (3): the failure rate judged by its count of deploys, a count no day is judged of.
+test("the change failure rate judged by its count of deploys tones that count by its own value: met under the target, missed over it", () => {
+  // 50 deploys: at most 50 meets and at most 49 misses, each beside the other badge.
   for (const [value, verdict] of [
-    [0.05, "met"],
-    [0.03, "missed"],
+    [50, "met"],
+    [49, "missed"],
   ] as const) {
     renderPanel({
       ...fixtureMeasures,
-      flags_source: "stored",
       measures: { ...fixtureMeasures.measures, change_failure_rate: measuredFailureRate },
       targets: {
         ...catalogueTargets,
         change_failure_rate: {
           ...catalogueTargets.change_failure_rate,
           value,
-          judges: ["upper_bound.rate"],
+          inclusive: true,
+          judges: ["per_deploy.total"],
         },
       },
-      status: {
-        ...fixtureMeasures.status,
-        change_failure_rate: verdict === "missed",
-        change_failure_rate_upper_bound: verdict === "missed",
-      },
+      status: { ...fixtureMeasures.status, change_failure_rate: verdict === "missed" },
     });
-    expect(
-      within(card("Change failure rate")).getByText(
-        wholeText("up to 4.00% if every pending flag is confirmed")
-      )
-    ).toBeDefined();
     expect(tones("Change failure rate")).toEqual({
       "per_deploy.rate": "plain",
-      "upper_bound.rate": verdict,
-      "per_deploy.confirmed": "plain",
+      "per_deploy.failed": "plain",
+      "per_deploy.total": verdict,
     });
     cleanup();
   }
@@ -1265,7 +1224,6 @@ test("a chart draws its target line exactly where its bars take a tone: where th
 test("a toned figure is written on its value's side of the target: more digits where the usual ones would print the target itself or past it", async () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: {
       ...fixtureMeasures.measures,
       deploy_frequency: { ...fixtureMeasures.measures.deploy_frequency, per_day: 19.96 },
@@ -1273,10 +1231,7 @@ test("a toned figure is written on its value's side of the target: more digits w
         ...fixtureMeasures.measures.lead_time,
         merge_to_production: { median_minutes: 44.6, p90_minutes: 44.8, max_minutes: 44.9 },
       },
-      change_failure_rate: {
-        ...measuredFailureRate,
-        per_deploy: { ...measuredFailureRate.per_deploy, rate: 0.0496 },
-      },
+      change_failure_rate: { ...measuredFailureRate, rate: 0.0496 },
       deploy_run_success: { ...fixtureMeasures.measures.deploy_run_success, rate: 0.8996 },
     },
   });
@@ -1289,8 +1244,8 @@ test("a toned figure is written on its value's side of the target: more digits w
     "Deploys a day": { "deploys.per_day": "19.96/day missed", "deploys.deploys": "5 plain" },
     "Change failure rate": {
       "per_deploy.rate": "4.96% met",
-      "upper_bound.rate": "4.00% plain",
-      "per_deploy.confirmed": "1 plain",
+      "per_deploy.failed": "1 plain",
+      "per_deploy.total": "50 plain",
     },
     "Merge \u2192 production": { "minutes.median": "44.6m met", "minutes.max": "44.9m met" },
     "PR open \u2192 merge": { "minutes.median": "5.5h missed", "minutes.p90": "7.7h plain" },
@@ -1302,11 +1257,12 @@ test("a toned figure is written on its value's side of the target: more digits w
     },
     "P0 issues with no owner": { "issues.value": "1 missed" },
   });
-  // The strip writes deploys a day to two decimals, which already print 19.96.
+  // The strip writes deploys a day to two decimals, which already print 19.96, and the per-deploy
+  // rate to one, which would print 5.0%.
   expect(written(screen.getByTestId("measures-strip"))).toEqual({
     "deploys.per_day": "19.96/day missed",
     "minutes.median": "44.6m met",
-    "per_pr.rate": "40.0% plain",
+    "per_deploy.rate": "4.96% met",
   });
   await openFold();
   // The fold writes rates to one decimal: the per-deploy rate, 4.96%, would print 5.0%. The p90,
@@ -1318,9 +1274,8 @@ test("a toned figure is written on its value's side of the target: more digits w
   });
   expect(written(definition("Change failure rate (per deploy)"))).toEqual({
     "per_deploy.rate": "4.96% met",
-    "per_deploy.confirmed": "1 plain",
+    "per_deploy.failed": "1 plain",
     "per_deploy.total": "50 plain",
-    "upper_bound.rate": "4.0% plain",
   });
 });
 
@@ -1329,17 +1284,13 @@ test("a toned figure is written on its value's side of the target: more digits w
 test("a toned figure whose usual digits print it on its value's side of the target keeps them", async () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
     measures: {
       ...fixtureMeasures.measures,
       lead_time: {
         ...fixtureMeasures.measures.lead_time,
         merge_to_production: { median_minutes: 44.4, p90_minutes: 2736, max_minutes: 3840 },
       },
-      change_failure_rate: {
-        ...measuredFailureRate,
-        per_deploy: { ...measuredFailureRate.per_deploy, rate: 0.0449 },
-      },
+      change_failure_rate: { ...measuredFailureRate, rate: 0.0449 },
     },
   });
   // Under 5%: 4.49% meets, and one decimal prints 4.5%, under it. Under 45m: a median of 44.4m
@@ -1457,47 +1408,88 @@ test("a lead-time card whose target is off reads off alone, with no verdict", ()
   }
 });
 
-test("with stored flags the change failure rate card shows the upper bound and the breakdown", () => {
+test("with the record measured, the failure measures show the per-deploy rate, the recovery median beside the failures not restored, and the deployment rework rate", async () => {
   renderPanel({
     ...fixtureMeasures,
-    flags_source: "stored",
-    status: {
-      ...fixtureMeasures.status,
-      change_failure_rate: false,
-      change_failure_rate_upper_bound: false,
-    },
+    status: { ...fixtureMeasures.status, change_failure_rate: false },
     measures: {
       ...fixtureMeasures.measures,
-      change_failure_rate: {
-        per_pr: { confirmed: 2, pending: 1, rejected: 1, reverts: 1, total: 14, rate: 2 / 14 },
-        per_deploy: {
-          confirmed: 2,
-          pending: 0,
-          rejected: 1,
-          reverts: 1,
-          total: 5,
-          rate: 0.4,
-          confirmed_or_pending: 2,
-          upper_bound_rate: 0.4,
-        },
-      },
+      change_failure_rate: { failed: 2, total: 5, rate: 0.4, ...retiredChangeFailLeaves },
+      time_to_restore: { median_minutes: null },
+      failed_deployment_recovery: { n: 2, median_minutes: 30, not_restored: 1 },
+      deployment_rework_rate: { restoring: 1, total: 5, rate: 0.2 },
     },
   });
   const cfr = within(card("Change failure rate"));
   expect(cfr.getByText("40.00%", { selector: "span.text-lg" })).toBeDefined();
   expect(cfr.getByText("\u2717 missed")).toBeDefined();
-  expect(cfr.getByText("confirmed")).toBeDefined();
-  expect(
-    cfr.getByText(
-      (_, element) =>
-        element?.tagName === "DIV" &&
-        element.textContent === "up to 40.00% if every pending flag is confirmed"
-    )
-  ).toBeDefined();
-  expect(
-    cfr.getByText(wholeText("2 deploys with a confirmed break; none with only unreviewed flags"))
-  ).toBeDefined();
-  expect(cfr.queryByText("Flags arrive with flag confirmation")).not.toBeInTheDocument();
+  expect(cfr.getByText("per deploy")).toBeDefined();
+  expect(cfr.getByText(wholeText("2 of 5 deploys with a failure"))).toBeDefined();
+  expect(cfr.queryByText("No data for this window")).not.toBeInTheDocument();
+  const strip = screen.getByTestId("measures-strip");
+  for (const [value, label] of [
+    ["40.0%", "CFR (per deploy)"],
+    ["30m", "Recovery time"],
+    ["20.0%", "Deploy rework"],
+  ]) {
+    expect(within(strip).getByText(label).parentElement?.textContent).toBe(`${value}${label}`);
+  }
+  await openFold();
+  expect(definition("Failed deployment recovery time").textContent).toBe(
+    "Failed deployment recovery time30mmedian, deploy \u2192 restore, of 2 restored; 1 not restored"
+  );
+  expect(definition("Deployment rework rate").textContent).toBe(
+    "Deployment rework rate20.0%1 of 5 deploys restored a failure"
+  );
+});
+
+test("a previous-build server answer with legacy placeholders and no modern failure fields reads no data in the card, the strip and the fold", async () => {
+  const {
+    failed_deployment_recovery: _recovery,
+    deployment_rework_rate: _rework,
+    ...sharedMeasures
+  } = fixtureMeasures.measures;
+  const previousServerAnswer = {
+    ...fixtureMeasures,
+    measures: {
+      ...sharedMeasures,
+      // As a previous server answered it: flag-count containers with numbers,
+      // a broken-PR-to-fix median on time_to_restore, and neither failed_deployment_recovery nor
+      // deployment_rework_rate.
+      change_failure_rate: {
+        per_pr: { confirmed: 1, pending: 2, rejected: 0, reverts: 1, total: 10, rate: 0.1 },
+        per_deploy: {
+          confirmed: 1,
+          pending: 2,
+          rejected: 0,
+          reverts: 1,
+          total: 5,
+          rate: 0.2,
+          confirmed_or_pending: 3,
+          upper_bound_rate: 0.6,
+        },
+      },
+      time_to_restore: { median_minutes: 45 },
+    },
+  } as unknown as DeliveryMeasuresResponse;
+  renderPanel(previousServerAnswer);
+  const cfr = within(card("Change failure rate"));
+  expect(cfr.getByText("n/a")).toBeDefined();
+  expect(cfr.getByText("No data for this window")).toBeDefined();
+  expect(cfr.queryByText("20.00%")).not.toBeInTheDocument();
+  const strip = screen.getByTestId("measures-strip");
+  for (const label of ["CFR (per deploy)", "Recovery time", "Deploy rework"]) {
+    expect(within(strip).getByText(label).parentElement?.textContent).toBe(`n/a${label}`);
+  }
+  expect(within(strip).queryByText("45m")).not.toBeInTheDocument();
+  await openFold();
+  for (const title of [
+    "Change failure rate (per deploy)",
+    "Failed deployment recovery time",
+    "Deployment rework rate",
+  ]) {
+    expect(definition(title).textContent).toBe(`${title}n/aNo data for this window`);
+  }
 });
 
 test("more than six unowned P0 issues list six and name the rest", () => {
@@ -1513,14 +1505,15 @@ test("more than six unowned P0 issues list six and name the rest", () => {
   expect(more).toHaveAttribute("title", "ACME-7, ACME-8");
 });
 
-test("the strip shows the five headline numbers", () => {
+test("the strip shows the six headline numbers", () => {
   renderPanel(fixtureMeasures);
   const strip = screen.getByTestId("measures-strip");
   for (const [value, label] of [
     ["0.17/day", "Deploy freq"],
     ["8.5h", "Lead time (merge\u2192prod)"],
-    ["n/a", "CFR (per PR)"],
-    ["n/a", "Time to restore"],
+    ["n/a", "CFR (per deploy)"],
+    ["n/a", "Recovery time"],
+    ["n/a", "Deploy rework"],
     ["28.6%", "Rework share"],
   ]) {
     const stat = within(strip).getByText(label).parentElement;
@@ -1541,10 +1534,13 @@ test("the definitions fold opens to the definition cards and the per-day table, 
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText("Lead time (first commit \u2192 prod)")).toBeDefined();
   expect(screen.getByText("23.0h")).toBeDefined();
-  const perPR = screen.getByText("Change failure rate (per PR)").parentElement;
-  expect(perPR?.textContent).toBe(
-    "Change failure rate (per PR)n/aNo failure source yet: flags arrive with flag confirmation. Incidents: no source yet."
-  );
+  for (const title of [
+    "Change failure rate (per deploy)",
+    "Failed deployment recovery time",
+    "Deployment rework rate",
+  ]) {
+    expect(definition(title).textContent).toBe(`${title}n/aNo data for this window`);
+  }
   const table = screen.getByRole("table");
   const rows = within(table).getAllByRole("row");
   // A header row, then every one of the window's 29 days.

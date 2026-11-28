@@ -105,7 +105,7 @@ func mustString(t *testing.T, raw json.RawMessage) string {
 // GET /api/v1/delivery/pipeline answers in pr_checks.failing_jobs for that at, one list and two
 // readers (measures.FailingJobs over the runs of those days): for an at whose 24 hours hold a
 // run of the deliverytest history that started before them and failed a job inside them, and for
-// an at on a midnight.
+// an at on a midnight. Each row is keyed `<repo>/<name>`, which a row filter finds alone.
 func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -149,6 +149,9 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 			if err := json.Unmarshal([]byte(mustJSON(t, row.Cols)), &job); err != nil {
 				t.Fatalf("decode the failing job row %s: %v", row.RowKey, err)
 			}
+			if repo, _ := row.Cols["repo"].(string); row.RowKey != repo+"/"+job.Name {
+				t.Errorf("the failing job %s of %s is keyed %q, want %q", job.Name, repo, row.RowKey, repo+"/"+job.Name)
+			}
 			answered = append(answered, job)
 		}
 		if len(pipeline) == 0 {
@@ -159,9 +162,65 @@ func TestTheFailingJobsItemsAreThePipelinesFailingJobs(t *testing.T) {
 			continue
 		}
 		t.Logf("%s (%s, %s): the items and the Pipeline answer the same %d failing jobs, the first %+v", pinned.name, at, query, len(pipeline), pipeline[0])
+		first := items.Items[0].RowKey
+		filtered := evalGet[evalItemsResponse](t, handler, "/api/v1/projects/"+fixture.Project+"/evals/pr-ci/items?sort=failures&limit=200&"+query+"&"+url.Values{"row": {first}}.Encode())
+		if len(filtered.Items) != 1 || filtered.Items[0].RowKey != first {
+			t.Errorf("%s: the row filter %q answers %d rows, want the one row it keys", pinned.name, first, len(filtered.Items))
+		}
 	}
 	t.Logf("the straddling run %d started %s, completed %s; its at is %s", straddling.RunID,
 		straddling.StartedAt.Format(time.RFC3339), straddling.CompletedAt.Format(time.RFC3339), straddleTo.Format(time.RFC3339))
+}
+
+// Two repositories' failed jobs of one name are two items rows, one per repository. The row
+// filter finds each alone, the job series finds both, and the Pipeline tallies them as one job.
+func TestTwoRepositoriesFailingJobsOfOneNameAreTwoRows(t *testing.T) {
+	t.Parallel()
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	const project, repoA, repoB = "TWOR", "acme/repo-a", "acme/repo-b"
+	issue := createTestIssue(t, handler, project, "Two source repositories")
+	saveProjectRules(t, database, project, deployRule(repoA, "a / release"), deployRule(repoB, "b / release"))
+	seedSourceCheck(t, database, repoA, issue, 101, 8, true)
+	seedSourceCheck(t, database, repoA, issue, 102, 9, true)
+	seedSourceCheck(t, database, repoB, issue, 201, 10, true)
+	leaveAttributionInputsUnread(t, database.Pool)
+	at := sourcesDay.Add(12 * time.Hour)
+	refreshEvalDays(t, evals.New(database, deps.Docs, deps.Events, deps.Attributor), database, at)
+
+	query := url.Values{
+		"from": {measures.WindowStart(at).Format(time.RFC3339)}, "to": {at.Format(time.RFC3339)},
+		"sort": {"failures"},
+	}
+	path := evalItemsPath(project, evals.SlugPRCI)
+	items := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+	if len(items.Items) != 2 || items.Total != 2 {
+		t.Fatalf("sort=failures answers %d rows of %d, want two build rows, one per repository", len(items.Items), items.Total)
+	}
+	var failures float64
+	for i, repo := range []string{repoA, repoB} {
+		row := items.Items[i]
+		key := repo + "/build"
+		n, _ := row.Cols["failures"].(float64)
+		if row.RowKey != key || row.Cols["repo"] != repo || row.Cols["name"] != "build" || n != float64(2-i) {
+			t.Errorf("row %d is %q with %v, want %q naming %s and %d failures", i, row.RowKey, row.Cols, key, repo, 2-i)
+		}
+		failures += n
+		query.Set("row", key)
+		filtered := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+		if len(filtered.Items) != 1 || filtered.Total != 1 || filtered.Items[0].RowKey != key {
+			t.Errorf("row filter %q answers %d rows of %d, want that row alone", key, len(filtered.Items), filtered.Total)
+		}
+	}
+	query.Del("row")
+	query.Set("series", "job:build")
+	series := evalGet[evalItemsResponse](t, handler, path+"?"+query.Encode())
+	if len(series.Items) != 2 || series.Total != 2 || series.Items[0].RowKey != repoA+"/build" || series.Items[1].RowKey != repoB+"/build" {
+		t.Errorf("series=job:build answers %v, want both repositories' build rows", series.Items)
+	}
+	pipeline := evalGet[deliveryPipelineResponse](t, handler, "/api/v1/delivery/pipeline?at="+at.Format(time.RFC3339)).PRChecks.FailingJobs
+	if len(pipeline) != 1 || pipeline[0].Name != "build" || float64(pipeline[0].Failures) != failures {
+		t.Errorf("Pipeline failing_jobs = %+v, want one build row with %v failures (the sum of the items)", pipeline, failures)
+	}
 }
 
 // TestTheSlowestJobsItemsAreThePipelinesSlowestJobs: pr-ci's items with sort=median over the
@@ -224,24 +283,38 @@ func TestTheSlowestJobsItemsAreThePipelinesSlowestJobs(t *testing.T) {
 // through the items route, rows its numbers count beside its day rows, so no computed eval's items
 // are its readings and day rows alone by an omission (evalComputedItems): over the histories the
 // eval reads are checked over (seedEvalHistoriesByIssue), each Legion eval of the Legion history
-// over its first golden window, and each other computed eval of the delivery history over seven of
-// its days, answers at least one row of a kind other than `day`. The folds' own table is held to
-// the catalogue when the evals package starts.
+// over its first golden window, each failure measure of the failure history (seedFailureHistory:
+// its rows are the record's deploys and failures, dispatch://INFRA-978 D7, which the delivery
+// history's project, with no failure source, holds none of) over its two days, and each other
+// computed eval of the delivery history over seven of its days, answers at least one row of a kind
+// other than `day`. The folds' own table is held to the catalogue when the evals package starts.
 func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
+	// The record is written before the histories' one refresh, which builds every project's rows.
+	seedFailureHistory(t, database)
 	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
-	legion := windows[0].Spec.Project
+	legion, failures := windows[0].Spec.Project, "FAIL"
 	ranges := map[string][2]time.Time{
 		fixture.Project: {fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
 		legion:          {windows[0].Window.From, windows[0].Window.To},
+		failures:        {failuresDay, failuresDay.AddDate(0, 0, 2)},
 	}
+	failureSources := []string{evals.SourceFoldChangeFailRate, evals.SourceFoldRecovery, evals.SourceFoldReworkRate}
 	computed := 0
-	for _, project := range []string{fixture.Project, legion} {
+	for _, project := range []string{fixture.Project, legion, failures} {
 		list := evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200")
 		for _, item := range list.Items {
 			definition := item.Definition
-			if !definition.Computed() || (definition.Kind == evals.KindLegion) != (project == legion) {
+			// Each eval is checked over the history that holds its input.
+			history := fixture.Project
+			switch {
+			case definition.Kind == evals.KindLegion:
+				history = legion
+			case slices.Contains(failureSources, definition.Source):
+				history = failures
+			}
+			if !definition.Computed() || history != project {
 				continue
 			}
 			computed++
@@ -271,8 +344,9 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 // legionItemSource). The table is the evals the fixture serves over the histories
 // TestEveryCatalogueSourceAnswersItsRows reads, so it holds every source kind: each computed eval
 // (a Legion eval's issues and legion-splitting's filings, a delivery eval's pull requests and
-// deploy runs, a CI eval's runs and pr-ci's jobs, unowned-p0's issues, and each eval's day rows),
-// pr-ci sorted by failures and by median (the failing jobs and the slowest jobs), and a logged eval
+// deploy runs, a failure measure's deploys and failures of the failure history, a CI eval's runs
+// and pr-ci's jobs, unowned-p0's issues, and each eval's day rows), pr-ci sorted by failures and by
+// median (the failing jobs, one row a repository's job, and the slowest jobs), and a logged eval
 // of two series (its readings and their day rows), with a reading logged under pr-ci's slug. Each
 // read answers rows with no series named, and none (total 0) for a series no row holds, alone and
 // with a cut; and for each series its rows name (a day row's or a reading's, a job's job series),
@@ -283,12 +357,16 @@ func TestEveryCatalogueSourceAnswersItsRows(t *testing.T) {
 func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
+	// The record is written before the histories' one refresh, which builds every project's rows.
+	seedFailureHistory(t, database)
 	fixture, windows := seedEvalHistoriesByIssue(t, database, deps, 14)
-	legion := windows[0].Spec.Project
+	legion, failures := windows[0].Spec.Project, "FAIL"
 	ranges := map[string][2]time.Time{
 		fixture.Project: {fixture.From.AddDate(0, 0, 4), fixture.From.AddDate(0, 0, 11)},
 		legion:          {windows[0].Window.From, windows[0].Window.To},
+		failures:        {failuresDay, failuresDay.AddDate(0, 0, 2)},
 	}
+	failureSources := []string{evals.SourceFoldChangeFailRate, evals.SourceFoldRecovery, evals.SourceFoldReworkRate}
 	const logged = "items-series"
 	at := ranges[fixture.Project][0].Add(time.Hour)
 	for slug, rows := range map[string][]any{
@@ -308,14 +386,22 @@ func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 		sort       string
 	}
 	var reads []itemsRead
-	for _, project := range []string{fixture.Project, legion} {
+	for _, project := range []string{fixture.Project, legion, failures} {
 		for _, item := range evalGet[evalListResponse](t, handler, "/api/v1/projects/"+project+"/evals?limit=200").Items {
 			definition := item.Definition
 			if definition.Computed() {
-				if (definition.Kind == evals.KindLegion) != (project == legion) {
+				// Each eval is read over the history that holds its input.
+				history := fixture.Project
+				switch {
+				case definition.Kind == evals.KindLegion:
+					history = legion
+				case slices.Contains(failureSources, definition.Source):
+					history = failures
+				}
+				if history != project {
 					continue
 				}
-			} else if definition.Slug != logged {
+			} else if definition.Slug != logged || project != fixture.Project {
 				continue
 			}
 			// Each series a kind stands behind is one its eval holds, so no kind stands behind a
@@ -338,14 +424,15 @@ func TestEveryItemsSourceNarrowsToTheNamedSeries(t *testing.T) {
 	}
 
 	// seriesOf is the series a row is of where it names one: a day row's and a reading's own, and
-	// a job's job series.
+	// a job's job series, by the job's name (a failing job's row is keyed by its repository too).
 	seriesOf := func(row evalItemRow) string {
 		switch row.RowKind {
 		case evalRowDay, "sample":
 			series, _ := row.Cols["series"].(string)
 			return series
 		case evalRowJob:
-			return measures.JobSeriesPrefix + row.RowKey
+			name, _ := row.Cols["name"].(string)
+			return measures.JobSeriesPrefix + name
 		}
 		return ""
 	}

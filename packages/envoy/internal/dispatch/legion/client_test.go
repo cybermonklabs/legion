@@ -1,11 +1,16 @@
 package legion
 
+//ci:reads packages/contracts/fixtures/daemon-api/controller.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): what the daemon's own internal/api TestControllerRouteGoldens writes from GET /legion/v1/controller once a session registered, which the controller read must read
+//ci:reads packages/contracts/fixtures/daemon-api/controller-none.json os.ReadFile (daemonAPIFixture, ../../../../contracts/fixtures/daemon-api): what the same golden writes from GET /legion/v1/controller while no session is registered, which the controller read must read as none
+
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -480,5 +485,200 @@ func TestAFailedCallNamesNoAddress(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "refused") {
 		t.Errorf("the failure reads %q, want the transport's own reason", err)
+	}
+}
+
+// controllerServer is a daemon stand-in answering GET /legion/v1/controller with status and body,
+// and anything else with 404. asked receives the request of each controller read it answers.
+func controllerServer(t *testing.T, status int, body string) (server *httptest.Server, asked <-chan *http.Request) {
+	t.Helper()
+	requests := make(chan *http.Request, 8)
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != ControllerPath {
+			http.NotFound(w, r)
+			return
+		}
+		select {
+		case requests <- r.Clone(r.Context()):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	return server, requests
+}
+
+// goldenControllerSession is the session the daemon's own golden of GET /legion/v1/controller
+// names, read as the daemon wrote it and without the decode under test, or "" where it names none.
+func goldenControllerSession(t *testing.T, body []byte) string {
+	t.Helper()
+	var document map[string]map[string]json.RawMessage
+	if err := json.Unmarshal(body, &document); err != nil {
+		t.Fatalf("read the golden %s: %v", body, err)
+	}
+	locator, named := document["controllerLocator"]
+	if !named {
+		return ""
+	}
+	var session string
+	if err := json.Unmarshal(locator["sessionId"], &session); err != nil || session == "" {
+		t.Fatalf("the golden's controllerLocator names no sessionId: %s (%v)", body, err)
+	}
+	return session
+}
+
+// TestTheControllerReadNamesTheSessionTheDaemonNames: a controller read of a daemon that answers
+// its own goldens of GET /legion/v1/controller (the daemon's internal/api TestControllerRouteGoldens)
+// names the session controller.json names, and no session for controller-none.json, the `{}` a
+// daemon answers while none is registered. It asks the route with no query, no credential and no
+// Legion-Plugin-Contract: the route authenticates nobody, and its answer is the same at every
+// contract.
+func TestTheControllerReadNamesTheSessionTheDaemonNames(t *testing.T) {
+	for _, tc := range []struct {
+		golden string
+		named  bool
+	}{
+		{"controller.json", true},
+		{"controller-none.json", false},
+	} {
+		t.Run(tc.golden, func(t *testing.T) {
+			body, err := os.ReadFile(daemonAPIFixture(tc.golden))
+			if err != nil {
+				t.Fatalf("read the daemon's golden: %v", err)
+			}
+			want := goldenControllerSession(t, body)
+			if (want != "") != tc.named {
+				t.Fatalf("the golden %s names %q, want a session %v: this test proves nothing", tc.golden, want, tc.named)
+			}
+			server, asked := controllerServer(t, http.StatusOK, string(body))
+
+			session, named, err := New(server.URL).Controller(t.Context())
+			if err != nil || named != tc.named || session != want {
+				t.Fatalf("the controller read = %q, %v, %v; want %q, %v and no error", session, named, err, want, tc.named)
+			}
+			var request *http.Request
+			select {
+			case request = <-asked:
+			default:
+				t.Fatal("the daemon's controller route was asked nothing, so this test proves nothing")
+			}
+			if request.URL.RawQuery != "" {
+				t.Errorf("the read's query is %q, want none", request.URL.RawQuery)
+			}
+			// The daemon's pluginContractHeader (packages/daemon/internal/api/shaping.go).
+			for _, name := range []string{"Authorization", "Legion-Plugin-Contract"} {
+				if sent := request.Header.Values(name); len(sent) != 0 {
+					t.Errorf("the read sends %s %v, want none", name, sent)
+				}
+			}
+		})
+	}
+}
+
+// TestAControllerReadOfADaemonWithoutTheRouteIsItsOwnFailure: a daemon of a build before
+// GET /legion/v1/controller answers it 404, its catch-all's answer, and the read is
+// ErrNoControllerRoute, which is not ErrUnavailable: what it calls for is a daemon rollout, not a
+// wait for a daemon that is down.
+func TestAControllerReadOfADaemonWithoutTheRouteIsItsOwnFailure(t *testing.T) {
+	older := stateServer(t, `{"issues":{}}`)
+
+	session, named, err := New(older.URL).Controller(t.Context())
+	if !errors.Is(err, ErrNoControllerRoute) || errors.Is(err, ErrUnavailable) || named || session != "" {
+		t.Fatalf("a controller read of a daemon without the route = %q, %v, %v; want ErrNoControllerRoute alone", session, named, err)
+	}
+}
+
+// TestAControllerReadIsHeldToItsOwnBound: a controller read gives up at ControllerTimeout, 2 s,
+// though the client's own window is the whole read's 60 s, whether the daemon sends no answer or
+// sends its status and then stalls its body; the failure is ErrUnavailable and names the bound.
+func TestAControllerReadIsHeldToItsOwnBound(t *testing.T) {
+	if ControllerTimeout != 2*time.Second {
+		t.Fatalf("ControllerTimeout = %s, want 2s", ControllerTimeout)
+	}
+	for _, tc := range []struct {
+		name  string
+		serve func(w http.ResponseWriter, r *http.Request)
+	}{
+		{"a daemon that sends no answer", func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() }},
+		{"a daemon that stalls its body", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"controllerLocator":`))
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			slow := httptest.NewServer(http.HandlerFunc(tc.serve))
+			t.Cleanup(slow.Close)
+
+			started := time.Now()
+			_, named, err := New(slow.URL).Controller(t.Context())
+			waited := time.Since(started)
+			if !errors.Is(err, ErrUnavailable) || named || !strings.Contains(err.Error(), "no answer within 2s") {
+				t.Fatalf("a controller read of %s: named %v, err %v; want ErrUnavailable naming the 2s bound", tc.name, named, err)
+			}
+			if waited < ControllerTimeout || waited >= RequestTimeout {
+				t.Errorf("the read gave up after %s, want its own %s bound and not the client's %s window", waited, ControllerTimeout, RequestTimeout)
+			}
+		})
+	}
+}
+
+// TestAControllerReadOfAnotherAnswerIsUnavailable: a status that is neither 200 nor 404, a body
+// over ControllerResponseLimit, 64 KiB, whether it declares its Content-Length or not, and a body
+// that is not the route's object are each ErrUnavailable, naming the status, the cap or the decode;
+// the body over the cap wraps ErrResponseTooLarge too and is never parsed. A body exactly at the
+// cap is read, and a daemon that is down is named without its address.
+func TestAControllerReadOfAnotherAnswerIsUnavailable(t *testing.T) {
+	if ControllerResponseLimit != 64<<10 {
+		t.Fatalf("ControllerResponseLimit = %d, want 64 KiB (%d)", ControllerResponseLimit, 64<<10)
+	}
+	// padded is an answer naming ses_padded, exactly size bytes long.
+	padded := func(size int) string {
+		const head, tail = `{"controllerLocator":{"sessionId":"ses_padded"},"pad":"`, `"}`
+		return head + strings.Repeat("a", size-len(head)-len(tail)) + tail
+	}
+	refused, _ := controllerServer(t, http.StatusInternalServerError, `{"error":"controller unavailable"}`)
+	_, _, err := New(refused.URL).Controller(t.Context())
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "500") {
+		t.Errorf("a 500: err = %v, want ErrUnavailable naming the status", err)
+	}
+
+	for _, declared := range []bool{true, false} {
+		over := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			body := padded(ControllerResponseLimit + 1)
+			if declared {
+				w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+			}
+			_, _ = io.WriteString(w, body)
+		}))
+		t.Cleanup(over.Close)
+		session, named, err := New(over.URL).Controller(t.Context())
+		if !errors.Is(err, ErrResponseTooLarge) || !errors.Is(err, ErrUnavailable) || named || session != "" {
+			t.Errorf("a body over the cap (Content-Length declared %v) = %q, %v, %v; want ErrResponseTooLarge and ErrUnavailable", declared, session, named, err)
+		} else if capText := fmt.Sprintf("%d-byte cap", ControllerResponseLimit); !strings.Contains(err.Error(), capText) {
+			t.Errorf("a body over the cap (Content-Length declared %v): err = %v, want it to name the %s", declared, err, capText)
+		}
+	}
+	atTheCap, _ := controllerServer(t, http.StatusOK, padded(ControllerResponseLimit))
+	if session, named, err := New(atTheCap.URL).Controller(t.Context()); err != nil || !named || session != "ses_padded" {
+		t.Errorf("a body exactly at the cap = %q, %v, %v; want ses_padded read", session, named, err)
+	}
+
+	for _, body := range []string{`{"controllerLocator":`, `null`, `[]`, `{"controllerLocator":{"sessionId":7}}`, `{"controllerLocator":{"runtime":"kubernetes"}}`} {
+		malformed, _ := controllerServer(t, http.StatusOK, body)
+		session, named, err := New(malformed.URL).Controller(t.Context())
+		if !errors.Is(err, ErrUnavailable) || named || session != "" || !strings.Contains(err.Error(), "decode") {
+			t.Errorf("the body %s = %q, %v, %v; want ErrUnavailable naming the decode", body, session, named, err)
+		}
+	}
+
+	address := testport.Refused(t)
+	_, _, err = New("http://" + address).Controller(t.Context())
+	if !errors.Is(err, ErrUnavailable) || strings.Contains(err.Error(), address) || !strings.Contains(err.Error(), "refused") {
+		t.Errorf("a controller read of a daemon that is down: err = %v, want ErrUnavailable with the transport's reason and no address", err)
 	}
 }

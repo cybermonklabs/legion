@@ -3,8 +3,9 @@ import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 
-import { inboxQuery, whoAmIQuery } from "../../api/queries";
+import { whoAmIQuery } from "../../api/queries";
 import type { CredentialPendingRow, InboxRow } from "../../api/types";
+import { useInbox } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -86,9 +87,12 @@ function needsYou(
   return { count: since.length, oldest };
 }
 
-/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox. */
+/** The rail's and the compact top bar's `Needs you N`: the reader's own, over the whole inbox.
+ *  Both reads need the `person` scope, so they are asked for once a read says the viewer's
+ *  credential holds it (`useInbox`, `useCredentialRequests`): nothing is asked for a viewer
+ *  without it, or while whoami or its scopes load, and the number is then 0. */
 export function useNeedsYouCount(): number {
-  const inbox = useQuery(inboxQuery());
+  const inbox = useInbox();
   // Until `/auth/whoami` answers, the rail shows no number rather than one that is not theirs.
   const viewer = useQuery(whoAmIQuery()).data?.login;
   const { requests } = useCredentialRequests();

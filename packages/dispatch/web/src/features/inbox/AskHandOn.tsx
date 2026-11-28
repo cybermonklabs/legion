@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useContext, useState } from "react";
 
-import { usersQuery } from "../../api/queries";
 import type { Ask } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
+import { useUsers } from "../../hooks/useHoldsPersonScope";
 import {
   badgeLow,
   badgePrimary,
@@ -37,13 +36,13 @@ import { useAskHandOn } from "./useAskHandOn";
  * names), and the picker over it is the same
  * invisible native `<select>` the assignee and priority pickers use, so the menu is one tap on
  * a phone and one keyboard interaction on a desktop. Its people are everyone who has signed in
- * (`usersQuery`, read only once the reader reaches for the control and then kept for the
- * session), with the assignee of the ask's own issue offered first where the card has it -
- * `assignee` is the Inbox row's `issue.assignee`, the one read that hydrates the issue, and
- * null on every other surface - since handing the ask back to them is what empties the stored
- * field and lets the ask follow its issue again. Where it is null that person is still in the
- * people list, under their own login: the named choice is a label, not the only way to pick
- * them, and the control's own value comes from the ask itself.
+ * (`useUsers`, read only once the reader reaches for the control, under the `person` scope the
+ * route needs, and then kept for the session), with the assignee of the ask's own issue offered
+ * first where the card has it - `assignee` is the Inbox row's `issue.assignee`, the one read that
+ * hydrates the issue, and null on every other surface - since handing the ask back to them is
+ * what empties the stored field and lets the ask follow its issue again. Where it is null that
+ * person is still in the people list, under their own login: the named choice is a label, not
+ * the only way to pick them, and the control's own value comes from the ask itself.
  *
  * Under it, where somebody has already handed the ask on, who did it and when
  * (`asked_of_by`, `asked_of_at`). A refusal shows the server's reason with Retry where the
@@ -64,7 +63,7 @@ import { useAskHandOn } from "./useAskHandOn";
  */
 export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null }): ReactNode {
   const [wanted, setWanted] = useState(false);
-  const people = useQuery({ ...usersQuery(), enabled: wanted });
+  const people = useUsers(wanted);
   const want = () => setWanted(true);
   const write = useAskHandOn(ask);
   const page = usePageWords();
@@ -81,8 +80,8 @@ export function AskHandOn({ ask, assignee }: { ask: Ask; assignee: string | null
     .map((user) => user.login)
     .filter((login) => login !== assignee);
   // Whoever holds the ask stays selectable even where the people list does not carry them (it
-  // is unread until the reader reaches for the control), so the select never shows a value its
-  // options lack.
+  // is unread until the reader reaches for the control, and unread for a viewer whose credential
+  // lacks the `person` scope), so the select never shows a value its options lack.
   const others =
     waitingOn === "" || waitingOn === assignee || logins.includes(waitingOn)
       ? logins

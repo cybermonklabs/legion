@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `LegionControllerResponse` is the answer of the daemon's `GET /legion/v1/controller` (daemon API
+  entry 20261127150416 controller-route): `controllerLocator`, with the members of the state's own,
+  and no `controllerLocator` while no session is registered. `fixtures/daemon-api/controller.json`
+  and `controller-none.json` are the daemon's goldens of it.
+time: 2026-11-27T15:15:00Z
+custom:
+    Issue: INFRA-978

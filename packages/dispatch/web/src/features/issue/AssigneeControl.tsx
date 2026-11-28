@@ -1,9 +1,8 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { usersQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { usePageWords } from "../../components/tooltips";
+import { useUsers } from "../../hooks/useHoldsPersonScope";
 import {
   badgeLow,
   badgePrimary,
@@ -62,7 +61,9 @@ export function AssigneeControl({
 }): ReactNode {
   const page = usePageWords();
   const [wanted, setWanted] = useState(false);
-  const users = useQuery({ ...usersQuery(), enabled: wanted });
+  // Everyone who has signed in, read under the `person` scope once the reader reaches for the
+  // picker and a read says their credential holds it (`useUsers`).
+  const users = useUsers(wanted);
   const want = () => setWanted(true);
   const write = useIssueAssignee(issueKey, host);
   /** The assignee as the badge and the select draw it (`IssueFieldWrite.shown`). */

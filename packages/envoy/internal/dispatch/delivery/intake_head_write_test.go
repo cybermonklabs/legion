@@ -202,9 +202,11 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // be a hand-back. The keeper's own acknowledgement is there to be read beside them, so a
 // recorder that saw nothing at all cannot pass the row by silence.
 //
-// The table is put back once the holder has stopped delivering and before the keeper is handed
-// anything, so the keeper's handling is the ordinary one: it writes the head row the holder
-// could not, acknowledges the envelope, and is handed it exactly once.
+// The table is put back once the holder has stopped delivering, and the keeper starts only once
+// it is back, so the keeper's handling is the ordinary one: it takes the lapsed hold over, writes
+// the head row the holder could not, acknowledges the envelope, and is handed it exactly once. A
+// keeper standing by from the start could take the hold over a moment after it lapsed, before the
+// table's migration had run again, and its own write would fail and earn a hand-back of its own.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -216,7 +218,6 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 
 	holder := startHeadWriteProcess(t, pool, natsURL, true)
 	awaitBoundDurable(t, publisher)
-	keeper := startHeadWriteProcess(t, pool, natsURL, false)
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails; its own head repository and a branch naming no issue, so the attribution
@@ -249,6 +250,7 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 		return "the holder has not let the durable go: " + consumerState(publisher)
 	})
 	restoreBranchCommits()
+	keeper := startHeadWriteProcess(t, pool, natsURL, false)
 
 	// 60 s: the hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s)
 	// and its take-over's delete, subscribe and create under the consumer lease.

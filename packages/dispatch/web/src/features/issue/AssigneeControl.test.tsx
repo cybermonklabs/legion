@@ -17,7 +17,7 @@ import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
-import { projectDefaultAssigneesQuery } from "../../api/queries";
+import { projectDefaultAssigneesQuery, whoAmIQuery } from "../../api/queries";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
@@ -169,6 +169,13 @@ function renderControl() {
   ]);
   const queryClient = new QueryClient({
     defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  // The reader is alice, a person, whose sign-in holds the `person` scope the list of who has
+  // signed in is read under.
+  queryClient.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice",
   });
   queryClient.setQueryData(detailKey, details);
   queryClient.setQueryData(listKey, [summary]);

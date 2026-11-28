@@ -3,7 +3,6 @@ import { useCallback, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
 
 import { api, type WriteBounds } from "../../api/client";
-import { inboxQuery, userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Anchor,
@@ -16,6 +15,7 @@ import type {
   DisplayTree,
 } from "../../api/types";
 import { commentWritten } from "../../api/write-events";
+import { useInbox, usePersonScope, useUserState } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
@@ -351,7 +351,13 @@ export function useMarginItems(
       : owner?.kind === "document"
         ? ["artifact", owner.artifactId, "comments"]
         : ["comments", undefined];
-  const asks = useQuery(inboxQuery());
+  // The margin is mounted on every route, so this read is made on every page; it needs the
+  // `person` scope, so it is asked for once a read says the viewer's credential holds it
+  // (`useInbox`): nothing is asked for a viewer without it, or while whoami or its scopes load.
+  // The asks are pending while that gate is, and while their read is once it holds: for any other
+  // viewer none is coming, so the margin draws without them.
+  const scope = usePersonScope();
+  const asks = useInbox();
   const inboxOpenAsks = useMemo(
     () =>
       (asks.data ?? []).filter(
@@ -379,7 +385,9 @@ export function useMarginItems(
     },
     ...freshness,
   });
-  const userState = useQuery({ ...userStateQuery(), enabled: owner?.kind === "issue" });
+  // The viewer's dismissed pins of the issue, read under the `person` scope (`useUserState`): a
+  // viewer whose credential lacks it dismissed none.
+  const userState = useUserState(owner?.kind === "issue");
   const dismissed =
     owner?.kind === "issue" ? (userState.data?.[owner.key]?.dismissed ?? NO_PINS) : NO_PINS;
   const pinnedIds = pinnedEventIds(dismissed);
@@ -629,7 +637,7 @@ export function useMarginItems(
   return {
     actionFailure,
     answeredAsksPending: answeredAsks.pending,
-    asksPending: asks.isPending,
+    asksPending: scope === "pending" || (scope === "held" && asks.isPending),
     commentsError: comments.isError,
     commentsPending: comments.isPending,
     commentRecords: comments.data ?? [],

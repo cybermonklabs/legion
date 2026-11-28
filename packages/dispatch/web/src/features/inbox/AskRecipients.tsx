@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
 import {
@@ -11,7 +11,7 @@ import {
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { type SubscriptionOwner, useSubscribers } from "../../hooks/useHoldsPersonScope";
 import { textMutedOnSurface } from "../../theme/classes";
 import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteReach";
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
@@ -31,25 +31,22 @@ type AskOwner = Pick<Ask, "artifact_id" | "issue_key">;
 
 /** The topic family an ask's owner routes through: the issue's or the document's, as a press of
  *  the card's Unsubscribe carries it. */
-interface OwnerSubscription {
-  id: string;
+interface OwnerSubscription extends SubscriptionOwner {
   label: string;
-  list: () => Promise<Subscriber[]>;
-  noun: "issue" | "document";
   remove: (sessionId: string, bounds: WriteBounds) => Promise<void>;
 }
 
 /** The subscribers list shared with the owner's header: the issue's Subscribed agents panel
- *  (`IssueHeader`) or the project document page. Same key, so a removal from either surface
- *  refreshes both, and a `subscription.removed` on the live event feed refreshes this card too. */
+ *  (`IssueHeader`) or the project document page, each read through `useSubscribers`. Same key,
+ *  so a removal from either surface refreshes both, and a `subscription.removed` on the live
+ *  event feed refreshes this card too. */
 function ownerSubscription(owner: AskOwner): OwnerSubscription | undefined {
   if (owner.issue_key !== null) {
     const key = owner.issue_key;
     return {
       id: key,
+      kind: "issue",
       label: key,
-      list: () => api.getIssueSubscribers(key),
-      noun: "issue",
       remove: (sessionId, bounds) => api.unsubscribeIssueSession(key, sessionId, bounds),
     };
   }
@@ -57,9 +54,8 @@ function ownerSubscription(owner: AskOwner): OwnerSubscription | undefined {
     const id = owner.artifact_id;
     return {
       id,
+      kind: "document",
       label: "this document",
-      list: () => api.getArtifactSubscribers(id),
-      noun: "document",
       remove: (sessionId, bounds) => api.unsubscribeArtifactSession(id, sessionId, bounds),
     };
   }
@@ -238,26 +234,14 @@ export function AskRecipients({
 }: AskRecipientsProps): ReactNode {
   const queryClient = useQueryClient();
   const subscription = ownerSubscription(owner);
-  // The subscribers endpoints need the `person` scope, which a signed-in browser holds; the card
-  // only asks once the sign-in read says the principal is a user, so nothing without the scope
-  // cycles on a 403.
-  const human = useIsHuman();
-  // Same key as the issue header (`IssueHeader`) and the project document page
+  // The subscribers endpoints need the `person` scope: the card only asks once a read says the
+  // viewer's credential holds it (`useSubscribers`), so nothing without the scope cycles on a
+  // 403. Same key as the issue header (`IssueHeader`) and the project document page
   // (`DocumentPage`), so an Inbox of cards on one issue shares one fetch with its header. Each
   // fetch is two Envoy listener round trips (interests + sessions), so it is held fresh for a
   // while rather than refetched on every mount and focus; the event feed's invalidation still
   // refreshes it.
-  const subscribersQuery = useQuery({
-    enabled: subscription !== undefined && human,
-    queryKey: ["subscribers", subscription?.id],
-    queryFn: () => {
-      if (subscription === undefined) {
-        throw new Error("Ask recipients query requires an owner.");
-      }
-      return subscription.list();
-    },
-    staleTime: 30_000,
-  });
+  const subscribersQuery = useSubscribers(subscription, { staleTime: 30_000 });
   const subscriberRows = subscribersQuery.data ?? EMPTY_SUBSCRIBERS;
   const text = useAgentText();
   const { count, issueRows, routeSession, subscribers, unknownRoute } = reachRows({
@@ -319,7 +303,7 @@ export function AskRecipients({
 
   // A follower carries no title of its own: it reads by its registry title, else its short id.
   const followerLabel = (sessionId: string): string => text.sessionText(sessionId, undefined);
-  const viaLabel = subscription === undefined ? "" : `via ${subscription.noun} subscription`;
+  const viaLabel = subscription === undefined ? "" : `via ${subscription.kind} subscription`;
   // What still delivers to a session once its claim or route is all that is left; the route's
   // session is a role's holder too. A role route the listener could not judge may be held by any
   // session, so one not otherwise known to be reached is told it may still hear the ask.
@@ -338,7 +322,7 @@ export function AskRecipients({
   // What still delivers to a session once it is unfollowed, named by the group it moves into.
   const stillReachesUnfollowed = (sessionId: string): string => {
     if (subscription !== undefined && subscriberRows.some((row) => row.session_id === sessionId)) {
-      return `Its answer and replies still reach them through the ${subscription.noun} subscription.`;
+      return `Its answer and replies still reach them through the ${subscription.kind} subscription.`;
     }
     return issueReach(sessionId) ?? "Its answer and replies will no longer reach them.";
   };
@@ -406,7 +390,7 @@ export function AskRecipients({
             <>
               <p className={`mt-1.5 text-xs italic ${textMutedOnSurface}`}>{viaLabel}</p>
               <ul
-                aria-label={`Via ${subscription?.noun} subscription`}
+                aria-label={`Via ${subscription?.kind} subscription`}
                 className="mt-1 flex flex-wrap gap-2"
               >
                 {subscribers.map((subscriber) => (

@@ -702,10 +702,15 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	t.Logf("cache-hits: %d version before registration, %d readings answered after it, method %q, verdict %+v",
 		versions, items.Total, *detail.DocText, newest.Verdict)
 
-	// A computed eval with a day row of its own: three deploys today.
+	// A computed eval with a day row of its own: three deploys today. deploy-frequency reads the
+	// deploy repository: its row is kept under it (eval_days.deploy_repo), and a read folds those of
+	// the repositories the refresher published (publishDeployRepo), here EVL's one source, acme/web.
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "EVL", rule)
+	publishDeployRepo(t, database, "EVL", rule, today)
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, counts, built_by)
-		values ('EVL', 'EVL/deploy-frequency', 'deploys', '', $1, true, 3, 3, '{"with_prs": 2}', 'test')
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+		values ('EVL', 'EVL/deploy-frequency', 'acme/web', 'deploys', '', $1, true, 3, 3, '{"with_prs": 2}', 'test')
 	`, today); err != nil {
 		t.Fatalf("write deploy-frequency's day row: %v", err)
 	}
@@ -1303,10 +1308,15 @@ func TestAnEvalWhoseSourceTurnsComputedFoldsNoReadingLoggedWhileItWasLogged(t *t
 	}
 
 	// The computation's own row of the day, as the refresher writes it: three deploys, two with
-	// pull requests.
+	// pull requests. deploy-frequency reads the deploy repository: its row is kept under it
+	// (eval_days.deploy_repo), and a read folds those of the repositories the refresher published
+	// (publishDeployRepo), here SQL's one source, acme/web.
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "SQL", rule)
+	publishDeployRepo(t, database, "SQL", rule, today)
 	if _, err := database.Pool.Exec(ctx, `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, counts, built_by)
-		values ('SQL', 'SQL/deploy-frequency', 'deploys', '', $1, true, 3, 3, '{"with_prs": 2}', 'test')
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, counts, built_by)
+		values ('SQL', 'SQL/deploy-frequency', 'acme/web', 'deploys', '', $1, true, 3, 3, '{"with_prs": 2}', 'test')
 	`, today); err != nil {
 		t.Fatalf("write the computation's row of deploy-frequency: %v", err)
 	}

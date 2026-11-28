@@ -72,20 +72,21 @@ const (
 // each folds through. The catalogue names them, computedSources is keyed by them, and api's items
 // route answers each one's rows, so a source is spelled once.
 const (
-	SourceFoldDeployFrequency   = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
-	SourceFoldDeployRunSuccess  = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
-	SourceFoldLeadTime          = SourceComputedPrefix + "delivery/measures.FoldLeadTime"
-	SourceFoldReworkShare       = SourceComputedPrefix + "delivery/measures.FoldReworkShare"
-	SourceFoldChangeFailureRate = SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate"
-	SourceFoldTimeToRestore     = SourceComputedPrefix + "delivery/measures.FoldTimeToRestore"
-	SourceFoldTiming            = SourceComputedPrefix + "delivery/measures.FoldTiming"
-	SourceListUnownedP0         = SourceComputedPrefix + "delivery.ListUnownedP0"
-	SourceFoldWorkTime          = SourceComputedPrefix + "legion/metrics.FoldWorkTime"
-	SourceFoldPhaseTime         = SourceComputedPrefix + "legion/metrics.FoldPhaseTime"
-	SourceFoldIdleTime          = SourceComputedPrefix + "legion/metrics.FoldIdleTime"
-	SourceFoldSlotWait          = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
-	SourceFoldRework            = SourceComputedPrefix + "legion/metrics.FoldRework"
-	SourceFoldSplitting         = SourceComputedPrefix + "legion/metrics.FoldSplitting"
+	SourceFoldDeployFrequency  = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
+	SourceFoldDeployRunSuccess = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
+	SourceFoldLeadTime         = SourceComputedPrefix + "delivery/measures.FoldLeadTime"
+	SourceFoldReworkShare      = SourceComputedPrefix + "delivery/measures.FoldReworkShare"
+	SourceFoldChangeFailRate   = SourceComputedPrefix + "delivery/measures.FoldChangeFailRate"
+	SourceFoldRecovery         = SourceComputedPrefix + "delivery/measures.FoldRecovery"
+	SourceFoldReworkRate       = SourceComputedPrefix + "delivery/measures.FoldReworkRate"
+	SourceFoldTiming           = SourceComputedPrefix + "delivery/measures.FoldTiming"
+	SourceListUnownedP0        = SourceComputedPrefix + "delivery.ListUnownedP0"
+	SourceFoldWorkTime         = SourceComputedPrefix + "legion/metrics.FoldWorkTime"
+	SourceFoldPhaseTime        = SourceComputedPrefix + "legion/metrics.FoldPhaseTime"
+	SourceFoldIdleTime         = SourceComputedPrefix + "legion/metrics.FoldIdleTime"
+	SourceFoldSlotWait         = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
+	SourceFoldRework           = SourceComputedPrefix + "legion/metrics.FoldRework"
+	SourceFoldSplitting        = SourceComputedPrefix + "legion/metrics.FoldSplitting"
 )
 
 // RegistryActor is who the server's own writes to `evals-md` are by: the section a registration
@@ -278,6 +279,12 @@ type DayRow struct {
 	measures.DayPart
 	BuiltBy   string    `json:"built_by"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// sampleKeys is the pull request each of the part's samples times (eval_days.sample_keys,
+	// measures.MergeToProductionKeys and the other two lead times' keys), in their order: on every
+	// row of the three lead times to production, whose samples of one pull request a read that
+	// reads several of its rows counts once (shippedOnce); nil on every other row, on a row that
+	// times no pull request, and on a row an earlier release wrote.
+	sampleKeys []string
 }
 
 // WindowRow is one day row as a DayWindowIn read answers it: the range it answers for
@@ -293,10 +300,15 @@ type WindowRow struct {
 	// key of the repository it publishes, whose row of one series and day can stand beside the
 	// project's; a rebuild's overlay of staged rows replaces each owner's row alone. repo is the
 	// repository it is stored under: a read that names repositories answers it, and every row of
-	// one that names none is stored under "". The folds take a day's rows in the order of the two
-	// and the series (sortWindowRows), and the overlay replaces a row of each repository alone.
-	owner string
-	repo  string
+	// one that names none is stored under "". deployRepo is the deploy repository the row is stored
+	// under when a read folds several deploy repositories (a project's union cut or a multi-source
+	// day-row fallback), and empty otherwise. The folds take a day's rows in the order of those
+	// three and the series (sortWindowRows), and the overlay replaces a row of each whole key.
+	// sampleKeys is the row's sample keys (DayRow.sampleKeys), read with its samples.
+	owner      string
+	repo       string
+	deployRepo string
+	sampleKeys []string
 }
 
 // The two ranges a DayWindowIn read answers rows for.

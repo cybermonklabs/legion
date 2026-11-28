@@ -297,7 +297,7 @@ func (r *hubRig) changeCursor() int64 {
 
 // settle waits until the hub has acted on everything the test's setup wrote, so none of it counts
 // against the measurement that follows: its change cursor at the delivery change log's newest
-// entry (settings and pull requests seeded through delivery.PutSettings and its kin), its feed at
+// entry (settings and pull requests seeded through saveDeliveryRule and its kin), its feed at
 // or past the event log's head, and then nothing owed, which is what waitNothingOwed reads. The
 // hub takes delivery changes independently of the safe horizon the relay reads events up to, and
 // an event write of the test's database still open, the server's own on a loaded machine, can keep
@@ -735,13 +735,11 @@ func subscribeFrame(sub string, view DeliveryLiveView) deliverySubscription {
 // seedHubSettings writes the delivery settings the hub tests run under.
 func seedHubSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release / release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 }
 
 // hubPR is acme/widgets#n by octocat, opened two hours before it merged at merged.
@@ -2515,13 +2513,13 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 
 	for range 2 {
 		at := clock.Now()
-		if err := delivery.RecordReconcileSuccess(t.Context(), pool, at); err != nil {
+		if err := delivery.RecordReconcileSuccess(t.Context(), pool, "acme/widgets", at); err != nil {
 			t.Fatalf("record a reconcile: %v", err)
 		}
 		rig.waitFreshnessHeard(t, "the hub to hear the reconcile that changed no verdict", reconciledAt(at))
 		conn.empty(t, "a reconcile that changed no verdict")
 	}
-	if err := delivery.RecordReconcileError(t.Context(), pool, "GitHub answered 502"); err != nil {
+	if err := delivery.RecordReconcileError(t.Context(), pool, "acme/widgets", "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)
 	}
 	failed := conn.freshness(t, "the freshness frame naming the error")
@@ -2529,7 +2527,7 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 		t.Fatalf("the error's freshness frame = %+v, want last_error \"GitHub answered 502\" and nothing stale", failed)
 	}
 	cleared := clock.Now()
-	if err := delivery.RecordReconcileSuccess(t.Context(), pool, cleared); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, "acme/widgets", cleared); err != nil {
 		t.Fatalf("record the next reconcile: %v", err)
 	}
 	clearing := conn.freshness(t, "the freshness frame clearing the error")
@@ -2548,7 +2546,7 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 	// The pass that clears the stale verdict sends the next frame the page is sent, so a second
 	// frame for the stale verdict would be read in its place here.
 	passed := clock.Now()
-	if err := delivery.RecordReconcileSuccess(t.Context(), pool, passed); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), pool, "acme/widgets", passed); err != nil {
 		t.Fatalf("record the reconcile that clears the stale sources: %v", err)
 	}
 	again := conn.freshness(t, "the freshness frame clearing the stale sources")
@@ -2557,6 +2555,31 @@ func TestFreshnessIsSentOnlyWhenItsVerdictChanges(t *testing.T) {
 	}
 	rig.waitFreshnessHeard(t, "the hub to hear the pass that cleared the stale sources", reconciledAt(passed))
 	conn.empty(t, "the frame clearing the stale sources")
+}
+
+// TestTheHubJoinsTheSourcesLastErrorsInTheGETRoutesOrder: two sources whose repositories sort one
+// way by their bytes and the other way in lower case (Zeta/app before acme/web, zeta/app after),
+// each with a last error: the hub's freshness (deliveryFreshnessHeard) joins the two errors in the
+// rules' order, as the GET routes' deliveryFreshnessOf of rules.All does, so a page reads one text
+// whichever of the two answered it. Red where the hub orders the sources by their lower-case keys.
+func TestTheHubJoinsTheSourcesLastErrorsInTheGETRoutesOrder(t *testing.T) {
+	t.Parallel()
+	rules := delivery.NewSourceRules([]delivery.ProjectSettings{{Project: "ACME", Delivery: true, Sources: []delivery.DeploySource{
+		{SourceRule: delivery.SourceRule{Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/web")}, LastError: new("GitHub answered 502")},
+		{SourceRule: delivery.SourceRule{Kind: delivery.SourceKindGitHubWorkflow, Repo: new("Zeta/app")}, LastError: new("the token was refused")},
+	}}})
+	want := deliveryFreshnessOf(rules.All(), 0).LastError
+	if want == nil {
+		t.Fatal("the GET routes' freshness states no last error of two sources that each hold one")
+	}
+	var heard deliveryFreshnessHeard
+	heard.heardRules(rules)
+	if heard.lastError == nil {
+		t.Fatalf("the hub states no last error, want the GET routes' %q", *want)
+	}
+	if *heard.lastError != *want {
+		t.Fatalf("the hub's last error = %q, want the GET routes' %q", *heard.lastError, *want)
+	}
 }
 
 func TestAnUnfetchablePullRequestSendsAFreshnessFrame(t *testing.T) {
@@ -2605,7 +2628,7 @@ func TestASubscriptionAfterAVerdictChangeIsSentThatVerdict(t *testing.T) {
 	rig.requireNothingSent(t, page, "the first snapshot, whose verdict is set silently")
 	rig.waitConnected(t)
 
-	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "GitHub answered 502"); err != nil {
+	if err := delivery.RecordReconcileError(t.Context(), rig.database.Pool, "acme/widgets", "GitHub answered 502"); err != nil {
 		t.Fatalf("record a reconcile error: %v", err)
 	}
 	requireVerdict := func(conn *fakeLiveConn, what string) {
@@ -2674,6 +2697,62 @@ func TestASubscriberGetsTheGETBodyAsItsSnapshot(t *testing.T) {
 	}
 }
 
+// TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule (dispatch://INFRA-978, D9):
+// ALPHA reads two source repositories, acme/one under the production job `one / release` and
+// acme/two under `two / release`, and each holds a run of its own job and a run of the other's:
+// acme/one's 1001 and acme/two's 1002 are deploys by their own repository's rule, and acme/two's
+// 1003 (one's job) and acme/one's 1004 (two's job) are none. A subscriber's first answer of the
+// `measures` view counts two successful deploys and its first answer of the `pipeline` view holds a
+// production card of both repositories' jobs with two deploys, each the body its route answers, as
+// the routes count them (TestTheDeliveryRoutesReadEachSourceRepositoryUnderItsOwnRule).
+func TestTheHubServesAViewOverTwoSourceRepositoriesEachUnderItsOwnRule(t *testing.T) {
+	t.Parallel()
+	rig := newHubRig(t, nil)
+	createTestProject(t, rig.handler, "ALPHA")
+	saveProjectRules(t, rig.database, "ALPHA", deployRule("acme/one", "one / release"), deployRule("acme/two", "two / release"))
+	seedSourceRun(t, rig.database, "acme/one", 1001, 1, "one / release")
+	seedSourceRun(t, rig.database, "acme/two", 1002, 2, "two / release")
+	seedSourceRun(t, rig.database, "acme/two", 1003, 3, "one / release")
+	seedSourceRun(t, rig.database, "acme/one", 1004, 4, "two / release")
+	from, to := sourcesDay, sourcesDay.AddDate(0, 0, 1)
+	at := sourcesDay.Add(20 * time.Hour)
+
+	conn := newFakeLiveConn()
+	bodies := map[string]json.RawMessage{}
+	for i, test := range []struct {
+		sub, kind, query string
+		view             DeliveryLiveView
+	}{
+		{"measures", deliveryLiveMeasures, "", measuresRange(from, to, "")},
+		{"pipeline", deliveryLivePipeline, "at=" + at.Format(time.RFC3339Nano), livePipelineView(&at)},
+	} {
+		rig.hub.Subscribe(conn, subscribeFrame(test.sub, test.view))
+		snapshot := conn.snapshot(t, test.sub)
+		if i > 0 {
+			// The first view's read set the hub's verdict silently; every later view's snapshot is
+			// followed by it.
+			conn.freshness(t, "the verdict after the snapshot of "+test.sub)
+		}
+		requireSameBody(t, test.sub, snapshot.Body, getBody(t, rig.handler, windowTarget(t, test.kind, snapshot.Body, test.query)))
+		bodies[test.sub] = snapshot.Body
+	}
+
+	var measured deliveryMeasuresResponse
+	if err := json.Unmarshal(bodies["measures"], &measured); err != nil {
+		t.Fatalf("decode the measures snapshot: %v", err)
+	}
+	if deploys := measured.Measures.DeployFrequency.SuccessfulDeploys; deploys != 2 {
+		t.Errorf("the hub's measures view counts %d successful deploys, want 2: acme/one's 1001 and acme/two's 1002, each by its own rule", deploys)
+	}
+	var pipeline deliveryPipelineResponse
+	if err := json.Unmarshal(bodies["pipeline"], &pipeline); err != nil {
+		t.Fatalf("decode the pipeline snapshot: %v", err)
+	}
+	if card := pipeline.ProductionApply; card.Job != "one / release or two / release" || card.Total.N != 2 {
+		t.Errorf("the hub's pipeline view holds the production card %+v, want both repositories' jobs and their two deploys", card)
+	}
+}
+
 func TestAMergedPullRequestReachesTheSubscriberAsOneDelta(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
@@ -2727,7 +2806,7 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	t.Parallel()
 	rig := newHubRig(t, nil)
 	seedHubSettings(t, rig.database)
-	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, rig.clock.Now()); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, "acme/widgets", rig.clock.Now()); err != nil {
 		t.Fatalf("record a reconcile: %v", err)
 	}
 	now := rig.clock.Now()
@@ -2746,7 +2825,7 @@ func TestAReconcilePassThatFindsNothingNewSendsNothing(t *testing.T) {
 	}
 	upsertDeploy(t, rig.database, 100, now.Add(-29*time.Hour), now.Add(-28*time.Hour))
 	passed := rig.clock.Now()
-	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, passed); err != nil {
+	if err := delivery.RecordReconcileSuccess(t.Context(), rig.database.Pool, "acme/widgets", passed); err != nil {
 		t.Fatalf("record the pass: %v", err)
 	}
 	rig.waitFreshnessHeard(t, "the hub to hear the reconcile pass", reconciledAt(passed))
@@ -3045,9 +3124,12 @@ func TestTheHubRecomputesUpToEvalsRecomputesEvalsViewsAtOnce(t *testing.T) {
 		mu.Unlock()
 		close(gate)
 	}
-	seedHubSettings(t, rig.database)
 	createTestProject(t, rig.handler, "ACME")
+	saveProjectRules(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"))
 	today := rig.clock.Now().UTC().Truncate(24 * time.Hour)
+	// The day row below is of acme/widgets', which a read of ACME's evals reads once the refresher's
+	// record names it (eval_days_rules, evals.DeployReposIn).
+	publishDeployRepo(t, rig.database, "ACME", deployRule("acme/widgets", "release / release"), today.AddDate(0, 0, -27))
 	keyOf := func(frame DeliveryLiveView) string {
 		spec, refusal := parseDeliveryLiveView(frame)
 		if refusal != nil {

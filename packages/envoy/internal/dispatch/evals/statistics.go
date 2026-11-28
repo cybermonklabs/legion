@@ -47,13 +47,14 @@ type computedSource struct {
 
 // computedSources is each computed eval's fold and headline, by its source.
 var computedSources = map[string]computedSource{
-	SourceFoldDeployFrequency:   {oneSeries(measures.SeriesDeploys, deployFrequencyStatistics), stated("per_day")},
-	SourceFoldDeployRunSuccess:  {oneSeries(measures.SeriesRuns, deployRunSuccessStatistics), stated("rate")},
-	SourceFoldLeadTime:          {oneSeries(measures.SeriesMinutes, leadTimeStatistics), stated("median")},
-	SourceFoldReworkShare:       {oneSeries(measures.SeriesPRs, reworkShareStatistics), stated("rate")},
-	SourceFoldChangeFailureRate: {changeFailureRateStatistics, stated("rate")},
-	SourceFoldTimeToRestore:     {oneSeries(measures.SeriesMinutes, timeToRestoreStatistics), stated("median")},
-	SourceFoldTiming:            {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
+	SourceFoldDeployFrequency:  {oneSeries(measures.SeriesDeploys, deployFrequencyStatistics), stated("per_day")},
+	SourceFoldDeployRunSuccess: {oneSeries(measures.SeriesRuns, deployRunSuccessStatistics), stated("rate")},
+	SourceFoldLeadTime:         {oneSeries(measures.SeriesMinutes, leadTimeStatistics), stated("median")},
+	SourceFoldReworkShare:      {oneSeries(measures.SeriesPRs, reworkShareStatistics), stated("rate")},
+	SourceFoldChangeFailRate:   {oneSeries(measures.SeriesPerDeploy, changeFailRateStatistics), stated("rate")},
+	SourceFoldRecovery:         {oneSeries(measures.SeriesMinutes, recoveryStatistics), stated("median")},
+	SourceFoldReworkRate:       {oneSeries(measures.SeriesReworkDeploys, reworkRateStatistics), stated("rate")},
+	SourceFoldTiming:           {oneSeries(measures.SeriesMinutes, timingStatistics), stated("median")},
 	// unowned-p0's day rows are the counts at the day's last refresh, the project's and each
 	// repository's (WriteUnownedP0Day); a window reads its newest day's, the sum of that day's rows.
 	SourceListUnownedP0: {oneSeries(SeriesUnownedP0, unownedP0Statistics), stated("value")},
@@ -111,8 +112,18 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 		}
 	default:
 		folded = make(map[string]Statistics, len(series))
+		if len(series) <= 1 {
+			for _, one := range series {
+				folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			}
+			break
+		}
+		bySeries := make(map[string][]measures.DayPart, len(series))
+		for _, part := range parts {
+			bySeries[part.Series] = append(bySeries[part.Series], part)
+		}
 		for _, one := range series {
-			folded[one.Series] = aggStatistics(one.Agg, parts, one.Series)
+			folded[one.Series] = aggStatistics(one.Agg, bySeries[one.Series], one.Series)
 		}
 	}
 	return writable(folded)
@@ -169,15 +180,15 @@ type DayPoint struct {
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
 // sums depend on the order of its parts answers the stored figures' bits whatever order the read's
 // plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
-// what this does, bit for bit.
+// what this does, bit for bit. It folds their parts as those folds do too, each pull request
+// counted once, at the first deploy of those its rows time it to (shippedOnce).
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
 	var windowParts, compareParts []measures.DayPart
 	via := map[string]int{}
-	for _, row := range rows {
-		part := row.Part
-		if row.Range == RangeCompare {
+	for index, part := range shippedOnce(rows) {
+		if rows[index].Range == RangeCompare {
 			compareParts = append(compareParts, part)
 			continue
 		}
@@ -204,22 +215,171 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 	return valuesOf(listed, windowed, via, compared, daily, firsts, window, compare)
 }
 
+// shippedOnce is the parts of rows, one eval's rows of one read, in their order, as the folds of
+// the eval's numbers read them (SeriesValuesOf, newFigureGroup), with each pull request counted once,
+// at the first deploy to ship it of those the rows the read reads time it to
+// (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8). Each repository's rows time a
+// pull request by that repository's own first deploy of it alone: a GitHub repository's, a
+// project's own rows and an owner key's, by its runs, and a project's events repository's by the
+// deploys posted to the project (DeliveryDay.Rows). Which repositories a project reads is chosen
+// when it reads (DeployReposIn, and the owner keys the published defaults give it), so the choice
+// is the read's: of one pull request's samples in one range, day, series and cut (repository), it
+// keeps the smallest, the first deploy's, since each counts its minutes from the one moment the
+// lead time starts (the merge, the opening, the first commit), a tie going to a GitHub deploy and
+// then to the deploy repository first by name (Shipping.Before), and leaves the others out of their
+// rows' parts: their samples, n, sum and max, and, of an owner key's part the project reads through
+// the repository, one of its via_repository each. An events repository holds merge-to-production
+// rows alone, so a post takes part in that eval alone
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3). The rows that name
+// each sample's pull request are those the builder keyed (DayRow.sampleKeys: every row of the three
+// lead times to production); a row whose keys are not one for each sample (a row an earlier release
+// wrote holds none) is taken as it stands. Only one repository's rows time a pull request in a read
+// of one deploy repository, whose rows carry none (WindowRow.deployRepo ""), and two rows can time
+// one pull request only where they are of two deploy repositories, so the samples of a cell are
+// looked into only where keyed rows of two deploy repositories share it: a read with none costs one
+// pass over its rows and no allocation. Every part it changes is a copy with samples of its own, so
+// rows that share their samples with another group's (readFoldGroups) keep them; and it keeps and
+// leaves out the same samples, and makes the same sum, whatever order each row's samples are in
+// (newFigureGroup sorts them, a read of the rows does not).
+func shippedOnce(rows []WindowRow) []measures.DayPart {
+	parts := make([]measures.DayPart, len(rows))
+	// cell is one range, day, series and cut of the rows, whose samples of one pull request are the
+	// ones a read counts once.
+	type cell struct {
+		within, series, repo string
+		day                  int64
+	}
+	cellOf := func(row *WindowRow) cell {
+		return cell{within: row.Range, series: row.Part.Series, repo: row.repo, day: row.Part.Day.Unix()}
+	}
+	// timesEach reports whether row is a keyed row of a read of several deploy repositories: one
+	// whose keys name the pull request of each of its samples.
+	timesEach := func(row *WindowRow) bool {
+		return row.deployRepo != "" && len(row.sampleKeys) > 0 && len(row.sampleKeys) == len(row.Part.Samples)
+	}
+	// seen is the deploy repository of the first keyed row of each cell, and shared each cell keyed
+	// rows of another deploy repository share with it.
+	var seen map[cell]string
+	var shared map[cell]bool
+	for index := range rows {
+		row := &rows[index]
+		parts[index] = row.Part
+		if !timesEach(row) {
+			continue
+		}
+		if seen == nil {
+			seen = map[cell]string{}
+		}
+		at := cellOf(row)
+		if was, held := seen[at]; !held {
+			seen[at] = row.deployRepo
+		} else if was != row.deployRepo {
+			if shared == nil {
+				shared = map[cell]bool{}
+			}
+			shared[at] = true
+		}
+	}
+	if len(shared) == 0 {
+		return parts
+	}
+	// timed is one pull request's samples in one cell, and sample one of them: its row, its place
+	// among that row's samples, and the deploy that ships it.
+	type timed struct {
+		cell
+		pr string
+	}
+	type sample struct {
+		row, at  int
+		shipping Shipping
+	}
+	samples := map[timed][]sample{}
+	for index := range rows {
+		row := &rows[index]
+		if !timesEach(row) {
+			continue
+		}
+		at := cellOf(row)
+		if !shared[at] {
+			continue
+		}
+		posted := IsEventsRepo(row.deployRepo)
+		for k, pr := range row.sampleKeys {
+			finished := time.Time{}.Add(time.Duration(math.Round(row.Part.Samples[k] * float64(time.Minute))))
+			key := timed{cell: at, pr: pr}
+			samples[key] = append(samples[key], sample{row: index, at: k, shipping: Shipping{At: finished, Posted: posted, Repo: row.deployRepo}})
+		}
+	}
+	dropped := map[int][]bool{}
+	for _, of := range samples {
+		if len(of) < 2 {
+			continue
+		}
+		first := 0
+		for k := range of {
+			if of[k].shipping.Before(of[first].shipping) {
+				first = k
+			}
+		}
+		for k, one := range of {
+			if k == first {
+				continue
+			}
+			if dropped[one.row] == nil {
+				dropped[one.row] = make([]bool, len(rows[one.row].Part.Samples))
+			}
+			dropped[one.row][one.at] = true
+		}
+	}
+	for index, drops := range dropped {
+		part := &parts[index]
+		kept := make([]float64, 0, len(part.Samples))
+		var lost []float64
+		for at, value := range part.Samples {
+			if drops[at] {
+				lost = append(lost, value)
+			} else {
+				kept = append(kept, value)
+			}
+		}
+		if part.Sum != nil {
+			// In ascending order, so the sum is the same bits whatever order the row's samples are in.
+			slices.Sort(lost)
+			sum := *part.Sum
+			for _, value := range lost {
+				sum -= value
+			}
+			part.Sum = &sum
+		}
+		part.Samples, part.N, part.Max = kept, part.N-len(lost), nil
+		if len(kept) > 0 {
+			part.Max = new(slices.Max(kept))
+		}
+		if isOwner(rows[index].owner) {
+			part.ViaRepository = max(0, part.ViaRepository-len(lost))
+		}
+	}
+	return parts
+}
+
 // sortWindowRows sorts rows in place into the one order a read of the day rows (SeriesValuesOf),
 // the stored figures (newFigureGroup) and a rebuild's overlay of staged rows (readOverlayGroups)
 // all fold them in: by day, and within a day by the key each row is stored under (WindowRow.owner),
-// then by its repository (WindowRow.repo) and then by its series. A day of one series can hold
-// several rows: a project's own row and an owner key's (owners.go), and in the cut of the project's
-// default repository its own row of the repository and its own row stored under
-// legionfacts.DefaultRepo (repoCut). No two rows of one eval and range share all four, so the order
-// is total, and a sum of floats, whose bits depend on the order of its parts (1e16, -1e16 and 1 sum
-// to 1 in that order and to 0 in another), answers the same bits whatever order the database
-// answered the rows in.
+// then by its repository (WindowRow.repo), then by its deploy repository (WindowRow.deployRepo)
+// and then by its series. A day of one series can hold several rows: a project's own row and an
+// owner key's (owners.go), in the cut of the project's default repository its own row of the
+// repository and its own row stored under legionfacts.DefaultRepo (repoCut), and in a project's
+// union cut rows of several deploy repositories. No two rows of one eval and range share all five,
+// so the order is total, and a sum of floats, whose bits depend on the order of its parts (1e16,
+// -1e16 and 1 sum to 1 in that order and to 0 in another), answers the same bits whatever order the
+// database answered the rows in.
 func sortWindowRows(rows []WindowRow) {
 	slices.SortFunc(rows, func(a, b WindowRow) int {
 		if order := a.Part.Day.Compare(b.Part.Day); order != 0 {
 			return order
 		}
-		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo), strings.Compare(a.Part.Series, b.Part.Series))
+		return cmp.Or(strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo),
+			strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.Part.Series, b.Part.Series))
 	})
 }
 
@@ -569,44 +729,41 @@ func reworkShareStatistics(parts []measures.DayPart, _ Range) Statistics {
 	return Statistics{"rate": measures.FoldReworkShare(parts)}
 }
 
-// change-fail-rate's three shares (measures.FoldChangeFailureRate): `per_deploy` and `per_pr`,
-// each its rate, confirmed, pending, rejected and total (and per_pr its reverts), and
-// `upper_bound`, its rate and confirmed_or_pending.
-func changeFailureRateStatistics(parts []measures.DayPart, _ Range, names []string) map[string]Statistics {
-	shares := changeFailureRateOf(measures.FoldChangeFailureRate(parts))
-	folded := make(map[string]Statistics, len(names))
-	for _, name := range names {
-		folded[name] = shares[name]
-		if folded[name] == nil {
-			folded[name] = Statistics{}
-		}
-	}
-	return folded
+// change-fail-rate's `per_deploy` (measures.FoldChangeFailRate): rate, failed (the deploys with a
+// counted failure) and total (every deploy).
+func changeFailRateStatistics(parts []measures.DayPart, _ Range) Statistics {
+	return changeFailRateOf(measures.FoldChangeFailRate(parts))
 }
 
-// changeFailureRateOf is change-fail-rate's three shares' statistics of a folded failure rate, by
-// series. If no part measured anything, the fold is the zero ChangeFailureRate, even when it
-// read zero parts from stored days: every figure is nil, including the counts.
-func changeFailureRateOf(folded measures.ChangeFailureRate) map[string]Statistics {
-	perDeploy := blank("rate", "confirmed", "pending", "rejected", "total")
-	perPR := blank("rate", "confirmed", "pending", "rejected", "reverts", "total")
-	upperBound := blank("rate", "confirmed_or_pending")
-	if folded != (measures.ChangeFailureRate{}) {
-		flagged := func(stats Statistics, flags measures.FlagCounts) {
-			stats["rate"], stats["confirmed"], stats["pending"] = flags.Rate, new(float64(flags.Confirmed)), new(float64(flags.Pending))
-			stats["rejected"], stats["total"] = new(float64(flags.Rejected)), new(float64(flags.Total))
-		}
-		flagged(perDeploy, folded.PerDeploy.FlagCounts)
-		flagged(perPR, folded.PerPR)
-		perPR["reverts"] = new(float64(folded.PerPR.Reverts))
-		upperBound["rate"], upperBound["confirmed_or_pending"] = folded.PerDeploy.UpperBoundRate, new(float64(folded.PerDeploy.ConfirmedOrPending))
+// changeFailRateOf is change-fail-rate's `per_deploy` statistics of a folded change fail rate,
+// every figure nil where folded is (no part was folded: "no data").
+func changeFailRateOf(folded *measures.ChangeFailRate) Statistics {
+	stats := blank("rate", "failed", "total")
+	if folded != nil {
+		stats["rate"], stats["failed"], stats["total"] = folded.Rate, new(float64(folded.Failed)), new(float64(folded.Total))
 	}
-	return map[string]Statistics{measures.SeriesPerDeploy: perDeploy, measures.SeriesPerPR: perPR, measures.SeriesUpperBound: upperBound}
+	return stats
 }
 
-// failed-deploy-recovery's `minutes` (measures.FoldTimeToRestore): median.
-func timeToRestoreStatistics(parts []measures.DayPart, _ Range) Statistics {
-	return Statistics{"median": measures.FoldTimeToRestore(parts).MedianMinutes}
+// failed-deploy-recovery's `minutes` (measures.FoldRecovery): n (the restores timed), median and
+// not_restored, every figure nil where no part was folded, and the median nil where no failure was
+// restored.
+func recoveryStatistics(parts []measures.DayPart, _ Range) Statistics {
+	stats := blank("n", "median", "not_restored")
+	if folded := measures.FoldRecovery(parts); folded != nil {
+		stats["n"], stats["median"], stats["not_restored"] = new(float64(folded.N)), folded.MedianMinutes, new(float64(folded.NotRestored))
+	}
+	return stats
+}
+
+// deployment-rework-rate's `deploys` (measures.FoldReworkRate): rate, restoring (the deploys that
+// restored a counted failure) and total (every deploy), every figure nil where no part was folded.
+func reworkRateStatistics(parts []measures.DayPart, _ Range) Statistics {
+	stats := blank("rate", "restoring", "total")
+	if folded := measures.FoldReworkRate(parts); folded != nil {
+		stats["rate"], stats["restoring"], stats["total"] = folded.Rate, new(float64(folded.Restoring)), new(float64(folded.Total))
+	}
+	return stats
 }
 
 // A CI eval's `minutes` (measures.FoldTiming): n, median, p90, success, failure, cancelled,

@@ -16,7 +16,6 @@ import type {
   DeliveryLiveView,
   DeliveryMeasuresResponse,
   DeliveryPR,
-  DeliverySettings,
   DeliveryTimelineWithMeasures,
   LiveServerFrame,
   LiveSubscribe,
@@ -51,7 +50,26 @@ const emptyFreshness: DeliveryTimelineWithMeasures["freshness"] = {
 
 const NOT_CONFIGURED = "DELIVERY_NOT_CONFIGURED";
 const notConfiguredMessage =
-  "delivery is not configured; set delivery_settings through PUT /api/v1/settings/delivery";
+  "delivery is not configured: no project has delivery on; turn it on through PUT /api/v1/projects/{key}/settings/delivery";
+
+/** The projects the setup links name: `GET /api/v1/projects` answered with two. */
+function stubProjects() {
+  return spyOn(api, "listProjects").mockResolvedValue(
+    ["ACME", "CORE"].map((key) => ({
+      created_at: "2026-09-10T00:00:00Z",
+      gated_steps: [],
+      key,
+      name: key === "ACME" ? "Acme" : "Core",
+      open_asks: 0,
+      proven_sessions: false,
+    }))
+  );
+}
+
+/** The setup links' list, once the projects are read. */
+function setupLinks(): Promise<HTMLElement> {
+  return screen.findByRole("list", { name: "Project settings" });
+}
 
 /** The measures panel's answer for the page's window: nothing in it, so every test that is not
  *  about the panel renders it without asserting on it. */
@@ -71,27 +89,36 @@ const emptyMeasures: DeliveryMeasuresResponse = {
       opened_to_production: { median_minutes: null, p90_minutes: null, max_minutes: null },
       opened_to_merge: { median_minutes: null, p90_minutes: null, max_minutes: null },
     },
-    // As the server answers it while no failure source exists (`flags_source: "none"`): every
-    // count 0 and every rate null.
+    // As the server answers it while no day row of the three failure measures is stored: each
+    // failure measure reads no data, and the retired members the earlier build read keep null
+    // leaves.
     change_failure_rate: {
-      per_pr: { confirmed: 0, pending: 0, rejected: 0, reverts: 0, total: 0, rate: null },
-      per_deploy: {
-        confirmed: 0,
-        pending: 0,
-        rejected: 0,
-        reverts: 0,
-        total: 0,
+      failed: null,
+      total: null,
+      rate: null,
+      per_pr: {
+        confirmed: null,
+        pending: null,
+        rejected: null,
+        reverts: null,
+        total: null,
         rate: null,
-        confirmed_or_pending: 0,
+      },
+      per_deploy: {
+        confirmed: null,
+        total: null,
+        rate: null,
+        confirmed_or_pending: null,
         upper_bound_rate: null,
       },
     },
     time_to_restore: { median_minutes: null },
+    failed_deployment_recovery: null,
+    deployment_rework_rate: null,
     rework_share: 0,
     deploy_run_success: { concluded: 0, reached_production: 0, cancelled: 0, rate: null },
     daily: [],
   },
-  flags_source: "none",
   unowned_p0: [],
   targets: {
     deploys_per_day: {
@@ -129,7 +156,6 @@ const emptyMeasures: DeliveryMeasuresResponse = {
   status: {
     deploys_per_day: false,
     change_failure_rate: null,
-    change_failure_rate_upper_bound: null,
     merge_to_production_median: null,
     merge_to_production: null,
     opened_to_merge: null,
@@ -242,27 +268,8 @@ async function answered(body: DeliveryTimelineWithMeasures): Promise<FakeLiveSoc
   return socket;
 }
 
-test("an unconfigured timeline shows the setup form in its place, reading no settings, and once a save configures it the page's own subscription brings the timeline", async () => {
-  const user = userEvent.setup();
-  const saved: DeliverySettings = {
-    deploy_repo: "acme/widgets",
-    deploy_workflow_path: ".github/workflows/deploy.yml",
-    excluded_repos: [],
-    last_error: null,
-    last_event_at: null,
-    last_reconcile_at: null,
-    population_authors: ["octocat"],
-    pr_checks_rollup_job_name: null,
-    pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-    production_job_names: ["widgets-release"],
-    production_apply_step_name: null,
-    staging_apply_job_name: null,
-    staging_e2e_job_name: null,
-    updated_at: "2026-10-07T12:00:00Z",
-    updated_by: { id: "alice@example.com", kind: "user" },
-  };
-  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
-  const putDeliverySettings = spyOn(api, "putDeliverySettings").mockResolvedValue(saved);
+test("an unconfigured timeline links to each project's settings tab in its place, and once a project turns delivery on the page's own subscription brings the timeline", async () => {
+  const listProjects = stubProjects();
 
   try {
     const queryClient = renderPage();
@@ -275,101 +282,100 @@ test("an unconfigured timeline shows the setup form in its place, reading no set
     ).toBeDefined();
     expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
-    // DELIVERY_NOT_CONFIGURED already says no record is stored: the form's fields are there at
-    // once, empty, with no read of the record and no loading line.
-    expect(screen.queryByText("Loading delivery settings…")).not.toBeInTheDocument();
-    expect((screen.getByLabelText("Deploy repository") as HTMLInputElement).value).toBe("");
+    // Each project's delivery settings live on its own settings tab: the page holds no form.
+    const links = within(await setupLinks()).getAllByRole("link");
+    expect(links.map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Acme settings", "/projects/ACME/settings"],
+      ["Core settings", "/projects/CORE/settings"],
+    ]);
+    expect(
+      screen.queryByRole("button", { name: "Save delivery settings" })
+    ).not.toBeInTheDocument();
 
-    await user.click(screen.getByLabelText("Deploy repository"));
-    await user.paste("acme/widgets");
-    await user.click(screen.getByLabelText("Deploy workflow"));
-    await user.paste(".github/workflows/deploy.yml");
-    await user.click(screen.getByLabelText("Production jobs"));
-    await user.paste("widgets-release");
-    await user.click(screen.getByLabelText("PR checks workflow"));
-    await user.paste(".github/workflows/pr-checks.yml");
-    await user.click(screen.getByLabelText("Population authors"));
-    await user.paste("octocat");
-    await user.click(screen.getByRole("button", { name: "Save delivery settings" }));
-    await waitFor(() => expect(putDeliverySettings).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(queryClient.isMutating()).toBe(0));
-
-    // The save reads nothing again: the page stays subscribed, and Dispatch answers that same
-    // subscription once a configuration exists.
+    // A project's save reads nothing here: the page stays subscribed, and Dispatch answers that
+    // same subscription once a project has delivery on.
     expect(socket.subscribes()).toHaveLength(1);
     expect(queryClient.isFetching()).toBe(0);
     serve(socket, snapshotFrame(sub, emptyTimeline));
 
     expect(await screen.findByText("No PRs in the current filter/window.")).toBeDefined();
     expect(screen.queryByRole("heading", { name: "Set up the delivery timeline" })).toBeNull();
-    expect(getDeliverySettings).not.toHaveBeenCalled();
   } finally {
-    getDeliverySettings.mockRestore();
-    putDeliverySettings.mockRestore();
+    listProjects.mockRestore();
   }
 });
 
-test("a reconnect while the timeline is unconfigured keeps the setup form and its unsaved draft", async () => {
-  const user = userEvent.setup();
-  renderPage();
-  const socket = await openSocket();
-  const { sub } = await subscription(socket, "timeline");
-  serve(socket, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
-  await screen.findByRole("heading", { name: "Set up the delivery timeline" });
-  await user.click(screen.getByLabelText("Deploy repository"));
-  await user.paste("acme/widgets");
-  const draft = () => (screen.getByLabelText("Deploy repository") as HTMLInputElement).value;
+test("a reconnect while the timeline is unconfigured keeps the setup links, never the loading line", async () => {
+  const listProjects = stubProjects();
 
-  // Coming back to the tab (TanStack's focus listener is on `window`) reads nothing.
-  act(() => {
-    window.dispatchEvent(new Event("visibilitychange"));
-  });
-  expect(socket.subscribes()).toHaveLength(1);
+  try {
+    renderPage();
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    serve(socket, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
+    await screen.findByRole("heading", { name: "Set up the delivery timeline" });
+    const links = await setupLinks();
 
-  // Dispatch restarts: the page opens a new socket within the first attempt's spread (its draw
-  // pinned to the start of the window here) and subscribes again. Any render of the timeline's
-  // body while that waits would unmount the form, so the draft surviving says none happened.
-  const random = spyOn(Math, "random").mockReturnValue(0);
-  act(() => socket.drop(1012));
-  random.mockRestore();
-  await waitFor(() => expect(sockets.sockets).toHaveLength(2));
-  const again = sockets.latest();
-  act(() => again.open());
-  expect(again.subscribed("timeline").sub).toBe(sub);
-  expect(draft()).toBe("acme/widgets");
-  expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
-  expect(screen.queryByText("Loading delivery timeline…")).not.toBeInTheDocument();
+    // Coming back to the tab (TanStack's focus listener is on `window`) reads nothing.
+    act(() => {
+      window.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(socket.subscribes()).toHaveLength(1);
 
-  serve(again, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
-  expect(screen.getByRole("heading", { name: "Set up the delivery timeline" })).toBeDefined();
-  expect(draft()).toBe("acme/widgets");
-  expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+    // Dispatch restarts: the page opens a new socket within the first attempt's spread (its
+    // draw pinned to the start of the window here) and subscribes again. The links staying the
+    // very element says no render of the timeline's body happened while that waits.
+    const random = spyOn(Math, "random").mockReturnValue(0);
+    act(() => socket.drop(1012));
+    random.mockRestore();
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2));
+    const again = sockets.latest();
+    act(() => again.open());
+    expect(again.subscribed("timeline").sub).toBe(sub);
+    expect(screen.getByRole("list", { name: "Project settings" })).toBe(links);
+    expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Loading delivery timeline…")).not.toBeInTheDocument();
+
+    serve(again, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
+    expect(screen.getByRole("heading", { name: "Set up the delivery timeline" })).toBeDefined();
+    expect(screen.getByRole("list", { name: "Project settings" })).toBe(links);
+    expect(screen.queryByRole("button", { name: "Timeline" })).not.toBeInTheDocument();
+  } finally {
+    listProjects.mockRestore();
+  }
 });
 
-test("an unconfigured timeline that Dispatch then refuses otherwise shows that failure and Retry, not the setup form", async () => {
-  renderPage();
-  const socket = await openSocket();
-  const { sub } = await subscription(socket, "timeline");
-  serve(socket, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
-  await screen.findByRole("heading", { name: "Set up the delivery timeline" });
+test("an unconfigured timeline that Dispatch then refuses otherwise shows that failure and Retry, not the setup links", async () => {
+  const listProjects = stubProjects();
 
-  const random = spyOn(Math, "random").mockReturnValue(0);
-  act(() => socket.drop(1012));
-  random.mockRestore();
-  await waitFor(() => expect(sockets.sockets).toHaveLength(2));
-  const again = sockets.latest();
-  act(() => again.open());
-  serve(again, errorFrame(sub, "INTERNAL", "database unavailable"));
+  try {
+    renderPage();
+    const socket = await openSocket();
+    const { sub } = await subscription(socket, "timeline");
+    serve(socket, errorFrame(sub, NOT_CONFIGURED, notConfiguredMessage));
+    await screen.findByRole("heading", { name: "Set up the delivery timeline" });
 
-  expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
-  expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
-  expect(
-    screen.queryByRole("heading", { name: "Set up the delivery timeline" })
-  ).not.toBeInTheDocument();
+    const random = spyOn(Math, "random").mockReturnValue(0);
+    act(() => socket.drop(1012));
+    random.mockRestore();
+    await waitFor(() => expect(sockets.sockets).toHaveLength(2));
+    const again = sockets.latest();
+    act(() => again.open());
+    serve(again, errorFrame(sub, "INTERNAL", "database unavailable"));
+
+    expect(await screen.findByText("Couldn't load the delivery timeline.")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDefined();
+    expect(
+      screen.queryByRole("heading", { name: "Set up the delivery timeline" })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Project settings" })).not.toBeInTheDocument();
+  } finally {
+    listProjects.mockRestore();
+  }
 });
 
-test("a configured timeline renders with no setup form, subscribing the window and facets the URL names", async () => {
-  const getDeliverySettings = spyOn(api, "getDeliverySettings").mockResolvedValue(null);
+test("a configured timeline renders with no setup links, subscribing the window and facets the URL names", async () => {
+  const listProjects = stubProjects();
 
   try {
     renderPage();
@@ -387,13 +393,14 @@ test("a configured timeline renders with no setup form, subscribing the window a
       screen.queryByRole("heading", { name: "Set up the delivery timeline" })
     ).not.toBeInTheDocument();
     expect(socket.subscribes()).toHaveLength(1);
-    expect(getDeliverySettings).not.toHaveBeenCalled();
+    // The links are the setup state's alone: a configured page reads no project list for them.
+    expect(listProjects).not.toHaveBeenCalled();
   } finally {
-    getDeliverySettings.mockRestore();
+    listProjects.mockRestore();
   }
 });
 
-test("any other refusal keeps the page and offers Retry, not the setup form, and Retry subscribes again", async () => {
+test("any other refusal keeps the page and offers Retry, not the setup links, and Retry subscribes again", async () => {
   const user = userEvent.setup();
   renderPage();
   const socket = await openSocket();

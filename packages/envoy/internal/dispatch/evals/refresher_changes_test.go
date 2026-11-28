@@ -20,17 +20,21 @@ import (
 // moved (expectDays).
 
 // deliveryDays reads every day of the delivery history as the refresher reads it (readDeliveryDays)
-// with the deploy repository the settings name, the one repository of the history that holds runs,
-// as the deploy repository: that repository's read of each day.
+// with the one repository a deploy source reads, the one repository of the history that holds
+// runs, as the deploy repository: that repository's read of each day.
 func (r *refresherRig) deliveryDays(t *testing.T) []DeliveryDay {
 	t.Helper()
-	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
+	projects, err := delivery.ListProjectSettings(t.Context(), r.database.Pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
+	rules := delivery.DeployRules(projects)
+	if len(rules) != 1 {
+		t.Fatalf("%d deploy sources read a repository, want the history's one", len(rules))
+	}
 	var days []DeliveryDay
 	for day := refresherToday.AddDate(0, 0, -5); day.Before(refresherToday); day = day.AddDate(0, 0, 1) {
-		reads, err := r.registry.readDeliveryDays(t.Context(), settings, []keptRepo{{name: settings.DeployRepo, deploys: true}}, []time.Time{measures.Midnight(day)}, nil)
+		reads, err := r.registry.readDeliveryDays(t.Context(), []keptRepo{{deploys: true, rule: rules[0]}}, []time.Time{measures.Midnight(day)}, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -97,11 +101,13 @@ func firstApply(merged time.Time, applies []delivery.Apply) *delivery.Apply {
 //   - a session group, a version of a definition and a write of day rows rewrite no day.
 //
 // What no issue attributes counts for its repository's owner key (owners.go, R15): a pull request
-// that names no issue, and a deploy run that ships one or ships none, under the key whose sharers
-// are the projects it counts for through issues. So a deploy run's day is rewritten in each owner
-// key it counted for before or after the change where the key moved or the run's row in it did,
-// and a key whose first input the change brings writes its zero rows through today, as one that no
-// input counts for any more deletes every row it held (keyDays).
+// that names no issue, and a deploy run that ships one, under the key whose sharers are the
+// projects it counts for through issues; a deploy run that ships none counts under its repository's
+// source key (sourceKey), which the project whose deploy source reads the repository reads alone
+// (dispatch://INFRA-978, R12). So a deploy run's day is rewritten in each owner key it counted for
+// before or after the change where the key moved or the run's row in it did, the source key among
+// them, and a key whose first input the change brings writes its zero rows through today, as one
+// that no input counts for any more deletes every row it held (keyDays).
 func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -171,10 +177,11 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		runRepos[run.RunID] = run.Repo
 	}
 	// runCount is what a deploy run's start day counts it for (attribution.deploy): the projects
-	// of the pull requests it ships through their issues, which its CI rows count for too; and,
-	// where it ships a pull request no issue attributes or ships none, its repository's owner key
-	// with those projects as its sharers, whose row of the day holds whether the run reached
-	// production and those pull requests.
+	// of the pull requests it ships through their issues, which its CI rows count for too; where it
+	// ships a pull request no issue attributes, its repository's owner key with those projects as
+	// its sharers, whose row of the day holds whether the run reached production and those pull
+	// requests; and, where it ships none, its repository's source key, whose row of the day holds
+	// whether it reached production, and no project's own rows (dispatch://INFRA-978, R12).
 	type runCount struct {
 		projects map[string]bool
 		owner    string
@@ -196,7 +203,10 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 				unissued = append(unissued, PullRequestMember(pr.Repo, pr.Number))
 			}
 		}
-		if !ships || len(unissued) > 0 {
+		switch {
+		case !ships:
+			count.owner = sourceKey(runRepos[runID])
+		case len(unissued) > 0:
 			slices.Sort(unissued)
 			count.owner = ownerKeyOf(runRepos[runID], slices.Collect(maps.Keys(count.projects))...)
 			count.unissued = strings.Join(unissued, " ")
@@ -943,10 +953,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 	t.Logf("%s's %d rows of %s were deleted in the evals %v; eval_days changes of the pass: %v",
 		repo, len(held), day.Format(time.DateOnly), slices.Sorted(maps.Keys(evalsDeleted)), changes)
 
-	settings, err := delivery.GetSettings(t.Context(), r.database.Pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	settings := deployRule(t, r.database.Pool, deliveries.DeployRepo)
 	if settings.StagingE2EJobName == nil {
 		t.Fatal("the history's settings make no staging gate's card, and the check needs one")
 	}
@@ -959,7 +966,7 @@ func TestARepositoryRowThatLosesItsLastInputIsDeletedAsAWholeWalkHoldsNone(t *te
 		rig.putSettings(t, settings, alice)
 	}
 	r.pass(t)
-	walk.exec(t, "forget the settings the rows stand built under", `delete from eval_days_settings`)
+	walk.exec(t, "forget the rules the rows stand built under", `delete from eval_days_rules`)
 	walk.settle(t)
 	if left := r.count(t, `select count(*) from eval_days where eval_id = $1`, gate); left != 0 {
 		t.Errorf("%s holds %d rows once the settings stop making its card, want none", gate, left)
@@ -1027,14 +1034,14 @@ func TestADayWithNoInputReadsZeroFromItsSeriesFirstInputDayOnAndNoDataBeforeIt(t
 		t.Fatalf("%s has no deploy-frequency eval", main)
 	}
 	entry, evalID := page.Items[index], EvalID(main, SlugDeployFrequency)
-	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, repo)
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, DeployReposOf(main, repo))
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := DayWindowIn(ctx, r.database.Pool, []string{main}, []Entry{entry}, repo, nil, window, nil)
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{main}, []Entry{entry}, DeployReposOf(main, repo), nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}

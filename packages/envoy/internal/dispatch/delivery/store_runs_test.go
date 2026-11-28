@@ -1,10 +1,71 @@
 package delivery
 
 import (
+	"maps"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
+
+// A save of the one delivery_settings row, which the release before this one and the kept GET and
+// PUT /api/v1/settings/delivery still make, clears the progress of the run steps named without a
+// repository alone, the names that release reads and writes: each source repository's progress
+// under its own step names (repoStep) stays, and so does every installation's merged-pull-request
+// search (dispatch://INFRA-978, D10).
+func TestASingletonSaveLeavesEachSourcesProgress(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	through := time.Date(2026, 11, 22, 12, 0, 0, 0, time.UTC)
+	kept := map[string]string{
+		runsStep(DeliveryRunKindDeploy, "acme/widgets"):       "acme/widgets .github/workflows/deploy.yml",
+		runsStep(DeliveryRunKindPRChecks, "acme/widgets"):     "acme/widgets .github/workflows/pr-checks.yml",
+		backfillStep(DeliveryRunKindDeploy, "acme/widgets"):   "acme/widgets .github/workflows/deploy.yml",
+		backfillStep(DeliveryRunKindPRChecks, "acme/widgets"): "acme/widgets .github/workflows/pr-checks.yml",
+		createdAtBackfillStep("acme/widgets"):                 "acme/widgets .github/workflows/deploy.yml",
+		mergedPullRequestsStep(1):                             "authors=octocat excluded= deploy=acme/widgets",
+	}
+	cleared := map[string]string{
+		"runs/deploy":                "acme/widgets .github/workflows/deploy.yml",
+		"runs/pr_checks":             "acme/widgets .github/workflows/pr-checks.yml",
+		"backfill/runs/deploy":       "acme/widgets .github/workflows/deploy.yml",
+		"backfill/runs/pr_checks":    "acme/widgets .github/workflows/pr-checks.yml",
+		"backfill/created_at/deploy": "acme/widgets .github/workflows/deploy.yml",
+	}
+	for _, group := range []map[string]string{kept, cleared} {
+		for step, scope := range group {
+			if err := RecordReconcileProgress(ctx, pool, step, scope, through); err != nil {
+				t.Fatalf("record the progress of %s: %v", step, err)
+			}
+		}
+	}
+	if _, err := PutSettings(ctx, pool, DeliverySettings{
+		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
+		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+		PopulationAuthors: []string{"octocat"},
+	}, model.Actor{Kind: "system", ID: "delivery-test"}); err != nil {
+		t.Fatalf("save the singleton delivery settings: %v", err)
+	}
+	rows, err := pool.Query(ctx, `select step from delivery_reconcile_progress order by step`)
+	if err != nil {
+		t.Fatalf("read the progress rows: %v", err)
+	}
+	defer rows.Close()
+	var steps []string
+	for rows.Next() {
+		var step string
+		if err := rows.Scan(&step); err != nil {
+			t.Fatalf("read a progress row: %v", err)
+		}
+		steps = append(steps, step)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the progress rows: %v", err)
+	}
+	if want := slices.Sorted(maps.Keys(kept)); !slices.Equal(steps, want) {
+		t.Fatalf("the progress rows after a singleton save = %v, want each source's and the search's kept and the names without a repository gone, %v", steps, want)
+	}
+}
 
 // TestListRunsStartedInIsHalfOpenAndOrderedByStart seeds four deploy runs started one second
 // before from, at from, one second before to and at to, every head commit before from: the

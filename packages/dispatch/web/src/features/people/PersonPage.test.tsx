@@ -1,8 +1,9 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { IssueReferenceSummary, PersonNode, PersonNodes } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -49,9 +50,7 @@ test("a node's line is drawn through the renderer, its marks drawn and a referen
   });
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(named);
   const view = render(
-    <QueryClientProvider
-      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
-    >
+    <QueryClientProvider client={signedInQueryClient()}>
       <MemoryRouter initialEntries={["/people/alice"]}>
         <ReferenceNamesProvider>
           <Routes>
@@ -109,7 +108,7 @@ test("a role the line's issue records reads as that role, read by the issue its 
     legion_registry: "ok",
     people: [],
   } as never);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const client = signedInQueryClient();
   client.setQueryData(["agents"], []);
   const view = render(
     <QueryClientProvider client={client}>
@@ -151,7 +150,7 @@ function commentNode(id: string, overrides: Partial<PersonNode> = {}): PersonNod
 function renderPage(rows: PersonNode[]) {
   const answer: PersonNodes = { limit: 50, offset: 0, person: "alice", rows, total: rows.length };
   const listPersonNodes = spyOn(api, "listPersonNodes").mockResolvedValue(answer);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   const view = render(
     <MemoryRouter initialEntries={["/people/alice"]}>
       <QueryClientProvider client={queryClient}>

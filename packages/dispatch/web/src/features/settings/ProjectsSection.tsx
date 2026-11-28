@@ -4,12 +4,7 @@ import { useMutationState, useQuery, useQueryClient } from "@tanstack/react-quer
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api, apiErrorMessage, type WriteBounds } from "../../api/client";
-import {
-  projectDefaultAssigneesQuery,
-  projectsQuery,
-  usersQuery,
-  whoAmIQuery,
-} from "../../api/queries";
+import { projectDefaultAssigneesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   CreateProjectInput,
@@ -18,6 +13,7 @@ import type {
   ProjectDefaultRepository,
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useHoldsPersonScope, useUsers } from "../../hooks/useHoldsPersonScope";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -39,14 +35,13 @@ import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { type KeyedPress, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   NOT_OWNER_NAME,
-  ownerRepoPattern,
+  ownerRepo,
   settingsFieldLabel,
   settingsMonoInput,
   settingsSubmitButton,
   settingsTableHead,
   settingsTableRow,
   settingsTableWrapper,
-  wholeValue,
 } from "./classes";
 
 /** Lists native projects, lets a human create one, and carries two settings of each project:
@@ -87,11 +82,17 @@ export function ProjectsSection(): ReactNode {
       setProjectAssignee(null);
     },
   });
-  const defaults = useQuery(projectDefaultAssigneesQuery());
+  // The defaults and the people list are read under the `person` scope, once a read says the
+  // viewer's credential holds it (`useHoldsPersonScope`, `useUsers`): for a viewer without it
+  // neither is asked, and no row names a default.
+  const defaults = useQuery({
+    ...projectDefaultAssigneesQuery(),
+    enabled: useHoldsPersonScope(),
+  });
   // The people list is read only once a reader reaches for a picker, as `AssigneeControl` does
   // it, so opening Settings makes no request for it.
   const [wantUsers, setWantUsers] = useState(false);
-  const users = useQuery({ ...usersQuery(), enabled: wantUsers });
+  const users = useUsers(wantUsers);
   const defaultAssignees = new Map((defaults.data ?? []).map((row) => [row.project, row.assignee]));
   const logins = (users.data ?? []).map((user) => user.login);
   // The server takes the person creating the project when the call names nobody, so that is what
@@ -597,11 +598,6 @@ function DefaultAssigneeSelect({
     </select>
   );
 }
-
-/** The check the default-repository cell makes before it sends. The server holds the name to
- *  GitHub's own grammar, which is stricter than `ownerRepoPattern`, and its refusal shows under
- *  the cell. */
-const ownerRepo = wholeValue(ownerRepoPattern);
 
 /** One project's default-repository cell. The text box holds the project's default repository,
  *  labelled `Default repository of <KEY>`, and an empty box reads **None**. Save sends what was

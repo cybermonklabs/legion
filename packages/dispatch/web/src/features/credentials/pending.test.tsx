@@ -4,17 +4,37 @@ import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 import { api } from "../../api/client";
-import type { CredentialPendingResponse } from "../../api/types";
+import { whoAmIQuery } from "../../api/queries";
+import type { AuthenticatedUser, CredentialPendingResponse } from "../../api/types";
 import { credentialPendingQuery, useCredentialRequests } from "./pending";
 
-function renderPending() {
+const alice: AuthenticatedUser = { event_head: "0", kind: "user", login: "alice" };
+
+/** The hook drawn for `viewer`, `/auth/whoami`'s answer: a person's is in the cache before the
+ *  first render, an agent's is what that read answers, whose credential's scopes
+ *  (`GET /api/v1/whoami`) name none, and a whoami that never answers is drawn where `viewer` is
+ *  `"loading"`. */
+function renderPending(viewer: AuthenticatedUser | "loading" = alice) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const agent = viewer !== "loading" && viewer.kind === "agent" ? viewer : undefined;
+  const whoAmI = spyOn(api, "whoAmI").mockImplementation(() =>
+    agent === undefined ? Promise.withResolvers<never>().promise : Promise.resolve(agent)
+  );
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
+  if (viewer !== "loading" && agent === undefined) {
+    queryClient.setQueryData(whoAmIQuery().queryKey, viewer);
+  }
   const view = renderHook(() => useCredentialRequests(), {
     wrapper: ({ children }: { children: ReactNode }) => (
       <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
     ),
   });
-  return { queryClient, view };
+  const restore = () => {
+    view.unmount();
+    whoAmI.mockRestore();
+    whoAmIScopes.mockRestore();
+  };
+  return { queryClient, restore, view, whoAmI };
 }
 
 // A `null`-holding query (no secrets broker) can neither fetch again on its own nor have the poll
@@ -58,7 +78,7 @@ test("a poll that fails after a list already loaded keeps showing that list, not
       ],
     })
     .mockRejectedValueOnce(new Error("network"));
-  const { queryClient, view } = renderPending();
+  const { queryClient, restore, view } = renderPending();
   try {
     await waitFor(() => expect(view.result.current.status).toBe("listed"));
     expect(view.result.current.requests).toHaveLength(1);
@@ -70,7 +90,41 @@ test("a poll that fails after a list already loaded keeps showing that list, not
     expect(view.result.current.requests).toHaveLength(1);
     expect(view.result.current.requests[0]?.record_id).toBe("req-1");
   } finally {
-    view.unmount();
+    restore();
+    getCredentialPending.mockRestore();
+  }
+});
+
+// The list is the requests a person decides, read under the `person` scope: it is asked for once
+// a read says the viewer's credential holds it, so a page whose whoami is still loading, and an
+// agent's whose credential names no scope, asks nothing and reads the list as loading.
+test("an agent viewer, and a page whose whoami is still loading, ask for no credential request", async () => {
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue({
+    pending: [],
+  });
+  try {
+    for (const viewer of [
+      "loading" as const,
+      { event_head: "0", kind: "agent" as const, login: "alice", session: null },
+    ]) {
+      const { restore, view, whoAmI } = renderPending(viewer);
+      try {
+        await waitFor(() => expect(whoAmI).toHaveBeenCalled());
+        expect(view.result.current).toEqual({ requests: [], status: "loading" });
+        expect(getCredentialPending).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    }
+
+    const person = renderPending();
+    try {
+      await waitFor(() => expect(person.view.result.current.status).toBe("listed"));
+      expect(getCredentialPending).toHaveBeenCalledTimes(1);
+    } finally {
+      person.restore();
+    }
+  } finally {
     getCredentialPending.mockRestore();
   }
 });

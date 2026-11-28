@@ -293,10 +293,10 @@ export interface WriteRequest<T = unknown> {
  *  every attempt of it, and what the store keeps it under; sent as `Idempotency-Key` on a `POST`
  *  and a `PATCH`, and never on a `PUT` or a `DELETE`, which are the same however often they are
  *  made - the login of the person who pressed it (`Dispatch-Login`, sent on every write, so
- *  Dispatch refuses it under anyone else's session), the attempt's silence deadline, `sent`, told
- *  the request as it goes out, for a caller that keeps it to make again, and `progress`, told how
- *  much of an upload's body has gone up. Every write method takes these, so a write made outside
- *  the store does not type-check. */
+ *  Dispatch refuses it under anyone else's session), none for an agent viewer, whose bearer names
+ *  no person; the attempt's silence deadline, `sent`, told the request as it goes out, for a
+ *  caller that keeps it to make again, and `progress`, told how much of an upload's body has gone
+ *  up. Every write method takes these, so a write made outside the store does not type-check. */
 export interface WriteBounds extends RequestBounds {
   readonly key: string;
   readonly login?: string;
@@ -1952,15 +1952,34 @@ export class DispatchApiClient {
     return this.read("/api/v1/delivery/runs/{id}", { id: String(id) });
   }
 
-  /** The delivery timeline's configuration record, or `null` until someone sets it. */
-  getDeliverySettings() {
-    return this.read("/api/v1/settings/delivery", {});
+  /** One project's delivery settings, or `null` for a project with none: the switch, its deploy
+   *  sources (each with its `id`, the repository it reads as `resolved_repo`, and
+   *  `reconciled_through`, null until that repository's import has run), the population, the
+   *  failure sources with `failures_measured_since`, and the targets of its seven delivery evals,
+   *  each a number or `"off"`. Every reader of the project reads them. */
+  getProjectDeliverySettings(project: string) {
+    return this.read("/api/v1/projects/{key}/settings/delivery", { key: project });
   }
 
-  /** Replaces the delivery timeline's configuration (human callers only). The server first proves
-   *  the GitHub App can read `deploy_repo`, answering `409 DELIVERY_SETTINGS_ACCESS` when not. */
-  putDeliverySettings(input: Body<"/api/v1/settings/delivery", "put">, bounds: WriteBounds) {
-    return this.put("/api/v1/settings/delivery", {}, input, bounds);
+  /** Updates one project's delivery settings (a top-level field the body leaves out keeps the
+   *  value stored when the save is written; `null` clears a field that may be empty; `sources`,
+   *  when present, replaces the list; a `targets` key changes that target alone, each as a new
+   *  version of the project's eval, in one write) and answers them as `getProjectDeliverySettings`
+   *  does.
+   *  A bearer whose credential proves no session names the session the save is made as in
+   *  `actor` (`400 ACTOR_KIND` otherwise); a person's save names none, their cookie naming them.
+   *  A refusal names its field and source
+   *  (`400 DELIVERY_SETTINGS_INPUT`, `409 DELIVERY_SETTINGS_ACCESS`, `409
+   *  DELIVERY_NO_DEFAULT_REPOSITORY`) or the other project (`409 DELIVERY_REPOSITORY_SHARED`), and
+   *  writes nothing; so does `409 DELIVERY_SETTINGS_CHANGED`, where another write moved the
+   *  settings, or a target the save names, during each of its attempts, so the reader reads them
+   *  again before saving again. */
+  putProjectDeliverySettings(
+    project: string,
+    input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
+    bounds: WriteBounds
+  ) {
+    return this.put("/api/v1/projects/{key}/settings/delivery", { key: project }, input, bounds);
   }
 
   /** One project's Legion daemon: the base URL its state is read from, the actor that first named

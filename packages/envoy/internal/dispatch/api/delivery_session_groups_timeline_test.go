@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -40,13 +39,11 @@ const groupsWindow = "from=2024-03-01T00:00:00Z&to=2024-03-02T00:00:00Z"
 func seedGroupsTimeline(t *testing.T, database *store.Store, firstSessions []string, rework map[int]bool, titles map[string]string) {
 	t.Helper()
 	ctx := t.Context()
-	if _, err := delivery.PutSettings(ctx, database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 	merged := time.Date(2024, 3, 1, 12, 0, 0, 0, time.UTC)
 	for index, session := range firstSessions {
 		number := index + 1

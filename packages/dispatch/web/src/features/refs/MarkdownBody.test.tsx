@@ -8,7 +8,7 @@ import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
-import { renderWithQueries as render } from "../../__tests__/query-provider";
+import { renderWithQueries as render, signedInQueryClient } from "../../__tests__/query-provider";
 import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
@@ -33,8 +33,9 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
+/** `children` under a client of their own, signed in as a person, as a page's is. */
 function withQueries(children: ReactNode): ReactNode {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
 }
 
@@ -187,7 +188,7 @@ describe("Dispatch pictures", () => {
     const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(
       issueSummary([picture])
     );
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const queryClient = signedInQueryClient();
     const view = render(
       <QueryClientProvider client={queryClient}>
         <MarkdownBody markdown="![shot.png](dispatch://CORE-1/artifact/shot-png)" />

@@ -850,7 +850,7 @@ func evalProjectsIn(ctx context.Context, tx pgx.Tx, named []string) ([]string, e
 // every project at once, so a read of many projects makes as many statements as a read of one.
 //
 // One answer, one snapshot: every read it makes (its projects, request.projectsIn, the page, the
-// deploy repository its values read, the one recorded with the stored rows, evals.DeployRepoIn,
+// deploy repositories its values read, those recorded with the stored rows, evals.DeployReposIn,
 // and the reads its values are stated from, readEvalValues) runs in one read-only
 // repeatable-read transaction on one connection (evals.Store.BeginSnapshot), committed before the
 // folds (evalValues.items). A write that commits while the answer reads, as a settings rewrite
@@ -874,11 +874,11 @@ func (s *server) readEvalList(ctx context.Context, request evalListRequest, now 
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	deployRepo, err := evals.DeployRepoIn(ctx, tx)
+	deployRepos, err := evals.DeployReposIn(ctx, tx)
 	if err != nil {
 		return evalListResponse{}, err
 	}
-	values, err := readEvalValues(ctx, tx, page.Items, deployRepo, request.repos, request.ranges, now)
+	values, err := readEvalValues(ctx, tx, page.Items, deployRepos, request.repos, request.ranges, now)
 	if err != nil {
 		return evalListResponse{}, err
 	}
@@ -916,9 +916,9 @@ type evalValues struct {
 
 // readEvalValues reads in tx, one answer's snapshot (readEvalList), the refresher's age at now
 // (evals.RefresherAgeIn) and what each of entries' values over ranges is stated from. Each eval
-// that reads the deploy repository is stated from the rows kept for deployRepo, the repository
-// recorded with the stored rows (evals.DeployRepoOf, evals.DeployRepoIn), so a move of the deploy
-// repository is this selection and rewrites nothing. It reads each series' first day
+// that reads the deploy repository is stated from the rows kept for its project's repositories in
+// deployRepos, those recorded with the stored rows (evals.DeployRepoOf, evals.DeployReposIn), so a
+// move of a project's repositories is this selection. It reads each series' first day
 // (evals.FirstDaysIn), how far the stored rows of each computed eval's family are whole through as
 // of now's UTC day (evals.BuiltIn, one read of the serving records, made where an eval's rows are a
 // walk's), and for an offered range (evals.FiguresOffered: a window and a compare range each of a
@@ -934,7 +934,7 @@ type evalValues struct {
 // folded once the snapshot is committed (evalValues.items). Both answer the same bits
 // (evals.StoredFigures.SeriesValues). Each read reads every project the entries it reads are evals
 // of at once.
-func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepo string, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
+func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deployRepos *evals.DeployRepos, repos []string, ranges evalRanges, now time.Time) (evalValues, error) {
 	read := evalValues{entries: entries, ranges: ranges, values: make([][]evals.SeriesValues, len(entries))}
 	var err error
 	if read.age, read.aged, err = evals.RefresherAgeIn(ctx, tx, now); err != nil {
@@ -948,14 +948,14 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 	if err != nil {
 		return evalValues{}, err
 	}
-	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepo); err != nil {
+	if read.firsts, err = evals.FirstDaysIn(ctx, tx, entries, deployRepos); err != nil {
 		return evalValues{}, err
 	}
 	if read.built, err = evals.BuiltIn(ctx, tx, entries, now); err != nil {
 		return evalValues{}, err
 	}
 	if evals.FiguresOffered(repos, ranges.window, ranges.compare) {
-		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, deployRepo, repos, ranges.window, ranges.compare)
+		stored, err := evals.ReadStoredFiguresIn(ctx, tx, projects, entries, repos, ranges.window, ranges.compare)
 		if err != nil {
 			return evalValues{}, err
 		}
@@ -982,7 +982,7 @@ func readEvalValues(ctx context.Context, tx pgx.Tx, entries []evals.Entry, deplo
 	for position, index := range read.unstated {
 		rest[position] = entries[index]
 	}
-	if read.rows, err = evals.DayWindowIn(ctx, tx, evalProjects(rest), rest, deployRepo, repos, ranges.window, ranges.compare); err != nil {
+	if read.rows, err = evals.DayWindowIn(ctx, tx, evalProjects(rest), rest, deployRepos, repos, ranges.window, ranges.compare); err != nil {
 		return evalValues{}, err
 	}
 	return read, nil
@@ -1050,7 +1050,7 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 // page's versions alone), the newest stating the window's values as the list read states them
 // (readEvalValues), and the method its section of the project's `evals-md` holds
 // (evals.Store.Method). One answer, one snapshot, as the list read's (readEvalList): the project,
-// the eval, its versions, the deploy repository (evals.DeployRepoIn) and the values' reads run in
+// the eval, its versions, the deploy repositories (evals.DeployReposIn) and the values' reads run in
 // one read-only repeatable-read transaction, committed before the folds. It is begun on a
 // connection mark of its own (store.ForConcurrentRead), so the method is read beside the values:
 // the documents service answers it from the document's room where one is open, not from a
@@ -1094,7 +1094,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, evalNotFound(project, slug))
 		return
 	}
-	deployRepo, err := evals.DeployRepoIn(snapshot, tx)
+	deployRepos, err := evals.DeployReposIn(snapshot, tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1113,7 +1113,7 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	var held bool
 	if err := store.ReadSideBySide(ctx,
 		func(context.Context) (err error) {
-			if values, err = readEvalValues(snapshot, tx, stated, deployRepo, read.repos, read.ranges, time.Now().UTC()); err != nil {
+			if values, err = readEvalValues(snapshot, tx, stated, deployRepos, read.repos, read.ranges, time.Now().UTC()); err != nil {
 				return err
 			}
 			if err := tx.Commit(snapshot); err != nil {

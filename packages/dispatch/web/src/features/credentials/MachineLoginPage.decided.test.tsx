@@ -1,9 +1,10 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { RecordResponse } from "../../api/types";
 import { MachineLoginPage } from "./MachineLoginPage";
@@ -29,7 +30,7 @@ function machineRecord(decided: RecordResponse["decided"] = null): RecordRespons
 
 async function lookUp() {
   const user = userEvent.setup();
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
       <QueryClientProvider client={queryClient}>

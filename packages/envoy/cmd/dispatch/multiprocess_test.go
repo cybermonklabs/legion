@@ -3042,15 +3042,13 @@ const mergedPullRequestAuthor = "octocat"
 // GitHub call at all, so no handling could be counted.
 func seedMergedPullRequestSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database, delivery.DeliverySettings{
 		DeployRepo:           "acme/deploy",
 		DeployWorkflowPath:   ".github/workflows/deploy.yaml",
 		PRChecksWorkflowPath: ".github/workflows/pr.yaml",
 		ProductionJobNames:   []string{"production"},
 		PopulationAuthors:    []string{mergedPullRequestAuthor},
-	}, model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("seed the delivery settings: %v", err)
-	}
+	})
 }
 
 // mergedPullRequestFake is the loopback GitHub the pair's intakes read while they handle a
@@ -3468,11 +3466,11 @@ const deliveryEnvelopeFetchWithin = 30 * time.Second
 const deliverySecondFetchWindow = time.Second
 
 // addPopulationAuthor adds author to the delivery settings' population, leaving every other
-// setting as it is: the row is read back and written whole, which is the write the Delivery page's
-// own save makes (delivery.PutSettings). seedDeliverySettings names no population author, and a
-// merge by an author outside the population costs no GitHub call
-// (Intake.handlePullRequestEnvelope), so a row that counts the fetch of a merged pull request puts
-// its author in the population before the processes start.
+// setting as it is: the rule is read back and saved whole (saveDeliveryRule), which is the write
+// the settings tab's own save makes. seedDeliverySettings names no population author, and a merge
+// by an author outside the population costs no GitHub call (Intake.handlePullRequestEnvelope), so
+// a row that counts the fetch of a merged pull request puts its author in the population before
+// the processes start.
 func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 	t.Helper()
 	settings, err := delivery.GetSettings(context.Background(), database.Pool)
@@ -3480,10 +3478,7 @@ func addPopulationAuthor(t *testing.T, database *store.Store, author string) {
 		t.Fatalf("read the delivery settings to add %s to the population: %v", author, err)
 	}
 	settings.PopulationAuthors = append(settings.PopulationAuthors, author)
-	if _, err := delivery.PutSettings(context.Background(), database.Pool, settings,
-		model.Actor{Kind: "user", ID: dispatchTestLogin}); err != nil {
-		t.Fatalf("add %s to the delivery population: %v", author, err)
-	}
+	saveDeliveryRule(t, database, settings)
 }
 
 // deliveryOutcome is what one process has logged for one delivery durable: its binds of it and

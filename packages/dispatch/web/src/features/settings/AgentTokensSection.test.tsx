@@ -1,5 +1,5 @@
 import { beforeAll, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -8,6 +8,7 @@ import { http } from "msw";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -52,7 +53,7 @@ test("Settings exposes a new personal token once, copies it, and revokes an exis
   const writeText = spyOn({ writeText: async () => undefined }, "writeText");
   window.confirm = () => true;
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -120,7 +121,7 @@ test("Settings copies a new token through the legacy clipboard fallback", async 
   const execCommand = spyOn({ execCommand: (_command: string) => true }, "execCommand");
   Object.defineProperty(document, "execCommand", { configurable: true, value: execCommand });
   Object.defineProperty(navigator, "clipboard", { configurable: true, value: undefined });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -165,7 +166,7 @@ test("a token's row shows the scopes it holds, and each change sends the whole s
   const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes").mockImplementation(
     async (id: string, scopes: DispatchScope[]) => ({ ...personOnly, id, scopes })
   );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -219,7 +220,7 @@ test("the mint form starts with both scopes and sends the set the reader chose",
     scopes: ["person"],
     token: "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG",
   });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -307,7 +308,7 @@ const SETUP: Record<string, readonly DispatchTokenScope[]> = {
 /** The Settings token section listing `listed`, none unless given, its mint form at its start. */
 function renderMintForm(listed: AgentToken[] = []): () => void {
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue(listed);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   render(
     <QueryClientProvider client={queryClient}>
       <AgentTokensSection />
@@ -526,7 +527,7 @@ test("a read-only token's row shows its scopes and offers no box to change them"
   };
   const listAgentTokens = spyOn(api, "listAgentTokens").mockResolvedValue([reader, token]);
   const setAgentTokenScopes = spyOn(api, "setAgentTokenScopes");
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
 
   try {
     render(
@@ -858,7 +859,7 @@ async function mintLostWith(
     asked.push(message ?? "");
     return confirmAnswers.shift() ?? false;
   };
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
   render(
     <QueryClientProvider client={queryClient}>
@@ -1047,7 +1048,7 @@ async function renderWithListReadOut(listed: AgentToken[]): Promise<{
   const listAgentTokens = spyOn(api, "listAgentTokens")
     .mockResolvedValueOnce(listed)
     .mockReturnValueOnce(staleRead.promise);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   render(
     <QueryClientProvider client={queryClient}>
       <AgentTokensSection />
@@ -1200,7 +1201,7 @@ test("a mint the reader stopped says Retry asks again under its key", async () =
   const createAgentToken = spyOn(api, "createAgentToken").mockRejectedValue(
     new NetworkError("/api/v1/me/agent-tokens", new TypeError("Failed to fetch"))
   );
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   try {
     render(
       <QueryClientProvider client={queryClient}>

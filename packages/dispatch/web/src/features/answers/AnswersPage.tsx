@@ -10,6 +10,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill } from "../../components/Pill";
 import { ShowMore } from "../../components/ShowMore";
+import { PERSON_SCOPE_LACKING, usePersonScope } from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   card,
@@ -188,17 +189,25 @@ function AnswerRow({
 /** `/answers`: every answer the signed-in person gave and every reply they wrote on an ask,
  *  newest first, from one `GET /api/v1/me/answers`. A current, non-approval answer can be
  *  changed in place: the card opens below its row and stays open across the refetch the change
- *  causes, which puts the new answer at the top and marks the old row "Changed since". */
+ *  causes, which puts the new answer at the top and marks the old row "Changed since". The
+ *  route needs the `person` scope: the list is asked for once a read says the viewer's
+ *  credential holds it (`usePersonScope`), and for a viewer whose credential lacks it nothing is
+ *  asked and the page says why it has no list. */
 export function AnswersPage(): ReactNode {
   useDocumentTitle("Answered by you · Dispatch");
   const [changingAsk, setChangingAsk] = useState<string | null>(null);
+  const scope = usePersonScope();
   const answers = useInfiniteQuery({
+    enabled: scope === "held",
     getNextPageParam: nextOffsetPage,
     initialPageParam: 0,
     queryFn: ({ pageParam }) => api.listMyAnswers({ limit: PAGE_SIZE, offset: pageParam }),
     queryKey: ["me", "answers"],
   });
 
+  if (scope === "lacking") {
+    return <p className={dangerText}>Could not load your answers: {PERSON_SCOPE_LACKING}</p>;
+  }
   if (answers.isPending) return <LoadingSkeleton label="Loading your answers" />;
   if (answers.isError) {
     return <p className={dangerText}>Could not load your answers: {answers.error.message}</p>;

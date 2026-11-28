@@ -24,12 +24,13 @@ func minutesParts(counts ...map[string]float64) []DayPart {
 	}
 }
 
-// TestAQuantileFoldsTheMergeOfTheDaysSamples: FoldLeadTime, FoldTimeToRestore and FoldTiming read
-// the quantile of every sample of the parts, not the mean of each day's quantile.
+// TestAQuantileFoldsTheMergeOfTheDaysSamples: FoldLeadTime, FoldRecovery and FoldTiming read the
+// quantile of every sample of the parts, not the mean of each day's quantile; a count beside the
+// samples is summed.
 func TestAQuantileFoldsTheMergeOfTheDaysSamples(t *testing.T) {
 	parts := minutesParts(
-		map[string]float64{CountSuccess: 3, CountFailure: 0, CountCancelled: 1},
-		map[string]float64{CountSuccess: 4, CountFailure: 1, CountCancelled: 0},
+		map[string]float64{CountSuccess: 3, CountFailure: 0, CountCancelled: 1, CountNotRestored: 1},
+		map[string]float64{CountSuccess: 4, CountFailure: 1, CountCancelled: 0, CountNotRestored: 2},
 	)
 	meanOfDailyMedians := (*FoldLeadTime(parts[:1]).MedianMinutes + *FoldLeadTime(parts[1:]).MedianMinutes) / 2
 	if meanOfDailyMedians == 15 {
@@ -38,15 +39,19 @@ func TestAQuantileFoldsTheMergeOfTheDaysSamples(t *testing.T) {
 
 	lead := FoldLeadTime(parts)
 	assertLeadTimeCell(t, "FoldLeadTime", lead, 8, new(15.0), new(58.0), new(100.0))
-	assertOptional(t, "FoldTimeToRestore.median_minutes", FoldTimeToRestore(parts).MedianMinutes, new(15.0))
+	if recovery := FoldRecovery(parts); recovery == nil || recovery.N != 8 || recovery.NotRestored != 3 {
+		t.Errorf("FoldRecovery = %+v, want 8 restores and 3 not restored", recovery)
+	} else {
+		assertOptional(t, "FoldRecovery.median_minutes", recovery.MedianMinutes, new(15.0))
+	}
 	assertCell(t, "FoldTiming", FoldTiming(parts), 8, new(15.0), new(58.0), 7, 1, 1, new(0.875))
 	t.Logf("median of the merged samples %v, p90 %v; the mean of the two daily medians would read %v",
 		*lead.MedianMinutes, *lead.P90Minutes, meanOfDailyMedians)
 }
 
 // TestAShareFoldsTheSummedNumeratorOverTheSummedDenominator: FoldDeployRunSuccess,
-// FoldReworkShare and FoldChangeFailureRate read Σnum/Σden over the parts, not the mean of each
-// day's share; a count beside a share is summed.
+// FoldReworkShare, FoldChangeFailRate and FoldReworkRate read Σnum/Σden over the parts, not the
+// mean of each day's share; a count beside a share is summed.
 func TestAShareFoldsTheSummedNumeratorOverTheSummedDenominator(t *testing.T) {
 	// One run of one concluded on the first day, one of nine on the second: 2/10 in all, where the
 	// days' shares, 1 and 1/9, average 5/9.
@@ -69,20 +74,16 @@ func TestAShareFoldsTheSummedNumeratorOverTheSummedDenominator(t *testing.T) {
 	assertOptional(t, "FoldDeployRunSuccess.rate", success.Rate, new(0.2))
 	assertOptional(t, "FoldReworkShare", FoldReworkShare(share(SeriesPRs)), new(0.2))
 
-	failures := FoldChangeFailureRate(append(append(
-		share(SeriesPerDeploy, map[string]float64{CountPending: 1}, map[string]float64{CountRejected: 2}),
-		share(SeriesUpperBound)...),
-		share(SeriesPerPR, map[string]float64{CountReverts: 1}, map[string]float64{CountPending: 4})...))
-	perDeploy, perPR := failures.PerDeploy, failures.PerPR
-	if perDeploy.Confirmed != 2 || perDeploy.Total != 10 || perDeploy.Pending != 1 || perDeploy.Rejected != 2 || perDeploy.ConfirmedOrPending != 2 || perDeploy.Reverts != 1 {
-		t.Errorf("per_deploy = %+v, want 2 confirmed of 10 deploys, 1 pending, 2 rejected, 2 confirmed or pending, 1 revert", perDeploy)
+	if rate := FoldChangeFailRate(share(SeriesPerDeploy)); rate == nil || rate.Failed != 2 || rate.Total != 10 {
+		t.Errorf("FoldChangeFailRate = %+v, want 2 failed of 10 deploys", rate)
+	} else {
+		assertOptional(t, "FoldChangeFailRate.rate", rate.Rate, new(0.2))
 	}
-	if perPR.Confirmed != 2 || perPR.Total != 10 || perPR.Pending != 4 || perPR.Reverts != 1 {
-		t.Errorf("per_pr = %+v, want 2 confirmed of 10 pull requests, 4 pending, 1 revert", perPR)
+	if rate := FoldReworkRate(share(SeriesReworkDeploys)); rate == nil || rate.Restoring != 2 || rate.Total != 10 {
+		t.Errorf("FoldReworkRate = %+v, want 2 restoring of 10 deploys", rate)
+	} else {
+		assertOptional(t, "FoldReworkRate.rate", rate.Rate, new(0.2))
 	}
-	assertOptional(t, "per_deploy.rate", perDeploy.Rate, new(0.2))
-	assertOptional(t, "per_deploy.upper_bound_rate", perDeploy.UpperBoundRate, new(0.2))
-	assertOptional(t, "per_pr.rate", perPR.Rate, new(0.2))
 	t.Logf("summed share %v; the mean of the two daily shares would read %v", *success.Rate, meanOfDailyShares)
 }
 
@@ -100,9 +101,8 @@ func TestACountFoldsTheSumOfTheDays(t *testing.T) {
 }
 
 // TestNoPartsReadNoValueAndAZeroPartReadsZero: a fold of no part of its series reads no value,
-// never 0, whether the set is empty or holds only another series' parts (the change failure rate:
-// every count 0 and every rate nil); a zero part, a day built with no rows, reads zero counts, and
-// a share over its zero denominator still reads no value.
+// never 0, whether the set is empty or holds only another series' parts; a zero part, a day built
+// with no rows, reads zero counts, and a share over its zero denominator still reads no value.
 func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 	window := Window{From: foldDays[0], To: foldDays[0].Add(day)}
 	other := []DayPart{CountPart(foldDays[0], "elsewhere", 4, nil), RatioPart(foldDays[0], "elsewhere", 1, 2, nil)}
@@ -116,11 +116,16 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 		if got := FoldReworkShare(parts); got != nil {
 			t.Errorf("%s: FoldReworkShare = %v, want nil", name, *got)
 		}
-		if got := FoldChangeFailureRate(parts); got != (ChangeFailureRate{}) {
-			t.Errorf("%s: FoldChangeFailureRate = %+v, want every count 0 and every rate nil", name, got)
+		if got := FoldChangeFailRate(parts); got != nil {
+			t.Errorf("%s: FoldChangeFailRate = %+v, want nil", name, got)
+		}
+		if got := FoldReworkRate(parts); got != nil {
+			t.Errorf("%s: FoldReworkRate = %+v, want nil", name, got)
+		}
+		if got := FoldRecovery(parts); got != nil {
+			t.Errorf("%s: FoldRecovery = %+v, want nil", name, got)
 		}
 		assertLeadTimeCell(t, name+": FoldLeadTime", FoldLeadTime(parts), 0, nil, nil, nil)
-		assertOptional(t, name+": FoldTimeToRestore.median_minutes", FoldTimeToRestore(parts).MedianMinutes, nil)
 		assertCell(t, name+": FoldTiming", FoldTiming(parts), 0, nil, nil, 0, 0, 0, nil)
 		if got := FoldSlowestJobs(parts, []string{utcDay(foldDays[0])}, 0); got == nil || len(got) != 0 {
 			t.Errorf("%s: FoldSlowestJobs = %#v, want an empty list", name, got)
@@ -137,7 +142,4 @@ func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 		t.Errorf("FoldReworkShare of a zero part = %v, want nil: no pull request has no share", *got)
 	}
 	assertLeadTimeCell(t, "FoldLeadTime of a zero part", FoldLeadTime(MergeToProductionDay(foldDays[0], nil)), 0, nil, nil, nil)
-	if got := FoldChangeFailureRate(ChangeFailureRateDay(foldDays[0], nil, nil, nil)); got != (ChangeFailureRate{}) {
-		t.Errorf("FoldChangeFailureRate of a zero part = %+v, want every count 0 and every rate nil", got)
-	}
 }

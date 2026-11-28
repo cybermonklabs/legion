@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -48,12 +50,11 @@ type deliveryPipelineStatus struct {
 // deliveryPipelinePRChecks is the PR-checks workflow's part of the Pipeline page: its whole runs'
 // timing, its slowest jobs and the jobs that failed in the last 24 hours, both lists never null,
 // and the timed results over the shown days a job needed to be ranked among the slowest: the
-// min_n of pr-ci's job series in the deploy repository's project (the one whose default
-// repository it is), or measures.SlowestMinResults where no project or more than one publishes
-// the deploy repository as its default or that project holds no pr-ci eval yet
-// (evals.PipelineMinN), and 1 where that min_n is null, no minimum, since a job needs a timed
-// result to have a median to rank by (measures.FoldSlowestJobs); so the page says what it ranked
-// by.
+// min_n of pr-ci's job series in the project whose deploy sources read every source repository
+// (evals.Store.DeployRepoEvals), or measures.SlowestMinResults where two or more projects own
+// them, none is read, or that project holds no pr-ci eval yet (evals.PipelineMinN), and 1 where
+// that min_n is null, no minimum, since a job needs a timed result to have a median to rank by
+// (measures.FoldSlowestJobs); so the page says what it ranked by.
 type deliveryPipelinePRChecks struct {
 	Run               measures.Timing       `json:"run"`
 	SlowestJobs       []measures.JobTiming  `json:"slowest_jobs"`
@@ -84,16 +85,16 @@ func (s *server) getDeliveryPipeline(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
-	settings, ok := s.deliverySettings(w, r)
+	rules, ok := s.deliveryRules(w, r)
 	if !ok {
 		return
 	}
-	population, err := s.readPipelinePopulation(r.Context(), settings, at)
+	population, err := s.readPipelinePopulation(r.Context(), rules, at)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	WriteJSON(w, http.StatusOK, deliveryPipelineCompute(settings, population, at, time.Now().UTC()))
+	WriteJSON(w, http.StatusOK, deliveryPipelineCompute(rules, population, at, time.Now().UTC()))
 }
 
 // parsePipelineAt is the Pipeline's at in UTC: query's at as every delivery read parses a moment
@@ -116,10 +117,10 @@ func parsePipelineAt(query url.Values, fallback time.Time) (time.Time, error) {
 	return at, nil
 }
 
-// pipelinePopulation is every read the Pipeline page's answer for one `at` makes: the PR-checks
-// pull_request runs and the deploy push runs on main started in the shown days, each with its
-// jobs, the population pull requests merged in them (their lead times), and the evals of
-// evals.PipelineSlugs the deploy repository's project holds
+// pipelinePopulation is every read the Pipeline page's answer for one `at` makes: every source
+// repository's PR-checks pull_request runs and deploy push runs on main started in the shown days,
+// each with its jobs and carrying its repository, the population pull requests merged in them
+// (their lead times), and the evals of evals.PipelineSlugs the answer judges by
 // (evals.Store.DeployRepoEvals): the targets the page states and its lead-time cards are judged
 // by, and pr-ci, whose job series' min_n its slowest jobs are ranked by (evals.PipelineMinN).
 type pipelinePopulation struct {
@@ -129,56 +130,100 @@ type pipelinePopulation struct {
 }
 
 // readPipelinePopulation reads the Pipeline page's runs and pull requests for the shown days
-// ending on at's UTC day, and the evals it judges and ranks by. Runs are read by start over the
-// whole of the shown days, today included past at, by delivery.ReadCIRows, the read the CI evals'
-// day rows make: the PR-checks runs with every job, which their job timings and failing jobs tally
-// whatever their names (measures.PRChecks), and the deploy runs with the jobs the deploy cards
-// follow and no other (measures.DeployJobs reads none else). The three reads depend on none of
-// each other, and are read side by side.
-func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.DeliverySettings, at time.Time) (pipelinePopulation, error) {
+// ending on at's UTC day, and the evals it judges and ranks by. Each source repository's runs are
+// read by start over the whole of the shown days, today included past at, by delivery.ReadCIRows
+// under that repository's rule, the read the CI evals' day rows make: the PR-checks runs with every
+// job, which their job timings and failing jobs tally whatever their names
+// (measures.PRChecksTimings and FailingJobs), and the deploy runs with the jobs the repository's
+// deploy cards follow and no other (measures.DeployJobsOf reads none else). The reads depend on
+// none of each other, and are read side by side; the repositories' runs are held together, each in
+// start order as one repository's are.
+func (s *server) readPipelinePopulation(ctx context.Context, rules *delivery.SourceRules, at time.Time) (pipelinePopulation, error) {
 	from := measures.WindowStart(at)
 	to := from.AddDate(0, 0, measures.ShownDayCount)
 	var pop pipelinePopulation
-	if err := store.ReadSideBySide(ctx,
-		func(ctx context.Context) error {
-			ci, err := delivery.ReadCIRows(ctx, s.deps.Store.Pool, settings.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(settings)))
-			pop.checks, pop.deploys = ci.Checks, ci.Deploys
+	sources := rules.All()
+	ci := make([]delivery.CIRows, len(sources))
+	reads := []func(ctx context.Context) error{
+		func(ctx context.Context) (err error) {
+			pop.leadTimes, err = s.readDeliveryRows(ctx, rules, from, to, url.Values{}, false, false)
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			pop.leadTimes, err = s.readDeliveryRows(ctx, settings, from, to, url.Values{}, false, false)
+			pop.deployRepoEvals, err = s.registry().DeployRepoEvals(ctx, evals.PipelineSlugs)
 			return err
 		},
-		func(ctx context.Context) (err error) {
-			pop.deployRepoEvals, err = s.registry().DeployRepoEvals(ctx, settings.DeployRepo, evals.PipelineSlugs)
+	}
+	for i, rule := range sources {
+		reads = append(reads, func(ctx context.Context) (err error) {
+			ci[i], err = delivery.ReadCIRows(ctx, s.deps.Store.Pool, rule.DeployRepo, from, to, measures.DeployCardJobNames(measures.DeployCards(rule)))
 			return err
-		},
-	); err != nil {
+		})
+	}
+	if err := store.ReadSideBySide(ctx, reads...); err != nil {
 		return pipelinePopulation{}, err
+	}
+	pop.checks.Jobs, pop.deploys.Jobs = map[int64][]delivery.DeliveryRunJob{}, map[int64][]delivery.DeliveryRunJob{}
+	for _, rows := range ci {
+		pop.checks.Runs = append(pop.checks.Runs, rows.Checks.Runs...)
+		maps.Copy(pop.checks.Jobs, rows.Checks.Jobs)
+		pop.deploys.Runs = append(pop.deploys.Runs, rows.Deploys.Runs...)
+		maps.Copy(pop.deploys.Jobs, rows.Deploys.Jobs)
+	}
+	if len(sources) > 1 {
+		byStart := func(a, b delivery.DeliveryRun) int { return a.StartedAt.Compare(b.StartedAt) }
+		slices.SortStableFunc(pop.checks.Runs, byStart)
+		slices.SortStableFunc(pop.deploys.Runs, byStart)
 	}
 	return pop, nil
 }
 
-// deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read
-// for at or narrowed to it. It reads nothing; now is only computed_at. The PR checks, the deploy
-// cards and the lead times build each shown day's rows into day parts and fold them with the folds
-// the CI and delivery evals read stored parts with (measures.PRChecks, DeployJobs and LeadTimes),
-// the slowest jobs ranked by pr-ci's min_n through the ranking pr-ci's items sorted by median read
-// (measures.FoldSlowestJobs), and each lead-time card judged by its eval's target over the shown
-// days' figures (deliveryVerdict); the failing-jobs table is read from the run jobs themselves
-// (measures.FailingJobs).
-func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, at, now time.Time) deliveryPipelineResponse {
-	days := measures.ShownDays(at)
-	rollup := ""
-	if settings.PRChecksRollupJobName != nil {
-		rollup = *settings.PRChecksRollupJobName
+// pipelineDeploys is the deploy runs of pop, each source repository's with its jobs and the deploy
+// cards its own rule follows (measures.DeployCards), in the order of rules.
+func pipelineDeploys(rules *delivery.SourceRules, deploys delivery.RunsWithJobs) []measures.SourceDeployRuns {
+	sources := rules.All()
+	bySource := make([]measures.SourceDeployRuns, len(sources))
+	index := make(map[string]int, len(sources))
+	for i, rule := range sources {
+		bySource[i] = measures.SourceDeployRuns{Jobs: deploys.Jobs, Cards: measures.DeployCards(rule)}
+		index[delivery.RuleKey(rule.DeployRepo)] = i
 	}
+	for _, run := range deploys.Runs {
+		if i, ok := index[delivery.RuleKey(run.Repo)]; ok {
+			bySource[i].Runs = append(bySource[i].Runs, run)
+		}
+	}
+	return bySource
+}
+
+// deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body as of at, from a population read
+// for at or narrowed to it, each source repository's runs judged by its own rule of rules. It reads
+// nothing; now is only computed_at. The PR checks, the deploy cards and the lead times build each
+// shown day's rows into day parts and fold them with the folds the CI and delivery evals read
+// stored parts with (measures.PRChecksTimings, DeployJobsOf and LeadTimes), the slowest jobs ranked by
+// pr-ci's min_n through the ranking pr-ci's items sorted by median read (measures.FoldSlowestJobs),
+// and each lead-time card judged by its eval's target over the shown days' figures
+// (deliveryVerdict); the failing-jobs table is read from the run jobs themselves, each run's
+// without the roll-up job its repository's rule names (measures.FailingJobs). A card no source's
+// rule names is null, and the production deploy card, which every github_workflow source names, is
+// empty where no source reads a repository.
+func deliveryPipelineCompute(rules *delivery.SourceRules, pop pipelinePopulation, at, now time.Time) deliveryPipelineResponse {
+	days := measures.ShownDays(at)
 	minN := evals.PipelineMinN(pop.deployRepoEvals[evals.SlugPRCI])
-	run, slowest, failing := measures.PRChecks(pop.checks.Runs, pop.checks.Jobs, days, at, rollup, minN)
-	timings := measures.DeployJobs(pop.deploys.Runs, pop.deploys.Jobs, measures.DeployCards(settings), days)
+	run, slowest := measures.PRChecksTimings(pop.checks.Runs, pop.checks.Jobs, days, minN)
+	rollupOf := func(repo string) string {
+		rule, _ := rules.For(repo)
+		return deref(rule.PRChecksRollupJobName)
+	}
+	failing := measures.FailingJobs(pop.checks.Runs, pop.checks.Jobs, at, rollupOf)
+	timings := measures.DeployJobsOf(pipelineDeploys(rules, pop.deploys), days)
+	production, named := timings[measures.CardProductionApply]
+	if !named {
+		production = measures.DeployJobsOf([]measures.SourceDeployRuns{{Cards: []measures.DeployJobCard{{CardID: measures.CardProductionApply}}}}, days)[measures.CardProductionApply]
+	}
 	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
 	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
-	derived := pop.leadTimes.derive(settings)
+	derived := pop.leadTimes.derive(rules)
 	mergeToProduction, openedToMerge := measures.LeadTimes(derived.measuresPRs(), days)
 	leadTime := func(slug string, timing measures.LeadTimeTiming) *bool {
 		return deliveryVerdict(pop.deployRepoEvals, slug, map[string]evals.Statistics{measures.SeriesMinutes: evals.LeadTimeStatistics(timing.Total)})
@@ -191,7 +236,7 @@ func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePop
 		},
 		StagingE2E:        stagingE2E,
 		StagingApply:      stagingApply,
-		ProductionApply:   timings[measures.CardProductionApply],
+		ProductionApply:   production,
 		MergeToProduction: mergeToProduction,
 		OpenedToMerge:     openedToMerge,
 		Targets:           deliveryTargets(pop.deployRepoEvals),
@@ -215,10 +260,10 @@ func optionalDeployJobTiming(timings map[measures.DeployJobCardID]measures.Deplo
 // the new first shown day leave and the lead times' pull requests narrow to it; the failing-jobs
 // table needs nothing taken out, since deliveryPipelineCompute reads its 24 hours from at, and the
 // evals are the ones the population was read with.
-func (p pipelinePopulation) narrowedTo(settings delivery.DeliverySettings, at time.Time) pipelinePopulation {
+func (p pipelinePopulation) narrowedTo(rules *delivery.SourceRules, at time.Time) pipelinePopulation {
 	start := measures.WindowStart(at)
 	startedInShownDays := func(run delivery.DeliveryRun) bool { return !run.StartedAt.Before(start) }
-	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(settings, start), deployRepoEvals: p.deployRepoEvals}
+	narrowed := pipelinePopulation{leadTimes: p.leadTimes.narrowedTo(rules, start), deployRepoEvals: p.deployRepoEvals}
 	narrowed.checks.Runs, narrowed.checks.Jobs = runsWhere(p.checks.Runs, p.checks.Jobs, startedInShownDays)
 	narrowed.deploys.Runs, narrowed.deploys.Jobs = runsWhere(p.deploys.Runs, p.deploys.Jobs, startedInShownDays)
 	return narrowed

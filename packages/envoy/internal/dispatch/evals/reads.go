@@ -170,7 +170,7 @@ func EvalVersionsIn(ctx context.Context, tx pgx.Tx, evalID string, limit, offset
 // BeginSnapshot begins a read-only repeatable-read transaction, whose statements read one
 // snapshot: the one database moment of an answer whose every read runs in it (ProjectsIn,
 // CurrentIn, EvalVersionsIn, EvalIn, FirstDaysIn, ReadStoredFiguresIn, DayWindowIn, EvalDaysIn,
-// CountedIn, ItemsIn, RefresherAgeIn, DeployRepoIn, BuiltSettingsIn, and the delivery and Legion
+// CountedIn, ItemsIn, RefresherAgeIn, DeployReposIn, BuiltSettingsIn, and the delivery and Legion
 // reads an items answer makes in it). Its caller commits it once those reads are done.
 func (s *Store) BeginSnapshot(ctx context.Context) (pgx.Tx, error) {
 	return s.database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -211,60 +211,68 @@ func EvalIn(ctx context.Context, tx pgx.Tx, evalID string) (Entry, bool, error) 
 // owner keys it reads under the published defaults (eval_project_owners, owners.go), whose
 // first day is the first of any of them: each owner writes its zero rows from its own first day,
 // so the project holds a row of every day from the first on. Each series is one probe of
-// eval_days' primary key for each owner, its first day, under its own eval's slug and among its
-// own writer's rows (Definition.writer) of the deploy repository its read reads where the rows are
-// recorded under deployRepo ("" where none is set; DeployRepoIn, DeployRepoOf), so the evals of
-// many projects are one read, a row the other writer made moves no eval's first day, and an eval
-// that reads the deploy repository begins on that repository's own first day.
-// A repository filter still names the project's first day. Of a computed Legion eval, every series
-// its zero day builds (zeroLegionParts) has a project row on every day the eval has input, so its
-// first day is the eval's own, on or before the eval's first day in any repository's cut, and a
-// range of a repository's cut that starts on or after that day does not read "no data" for a
-// series with no row of its own. A repository's day that holds no row of the eval reads no data,
-// not zero, and one that holds a row of it reads each such series it holds no row of as its zero
-// part (cutZeros).
-func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepo string) (map[string]map[string]time.Time, error) {
+// eval_days' primary key for each owner and each deploy repository its read reads, its first day,
+// under its own eval's slug and among its own writer's rows (Definition.writer) of the deploy
+// repositories its read reads where the rows are recorded under deployRepos (DeployReposIn,
+// DeployRepoOf): the earliest of them, so the evals of many projects are one read, a row the other
+// writer made moves no eval's first day, and an eval that reads the deploy repository begins on
+// the first day of the first of its project's repositories to begin. A failure measure's first day
+// is its project's failures_measured_since, or none where its failure measures are off
+// (failureFirstDays). A repository filter still names the project's first day. Of a computed
+// Legion eval, every series its zero day builds (zeroLegionParts) has a project row on every day
+// the eval has input, so its first day is the eval's own, on or before the eval's first day in any
+// repository's cut, and a range of a repository's cut that starts on or after that day does not
+// read "no data" for a series with no row of its own. A repository's day that holds no row of the
+// eval reads no data, not zero, and one that holds a row of it reads each such series it holds no
+// row of as its zero part (cutZeros).
+func FirstDaysIn(ctx context.Context, q delivery.Querier, entries []Entry, deployRepos *DeployRepos) (map[string]map[string]time.Time, error) {
 	firsts := map[string]map[string]time.Time{}
 	if len(entries) == 0 {
 		return firsts, nil
 	}
-	projects, evalIDs, writers := make([]string, len(entries)), make([]string, len(entries)), make([]string, len(entries))
-	deployRepos := make([]string, len(entries))
-	for index, entry := range entries {
-		projects[index], evalIDs[index], writers[index] = entry.Definition.ProjectKey, entry.Definition.EvalID, entry.Definition.writer()
-		deployRepos[index] = DeployRepoOf(entry.Definition, deployRepo)
+	var projects, evalIDs, writers, repos []string
+	for _, entry := range entries {
+		if isFailureMeasure(entry.Definition) {
+			// Its first day is its project's, whatever rows stand (failureFirstDays).
+			continue
+		}
+		for _, repo := range DeployRepoOf(entry.Definition, deployRepos) {
+			projects, evalIDs = append(projects, entry.Definition.ProjectKey), append(evalIDs, entry.Definition.EvalID)
+			writers, repos = append(writers, entry.Definition.writer()), append(repos, repo)
+		}
 	}
-	rows, err := q.Query(ctx, `
-		select given.eval_id, s.series, min(first.day)
-		from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
-		cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
-		join eval_project_owners o on o.project_key = given.project_key
-		cross join lateral (
-			select d.day from eval_days d
-			where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "given.project_key")+`
-			  and d.writer = given.writer and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
-			order by d.day
-			limit 1
-		) first
-		group by given.eval_id, s.series
-	`, projects, evalIDs, writers, deployRepos)
-	if err != nil {
-		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
-	}
-	defer rows.Close()
-	for rows.Next() {
+	if len(evalIDs) > 0 {
+		rows, err := q.Query(ctx, `
+			select given.eval_id, s.series, min(first.day)
+			from unnest($1::text[], $2::text[], $3::text[], $4::text[]) as given(project_key, eval_id, writer, deploy_repo)
+			cross join lateral (select series from eval_series_current s where s.eval_id = given.eval_id) s
+			join eval_project_owners o on o.project_key = given.project_key
+			cross join lateral (
+				select d.day from eval_days d
+				where d.project_key = o.owner and d.eval_id = `+evalIDAs("o.owner", "given.eval_id", "given.project_key")+`
+				  and d.writer = given.writer and d.deploy_repo = given.deploy_repo and d.series = s.series and d.repo = ''
+				order by d.day
+				limit 1
+			) first
+			group by given.eval_id, s.series
+		`, projects, evalIDs, writers, repos)
+		if err != nil {
+			return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
+		}
 		var evalID, series string
 		var day time.Time
-		if err := rows.Scan(&evalID, &series, &day); err != nil {
-			return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
+		if _, err := pgx.ForEachRow(rows, []any{&evalID, &series, &day}, func() error {
+			if firsts[evalID] == nil {
+				firsts[evalID] = map[string]time.Time{}
+			}
+			firsts[evalID][series] = day.UTC()
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("read the first days of %d evals: %w", len(entries), err)
 		}
-		if firsts[evalID] == nil {
-			firsts[evalID] = map[string]time.Time{}
-		}
-		firsts[evalID][series] = day.UTC()
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the first days of %d evals: %w", len(evalIDs), err)
+	if err := failureFirstDays(ctx, q, entries, firsts); err != nil {
+		return nil, err
 	}
 	return firsts, nil
 }
@@ -423,16 +431,17 @@ const storedReposQuery = `
 
 // EvalDaysIn reads in q every day row of definition's eval on the days of window, listed or not
 // (pr-ci's per-job series are not), among its own writer's rows (Definition.writer) of the deploy
-// repository its read reads where the rows are recorded under deployRepo ("" where none is set;
-// DeployRepoIn, DeployRepoOf): the rows of all its project's repositories, or those of repos
-// where repos names any, and of one series where series is not ""; newest day first, then by
-// series and repository. A project's rows are its own and those of the owner keys it reads under
-// the published defaults (eval_project_owners, owners.go), each read under the project's key and
-// its eval id of the row's slug. Rows of one series, day and cut are added into one (addOwnedRows),
-// including a Legion row read through the published default. Only the computed pr-ci job rows
-// send samples, which the items route folds into job timings; day items do not display samples.
-// Each owner's read is a range of eval_days' primary key, bounded by the owner keys (ownedKeys).
-func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, deployRepo, series string, repos []string, window Range) ([]DayRow, error) {
+// repositories its read reads where the rows are recorded under deployRepos (DeployReposIn,
+// DeployRepoOf): the rows of all its project's repositories, or those of repos where repos names
+// any, and of one series where series is not ""; newest day first, then by series, repository and
+// deploy repository. A project's rows are its own and those of the owner keys it reads under the
+// published defaults (eval_project_owners, owners.go), each read under the project's key and its
+// eval id of the row's slug. Rows of one series, day, cut and deploy repository are added into one
+// (addOwnedRows), including a Legion row read through the published default. Only the computed
+// pr-ci job rows send samples, which the items route folds into job timings; day items do not
+// display samples. Each owner's read is a range of eval_days' primary key for each deploy
+// repository, bounded by the owner keys (ownedKeys).
+func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, deployRepos *DeployRepos, series string, repos []string, window Range) ([]DayRow, error) {
 	cut := `d.repo = any($5)`
 	repo, samples := `d.repo`, `null::double precision[]`
 	if len(repos) == 0 {
@@ -445,15 +454,15 @@ func EvalDaysIn(ctx context.Context, q delivery.Querier, definition Definition, 
 		samples = `case when starts_with(d.series, '` + measures.JobSeriesPrefix + `') then d.samples end`
 	}
 	filter := `o.project_key = $1 and ` + ownedKeys("d", "= $1") + ` and d.eval_id = o.owner || substr($2, length($1) + 1)
-		and d.writer = $3 and d.deploy_repo = $4 and ` + cut + ` and d.day >= $6::date and d.day < $7::date`
-	args := []any{definition.ProjectKey, definition.EvalID, definition.writer(), DeployRepoOf(definition, deployRepo), repos, window.From.UTC(), window.To.UTC()}
+		and d.writer = $3 and d.deploy_repo = any($4) and ` + cut + ` and d.day >= $6::date and d.day < $7::date`
+	args := []any{definition.ProjectKey, definition.EvalID, definition.writer(), DeployRepoOf(definition, deployRepos), repos, window.From.UTC(), window.To.UTC()}
 	if series != "" {
 		args = append(args, series)
 		filter += ` and d.series = $8`
 	}
 	rows, err := q.Query(ctx, `
 		select `+ownedDayColumns(repo, samples)+` from eval_project_owners o join eval_days d on d.project_key = o.owner
-		where `+filter+` order by d.day desc, d.series, cut_repo
+		where `+filter+` order by d.day desc, d.series, cut_repo, d.deploy_repo
 	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the day rows of %s: %w", definition.EvalID, err)
@@ -473,24 +482,24 @@ type Counted struct {
 }
 
 // CountedIn reads in q the items family's day rows of project counted on the days of window,
-// under deployRepo ("" for the items counted whatever the deploy repository is, a repository's
+// under deployRepos ("" for the items counted whatever the deploy repository is, a repository's
 // name for those the evals that read it counted with it as the deploy repository; DeployRepoOf),
 // those of repos where repos names any, by day and then by row key, through eval_day_members_day:
 // the pull requests and deploy runs the delivery evals' rows of those days count, or the runs the
 // CI evals' rows do, the project's own and those of the owner keys it reads under the published
 // defaults (eval_project_owners, owners.go). An items read answers them, so it lists
 // the items the window's numbers fold.
-func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployRepo string, repos []string, window Range) ([]Counted, error) {
-	filter := ownedKeys("m", "= $1") + ` and m.family = $2 and m.deploy_repo = $3 and m.day >= $4::date and m.day < $5::date`
-	args := []any{project, family, deployRepo, window.From.UTC(), window.To.UTC()}
+func CountedIn(ctx context.Context, q delivery.Querier, project, family string, deployRepos, repos []string, window Range) ([]Counted, error) {
+	filter := ownedKeys("m", "= $1") + ` and m.family = $2 and m.deploy_repo = any($3) and m.day >= $4::date and m.day < $5::date`
+	args := []any{project, family, nonNil(deployRepos), window.From.UTC(), window.To.UTC()}
 	if len(repos) > 0 {
 		args = append(args, repos)
 		filter += ` and ` + repoCut("m", "$6", "$1")
 	}
 	rows, err := q.Query(ctx, `
-		select m.row_key, m.repo, m.shipped_by, m.day
+		select m.row_key, m.deploy_repo, m.repo, m.shipped_by, m.day
 		from eval_project_owners o join eval_day_members m on m.project_key = o.owner
-		where o.project_key = $1 and `+filter+` order by m.day, m.row_key
+		where o.project_key = $1 and `+filter+` order by m.day, m.row_key, m.deploy_repo
 	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
@@ -498,8 +507,8 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 	defer rows.Close()
 	var items []Counted
 	for rows.Next() {
-		item := Counted{Member: Member{Family: family, DeployRepo: deployRepo}}
-		if err := rows.Scan(&item.RowKey, &item.Repo, &item.ShippedBy, &item.Day); err != nil {
+		item := Counted{Member: Member{Family: family}}
+		if err := rows.Scan(&item.RowKey, &item.DeployRepo, &item.Repo, &item.ShippedBy, &item.Day); err != nil {
 			return nil, fmt.Errorf("read the %s items of %s: %w", family, project, err)
 		}
 		item.Day = item.Day.UTC()
@@ -522,9 +531,10 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // repository filter's fold. Each eval's rows are its own writer's (Definition.writer, R3): a
 // computed eval's the computation's, a logged eval's the readings write's, so an eval whose source
 // changed folds none of the rows the other writer made. And they are those of the deploy
-// repository its read reads, where the rows are recorded under deployRepo ("" where none is set;
-// DeployRepoIn, DeployRepoOf): of an eval keyed by the deploy repository that repository's rows,
-// and of every other the rows of none, so a move of the deploy repository is this selection
+// repositories its read reads, where the rows are recorded under deployRepos (DeployReposIn,
+// DeployRepoOf): of an eval keyed by the deploy repository the rows of each repository of its
+// project, folded together as a repository filter folds several repositories' rows, and of every
+// other the rows of none, so a move of a project's repositories is this selection
 // (deploy_repos.go). A project's rows are its own and those of the owner keys it reads under the
 // published defaults, less those it shares (eval_project_owners, owners.go), each under the
 // project's eval id of its slug and its via_repository as the project reads it (viaAsRead): a
@@ -547,18 +557,20 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // each), the fence took the median execution from 77 to 78 ms to 64 to 67 ms, with the same plan.
 //
 // A row answers what the folds and the answer read and nothing more (WindowRow), since what the
-// read costs is the bytes it sends: no project, listing or build, but the owner it is stored under
-// and, in a read that names repositories, the repository it is stored under, which the folds order
-// a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
+// read costs is the bytes it sends: no project, listing or build, but the owner it is stored under,
+// in a read that names repositories the repository it is stored under, and in a read that folds
+// more than one deploy repository of a project the deploy repository it is stored under, which the
+// folds order a day's rows by (sortWindowRows) and a rebuild's overlay of staged rows reads
 // (readOverlayGroups); a read that names none reads the rows stored under "" alone, and sends no
-// repository. And a sample list only for a series whose fold reads one (readsSamples), so a
-// logged series folded by anything but a quantile, whose rows keep every value of their day, sends
-// none. The write that stored a row's last value (last_recorded_at, last_reading), which the
-// `last` fold breaks a tie of two rows' last_at by (aggStatistics), comes only with a row of a
-// `last` series in a read that names more than one repository: only that read folds two rows of
-// one series and day, which can tie, and the order the folds take its rows in (sortWindowRows)
-// says nothing of which was written later. Every other row answers no write: null and the empty
-// string.
+// repository. And a sample list, with its sample keys where the row holds them (DayRow.sampleKeys,
+// which the folds count a pull request once by: shippedOnce), only for a series whose fold reads
+// one (readsSamples), so a logged series folded by anything but a quantile, whose rows keep every
+// value of their day, sends none. The write that stored a row's last value (last_recorded_at,
+// last_reading), which the `last` fold breaks a tie of two rows' last_at by (aggStatistics), comes
+// only with a row of a `last` series in a read that names more than one repository or more than
+// one deploy repository of a project: only that read folds two rows of one series and day, which
+// can tie, and the order the folds take its rows in (sortWindowRows) says nothing of which was
+// written later. Every other row answers no write: null and the empty string.
 //
 // q is the pool; a transaction that writes the rows it reads, as the stored figures' writes fold
 // them (figures.go), so a fold of the rows a write left reads them as a paint does; or the snapshot
@@ -572,23 +584,34 @@ func CountedIn(ctx context.Context, q delivery.Querier, project, family, deployR
 // statement reads q's snapshot: in the list read's snapshot, as in any transaction at repeatable
 // read, every run reads the one moment the answer's other reads read, as one statement would; on
 // the pool, or in a transaction at read committed, each reads the rows that stand when it runs.
-func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepo string, repos []string, window Range, compare *Range) ([]WindowRow, error) {
-	cut, storedRepo, ownedRepo, scan := `d.repo = any($2)`, "", "", scanWindowRow
-	if len(repos) == 0 {
+//
+// A settings rewrite's first paints restate its answer in Go over the rows the rewrite holds of the
+// repository it rewrote (rewrittenRows.windowRows), so a change to one lands in both.
+func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, entries []Entry, deployRepos *DeployRepos, repos []string, window Range, compare *Range) ([]WindowRow, error) {
+	multiDeploy := slices.ContainsFunc(projects, deployRepos.several)
+	cut, storedRepo, ownedRepo := `d.repo = any($2)`, "", ""
+	withRepo := len(repos) > 0
+	if !withRepo {
 		repos = []string{""}
 	} else {
-		cut, storedRepo, ownedRepo, scan = repoCut("d", "$2", "o.project_key"), ", repo", ", d.repo", scanRepoWindowRow
+		cut, storedRepo, ownedRepo = repoCut("d", "$2", "o.project_key"), ", repo", ", d.repo"
 	}
+	storedDeploy := ""
+	if multiDeploy {
+		storedDeploy = ", deploy_repo"
+	}
+	scan := func(row pgx.CollectableRow) (WindowRow, error) { return scanWindowRowOf(row, withRepo, multiDeploy) }
 	ranged := func(inWindow string, from, to int) string {
 		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
 				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
+				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then sample_keys end,
 				last_value, last_at,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then last_recorded_at end,
 				case when (eval_id, series) in (select * from unnest($7::text[], $8::text[])) then coalesce(last_reading::text, '') else '' end,
-				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + `
+				nullif(counts, '{}'), via_repository, updated_at, owner` + storedRepo + storedDeploy + `
 			from (
-				select o.owner, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
-					d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
+				select o.owner, o.project_key, o.project_key || substr(d.eval_id, length(o.owner) + 1) as eval_id, d.writer, d.deploy_repo, d.series, d.day,
+					d.n, d.sum, d.num, d.den, d.max, d.samples, d.sample_keys, d.last_value, d.last_at, d.last_recorded_at, d.last_reading, d.counts,
 					` + viaAsRead("d.via_repository") + ` as via_repository, d.updated_at` + ownedRepo + `
 				from eval_project_owners o join eval_days d on d.project_key = o.owner
 				where o.project_key = any($1::text[]) and ` + ownedKeys("d", "= any($1::text[])") + ` and d.listed
@@ -598,21 +621,22 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 			) owned
 			where eval_id = any($3)
 			  and writer = case when eval_id = any($6::text[]) then '` + writerComputation + `' else '` + writerReadings + `' end
-			  and ` + deployRepoCase("deploy_repo", "$9", "$10")
+			  and ` + deployRepoCase("deploy_repo", "$9", "$10", "$11")
 	}
-	query, times := ranged("true", 11, 12), 2
+	query, times := ranged("true", 12, 13), 2
 	if compare != nil {
-		query, times = query+"\n\t\tunion all\n\t\t"+ranged("false", 13, 14), 4
+		query, times = query+"\n\t\tunion all\n\t\t"+ranged("false", 14, 15), 4
 	}
-	// base is the statement's parameters with no eval: its nine arrays, the deploy repository, the
-	// days of the ranges and the projects and repositories it reads.
-	base := paramBytes(9, deployRepo) + (4+8)*times
-	for _, names := range [][]string{projects, repos} {
+	pairProjects, pairRepos := deployRepos.pairs(projects)
+	// base is the statement's parameters with no eval: its eleven arrays, the days of the ranges,
+	// and the projects, the repositories and the deploy repositories it reads.
+	base := paramBytes(11) + (4+8)*times
+	for _, names := range [][]string{projects, repos, pairProjects, pairRepos} {
 		for _, name := range names {
 			base += 4 + len(name)
 		}
 	}
-	lastPairs := len(repos) > 1
+	lastPairs := len(repos) > 1 || multiDeploy
 	days := []WindowRow{}
 	for run := range statementChunks(entries, base, func(entry *Entry) int { return windowEntryBytes(entry, lastPairs) }) {
 		evalIDs := make([]string, len(run))
@@ -632,7 +656,7 @@ func DayWindowIn(ctx context.Context, q delivery.Querier, projects []string, ent
 			}
 		}
 		args := []any{pgx.QueryExecModeDescribeExec, projects, repos, evalIDs, sampledEvals, sampledSeries, computedEvals, lastEvals, lastSeries,
-			keyedEvals(run), deployRepo, window.From.UTC(), window.To.UTC()}
+			keyedEvals(run), pairProjects, pairRepos, window.From.UTC(), window.To.UTC()}
 		if compare != nil {
 			args = append(args, compare.From.UTC(), compare.To.UTC())
 		}

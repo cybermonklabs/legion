@@ -1,9 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 
 import { isDeliveryNotConfigured } from "../../api/client";
-import { deliveryMeasuresQuery, deliveryTimelineQuery } from "../../api/queries";
+import { deliveryMeasuresQuery, deliveryTimelineQuery, projectsQuery } from "../../api/queries";
 import type { DeliverySessionGroup } from "../../api/types";
 import { MultiSelect } from "../../components/MultiSelect";
 import { QueryError } from "../../components/QueryError";
@@ -12,6 +12,7 @@ import { useRepeatableSearchParams, useSearchParamsUpdate } from "../../lib/url-
 import {
   borderStrong,
   dragHandleBg,
+  linkHoverText,
   linkText,
   surfaceBg,
   surfaceMutedBg,
@@ -24,8 +25,8 @@ import {
   textPrimaryOnSurfaceMuted,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { buildProjectPath } from "../refs/routes";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { DeliverySettingsForm } from "./DeliverySettingsForm";
 import { DrillDown } from "./DrillDown";
 import { FacetPanel } from "./FacetPanel";
 import {
@@ -236,6 +237,52 @@ function LanesSwitch({
   );
 }
 
+/** Where a project's delivery is turned on: a link to each project's settings tab, which holds
+ *  its delivery settings. */
+function ProjectSettingsLinks(): ReactNode {
+  const projects = useQuery(projectsQuery());
+  if (projects.isPending) {
+    return <p className={`mt-3 text-sm ${textMutedOnCanvas}`}>Loading projects…</p>;
+  }
+  if (projects.isError) {
+    return (
+      <div className="mt-3">
+        <QueryError
+          message="Couldn't load the projects."
+          onRetry={() => void projects.refetch()}
+          retrying={projects.isFetching}
+        />
+      </div>
+    );
+  }
+  if (projects.data.length === 0) {
+    return (
+      <p className={`mt-3 text-sm ${textSecondaryOnCanvas}`}>
+        No project exists yet: create one in{" "}
+        <Link className={`font-medium ${linkText} ${linkHoverText}`} to="/settings">
+          Settings → Projects
+        </Link>
+        .
+      </p>
+    );
+  }
+  return (
+    <ul aria-label="Project settings" className="mt-3 grid gap-1 text-sm">
+      {projects.data.map((project) => (
+        <li key={project.key}>
+          <Link
+            className={`font-medium ${linkText} ${linkHoverText}`}
+            to={buildProjectPath({ kind: "settings", project: project.key })}
+          >
+            {project.name} settings
+          </Link>{" "}
+          <span className={textMutedOnCanvas}>{project.key}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 /** Coloured by Parent agent: which values get their own colour and lane, busiest first. The rest
  *  share one Other colour and lane; with none chosen, the colours and lanes are the facet's usual. */
 function OwnColourPicker({
@@ -278,10 +325,10 @@ function OwnColourPicker({
 
 /** `/delivery`: successful production deploys, pipeline failures, and merged PRs labelled by
  *  agent session, Dispatch issue, priority, and architectural component, as the prototype's
- *  timeline view shows them. Until the timeline's configuration is set, Dispatch refuses the
- *  page's live view with `DELIVERY_NOT_CONFIGURED` and the page shows the settings form in the
- *  timeline's place; once a save configures it, Dispatch answers the same subscription with the
- *  timeline. */
+ *  timeline view shows them. Until a project has delivery on, Dispatch refuses the page's live
+ *  view with `DELIVERY_NOT_CONFIGURED` and the page shows, in the timeline's place, a link to each
+ *  project's settings tab (`ProjectSettingsLinks`); once a save turns delivery on, Dispatch answers
+ *  the same subscription with the timeline. */
 export function DeliveryPage(): ReactNode {
   useDocumentTitle("Delivery · Dispatch");
   const [state, setState] = useDeliveryUrlState();
@@ -373,13 +420,13 @@ export function DeliveryPage(): ReactNode {
 
   const setView = (view: DeliveryView) => setState({ ...state, view });
 
-  // Whether the page shows the setup form: the last settled timeline read's answer, held while a
+  // Whether the page shows the setup links: the last settled timeline read's answer, held while a
   // read is in flight. A refetch with nothing cached clears `query.error` the moment it starts
   // (the window regaining focus or a live-socket gap refresh), so a body read live from the query
-  // would unmount the form, and the draft typed into it, on every tab switch. A read that settles
-  // on anything but `DELIVERY_NOT_CONFIGURED` shows that instead: the timeline a save brings, or a
-  // failure with Retry. Set during render (React's pattern for state derived from props), so the
-  // render that settles already shows the new body.
+  // would swap the links for the loading line on every tab switch. A read that settles on
+  // anything but `DELIVERY_NOT_CONFIGURED` shows that instead: the timeline a project's save
+  // brings, or a failure with Retry. Set during render (React's pattern for state derived from
+  // props), so the render that settles already shows the new body.
   const [notConfigured, setNotConfigured] = useState(false);
   if (query.fetchStatus === "idle" && isDeliveryNotConfigured(query.error) !== notConfigured) {
     setNotConfigured(!notConfigured);
@@ -430,10 +477,11 @@ export function DeliveryPage(): ReactNode {
             Set up the delivery timeline
           </h2>
           <p className={`mt-1 text-sm ${textSecondaryOnCanvas}`}>
-            Once set, this page shows the merged pull requests of the authors you name, the
-            production deploys that shipped them, and the pipeline failures in between.
+            No project has delivery on. Turn it on in a project&apos;s settings: this page then
+            shows the merged pull requests of the authors it names, the production deploys that
+            shipped them, and the pipeline failures in between.
           </p>
-          <DeliverySettingsForm initial={null} />
+          <ProjectSettingsLinks />
         </section>
       ) : (
         <>

@@ -7,18 +7,24 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// DeliverySettings is LEGION-567's one configuration record: which repository deploys, its
-// workflow paths, production job names and optional apply step, the population rule's authors and
-// excluded repositories (LEGION-294), and the three optional job names the Pipeline page follows
-// besides the production jobs (the deploy workflow's staging end-to-end gate and staging deploy,
-// and the PR-checks workflow's roll-up job, which the failing-jobs table leaves out); each is nil
-// when the pipeline has no such step. At most one row ever exists. LastEventAt and LastReconcileAt
-// are the Delivery page's freshness: the last GitHub event the intake consumer processed, and the
-// last time the five-minute reconcile *completed successfully*. LastError is the most recent
-// reconcile pass's failure (a missing permission, a rate limit, any other GitHub or store error),
-// cleared the next time a pass succeeds -- LastReconcileAt does not advance on a failed pass, so
-// the two together answer both "when did this last actually work" and "what's wrong right now."
+// DeliverySettings is one source repository's rule (dispatch://INFRA-978, D1; DeployRules builds
+// one per github_workflow source of a delivery-on project, and the release before this one read
+// LEGION-567's one delivery_settings row in this shape): which repository deploys, its workflow
+// paths, production job names and optional apply step, the population rule's authors and
+// excluded repositories of its project (LEGION-294), and the three optional job names the Pipeline
+// page follows besides the production jobs (the deploy workflow's staging end-to-end gate and
+// staging deploy, and the PR-checks workflow's roll-up job, which the failing-jobs table leaves
+// out); each is nil when the pipeline has no such step. LastEventAt and LastReconcileAt are the
+// source's freshness: the last GitHub event of the repository the intake consumer processed, and
+// the last time the five-minute reconcile *completed successfully* for it. LastError is the most
+// recent reconcile pass's failure for it (a missing permission, a rate limit, any other GitHub or
+// store error), cleared the next time a pass succeeds -- LastReconcileAt does not advance on a
+// failed pass, so the two together answer both "when did this last actually work" and "what's
+// wrong right now."
 type DeliverySettings struct {
+	// Project is the delivery-on project whose deploy source reads DeployRepo (dispatch://INFRA-978,
+	// D1), and empty for the singleton row the release before reads.
+	Project                 string      `json:"project,omitempty"`
 	DeployRepo              string      `json:"deploy_repo"`
 	DeployWorkflowPath      string      `json:"deploy_workflow_path"`
 	ProductionJobNames      []string    `json:"production_job_names"`

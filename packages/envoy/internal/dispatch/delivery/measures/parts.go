@@ -6,9 +6,9 @@ import "time"
 // builder (the functions named <Measure>Day) turns the rows of one UTC day into that day's parts,
 // and one exported fold (the functions named Fold<Measure>) turns any set of parts into the
 // answer. The delivery routes build the parts of their window's days from the rows they read and
-// fold them (Compute, PRChecks, DeployJobs, LeadTimes); the eval routes fold the parts stored in
-// eval_days through the same folds, so each rule has one statement and a read that both families
-// serve has one answer.
+// fold them (Compute, PRChecksTimings, DeployJobsOf, LeadTimes); the eval routes fold the parts
+// stored in eval_days through the same folds, so each rule has one statement and a read that both
+// families serve has one answer.
 //
 // A fold reads the parts of its own series and passes over the rest, so it can be handed every
 // part of its eval. A count or a sum adds Sum; a share is the summed Num over the summed Den, never
@@ -16,10 +16,10 @@ import "time"
 // days in ascending order (MergedSamples), which is the quantile of every value of those days,
 // never the mean of the days' quantiles. A set that holds no part of a fold's series reads no
 // value, never 0: a pointer-returning fold (FoldDeployFrequency, FoldDeployRunSuccess,
-// FoldReworkShare) reads nil, a cell fold (FoldLeadTime, FoldTiming, FoldTimeToRestore) a
-// zero-count struct with nil quantile and rate pointers, and FoldChangeFailureRate every count 0
-// and every rate nil. A part built for a day with no rows is a zero part, and reads as zero
-// counts (and nil shares).
+// FoldReworkShare, FoldChangeFailRate, FoldReworkRate, FoldRecovery) reads nil, and a cell fold
+// (FoldLeadTime, FoldTiming) a zero-count struct with nil quantile and rate pointers. A part built
+// for a day with no rows is a zero part, and reads as zero counts (and nil shares, but for
+// FoldChangeFailRate and FoldReworkRate, whose rate over no deploy is a measured 0).
 
 // DayPart is one series' part of one UTC day: what one eval_days row holds except its key's
 // project, eval and repository and its bookkeeping (listed, built_by, updated_at), so a fold
@@ -63,10 +63,9 @@ const (
 	SeriesRuns = "runs"
 	// SeriesPRs is rework-share's: the rework pull requests over every one (a share).
 	SeriesPRs = "prs"
-	// SeriesPerDeploy, SeriesUpperBound and SeriesPerPR are change-fail-rate's three shares.
-	SeriesPerDeploy  = "per_deploy"
-	SeriesUpperBound = "upper_bound"
-	SeriesPerPR      = "per_pr"
+	// SeriesPerDeploy is change-fail-rate's: the deploys with a counted failure over every deploy
+	// (a share).
+	SeriesPerDeploy = "per_deploy"
 	// SeriesMinutes is the minutes of every lead time, of failed-deploy-recovery and of each CI
 	// eval (a quantile).
 	SeriesMinutes = "minutes"
@@ -81,9 +80,6 @@ const (
 	CountCancelled = "cancelled"
 	CountSuccess   = "success"
 	CountFailure   = "failure"
-	CountPending   = "pending"
-	CountRejected  = "rejected"
-	CountReverts   = "reverts"
 )
 
 // CountPart is a sum's part: count rows, with counts beside them. The part helpers and the fold

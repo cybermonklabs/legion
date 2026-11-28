@@ -634,6 +634,12 @@ test("the broadcasts list shows each broadcast's first line formatted", async ()
   };
   const listBroadcasts = spyOn(api, "listBroadcasts").mockResolvedValue([sent]);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+  // The reader is alice, a person, whose sign-in holds the `person` scope the list is read under.
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const view = render(
     <Providers>
       <BroadcastsPage />
@@ -650,6 +656,7 @@ test("the broadcasts list shows each broadcast's first line formatted", async ()
     view.unmount();
     listBroadcasts.mockRestore();
     listAgents.mockRestore();
+    whoAmI.mockRestore();
     getIssueSummary.mockRestore();
   }
 });
@@ -1014,6 +1021,9 @@ describe("a Dispatch picture on every surface", () => {
     };
     const listBroadcasts = spyOn(api, "listBroadcasts").mockResolvedValue([sent]);
     const listAgents = spyOn(api, "listAgents").mockResolvedValue([]);
+    // The reader is alice, a person, whose sign-in holds the `person` scope the list is read
+    // under; the suite's `afterEach` restores the spy.
+    whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login: "alice" });
     const view = render(
       <Providers>
         <BroadcastsPage />

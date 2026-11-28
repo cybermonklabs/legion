@@ -3,15 +3,11 @@ import { type ReactNode, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
-import {
-  inboxQuery,
-  prioritySummaryQuery,
-  projectsQuery,
-  userAgentStateQuery,
-} from "../../api/queries";
+import { prioritySummaryQuery, projectsQuery } from "../../api/queries";
 import type { AuthenticatedUser } from "../../api/types";
 import { ChevronIcon } from "../../components/DisclosureToggle";
 import { PinButton } from "../../components/PinButton";
+import { useInbox, usePersonScope, useUserAgentState } from "../../hooks/useHoldsPersonScope";
 import {
   railAccentText,
   railActiveBg,
@@ -153,10 +149,20 @@ export function Sidebar({
   user: AuthenticatedUser;
 }): ReactNode {
   const location = useLocation();
-  const inbox = useQuery(inboxQuery());
+  // The viewer's own reads - the asks waiting on them, the issues they pinned, their pinned
+  // agents and their conversations' unread replies - each need the `person` scope, so the rail
+  // asks them under its one gate (`usePersonScope`): it waits for the gate as it waits for the
+  // reads, and for a viewer whose credential lacks the scope it reads none of them and waits on
+  // none, and is drawn with its projects and pages, with no Pinned section and no pinned agent.
+  // What it draws for the viewer's kind is apart from that: no Inbox, no Peek and no Settings
+  // for an agent (`AuthenticatedUser.kind`).
+  const person = user.kind === "user";
+  const scope = usePersonScope();
+  const inbox = useInbox();
   const pinned = useQuery({
     queryKey: ["issues", "pinned"],
     queryFn: () => api.listIssues({ pinned: true }),
+    enabled: scope === "held",
   });
   const projects = useQuery(projectsQuery());
   // The number beside Priorities (INFRA-2947, R8): the two faults added - the work in flight
@@ -173,9 +179,9 @@ export function Sidebar({
   // One number on Inbox, composed in one place (`useInboxCount.ts`): the work waiting on
   // the reader plus the threads they have not read, which the Inbox lists beside those asks now.
   const inboxCount = useInboxCount();
-  const agentState = useQuery(userAgentStateQuery()).data;
+  const agentState = useUserAgentState().data;
   const unreadReplies = totalUnreadReplies(agentState);
-  // The rail's own list: the person's pinned agents, oldest pin first, and the control that
+  // The rail's own list: the viewer's pinned agents, oldest pin first, and the control that
   // unpins one from here. The registry is told the whole set in the shell (`app.tsx`), not
   // here, because this rail is a sheet behind the Menu control below 1280 pixels and is not on
   // the page at all while the sidebar is collapsed.
@@ -200,7 +206,11 @@ export function Sidebar({
       </button>
     );
 
-  if (inbox.isPending || pinned.isPending || projects.isPending) {
+  if (
+    scope === "pending" ||
+    (scope === "held" && (inbox.isPending || pinned.isPending)) ||
+    projects.isPending
+  ) {
     return (
       <>
         {hideControl}
@@ -216,38 +226,43 @@ export function Sidebar({
       </>
     );
   }
+  // A viewer whose credential lacks the `person` scope reads no pins: its rail draws no Pinned
+  // section.
+  const pinnedIssues = pinned.data ?? [];
 
   return (
     <>
       {hideControl}
       <nav aria-label="Navigation" className="mt-8 space-y-5">
-        <section className="flex items-center gap-1">
-          <Link
-            className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-            onClick={onNavigate}
-            to="/"
-          >
-            <span>Inbox</span>
-            {inboxCount === 0 ? null : (
-              <span
-                className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
-              >
-                {inboxCount}
-              </span>
-            )}
-          </Link>
-          {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
-          {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
-            <button
-              aria-label="Peek at the inbox without leaving this page"
-              className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
-              onClick={onOpenInboxDrawer}
-              type="button"
+        {person ? (
+          <section className="flex items-center gap-1">
+            <Link
+              className={`mt-1 flex flex-1 items-baseline gap-2 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+              onClick={onNavigate}
+              to="/"
             >
-              Peek
-            </button>
-          )}
-        </section>
+              <span>Inbox</span>
+              {inboxCount === 0 ? null : (
+                <span
+                  className={`rounded-full px-1.5 py-0.5 text-xs ${railNeedsYouBadgeBg} ${railNeedsYouBadgeText}`}
+                >
+                  {inboxCount}
+                </span>
+              )}
+            </Link>
+            {/* The Inbox page is the Inbox already, so there is nothing to peek at from it. */}
+            {onOpenInboxDrawer === undefined || routeIsInbox(location.pathname) ? null : (
+              <button
+                aria-label="Peek at the inbox without leaving this page"
+                className={`mt-1 shrink-0 rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}
+                onClick={onOpenInboxDrawer}
+                type="button"
+              >
+                Peek
+              </button>
+            )}
+          </section>
+        ) : null}
         <section>
           <div className="flex items-center gap-1">
             <Link
@@ -337,13 +352,13 @@ export function Sidebar({
             />
           </ul>
         </section>
-        {pinned.data.length === 0 ? null : (
+        {pinnedIssues.length === 0 ? null : (
           <section>
             <h2 className={`px-2 text-xs font-semibold tracking-wide uppercase ${railMutedText}`}>
               Pinned
             </h2>
             <ul className="mt-1 space-y-0.5">
-              {pinned.data.map((issue) => (
+              {pinnedIssues.map((issue) => (
                 <RailRow
                   badge={issue.open_asks === 0 ? undefined : issue.open_asks}
                   detail={issue.title}
@@ -379,7 +394,7 @@ export function Sidebar({
             ))}
           </ul>
         </section>
-        {user.kind === "user" ? (
+        {person ? (
           <div className={`border-t pt-4 ${railBorder}`}>
             <Link
               className={`block rounded px-2 py-1.5 text-sm font-medium ${railSecondaryText} ${railHoverBg} ${railHoverText}`}

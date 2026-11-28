@@ -293,6 +293,8 @@ packages/envoy:
       - internal/dispatch/evals/evalfixture/cmd
       - internal/dispatch/evals/independent
       - internal/dispatch/evals/independent/cmd
+      - internal/dispatch/prodevents
+      - internal/dispatch/prodevents/signals
     # Dispatch's heavier packages and the Legion facts, which took about 109 s in the same CI as the
     # eval registry in leg 3.
     4:

@@ -294,6 +294,29 @@ type evalItemsQuery struct {
 	Offset int `query:"offset"`
 }
 
+// productionEventsQuery is GET /api/v1/projects/{key}/production-events's query: the window, one
+// kind, one state, the failures of one deploy (deploy_id, a deploy row's uuid) and the page
+// (parseProductionEventsQuery).
+type productionEventsQuery struct {
+	// From is the window's start, RFC3339; absent it is seven days before To. A deploy is in the
+	// window by its finished_at, a failure by its detected_at.
+	From string `query:"from"`
+	// To is the window's end, RFC3339, exclusive; absent it is now. The window spans at most 84
+	// days.
+	To string `query:"to"`
+	// Kind keeps the rows of one kind.
+	Kind string `query:"kind" enum:"deploy,failure"`
+	// State keeps the rows of one state; a deploy is always counted.
+	State string `query:"state" enum:"counted,rejected"`
+	// DeployID keeps the project's failures that blame this deploy, a row's uuid: the
+	// drill-down's read of one deploy. An id of no row answers an empty page.
+	DeployID string `query:"deploy_id"`
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
 type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins

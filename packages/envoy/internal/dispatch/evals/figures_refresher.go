@@ -514,8 +514,29 @@ func (s *Store) foldFiguresOfDays(ctx context.Context, build, project string, sp
 // it, built: no range before holds a row, and the write of its first rows folds them. A release
 // folds built figures again aside, in its rebuild (rebuild.go), not here. It answers whether end
 // days before the last are left, which asks for the pass that builds them.
+//
+// The walk folds each project's union cut (`deploy_repo` `*`, unionDeployRepo) with the rest, and
+// moves the union's mark (eval_figures_built.union_through, by which a read of an eval keyed by the
+// deploy repository takes the union rows: builtCut.unionServes) with each batch, where the mark
+// stands at the day before the batch's first end day (markFiguresBuilt, markUnionFolded); the first
+// whole walk sets it with the figures' own mark. A build that folds no union cut, the release
+// before this one, moves no such mark, and its fold of a range or a day deletes the union rows of
+// it, which moves the mark back (migration 20261126125956). So where a project's figures are built
+// and its union cut is folded through an earlier end day than they are, or through none, and no
+// rebuild that is building holds the project's figures walk (its flip lands the union rows and
+// moves the mark, rebuild.go), the walk folds the project's figures again from the day after the
+// mark (from its first end day where none stands), batch after batch, which writes the rows whose
+// figures moved alone, the union's mostly, and leaves the walk's record where it stands until it
+// passes it, so no build reads its record moved back over end days it walked. And a first walk
+// another build moved last (eval_days_walks.built_by), whose batches may have folded no union cut,
+// begins again from its first end day, so the batches of the first whole walk that sets the marks
+// are this build's alone.
 func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 	walks, err := r.store.readWalks(ctx)
+	if err != nil {
+		return false, err
+	}
+	marks, err := r.store.readFiguresBuilt(ctx)
 	if err != nil {
 		return false, err
 	}
@@ -526,7 +547,18 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 			return true, nil
 		}
 		key := walkKey{family: walkFigures, project: project}
-		next := walks[key].next
+		walk := walks[key]
+		next, recorded := walk.next, walk.next
+		mark, built := marks[project]
+		switch {
+		case !built && next != nil && walk.build != r.build:
+			next, recorded = nil, nil
+		case !built || r.rebuilding.holds(key):
+		case mark.union == nil:
+			next = nil
+		case mark.union.Before(mark.through) && (next == nil || mark.union.AddDate(0, 0, 1).Before(*next)):
+			next = new(mark.union.AddDate(0, 0, 1))
+		}
 		begun := next == nil
 		if begun {
 			start, err := r.store.figuresStart(ctx, project)
@@ -556,11 +588,13 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 				end = most
 			}
 			began := time.Now()
-			if err := r.buildFigures(ctx, key, *next, end, end.Equal(last)); err != nil {
+			if err := r.buildFigures(ctx, key, *next, end, figuresBatch{
+				built: end.Equal(last), folded: built, fromStart: begun, recorded: recorded,
+			}); err != nil {
 				return false, err
 			}
-			built := int(end.Sub(*next)/(24*time.Hour)) + 1
-			r.batched.spend(key, built)
+			folded := int(end.Sub(*next)/(24*time.Hour)) + 1
+			r.batched.spend(key, folded)
 			r.walkBuilt++
 			if !end.Before(last) {
 				break
@@ -568,16 +602,46 @@ func (r *refresh) walkFigures(ctx context.Context) (bool, error) {
 			if r.yields(ctx) {
 				return true, nil
 			}
-			days = refoldBatchDays(built, time.Since(began), r.refoldBudget, r.batch)
-			next = new(end.AddDate(0, 0, 1))
+			days = refoldBatchDays(folded, time.Since(began), r.refoldBudget, r.batch)
+			begun, next = false, new(end.AddDate(0, 0, 1))
 		}
 	}
 	return pending, nil
 }
 
+// figuresMark is one project's mark of built figures (eval_figures_built): the last end day its
+// figures are built through, and the last its union cut is folded through, nil for none.
+type figuresMark struct {
+	through time.Time
+	union   *time.Time
+}
+
+// readFiguresBuilt reads every project's mark of built figures, by project: a project whose
+// figures are not built is in none.
+func (s *Store) readFiguresBuilt(ctx context.Context) (map[string]figuresMark, error) {
+	rows, err := s.database.Pool.Query(ctx, `select project_key, through, union_through from eval_figures_built`)
+	if err != nil {
+		return nil, fmt.Errorf("read how far the stored figures are built: %w", err)
+	}
+	marks := map[string]figuresMark{}
+	var project string
+	var mark figuresMark
+	if _, err := pgx.ForEachRow(rows, []any{&project, &mark.through, &mark.union}, func() error {
+		kept := figuresMark{through: measures.Midnight(mark.through)}
+		if mark.union != nil {
+			kept.union = new(measures.Midnight(*mark.union))
+		}
+		marks[project] = kept
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read how far the stored figures are built: %w", err)
+	}
+	return marks, nil
+}
+
 // recordFiguresBuilt records, in one transaction, that key's walk stands at next, past the last end
-// day, and that its project's figures are built through the day before it: a project whose ranges
-// before next hold no row.
+// day, and that its project's figures are built through the day before it, its union cut with
+// them: a project whose ranges before next hold no row.
 func (r *refresh) recordFiguresBuilt(ctx context.Context, key walkKey, next time.Time) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
@@ -587,7 +651,7 @@ func (r *refresh) recordFiguresBuilt(ctx context.Context, key walkKey, next time
 	if err := r.recordWalkIn(ctx, tx, key, next); err != nil {
 		return err
 	}
-	if err := markFiguresBuilt(ctx, tx, key.project, next.AddDate(0, 0, -1), r.build); err != nil {
+	if err := markFiguresBuilt(ctx, tx, key.project, nil, next.AddDate(0, 0, -1), r.build); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -596,10 +660,22 @@ func (r *refresh) recordFiguresBuilt(ctx context.Context, key walkKey, next time
 	return nil
 }
 
+// figuresBatch is what one batch of a figures walk records beside the figures it folds
+// (buildFigures): built, that it reaches the last end day, so it marks its project's figures built
+// through it; folded, that the project's figures were built before it, so it moves the union cut's
+// mark on through its last end day; fromStart, that it begins at the project's first end day, so
+// that mark moves on wherever it stood; and recorded, the walk's record as the walk read it, which
+// the batch moves only where it passes it (nil: wherever it stands).
+type figuresBatch struct {
+	built, folded, fromStart bool
+	recorded                 *time.Time
+}
+
 // buildFigures is one batch of key's figures walk: the figures of every range of the project that
-// ends on a day from first through last, where the walk stands after them, and, where built (the
-// batch reaches the last end day), the project's figures built through last, in one transaction.
-func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last time.Time, built bool) error {
+// ends on a day from first through last, every cut's, the union cut's among them, where the walk
+// stands after them unless batch says it stood past them, and the marks batch says, in one
+// transaction.
+func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last time.Time, batch figuresBatch) error {
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the figures walk of %s: %w", key.project, err)
@@ -613,15 +689,26 @@ func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last tim
 	if _, err := lockLogged(ctx, tx, entries); err != nil {
 		return err
 	}
-	scope := figureScope{build: r.build, project: key.project, through: last}
-	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, endsThrough(first, last)); err != nil {
+	scope := figureScope{build: r.build, project: key.project, through: last, repos: &recordedRepos{}}
+	if err := buildFigureEnds(ctx, tx, scope, byID, nil, true, endsThrough(first, last), readFigureGroups); err != nil {
 		return err
 	}
-	if err := r.recordWalkIn(ctx, tx, key, last.AddDate(0, 0, 1)); err != nil {
-		return err
+	if batch.recorded == nil || last.AddDate(0, 0, 1).After(*batch.recorded) {
+		if err := r.recordWalkIn(ctx, tx, key, last.AddDate(0, 0, 1)); err != nil {
+			return err
+		}
 	}
-	if built {
-		if err := markFiguresBuilt(ctx, tx, key.project, last, r.build); err != nil {
+	var from *time.Time
+	if !batch.fromStart {
+		from = &first
+	}
+	switch {
+	case batch.built:
+		if err := markFiguresBuilt(ctx, tx, key.project, from, last, r.build); err != nil {
+			return err
+		}
+	case batch.folded:
+		if err := markUnionFolded(ctx, tx, key.project, from, last); err != nil {
 			return err
 		}
 	}
@@ -633,14 +720,37 @@ func (r *refresh) buildFigures(ctx context.Context, key walkKey, first, last tim
 
 // markFiguresBuilt records in q that project's figures are built through through, by build where
 // no build had built them before: eval_figures_built's row is made by the first whole walk and
-// moves on with each later day, never back.
-func markFiguresBuilt(ctx context.Context, q executor, project string, through time.Time, build string) error {
+// moves on with each later day, never back. The union cut's mark (union_through) is made with the
+// row, the first whole walk being this build's (walkFigures), and moves on through through where
+// it stands at the day before from, or wherever it stands where from is nil (markUnionFolded).
+func markFiguresBuilt(ctx context.Context, q executor, project string, from *time.Time, through time.Time, build string) error {
 	if _, err := q.Exec(ctx, `
-		insert into eval_figures_built (project_key, through, built_by, updated_at) values ($1, $2, $3, now())
-		on conflict (project_key) do update set through = excluded.through, updated_at = excluded.updated_at
+		insert into eval_figures_built (project_key, through, built_by, updated_at, union_through) values ($1, $2, $3, now(), $2)
+		on conflict (project_key) do update
+		set through = greatest(eval_figures_built.through, excluded.through),
+			updated_at = case when eval_figures_built.through < excluded.through then excluded.updated_at else eval_figures_built.updated_at end,
+			union_through = case when $4::date is null or eval_figures_built.union_through >= $4::date - 1
+				then greatest(eval_figures_built.union_through, excluded.through) else eval_figures_built.union_through end
 		where eval_figures_built.through < excluded.through
-	`, project, through, build); err != nil {
+			or ($4::date is null or eval_figures_built.union_through >= $4::date - 1)
+				and eval_figures_built.union_through is distinct from greatest(eval_figures_built.union_through, excluded.through)
+	`, project, through, build, from); err != nil {
 		return fmt.Errorf("record the stored figures of %s built through %s: %w", project, through.Format(time.DateOnly), err)
+	}
+	return nil
+}
+
+// markUnionFolded records in q that project's union cut (`deploy_repo` `*`) is folded through
+// through, where its mark (eval_figures_built.union_through) stands at the day before from, or
+// wherever it stands where from is nil, a fold that began at the project's first end day: so the
+// mark holds every end day through it, and never one a build that folds no union cut built since.
+// A project whose figures are not built has no mark to move.
+func markUnionFolded(ctx context.Context, q executor, project string, from *time.Time, through time.Time) error {
+	if _, err := q.Exec(ctx, `
+		update eval_figures_built set union_through = $3
+		where project_key = $1 and ($2::date is null or union_through >= $2::date - 1) and (union_through is null or union_through < $3)
+	`, project, from, through); err != nil {
+		return fmt.Errorf("record the union cut of %s folded through %s: %w", project, through.Format(time.DateOnly), err)
 	}
 	return nil
 }
@@ -663,15 +773,17 @@ func (s *Store) figuresStart(ctx context.Context, project string) (*time.Time, e
 	return &start, nil
 }
 
-// builtCut is how far one project's stored figures are built (eval_figures_built); which of its
-// evals a stale mark of the cut a read reads names (eval_figure_cuts_stale): none where no mark
-// holds the cut, every one where the mark names every eval (every, its evals null), and else each
-// eval stale holds; and what the mark's generation has folded again of those evals since the move,
-// or the new version of a fold key, that marked the cut: its first paint (paint, firstPaintOf the
-// mark's ready_through; nil until its first-paint batch commits) and the end days of its refold
-// after next (next_day; nil until the refold's first batch commits).
+// builtCut is how far one project's stored figures are built (eval_figures_built), and its union
+// cut (`deploy_repo` `*`) folded (union, nil for through no day); which of its evals a stale mark of
+// the cut a read reads names (eval_figure_cuts_stale): none where no mark holds the cut, every one
+// where the mark names every eval (every, its evals null), and else each eval stale holds; and
+// what the mark's generation has folded again of those evals since the move, or the new version of
+// a fold key, that marked the cut: its first paint (paint, firstPaintOf the mark's ready_through;
+// nil until its first-paint batch commits) and the end days of its refold after next (next_day;
+// nil until the refold's first batch commits).
 type builtCut struct {
 	through time.Time
+	union   *time.Time
 	every   bool
 	stale   map[string]bool
 	paint   *figureEnds
@@ -683,6 +795,16 @@ type builtCut struct {
 // reads of it is one the mark's generation has folded again from the rows that stand (refolded).
 func (b builtCut) serves(evalID string, window Range, compare *Range) bool {
 	return !b.every && !b.stale[evalID] || b.refolded(window, compare)
+}
+
+// unionServes reports whether the project's union cut (`deploy_repo` `*`, unionDeployRepo), which
+// a read of an eval keyed by the deploy repository looks up, is folded through the end of window
+// and of compare (nil for none), by a build that folds it (eval_figures_built.union_through): the
+// release before this one marks a project's figures built and folds no union cut, so its figures
+// answer no eval keyed by the deploy repository until this release has folded the union rows of
+// the ranges a read reads (walkFigures, a rebuild's flip; migration 20261126125956).
+func (b builtCut) unionServes(window Range, compare *Range) bool {
+	return b.union != nil && !b.union.Before(window.To) && (compare == nil || !b.union.Before(compare.To))
 }
 
 // refolded reports whether every stored row a read of window and compare reads of an eval the
@@ -719,17 +841,19 @@ func (b builtCut) refolded(window Range, compare *Range) bool {
 // generation has folded again (builtCut.serves), and reads the day rows of every other. A project
 // is absent until the first whole walk of its figures by any build is done (the first release
 // that holds the stored figures, or a project made later), and stays once it is, through every
-// later release, roll and rollback. An eval a move of a default repository or a rewrite of a
-// settings change moved rows of in a cut, or a new version gave another fold key (markMovedKeys),
+// later release, roll and rollback. An eval a move of a default repository or the rewrite of a
+// repository's rule moved rows of in a cut, or a new version gave another fold key (markMovedKeys),
 // is named stale there from the commit of the mark until the commit of its refold's last batch
 // (refoldStaleCuts), and is read from the day rows until the commit of the first-paint batch of
 // the mark's generation, which a move's or a rewrite's commit makes, a boot makes before it serves
 // and the refresher's pass makes before the rest of its refold; every other eval of the cut is
-// read from its stored figures throughout, since no mark names it. One statement: a primary-key
-// probe of each project's mark.
+// read from its stored figures throughout, since no mark names it. An eval keyed by the deploy
+// repository is read from the stored figures of the project's union cut only through the end day
+// that cut is folded through (builtCut.unionServes). One statement: a primary-key probe of each
+// project's mark.
 func figuresThrough(ctx context.Context, q delivery.Querier, projects []string, repo string) (map[string]builtCut, error) {
 	rows, err := q.Query(ctx, `
-		select b.project_key, b.through, s.project_key is not null, s.evals, s.ready_through, s.next_day from eval_figures_built b
+		select b.project_key, b.through, b.union_through, s.project_key is not null, s.evals, s.ready_through, s.next_day from eval_figures_built b
 		left join eval_figure_cuts_stale s on s.project_key = b.project_key and s.repo = $2
 		where b.project_key = any($1)
 	`, projects, repo)
@@ -741,9 +865,12 @@ func figuresThrough(ctx context.Context, q delivery.Querier, projects []string, 
 	var day time.Time
 	var marked bool
 	var evals []string
-	var ready, next *time.Time
-	if _, err := pgx.ForEachRow(rows, []any{&project, &day, &marked, &evals, &ready, &next}, func() error {
+	var union, ready, next *time.Time
+	if _, err := pgx.ForEachRow(rows, []any{&project, &day, &union, &marked, &evals, &ready, &next}, func() error {
 		cut := builtCut{through: measures.Midnight(day), every: marked && evals == nil}
+		if union != nil {
+			cut.union = new(measures.Midnight(*union))
+		}
 		if len(evals) > 0 {
 			cut.stale = make(map[string]bool, len(evals))
 			for _, evalID := range evals {
@@ -905,7 +1032,7 @@ func foldWrittenPaints(ctx context.Context, tx pgx.Tx, scope figureScope, entry 
 	paint := paintReached(scope.through)
 	for _, cut := range slices.SortedFunc(maps.Keys(marks), compareStaleCuts) {
 		if mark := marks[cut]; slices.Equal(mark.evals, []string{evalID}) {
-			if _, err := foldPaintOf(ctx, tx, scope, cut, mark, []Entry{entry}, paint); err != nil {
+			if _, err := foldPaintOf(ctx, tx, scope, cut, mark, []Entry{entry}, paint, readFigureGroups); err != nil {
 				return err
 			}
 		}
@@ -1201,14 +1328,17 @@ func foldFirstPaint(ctx context.Context, tx pgx.Tx, scope figureScope, cut stale
 // the rows reach, a stale one among them (foldFiguresInTx, refoldProject, which no mark keeps from
 // a cut).
 func foldFirstPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry) (FirstPaint, error) {
-	return foldPaintOf(ctx, tx, scope, cut, mark, entries, firstPaintOf(scope.through))
+	return foldPaintOf(ctx, tx, scope, cut, mark, entries, firstPaintOf(scope.through), readFigureGroups)
 }
 
 // foldPaintOf is foldFirstPaintOf with paint, the first paint of scope.through or one that folds
 // the day rows of more days beside it (paintReached: foldWrittenPaints, and the first paints of
-// the cuts a rewrite of a settings change marks, foldMarkedFirstPaints), in place of firstPaintOf's.
-func foldPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry, paint figureEnds) (FirstPaint, error) {
-	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &cut.repo, mark.evals == nil, paint); err != nil {
+// the cuts a rewrite of a settings change marks, foldMarkedFirstPaints), in place of firstPaintOf's,
+// and with the rows groupsOf reads of each cut (readFigureGroups, or the rows a settings rewrite
+// holds: rewrittenRows.groups).
+func foldPaintOf(ctx context.Context, tx pgx.Tx, scope figureScope, cut staleCut, mark cutMark, entries []Entry, paint figureEnds,
+	groupsOf figureGroupReader) (FirstPaint, error) {
+	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &cut.repo, mark.evals == nil, paint, groupsOf); err != nil {
 		return FirstPaint{}, err
 	}
 	if _, err := tx.Exec(ctx, `update eval_figure_cuts_stale set ready_through = $3 where project_key = $1 and repo = $2 and generation = $4`,
@@ -1547,7 +1677,7 @@ func refoldCut(ctx context.Context, tx pgx.Tx, scope figureScope, repo string, e
 	if first.Before(*start) {
 		first = *start
 	}
-	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, evals == nil, endsThrough(first, last)); err != nil {
+	if err := buildFigureEnds(ctx, tx, scope, entriesByID(entries), &repo, evals == nil, endsThrough(first, last), readFigureGroups); err != nil {
 		return time.Time{}, false, locked, err
 	}
 	return first.AddDate(0, 0, -1), first.Equal(*start), locked, nil

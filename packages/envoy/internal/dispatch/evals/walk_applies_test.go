@@ -21,10 +21,7 @@ func TestADaysPartOfAWalksDeployRunsIsTheDaysOwnRead(t *testing.T) {
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 5})
-	settings, err := delivery.GetSettings(ctx, pool)
-	if err != nil {
-		t.Fatalf("read the delivery settings: %v", err)
-	}
+	settings := deployRule(t, pool, fixture.DeployRepo)
 	applies, err := delivery.ReadApplyRows(ctx, pool, settings, fixture.From)
 	if err != nil {
 		t.Fatalf("read the deploy runs from %s on: %v", fixture.From, err)
@@ -63,13 +60,27 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 	r := newRig(t)
 	ctx, pool := t.Context(), r.database.Pool
 	fixture := deliverytest.Seed(t, pool, deliveryseed.Spec{Days: 8})
-	settings, err := delivery.GetSettings(ctx, pool)
+	settings := deployRule(t, pool, fixture.DeployRepo)
+	projects, err := delivery.ListProjectSettings(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the delivery settings: %v", err)
 	}
-	repos, err := readDeployRepos(ctx, pool)
+	held, err := readDeployRepos(ctx, pool)
 	if err != nil {
 		t.Fatalf("read the repositories that hold a delivery run: %v", err)
+	}
+	// The repositories kept are those a deploy source reads, each under its source's rule
+	// (refresh.keptRepos).
+	var repos []keptRepo
+	for _, repo := range held {
+		name := repo.rule.DeployRepo
+		for _, rule := range delivery.DeployRules(projects) {
+			if delivery.RuleKey(rule.DeployRepo) == delivery.RuleKey(name) {
+				repo.rule = rule
+				repo.rule.DeployRepo = name
+				repos = append(repos, repo)
+			}
+		}
 	}
 	cards := measures.DeployCardJobNames(measures.DeployCards(settings))
 	var every, others []time.Time
@@ -98,7 +109,7 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the CI runs of %d days: %v", len(days), err)
 		}
-		reads, err := r.registry.readDeliveryDays(ctx, settings, repos, days, nil)
+		reads, err := r.registry.readDeliveryDays(ctx, repos, days, nil, nil)
 		if err != nil {
 			t.Fatalf("read the delivery rows of %d days: %v", len(days), err)
 		}
@@ -130,15 +141,14 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 			}
 			walked := map[string]*delivery.ApplyRows{}
 			for _, repo := range repos {
-				one := settings
-				one.DeployRepo = repo.name
+				one := repo.rule
 				applies, err := delivery.ReadApplyRows(ctx, pool, one, day)
 				if err != nil {
-					t.Fatalf("%s: read the deploy runs of %s from the day on: %v", what, repo.name, err)
+					t.Fatalf("%s: read the deploy runs of %s from the day on: %v", what, one.DeployRepo, err)
 				}
-				walked[repo.name] = &applies
+				walked[one.DeployRepo] = &applies
 			}
-			own, err := r.registry.readDeliveryDays(ctx, settings, repos, []time.Time{day}, walked)
+			own, err := r.registry.readDeliveryDays(ctx, repos, []time.Time{day}, walked, nil)
 			if err != nil {
 				t.Fatalf("%s: read the delivery rows with every deploy run from the day on: %v", what, err)
 			}

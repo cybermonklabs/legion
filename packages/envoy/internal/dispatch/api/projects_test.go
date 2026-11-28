@@ -52,11 +52,11 @@ func TestCreateProjectRejectsDuplicateKeyWithProjectExists(t *testing.T) {
 // seededSlugs is every eval of the seeded catalogue (dispatch://INFRA-2916/artifact/plan-md, "The
 // seeded catalogue").
 var seededSlugs = []string{
-	evals.SlugDeployFrequency, evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugMergeToProduction,
-	evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugPROpenToMerge, evals.SlugDeployRunSuccess,
-	evals.SlugUnownedP0, evals.SlugReworkShare, evals.SlugPRCI, evals.SlugStagingE2E, evals.SlugStagingDeploy,
-	evals.SlugProductionDeploy, evals.SlugLegionWorkTime, evals.SlugLegionPhaseTime, evals.SlugLegionIdleTime,
-	evals.SlugLegionSlotWait, evals.SlugLegionRework, evals.SlugLegionSplitting,
+	evals.SlugDeployFrequency, evals.SlugChangeFailRate, evals.SlugFailedDeployRecovery, evals.SlugDeploymentReworkRate,
+	evals.SlugMergeToProduction, evals.SlugFirstCommitToProduction, evals.SlugOpenToProduction, evals.SlugPROpenToMerge,
+	evals.SlugDeployRunSuccess, evals.SlugUnownedP0, evals.SlugReworkShare, evals.SlugPRCI, evals.SlugStagingE2E,
+	evals.SlugStagingDeploy, evals.SlugProductionDeploy, evals.SlugLegionWorkTime, evals.SlugLegionPhaseTime,
+	evals.SlugLegionIdleTime, evals.SlugLegionSlotWait, evals.SlugLegionRework, evals.SlugLegionSplitting,
 }
 
 // A project created through the API holds the seeded catalogue as it is created (R5): its

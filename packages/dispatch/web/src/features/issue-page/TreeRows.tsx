@@ -2,10 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties, ReactNode } from "react";
 
 import { whoAmIQuery } from "../../api/queries";
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Artifact } from "../../api/types";
 import { pageGuideLineBg, pageQuietText } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { EVENT_FRESH } from "../refs/reference-target";
 import type { PointMark } from "./current-point";
 import { useDocumentAdmissions } from "./document-admission";
 import { documentOfNode } from "./issue-artifacts";

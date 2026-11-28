@@ -161,7 +161,7 @@ func programOf(check model.CheckBlock, deploys []model.Deploy) (string, string) 
 
 func (c *comparisonReader) withLiveDeploy(ctx context.Context, check model.CheckBlock, compared comparison) comparison {
 	if (check.Subject != "production" && check.Subject != "graph") ||
-		(check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch) {
+		(check.When != model.CheckWhenAfterMerge && check.When != checkWhenDefaultBranch) {
 		return compared
 	}
 	compared.live = true

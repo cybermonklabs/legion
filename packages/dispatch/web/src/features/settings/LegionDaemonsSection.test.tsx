@@ -74,20 +74,17 @@ function legionServer(initial: readonly LegionSetting[]): LegionServer {
 
 /** Renders the section against `server`, over a deployment of two projects, ACME and CORE, in
  *  `queryClient`, which a case that stops a late write reaches as the shell's indicator does.
- *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, a bearer is
- *  not. A bearer's answer names a kind the browser's own contract does not — the SPA types the
- *  route by the one answer it is meant to get — so this writes the answer a bearer really
- *  receives. */
+ *  `human` is what `/auth/whoami` says: a person is offered the field and the Remove, an agent
+ *  viewer - here a personal token of alice's, so its login is hers - is not. */
 async function renderSection(
   server: LegionServer,
   human = true,
   queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 ) {
-  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(
-    human
-      ? { event_head: "0", kind: "user", login: "alice" }
-      : ({ event_head: "0", kind: "agent", login: "alice" } as unknown as AuthenticatedUser)
-  );
+  const viewer: AuthenticatedUser = human
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "alice", session: null };
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue(viewer);
   const getLegionDaemon = spyOn(api, "getLegionDaemon").mockImplementation(server.get);
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(
     ["ACME", "CORE"].map((key) => ({

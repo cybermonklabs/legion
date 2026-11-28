@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
 import { api } from "../../api/client";
+import { whoAmIScopesQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
 import type {
   AgentToken,
@@ -12,6 +13,7 @@ import type {
 } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
 import { useCopyFeedback } from "../../hooks/useCopyFeedback";
+import { PERSON_SCOPE_LACKING, usePersonScope } from "../../hooks/useHoldsPersonScope";
 import { compareTimestamps } from "../../lib/timestamps";
 import {
   borderDefault,
@@ -42,8 +44,6 @@ import {
 } from "./classes";
 
 const agentTokensQueryKey = ["agent-tokens"] as const;
-
-const whoAmIScopesQueryKey = ["whoami-scopes"] as const;
 
 /** A mint Dispatch made and lost the answer to: the label it was pressed with, the tokens already
  *  listed under any label when it was pressed (`before`), and whether the token list has been read
@@ -251,16 +251,21 @@ export function AgentTokensSection(): ReactNode {
   /** When the token list was last read again after a mint whose answer was lost. */
   const [rereadAt, setRereadAt] = useState<number | undefined>(undefined);
   const { copy, reset: resetCopyStatus, status: copyStatus } = useCopyFeedback();
-  const tokens = useQuery({ queryKey: agentTokensQueryKey, queryFn: () => api.listAgentTokens() });
+  // The person's tokens, read under the `person` scope: asked for once a read says the viewer's
+  // credential holds it (`usePersonScope`), and for a viewer whose credential lacks it nothing is
+  // asked and the section says why it lists none.
+  const scope = usePersonScope();
+  const tokens = useQuery({
+    enabled: scope === "held",
+    queryKey: agentTokensQueryKey,
+    queryFn: () => api.listAgentTokens(),
+  });
   // The scopes Dispatch says the person at this browser holds (`GET /api/v1/whoami`). Set P0 is
   // drawn, on the mint form and on each row of a token that writes, only once they name `p0`:
   // while the read has not answered, where it failed, and where a build before p0 answered it, no
   // box is drawn and the form mints as it did before p0. A failed read says nothing on the page,
   // since the rest of the section does not need it.
-  const callerScopes = useQuery({
-    queryKey: whoAmIScopesQueryKey,
-    queryFn: () => api.whoAmIScopes(),
-  });
+  const callerScopes = useQuery(whoAmIScopesQuery());
   const offersP0 = callerScopes.data?.includes("p0") === true;
   const mintScopes = offersP0 ? MINT_SCOPES : MINT_SCOPES_WITHOUT_P0;
   // The form shows a refused mint beside the name it was refused over.
@@ -396,7 +401,9 @@ export function AgentTokensSection(): ReactNode {
         Create a token for an agent you run. Its writes are attributed to you.
       </p>
 
-      {tokens.isPending ? (
+      {scope === "lacking" ? (
+        <p className={`mt-6 ${dangerText}`}>Could not load agent tokens: {PERSON_SCOPE_LACKING}</p>
+      ) : tokens.isPending ? (
         <p className={`mt-6 ${textMutedOnCanvas}`}>Loading agent tokens…</p>
       ) : null}
       {tokens.isError ? (

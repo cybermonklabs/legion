@@ -33,13 +33,15 @@ import (
 //     each of those items was counted on before, so an item whose day or project moved rewrites
 //     the day it left as well as the day it joined. A stored Legion fact's change and a filing's
 //     name their days themselves: an issue's close day before and after the change, a filing's
-//     day before and after. A change of the delivery settings rewrites, in one transaction, every
-//     day of the delivery and CI evals it moves (settings_rewrite.go), and begins no walk; a move
-//     of the deploy repository moves none, since the evals that read it are kept for every
-//     repository that holds a delivery run and a read chooses among them (deploy_repos.go). A page
-//     whose changes move a series' first input day, or the repositories that hold a delivery run,
-//     writes the days it names and every other day those moves reach in its one commit, and
-//     moves no walk (span.go).
+//     day before and after. A change of the delivery settings rewrites every day of the delivery
+//     and CI evals it moves, staged aside and published in one transaction with the rule
+//     (settings_rewrite.go, ruleStaging), and begins no walk; a move of a deploy source writes
+//     no day row of a repository whose rows stand built, since the evals that read it are kept for
+//     every repository that holds a delivery run and a read chooses among them (deploy_repos.go),
+//     and a repository a source reads under its first rule has its days built in the page's
+//     commit that records the rule (syncKept). A page whose changes move a series' first input
+//     day, or the repositories that hold a delivery run, writes the days it names and every other
+//     day those moves reach in its one commit, and moves no walk (span.go).
 //   - the event log up to its safe horizon, woken by the events channel: an issue event that can
 //     move the count of open P0 issues with no owner rewrites that project's unowned-p0 row of
 //     today, and one that moves an issue's repository or parent rewrites the days of the filings of
@@ -435,7 +437,8 @@ func (s *stopwatch) total() time.Duration {
 // (owed, writeOwed), each page's added to the page's before; then the walks' and the serving
 // records read (walk_reads), the delivery walk's batch (delivery_walk), each project's Legion
 // walk's (legion_walks), the rebuild's walks (rebuild_walks, rebuildDays), each project's logged
-// zero fill and unowned-p0 row of the day (daily, walkDaily), and the stored figures of the days
+// zero fill and unowned-p0 row of the day and the failure rows of the UTC day (daily, walkDaily,
+// walkFailures), and the stored figures of the days
 // the walks wrote folded (fold_walked, foldWalked); the stored figures' read of the change log and
 // its folds (figure_changes, figureChanges), each project's figures walk's batch (figures_walk,
 // walkFigures), the stale cuts folded again (refold, refoldStaleCuts), the rebuild's rest
@@ -642,7 +645,7 @@ func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 		clock:  func() time.Time { return now },
 		report: refreshed{days: map[builtDay]bool{}},
 		first:  map[walkKey]map[evalKey]time.Time{}, since: map[string]LegionSince{},
-		batched: &gapBatch{},
+		batched: &gapBatch{}, failuresWritten: map[string]time.Time{},
 	}
 }
 
@@ -713,31 +716,39 @@ func (s *Store) readRefresherCursors(ctx context.Context) (feedCursors, bool, er
 
 // commitPage moves the two cursors to the positions a page read, begins again each walk the page's
 // changes call for, begins the rebuild they call for (work.rebuild: of every served family,
-// replaceRebuild), records work.built, where it is set, as the delivery settings the delivery and
-// CI rows stand built under (eval_days_settings), and work.kept, where it is set, as the
-// repositories they stand built for (syncKept), in one transaction, which first writes spans:
-// the days of each family whose days the page writes in its commit, with every other day they
-// move (writeSpans: the rows, then the members, then the stored figures, ahead of the cursors,
-// the walks and the settings). The days the page named that move no other day are written before
-// it, so a crash between the two reads the same changes again, and a walk or a rebuild the changes
-// begin is recorded with the cursor that passed them, and with the settings it builds under where
-// none were recorded (syncSettings). A walk a lost cursor begins again is one of a family no rows
+// replaceRebuild), records, where work.record is set, the rules the delivery and CI rows stand
+// built under and the repositories they stand built for (eval_days_rules, refresh.builtUnder:
+// syncSettings, syncKept), in one transaction, which first records those rules, so the rows it
+// writes are logged and folded for the projects they name, and then writes spans: the days of each
+// family whose days the page writes in its commit, with every other day they move (writeSpans: the
+// rows, then the members, then the stored figures, ahead of the cursors and the walks), those of a
+// change of the kept repositories (a repository's first rule or first runs) staged aside before the
+// transaction begins and written from their staging (stageKept), so the rule it records and the
+// rows built under it become visible together. The
+// days the page named that move no other day are written before it, so a crash between the two
+// reads the same changes again, and a walk or a rebuild the changes begin is recorded with the
+// cursor that passed them, and with the rules it builds under where none were recorded
+// (syncSettings). A walk a lost cursor begins again is one of a family no rows
 // are served of, which a walk builds in the open; a served family's is the rebuild's. Where the
-// settings it records move the deploy repository a read of the evals takes, or none were recorded
+// rules it records move the repositories a read of the evals chooses among, or none were recorded
 // and the page read a change of the settings row (work.settingsApplied, syncSettings), the commit
-// says that the day rows stand at the settings
-// (markSettingsApplied); a rewrite of the rows says so in its own transaction where it moved the
-// deploy repository (rewriteSettings). Where a project's
-// default repository moved (work.defaults, syncDefaults), the commit publishes it, with the marks
-// of the stored cuts it moves and the first paints of those whose evals are all computed
-// (publishDefaults). It takes no eval lock, whose place in the eval tables' lock order is before
-// every row lock (defaults.go): the day rows and stored figures it writes are of computed evals,
-// whose rows are the refresher's alone. The event cursor
-// is stamped with the moment the pass ran as of, and the change cursor with its ReadAt, when a
-// page last read the change log to its end (page), which the lost-cursor rule reads and which a
-// full page leaves where it stood. Once the transaction commits, the pass records what the spans
-// wrote (committed), and moves a batch of the change log's outbox into the log where the commit
-// logged a change.
+// says that the day rows stand at the settings (markSettingsApplied); a rewrite of one
+// repository's rows says so in no transaction of its own (rewriteSettings). Where a project's
+// default repository moved (work.defaults, syncDefaults), the commit publishes it
+// (publishDefaults), and where it records the rules or publishes a default it marks the stored
+// cuts the move of what a read selects moves, read in the transaction before its first write and
+// after its last, and folds the first paints of those whose evals are all computed (publishMove):
+// a source added, removed or moved, the switch, an owner change and a default move under a source
+// that names none move the deploy repositories a read folds and the readers of their source keys,
+// and the repositories the page builds anew (freshRepos) are folded by their own writes. It takes
+// no eval lock, whose place in the eval tables' lock order is before every row lock (defaults.go):
+// the day rows and stored figures it writes are of computed evals, whose rows are the refresher's
+// alone. The event cursor is stamped with the moment the pass ran as of, and the change cursor
+// with its ReadAt, when a page last read the change log to its end (page), which the lost-cursor
+// rule reads and which a full page leaves where it stood. Once the transaction commits, the pass
+// records what the spans wrote (committed) and adds the projects the published selection moves
+// to those whose failure rows the page writes whole (work.failureSelection). The page drains
+// publishing changes after its failure writes (page), not here.
 func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts []walkKey, work *pageWork, spans []*spanWrite) error {
 	var rebuildWalks []walkKey
 	if work.rebuild != "" {
@@ -751,12 +762,37 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 		}
 		restarts = slices.DeleteFunc(slices.Clone(restarts), func(key walkKey) bool { return served[key] })
 	}
+	// A kept move's rows and members are staged before the commit begins, which then writes them
+	// beside the rules it records (stageKept).
+	if err := r.stageKept(ctx, work, spans); err != nil {
+		return err
+	}
 	began := time.Now()
 	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
 	defer tx.Rollback(ctx)
+	// What a read selects is read before the first write, which a move of the sources or of a
+	// default moves, so the commit marks the cuts the move moves (publishMove).
+	var selected *selectionRead
+	if work.record || work.defaults != nil {
+		read, err := readSelection(ctx, tx)
+		if err != nil {
+			return err
+		}
+		selected = &read
+	}
+	// The rules are recorded before the spans' rows are written: the project a rule names reads the
+	// repository's source key (eval_project_owners), so the change trigger logs the rows' changes,
+	// and the spans' folds fold them, for the project the new rule names. It is the rules' place in
+	// the eval tables' lock order too (defaults.go), before eval_days, where the boot's rename pass
+	// locks them (store's repoRenameLines), so the two wait for each other in turn.
+	if work.record {
+		if err := recordRules(ctx, tx, r.builtUnder); err != nil {
+			return err
+		}
+	}
 	if err := writeSpans(ctx, tx, spans); err != nil {
 		return err
 	}
@@ -793,19 +829,16 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 			return err
 		}
 	}
-	if work.built != nil {
-		if err := recordBuiltUnder(ctx, tx, *work.built); err != nil {
-			return err
-		}
-	}
-	if work.kept != nil {
-		if err := recordKept(ctx, tx, work.kept); err != nil {
-			return err
-		}
-	}
 	var published *movePublished
-	if work.defaults != nil {
-		move, err := publishDefaults(ctx, tx, r.build, work.defaults)
+	what := "the deploy sources"
+	if selected != nil {
+		var move movePublished
+		if work.defaults != nil {
+			what = "the default repositories"
+			move, err = publishDefaults(ctx, tx, r.build, r.projects, work.defaults, *selected, freshRepos(work))
+		} else {
+			move, err = publishMove(ctx, tx, r.build, r.projects, nil, nil, nil, *selected, freshRepos(work))
+		}
 		if err != nil {
 			return err
 		}
@@ -818,15 +851,34 @@ func (r *refresh) commitPage(ctx context.Context, cursors feedCursors, restarts 
 	r.committed(spans)
 	logSpans(spans, committed.Sub(began))
 	if published != nil {
-		published.log(began, committed)
+		published.log(what, began, committed)
+		for _, project := range published.moved {
+			work.failureSelection[project] = true
+		}
 	}
-	// The commit logged a change where it recorded the settings (recordBuiltUnder logs that they
-	// are recorded, which the delivery views are recomputed for), applied them, wrote a span or
-	// published a default: the log's outbox is moved into the log now, not at the next pass.
-	if work.built != nil || work.settingsApplied || len(spans) > 0 || work.defaults != nil {
+	// A publishing page drains after the failure writes it owes. Otherwise the spans' changes
+	// are ready now.
+	if (len(spans) > 0 || work.settingsApplied) && !work.record && work.defaults == nil {
 		r.store.drainChanges(ctx)
 	}
 	return nil
+}
+
+// freshRepos is the repositories whose every row the page's commit writes (work.kept against
+// work.keptWas, syncKept): each kept now that the rows stood built for none of, a repository whose
+// first runs arrived or that a source reads under its first rule, whose days the commit's span
+// builds from its start on (writeNamed), after the commit records the rules, so the span's folds
+// fold its rows into every cut their readers read (foldFiguresInTx). None where the kept set
+// stands.
+func freshRepos(work *pageWork) map[string]bool {
+	fresh := map[string]bool{}
+	for _, repo := range work.kept {
+		name := repo.rule.DeployRepo
+		if !slices.ContainsFunc(work.keptWas, func(was keptRepo) bool { return was.rule.DeployRepo == name }) {
+			fresh[name] = true
+		}
+	}
+	return fresh
 }
 
 // walkKey names one walk: its family and its project (the empty string for the delivery walk).
@@ -846,9 +898,10 @@ func walkColumns(keys []walkKey) (families, projects []string) {
 }
 
 // walkState is one walk's record: the first day it has not built, nil while it is to begin at its
-// first input day.
+// first input day, and the build whose process last moved it (built_by).
 type walkState struct {
-	next *time.Time
+	next  *time.Time
+	build string
 }
 
 // staleRebuild is how long a rebuild stands untouched before another build's refresher abandons
@@ -859,14 +912,14 @@ const staleRebuild = 10 * time.Minute
 
 // readWalks is every record of a walk, whichever build's process last moved it.
 func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
-	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day from eval_days_walks`)
+	rows, err := s.database.Pool.Query(ctx, `select family, project_key, next_day, built_by from eval_days_walks`)
 	if err != nil {
 		return nil, fmt.Errorf("read the walks of the day rows: %w", err)
 	}
 	walks := map[walkKey]walkState{}
 	var key walkKey
 	var state walkState
-	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.next}, func() error {
+	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.next, &state.build}, func() error {
 		kept := state
 		if state.next != nil {
 			next := measures.Midnight(*state.next)

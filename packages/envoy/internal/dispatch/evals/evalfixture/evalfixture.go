@@ -1,8 +1,8 @@
 // Package evalfixture loads the histories the eval registry's checks read (dispatch://INFRA-2916,
-// k6, k12 and k15, and the base whose first paint k8's and k13's negative controls read) into a
-// database that already holds Dispatch's schema: the local stack's, which migrates its database
-// when it starts, or the base's, main at the commit this head merges. cmd is the command a
-// checker types.
+// k6, k12 and k15, the base whose first paint k8's and k13's negative controls read, and
+// dispatch://INFRA-978's checks of the record of deploys and failed changes) into a database that
+// already holds Dispatch's schema: the local stack's, which migrates its database when it starts,
+// or the base's, main at the commit this head merges. cmd is the command a checker types.
 //
 // The modes:
 //
@@ -26,14 +26,16 @@
 //     120 days (deliveryseed.DefaultDays) for a caller that names none.
 //   - MergePR (-merge-pr): one pull request of those rows merged at a given moment, k12's one
 //     change.
+//   - Failures (-failures): INFRA-978's two projects with their deploy sources, deploys and
+//     failed changes, each written through the writer production uses (WriteFailures).
 //
 // Legion adds to one project and writes that project's row only where it has none, so it combines
-// with Attribution, Delivery and MergePR; Base writes the same history alone, into a database of
-// the base. Delivery adds to one project too, beside deliveryseed's second project, and gives the
-// project the deploy repository as its default repository where it has none; Attribution writes
-// its three projects with their default repositories; and each of the two replaces the one
-// delivery_settings row, so they are not combined with each other. MergePR writes no project's
-// rows.
+// with Attribution, Delivery, Failures and MergePR; Base writes the same history alone, into a
+// database of the base. Delivery adds to one project too, beside deliveryseed's second project,
+// and gives the project the deploy repository as its default repository where it has none;
+// Attribution writes its three projects with their default repositories; and each of the two, as
+// Failures does for its two projects, saves the project's delivery settings, so none of the three
+// is combined with another. MergePR writes no project's rows.
 //
 // Every time is relative to the moment the caller names (-now), so two loads with one -now hold
 // the same history at the same times. The rows bypass the server's own writers (legionseed's
@@ -101,7 +103,7 @@ var LegionTables = []string{"projects", "issues", "events", "handoffs", "legion_
 var DerivedTables = []string{
 	"issue_filings", "session_titles", "session_titles_backfill", "eval_versions", "eval_series",
 	"eval_readings", "eval_days", "eval_day_members", "eval_days_owed", "eval_day_owners", "eval_days_defaults",
-	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings",
+	"eval_days_cursor", "eval_days_walks", "eval_days_serving", "eval_days_settings", "eval_days_rules",
 	"eval_rebuilds", "eval_rebuild_walks", "eval_rebuild_firsts", "eval_rebuild_days", "eval_rebuild_members",
 	"eval_rebuild_range_figures", "eval_rebuild_day_figures", "eval_rebuild_reverify",
 	"eval_range_figures", "eval_day_figures", "eval_figures_built", "eval_figure_cuts_stale",
@@ -519,19 +521,17 @@ func MergePR(ctx context.Context, pool *store.Pool, ref string, at time.Time) (M
 
 // shipDays is the UTC start day of the deploy run that ships a pull request of repo merged at at,
 // and of the one that ships it merged at was (nil for a pull request that had not merged): the
-// run of its first shipping apply (delivery.FirstShippingApply over the deploy repository's
-// production applies, as delivery.ContainingRun ships a pull request). Each is nil where no run
-// ships it, and both are nil for a repository that is not the deploy repository the delivery
-// settings name, or where no settings are written.
+// run of its first shipping apply (delivery.FirstShippingApply over the repository's production
+// applies under the rule of the source that reads it, as delivery.ContainingRun ships a pull
+// request). Each is nil where no run ships it, and both are nil for a repository that no
+// delivery-on project's source reads, or where no project's settings are written.
 func shipDays(ctx context.Context, pool *store.Pool, repo string, at time.Time, was *time.Time) (*string, *string, error) {
-	settings, err := delivery.GetSettings(ctx, pool)
-	if errors.Is(err, delivery.ErrNoSettings) {
-		return nil, nil, nil
-	}
+	rules, err := delivery.ReadSourceRules(ctx, pool)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the delivery settings: %w", err)
 	}
-	if repo != settings.DeployRepo {
+	settings, source := rules.For(repo)
+	if !source {
 		return nil, nil, nil
 	}
 	from := at
@@ -643,12 +643,45 @@ func nextMidnight(at time.Time) time.Time {
 	return day
 }
 
-// deliverySettingsOf is the delivery_settings row the Attribution mode writes, naming deployRepo,
-// its production job and its PR-checks workflow, and author as the one population author.
+// deliverySettingsOf is the rule the Attribution mode's source holds, naming deployRepo, its
+// production job and its PR-checks workflow, and author as the one population author.
 func deliverySettingsOf(deployRepo string) delivery.DeliverySettings {
 	return delivery.DeliverySettings{
 		DeployRepo: deployRepo, DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{productionJob}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{author}, ExcludedRepos: []string{},
 	}
+}
+
+// PutDeliverySettings saves settings as project's delivery settings (project_delivery_settings and
+// project_deploy_sources, through SaveSettings): delivery on, settings' population rule, and one
+// github_workflow source holding settings' rule, which names no repository where
+// settings.DeployRepo is the project's default repository (delivery.DefaultRepo), so it reads that
+// default and moves with it, and names settings.DeployRepo otherwise. The project's row exists
+// first.
+func PutDeliverySettings(ctx context.Context, pool *store.Pool, project string, settings delivery.DeliverySettings, by model.Actor) (delivery.ProjectSettings, error) {
+	defaultRepo, err := delivery.DefaultRepo(ctx, pool, project)
+	if err != nil {
+		return delivery.ProjectSettings{}, err
+	}
+	var repo *string
+	if defaultRepo == nil || !strings.EqualFold(*defaultRepo, settings.DeployRepo) {
+		repo = new(settings.DeployRepo)
+	}
+	return SaveSettings(ctx, pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: []delivery.SourceInput{deliveryseed.SourceOf(settings, repo)},
+		PopulationAuthors: settings.PopulationAuthors, ExcludedRepos: settings.ExcludedRepos,
+	}, by)
+}
+
+// SaveSettings saves input in a transaction of its own, as the settings route does
+// (deliveryseed.SaveSettings), and drains the change rows it logged after the commit. The
+// fixture's modes and evalbench's k14 projects save their settings through it.
+func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, by model.Actor) (delivery.ProjectSettings, error) {
+	saved, err := deliveryseed.SaveSettings(ctx, pool, input, by)
+	if err != nil {
+		return delivery.ProjectSettings{}, fmt.Errorf("save the delivery settings of %s: %w", input.Project, err)
+	}
+	delivery.DrainAfterCommit(ctx, pool, "drain the change rows of the fixture's delivery settings")
+	return saved, nil
 }

@@ -1,9 +1,9 @@
 // Package delivery is LEGION-567 slice 1: the delivery timeline's stored facts (population pull
-// requests, deploy-workflow and PR-checks workflow runs with their jobs, and the one
-// delivery_settings record), their intake from the GitHub events Envoy relays over NATS, and the
-// five-minute GitHub-App reconcile that backfills and catches a missed event. Population,
-// containment and failure-attribution are pure functions in population.go, containment.go and
-// failures.go, unit-tested without Postgres.
+// requests, deploy-workflow and PR-checks workflow runs with their jobs, and each project's
+// delivery settings and deploy sources), their intake from the GitHub events Envoy relays over
+// NATS, and the five-minute GitHub-App reconcile that backfills and catches a missed event.
+// Population, containment and failure-attribution are pure functions in population.go,
+// containment.go and failures.go, unit-tested without Postgres.
 package delivery
 
 import (
@@ -44,8 +44,10 @@ func ScanSettings(row pgx.Row) (DeliverySettings, error) {
 	return settings, nil
 }
 
-// ErrNoSettings is "delivery_settings has no row yet": intake and reconcile stay idle, and the
-// API answers that delivery is not configured, rather than guessing a repository.
+// ErrNoSettings is "no delivery settings stand": the singleton delivery_settings has no row yet
+// (GetSettings), a project has no row of project_delivery_settings (GetProjectSettings), or no
+// project has delivery on (the API's readDeliveryRules), which the API answers as delivery not
+// configured rather than guessing a repository.
 var ErrNoSettings = errors.New("delivery settings are not configured")
 
 // GetSettings reads the one delivery_settings row in q (the pool, or a transaction a read of
@@ -61,13 +63,21 @@ func GetSettings(ctx context.Context, q Querier) (DeliverySettings, error) {
 	return settings, nil
 }
 
-// PutSettings upserts the one delivery_settings row, clearing the freshness columns and every
-// delivery_reconcile_progress row: a settings change (a different repository, a different
-// population) makes the previous freshness and every step's recorded progress meaningless, and
-// the next reconcile sets both again from scratch. The delete rides the same statement as the
-// upsert (a data-modifying CTE, which Postgres runs exactly once whether or not the outer query
-// reads its output) so no pass can ever see the new settings beside the old settings' progress.
-// Takes the pool directly, not a
+// singletonRunSteps is the run steps' progress names without a repository, which the release
+// before this one reads and writes for the one delivery_settings row's deploy repository. This
+// release names each source repository's own (repoStep), and a save of the singleton clears these
+// alone.
+var singletonRunSteps = []string{"runs/deploy", "runs/pr_checks", "backfill/runs/deploy", "backfill/runs/pr_checks", "backfill/created_at/deploy"}
+
+// PutSettings upserts the one delivery_settings row, clearing the freshness columns and the
+// progress of the run steps named without a repository (singletonRunSteps): a settings change (a
+// different repository, a different population) makes the previous freshness and the singleton's
+// recorded progress meaningless, and the next reconcile of the release before this one sets both
+// again from scratch. The progress this release keeps per source repository (repoStep) and per
+// installation's search is the project settings' (PutProjectSettings), and a singleton save leaves
+// it. The delete rides the same statement as the upsert (a data-modifying CTE, which Postgres runs
+// exactly once whether or not the outer query reads its output) so no pass can ever see the new
+// settings beside the old settings' progress. Takes the pool directly, not a
 // transaction: putDeliverySettings (api/settings_delivery.go) deliberately does not wrap this in
 // a transaction+event+publish the way sibling settings routes do, since delivery_settings is a
 // true singleton with no project/issue/artifact to own an event against (see that handler's own
@@ -88,7 +98,7 @@ func PutSettings(ctx context.Context, pool *store.Pool, settings DeliverySetting
 		excludedRepos = []string{}
 	}
 	return ScanSettings(pool.QueryRow(ctx, `
-		with cleared as (delete from delivery_reconcile_progress)
+		with cleared as (delete from delivery_reconcile_progress where step = any($12))
 		insert into delivery_settings (
 			singleton, deploy_repo, deploy_workflow_path, production_job_names, production_apply_step_name,
 			pr_checks_workflow_path, population_authors, excluded_repos,
@@ -114,40 +124,54 @@ func PutSettings(ctx context.Context, pool *store.Pool, settings DeliverySetting
 		returning `+SettingsColumns,
 		settings.DeployRepo, settings.DeployWorkflowPath, settings.ProductionJobNames, settings.ProductionApplyStepName,
 		settings.PRChecksWorkflowPath, populationAuthors, excludedRepos,
-		settings.StagingE2EJobName, settings.StagingApplyJobName, settings.PRChecksRollupJobName, actorJSON,
+		settings.StagingE2EJobName, settings.StagingApplyJobName, settings.PRChecksRollupJobName, actorJSON, singletonRunSteps,
 	))
 }
 
-// RecordEventAt advances delivery_settings.last_event_at to the database's now(): called after
-// intake processes a GitHub envelope. The database's clock, not the calling process's, so server
-// processes whose clocks disagree still stamp one clock. Never moves it backward: now() is the
-// statement's transaction start, so an update that started earlier and commits later cannot make
-// the freshness row look staler than it is.
-func RecordEventAt(ctx context.Context, pool *store.Pool) error {
+// sourceOfRepo is the predicate that picks, among project_deploy_sources as src, the github_workflow
+// source of a delivery-on project whose repository (SourceRepoOf: the one it names, else its
+// project's default repository) is $1 in any case: the source whose bookkeeping a GitHub event and a
+// reconcile pass of that repository write. A repository is the source of one delivery-on project at
+// most (PutProjectSettings), so it picks one row at most.
+const sourceOfRepo = `src.kind = 'github_workflow' and exists (
+		select from project_delivery_settings s join projects p on p.key = s.project_key
+		where s.project_key = src.project_key and s.delivery and lower(coalesce(src.repo, p.default_repo)) = lower($1))`
+
+// RecordEventAt advances last_event_at of repo's source (sourceOfRepo) to the database's now():
+// called after intake processes a GitHub envelope about repo. The database's clock, not the
+// calling process's, so server processes whose clocks disagree still stamp one clock. Never moves
+// it backward: now() is the statement's transaction start, so an update that started earlier and
+// commits later cannot make the freshness look staler than it is. A repository no source reads
+// has no row to write.
+func RecordEventAt(ctx context.Context, pool *store.Pool, repo string) error {
 	_, err := pool.Exec(ctx, `
-		update delivery_settings set last_event_at = greatest(last_event_at, now())
-		where singleton
-	`)
+		update project_deploy_sources src set last_event_at = greatest(src.last_event_at, now())
+		where `+sourceOfRepo, repo)
 	return err
 }
 
-// RecordReconcileSuccess sets delivery_settings.last_reconcile_at to t and clears last_error:
-// called only once a reconcile pass's every GitHub-touching step has actually succeeded.
-// last_reconcile_at deliberately does NOT advance on a failed pass (see RecordReconcileError) --
-// unlike architecture_sources' last_sync_at, which advances on every attempt and tracks failure
-// separately, this freshness row's whole purpose is "when did this last actually refresh data",
-// so a pass that touched nothing successfully must not look like one that did.
-func RecordReconcileSuccess(ctx context.Context, pool *store.Pool, t time.Time) error {
-	_, err := pool.Exec(ctx, `update delivery_settings set last_reconcile_at = $1, last_error = null where singleton`, t)
+// RecordReconcileSuccess sets last_reconcile_at of repo's source (sourceOfRepo) to t and clears its
+// last_error: called only once every GitHub-touching step a reconcile pass ran for repo has
+// actually succeeded. last_reconcile_at deliberately does NOT advance on a failed pass (see
+// RecordReconcileError) -- unlike architecture_sources' last_sync_at, which advances on every
+// attempt and tracks failure separately, this freshness's whole purpose is "when did this last
+// actually refresh data", so a pass that touched nothing successfully must not look like one that
+// did.
+func RecordReconcileSuccess(ctx context.Context, pool *store.Pool, repo string, t time.Time) error {
+	_, err := pool.Exec(ctx, `
+		update project_deploy_sources src set last_reconcile_at = $2, last_error = null
+		where `+sourceOfRepo, repo, t)
 	return err
 }
 
-// RecordReconcileError records a failed reconcile pass's reason in delivery_settings.last_error,
-// without advancing last_reconcile_at: a missing GitHub App permission, a rate limit, or any
-// other failure is named here so the freshness row (and the API) can show it, rather than the
-// pass silently reporting itself healthy by advancing the timestamp anyway.
-func RecordReconcileError(ctx context.Context, pool *store.Pool, message string) error {
-	_, err := pool.Exec(ctx, `update delivery_settings set last_error = $1 where singleton`, message)
+// RecordReconcileError records a failed reconcile pass's reason for repo in last_error of repo's
+// source (sourceOfRepo), without advancing its last_reconcile_at: a missing GitHub App permission
+// on repo, a rate limit, or any other failure is named here so the freshness (and the API) can show
+// it, rather than the pass silently reporting itself healthy by advancing the timestamp anyway.
+func RecordReconcileError(ctx context.Context, pool *store.Pool, repo, message string) error {
+	_, err := pool.Exec(ctx, `
+		update project_deploy_sources src set last_error = $2
+		where `+sourceOfRepo, repo, message)
 	return err
 }
 
@@ -227,11 +251,11 @@ func StartBackfillProgress(ctx context.Context, pool *store.Pool, step, scope st
 }
 
 // AdvanceBackfillProgress records that a backfill step has stored every run up to through. It
-// updates only the step's own row under scope and never inserts one: a settings change deletes
-// every progress row (PutSettings) while a pass may still be walking, and an insert would
-// recreate the old scope's row with no began_at, which the next pass's start could not tell
-// apart. Progress only moves forward (greatest), so a second reconcile overlapping in a rolling
-// deploy cannot move it back.
+// updates only the step's own row under scope and never inserts one: a settings save deletes the
+// progress rows of each repository whose rule moved (ClearRepositoryProgress) while a pass may
+// still be walking, and an insert would recreate the old scope's row with no began_at, which the
+// next pass's start could not tell apart. Progress only moves forward (greatest), so a second
+// reconcile overlapping in a rolling deploy cannot move it back.
 func AdvanceBackfillProgress(ctx context.Context, pool *store.Pool, step, scope string, through time.Time) error {
 	_, err := pool.Exec(ctx, `
 		update delivery_reconcile_progress
@@ -1032,8 +1056,9 @@ func namedAndFailedJobs(runs []DeliveryRun, named, failed map[int64][]DeliveryRu
 
 // listEveryRunJobForRuns lists every job of every run in runIDs on repo, as ListRunJobsForRuns
 // lists the named ones, for the callers that read every job a run ran: the Pipeline's PR checks
-// time every job of every run and tally every job that failed (measures.PRChecks), and the jobs
-// they report are whichever the runs hold, so no list of names can stand in for them.
+// time every job of every run and tally every job that failed (measures.PRChecksTimings and
+// FailingJobs), and the jobs they report are whichever the runs hold, so no list of names can
+// stand in for them.
 func listEveryRunJobForRuns(ctx context.Context, q Querier, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
 	return runJobsByRun(ctx, q, runIDs, everyRunJobForRunsQuery, repo, runIDs)
 }
@@ -1291,7 +1316,7 @@ type RunsWithJobs struct {
 
 // listRunsWithJobsStartedIn is listRunsStartedIn's runs with ListRunJobsForRuns' jobs named names
 // of them: the Pipeline page's deploy runs of its shown days, read for the jobs its deploy cards
-// follow (measures.DeployJobs reads no other), and the measures' deploys of a window, read for the
+// follow (measures.DeployJobsOf reads no other), and the measures' deploys of a window, read for the
 // jobs a deploy is judged by (ReadDeploys).
 func listRunsWithJobsStartedIn(ctx context.Context, q Querier, repo string, kind DeliveryRunKind, branch, event string, from, to time.Time, names []string) (RunsWithJobs, error) {
 	return runsWithJobsStartedIn(ctx, q, repo, kind, branch, event, from, to, func(runIDs []int64) (map[int64][]DeliveryRunJob, error) {

@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -73,9 +72,7 @@ func seedPipelineRun(t *testing.T, pool *store.Pool, run delivery.DeliveryRun, j
 func seedPipelineFixture(t *testing.T, database *store.Store, settings delivery.DeliverySettings) {
 	t.Helper()
 	pool := database.Pool
-	if _, err := delivery.PutSettings(t.Context(), pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	saveDeliveryRule(t, pool, settings)
 	prRun := func(id int64, day, hour int, minutes float64, conclusion, event string, jobs ...pipelineFixtureJob) {
 		started := pipelineFixtureTime(day, hour, 0)
 		seedPipelineRun(t, pool, delivery.DeliveryRun{
@@ -161,7 +158,7 @@ func TestDeliveryPipelineProductionCardMergesJobNames(t *testing.T) {
 			},
 		},
 	}
-	body := deliveryPipelineCompute(settings, pop, pipelineFixtureTime(32, 12, 0), pipelineFixtureTime(32, 12, 0))
+	body := deliveryPipelineCompute(sourceRulesOf(settings), pop, pipelineFixtureTime(32, 12, 0), pipelineFixtureTime(32, 12, 0))
 	if body.ProductionApply.Job != oldName+" or "+newName || body.ProductionApply.Total.N != 2 || body.ProductionApply.Total.Success != 2 {
 		t.Fatalf("production_apply = %+v, want two successful results under both names", body.ProductionApply)
 	}
@@ -177,16 +174,15 @@ func TestDeliveryPipelineCardKeysSurviveReorderedCards(t *testing.T) {
 		{CardID: measures.CardProductionApply, Production: delivery.Production{JobNames: []string{"widgets-release / widgets-release"}}},
 		{CardID: measures.CardStagingE2E, Production: delivery.Production{JobNames: []string{"staging-e2e / run"}}},
 	}
-	timings := measures.DeployJobs(
-		[]delivery.DeliveryRun{{RunID: 1, StartedAt: started}},
-		map[int64][]delivery.DeliveryRunJob{1: {
+	timings := measures.DeployJobsOf([]measures.SourceDeployRuns{{
+		Runs: []delivery.DeliveryRun{{RunID: 1, StartedAt: started}},
+		Jobs: map[int64][]delivery.DeliveryRunJob{1: {
 			{Name: "staging-e2e / run", StartedAt: new(started), CompletedAt: new(started.Add(4 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 			{Name: "staging-release / apply", StartedAt: new(started), CompletedAt: new(started.Add(7 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 			{Name: "widgets-release / widgets-release", StartedAt: new(started), CompletedAt: new(started.Add(9 * time.Minute)), Conclusion: new(delivery.DeliveryJobConclusionSuccess)},
 		}},
-		cards,
-		measures.ShownDays(pipelineFixtureTime(32, 12, 0)),
-	)
+		Cards: cards,
+	}}, measures.ShownDays(pipelineFixtureTime(32, 12, 0)))
 	stagingE2E := optionalDeployJobTiming(timings, measures.CardStagingE2E)
 	stagingApply := optionalDeployJobTiming(timings, measures.CardStagingApply)
 	production := timings[measures.CardProductionApply]
@@ -337,9 +333,7 @@ func TestGetDeliveryPipelineComputesTheFixture(t *testing.T) {
 	// A pipeline with no staging end-to-end gate: its card goes, and nothing else changes.
 	settings := pipelineSettings()
 	settings.StagingE2EJobName = nil
-	if _, err := delivery.PutSettings(t.Context(), pool, settings, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("clear staging_e2e_job_name: %v", err)
-	}
+	saveDeliveryRule(t, pool, settings)
 	raw, without := getDeliveryPipeline(t, handler, "at="+pipelineAt)
 	if value, present := raw["staging_e2e"]; !present || value != nil {
 		t.Errorf("staging_e2e = %#v (present %v), want null", value, present)
@@ -369,18 +363,21 @@ func TestGetDeliveryPipelineAnswersEmptyListsAsArrays(t *testing.T) {
 }
 
 // TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject: the deployment-wide Pipeline
-// ranks its slowest jobs by the min_n of pr-ci's job series in the deploy repository's project,
-// the one whose published default repository it is (eval_days_defaults, which the evals
+// ranks its slowest jobs by the min_n of pr-ci's job series in the project whose deploy sources
+// read every deploy repository (evals.Store.DeployRepoEvals; a source that names no repository
+// reads its project's published default repository, eval_days_defaults, which the evals
 // refresher's page commit moves and the test writes as it does, publishDefaultRepos), states it in
-// slowest_min_results, and ranks by measures.SlowestMinResults (50) where no project's default is
-// the repository, or more than one project's is, or its project holds no pr-ci eval yet, whatever
-// min_n another project's pr-ci holds. Over a deliverytest history whose deploy repository is
-// DELIV's default, a register write setting DELIV's job min_n to the timed results of the busiest
-// job the Pipeline ranks at 50 moves its table, so the table can tell the two apart; with that
-// min_n cleared (null, no minimum) it ranks every job with a timed result and states 1, the one
-// result a job needs to have a median to rank by (measures.FoldSlowestJobs); with DELIV's default
-// cleared the Pipeline answers its table at 50 again; with the repository the default of a
-// project made by SQL, which holds no eval, too; and with it the default of both, too.
+// slowest_min_results, and ranks by measures.SlowestMinResults (50) where no source reads a
+// repository, or two or more projects' sources read them, whatever min_n another project's pr-ci
+// holds. Over a deliverytest history whose deploy repository DELIV's source reads as its default, a
+// register write setting DELIV's job min_n to the timed results of the busiest job the Pipeline
+// ranks at 50 moves its table, so the table can tell the two apart; with that min_n cleared (null,
+// no minimum) it ranks every job with a timed result and states 1, the one result a job needs to
+// have a median to rank by (measures.FoldSlowestJobs); with DELIV's default cleared, its source
+// reads no repository and the Pipeline answers its table at 50 again; with the repository the
+// default of a project made by SQL, which holds no delivery settings, too; with DELIV's default
+// back it ranks by that null min_n again; and with that project's source reading another
+// repository it ranks at 50 again: two projects own the repositories.
 func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -410,9 +407,10 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 	if registered.Code != http.StatusCreated && registered.Code != http.StatusOK {
 		t.Fatalf("set %s's pr-ci min_n to %d: status %d, body %s", fixture.Project, busiest, registered.Code, registered.Body.String())
 	}
-	if moved, _, minN := read(); minN != busiest || slices.Equal(moved, at50) {
+	moved, _, movedMinN := read()
+	if movedMinN != busiest || slices.Equal(moved, at50) {
 		t.Fatalf("with %s's pr-ci min_n at %d the Pipeline ranks %v by %d, at 50 %v: want its table moved and ranked by %d",
-			fixture.Project, busiest, moved, minN, at50, busiest)
+			fixture.Project, busiest, moved, movedMinN, at50, busiest)
 	}
 	cleared := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/"+fixture.Project+"/evals", map[string]any{
 		"slug": evals.SlugPRCI, "series": []any{map[string]any{"series": evals.SeriesJobs, "min_n": nil}},
@@ -420,9 +418,10 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 	if cleared.Code != http.StatusCreated && cleared.Code != http.StatusOK {
 		t.Fatalf("clear %s's pr-ci min_n: status %d, body %s", fixture.Project, cleared.Code, cleared.Body.String())
 	}
-	if every, _, minN := read(); minN != 1 || len(every) < len(at50) {
+	every, _, everyMinN := read()
+	if everyMinN != 1 || len(every) < len(at50) {
 		t.Fatalf("with %s's pr-ci min_n null the Pipeline ranks %v by %d, want every job with a timed result, at least the %d at 50, by 1",
-			fixture.Project, every, minN, len(at50))
+			fixture.Project, every, everyMinN, len(at50))
 	}
 
 	setDefault := func(project string, repo *string) {
@@ -432,22 +431,27 @@ func TestThePipelineRanksBy50WhereItsDeployRepositoryMapsToNoProject(t *testing.
 		}
 		publishDefaultRepos(t, database.Pool)
 	}
+	// No source reads the repository, so no run of it is read: the table is empty, at 50.
 	setDefault(fixture.Project, nil)
-	if unmapped, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(unmapped, at50) {
-		t.Errorf("with %s no project's default the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, unmapped, minN, at50, measures.SlowestMinResults)
+	if unmapped, _, minN := read(); minN != measures.SlowestMinResults || len(unmapped) != 0 {
+		t.Errorf("with %s no project's default the Pipeline ranks %v by %d, want none by %d", fixture.DeployRepo, unmapped, minN, measures.SlowestMinResults)
 	}
 
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee, default_repo) values ('BARE', 'Made by SQL', 'alice', $1)`, fixture.DeployRepo); err != nil {
 		t.Fatalf("make a project by SQL: %v", err)
 	}
 	publishDefaultRepos(t, database.Pool)
-	if bare, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(bare, at50) {
-		t.Errorf("with %s BARE's default, which holds no pr-ci eval, the Pipeline ranks %v by %d, want %v by %d", fixture.DeployRepo, bare, minN, at50, measures.SlowestMinResults)
+	if bare, _, minN := read(); minN != measures.SlowestMinResults || len(bare) != 0 {
+		t.Errorf("with %s BARE's default and no source reading it the Pipeline ranks %v by %d, want none by %d", fixture.DeployRepo, bare, minN, measures.SlowestMinResults)
 	}
 	setDefault(fixture.Project, &fixture.DeployRepo)
-	if both, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(both, at50) {
-		t.Errorf("with %s the default of %s and BARE the Pipeline ranks %v by %d, want %v by %d: two projects name no one project", fixture.DeployRepo, fixture.Project, both, minN, at50, measures.SlowestMinResults)
+	if owned, _, minN := read(); minN != 1 || !slices.Equal(owned, every) {
+		t.Errorf("with DELIV's source reading %s again the Pipeline ranks %v by %d, want %v by 1, its null min_n's", fixture.DeployRepo, owned, minN, every)
 	}
-	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; with the repository no project's default, a project's with no pr-ci eval, and two projects', %v again",
+	saveProjectRules(t, database, "BARE", deployRule(fixture.Repos[1], "release / release"))
+	if both, _, minN := read(); minN != measures.SlowestMinResults || !slices.Equal(both, at50) {
+		t.Errorf("with DELIV's and BARE's sources each reading a repository the Pipeline ranks %v by %d, want %v by %d: two projects name no one project", both, minN, at50, measures.SlowestMinResults)
+	}
+	t.Logf("at 50 the Pipeline ranks %v; at %s's min_n of %d another table; with no source reading the repository, and with two projects' sources, %v again",
 		at50, fixture.Project, busiest, at50)
 }

@@ -421,7 +421,7 @@ func TestReconcilePrunesChangesOlderThanADay(t *testing.T) {
 	}
 	NewReconcile(pool, fake.newTestClient(), events.NewBroker(), unrenamed()).runOnce(ctx)
 
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil || settings.LastError != nil {
 		t.Fatalf("the pass failed: %v, last_error %v", err, settings.LastError)
 	}

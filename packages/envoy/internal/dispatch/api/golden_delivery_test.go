@@ -82,14 +82,17 @@ type deliveryOracleFixture struct {
 // deploys_with_prs must be the base head's plus exactly the deploys of the window whose every
 // shipped pull request merged before it, counted from the fixture's own containment
 // (deploysShippingOnlyEarlier), and with_prs_per_day the base head's plus that count over the
-// window's days. The change failure rate while no failure source exists (root R11: 0 is a value,
-// never a stand-in): the base head answered an object of zero flag counts and rates over the
-// window's totals, and verdicts over them; this head answers that object with every count 0 and
-// every rate null, which a page of the base head's build still reads, and both its verdicts null
-// (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a series'
-// min_n is a person's to set, and every reader uses it): the base head ranked by the constant 50
-// and stated nothing, this head ranks by the min_n of pr-ci's job series in the project the
-// deploy repository is mapped to, 50 where none holds one, and states it in
+// window's days. The failure measures (root R11: 0 is a value, never a stand-in; and
+// dispatch://INFRA-978, R8 and R11): the base head computed the change failure rate from
+// failed-change flags it never stored, and answered flags_source none, an object of zero flag
+// counts and rates over the window's totals, time to restore with no median, and verdicts of the
+// rate and of its upper bound; this head folds the three failure measures from their evals' day
+// rows, which no builder writes here, so each is null with a null verdict, the flag counts and the
+// time_to_restore a page of the base head's build reads stay with every leaf null, flags_source and
+// the upper bound are gone (takeFailureMeasures). And the Pipeline's slowest-jobs threshold (R5: a
+// series' min_n is a person's to set, and every reader uses it): the base head ranked by the
+// constant 50 and stated nothing, this head ranks by the min_n of pr-ci's job series in the
+// project the deploy repository is mapped to, 50 where none holds one, and states it in
 // pr_checks.slowest_min_results, which must be 50 here, where no pr-ci eval is seeded, and which
 // the base head's answer must not hold (takeSlowestMinResults). Those fields are then left out of
 // the value-for-value comparison, and every other field it reads must be the base head's.
@@ -281,13 +284,16 @@ func takeWithPRs(t *testing.T, got, want any, earlier, days int) (string, string
 	return change, ""
 }
 
-// takeFailureMeasures checks got's change failure rate and its verdicts against want's, a
-// measures answer's and the base head's, while no failure source exists, and takes them out of
-// both: got's status.change_failure_rate and status.change_failure_rate_upper_bound must each be
-// null, and its measures.change_failure_rate the base head's object, field for field, with every
-// rate null and every count 0; want's change failure rate must be the base head's stand-in, every
-// flag count and rate 0 over a total that is a count, and each of its verdicts a boolean or null.
-// It answers how many of the base head's values the check named and, where any is off, what is.
+// takeFailureMeasures checks got's failure measures and their verdict against want's, a measures
+// answer's and the base head's, and takes them out of both. Since no day row of the three evals is
+// written here, each of got's failure members (modernFailureMembers) and status.change_failure_rate
+// must be null; each container a page of the base head's build reads (legacyMeasureReads) an
+// object of exactly the leaves that page reads, each null; and got must hold no flags_source and
+// no status.change_failure_rate_upper_bound. want's must be the base head's stand-ins: flags_source
+// none, each change_failure_rate count and rate 0 over a total that is a count, time_to_restore
+// with no median, no deployment_rework_rate or failed_deployment_recovery, and each of its two
+// verdicts a boolean or null. It answers how many of the base head's values the check named and,
+// where any is off, what is.
 func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 	t.Helper()
 	field := func(tree any, path ...string) (map[string]any, string) {
@@ -297,64 +303,74 @@ func takeFailureMeasures(t *testing.T, got, want any) (int, string) {
 		}
 		return parent, path[len(path)-1]
 	}
-	named := 0
-	for _, path := range [][]string{{"measures", "change_failure_rate"}, {"status", "change_failure_rate"}, {"status", "change_failure_rate_upper_bound"}} {
-		gotParent, key := field(got, path...)
-		wantParent, _ := field(want, path...)
-		gotValue, gotHeld := gotParent[key]
-		wantValue, wantHeld := wantParent[key]
-		if !gotHeld || !wantHeld {
-			return named, fmt.Sprintf("%s is held %t by this answer and %t by the base head's, want both", strings.Join(path, "."), gotHeld, wantHeld)
+	written := got.(map[string]any)["measures"].(map[string]any)
+	if problems := append(nullMemberProblems(written, modernFailureMembers...), legacyReadProblems(written)...); len(problems) > 0 {
+		return 0, problems[0] + ", with no day row of the failure measures"
+	}
+	if value, held := got.(map[string]any)["status"].(map[string]any)["change_failure_rate"]; !held || value != nil {
+		return 0, fmt.Sprintf("status.change_failure_rate is %v (held %t) with no day row of the failure measures, want null", value, held)
+	}
+	for _, path := range [][]string{
+		{"measures", "change_failure_rate"}, {"measures", "time_to_restore"}, {"measures", "failed_deployment_recovery"},
+		{"measures", "deployment_rework_rate"}, {"status", "change_failure_rate"},
+	} {
+		parent, key := field(got, path...)
+		delete(parent, key)
+	}
+	for _, path := range [][]string{{"flags_source"}, {"status", "change_failure_rate_upper_bound"}} {
+		parent, key := field(got, path...)
+		if value, held := parent[key]; held {
+			return 0, fmt.Sprintf("this answer holds %s %v, which went with the pending state", strings.Join(path, "."), value)
 		}
-		if path[0] == "status" {
-			if gotValue != nil {
-				return named, fmt.Sprintf("%s is %v with no failure source, want null", strings.Join(path, "."), gotValue)
+	}
+	for _, name := range []string{"deployment_rework_rate", "failed_deployment_recovery"} {
+		if value, held := want.(map[string]any)["measures"].(map[string]any)[name]; held {
+			return 0, fmt.Sprintf("the base head's answer holds measures.%s %v, which it never measured", name, value)
+		}
+	}
+	named := 0
+	if source := want.(map[string]any)["flags_source"]; source != "none" {
+		return named, fmt.Sprintf("the base head's flags_source is %v, want none", source)
+	}
+	delete(want.(map[string]any), "flags_source")
+	named++
+	for _, path := range [][]string{{"status", "change_failure_rate"}, {"status", "change_failure_rate_upper_bound"}} {
+		parent, key := field(want, path...)
+		value, held := parent[key]
+		if _, verdict := value.(bool); !held || (value != nil && !verdict) {
+			return named, fmt.Sprintf("the base head's %s is %v (held %t), want a verdict or null", strings.Join(path, "."), value, held)
+		}
+		delete(parent, key)
+		named++
+	}
+	restore, key := field(want, "measures", "time_to_restore")
+	if median, ok := restore[key].(map[string]any); !ok || len(median) != 1 || median["median_minutes"] != nil {
+		return named, fmt.Sprintf("the base head's time_to_restore is %v, want no median", restore[key])
+	}
+	delete(restore, key)
+	named++
+	rates, key := field(want, "measures", "change_failure_rate")
+	cuts, ok := rates[key].(map[string]any)
+	if !ok || len(cuts) != 2 {
+		return named, fmt.Sprintf("the base head's change_failure_rate is %v, want its object of two cuts of flag counts", rates[key])
+	}
+	for cut, held := range cuts {
+		counts, ok := held.(map[string]any)
+		if !ok {
+			return named, fmt.Sprintf("the base head's change_failure_rate.%s is %v, want an object", cut, held)
+		}
+		for name, value := range counts {
+			number, isNumber := value.(json.Number)
+			if !isNumber {
+				return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %v, want a number", cut, name, value)
 			}
-			if _, verdict := wantValue.(bool); wantValue != nil && !verdict {
-				return named, fmt.Sprintf("the base head's %s is %v, want a verdict or null", strings.Join(path, "."), wantValue)
+			if name != "total" && number.String() != "0" {
+				return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %s with no flag stored, want its stand-in 0", cut, name, number)
 			}
 			named++
-		} else {
-			rates, ok := wantValue.(map[string]any)
-			if !ok {
-				return named, fmt.Sprintf("the base head's %s is %v, want its object of flag counts", strings.Join(path, "."), wantValue)
-			}
-			gotRates, ok := gotValue.(map[string]any)
-			if !ok {
-				return named, fmt.Sprintf("%s is %v with no failure source, want the base head's object with null rates", strings.Join(path, "."), gotValue)
-			}
-			for _, cut := range []string{"per_pr", "per_deploy"} {
-				counts, ok := rates[cut].(map[string]any)
-				if !ok {
-					return named, fmt.Sprintf("the base head's change_failure_rate.%s is %v, want an object", cut, rates[cut])
-				}
-				gotCounts, ok := gotRates[cut].(map[string]any)
-				if !ok || len(gotCounts) != len(counts) {
-					return named, fmt.Sprintf("change_failure_rate.%s is %v, want the base head's fields %v", cut, gotRates[cut], slices.Sorted(maps.Keys(counts)))
-				}
-				for name, value := range counts {
-					number, isNumber := value.(json.Number)
-					if !isNumber {
-						return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %v, want a number", cut, name, value)
-					}
-					if name != "total" && number.String() != "0" {
-						return named, fmt.Sprintf("the base head's change_failure_rate.%s.%s is %s with no flag stored, want its stand-in 0", cut, name, number)
-					}
-					gotField, held := gotCounts[name]
-					if name == "rate" || name == "upper_bound_rate" {
-						if !held || gotField != nil {
-							return named, fmt.Sprintf("change_failure_rate.%s.%s is %v (held %t) with no failure source, want null", cut, name, gotField, held)
-						}
-					} else if count, isNumber := gotField.(json.Number); !held || !isNumber || count.String() != "0" {
-						return named, fmt.Sprintf("change_failure_rate.%s.%s is %v (held %t) with no failure source, want 0", cut, name, gotField, held)
-					}
-					named++
-				}
-			}
 		}
-		delete(gotParent, key)
-		delete(wantParent, key)
 	}
+	delete(rates, key)
 	return named, ""
 }
 

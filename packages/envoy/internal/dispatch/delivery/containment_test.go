@@ -481,26 +481,51 @@ func TestComputeDeployedStatus(t *testing.T) {
 	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	apply := &Apply{RunID: 1, CompletedAt: base, CreatedAt: base}
 
-	t.Run("deployed in deploy repo", func(t *testing.T) {
-		pr := DeliveryPullRequest{Repo: "acme/widgets"}
-		if got := ComputeDeployedStatus(pr, "acme/widgets", apply); got != DeployedStatusDeployed {
+	t.Run("deployed where tracked", func(t *testing.T) {
+		if got := ComputeDeployedStatus(true, apply); got != DeployedStatusDeployed {
 			t.Errorf("got %q, want deployed", got)
 		}
 	})
 
-	t.Run("waiting in deploy repo with nil apply", func(t *testing.T) {
-		pr := DeliveryPullRequest{Repo: "acme/widgets"}
-		if got := ComputeDeployedStatus(pr, "acme/widgets", nil); got != DeployedStatusWaiting {
+	t.Run("waiting where tracked with nil apply", func(t *testing.T) {
+		if got := ComputeDeployedStatus(true, nil); got != DeployedStatusWaiting {
 			t.Errorf("got %q, want waiting", got)
 		}
 	})
 
-	t.Run("not_tracked outside deploy repo even with nil apply", func(t *testing.T) {
-		pr := DeliveryPullRequest{Repo: "acme/other"}
-		if got := ComputeDeployedStatus(pr, "acme/widgets", nil); got != DeployedStatusNotTracked {
-			t.Errorf("got %q, want not_tracked (repo check independent of apply nilness)", got)
+	t.Run("not_tracked where untracked, with or without an apply", func(t *testing.T) {
+		for _, shipped := range []*Apply{nil, apply} {
+			if got := ComputeDeployedStatus(false, shipped); got != DeployedStatusNotTracked {
+				t.Errorf("with apply %+v got %q, want not_tracked (tracking independent of apply nilness)", shipped, got)
+			}
 		}
 	})
+}
+
+// TestContainmentReadsTheDeployRepositoryInAnyCase: a pull request keeps GitHub's spelling of its
+// repository (Acme/Widgets) where a rule's repository is stored lower case, so ContainingRun and the
+// shipping index compare the two in any case, as IsTaskPR does: the pull request ships with run 1.
+// A pull request of another repository still ships with none.
+func TestContainmentReadsTheDeployRepositoryInAnyCase(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	applies := []Apply{{RunID: 1, CompletedAt: base.Add(time.Hour), CreatedAt: base.Add(time.Second)}}
+	index := NewShippingIndex(applies)
+	const deployRepo = "acme/widgets"
+	for _, row := range []struct {
+		repo  string
+		ships bool
+	}{
+		{"Acme/Widgets", true},
+		{"acme/other", false},
+	} {
+		pr := DeliveryPullRequest{Repo: row.repo, Number: 7, MergedAt: new(base)}
+		for name, got := range map[string]*Apply{"ContainingRun": ContainingRun(pr, deployRepo, applies), "ShippingIndex.Containing": index.Containing(pr, deployRepo)} {
+			if shipped := got != nil && got.RunID == 1; shipped != row.ships || (!row.ships && got != nil) {
+				t.Errorf("%s of %s#7 against %s = %+v, want run 1 %t", name, row.repo, deployRepo, got, row.ships)
+			}
+		}
+	}
 }
 
 // TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes: given only a run's jobs that

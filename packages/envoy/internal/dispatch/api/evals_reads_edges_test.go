@@ -113,11 +113,17 @@ func TestTheMedianRankLeavesOutAJobWithNoTimedResult(t *testing.T) {
 	if registered.Code != http.StatusCreated {
 		t.Fatalf("set pr-ci's job min_n to 0: status %d, body %s", registered.Code, registered.Body.String())
 	}
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "EVL", rule)
 	today := measures.Midnight(time.Now())
+	// pr-ci reads the deploy repository: its rows are kept under it (eval_days.deploy_repo), and a
+	// read folds those of the repositories the refresher published (publishDeployRepo), here EVL's
+	// one source, acme/web.
+	publishDeployRepo(t, database, "EVL", rule, today)
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, samples, counts, built_by)
-		values ('EVL', 'EVL/pr-ci', 'job:lint', '', $1, false, 0, '{}', '{"cancelled": 1}', 'test'),
-		       ('EVL', 'EVL/pr-ci', 'job:unit', '', $1, false, 2, '{3, 5}', '{"success": 2}', 'test')
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, samples, counts, built_by)
+		values ('EVL', 'EVL/pr-ci', 'acme/web', 'job:lint', '', $1, false, 0, '{}', '{"cancelled": 1}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'acme/web', 'job:unit', '', $1, false, 2, '{3, 5}', '{"success": 2}', 'test')
 	`, today); err != nil {
 		t.Fatalf("write the job rows: %v", err)
 	}
@@ -142,13 +148,19 @@ func TestAnItemsLinkKeepsItsRepositoryAndItsRange(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "EVL", rule)
 	day := measures.Midnight(time.Now()).AddDate(0, 0, -1)
+	// deploy-frequency and pr-ci read the deploy repository: their rows are kept under it
+	// (eval_days.deploy_repo), and a read folds those of the repositories the refresher published
+	// (publishDeployRepo), here EVL's one source, acme/web, whose rows cut by acme/web and acme/api.
+	publishDeployRepo(t, database, "EVL", rule, day)
 	if _, err := database.Pool.Exec(t.Context(), `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, counts, built_by)
-		values ('EVL', 'EVL/deploy-frequency', 'deploys', 'acme/web', $1, true, 2, 2, null, '{}', 'test'),
-		       ('EVL', 'EVL/deploy-frequency', 'deploys', 'acme/api', $1, true, 1, 1, null, '{}', 'test'),
-		       ('EVL', 'EVL/pr-ci', 'job:unit', 'acme/web', $1, false, 2, null, '{3, 5}', '{"success": 2}', 'test'),
-		       ('EVL', 'EVL/pr-ci', 'job:unit', 'acme/api', $1, false, 1, null, '{4}', '{"success": 1}', 'test')
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, samples, counts, built_by)
+		values ('EVL', 'EVL/deploy-frequency', 'acme/web', 'deploys', 'acme/web', $1, true, 2, 2, null, '{}', 'test'),
+		       ('EVL', 'EVL/deploy-frequency', 'acme/web', 'deploys', 'acme/api', $1, true, 1, 1, null, '{}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'acme/web', 'job:unit', 'acme/web', $1, false, 2, null, '{3, 5}', '{"success": 2}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'acme/web', 'job:unit', 'acme/api', $1, false, 1, null, '{4}', '{"success": 1}', 'test')
 	`, day); err != nil {
 		t.Fatalf("write the repositories' rows: %v", err)
 	}
@@ -214,12 +226,18 @@ func TestEvalReadsResolveRepositorySpellingsBeforeReadingTheirRows(t *testing.T)
 	if _, err := pool.Exec(ctx, `insert into eval_days_defaults (project_key, repo) values ('EVL', 'acme/web')`); err != nil {
 		t.Fatal(err)
 	}
+	// pr-ci reads the deploy repository: its rows are kept under it (eval_days.deploy_repo), and a
+	// read folds those of the repositories the refresher published (publishDeployRepo), here EVL's
+	// one source, acme/web.
+	rule := deployRule("acme/web", "release / release")
+	saveProjectRules(t, database, "EVL", rule)
+	publishDeployRepo(t, database, "EVL", rule, day)
 	if _, err := pool.Exec(ctx, `
-		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, built_by)
-		values ('EVL', 'EVL/legion-work-time', 'hours', '', $1, true, 2, 12, '{4,8}', 'test'),
-		       ('EVL', 'EVL/legion-work-time', 'hours', 'Acme/Web', $1, true, 1, 4, '{4}', 'test'),
-		       ('EVL', 'EVL/legion-work-time', 'hours', ':default', $1, true, 1, 8, '{8}', 'test'),
-		       ('EVL', 'EVL/pr-ci', 'job:unit', 'Acme/Web', $1, false, 2, 8, '{3,5}', 'test')`, day); err != nil {
+		insert into eval_days (project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, samples, built_by)
+		values ('EVL', 'EVL/legion-work-time', '', 'hours', '', $1, true, 2, 12, '{4,8}', 'test'),
+		       ('EVL', 'EVL/legion-work-time', '', 'hours', 'Acme/Web', $1, true, 1, 4, '{4}', 'test'),
+		       ('EVL', 'EVL/legion-work-time', '', 'hours', ':default', $1, true, 1, 8, '{8}', 'test'),
+		       ('EVL', 'EVL/pr-ci', 'acme/web', 'job:unit', 'Acme/Web', $1, false, 2, 8, '{3,5}', 'test')`, day); err != nil {
 		t.Fatal(err)
 	}
 	const path = "/api/v1/projects/EVL/evals/legion-work-time"

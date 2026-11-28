@@ -1,10 +1,11 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { type QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { signedInQueryClient } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
@@ -40,7 +41,7 @@ function machineRecord(overrides: Partial<RecordResponse> = {}): RecordResponse 
 }
 
 function renderPage() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   return render(
     <MemoryRouter initialEntries={["/credentials/machine"]}>
       <QueryClientProvider client={queryClient}>
@@ -220,7 +221,7 @@ test("a lookup the reader stopped says it may have been made, not that it failed
   jest.useFakeTimers();
   const lookup = spyOn(api, "lookupMachineCredential").mockRejectedValue(dropped());
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   try {
     await stoppedPage(queryClient);
     await stopTheLateWrite(queryClient);
@@ -246,7 +247,7 @@ test("an approval the reader stopped says it may have been made, not that it fai
   const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const approve = spyOn(api, "approveCredentialRecord").mockRejectedValue(dropped());
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   try {
     const user = await stoppedPage(queryClient, lookedUp.resolve);
     await user.click(screen.getByRole("button", { name: "Approve" }));
@@ -274,7 +275,7 @@ test("a denial the reader stopped says it may have been made, not that it failed
   const lookup = spyOn(api, "lookupMachineCredential").mockReturnValue(lookedUp.promise);
   const getMachineLogins = spyOn(api, "getMachineLogins").mockResolvedValue({ credentials: [] });
   const deny = spyOn(api, "denyCredentialRecord").mockRejectedValue(dropped());
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryClient = signedInQueryClient();
   try {
     const user = await stoppedPage(queryClient, lookedUp.resolve);
     await user.click(screen.getByRole("button", { name: "Deny" }));

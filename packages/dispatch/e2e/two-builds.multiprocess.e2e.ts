@@ -491,6 +491,14 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/documents",
     },
     {
+      // The project's settings tab, holding its delivery settings editor.
+      route: "/projects/:key/settings",
+      shows: (page) => [
+        page.locator("#project-settings-panel").getByRole("switch", { name: "Delivery" }),
+      ],
+      url: "/projects/CORE/settings",
+    },
+    {
       loads: ["editor"],
       route: "/projects/:key/documents/:slug",
       shows: (page) => openDocument(page, shown.document),

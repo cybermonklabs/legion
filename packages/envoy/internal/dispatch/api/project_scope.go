@@ -318,8 +318,10 @@ func checkIssueProject(ctx context.Context, q queryer, caller, checkIssue string
 }
 
 // projectVisibility reads whether the project key is private, and whether any project has that
-// key: the one-statement read of a write whose project its body names (createIssue,
-// createGoingRequest).
+// key: the one-statement read a write makes of a project its route's address does not name, before
+// access.CredentialCovers asks of that project: the project its body names (createIssue,
+// createGoingRequest), or the project of another project's failure the state route reaches
+// (stateReaches).
 func projectVisibility(ctx context.Context, q queryer, key string) (private, found bool, err error) {
 	err = q.QueryRow(ctx, `select visibility = 'private' from projects where key = $1`, key).Scan(&private)
 	if errors.Is(err, pgx.ErrNoRows) {

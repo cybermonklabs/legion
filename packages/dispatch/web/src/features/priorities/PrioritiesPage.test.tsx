@@ -25,7 +25,14 @@ import {
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
-import type { DisplayTree, IssueSummary, Priorities, Priority, PriorityRow } from "../../api/types";
+import type {
+  AuthenticatedUser,
+  DisplayTree,
+  IssueSummary,
+  Priorities,
+  Priority,
+  PriorityRow,
+} from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { DocumentRuntime } from "../doc/runtime";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
@@ -182,10 +189,10 @@ function page(
   const listing = spyOn(api, "listIssues").mockImplementation(answerListing(issues));
   const state = spyOn(api, "getMyState").mockResolvedValue({});
   const agents = spyOn(api, "listAgents").mockResolvedValue([]);
-  // `useIsHuman`: the contract types only a person's answer, so the other principal is cast.
-  const whoami = writer
-    ? { event_head: "0", kind: "user" as const, login: "alice" }
-    : ({ event_head: "0", kind: "token", login: "ci" } as never);
+  // `useIsHuman`: a reader who is not a person is an agent viewer, here the shared token's.
+  const whoami: AuthenticatedUser = writer
+    ? { event_head: "0", kind: "user", login: "alice" }
+    : { event_head: "0", kind: "agent", login: "agent", session: null };
   const viewer = spyOn(api, "whoAmI").mockResolvedValue(whoami);
   const create = spyOn(api, "createPriority").mockResolvedValue(saved("new"));
   // A change of a priority goes on its priority's line, made from its request alone

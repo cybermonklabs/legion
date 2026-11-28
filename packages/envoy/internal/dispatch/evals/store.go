@@ -94,11 +94,17 @@ const writeAttempts = 2
 // run found the document removed under it (errDocumentRemoved), which it answers before it writes
 // anything.
 //
-// Every registry write logs a change for its versions, readings and day rows, whose triggers
-// record each in the change log's outbox (delivery_changes_pending, migration 20261117100001) and
-// take no lock, so the write never takes the change log's lock (6900, delivery's
-// lockChangesStatement). Once it has committed, committed moves a batch of the outbox into the
-// log (drainChanges) before the caller answers.
+// The registry's own rows, its versions, readings and day rows, log a change for each write
+// through triggers that record it in the change log's outbox (delivery_changes_pending, migration
+// 20261117100001) and take no lock, so those writes never take the change log's lock (6900,
+// delivery's lockChangesStatement). RegisterWith also runs its caller's own work in this
+// transaction, and the delivery settings route's (api's settingsSave.write) writes the project's
+// delivery settings, whose triggers write a `settings` change into the change log itself for a
+// write that moves a logged column (delivery_change_log, migration 20261123010254): that write
+// takes the change log's lock, with the transaction already holding an id, and the transaction
+// holds it until it commits. Once the transaction has committed, committed moves one batch of the
+// outbox into the log (drainChanges), in a short transaction of its own, before the caller
+// answers.
 func (s *Store) inWrite(ctx context.Context, project string, fn func(ctx context.Context, w *writeTx) error) error {
 	if s.database == nil || s.database.Pool == nil {
 		return errors.New("evals: the registry has no database")
@@ -300,7 +306,7 @@ func scanReading(row pgx.Row) (Reading, error) {
 }
 
 // dayColumns is the column list scanDay reads from eval_days.
-const dayColumns = `project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples,
+const dayColumns = `project_key, eval_id, deploy_repo, series, repo, day, listed, n, sum, num, den, max, samples, sample_keys,
 	last_value, last_at, last_recorded_at, coalesce(last_reading::text, ''), counts, via_repository, built_by, updated_at`
 
 func scanDay(row pgx.Row) (DayRow, error) {
@@ -308,7 +314,7 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	var counts []byte
 	if err := row.Scan(
 		&day.ProjectKey, &day.EvalID, &day.DeployRepo, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
-		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
+		&day.Num, &day.Den, &day.Max, &day.Samples, &day.sampleKeys, &day.LastValue, &day.LastAt, &day.LastRecordedAt, &day.LastReading,
 		&counts, &day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
 	); err != nil {
 		return DayRow{}, err
@@ -321,29 +327,20 @@ func scanDay(row pgx.Row) (DayRow, error) {
 	return day, nil
 }
 
-// scanWindowRow reads one row of a DayWindowIn read that names no repository: whether it answers
-// for the window or the compare range, then its eval, series and day, its parts, its updated_at and
-// the owner it is stored under (owners.go). Every row of that read is stored under "", which the
-// row's repo, left empty, says.
-func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, false)
-}
-
-// scanRepoWindowRow is scanWindowRow of a read that names repositories, which answers each row's
-// repository after its owner (DayWindowIn).
-func scanRepoWindowRow(row pgx.CollectableRow) (WindowRow, error) {
-	return scanWindowRowOf(row, true)
-}
-
-func scanWindowRowOf(row pgx.CollectableRow, repo bool) (WindowRow, error) {
+// scanWindowRowOf reads one row of a DayWindowIn read, scanning repo and deployRepo after owner
+// when the query selects them.
+func scanWindowRowOf(row pgx.CollectableRow, repo, deployRepo bool) (WindowRow, error) {
 	var inWindow bool
 	var day WindowRow
 	part := &day.Part
-	fields := append(make([]any, 0, 19), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
-		&part.Samples, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
+	fields := append(make([]any, 0, 21), &inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+		&part.Samples, &day.sampleKeys, &part.LastValue, &part.LastAt, &part.LastRecordedAt, &part.LastReading, &part.Counts, &part.ViaRepository,
 		&day.UpdatedAt, &day.owner)
 	if repo {
 		fields = append(fields, &day.repo)
+	}
+	if deployRepo {
+		fields = append(fields, &day.deployRepo)
 	}
 	if err := row.Scan(fields...); err != nil {
 		return WindowRow{}, err

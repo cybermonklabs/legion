@@ -14,8 +14,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliveryseed"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/explaintest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -497,26 +499,22 @@ func TestTheLoggedZeroFillWritesEveryMissingDayAndNoOther(t *testing.T) {
 }
 
 // TestAPassOverDeliveryInputWithNoProjectSucceeds: the delivery walk begins at the UTC midnight of
-// its first input day whatever else the store holds. A store with delivery settings and a deploy
-// run that started at 08:00, and no project yet (a fresh deployment, or the browser suite's store
-// between a reset and its next seed), is walked from that run's day, and the pass ends with no
-// error and the walk standing at the day after today, every day it had to build built. The tester
-// saw such a pass refused in the browser suite's run of the Legion rows: "read the pull requests of
-// 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a window from
-// 2026-09-27T00:00:00Z".
+// its first input day whatever else the store holds. A store with a deploy run that started at
+// 08:00 and no project yet (a fresh deployment, or the browser suite's store between a reset and its
+// next seed) passes with no error. Delivery settings are each project's (dispatch://INFRA-978, R4),
+// so a store with no project holds none, and the store's first project is then made with delivery
+// on and one source reading the run's repository, and with no issue, pull request or day row of its
+// own; the run ships no pull request, so its rows are its repository's source key's (R12), and the
+// walk's first input day is the run's alone, as with no project. The pass after it walks from that
+// run's day and ends with no error and the walk standing at the day after today, every day it had
+// to build built. The tester saw such a pass refused in the browser suite's run of the Legion rows:
+// "read the pull requests of 2026-09-27: apply rows read from 2026-09-27T08:00:00Z hold no run of a
+// window from 2026-09-27T00:00:00Z".
 func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
 	ctx := t.Context()
 	r.exec(t, "remove the rig's one project", `delete from projects`)
-	apply := "Apply"
-	if _, err := delivery.PutSettings(ctx, r.database.Pool, delivery.DeliverySettings{
-		DeployRepo: "acme/deploy", DeployWorkflowPath: ".github/workflows/deploy.yml",
-		ProductionJobNames: []string{"production / apply"}, ProductionApplyStepName: &apply,
-		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
-	}, alice); err != nil {
-		t.Fatalf("store the delivery settings: %v", err)
-	}
 	started := refresherToday.AddDate(0, 0, -2).Add(8 * time.Hour)
 	r.exec(t, "store a deploy run that started at 08:00", `
 		insert into delivery_runs (repo, run_id, kind, head_sha, head_commit_at, started_at, created_at, completed_at,
@@ -524,6 +522,13 @@ func TestAPassOverDeliveryInputWithNoProjectSucceeds(t *testing.T) {
 		values ('acme/deploy', 1, $1, 'abc123', $2::timestamptz, $2::timestamptz, $2::timestamptz,
 			$2::timestamptz + interval '10 minutes', 'success', 'https://github.com/acme/deploy/actions/runs/1', 'main', 'push', true)
 	`, string(delivery.DeliveryRunKindDeploy), started)
+	r.pass(t)
+	r.exec(t, "make the store's first project", `insert into projects (key, name, default_assignee) values ('DEPLOY', 'Deploys', 'alice')`)
+	apply := "Apply"
+	putSources(t, r.database.Pool, "DEPLOY", []string{}, deliveryseed.SourceOf(delivery.DeliverySettings{
+		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{"production / apply"},
+		ProductionApplyStepName: &apply, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+	}, new("acme/deploy")))
 	report, _ := r.pass(t)
 	walks, err := r.registry.readWalks(ctx)
 	if err != nil {
@@ -824,7 +829,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 		t.Fatalf("%s has no build-minutes eval", r.project)
 	}
 	entry := page.Items[index]
-	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, "")
+	firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, nil)
 	if err != nil {
 		t.Fatalf("read the first days of %s: %v", evalID, err)
 	}
@@ -834,7 +839,7 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 	read := func(day time.Time) SeriesValues {
 		t.Helper()
 		window := Range{From: day, To: day.AddDate(0, 0, 1)}
-		rows, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, []Entry{entry}, "", nil, window, nil)
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{r.project}, []Entry{entry}, nil, nil, window, nil)
 		if err != nil {
 			t.Fatalf("read %s over %s: %v", evalID, day.Format(time.DateOnly), err)
 		}
@@ -860,4 +865,589 @@ func TestACorrectionThatEmptiesASeriesFirstDaysLeavesNoRowBeforeItsFirstReading(
 	if after := read(on(8, 0)); !statesData(after) {
 		t.Errorf("a window over the 8th, the series' first day, reads %v, want its first reading's values", after.Window)
 	}
+}
+
+// sourcesDay is the UTC day the three-source history happens on, the day before refresherToday.
+var sourcesDay = refresherToday.AddDate(0, 0, -1)
+
+// The three-source history's repositories (dispatch://INFRA-978, D1): ALPHA's default repository
+// acme/alpha-app, which ALPHA's first source names none of and so reads; acme/alpha-ops, no
+// project's default, which ALPHA's second source names; OMEGA's default repository acme/omega-app,
+// which its one GitHub source reads; and acme/alpha-next, which ALPHA's default repository moves
+// to.
+const (
+	alphaApp  = "acme/alpha-app"
+	alphaOps  = "acme/alpha-ops"
+	omegaApp  = "acme/omega-app"
+	alphaNext = "acme/alpha-next"
+)
+
+// The production job each source's rule names.
+const (
+	alphaJob = "alpha / apply"
+	opsJob   = "ops / release"
+	omegaJob = "omega / apply"
+)
+
+// ruleOfJob is a GitHub source's rule that calls a run a deploy by its job named job.
+func ruleOfJob(job string) delivery.DeliverySettings {
+	return delivery.DeliverySettings{
+		DeployWorkflowPath: ".github/workflows/deploy.yml", ProductionJobNames: []string{job},
+		PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
+	}
+}
+
+// deployRun stores deploy run id of repo on main, created at created, with one job named job that
+// succeeded, which completes 19 minutes after created.
+func (r *refresherRig) deployRun(t *testing.T, repo string, id int64, created time.Time, job string) {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	started, completed := created.Add(time.Minute), created.Add(20*time.Minute)
+	if err := delivery.UpsertRun(ctx, pool, delivery.DeliveryRun{
+		Repo: repo, RunID: id, Kind: delivery.DeliveryRunKindDeploy, HeadSHA: fmt.Sprintf("%040d", id),
+		HeadCommitAt: created.Add(-time.Minute), StartedAt: started, CreatedAt: new(created), CompletedAt: &completed,
+		Conclusion: new(delivery.DeliveryRunConclusionSuccess), URL: fmt.Sprintf("https://github.com/%s/actions/runs/%d", repo, id),
+		HeadBranch: new("main"), Event: new("push"),
+	}); err != nil {
+		t.Fatalf("write deploy run %d of %s: %v", id, repo, err)
+	}
+	ran := delivery.DeliveryRunJob{Name: job, StartedAt: new(started.Add(time.Minute)), CompletedAt: new(completed.Add(-time.Minute)),
+		Conclusion: new(delivery.DeliveryJobConclusionSuccess)}
+	if err := delivery.UpsertRunJobs(ctx, pool, repo, id, []delivery.DeliveryRunJob{ran}, true); err != nil {
+		t.Fatalf("write the job of deploy run %d of %s: %v", id, repo, err)
+	}
+}
+
+// seedSources writes the three-source history on sourcesDay. ALPHA holds two GitHub sources, one
+// naming no repository (acme/alpha-app, its default, under alphaJob) and one naming acme/alpha-ops
+// (under opsJob); OMEGA one naming none (acme/omega-app under omegaJob) and an events source;
+// DELTA an events source with delivery off. The runs, each on main and shipping no pull request:
+// acme/alpha-app's 1001 by alphaJob; acme/alpha-ops' 2001 by opsJob and 2002 by alphaJob, which
+// its own rule calls no deploy; acme/omega-app's 3001 by omegaJob; and acme/alpha-next's 4001 and
+// 4002 by alphaJob, which no source reads until ALPHA's default moves there.
+func (r *refresherRig) seedSources(t *testing.T) {
+	t.Helper()
+	pool := r.database.Pool
+	r.exec(t, "the projects", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('ALPHA', 'Alpha', 'alice', 1, $1), ('OMEGA', 'Omega', 'alice', 2, $2), ('DELTA', 'Delta', 'alice', 1, null)`, alphaApp, omegaApp)
+	r.exec(t, "the issue", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('OMEGA-1', 'OMEGA', 1, 'Omega work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		omegaApp, sourcesDay.AddDate(0, 0, -1))
+	authors := []string{"dev-ana"}
+	putSources(t, pool, "ALPHA", authors, deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps)))
+	putSources(t, pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
+	putProjectSettings(t, pool, delivery.ProjectSettingsInput{Project: "DELTA", Delivery: false, Sources: []delivery.SourceInput{eventsSource}})
+	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+	r.deployRun(t, alphaApp, 1001, at(10), alphaJob)
+	r.deployRun(t, alphaOps, 2001, at(10), opsJob)
+	r.deployRun(t, alphaOps, 2002, at(12), alphaJob)
+	r.deployRun(t, omegaApp, 3001, at(10), omegaJob)
+	r.deployRun(t, alphaNext, 4001, at(10), alphaJob)
+	r.deployRun(t, alphaNext, 4002, at(12), alphaJob)
+}
+
+// deploysOn is project's deploy-frequency on day as the eval routes read it (readTallies, over the
+// repositories recorded with the rows): its deploys and how many reached it through a repository.
+func (r *refresherRig) deploysOn(t *testing.T, project string, day time.Time) defaultTally {
+	t.Helper()
+	tallies, _ := r.readTallies(t, project, map[string]string{SlugDeployFrequency: "deploys"}, day)
+	return tallies[SlugDeployFrequency]
+}
+
+// TestAProjectReadsEachOfItsSourceRepositoriesUnderItsOwnRule: over the three-source history,
+// ALPHA's read of deploy-frequency folds the rows of both its source repositories, each built under
+// its own rule (acme/alpha-ops' 2002, a deploy by ALPHA's first rule, is none by its own), and a
+// deploy of acme/omega-app, OMEGA's, counts nowhere for it; the repositories recorded with the rows
+// are each project's sources'. Red under one rule for every repository: 2002 counts, or 2001 does
+// not.
+func TestAProjectReadsEachOfItsSourceRepositoriesUnderItsOwnRule(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaApp, alphaOps}) {
+		t.Errorf("ALPHA's rows stand recorded under %v, want %s and %s", got, alphaApp, alphaOps)
+	}
+	if got := ownedRepos(t, r.database.Pool, "OMEGA"); !slices.Equal(got, []string{omegaApp}) {
+		t.Errorf("OMEGA's rows stand recorded under %v, want %s alone", got, omegaApp)
+	}
+	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 1, via: 1}} {
+		if got := r.deploysOn(t, project, sourcesDay); got != want {
+			t.Errorf("%s's deploy-frequency on %s counts %d deploys, %d through a repository; want %d and %d",
+				project, sourcesDay.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+		}
+	}
+	if n := r.count(t, `select count(*) from eval_day_members where project_key = 'ALPHA' and row_key = $1`, RunMember(omegaApp, 3001)); n != 0 {
+		t.Errorf("ALPHA counts OMEGA's deploy 3001 %d times, want none", n)
+	}
+	// acme/alpha-ops' 2002 ran no job its own rule names, so it reached no production: ALPHA's
+	// deploy-frequency above counts 2001 alone of acme/alpha-ops', where under alphaJob it would
+	// count 2002 too.
+}
+
+// TestASourceNamingNoRepositoryMovesWithTheDefaultRepository: ALPHA's first source names no
+// repository, so it reads ALPHA's default repository; once that moves to acme/alpha-next, the pass
+// after it records ALPHA's rows under acme/alpha-next and acme/alpha-ops, builds acme/alpha-next's
+// days under its first rule, and ALPHA's deploy-frequency reads its two deploys and acme/alpha-ops'
+// one, each through its repository; acme/alpha-app, which no source reads any more, keeps its rows
+// as they stood (none written, none deleted) and its rule, recorded with no project, and ALPHA
+// reads none of them (dispatch://INFRA-978, plan T19 path 1: which repositories a project reads is
+// a selection). Before the pass the read answers the old selection whole.
+func TestASourceNamingNoRepositoryMovesWithTheDefaultRepository(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	appRows := `select project_key || ' ' || eval_id || ' ' || series || ' ' || repo || ' ' || day::text, xmin::text
+		from eval_days where deploy_repo = '` + alphaApp + `'`
+	held := r.xmins(t, appRows)
+	if len(held) == 0 {
+		t.Fatalf("%s holds no row before the move, so its keeping them shows nothing", alphaApp)
+	}
+	r.exec(t, "move ALPHA's default repository", `update projects set default_repo = $1 where key = 'ALPHA'`, alphaNext)
+	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 2, via: 2}) {
+		t.Errorf("before the pass ALPHA reads %d deploys, %d through a repository; want the old selection's 2 and 2", got.n, got.via)
+	}
+	r.settle(t)
+	if got := ownedRepos(t, r.database.Pool, "ALPHA"); !slices.Equal(got, []string{alphaNext, alphaOps}) {
+		t.Errorf("after the move ALPHA's rows stand recorded under %v, want %s and %s", got, alphaNext, alphaOps)
+	}
+	if got := r.deploysOn(t, "ALPHA", sourcesDay); got != (defaultTally{n: 3, via: 3}) {
+		t.Errorf("after the move ALPHA reads %d deploys, %d through a repository; want acme/alpha-next's 2 and acme/alpha-ops' 1, each through it", got.n, got.via)
+	}
+	if differ := sameValues(r.xmins(t, appRows), held, func(xmin string) string { return "written by " + xmin }); len(differ) > 0 {
+		t.Errorf("%s, which no source reads any more, did not keep its rows as they stood, first ones:\n\t%s", alphaApp, strings.Join(differ, "\n\t"))
+	}
+	if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and project_key is null and kept_since is not null`, alphaApp); n != 1 {
+		t.Errorf("%s's rule is recorded with no project and its start %d times, want once", alphaApp, n)
+	}
+}
+
+// TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule: ALPHA's third source reads
+// acme/alpha-stage, which holds no run yet, under a rule with a staging e2e job, so that rule is
+// recorded with no start; once the source is removed, runs that land there later keep the
+// repository under its recorded rule (keptRepos), and the span that builds its days writes each
+// project that holds a staging-e2e row of its first input day a zero row of the day after, as a
+// whole walk would. Red where the span builds its zero rows under the live rules alone, which no
+// source of acme/alpha-stage holds any more: no zero row of that day. With the source kept, the
+// live rule is the recorded one, and the row is there either way.
+func TestASpanBuildsAKeptRepositorysZeroRowsUnderItsRecordedRule(t *testing.T) {
+	t.Parallel()
+	const alphaStage, stageJob, e2eJob = "acme/alpha-stage", "stage / apply", "staging-e2e / run"
+	for _, removed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("removed=%t", removed), func(t *testing.T) {
+			t.Parallel()
+			r := newRefresherRig(t)
+			r.seedSources(t)
+			r.settle(t)
+			pool, authors := r.database.Pool, []string{"dev-ana"}
+			stage := ruleOfJob(stageJob)
+			stage.StagingE2EJobName = new(e2eJob)
+			alpha := []delivery.SourceInput{deliveryseed.SourceOf(ruleOfJob(alphaJob), nil), deliveryseed.SourceOf(ruleOfJob(opsJob), new(alphaOps))}
+			putSources(t, pool, "ALPHA", authors, append(slices.Clone(alpha), deliveryseed.SourceOf(stage, new(alphaStage)))...)
+			r.settle(t)
+			if n := r.count(t, `select count(*) from eval_days_rules where repo = $1 and kept_since is null`, alphaStage); n != 1 {
+				t.Fatalf("%s's rule is recorded with no start %d times, want once", alphaStage, n)
+			}
+			if removed {
+				putSources(t, pool, "ALPHA", authors, alpha...)
+				r.settle(t)
+			}
+			first, next := sourcesDay.AddDate(0, 0, -2), sourcesDay.AddDate(0, 0, -1)
+			r.deployRun(t, alphaStage, 5001, first.Add(10*time.Hour), e2eJob)
+			r.deployRun(t, alphaStage, 5002, sourcesDay.Add(10*time.Hour), stageJob)
+			r.settle(t)
+			staged := `select distinct project_key from eval_days where deploy_repo = $1 and eval_id like '%/' || $2`
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3) held`, alphaStage, SlugStagingE2E, first); n == 0 {
+				t.Fatalf("no project holds a staging-e2e row of %s on %s, so the zero rows after it show nothing", alphaStage, first.Format(time.DateOnly))
+			}
+			if n := r.count(t, `select count(*) from (`+staged+` and day = $3 except `+staged+` and day = $4 and repo = '' and n = 0) missing`,
+				alphaStage, SlugStagingE2E, first, next); n != 0 {
+				t.Errorf("%d projects hold a staging-e2e row of %s on %s and no zero row on %s, want none",
+					n, alphaStage, first.Format(time.DateOnly), next.Format(time.DateOnly))
+			}
+		})
+	}
+}
+
+// post writes a deploy posted to project's route (prodevents.Write, source api) under ref,
+// finished at finished, naming the pull requests prs.
+func (r *refresherRig) post(t *testing.T, project, ref string, finished time.Time, prs ...string) prodevents.Event {
+	t.Helper()
+	event, _, err := prodevents.Write(t.Context(), r.database.Pool, prodevents.Event{
+		ProjectKey: project, Kind: prodevents.KindDeploy, Source: prodevents.SourceAPI, SourceRef: ref,
+		FinishedAt: &finished, PullRequests: prs, Actor: alice,
+	}, nil)
+	if err != nil {
+		t.Fatalf("post the deploy %s to %s: %v", ref, project, err)
+	}
+	return event
+}
+
+// TestAPostedDeployCountsInItsRoutesProjectsDeployFrequencyAlone: over the three-source history, a
+// deploy posted to OMEGA, whose events source reads its posts, adds one to OMEGA's deploy-frequency
+// on the day it finished and to no other project's (k12's posted deploy); one posted to ALPHA,
+// which has no events source, and one to DELTA, whose delivery is off, count in no eval. A post
+// naming no pull request adds to deploy frequency alone.
+func TestAPostedDeployCountsInItsRoutesProjectsDeployFrequencyAlone(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+	r.post(t, "OMEGA", "release-1", at(15))
+	r.post(t, "ALPHA", "release-1", at(15))
+	r.post(t, "DELTA", "release-1", at(15))
+	r.settle(t)
+	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 2, via: 1}, "DELTA": {}} {
+		if got := r.deploysOn(t, project, sourcesDay); got != want {
+			t.Errorf("%s's deploy-frequency on %s counts %d deploys, %d through a repository; want %d and %d",
+				project, sourcesDay.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+		}
+	}
+	if n := r.count(t, `select count(*) from eval_days where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and n > 0`,
+		EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA")); n != 0 {
+		t.Errorf("a post naming no pull request times %d merge-to-production rows, want none", n)
+	}
+	expectTruth(t, "after the posted deploys", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostedDeployTimesThePullRequestsItShipsFirst: OMEGA's post at 11:00 names acme/omega-app#7,
+// merged at 09:00, which OMEGA's GitHub deploy 3001 shipped at 10:19 first, and #8, merged at 10:30,
+// which no GitHub deploy ships, each in another case than GitHub's. Each repository's rows time a
+// pull request by their own deploys (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8):
+// acme/omega-app's #7 at 79 minutes, OMEGA's events repository's #7 at 120 and #8 at 30. OMEGA's
+// merge-to-production counts each pull request once, from its merge to the first deploy that
+// ships it: #7 at 79 and #8 at 30 (n 2, max 79).
+func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	for _, pr := range []struct {
+		number int
+		merged time.Time
+	}{{7, at(9, 0)}, {8, at(10, 30)}} {
+		if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+			Repo: omegaApp, Number: pr.number, Title: fmt.Sprintf("OMEGA-1: change %d", pr.number),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", omegaApp, pr.number), Author: "dev-ana",
+			CreatedAt: new(pr.merged.Add(-time.Hour)), MergedAt: new(pr.merged), IssueKey: new("OMEGA-1"), Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", omegaApp, pr.number, err)
+		}
+	}
+	r.post(t, "OMEGA", "release-2", at(11, 0), "Acme/Omega-App#7", "ACME/omega-app#8")
+	r.settle(t)
+	samples := func(deployRepo string) []float64 {
+		t.Helper()
+		var held []float64
+		if err := r.database.Pool.QueryRow(t.Context(), `
+			select coalesce(samples, '{}') from eval_days
+			where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and repo = '' and day = $3
+		`, EvalID("OMEGA", SlugMergeToProduction), deployRepo, sourcesDay).Scan(&held); err != nil {
+			t.Fatalf("read OMEGA's merge-to-production of %s: %v", deployRepo, err)
+		}
+		slices.Sort(held)
+		return held
+	}
+	if got := samples(omegaApp); !slices.Equal(got, []float64{79}) {
+		t.Errorf("acme/omega-app's merge-to-production of OMEGA times %v, want #7's 79 minutes alone", got)
+	}
+	if got := samples(EventsRepo("OMEGA")); !slices.Equal(got, []float64{30, 120}) {
+		t.Errorf("OMEGA's posted merge-to-production times %v, want #8's 30 minutes and #7's 120", got)
+	}
+	if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2`,
+		EventsRepo("OMEGA"), PullRequestMember(omegaApp, 7)); n != 1 {
+		t.Errorf("OMEGA's events repository counts #7, which its post ships, %d times, want once", n)
+	}
+	wantFigures(t, "after the posted deploy", map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)})},
+		map[string]*float64{SlugMergeToProduction + ".n": new(2.0), SlugMergeToProduction + ".max": new(79.0)})
+	expectTruth(t, "after the posted deploy timing pull requests", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3): acme/omega-app#9 of
+// OMEGA-1, first committed at 07:00, opened at 08:00 and merged at 09:00, is named by a deploy
+// posted to OMEGA that finished at 09:30, before OMEGA's GitHub deploy 3001 ships it at 10:19.
+// Each repository's merge-to-production row times it by its own deploy
+// (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8): 30 minutes in its events
+// repository's row and 79 in acme/omega-app's, and OMEGA's merge-to-production reads it once, at
+// the post (n 1, max 30). Its first-commit-to-production (199 minutes) and open-to-production (139)
+// stay timed to 3001 in acme/omega-app's rows, and its member there names 3001, as its events
+// repository's names the post. Red where the GitHub row drops 3001 for the post: those two lead
+// times lose #9.
+func TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: omegaApp, Number: 9, Title: "OMEGA-1: change 9", URL: "https://github.com/" + omegaApp + "/pull/9", Author: "dev-ana",
+		FirstCommitAt: new(at(7, 0)), CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)), IssueKey: new("OMEGA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#9: %v", omegaApp, err)
+	}
+	posted := r.post(t, "OMEGA", "release-9", at(9, 30), omegaApp+"#9")
+	r.settle(t)
+	// samples is OMEGA's samples of slug's all-repositories row of deployRepo on sourcesDay, in
+	// order, none where no row holds one.
+	samples := func(slug, deployRepo string) []float64 {
+		t.Helper()
+		var held []float64
+		if err := r.database.Pool.QueryRow(t.Context(), `
+			select coalesce(array_agg(s.sample order by s.sample), '{}') from eval_days d cross join lateral unnest(d.samples) as s(sample)
+			where d.eval_id = $1 and d.deploy_repo = $2 and d.series = 'minutes' and d.repo = '' and d.day = $3
+		`, EvalID("OMEGA", slug), deployRepo, sourcesDay).Scan(&held); err != nil {
+			t.Fatalf("read OMEGA's %s of %s: %v", slug, deployRepo, err)
+		}
+		return held
+	}
+	for _, want := range []struct {
+		slug, deployRepo string
+		minutes          []float64
+	}{
+		{SlugMergeToProduction, EventsRepo("OMEGA"), []float64{30}},
+		{SlugMergeToProduction, omegaApp, []float64{79}},
+		{SlugFirstCommitToProduction, omegaApp, []float64{199}},
+		{SlugOpenToProduction, omegaApp, []float64{139}},
+		{SlugFirstCommitToProduction, EventsRepo("OMEGA"), []float64{}},
+		{SlugOpenToProduction, EventsRepo("OMEGA"), []float64{}},
+	} {
+		if got := samples(want.slug, want.deployRepo); !slices.Equal(got, want.minutes) {
+			t.Errorf("OMEGA's %s of %s times %v, want %v", want.slug, want.deployRepo, got, want.minutes)
+		}
+	}
+	day := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)}
+	wantFigures(t, "after the post", map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", day)}, map[string]*float64{
+		SlugMergeToProduction + ".n": new(1.0), SlugMergeToProduction + ".max": new(30.0),
+	})
+	for deployRepo, shipper := range map[string]string{omegaApp: RunMember(omegaApp, 3001), EventsRepo("OMEGA"): PostedMember(posted.ID)} {
+		if n := r.count(t, `select count(*) from eval_day_members where project_key = 'OMEGA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
+			deployRepo, PullRequestMember(omegaApp, 9), shipper); n != 1 {
+			t.Errorf("OMEGA's member of %s#9 under %s names %s %d times, want once", omegaApp, deployRepo, shipper, n)
+		}
+	}
+	expectTruth(t, "after a post that ships a pull request first", r.storedFigures(t), r.truthFigures(t))
+}
+
+// mergeValues is project's merge-to-production over window as an eval read states it: its stored
+// rows of the deploy repositories recorded with them folded with its series' first day
+// (DeployReposIn, FirstDaysIn, DayWindowIn, SeriesValuesOf).
+func (r *refresherRig) mergeValues(t *testing.T, project string, window Range) SeriesValues {
+	t.Helper()
+	ctx, pool := t.Context(), r.database.Pool
+	page, err := r.registry.Current(ctx, []string{project}, "", 100, 0)
+	if err != nil {
+		t.Fatalf("read the evals of %s: %v", project, err)
+	}
+	at := slices.IndexFunc(page.Items, func(entry Entry) bool { return entry.Definition.Slug == SlugMergeToProduction })
+	if at < 0 {
+		t.Fatalf("%s holds no %s", project, SlugMergeToProduction)
+	}
+	entry := page.Items[at]
+	deployRepos, err := DeployReposIn(ctx, pool)
+	if err != nil {
+		t.Fatalf("read the recorded deploy repositories: %v", err)
+	}
+	firsts, err := FirstDaysIn(ctx, pool, []Entry{entry}, deployRepos)
+	if err != nil {
+		t.Fatalf("read the first days of %s: %v", entry.Definition.EvalID, err)
+	}
+	rows, err := DayWindowIn(ctx, pool, []string{project}, []Entry{entry}, deployRepos, nil, window, nil)
+	if err != nil {
+		t.Fatalf("read the day rows of %s: %v", entry.Definition.EvalID, err)
+	}
+	return SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil)[0]
+}
+
+// TestAPullRequestAnOwnerKeyAndAPostBothTimeCountsOnceInTheProject
+// (dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2): over the three-source
+// history, acme/omega-app's #21 and #22, of no issue, merge at 09:00, so each counts for OMEGA,
+// whose default repository acme/omega-app is, through the repository's plain owner key; OMEGA's
+// GitHub deploy 3001 ships both at 10:19, and deploys posted to OMEGA name #21, finished at 09:30,
+// and #22, finished at 11:00. The owner key's merge-to-production row of the day and OMEGA's events
+// repository's each time both, and OMEGA's merge-to-production counts each once, from the deploy
+// that finished first: #21 30 minutes to its post and #22 79 to 3001, n 2 and max 79, one of the
+// two through the repository; the stored figures fold the same. Once OMEGA's default repository
+// moves to acme/omega-next, OMEGA reads the owner key no more and counts its posts' times alone,
+// n 2 and max 120, none through a repository, and no row of its events repository is written
+// again (R14: the move is a selection the read makes).
+func TestAPullRequestAnOwnerKeyAndAPostBothTimeCountsOnceInTheProject(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour, minute int) time.Time {
+		return sourcesDay.Add(time.Duration(hour)*time.Hour + time.Duration(minute)*time.Minute)
+	}
+	for _, number := range []int{21, 22} {
+		if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+			Repo: omegaApp, Number: number, Title: fmt.Sprintf("Change %d", number),
+			URL: fmt.Sprintf("https://github.com/%s/pull/%d", omegaApp, number), Author: "dev-ana",
+			CreatedAt: new(at(8, 0)), MergedAt: new(at(9, 0)), Sessions: []string{},
+		}); err != nil {
+			t.Fatalf("write %s#%d: %v", omegaApp, number, err)
+		}
+	}
+	r.post(t, "OMEGA", "release-21", at(9, 30), omegaApp+"#21")
+	r.post(t, "OMEGA", "release-22", at(11, 0), omegaApp+"#22")
+	r.settle(t)
+	for _, pr := range []string{omegaApp + "#21", omegaApp + "#22"} {
+		if n := r.count(t, `select count(*) from eval_days where eval_id like '%/' || $1 and day = $2 and repo = '' and $3 = any(sample_keys)`,
+			SlugMergeToProduction, sourcesDay, pr); n != 2 {
+			t.Errorf("%d merge-to-production rows of %s time %s, want the owner key's and OMEGA's events repository's", n, sourcesDay.Format(time.DateOnly), pr)
+		}
+	}
+	day := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)}
+	wantMerge := func(what string, n, most float64, via int) {
+		t.Helper()
+		values := r.mergeValues(t, "OMEGA", day)
+		wantFigures(t, what, map[string]SeriesValues{SlugMergeToProduction: values}, map[string]*float64{
+			SlugMergeToProduction + ".n": new(n), SlugMergeToProduction + ".max": new(most),
+		})
+		if values.ViaRepository != via {
+			t.Errorf("%s: OMEGA's merge-to-production counts %d pull requests through a repository, want %d", what, values.ViaRepository, via)
+		}
+	}
+	wantMerge("after the posts", 2, 79, 1)
+	expectTruth(t, "after the posts", r.storedFigures(t), r.truthFigures(t))
+
+	events := `select project_key || ' ' || eval_id || ' ' || series || ' ' || repo || ' ' || day::text, xmin::text
+		from eval_days where deploy_repo = '` + EventsRepo("OMEGA") + `'`
+	held := r.xmins(t, events)
+	if len(held) == 0 {
+		t.Fatalf("OMEGA's events repository holds no row before the move, so its keeping them shows nothing")
+	}
+	const omegaNext = "acme/omega-next"
+	r.exec(t, "move OMEGA's default repository", `update projects set default_repo = $1 where key = 'OMEGA'`, omegaNext)
+	r.settle(t)
+	wantMerge("after OMEGA's default repository moved", 2, 120, 0)
+	if differ := sameValues(r.xmins(t, events), held, func(xmin string) string { return "written by " + xmin }); len(differ) > 0 {
+		t.Errorf("the move of OMEGA's default repository wrote rows of its events repository again, first ones:\n\t%s", strings.Join(differ, "\n\t"))
+	}
+	expectTruth(t, "after OMEGA's default repository moved", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostedDeployNamingAnotherProjectsPullRequestCountsInItsRoutesProjectAlone (dispatch://INFRA-978,
+// R10, R12 and A8): a deploy posted to OMEGA's route that names acme/alpha-app#9, a pull request
+// of ALPHA's issue that no GitHub deploy ships, counts in OMEGA's deploy-frequency and in no other
+// project's, because the post's token writes OMEGA alone; and the pull request's merge-to-production
+// minutes, from its merge at 16:00 to the post's finish at 17:00, count in OMEGA's rows of its
+// events repository and in none of ALPHA's, whose rows hold no minutes of it.
+func TestAPostedDeployNamingAnotherProjectsPullRequestCountsInItsRoutesProjectAlone(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	at := func(hour int) time.Time { return sourcesDay.Add(time.Duration(hour) * time.Hour) }
+	r.exec(t, "ALPHA's issue", `insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
+		values ('ALPHA-1', 'ALPHA', 1, 'Alpha work', 'in_progress', '00000001', $1, '{"kind":"system","id":"sources-test"}', $2)`,
+		alphaApp, sourcesDay.AddDate(0, 0, -1))
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: alphaApp, Number: 9, Title: "ALPHA-1: change 9", URL: fmt.Sprintf("https://github.com/%s/pull/9", alphaApp), Author: "dev-ana",
+		CreatedAt: new(at(15)), MergedAt: new(at(16)), IssueKey: new("ALPHA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#9: %v", alphaApp, err)
+	}
+	posted := r.post(t, "OMEGA", "release-9", at(17), "acme/alpha-app#9")
+	r.settle(t)
+
+	for project, want := range map[string]defaultTally{"ALPHA": {n: 2, via: 2}, "OMEGA": {n: 2, via: 1}} {
+		if got := r.deploysOn(t, project, sourcesDay); got != want {
+			t.Errorf("%s's deploy-frequency on %s counts %d deploys, %d through a repository; want %d and %d",
+				project, sourcesDay.Format(time.DateOnly), got.n, got.via, want.n, want.via)
+		}
+	}
+	if n := r.count(t, `select count(*) from eval_day_members where row_key = $1 and project_key <> 'OMEGA'`, PostedMember(posted.ID)); n != 0 {
+		t.Errorf("the posted deploy is counted in %d projects or keys besides OMEGA, want none", n)
+	}
+	for _, member := range []string{PostedMember(posted.ID), PullRequestMember(alphaApp, 9)} {
+		if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2 and project_key = 'OMEGA'`,
+			EventsRepo("OMEGA"), member); n != 1 {
+			t.Errorf("OMEGA's events repository counts %s %d times, want once", member, n)
+		}
+		if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2 and project_key <> 'OMEGA'`,
+			EventsRepo("OMEGA"), member); n != 0 {
+			t.Errorf("OMEGA's events repository counts %s for %d projects or keys besides OMEGA, want none", member, n)
+		}
+	}
+	var minutes []float64
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select coalesce(samples, '{}') from eval_days
+		where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and repo = '' and day = $3
+	`, EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA"), sourcesDay).Scan(&minutes); err != nil {
+		t.Fatalf("read OMEGA's merge-to-production of its events repository: %v", err)
+	}
+	if !slices.Equal(minutes, []float64{60}) {
+		t.Errorf("OMEGA's posted merge-to-production times %v, want acme/alpha-app#9's 60 minutes alone", minutes)
+	}
+	if n := r.count(t, `select count(*) from eval_days where project_key = 'ALPHA' and eval_id = $1 and series = 'minutes' and n > 0`,
+		EvalID("ALPHA", SlugMergeToProduction)); n != 0 {
+		t.Errorf("ALPHA holds %d merge-to-production rows with minutes, want none: the post counts for OMEGA's route alone", n)
+	}
+	expectTruth(t, "after a deploy posted naming another project's pull request", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay: once the history has settled with
+// one posted deploy of OMEGA's, a deploy posted later that finished today, a day already built,
+// rewrites that day of OMEGA through its production_events change (pageWork.addChange), and today's
+// deploy-frequency of OMEGA counts it.
+func TestAPostedDeployWrittenAfterItsDayWasBuiltRewritesThatDay(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.putFailures(t, "OMEGA", omegaJob, []string{delivery.FailureSourceEvents}, sourcesDay, eventsSource)
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.settle(t)
+	if got := r.deploysOn(t, "OMEGA", refresherToday); got.n != 0 {
+		t.Fatalf("OMEGA counts %d deploys today before the post, want none", got.n)
+	}
+	r.post(t, "OMEGA", "release-3", refresherToday.Add(time.Hour))
+	report, _ := r.pass(t)
+	if !report.days[builtDay{family: walkDelivery, project: "OMEGA", day: refresherToday}] {
+		t.Errorf("the pass after the post built %v, want OMEGA's day %s among them", report.sorted(), refresherToday.Format(time.DateOnly))
+	}
+	if got := r.deploysOn(t, "OMEGA", refresherToday); got.n != 1 {
+		t.Errorf("OMEGA counts %d deploys today after the post, want 1", got.n)
+	}
+	window := Range{From: refresherToday, To: refresherToday.AddDate(0, 0, 1)}
+	wantFigures(t, "after the late posted deploy", r.failureValues(t, "OMEGA", window), map[string]*float64{
+		"change-fail-rate.total": new(1.0), "deployment-rework-rate.total": new(1.0),
+	})
+	expectTruth(t, "after the late posted deploy", r.storedFigures(t), r.truthFigures(t))
+}
+
+// TestAPostedPullRequestRewritesTheMergeDayOfARepositoryGitHubSpellsInCapitals (dispatch://INFRA-978,
+// R12): delivery_pull_requests keeps a repository as GitHub spells it, Acme/Omega-Tools, and the
+// record names each pull request in lower case (prodevents.ParsePullRequest). Once the history has
+// settled with #5 of it, merged yesterday at 09:00 for OMEGA-1, and a deploy posted to OMEGA that
+// finished yesterday at 01:00 naming none, so that OMEGA's events repository starts yesterday
+// (readPostedRepos), a deploy posted to OMEGA that names acme/omega-tools#5 and finished today at
+// 01:00 rewrites the day #5 merged on, which no other change names, and OMEGA's merge-to-production
+// of its events repository times #5 there: 960 minutes. Red where the read of the posted pull
+// requests' merges compares the repository as stored: it finds no merge, and that day keeps no
+// minutes.
+func TestAPostedPullRequestRewritesTheMergeDayOfARepositoryGitHubSpellsInCapitals(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	const tools = "Acme/Omega-Tools"
+	merged := sourcesDay.Add(9 * time.Hour)
+	if err := delivery.UpsertPullRequest(t.Context(), r.database.Pool, delivery.DeliveryPullRequest{
+		Repo: tools, Number: 5, Title: "OMEGA-1: change 5", URL: "https://github.com/" + tools + "/pull/5", Author: "dev-ana",
+		CreatedAt: new(merged.Add(-time.Hour)), MergedAt: new(merged), IssueKey: new("OMEGA-1"), Sessions: []string{},
+	}); err != nil {
+		t.Fatalf("write %s#5: %v", tools, err)
+	}
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(time.Hour))
+	r.settle(t)
+	r.post(t, "OMEGA", "release-5", refresherToday.Add(time.Hour), "acme/omega-tools#5")
+	report, _ := r.pass(t)
+	if !report.days[builtDay{family: walkDelivery, project: "OMEGA", day: sourcesDay}] {
+		t.Errorf("the pass after the post built %v, want OMEGA's day %s, the day #5 merged, among them", report.sorted(), sourcesDay.Format(time.DateOnly))
+	}
+	var minutes []float64
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select coalesce(samples, '{}') from eval_days
+		where eval_id = $1 and deploy_repo = $2 and series = 'minutes' and repo = '' and day = $3
+	`, EvalID("OMEGA", SlugMergeToProduction), EventsRepo("OMEGA"), sourcesDay).Scan(&minutes); err != nil {
+		t.Fatalf("read OMEGA's merge-to-production of its events repository: %v", err)
+	}
+	if !slices.Equal(minutes, []float64{960}) {
+		t.Errorf("OMEGA's posted merge-to-production of %s times %v, want #5's 960 minutes alone", sourcesDay.Format(time.DateOnly), minutes)
+	}
+	expectTruth(t, "after the post naming a pull request in lower case", r.storedFigures(t), r.truthFigures(t))
 }

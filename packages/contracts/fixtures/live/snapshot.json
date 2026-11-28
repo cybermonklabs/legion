@@ -229,28 +229,30 @@
           }
         },
         "change_failure_rate": {
+          "failed": null,
+          "total": null,
+          "rate": null,
           "per_pr": {
-            "confirmed": 0,
-            "pending": 0,
-            "rejected": 0,
-            "reverts": 0,
-            "total": 0,
+            "confirmed": null,
+            "pending": null,
+            "rejected": null,
+            "reverts": null,
+            "total": null,
             "rate": null
           },
           "per_deploy": {
-            "confirmed": 0,
-            "pending": 0,
-            "rejected": 0,
-            "reverts": 0,
-            "total": 0,
+            "confirmed": null,
+            "total": null,
             "rate": null,
-            "confirmed_or_pending": 0,
+            "confirmed_or_pending": null,
             "upper_bound_rate": null
           }
         },
         "time_to_restore": {
           "median_minutes": null
         },
+        "failed_deployment_recovery": null,
+        "deployment_rework_rate": null,
         "rework_share": 0,
         "deploy_run_success": {
           "concluded": 0,
@@ -260,7 +262,6 @@
         },
         "daily": []
       },
-      "flags_source": "none",
       "unowned_p0": [],
       "targets": {
         "deploys_per_day": {
@@ -316,7 +317,6 @@
       "status": {
         "deploys_per_day": null,
         "change_failure_rate": null,
-        "change_failure_rate_upper_bound": null,
         "merge_to_production_median": null,
         "merge_to_production": null,
         "opened_to_merge": null,
@@ -410,7 +410,7 @@
       }
     },
     "fields": {
-      "measures": "c09549d2a3e9a64f",
+      "measures": "8771899fb4caae1f",
       "waiting": "65f5705a0510ccf7",
       "window": "037ec912c5c440a4"
     }

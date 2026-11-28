@@ -1,4 +1,4 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link, useLocation, useParams } from "react-router-dom";
 
@@ -12,6 +12,11 @@ import type {
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill } from "../../components/Pill";
+import {
+  PERSON_SCOPE_LACKING,
+  useBroadcast,
+  usePersonScope,
+} from "../../hooks/useHoldsPersonScope";
 import {
   borderDefault,
   card,
@@ -179,19 +184,21 @@ function BroadcastRecipientRow({
   );
 }
 
-/** One broadcast: what was sent, and where every recipient's copy of it got to. */
+/** One broadcast: what was sent, and where every recipient's copy of it got to. It is read under
+ *  the `person` scope, which an agent viewer's bearer may not hold: it is asked for once a read
+ *  says the viewer's credential holds it (`useBroadcast`), and for a viewer whose credential lacks
+ *  it (`usePersonScope`) nothing is asked and the page says why it has no broadcast. */
 export function BroadcastPage(): ReactNode {
   const { id = "" } = useParams<{ id: string }>();
   const location = useLocation();
   const excluded = exclusionsFromState(location.state);
   const { agents, current } = useAgents(true, true);
-  const broadcast = useQuery({
-    queryFn: () => api.getBroadcast(id),
-    // Keyed under ["broadcast"], the prefix every issue-less message event invalidates, so a
-    // recipient's delivery receipt or reply lands here without a poll.
-    queryKey: ["broadcast", id],
-  });
+  const scope = usePersonScope();
+  const broadcast = useBroadcast(id);
 
+  if (scope === "lacking") {
+    return <p className={dangerText}>Could not load this broadcast: {PERSON_SCOPE_LACKING}</p>;
+  }
   if (broadcast.isPending) return <LoadingSkeleton label="Loading broadcast" />;
   if (broadcast.isError) {
     return (

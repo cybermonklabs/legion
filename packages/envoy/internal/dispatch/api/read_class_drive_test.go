@@ -126,6 +126,10 @@ var readRowDrives = map[string]rowDrive{
 		volatile:  evalWindowVolatile},
 	"GET /api/v1/evals": {target: "/api/v1/evals?project=$project", statement: statementOf(`\bselect\s+key\s+from\s+projects\s+order\s+by\s+key\b`),
 		volatile: evalReadVolatile},
+	// The delivery reads read the project seedWrites configures (saveDeliveryRule): the list its
+	// page of the record, and the settings its row with each source's reconcile progress.
+	"GET /api/v1/projects/{key}/production-events": {target: "/api/v1/projects/$deliveryProject/production-events",
+		statement: statementOf(`\bwith\s+matched\s+as\s*\(\s*select\s+\*,\s*coalesce\(finished_at,\s*detected_at\)\s+as\s+at\b`)},
 	"GET /api/v1/settings/repo-projects": {target: "/api/v1/settings/repo-projects", statement: statementOf(`\bfrom\s+repo_projects\s+order\s+by\s+repo\b`)},
 	// The handler asks GitHub; its one statement is the GitHub client's read of the rate limit
 	// GitHub last answered, which it reads before it asks.
@@ -140,7 +144,9 @@ var readRowDrives = map[string]rowDrive{
 		statement: statementOf(`\bfrom\s+issues\s+i\s+left\s+join\s+\(\s*workflow_tuples\b`)},
 	"GET /api/v1/settings/project-default-assignees": {target: "/api/v1/settings/project-default-assignees",
 		statement: statementOf(`\bselect\s+key,\s*default_assignee\s+from\s+projects\b`)},
-	"GET /api/v1/settings/new-issue":           {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/settings/new-issue": {target: "/api/v1/settings/new-issue", fromMemory: "the new-issue settings are the deployment's configuration, held in memory"},
+	"GET /api/v1/projects/{key}/settings/delivery": {target: "/api/v1/projects/$deliveryProject/settings/delivery",
+		statement: statementOf(`\bfrom\s+project_delivery_settings\s+s\s+join\s+projects\s+p\s+on\s+p\.key\s*=\s*s\.project_key\b`)},
 	"GET /api/v1/settings/delivery":            {target: "/api/v1/settings/delivery", statement: statementOf(`\bfrom\s+delivery_settings\b`)},
 	"GET /api/v1/projects/{key}/legion/daemon": {target: "/api/v1/projects/$project/legion/daemon", statement: statementOf(`\bfrom\s+legion_settings\s+where\s+project\b`)},
 	"GET /api/v1/projects/{key}/legion/board": {target: "/api/v1/projects/$project/legion/board", statement: statementOf(`\bfrom\s+legion_reads\b`),

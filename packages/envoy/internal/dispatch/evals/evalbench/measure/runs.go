@@ -47,9 +47,10 @@ func runOf(run int, measured []measuredCase) paintRun {
 	return line
 }
 
-// recordRun appends the run's line to path.
-func recordRun(path string, run paintRun) error {
-	encoded, err := json.Marshal(run)
+// recordRun appends one run's line, line as JSON, to path: a first paint's run (paintRun) or a
+// k14 paint's (k14PaintRecord).
+func recordRun(path string, line any) error {
+	encoded, err := json.Marshal(line)
 	if err != nil {
 		return err
 	}

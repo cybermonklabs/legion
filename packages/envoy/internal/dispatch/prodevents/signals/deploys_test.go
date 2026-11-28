@@ -1,0 +1,488 @@
+package signals
+
+import (
+	"slices"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/prodevents"
+)
+
+// changeRowsOf is how many change rows of the record's kind name id, pending or drained.
+func (r *rig) changeRowsOf(id string) int {
+	r.t.Helper()
+	var count int
+	if err := r.pool.QueryRow(r.ctx, `select
+		(select count(*) from delivery_changes_pending where kind = 'production_events' and ref = $1)
+		+ (select count(*) from delivery_changes where kind = 'production_events' and ref = $1)`, id).Scan(&count); err != nil {
+		r.t.Fatalf("count the change rows of %s: %v", id, err)
+	}
+	return count
+}
+
+// TestADeployRunWhoseProductionJobAndApplyStepSucceedWritesOneDeployRow: a deploy run on main
+// whose production job and apply step succeed is one deploy row of the repository's owner, keyed
+// by its run, started at the run's creation, finished at its production job's completion, holding
+// the run's head and the merge commit of the pull request it ships, and the pull request. A second
+// delivery of the same run, written again by a run writer, writes no second row, moves none, and
+// logs no change.
+func TestADeployRunWhoseProductionJobAndApplyStepSucceedWritesOneDeployRow(t *testing.T) {
+	r := newRig(t)
+	r.pullRequest(7, at(30), sha("7"), "")
+	r.deployRun(100, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+
+	rows := r.deploys()
+	if len(rows) != 1 {
+		t.Fatalf("deploy rows = %+v, want one", rows)
+	}
+	row := rows[0]
+	if row.ProjectKey != alpha || row.Kind != prodevents.KindDeploy || row.Source != prodevents.SourceGitHub ||
+		row.SourceRef != "github:100" || row.Status != prodevents.StatusSucceeded || row.Repo != widgets ||
+		row.URL != "https://github.com/acme/widgets/actions/runs/100" || row.Actor != loopActor {
+		t.Fatalf("deploy row = %+v", row)
+	}
+	if !row.StartedAt.Equal(at(60)) || !row.FinishedAt.Equal(at(70)) {
+		t.Errorf("deploy row times = %v .. %v, want the run's creation %v and the job's completion %v", row.StartedAt, row.FinishedAt, at(60), at(70))
+	}
+	if !slices.Equal(row.Commits, []string{sha("a"), sha("7")}) || !slices.Equal(row.PullRequests, []string{"acme/widgets#7"}) {
+		t.Errorf("deploy row ships %v at %v, want acme/widgets#7 at the head and its merge commit", row.PullRequests, row.Commits)
+	}
+	changes := r.changeRowsOf(row.ID)
+	if changes != 1 {
+		t.Errorf("the deploy row's write logged %d change rows, want 1", changes)
+	}
+
+	r.deployRun(100, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	again := r.deploys()
+	if len(again) != 1 || again[0].ID != row.ID || !again[0].FinishedAt.Equal(*row.FinishedAt) {
+		t.Fatalf("after a second delivery, deploy rows = %+v, want the one row %s unmoved", again, row.ID)
+	}
+	if got := r.changeRowsOf(row.ID); got != changes {
+		t.Errorf("a second delivery logged %d change rows of the deploy row, want none", got-changes)
+	}
+}
+
+// TestARunWhoseApplyStepFailedWritesNoDeployRow: a run whose production job succeeded but whose
+// apply step, the step the rule names, did not, applied nothing, and makes no deploy row; nor does
+// a run of a job the rule does not name.
+func TestARunWhoseApplyStepFailedWritesNoDeployRow(t *testing.T) {
+	r := newRig(t)
+	r.deployRun(110, at(60), sha("b"), prodJob, success, failure)
+	r.deployRun(111, at(90), sha("c"), canaryJob, success, success)
+	r.passDeploys()
+	if rows := r.deploys(); len(rows) != 0 {
+		t.Fatalf("deploy rows = %+v, want none", rows)
+	}
+}
+
+// TestAJobWriteMakesTheDeployRowOnceTheProductionJobFinishes: the job intake writes a running
+// deploy run's jobs as each finishes (delivery.UpsertRunJobs). While the production job runs, the
+// run is no deploy and has no row; the job write that records its success makes the row, from the
+// change that write logs once it has committed.
+func TestAJobWriteMakesTheDeployRowOnceTheProductionJobFinishes(t *testing.T) {
+	r := newRig(t)
+	r.deployRun(120, at(60), sha("d"), prodJob, nil, nil)
+	r.passDeploys()
+	if rows := r.deploys(); len(rows) != 0 {
+		t.Fatalf("with the production job running, deploy rows = %+v, want none", rows)
+	}
+	r.deployRun(120, at(60), sha("d"), prodJob, success, success)
+	r.passDeploys()
+	if row := r.deployOf(120); !row.FinishedAt.Equal(at(70)) {
+		t.Errorf("the deploy row finished at %v, want the job's completion %v", row.FinishedAt, at(70))
+	}
+}
+
+// TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor: the deploys feed judges its cursor
+// afresh before each page of the change log, by its clock's reading for that page
+// (delivery.ChangeCursor, CursorLost). Its cursor last read the log to its end more than the
+// retention ago, and a backlog recorded past the retention waits after it: a full page of changes
+// the feed derives nothing from (a repository no rule reads), then deploy run 300's. A prune that
+// runs once the first page has moved the cursor takes the change the cursor rests on, and run
+// 300's changes, which the feed never read, with it. So the second page finds the cursor lost: the
+// feed forgets the recorded rule, derives the repository whole, and run 300 gets its deploy row.
+// Red where the feed judges its cursor once a pass: its second page reads on after the pruned
+// changes, finds none, and run 300 gets no row.
+func TestAPruneBetweenTwoPagesOfTheDeploysFeedLosesItsCursor(t *testing.T) {
+	r := newRig(t)
+	r.passDeploys()
+	head, err := delivery.ChangesHead(r.ctx, r.pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.exec("a full page of changes no rule reads", `insert into delivery_changes (kind, repo, ref)
+		select 'session_group', 'acme/elsewhere', n::text from generate_series(1, $1::int) n`, page)
+	r.deployRun(300, at(60), sha("e"), prodJob, success, success)
+	if _, err := delivery.DrainPending(r.ctx, r.pool); err != nil {
+		t.Fatalf("drain the change log's outbox: %v", err)
+	}
+	r.exec("record the backlog past the retention", `update delivery_changes set at = now() - interval '2 days' where seq > $1`, head.Seq)
+	r.exec("leave the log unread to its end past the retention", `update production_signal_cursors
+		set updated_at = now() - interval '25 hours' where name = $1`, deploysCursor)
+	// The prune, run by the first move of the cursor past the head: PruneChanges' statement.
+	r.exec("make the prune", `create function signals_test_prune() returns trigger language plpgsql as $$
+		begin
+			delete from delivery_changes where at < now() - interval '24 hours';
+			return new;
+		end $$`)
+	r.exec("prune once the first page moves the cursor", `create trigger signals_test_prune after update on production_signal_cursors
+		for each row when (new.name = 'deploys' and new.position > `+strconv.FormatInt(head.Seq, 10)+`) execute function signals_test_prune()`)
+	r.passDeploys()
+	var left int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from delivery_changes where seq > $1 and at < now() - interval '24 hours'`, head.Seq).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the backlog holds %d changes after the pass (%v), want the prune to have taken them all", left, err)
+	}
+	if !slices.ContainsFunc(r.deploys(), func(row prodevents.Event) bool { return row.SourceRef == prodevents.GitHubSourceRef(300) }) {
+		t.Errorf("deploy rows = %+v, want run 300's, whose changes the prune took before the feed read them", r.deploys())
+	}
+}
+
+// TestARuleChangeDerivesTheRepositorysDeployRowsAgain: a save that changes the repository's rule
+// derives its GitHub deploy rows again on the next pass. A run the new rule calls a deploy gains
+// its row; a row the new rule does not call a deploy stays, dropped, whether a failure blames it or
+// not, and each failure on it is rejected by the drop's writer (prodevents.DropWriter) for a reason
+// that names the rule change.
+func TestARuleChangeDerivesTheRepositorysDeployRowsAgain(t *testing.T) {
+	r := newRig(t)
+	r.deployRun(130, at(60), sha("e"), prodJob, success, success)
+	r.deployRun(131, at(120), sha("f"), prodJob, success, success)
+	r.deployRun(132, at(180), sha("1"), canaryJob, success, success)
+	r.passDeploys()
+	if rows := r.deploys(); len(rows) != 2 {
+		t.Fatalf("under the first rule, deploy rows = %+v, want runs 130 and 131", rows)
+	}
+	blamed, unblamed := r.deployOf(130), r.deployOf(131)
+	flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
+		ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson, SourceRef: prodevents.PersonSourceRef(blamed.ID, "alice"),
+		Actor: person, DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
+	}, nil)
+	if err != nil {
+		t.Fatalf("flag the deploy of run 130: %v", err)
+	}
+
+	r.saveRule(canaryJob)
+	r.passDeploys()
+
+	added := r.deployOf(132)
+	if added.ProjectKey != alpha || added.Status != prodevents.StatusSucceeded {
+		t.Errorf("the run the new rule calls a deploy = %+v", added)
+	}
+	if row, err := prodevents.Get(r.ctx, r.pool, alpha, unblamed.ID); err != nil || row.Status != prodevents.StatusDropped {
+		t.Errorf("the row of run 131, which nothing blames, = %+v (%v); want it kept, dropped", row, err)
+	}
+	kept, err := prodevents.Get(r.ctx, r.pool, alpha, blamed.ID)
+	if err != nil {
+		t.Fatalf("the row of run 130, which a failure blames, is gone: %v", err)
+	}
+	if kept.Status != prodevents.StatusDropped || !strings.Contains(kept.Note, "deploy rule of acme/widgets changed") {
+		t.Errorf("the blamed row = status %q, note %q; want dropped, naming the rule change", kept.Status, kept.Note)
+	}
+	rejected, err := prodevents.Get(r.ctx, r.pool, alpha, flagged.ID)
+	if err != nil {
+		t.Fatalf("read the failure: %v", err)
+	}
+	if rejected.State != prodevents.StateRejected || rejected.StateReason == nil ||
+		!strings.Contains(*rejected.StateReason, "deploy rule of acme/widgets changed") ||
+		!strings.Contains(*rejected.StateReason, canaryJob) || !prodevents.RejectedByDrop(rejected) {
+		t.Errorf("the failure on the dropped row = state %q, reason %v, by %v; want rejected by the drop's writer naming the rule change",
+			rejected.State, rejected.StateReason, rejected.StateBy)
+	}
+	if _, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("e")); err != nil || held {
+		t.Errorf("a signal finds the dropped deploy by its commit (%v, %v): no signal blames it", held, err)
+	}
+}
+
+// TestARuleThatDropsADeployAndTakesItBackCountsItAndItsFailuresAgain (the architect's ruling,
+// dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 4): a rule change that no
+// longer calls runs 150 and 151 deploys keeps both rows, dropped, and rejects each counted failure
+// on run 150's; a later change back to the first rule counts the same two rows again, with their
+// ids, and each failure the drop rejected counts again, for a reason that names the later change.
+// A failure a person rejected before the drop, one a person rejected while the deploy was dropped,
+// and a check_fail whose result was retracted while the deploy was dropped stay rejected, each with
+// its own reason and writer.
+func TestARuleThatDropsADeployAndTakesItBackCountsItAndItsFailuresAgain(t *testing.T) {
+	r := newRig(t)
+	issue := r.issue(1)
+	r.deployRun(150, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(151, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	blamed, unblamed := r.deployOf(150), r.deployOf(151)
+	flag := func(login string) string {
+		t.Helper()
+		flagged, _, err := prodevents.Write(r.ctx, r.pool, prodevents.Event{
+			ProjectKey: alpha, Kind: prodevents.KindFailure, Source: prodevents.SourcePerson,
+			SourceRef: prodevents.PersonSourceRef(blamed.ID, login), Actor: model.Actor{Kind: "user", ID: login},
+			DeployID: new(blamed.ID), Signal: new(prodevents.SignalPerson), DetectedAt: new(at(200)),
+		}, nil)
+		if err != nil {
+			t.Fatalf("%s's flag of run 150's deploy: %v", login, err)
+		}
+		return flagged.ID
+	}
+	reject := func(id, reason string) {
+		t.Helper()
+		if _, err := prodevents.SetState(r.ctx, r.pool, alpha, id, prodevents.StateChange{
+			State: prodevents.StateRejected, Reason: reason, Actor: person, At: at(210),
+		}); err != nil {
+			t.Fatalf("reject %s: %v", id, err)
+		}
+	}
+	stateOf := func(id string) prodevents.Event {
+		t.Helper()
+		row, err := prodevents.Get(r.ctx, r.pool, alpha, id)
+		if err != nil {
+			t.Fatalf("read failure %s: %v", id, err)
+		}
+		return row
+	}
+	counted, before, after := flag("alice"), flag("bob"), flag("carol")
+	result := r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	r.passEvents()
+	checkFail := r.boundTo(result)
+	if checkFail == "" || stateOf(checkFail).State != prodevents.StateCounted {
+		t.Fatalf("the failed check on run 150's commit made no counted check_fail (row %q)", checkFail)
+	}
+	const beforeReason, afterReason, retracted = "a staging alert", "bob flagged this one already", "The check ran against staging."
+	reject(before, beforeReason)
+
+	r.saveRule(canaryJob)
+	r.passDeploys()
+	for _, was := range []prodevents.Event{blamed, unblamed} {
+		if row, err := prodevents.Get(r.ctx, r.pool, alpha, was.ID); err != nil || !row.Dropped() {
+			t.Fatalf("under the canary rule, the row of %s = %+v (%v); want it kept, dropped", was.SourceRef, row, err)
+		}
+	}
+	for _, id := range []string{counted, after, checkFail} {
+		if row := stateOf(id); !prodevents.RejectedByDrop(row) {
+			t.Fatalf("under the canary rule, failure %s = state %q by %v; want rejected by the drop's writer", id, row.State, row.StateBy)
+		}
+	}
+	reject(after, afterReason)
+	r.retract(issue, result, "c1", sha("a"), retracted)
+	r.passEvents()
+
+	r.saveRule(prodJob)
+	r.passDeploys()
+	for _, was := range []prodevents.Event{blamed, unblamed} {
+		if row, err := prodevents.Get(r.ctx, r.pool, alpha, was.ID); err != nil || row.Status != prodevents.StatusSucceeded {
+			t.Errorf("back under the first rule, the row of %s = %+v (%v); want %s again, succeeded, ALPHA's", was.SourceRef, row, err, was.ID)
+		}
+	}
+	if rows := r.deploys(); len(rows) != 2 || rows[0].ID != blamed.ID || rows[1].ID != unblamed.ID {
+		t.Errorf("back under the first rule, the deploy rows = %+v; want runs 150 and 151's rows %s and %s alone", rows, blamed.ID, unblamed.ID)
+	}
+	if row := stateOf(counted); row.State != prodevents.StateCounted || row.StateReason == nil || row.StateBy == nil ||
+		!strings.Contains(*row.StateReason, "deploy rule of acme/widgets changed") || !strings.Contains(*row.StateReason, prodJob) ||
+		!strings.Contains(*row.StateReason, "a deploy again") || *row.StateBy != loopActor {
+		t.Errorf("the failure the drop rejected = state %q, reason %v, by %v; want counted again, naming the rule that takes the deploy back",
+			row.State, row.StateReason, row.StateBy)
+	}
+	for id, reason := range map[string]string{before: beforeReason, after: afterReason, checkFail: retracted} {
+		if row := stateOf(id); row.State != prodevents.StateRejected || row.StateReason == nil || *row.StateReason != reason ||
+			row.StateBy == nil || *row.StateBy != person {
+			t.Errorf("failure %s = state %q, reason %v, by %v; want it still rejected, for %q by %v", id, row.State, row.StateReason, row.StateBy, reason, person)
+		}
+	}
+	if found, held, err := prodevents.DeployForCommit(r.ctx, r.pool, alpha, sha("a")); err != nil || !held || found.ID != blamed.ID {
+		t.Errorf("a signal finds %q (held %v, %v) by run 150's commit, want its row %s again", found.ID, held, err, blamed.ID)
+	}
+}
+
+// TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures (the architect's
+// ruling, dispatch://INFRA-978/comment/e6c99e06-0589-4692-b30f-ed64684bd33a, point 4): acme/widgets's
+// one source moves from ALPHA to BETA and back. At each step the record holds the same two GitHub
+// deploy rows, runs 400 and 401, with their ids, each of the project whose source reads the
+// repository, and run 400's deploy, which ships no pull request, counts for that project alone. It
+// holds the same two failures, each counted and blaming run 400's row: ALPHA-1's check_fail and the
+// revert of #5, restored by run 401's row. The revert stays one row: BETA, which counts reverts as
+// ALPHA does, writes no second one.
+func TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "")
+	issue := r.issue(1)
+	r.deployRun(400, at(60), sha("a"), prodJob, success, success)
+	r.deployRun(401, at(120), sha("b"), prodJob, success, success)
+	r.passDeploys()
+	shipped, restoring := r.deployOf(400), r.deployOf(401)
+	r.checkResult(issue, "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if err := delivery.RecordRevert(r.ctx, r.pool, delivery.Revert{
+		Repo: widgets, Number: 9, RevertsRepo: widgets, RevertsNumber: 5, RevertsMergeCommitSHA: new(sha("a")),
+		MergedAt: at(90), MergeCommitSHA: new(sha("9")),
+	}); err != nil {
+		t.Fatalf("record the revert: %v", err)
+	}
+	pass := func() {
+		t.Helper()
+		r.passDeploys()
+		r.passEvents()
+	}
+	requireStep := func(step, owner string) {
+		t.Helper()
+		deploys := r.deploys()
+		if len(deploys) != 2 || deploys[0].ID != shipped.ID || deploys[1].ID != restoring.ID {
+			t.Fatalf("%s, the deploy rows = %+v; want runs 400 and 401's rows %s and %s", step, deploys, shipped.ID, restoring.ID)
+		}
+		for _, deploy := range deploys {
+			if deploy.ProjectKey != owner || deploy.Status != prodevents.StatusSucceeded {
+				t.Errorf("%s, the row of %s is %s's, %s; want %s's, succeeded", step, deploy.SourceRef, deploy.ProjectKey, deploy.Status, owner)
+			}
+		}
+		facts, err := storedDeployFacts(r.ctx, r.pool, deploys[0])
+		if err != nil {
+			t.Fatalf("%s, read the facts of run 400's deploy: %v", step, err)
+		}
+		if projects := prodevents.DeployProjects(deploys[0], facts); !slices.Equal(projects, []string{owner}) {
+			t.Errorf("%s, run 400's deploy counts for %v, want %s alone", step, projects, owner)
+		}
+		var all int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&all); err != nil {
+			t.Fatalf("%s, count the failure rows: %v", step, err)
+		}
+		failures, err := prodevents.FailuresOf(r.ctx, r.pool, []string{shipped.ID})
+		if err != nil {
+			t.Fatalf("%s, read the failures of run 400's deploy: %v", step, err)
+		}
+		signals := make([]string, len(failures))
+		for i, failure := range failures {
+			signals[i] = *failure.Signal
+			if failure.State != prodevents.StateCounted || failure.ProjectKey != alpha {
+				t.Errorf("%s, the %s row is %s's, %s; want ALPHA's, counted", step, *failure.Signal, failure.ProjectKey, failure.State)
+			}
+			if *failure.Signal == prodevents.SignalRevert && (failure.RestoredByDeploy == nil || *failure.RestoredByDeploy != restoring.ID) {
+				t.Errorf("%s, the revert is restored by %v, want run 401's row %s", step, failure.RestoredByDeploy, restoring.ID)
+			}
+		}
+		slices.Sort(signals)
+		if all != 2 || !slices.Equal(signals, []string{prodevents.SignalCheckFail, prodevents.SignalRevert}) {
+			t.Errorf("%s, the record holds %d failure rows, and run 400's deploy is blamed by %v; want the check_fail and the revert alone",
+				step, all, signals)
+		}
+	}
+
+	pass()
+	requireStep("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	pass()
+	requireStep("once the source moved to BETA", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	pass()
+	requireStep("once the source moved back to ALPHA", alpha)
+}
+
+// TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack (the architect's ruling,
+// dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): a fail of an after_merge
+// check on a BETA issue, at a commit only ALPHA's deploy holds, is refused while that deploy counts
+// for ALPHA alone (ruling 2(a)), and it stays refused. When acme/widgets's one source moves from
+// ALPHA to BETA, the derive that moves run 298's row binds no row to the result; when the source
+// moves back, no BETA row blames ALPHA's deploy, so ALPHA's numbers are as they were before the
+// move. The refusal is logged once, naming the result and the deploy.
+func TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
+	r := newRig(t)
+	refusals := r.logRefusals()
+	r.project("BETA", "acme/beta")
+	r.deployRun(298, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(298)
+	result := r.checkResult(r.issueOf("BETA", 1), "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
+		t.Fatalf("RecordCheckFailure on BETA's issue at ALPHA's commit = %v, %v; want no row", created, err)
+	}
+	pass := func() {
+		t.Helper()
+		r.passDeploys()
+		r.passEvents()
+	}
+	requireRefused := func(step, owner string) {
+		t.Helper()
+		if moved := r.deployOf(298); moved.ID != deploy.ID || moved.ProjectKey != owner {
+			t.Fatalf("%s, run 298's row is %s of %s; want %s of %s", step, moved.ID, moved.ProjectKey, deploy.ID, owner)
+		}
+		if bound := r.boundTo(result); bound != "" {
+			t.Errorf("%s, BETA's refused result is bound to %q; want it unbound", step, bound)
+		}
+		var rows int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&rows); err != nil || rows != 0 {
+			t.Errorf("%s, the record holds %d failure rows across every project (%v); want none", step, rows, err)
+		}
+	}
+
+	pass()
+	requireRefused("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	pass()
+	requireRefused("once the source moved to BETA", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	pass()
+	requireRefused("once the source moved back to ALPHA", alpha)
+	if logged, want := refusals(), []string{prodevents.SignalCheckFail + " " + result + " " + deploy.ID}; !slices.Equal(logged, want) {
+		t.Errorf("the refusals logged = %q; want %q, once", logged, want)
+	}
+}
+
+// TestTheDeployRowWriteTakesNoChangeLogLock: the adapter writes a deploy row in a transaction of its
+// own that takes the delivery change log's lock nowhere (dispatch://INFRA-978, D8 and R13), so the
+// row commits while another transaction holds that lock, with its change row waiting in the outbox;
+// only the drain after the commit waits for the lock, and moves the change row once it is free.
+func TestTheDeployRowWriteTakesNoChangeLogLock(t *testing.T) {
+	r := newRig(t)
+	r.deployRun(140, at(60), sha("9"), prodJob, success, success)
+
+	gate, err := r.pool.Begin(r.ctx)
+	if err != nil {
+		t.Fatalf("begin the gate: %v", err)
+	}
+	defer gate.Rollback(r.ctx)
+	if _, err := gate.Exec(r.ctx, `select pg_advisory_xact_lock(6900, 0)`); err != nil {
+		t.Fatalf("take the change log's lock: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- passDeploys(r.ctx, r.pool) }()
+
+	var row prodevents.Event
+	for deadline := time.Now().Add(30 * time.Second); ; {
+		if rows := r.deploys(); len(rows) == 1 {
+			row = rows[0]
+			break
+		}
+		select {
+		case err := <-done:
+			t.Fatalf("the pass ended (%v) with no deploy row while the change log's lock was held", err)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no deploy row committed in 30 s while another transaction held the change log's lock")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	var pending int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from delivery_changes_pending where kind = 'production_events' and ref = $1`,
+		row.ID).Scan(&pending); err != nil || pending != 1 {
+		t.Fatalf("with the lock held, the row's pending change rows = %d (%v), want 1 waiting in the outbox", pending, err)
+	}
+	if err := gate.Rollback(r.ctx); err != nil {
+		t.Fatalf("release the change log's lock: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("the pass: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatalf("the pass did not end within 30 s of the lock's release")
+	}
+	var drained int
+	if err := r.pool.QueryRow(r.ctx, `select count(*) from delivery_changes where kind = 'production_events' and ref = $1`,
+		row.ID).Scan(&drained); err != nil || drained != 1 {
+		t.Errorf("once the lock is free, the row's drained change rows = %d (%v), want 1", drained, err)
+	}
+}

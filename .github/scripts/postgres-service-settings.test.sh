@@ -43,7 +43,7 @@ case $1 in
       setting=${2#show }
       case $setting in
         fsync | full_page_writes | synchronous_commit) value=off ;;
-        max_connections) value=1000 ;;
+        max_connections) value=1010 ;;
         max_prepared_transactions) value=10 ;;
         shared_memory_size) value=171MB ;;
         *) echo "fake docker: no setting $setting" >&2; exit 2 ;;
@@ -83,13 +83,13 @@ run() {
   calls=$(cat "$work/docker.log")
 }
 
-all="fsync=off full_page_writes=off synchronous_commit=off max_connections=1000 max_prepared_transactions=10 shm_size=1073741824"
+all="fsync=off full_page_writes=off synchronous_commit=off max_connections=1010 max_prepared_transactions=10 shm_size=1073741824"
 
 echo "case: --command prints the server's command line"
 run -- --command
 check "exits 0" "$(is "$status" 0)"
 check "prints postgres and one -c per setting, in the read-back's order" \
-  "$(is "$out" "postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10")"
+  "$(is "$out" "postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1010 -c max_prepared_transactions=10")"
 check "asks docker nothing" "$(is "$calls" "")"
 
 echo "case: a server on every setting, with a 1 GiB /dev/shm"
@@ -128,7 +128,7 @@ check "and refuses nothing else" "$(is "$(grep -c '::error::' <<<"$out")" 1)"
 echo "case: a server off two settings, as a service with no command: line runs"
 run FAKE_PG_VALUES="max_connections=100 max_prepared_transactions=0" -- c0ffee db
 check "exits 1" "$(is "$status" 1)"
-check "names the first" "$(contains "$out" '^::error::the Postgres service db reports max_connections=100, not 1000$')"
+check "names the first" "$(contains "$out" '^::error::the Postgres service db reports max_connections=100, not 1010$')"
 check "names the second" "$(contains "$out" '^::error::the Postgres service db reports max_prepared_transactions=0, not 10$')"
 check "and no value that is as asked" "$(is "$(grep -c '::error::' <<<"$out")" 2)"
 

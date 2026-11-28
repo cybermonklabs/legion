@@ -9,6 +9,7 @@ import { displayTree } from "../../__tests__/display-trees";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { plannerAgent, searchResponse } from "../../__tests__/search-fixture";
 import { AGENT_LIST_REFILLING, ApiError, api } from "../../api/client";
+import { whoAmIQuery } from "../../api/queries";
 import type {
   Agent,
   ArchitectureTree,
@@ -244,6 +245,13 @@ function renderHost({
   const listAgentArtifacts = spyOn(api, "listAgentArtifacts").mockResolvedValue([shot]);
   const search = spyOn(api, "search").mockImplementation(searchAnswer);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The writer is alice, a person, whose sign-in holds the `person` scope the list of who has
+  // signed in and an agent's documents are read under.
+  client.setQueryData(whoAmIQuery().queryKey, {
+    event_head: "0",
+    kind: "user",
+    login: "alice@example.com",
+  });
   const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>

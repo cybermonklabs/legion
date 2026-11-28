@@ -344,7 +344,7 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	}
 	goSet = map[int]string{}
 	for _, pr := range stored {
-		if ComputeDeployedStatus(pr, waitingRepo, nil) == DeployedStatusNotTracked {
+		if !strings.EqualFold(pr.Repo, waitingRepo) {
 			continue
 		}
 		apply := ContainingRun(pr, waitingRepo, applies)

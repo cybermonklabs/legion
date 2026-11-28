@@ -17,9 +17,9 @@ func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 // now is the moment the histories of these tests end at.
 var now = time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
 
-// TestEveryModeButMergePRNeedsAProject: -legion, -base, -attribution and -delivery each write into
-// -project, so each is refused without one, and -merge-pr, which names its pull request by
-// repository and number and writes no project's rows, is not.
+// TestEveryModeButMergePRNeedsAProject: -legion, -base, -attribution, -delivery and -failures each
+// write into -project, so each is refused without one, and -merge-pr, which names its pull request
+// by repository and number and writes no project's rows, is not.
 func TestEveryModeButMergePRNeedsAProject(t *testing.T) {
 	for _, mode := range []struct {
 		name string
@@ -29,6 +29,7 @@ func TestEveryModeButMergePRNeedsAProject(t *testing.T) {
 		{"-base", options{base: true}},
 		{"-attribution", options{attribution: true}},
 		{"-delivery", options{delivery: true}},
+		{"-failures", options{failures: true}},
 		{"-delivery -merge-pr", options{delivery: true, mergePR: "acme/api#1"}},
 	} {
 		mode.o.database = "postgres://unused"
@@ -38,6 +39,33 @@ func TestEveryModeButMergePRNeedsAProject(t *testing.T) {
 	}
 	if err := check(options{database: "postgres://unused", mergePR: "acme/api#1"}); err != nil {
 		t.Errorf("-merge-pr with no -project was refused: %v", err)
+	}
+}
+
+// TestTheFailuresModeRefusesTheModesThatWriteItsSettings: -failures saves its projects' delivery
+// settings, as -attribution and -delivery save theirs, so it is refused beside either, and -base
+// writes the Legion history alone. -failures beside -legion is accepted.
+func TestTheFailuresModeRefusesTheModesThatWriteItsSettings(t *testing.T) {
+	for _, refused := range []struct {
+		name, says string
+		o          options
+	}{
+		{"-failures -attribution", "-failures", options{failures: true, attribution: true}},
+		{"-failures -delivery", "-failures", options{failures: true, delivery: true}},
+		{"-failures -base", "-base", options{failures: true, base: true}},
+	} {
+		refused.o.database, refused.o.project = "postgres://unused", "FAIL"
+		if err := check(refused.o); err == nil || !strings.Contains(err.Error(), refused.says) {
+			t.Errorf("%s was answered %v, want a refusal naming %s", refused.name, err, refused.says)
+		}
+	}
+	for _, accepted := range []options{
+		{failures: true, legion: true},
+	} {
+		accepted.database, accepted.project = "postgres://unused", "FAIL"
+		if err := check(accepted); err != nil {
+			t.Errorf("%+v was refused: %v", accepted, err)
+		}
 	}
 }
 
@@ -53,7 +81,7 @@ func TestCheckRefusesNoDatabaseNoModeAndModesThatCannotRunTogether(t *testing.T)
 		{"no mode", "at least one mode", options{database: "postgres://unused", project: "LEGK"}},
 		{"-base -legion", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, legion: true}},
 		{"-base -merge-pr", "-base writes the Legion history alone", options{database: "postgres://unused", project: "LEGK", base: true, mergePR: "acme/api#1"}},
-		{"-attribution -delivery", "the one delivery_settings row", options{database: "postgres://unused", project: "LEGK", attribution: true, delivery: true}},
+		{"-attribution -delivery", "each write the project's delivery settings", options{database: "postgres://unused", project: "LEGK", attribution: true, delivery: true}},
 	} {
 		if err := check(refused.o); err == nil || !strings.Contains(err.Error(), refused.reason) {
 			t.Errorf("%s was answered %v, want a refusal naming %q", refused.name, err, refused.reason)

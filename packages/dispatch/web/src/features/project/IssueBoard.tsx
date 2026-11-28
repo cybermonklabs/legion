@@ -16,12 +16,13 @@ import type { CSSProperties, ReactNode } from "react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { projectIssuesQuery, userStateQuery } from "../../api/queries";
+import { projectIssuesQuery } from "../../api/queries";
 import type { IssueSummary, UserState } from "../../api/types";
 import { AttentionBadge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { LabelPill, Pill, StatusPill } from "../../components/Pill";
+import { useUserState } from "../../hooks/useHoldsPersonScope";
 import { copyText } from "../../lib/clipboard";
 import {
   borderDefault,
@@ -326,7 +327,9 @@ export function IssueBoard({
     enabled: labels.length > 0,
   });
   const issues = labels.length === 0 ? allIssues : labelledIssues;
-  const userState = useQuery(userStateQuery());
+  // The viewer's per-issue state, read under the `person` scope once a read says the viewer's
+  // credential holds it (`useUserState`).
+  const userState = useUserState();
   /** The strip's client-side filters against this viewer's read state: what the board renders,
    *  what drop indices count, and what the PATCH names as neighbours. */
   const isVisible = useCallback(

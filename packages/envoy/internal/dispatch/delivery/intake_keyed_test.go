@@ -691,7 +691,7 @@ func TestAnIntakeSubscribesAtTheDeliverSubjectItIsGiven(t *testing.T) {
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "7", "author": "octocat",
 	})
 	awaitAcknowledged(t, natsClient)
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil || settings.LastEventAt == nil {
 		t.Fatalf("settings after the handled message = %+v, %v: want last_event_at recorded", settings, err)
 	}
@@ -762,7 +762,7 @@ func TestAStoppedIntakeStaysStoppedAcrossAReconnectAndSubscribesAgain(t *testing
 		"kind": "pr", "action": "opened", "repo": "acme/widgets", "number": "8", "author": "octocat",
 	})
 	awaitAcknowledged(t, natsClient)
-	settings, err := GetSettings(ctx, pool)
+	settings, err := getTestRule(ctx, pool)
 	if err != nil || settings.LastEventAt == nil {
 		t.Fatalf("settings after the message handled by the second subscription = %+v, %v: want last_event_at recorded", settings, err)
 	}

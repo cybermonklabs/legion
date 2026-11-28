@@ -11,6 +11,7 @@ import {
 } from "react";
 
 import { api } from "../../api/client";
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Artifact, Decision, DisplayTree, IssueDecisions } from "../../api/types";
 import { useTooltips } from "../../components/tooltips";
 import {
@@ -31,7 +32,6 @@ import { MentionField, type MentionFieldHandle } from "../conversation/MentionFi
 import { issueDecisionsQuery } from "../doc/spec-marks";
 import { useDecisionHeadingWords } from "../issue/decision-heading";
 import { usePlainHeadline } from "../refs/plain-text";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { type TextSource, textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { anchorBlock, anchorQuote, type ChangeAnchor, changeAnchor } from "./decision-review";

@@ -1,10 +1,9 @@
-import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
 import type { BroadcastCreated, DeliveryAttemptState } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
+import { useBroadcast } from "../../hooks/useHoldsPersonScope";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import {
   borderDefault,
@@ -298,14 +297,12 @@ export function BroadcastSends({
  * failed, which the broadcast's own page retries, or queued, for a recipient the listener knows
  * and that is not running, which gets the message when it runs again. A queued copy is counted on
  * its own, because a message that waits is not a message delivered. The broadcast is made either
- * way; nothing here is a write still unconfirmed.
+ * way; nothing here is a write still unconfirmed. The re-read is under the `person` scope, which
+ * an agent viewer's bearer may not hold: it is asked for once a read says the viewer's credential
+ * holds it (`useBroadcast`), and otherwise the row shows the broadcast as its send answered.
  */
 function SentBroadcast({ created }: { created: BroadcastCreated }): ReactNode {
-  const read = useQuery({
-    initialData: created,
-    queryFn: () => api.getBroadcast(created.id),
-    queryKey: ["broadcast", created.id],
-  }).data;
+  const read = useBroadcast(created.id, created).data;
   const states = (read.recipients ?? []).map((recipient) => {
     const state = (recipient.message.deliveries ?? []).at(-1)?.state;
     return state === undefined ? undefined : deliveryOutcomeState(state);

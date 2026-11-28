@@ -343,10 +343,10 @@ type deliveryView struct {
 	reading       bool
 	heardIssues   map[string]bool
 	heardSessions map[string]string
-	// settings, pop and pipe are as of the last read, settings the ones the stored day rows stand
-	// built under (recordedDeliverySettings), and readFrom the window start pop was read for: an
-	// expiry narrows them without a read.
-	settings delivery.DeliverySettings
+	// rules, pop and pipe are as of the last read, rules those the stored day rows stand built
+	// under (readDeliveryRules), and readFrom the window start pop was read for: an expiry narrows
+	// them without a read.
+	rules    *delivery.SourceRules
 	pop      deliveryPopulation
 	pipe     pipelinePopulation
 	readFrom time.Time
@@ -403,12 +403,48 @@ type deliveryLiveSpec struct {
 	key   string
 }
 
-// deliveryFreshnessHeard is the freshness row as the hub last heard it, and the population's
-// unfetchable count as the last recompute computed it.
+// deliveryFreshnessHeard is the freshness of the delivery reads' sources as the hub last heard it,
+// and the population's unfetchable count as the last recompute computed it. sources is each source
+// repository's rule with its bookkeeping as last heard, by delivery.RuleKey: seeded from a read's
+// rules, and moved by each delivery_freshness notification of a source the rules hold; rules is the
+// last read's, by which a notification of a source that names no repository is found under its
+// project's default repository. lastEventAt, lastReconcileAt and lastError are the sources' together
+// (deliveryFreshnessOf), what the verdict and its frame state.
 type deliveryFreshnessHeard struct {
 	lastEventAt, lastReconcileAt *time.Time
 	lastError                    *string
 	unfetchable                  int
+	sources                      map[string]delivery.DeliverySettings
+	rules                        *delivery.SourceRules
+}
+
+// heardRules takes rules, a delivery read's: a source repository the hub has heard nothing of yet
+// is taken as the read found it, and one the rules no longer hold is forgotten. A repository it has
+// heard of keeps what it heard, which a notification committed after the read may have moved past
+// the read's.
+func (f *deliveryFreshnessHeard) heardRules(rules *delivery.SourceRules) {
+	held := make(map[string]delivery.DeliverySettings, len(rules.All()))
+	for _, rule := range rules.All() {
+		key := delivery.RuleKey(rule.DeployRepo)
+		if heard, ok := f.sources[key]; ok {
+			rule.LastEventAt, rule.LastReconcileAt, rule.LastError = heard.LastEventAt, heard.LastReconcileAt, heard.LastError
+		}
+		held[key] = rule
+	}
+	f.sources, f.rules = held, rules
+	f.combine()
+}
+
+// combine states the sources' freshness together (deliveryFreshnessOf), in the rules' order, the
+// order the GET routes state it in (rules.All), so a page reads one last error from both.
+func (f *deliveryFreshnessHeard) combine() {
+	rules := f.rules.All()
+	all := make([]delivery.DeliverySettings, 0, len(rules))
+	for _, rule := range rules {
+		all = append(all, f.sources[delivery.RuleKey(rule.DeployRepo)])
+	}
+	freshness := deliveryFreshnessOf(all, f.unfetchable)
+	f.lastEventAt, f.lastReconcileAt, f.lastError = freshness.LastEventAt, freshness.LastReconcileAt, freshness.LastError
 }
 
 // deliveryFreshnessVerdict is what a freshness frame is sent for: the last error, the sources past
@@ -644,6 +680,7 @@ func timeOrZero(t *time.Time) time.Time {
 	return *t
 }
 
-func equalStringPointers(a, b *string) bool {
+// equalPointers is whether a and b are both nil, or point at equal values.
+func equalPointers[T comparable](a, b *T) bool {
 	return (a == nil) == (b == nil) && (a == nil || *a == *b)
 }

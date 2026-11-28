@@ -269,6 +269,8 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 		serverImportsNone},
 	{"internal/dispatch/evals/evalfixture/attribution.go", "the eval checks' fixture loader's attribution case: it seeds a synthetic issue, with its status, into a database that tests, its command (cmd) and the bench loader (evals/evalbench) load for a check to read, " +
 		serverImportsNone},
+	{"internal/dispatch/evals/evalfixture/failures.go", "the eval checks' fixture loader's Failures mode: it seeds synthetic issues, with their status and labels, into a database that tests and its command (cmd) load for a check to read, " +
+		serverImportsNone},
 	{"internal/dispatch/legion/legionseed/legionseed.go", "the Legion history fixture: it seeds synthetic issues, with their statuses and parents, into a database that tests (through legiontest.Seed) and the two eval loaders (evals/evalfixture, evals/evalbench) write for a check to count over, " +
 		serverImportsNone},
 }
@@ -278,7 +280,7 @@ var statusLabelsOrParentWriters = []struct{ path, reason string }{
 // TestNoServerPackageImportsTheFixtureWriters holds to the server's own packages.
 const serverImportsNone = "and which no request reaches: no package of the server imports it"
 
-// TestNoServerPackageImportsTheFixtureWriters holds the claim three writers of
+// TestNoServerPackageImportsTheFixtureWriters holds the claim four writers of
 // statusLabelsOrParentWriters are exempt on, that no package of the server imports them: no
 // function of the server's call graph (copyLockGraph, every package of the module that `go list
 // -deps ./cmd/dispatch` lists, read from its source) is declared in the directory of any of their
@@ -301,8 +303,8 @@ func TestNoServerPackageImportsTheFixtureWriters(t *testing.T) {
 			}
 		}
 	}
-	if exempt != 3 {
-		t.Fatalf("statusLabelsOrParentWriters names %d writers as imported by no package of the server, want the three fixtures", exempt)
+	if exempt != 4 {
+		t.Fatalf("statusLabelsOrParentWriters names %d writers as imported by no package of the server, want the four fixtures", exempt)
 	}
 }
 
@@ -697,6 +699,7 @@ func TestTheJudgedWriterGuardSeesAPlantedWriter(t *testing.T) {
 	}{
 		{"internal/dispatch/delivery/deliveryseed/deliveryseed.go", true},
 		{"internal/dispatch/evals/evalfixture/attribution.go", true},
+		{"internal/dispatch/evals/evalfixture/failures.go", true},
 		{"internal/dispatch/legion/legionseed/legionseed.go", true},
 		{"internal/dispatch/delivery/deliveryseed/other.go", false},
 		{"internal/dispatch/evals/evalfixture/other.go", false},

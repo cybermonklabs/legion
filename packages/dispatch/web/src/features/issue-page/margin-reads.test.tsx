@@ -40,8 +40,14 @@ interface MarginReads {
   readonly listIssueAsks: Mock<typeof api.listIssueAsks>;
 }
 
-/** Each of the margin's reads, answered empty. */
+/** Each of the margin's reads, answered empty, for alice, a person, whose sign-in holds the
+ *  `person` scope the inbox and the reader's state are read under. */
 function stubMarginReads(): MarginReads {
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const reads: MarginReads = {
     getInbox: spyOn(api, "getInbox").mockResolvedValue([]),
     getMyState: spyOn(api, "getMyState").mockResolvedValue({}),
@@ -50,6 +56,7 @@ function stubMarginReads(): MarginReads {
   };
   restore = () => {
     for (const read of Object.values(reads)) read.mockRestore();
+    whoAmI.mockRestore();
   };
   return reads;
 }

@@ -1,10 +1,11 @@
 // Package measures is the delivery measures' pure computation (LEGION-567 slice 2): deploys a day,
-// lead time, change failure rate, time to restore, rework share, deploy-run success and their
-// per-UTC-day series. It ports the prototype's web/src/lib/dora.ts formula by formula, and each
-// function cites the prototype lines it ports. It judges nothing: the targets a delivery answer
-// states (Targets) are those of the evals of the deploy repository's project
-// (evals.Store.DeployRepoEvals), its verdicts (Status) are evals.VerdictOf's, and DefaultTargets
-// is what the eval catalogue seeds those targets from. It reads no database, applies no facet and
+// lead time, rework share, deploy-run success and their per-UTC-day series, beside the three
+// failure measures (change fail rate, failed deployment recovery time and deployment rework rate,
+// failures.go). It ports the prototype's web/src/lib/dora.ts formula by formula, and each function
+// cites the prototype lines it ports. It judges nothing: the targets a delivery answer states
+// (Targets) are those of the evals of the deploy repository's project
+// (evals.Store.DeployRepoEvals), its verdicts (Status) are evals.VerdictOf's, and DefaultTargets is
+// what the eval catalogue seeds those targets from. It reads no database, applies no facet and
 // filters no window: the caller hands it the population PRs that survived the facets, the deploy
 // runs its store query selected and the delivery settings the deploy cards follow (DeployCards),
 // and Compute counts exactly those. Each measure is a day builder and a fold over day parts
@@ -64,14 +65,6 @@ type Run struct {
 	ShippedPRs int
 }
 
-// Flag is one failed-change flag against a population PR: the PR that broke production, the PR
-// that fixed or reverted it, and whether the dora role holder has confirmed it.
-type Flag struct {
-	Broken, Fix string // PR ids
-	Kind        string // "revert" | "fix"
-	State       string // "pending" | "confirmed" | "rejected"
-}
-
 // Spread is a set of durations' median, 90th percentile and maximum, in minutes, all three nil for
 // an empty set, and N, how many durations the set holds. N is no figure the measures panel shows,
 // so the answer does not send it; it is the lead-time evals' `n`, which a person may name as a
@@ -94,27 +87,6 @@ type DailyPoint struct {
 	RunSuccessRate    *float64 `json:"run_success_rate"`
 }
 
-// FlagCounts is the change failure rate's flags by state, counted against PRs or against deploys.
-// Rate is Confirmed over Total, nil where Total is 0, as it is, with every count 0, while no
-// failure source exists.
-type FlagCounts struct {
-	Confirmed int      `json:"confirmed"`
-	Pending   int      `json:"pending"`
-	Rejected  int      `json:"rejected"`
-	Reverts   int      `json:"reverts"`
-	Total     int      `json:"total"`
-	Rate      *float64 `json:"rate"`
-}
-
-// DeployFlagCounts is the per-deploy change failure rate, with the rate it would be if every
-// pending flag were confirmed: ConfirmedOrPending counts each deploy once. UpperBoundRate is nil
-// where Rate is.
-type DeployFlagCounts struct {
-	FlagCounts
-	ConfirmedOrPending int      `json:"confirmed_or_pending"`
-	UpperBoundRate     *float64 `json:"upper_bound_rate"`
-}
-
 // DeployFrequency counts the window's successful production deploys, and those that shipped at
 // least one population PR, in total and per day.
 type DeployFrequency struct {
@@ -133,19 +105,6 @@ type LeadTime struct {
 	OpenedToMerge           Spread `json:"opened_to_merge"`
 }
 
-// ChangeFailureRate is the flags counted against PRs and against deploys. Its zero value is the
-// rate while no failure source exists: every count 0 and every rate nil.
-type ChangeFailureRate struct {
-	PerPR     FlagCounts       `json:"per_pr"`
-	PerDeploy DeployFlagCounts `json:"per_deploy"`
-}
-
-// TimeToRestore is the median minutes from a broken PR's deploy to its fix's, over confirmed
-// flags whose two PRs both deployed; nil when there is none.
-type TimeToRestore struct {
-	MedianMinutes *float64 `json:"median_minutes"`
-}
-
 // DeployRunSuccess is the deploy runs that concluded success or failure, how many of those reached
 // production, the cancelled runs beside them, and the rate; Rate is nil when none concluded.
 type DeployRunSuccess struct {
@@ -156,19 +115,20 @@ type DeployRunSuccess struct {
 }
 
 // Result is every number the measures panel and GET /api/v1/delivery/measures show for one window
-// and population. While no failure source exists (Compute's flags nil), ChangeFailureRate's rates
-// are nil and its counts 0, and TimeToRestore holds no median: 0 is a measured value and never a
-// stand-in for one, so a rate nothing measured reads no value rather than a 0 a target would judge
-// met. ChangeFailureRate itself is never null: a Delivery page of an earlier build reads its
-// fields with no null guard.
+// and population, which the API writes through a projection of its own (api's deliveryMeasuresOf).
+// The three failure measures are the folds of their evals' stored day parts (FailureParts), one
+// fold per measure, so the answer and the eval read of the same parts agree: each is nil where no
+// part was folded, "no data" as the eval reads it. 0 is a measured value and never a stand-in for
+// one, so a rate nothing measured reads no value rather than a 0 a target would judge met.
 type Result struct {
-	DeployFrequency   DeployFrequency   `json:"deploy_frequency"`
-	LeadTime          LeadTime          `json:"lead_time"`
-	ChangeFailureRate ChangeFailureRate `json:"change_failure_rate"`
-	TimeToRestore     TimeToRestore     `json:"time_to_restore"`
-	ReworkShare       float64           `json:"rework_share"`
-	DeployRunSuccess  DeployRunSuccess  `json:"deploy_run_success"`
-	Daily             []DailyPoint      `json:"daily"`
+	DeployFrequency          DeployFrequency
+	LeadTime                 LeadTime
+	ChangeFailureRate        *ChangeFailRate // FoldChangeFailRate
+	FailedDeploymentRecovery *Recovery       // FoldRecovery
+	DeploymentReworkRate     *ReworkRate     // FoldReworkRate
+	ReworkShare              float64
+	DeployRunSuccess         DeployRunSuccess
+	Daily                    []DailyPoint
 }
 
 // Target is one measure's target as the eval that states it holds it: its value, whether the value
@@ -189,7 +149,7 @@ type Target struct {
 	Value     float64  `json:"value"`
 	Inclusive bool     `json:"inclusive"`
 	Direction string   `json:"direction" enum:"higher_better,lower_better"`
-	Judges    []string `json:"judges" enum:"deploys.deploys,deploys.per_day,deploys.with_prs,deploys.with_prs_per_day,issues.value,minutes.max,minutes.median,minutes.n,minutes.p90,per_deploy.confirmed,per_deploy.pending,per_deploy.rate,per_deploy.rejected,per_deploy.total,per_pr.confirmed,per_pr.pending,per_pr.rate,per_pr.rejected,per_pr.reverts,per_pr.total,runs.cancelled,runs.concluded,runs.rate,runs.reached_production,upper_bound.confirmed_or_pending,upper_bound.rate"`
+	Judges    []string `json:"judges" enum:"deploys.deploys,deploys.per_day,deploys.with_prs,deploys.with_prs_per_day,issues.value,minutes.max,minutes.median,minutes.n,minutes.p90,per_deploy.failed,per_deploy.rate,per_deploy.total,runs.cancelled,runs.concluded,runs.rate,runs.reached_production"`
 }
 
 // Targets are the targets a delivery answer judges its measures by: each the target of the eval
@@ -224,19 +184,17 @@ var DefaultTargets = Targets{
 // (evals.VerdictOf), null where the eval's target is off, and where no figure it judges misses the
 // target and one of them has no value. Each is its eval's verdict over every statistic its target
 // judges (MergeToProduction merge-to-production's, of the longest change and the median as the
-// catalogue judges it), but MergeToProductionMedian and ChangeFailureRateUpperBound, each the
-// verdict of one statistic of an eval (the median merge to production, the failure rate's upper
-// bound) against that eval's target, and null as well where that eval's target judges no such
-// statistic: the catalogue's judges give the median a verdict and the upper bound none.
+// catalogue judges it), but MergeToProductionMedian, the verdict of one statistic of an eval (the
+// median merge to production) against that eval's target, and null as well where that eval's
+// target judges no such statistic: the catalogue's judges give the median a verdict.
 type Status struct {
-	DeploysPerDay               *bool `json:"deploys_per_day"`
-	ChangeFailureRate           *bool `json:"change_failure_rate"`
-	ChangeFailureRateUpperBound *bool `json:"change_failure_rate_upper_bound"`
-	MergeToProductionMedian     *bool `json:"merge_to_production_median"`
-	MergeToProduction           *bool `json:"merge_to_production"`
-	OpenedToMerge               *bool `json:"opened_to_merge"`
-	DeployRunSuccess            *bool `json:"deploy_run_success"`
-	UnownedP0                   *bool `json:"unowned_p0"`
+	DeploysPerDay           *bool `json:"deploys_per_day"`
+	ChangeFailureRate       *bool `json:"change_failure_rate"`
+	MergeToProductionMedian *bool `json:"merge_to_production_median"`
+	MergeToProduction       *bool `json:"merge_to_production"`
+	OpenedToMerge           *bool `json:"opened_to_merge"`
+	DeployRunSuccess        *bool `json:"deploy_run_success"`
+	UnownedP0               *bool `json:"unowned_p0"`
 }
 
 // Quantile is p's quantile of ascending, non-empty sorted, linear between the two nearest ranks:
@@ -294,13 +252,13 @@ func windowDays(window Window) []time.Time {
 }
 
 // The delivery measures' day builders. Each turns one UTC day's rows into its eval's parts of that
-// day: the population pull requests merged that day, the deploy runs on main started that day, and
-// the failed-change flags that count on that day (JudgedFlag.Day). Two kinds of row are not
-// settled when their day is first built, and the day is built again (by the eval_days refresher,
-// for the stored parts) when the run that settles them lands: a pull request with no deploy yet
-// adds nothing to the lead times that end in production, and a deploy run still running neither
-// reached production nor concluded, and the pull requests it will ship count on no run
-// (Run.ShippedPRs) until it does.
+// day: the population pull requests merged that day and the deploy runs on main started that day
+// (the three failure measures' builders, failures.go, read the record of deploys and failures).
+// Two kinds of row are not settled when their day is first built, and the day is built again (by
+// the eval_days refresher, for the stored parts) when the run that settles them lands: a pull
+// request with no deploy yet adds nothing to the lead times that end in production, and a deploy
+// run still running neither reached production nor concluded, and the pull requests it will ship
+// count on no run (Run.ShippedPRs) until it does.
 
 // DeployFrequencyDay is deploy-frequency's part of one UTC day, from the deploy runs started that
 // day (dora.ts:169-174): the runs that reached production, a cancelled one included, with how many
@@ -347,36 +305,66 @@ func DeployRunSuccessDay(day time.Time, runs []Run) []DayPart {
 // requests merged that day: the minutes from each deployed one's merge to its deploy
 // (dora.ts:176-184).
 func MergeToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil {
-			return 0, false
-		}
-		return minutesBetween(pr.MergedAt, *pr.DeployedAt), true
-	})
+	return leadTimeDay(day, prs, mergeToProductionMinutes)
+}
+
+// MergeToProductionKeys is the ID of each of prs whose minutes MergeToProductionDay's part holds, in
+// the order of its samples, nil where it holds none: which pull request each sample times.
+func MergeToProductionKeys(prs []PR) []string {
+	return leadTimeKeys(prs, mergeToProductionMinutes)
+}
+
+// mergeToProductionMinutes is the minutes from pr's merge to its deploy, false while no deploy
+// ships it.
+func mergeToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil {
+		return 0, false
+	}
+	return minutesBetween(pr.MergedAt, *pr.DeployedAt), true
 }
 
 // FirstCommitToProductionDay is first-commit-to-production's part of one UTC day, from the
 // population pull requests merged that day: the minutes from each deployed one's first commit to
 // its deploy, where its first commit is known (dora.ts:176-184).
 func FirstCommitToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil || pr.FirstCommitAt == nil {
-			return 0, false
-		}
-		return minutesBetween(*pr.FirstCommitAt, *pr.DeployedAt), true
-	})
+	return leadTimeDay(day, prs, firstCommitToProductionMinutes)
+}
+
+// FirstCommitToProductionKeys is the ID of each of prs whose minutes FirstCommitToProductionDay's
+// part holds, in the order of its samples, nil where it holds none.
+func FirstCommitToProductionKeys(prs []PR) []string {
+	return leadTimeKeys(prs, firstCommitToProductionMinutes)
+}
+
+// firstCommitToProductionMinutes is the minutes from pr's first commit to its deploy, false while
+// no deploy ships it or where its first commit is not known.
+func firstCommitToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil || pr.FirstCommitAt == nil {
+		return 0, false
+	}
+	return minutesBetween(*pr.FirstCommitAt, *pr.DeployedAt), true
 }
 
 // OpenToProductionDay is open-to-production's part of one UTC day, from the population pull
 // requests merged that day: the minutes from each deployed one's opening to its deploy
 // (dora.ts:176-184).
 func OpenToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil {
-			return 0, false
-		}
-		return minutesBetween(pr.CreatedAt, *pr.DeployedAt), true
-	})
+	return leadTimeDay(day, prs, openToProductionMinutes)
+}
+
+// OpenToProductionKeys is the ID of each of prs whose minutes OpenToProductionDay's part holds, in
+// the order of its samples, nil where it holds none.
+func OpenToProductionKeys(prs []PR) []string {
+	return leadTimeKeys(prs, openToProductionMinutes)
+}
+
+// openToProductionMinutes is the minutes from pr's opening to its deploy, false while no deploy
+// ships it.
+func openToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil {
+		return 0, false
+	}
+	return minutesBetween(pr.CreatedAt, *pr.DeployedAt), true
 }
 
 // OpenToMergeDay is pr-open-to-merge's part of one UTC day, from the population pull requests
@@ -399,6 +387,18 @@ func leadTimeDay(day time.Time, prs []PR, minutesOf func(PR) (float64, bool)) []
 	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, nil)}
 }
 
+// leadTimeKeys is the ID of each of prs minutesOf times, in leadTimeDay's order of its samples,
+// nil where it times none.
+func leadTimeKeys(prs []PR, minutesOf func(PR) (float64, bool)) []string {
+	var keys []string
+	for _, pr := range prs {
+		if _, timed := minutesOf(pr); timed {
+			keys = append(keys, pr.ID)
+		}
+	}
+	return keys
+}
+
 // ReworkShareDay is rework-share's part of one UTC day, from the population pull requests merged
 // that day (dora.ts:215, 252): the rework ones over every one.
 func ReworkShareDay(day time.Time, prs []PR) []DayPart {
@@ -409,126 +409,6 @@ func ReworkShareDay(day time.Time, prs []PR) []DayPart {
 		}
 	}
 	return []DayPart{RatioPart(day, SeriesPRs, rework, len(prs), nil)}
-}
-
-// JudgedFlag is a Flag whose broken PR is a population PR, with the two PRs it names as the
-// change-failure parts read them; Fix is nil when the fix is not a population PR.
-type JudgedFlag struct {
-	Flag
-	Broken PR
-	Fix    *PR
-}
-
-// Day is the UTC day a flag counts on: the day its broken PR deployed (the deploy's completion), so
-// every flag of one deploy counts on one day and the deploy counts once however many flags name
-// it, or, while it has not deployed, the day it merged.
-//
-// It is the day of the numerator only. ChangeFailureRateDay divides by deploys counted on the day
-// they started and by pull requests counted on the day they merged (deliveryDays), so a deploy
-// that starts before UTC midnight and completes after it counts in a numerator a day after its
-// denominator, and one day's share can pass 1 where the fold of the days that hold both cannot. No
-// failure source exists yet (Compute is given no flag, and no day row of change-fail-rate is
-// stored), so no part reads this day yet; the failure source that lands settles which day each of
-// the three series counts a flag on, which one Day cannot do for deploys and pull requests at
-// once.
-func (f JudgedFlag) Day() time.Time {
-	if f.Broken.DeployedAt != nil {
-		return Midnight(*f.Broken.DeployedAt)
-	}
-	return Midnight(f.Broken.MergedAt)
-}
-
-// judgeFlags is each of flags whose broken PR is among prs, with its two PRs: a flag counts
-// against the population only when its broken PR is in it (dora.ts:186-204).
-func judgeFlags(prs []PR, flags []Flag) []JudgedFlag {
-	if len(flags) == 0 {
-		return nil
-	}
-	byID := make(map[string]PR, len(prs))
-	for _, pr := range prs {
-		byID[pr.ID] = pr
-	}
-	var judged []JudgedFlag
-	for _, flag := range flags {
-		broken, ok := byID[flag.Broken]
-		if !ok {
-			continue
-		}
-		flagged := JudgedFlag{Flag: flag, Broken: broken}
-		if fix, ok := byID[flag.Fix]; ok {
-			flagged.Fix = &fix
-		}
-		judged = append(judged, flagged)
-	}
-	return judged
-}
-
-// ChangeFailureRateDay is change-fail-rate's three parts of one UTC day (dora.ts:186-204,
-// 230-250), from the population pull requests merged that day, the deploy runs started that day
-// and the flags that count on it: per deploy, the deploys that shipped a confirmed flag's broken
-// PR, each once, over the successful deploys, with the deploys of pending and of rejected flags in
-// counts; the upper bound, the deploys of a confirmed or a pending flag, each once, over the same
-// deploys; and per PR, the confirmed flags over the pull requests, with the pending, rejected and
-// confirmed revert flags in counts.
-func ChangeFailureRateDay(day time.Time, prs []PR, runs []Run, flags []JudgedFlag) []DayPart {
-	successful := 0
-	for _, run := range runs {
-		if run.ReachedProduction {
-			successful++
-		}
-	}
-	var confirmed, pending, rejected, reverts int
-	confirmedDeploys, pendingDeploys, rejectedDeploys := map[int64]bool{}, map[int64]bool{}, map[int64]bool{}
-	for _, flag := range flags {
-		var deploys map[int64]bool
-		switch flag.State {
-		case "confirmed":
-			confirmed++
-			if flag.Kind == "revert" {
-				reverts++
-			}
-			deploys = confirmedDeploys
-		case "pending":
-			pending++
-			deploys = pendingDeploys
-		case "rejected":
-			rejected++
-			deploys = rejectedDeploys
-		default:
-			continue
-		}
-		if flag.Broken.DeployRunID != nil {
-			deploys[*flag.Broken.DeployRunID] = true
-		}
-	}
-	confirmedOrPending := len(confirmedDeploys)
-	for run := range pendingDeploys {
-		if !confirmedDeploys[run] {
-			confirmedOrPending++
-		}
-	}
-	return []DayPart{
-		RatioPart(day, SeriesPerDeploy, len(confirmedDeploys), successful, map[string]float64{
-			CountPending: float64(len(pendingDeploys)), CountRejected: float64(len(rejectedDeploys)),
-		}),
-		RatioPart(day, SeriesUpperBound, confirmedOrPending, successful, nil),
-		RatioPart(day, SeriesPerPR, confirmed, len(prs), map[string]float64{
-			CountPending: float64(pending), CountRejected: float64(rejected), CountReverts: float64(reverts),
-		}),
-	}
-}
-
-// TimeToRestoreDay is failed-deploy-recovery's part of one UTC day (dora.ts:206-213), from the
-// flags that count on it: the minutes from each confirmed flag's broken PR's deploy to its fix's,
-// where the fix is a population PR and both deployed.
-func TimeToRestoreDay(day time.Time, flags []JudgedFlag) []DayPart {
-	var minutes []float64
-	for _, flag := range flags {
-		if flag.State == "confirmed" && flag.Fix != nil && flag.Broken.DeployedAt != nil && flag.Fix.DeployedAt != nil {
-			minutes = append(minutes, minutesBetween(*flag.Broken.DeployedAt, *flag.Fix.DeployedAt))
-		}
-	}
-	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, nil)}
 }
 
 // The delivery measures' folds: each answers its eval's number from any set of its parts.
@@ -589,53 +469,6 @@ func FoldReworkShare(parts []DayPart) *float64 {
 	return FoldSeries(parts, SeriesPRs).share()
 }
 
-// FoldChangeFailureRate is change-fail-rate over parts: the flags counted against pull requests
-// and against deploys, each rate its summed numerator over its summed denominator, nil where that
-// denominator is 0, since a window with no pull request or no deploy measured no rate of them and
-// a 0 there would be judged met; the zero ChangeFailureRate, every rate nil, when parts hold none
-// of its three series.
-func FoldChangeFailureRate(parts []DayPart) ChangeFailureRate {
-	perDeploy := FoldSeries(parts, SeriesPerDeploy)
-	upperBound := FoldSeries(parts, SeriesUpperBound)
-	perPR := FoldSeries(parts, SeriesPerPR)
-	if perDeploy.Parts+upperBound.Parts+perPR.Parts == 0 {
-		return ChangeFailureRate{}
-	}
-	reverts := int(perPR.Counts[CountReverts])
-	return ChangeFailureRate{
-		PerPR: FlagCounts{
-			Confirmed: int(perPR.Num),
-			Pending:   int(perPR.Counts[CountPending]),
-			Rejected:  int(perPR.Counts[CountRejected]),
-			Reverts:   reverts,
-			Total:     int(perPR.Den),
-			Rate:      perPR.share(),
-		},
-		PerDeploy: DeployFlagCounts{
-			FlagCounts: FlagCounts{
-				Confirmed: int(perDeploy.Num),
-				Pending:   int(perDeploy.Counts[CountPending]),
-				Rejected:  int(perDeploy.Counts[CountRejected]),
-				Reverts:   reverts,
-				Total:     int(perDeploy.Den),
-				Rate:      perDeploy.share(),
-			},
-			ConfirmedOrPending: int(upperBound.Num),
-			UpperBoundRate:     upperBound.share(),
-		},
-	}
-}
-
-// FoldTimeToRestore is failed-deploy-recovery over parts: the median of every part's minutes
-// (dora.ts:206-213, 251), whose MedianMinutes is nil when no part holds a sample.
-func FoldTimeToRestore(parts []DayPart) TimeToRestore {
-	sorted := MergedSamples(parts, SeriesMinutes)
-	if sorted.Len() == 0 {
-		return TimeToRestore{}
-	}
-	return TimeToRestore{MedianMinutes: new(sorted.Quantile(0.5))}
-}
-
 // DailySeries is the window's per-UTC-day deploys and run success, oldest first, every day of the
 // window present (the prototype's dora.ts:83-117): each day's deploy-frequency and
 // deploy-run-success parts folded alone, by FoldDeployFrequency and FoldDeployRunSuccess. A window
@@ -664,17 +497,15 @@ func DailySeries(deploys, runs []DayPart, window Window) []DailyPoint {
 
 // deliveryRows is one UTC day's rows of the delivery measures, as the day builders read them.
 type deliveryRows struct {
-	day   time.Time
-	prs   []PR
-	runs  []Run
-	flags []JudgedFlag
+	day  time.Time
+	prs  []PR
+	runs []Run
 }
 
 // deliveryDays is the rows of every UTC day window covers, each day present whether it holds a
-// row or not, and of any other day a row is on, oldest first: each pull request on its merge day,
-// each run on its start day, the field its store query filters on, and each flag on its
-// JudgedFlag.Day.
-func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*deliveryRows {
+// row or not, and of any other day a row is on, oldest first: each pull request on its merge day
+// and each run on its start day, the field its store query filters on.
+func deliveryDays(prs []PR, runs []Run, window Window) []*deliveryRows {
 	byDay := map[time.Time]*deliveryRows{}
 	rowsOn := func(t time.Time) *deliveryRows {
 		d := Midnight(t)
@@ -694,11 +525,16 @@ func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*delivery
 		rows := rowsOn(run.StartedAt)
 		rows.runs = append(rows.runs, run)
 	}
-	for _, flag := range judgeFlags(prs, flags) {
-		rows := rowsOn(flag.Day())
-		rows.flags = append(rows.flags, flag)
-	}
 	return slices.SortedFunc(maps.Values(byDay), func(a, b *deliveryRows) int { return a.day.Compare(b.day) })
+}
+
+// FailureParts is the stored day parts of the three failure measures' evals over a window, which
+// their caller reads from eval_days: change-fail-rate's (ChangeFail), failed-deploy-recovery's
+// (Recovery) and deployment-rework-rate's (Rework). Their rows are built from the record of
+// deploys and failures (failures.go), which no population of pull requests and runs holds, so
+// Compute folds them as stored rather than building them.
+type FailureParts struct {
+	ChangeFail, Recovery, Rework []DayPart
 }
 
 // Compute is every measure of the window over prs and runs (the prototype's dora.ts:163-266
@@ -707,15 +543,12 @@ func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*delivery
 // folds stored parts with. Every run counts and every PR counts: the caller's query applied the
 // window and branch to runs, and the facets to prs.
 //
-// flags is a failure source's flags, nil where no failure source exists. With none, no part of
-// change-fail-rate or failed-deploy-recovery is built, as no day row of either is stored, so the
-// two read no value through their folds (every failure rate nil and no median to restore),
-// exactly as their evals read them; a source that holds no flag (an empty, non-nil list) measures
-// a rate of 0 over a window with pull requests and deploys, and no value of a denominator the
-// window holds none of (FoldChangeFailureRate).
-func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
-	var frequency, success, mergeToProduction, firstCommitToProduction, openedToProduction, openedToMerge, rework, changeFailure, restore []DayPart
-	for _, rows := range deliveryDays(prs, runs, flags, window) {
+// failures is the three failure measures' stored parts of the window, each folded by its eval's
+// one fold (FoldChangeFailRate, FoldRecovery, FoldReworkRate). A measure with no part (nil) reads
+// no value, exactly as its eval reads a window with no row.
+func Compute(prs []PR, runs []Run, failures FailureParts, window Window) Result {
+	var frequency, success, mergeToProduction, firstCommitToProduction, openedToProduction, openedToMerge, rework []DayPart
+	for _, rows := range deliveryDays(prs, runs, window) {
 		frequency = append(frequency, DeployFrequencyDay(rows.day, rows.runs)...)
 		success = append(success, DeployRunSuccessDay(rows.day, rows.runs)...)
 		mergeToProduction = append(mergeToProduction, MergeToProductionDay(rows.day, rows.prs)...)
@@ -723,17 +556,13 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 		openedToProduction = append(openedToProduction, OpenToProductionDay(rows.day, rows.prs)...)
 		openedToMerge = append(openedToMerge, OpenToMergeDay(rows.day, rows.prs)...)
 		rework = append(rework, ReworkShareDay(rows.day, rows.prs)...)
-		if flags != nil {
-			changeFailure = append(changeFailure, ChangeFailureRateDay(rows.day, rows.prs, rows.runs, rows.flags)...)
-			restore = append(restore, TimeToRestoreDay(rows.day, rows.flags)...)
-		}
 	}
 	spread := func(parts []DayPart) Spread {
 		cell := FoldLeadTime(parts)
 		return Spread{N: cell.N, MedianMinutes: cell.MedianMinutes, P90Minutes: cell.P90Minutes, MaxMinutes: cell.MaxMinutes}
 	}
 	// deliveryDays answers at least one day, the window's, and each day has a part of every
-	// series but the two failure measures', so no other fold below reads "no data".
+	// series built here, so no fold below but the three failure measures' reads "no data".
 	return Result{
 		DeployFrequency: *FoldDeployFrequency(frequency, window),
 		LeadTime: LeadTime{
@@ -742,8 +571,9 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 			OpenedToProduction:      spread(openedToProduction),
 			OpenedToMerge:           spread(openedToMerge),
 		},
-		ChangeFailureRate: FoldChangeFailureRate(changeFailure),
-		TimeToRestore:     FoldTimeToRestore(restore),
+		ChangeFailureRate:        FoldChangeFailRate(failures.ChangeFail),
+		FailedDeploymentRecovery: FoldRecovery(failures.Recovery),
+		DeploymentReworkRate:     FoldReworkRate(failures.Rework),
 		// The panel's share reads 0 for a window with no pull request (dora.ts:215).
 		ReworkShare:      ValueOrZero(FoldReworkShare(rework)),
 		DeployRunSuccess: *FoldDeployRunSuccess(success),

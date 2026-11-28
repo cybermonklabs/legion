@@ -9,10 +9,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 )
 
-// applyFreshness applies one delivery_freshness payload to g, the settings row's freshness columns
-// as migration 0100's trigger writes them, reading nothing.
+// applyFreshness applies one delivery_freshness payload to g, reading nothing: a deploy source's
+// bookkeeping as the trigger of project_deploy_sources writes it (migration 20261123010254), its
+// project, the repository it names (null for one reading the project's default repository) and
+// its times and last error. It moves the source repository it names, as the last read's rules find
+// it (deliveryFreshnessHeard.rules), and the sources' freshness together. A payload of no source
+// the rules hold (an events source, a project with delivery off, the release before's singleton
+// row) moves nothing: the next read takes the sources as they stand.
 func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	var row struct {
+		Project         string     `json:"project"`
+		Repo            *string    `json:"repo"`
 		LastEventAt     *time.Time `json:"last_event_at"`
 		LastReconcileAt *time.Time `json:"last_reconcile_at"`
 		LastError       *string    `json:"last_error"`
@@ -24,7 +31,23 @@ func (h *deliveryHub) applyFreshness(g *hubGeneration, payload string) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	g.fresh.lastEventAt, g.fresh.lastReconcileAt, g.fresh.lastError = row.LastEventAt, row.LastReconcileAt, row.LastError
+	repo := row.Repo
+	if repo == nil {
+		if defaulted, ok := g.fresh.rules.DefaultRepo(row.Project); ok {
+			repo = defaulted
+		}
+	}
+	if repo == nil {
+		return
+	}
+	key := delivery.RuleKey(*repo)
+	source, held := g.fresh.sources[key]
+	if !held || source.Project != row.Project {
+		return
+	}
+	source.LastEventAt, source.LastReconcileAt, source.LastError = row.LastEventAt, row.LastReconcileAt, row.LastError
+	g.fresh.sources[key] = source
+	g.fresh.combine()
 	h.judgeLocked(g, now)
 	// The threshold moved with the reconcile time: the worker re-arms its timer.
 	signal(g.wakeWork)
@@ -48,7 +71,7 @@ func (h *deliveryHub) judgeLocked(g *hubGeneration, now time.Time) {
 	}
 	verdict := g.verdictLocked(now)
 	if verdict.unfetchable == g.sent.unfetchable && slices.Equal(verdict.stale, g.sent.stale) &&
-		equalStringPointers(verdict.lastError, g.sent.lastError) {
+		equalPointers(verdict.lastError, g.sent.lastError) {
 		return
 	}
 	g.sent = verdict

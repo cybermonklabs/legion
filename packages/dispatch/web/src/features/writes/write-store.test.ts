@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, jest, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { DISPATCH_LOGIN_HEADER, IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import { http } from "msw";
 
 import { onFakeClock, settle } from "../../__tests__/fake-clock";
 import {
@@ -11,7 +12,9 @@ import {
   memoryFiles,
   UnloadTarget,
 } from "../../__tests__/kept-sends-harness";
+import { answerRequests } from "../../__tests__/network";
 import { answerSends, type SendAnswers } from "../../__tests__/send-answers";
+import { keepPageSession } from "../../api/agent-session";
 import {
   ApiError,
   api,
@@ -21,6 +24,7 @@ import {
   type WriteRequest,
 } from "../../api/client";
 import { reachable, routeOf, unreachable } from "../../api/reachability";
+import type { AuthenticatedUser } from "../../api/types";
 import {
   KEYED_SEND_ATTEMPT_MS,
   OneRequestPerWriteError,
@@ -2463,4 +2467,52 @@ test("a reload reads back whether each write goes under its key, with no request
       tab.close();
     }
   });
+});
+
+// A person's write names them in `Dispatch-Login`, so Dispatch refuses it under anyone else's
+// session. An agent viewer's names nobody - Dispatch refuses that header from every bearer, `409
+// LOGIN_CHANGED`. Neither write carries a session the store adds: a route that takes its writer in
+// the body names it in that write's own input. The request is read as it reaches the network,
+// through the page's own client.
+test("a person's write sends Dispatch-Login and an agent's sends none, and neither carries a session", async () => {
+  const sent: { body: unknown; login: string | null }[] = [];
+  answerRequests(
+    http.patch("/api/v1/issues/CORE-9", async ({ request }) => {
+      sent.push({ body: await request.json(), login: request.headers.get(DISPATCH_LOGIN_HEADER) });
+      return Response.json({ key: "CORE-9" });
+    })
+  );
+  // The page's first address names a session, which no write of the store's carries.
+  keepPageSession("?session=ses_from_the_address");
+  try {
+    const viewers: AuthenticatedUser[] = [
+      { event_head: "0", kind: "user", login: "alice" },
+      { event_head: "0", kind: "agent", login: "agent", session: "ses_agent" },
+    ];
+    for (const viewer of viewers) {
+      const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+      client.setQueryData(["whoami"], viewer);
+      const writes = new Writes(client, keptTab().page(), memoryFiles());
+      // A request of its own, which no answer of this file's registers, so `api.send` sends it.
+      const request: WriteRequest = {
+        body: { status: "done" },
+        method: "PATCH",
+        path: "/api/v1/issues/CORE-9",
+      };
+      await writes.run({
+        detail: null,
+        kind: plainWrite,
+        label: "CORE-9 set to done",
+        method: "PATCH",
+        presentation: "indicator",
+        write: (bounds) => api.send(request, bounds),
+      });
+    }
+  } finally {
+    keepPageSession("");
+  }
+  expect(sent).toEqual([
+    { body: { status: "done" }, login: "alice" },
+    { body: { status: "done" }, login: null },
+  ]);
 });

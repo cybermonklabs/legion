@@ -26,6 +26,7 @@ import {
   LegionControllerCredentialResponse,
   LegionControllerGrantRequest,
   LegionControllerRegisterResponse,
+  LegionControllerResponse,
   LegionControllerSecretResponse,
   LegionEmptyResponse,
   LegionErrorResponse,
@@ -200,6 +201,11 @@ const schemas: Record<string, z.ZodType> = {
   // state state.json holds, the body of `GET /legion/v1/state?view=observed` (entry
   // 20261125174131 state-seq).
   "observed-state.json": LegionObservedStateResponse,
+  // Written by internal/api's TestControllerRouteGoldens from what `GET /legion/v1/controller`
+  // answers (entry 20261127150416 controller-route): the session registered as the project's
+  // controller, and the body with no `controllerLocator` while none is.
+  "controller.json": LegionControllerResponse,
+  "controller-none.json": LegionControllerResponse,
   "register.json": LegionRegisterResponse,
   // The claim wire's `claim.ReadyRequest` with a capability report: what a session posts on
   // `claims/ready` (contract 21).

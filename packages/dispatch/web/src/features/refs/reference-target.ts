@@ -4,7 +4,6 @@ import {
   QueryObserver,
   type QueryObserverOptions,
   type QueryObserverResult,
-  type QueryStatus,
   queryOptions,
   type UseQueryOptions,
   type UseQueryResult,
@@ -16,6 +15,7 @@ import { useContext } from "react";
 import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { artifactAtAddress, primarySpec } from "../../api/issue-cache";
 import { issueCollaboratorsQuery, issueQuery, usersQuery } from "../../api/queries";
+import { EVENT_FRESH, refetchFailedOnFocus } from "../../api/query-refresh";
 import type {
   ArchitectureComponentRead,
   Artifact,
@@ -30,6 +30,7 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import { useMarginDrawer } from "../issue-page/margin-slot";
 import { useAgentText } from "./AgentName";
 import {
@@ -71,32 +72,6 @@ import { prefixReference, routeWithWholeIds, type TextSource } from "./text-refe
  * window focus (`refetchFailedOnFocus`). An ask, comment or message reference reads its own
  * record alone.
  */
-
-/**
- * Window focus fetches a summary or block read again only while it is in error, so a read that
- * failed (a 503 past its retries) recovers on the open page while a healthy one stays quiet. It
- * is fetched even over the data it holds, which an event's refetch that failed leaves fresh by
- * age (`staleTime: Infinity`).
- */
-const refetchFailedOnFocus = (query: { readonly state: { readonly status: QueryStatus } }) =>
-  query.state.status === "error" ? "always" : false;
-
-export { refetchFailedOnFocus };
-
-/**
- * The options of a read that events keep fresh, spread into its query: window focus fetches it
- * again only while it is in error (`refetchFailedOnFocus`), and it is never stale by its age, so
- * no mount reads it again while it holds an answer. What reads it again is an event whose refresh
- * rule names its key (`api/event-refresh.ts`), a gap in the feed, which refreshes every read the
- * app holds (`refreshQueries`), or a write that invalidates its key. Staleness is per observer,
- * so a view that observes such a read takes these options too: under the app's defaults
- * (`main.tsx`: a 30 s `staleTime`, and a window focus fetches a stale read) a focus more than
- * 30 s after the load would read it again for that view alone.
- */
-export const EVENT_FRESH = {
-  refetchOnWindowFocus: refetchFailedOnFocus,
-  staleTime: Number.POSITIVE_INFINITY,
-} as const;
 
 /**
  * `EVENT_FRESH` while the shell shows the new issue page, and `undefined` on every other page,
@@ -774,11 +749,15 @@ export function useReferenceData(
   const listed =
     sessionRoute === undefined ? undefined : registeredAgent(registry?.data, sessionRoute.session);
   // The registry answered and does not list the session: only then is Dispatch's record of it
-  // read, and only then can that record's answer make the reference missing.
+  // read, and only then can that record's answer make the reference missing. That record, and the
+  // list of everyone who has signed in below, are read under the `person` scope, once a read says
+  // the viewer's credential holds it (`useHoldsPersonScope`): for a viewer without it the
+  // reference stays as it is drawn before either answers.
+  const holdsPerson = useHoldsPersonScope();
   const unlisted =
     sessionRoute !== undefined && registry?.data !== undefined && listed === undefined;
   const recorded = useReferenceQuery(
-    unlisted ? knownSessionQuery(sessionRoute.session) : undefined
+    unlisted && holdsPerson ? knownSessionQuery(sessionRoute.session) : undefined
   );
   const listedTitle =
     sessionRoute === undefined ? undefined : registeredTitle(registry?.data, sessionRoute.session);
@@ -809,7 +788,9 @@ export function useReferenceData(
   // the one read of everyone who has signed in, shared with every other person reference and
   // with the pickers that list them, and made only for a person reference.
   const personRoute = route?.kind === "person" ? route : undefined;
-  const people = useReferenceQuery(personRoute === undefined ? undefined : usersQuery());
+  const people = useReferenceQuery(
+    personRoute === undefined || !holdsPerson ? undefined : usersQuery()
+  );
   const personKnown =
     personRoute !== undefined &&
     (people?.data ?? []).some((person) => person.login === personRoute.login);

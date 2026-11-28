@@ -31,7 +31,7 @@ var dayRowStatementOIDs = []uint32{
 	pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.DateArrayOID, pgtype.BoolArrayOID,
 	pgtype.Int4ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.Float8ArrayOID, pgtype.TextArrayOID,
 	pgtype.Float8ArrayOID, pgtype.TimestamptzArrayOID, pgtype.TextArrayOID, pgtype.Int4ArrayOID, pgtype.TextOID, pgtype.TextOID,
-	pgtype.TimestamptzArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID,
+	pgtype.TimestamptzArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID, pgtype.TextArrayOID,
 }
 
 // dayKeyLine is a day row's key as one string whose bytes order the keys as their fields' bytes
@@ -135,13 +135,19 @@ func TestAStatementOfDayRowsHoldsAtMostItsBoundAsPgxEncodesIt(t *testing.T) {
 	for index := range 16 {
 		counts[long(index, 40)] = -math.MaxFloat64
 	}
+	// keyed is a sample key of each of 64 samples, each with a quote and a backslash, which the
+	// array literal escapes (textArray).
+	keyed := make([]string, 64)
+	for index := range keyed {
+		keyed[index] = long(index, 200) + `"\#1`
+	}
 	most := func(index int) DayRow {
 		return DayRow{ProjectKey: "EVAL", EvalID: EvalID("EVAL", long(index, 200)), DeployRepo: long(index, 200), Repo: long(index, 200), Listed: true,
 			DayPart: measures.DayPart{
 				Series: long(index, 200), Day: far, N: math.MinInt32, Sum: new(-math.MaxFloat64), Num: new(-math.MaxFloat64),
 				Den: new(-math.MaxFloat64), Max: new(-math.MaxFloat64), Samples: widest(64), Counts: counts, LastValue: new(-math.MaxFloat64),
 				LastAt: &lastAt, LastRecordedAt: &lastAt, LastReading: "ffffffff-ffff-ffff-ffff-ffffffffffff", ViaRepository: math.MinInt32,
-			}}
+			}, sampleKeys: keyed}
 	}
 	short := func(index int) DayRow {
 		return DayRow{ProjectKey: "EVAL", EvalID: EvalID("EVAL", fmt.Sprintf("%06d", index)),
@@ -299,16 +305,17 @@ func (c dayChange) String() string {
 
 // TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder: a write of 1,440 day rows of three
 // evals, two deploy repositories, two series and three repositories over 40 days, most with a
-// sample list of 40 values, given out of order (upsertDays, its statements recorded on a traced
-// pool), sends at least three statements, none whose parameters pass statementBytes as
-// dayRowStatements estimates them, nor that estimate as pgx encodes them as the types the server
-// describes; they take the rows in the byte order of their keys across the statements, each once,
-// the order Postgres's `collate "C"` gives the keys they send (dayRowKeyOrder), which the
-// statement takes them in as sent; store every row as it was given, and log one eval_days change
-// per eval spanning the days written, as one statement does (migration 20261117100014). A second
-// write, which rewrites the later 20 days with other values and adds 20 days after them, so each
-// statement holds rows the upsert updates and rows it inserts, does the same and leaves the
-// earlier 20 days as they were.
+// sample list of 40 values and the key of each, one with a quote and a backslash (textArray), given
+// out of order (upsertDays, its statements recorded on a traced pool), sends at least three
+// statements, none whose parameters pass statementBytes as dayRowStatements estimates them, nor
+// that estimate as pgx encodes them as the types the server describes; they take the rows in the
+// byte order of their keys across the statements, each once, the order Postgres's `collate "C"`
+// gives the keys they send (dayRowKeyOrder), which the statement takes them in as sent; store
+// every row as it was given, and log one eval_days change per eval spanning the days written, as
+// one statement does (migration 20261117100014). A second write, which rewrites the later 20 days
+// with other values and other keys and adds 20 days after them, so each statement holds rows the
+// upsert updates and rows it inserts, does the same, the keys it sends kept beside the samples it
+// moves (markSampleKeys), and leaves the earlier 20 days as they were.
 func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) {
 	t.Parallel()
 	r := newRig(t)
@@ -336,13 +343,14 @@ func TestAWriteOfDayRowsPastTheBoundIsCutIntoStatementsInKeyOrder(t *testing.T) 
 								Counts: map[string]float64{"success": value, "failure": 1}, LastValue: new(value), LastAt: &lastAt, LastRecordedAt: &recordedAt,
 								LastReading: fmt.Sprintf("0190c9a4-5c1e-7a00-8000-%012d", len(rows)), ViaRepository: 1,
 							}}
-							row.Samples = make([]float64, 40)
+							row.Samples, row.sampleKeys = make([]float64, 40), make([]string, 40)
 							for k := range row.Samples {
 								row.Samples[k] = value + float64(k)/3
+								row.sampleKeys[k] = fmt.Sprintf(`acme/"web\%d#%d`, len(rows), k)
 							}
 							// Some rows hold nulls, whose elements take no bytes past their length.
 							if len(rows)%7 == 0 {
-								row.Num, row.Den, row.Samples, row.LastAt, row.LastRecordedAt, row.LastReading = nil, nil, nil, nil, nil, ""
+								row.Num, row.Den, row.Samples, row.sampleKeys, row.LastAt, row.LastRecordedAt, row.LastReading = nil, nil, nil, nil, nil, nil, ""
 							}
 							rows = append(rows, row)
 						}

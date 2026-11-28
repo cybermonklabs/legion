@@ -68,7 +68,6 @@ function share(value: number): string {
 }
 
 const perDeploy = (value: number) => `${share(value)} per deploy`;
-const perPR = (value: number) => `${share(value)} per PR`;
 
 /** Every statistic a delivery eval's target may judge: the judges the server's register write
  *  takes of the six delivery evals (packages/envoy/internal/dispatch/evals/delivery_targets.go,
@@ -81,21 +80,8 @@ const STATISTICS: Readonly<Record<Judge, Statistic>> = {
   "deploys.deploys": { word: "deploys", format: bare },
   "deploys.with_prs": { word: "deploys with a PR", format: bare },
   "per_deploy.rate": { word: "failure rate", format: perDeploy, alone: perDeploy },
-  "per_deploy.confirmed": { word: "deploys with a confirmed flag", format: bare },
-  "per_deploy.pending": { word: "deploys with a pending flag", format: bare },
-  "per_deploy.rejected": { word: "deploys with a rejected flag", format: bare },
+  "per_deploy.failed": { word: "deploys with a failure", format: bare },
   "per_deploy.total": { word: "deploys", format: bare },
-  "per_pr.rate": { word: "failure rate", format: perPR },
-  "per_pr.confirmed": { word: "PRs with a confirmed flag", format: bare },
-  "per_pr.pending": { word: "PRs with a pending flag", format: bare },
-  "per_pr.rejected": { word: "PRs with a rejected flag", format: bare },
-  "per_pr.reverts": { word: "reverted PRs", format: bare },
-  "per_pr.total": { word: "PRs", format: bare },
-  "upper_bound.rate": { word: "failure rate's upper bound", format: perDeploy },
-  "upper_bound.confirmed_or_pending": {
-    word: "deploys with a confirmed or pending flag",
-    format: bare,
-  },
   "minutes.n": { word: "count", format: bare },
   "minutes.median": { word: "median", format: minutes },
   "minutes.p90": { word: "p90", format: minutes },

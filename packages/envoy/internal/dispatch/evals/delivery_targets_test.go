@@ -85,16 +85,10 @@ func TestEveryJudgeADeliveryTargetTakesIsStatedByTheDeliveryAnswers(t *testing.T
 	t.Parallel()
 	spread := measures.Spread{MedianMinutes: new(30.0), P90Minutes: new(50.0), MaxMinutes: new(70.0)}
 	result := measures.Result{
-		DeployFrequency: measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},
-		LeadTime:        measures.LeadTime{MergeToProduction: spread, OpenedToMerge: spread},
-		ChangeFailureRate: measures.ChangeFailureRate{
-			PerPR: measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 9, Rate: new(0.1)},
-			PerDeploy: measures.DeployFlagCounts{
-				FlagCounts:         measures.FlagCounts{Confirmed: 1, Pending: 1, Rejected: 1, Reverts: 1, Total: 8, Rate: new(0.125)},
-				ConfirmedOrPending: 2, UpperBoundRate: new(0.25),
-			},
-		},
-		DeployRunSuccess: measures.DeployRunSuccess{Concluded: 10, ReachedProduction: 9, Cancelled: 1, Rate: new(0.9)},
+		DeployFrequency:   measures.DeployFrequency{SuccessfulDeploys: 14, DeploysWithPRs: 7, PerDay: 2, WithPRsPerDay: 1},
+		LeadTime:          measures.LeadTime{MergeToProduction: spread, OpenedToMerge: spread},
+		ChangeFailureRate: &measures.ChangeFailRate{Failed: 1, Total: 8, Rate: new(0.125)},
+		DeployRunSuccess:  measures.DeployRunSuccess{Concluded: 10, ReachedProduction: 9, Cancelled: 1, Rate: new(0.9)},
 	}
 	result.LeadTime.MergeToProduction.N, result.LeadTime.OpenedToMerge.N = 5, 5
 	answer := ResultStatistics(result, 2)
@@ -166,20 +160,25 @@ func TestVerdictAtInsideAndPastTheTarget(t *testing.T) {
 	}
 }
 
+// TestChangeFailureRateWithNoInputHasNoCounts: change-fail-rate's `per_deploy` statistics over no
+// part of its series, none at all or only another series' (deployment-rework-rate's), hold no
+// value, the counts included ("no data"). A stored zero row of the series is a day measured from
+// failures_measured_since on with no deploy, whose value is real (dispatch://INFRA-978, R9: 0
+// percent included): 0 failed of 0 deploys.
 func TestChangeFailureRateWithNoInputHasNoCounts(t *testing.T) {
 	t.Parallel()
-	for _, parts := range [][]measures.DayPart{
-		nil,
-		{{Series: measures.SeriesPerDeploy}, {Series: measures.SeriesPerPR}, {Series: measures.SeriesUpperBound}},
+	none := Statistics{"rate": nil, "failed": nil, "total": nil}
+	for _, test := range []struct {
+		name  string
+		parts []measures.DayPart
+		want  Statistics
+	}{
+		{"no part", nil, none},
+		{"another series' part", []measures.DayPart{{Series: measures.SeriesReworkDeploys}}, none},
+		{"a zero row", []measures.DayPart{{Series: measures.SeriesPerDeploy}}, Statistics{"rate": new(0.0), "failed": new(0.0), "total": new(0.0)}},
 	} {
-		got := changeFailureRateOf(measures.FoldChangeFailureRate(parts))
-		want := map[string]Statistics{
-			"per_deploy":  {"rate": nil, "confirmed": nil, "pending": nil, "rejected": nil, "total": nil},
-			"per_pr":      {"rate": nil, "confirmed": nil, "pending": nil, "rejected": nil, "reverts": nil, "total": nil},
-			"upper_bound": {"rate": nil, "confirmed_or_pending": nil},
-		}
-		if !reflect.DeepEqual(got, want) {
-			t.Errorf("change failure rate over %d empty parts = %v, want no values", len(parts), got)
+		if got := changeFailRateStatistics(test.parts, Range{}); !reflect.DeepEqual(got, test.want) {
+			t.Errorf("change fail rate over %s = %v, want %v", test.name, got, test.want)
 		}
 	}
 }

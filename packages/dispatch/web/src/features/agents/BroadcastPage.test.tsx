@@ -97,6 +97,12 @@ function renderBroadcast(
 ) {
   const getBroadcast = spyOn(api, "getBroadcast").mockResolvedValue(read);
   const listAgents = spyOn(api, "listAgents").mockResolvedValue(agents);
+  // The broadcast is read under the `person` scope, which a person's sign-in holds.
+  const whoAmI = spyOn(api, "whoAmI").mockResolvedValue({
+    event_head: "0",
+    kind: "user",
+    login: "alice",
+  });
   const createMessageDelivery = spyOn(api, "createMessageDelivery").mockResolvedValue(
     attempt({ attempt: 2, state: "sent" })
   );
@@ -126,6 +132,7 @@ function renderBroadcast(
       createMessageDelivery.mockRestore();
       listAgents.mockRestore();
       getBroadcast.mockRestore();
+      whoAmI.mockRestore();
     },
     view,
   };

@@ -15,6 +15,7 @@ import { MemoryRouter, useLocation, useNavigationType } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { installIntersectionObserver } from "../../__tests__/intersection-observer";
+import { SIGNED_IN_PERSON } from "../../__tests__/query-provider";
 import { api } from "../../api/client";
 import type { Actor, Agent, DisplayTree, IssueChild, ReferenceTarget } from "../../api/types";
 import { pageKindBullet, pageKindTag } from "../../theme/classes";
@@ -121,8 +122,11 @@ interface Parties {
   readonly session?: Agent;
 }
 
-/** Answers the registry's and the people's reads with `parties`, as the shell has read them. */
+/** Answers the registry's and the people's reads with `parties`, as the shell has read them, for
+ *  a reader signed in as a person (`SIGNED_IN_PERSON`), whose sign-in holds the `person` scope the
+ *  people are read under. */
 function knowParties(queryClient: QueryClient, { login, role, session }: Parties): void {
+  queryClient.setQueryData(["whoami"], SIGNED_IN_PERSON);
   const agents = [
     ...(session === undefined ? [] : [session]),
     ...(role === undefined

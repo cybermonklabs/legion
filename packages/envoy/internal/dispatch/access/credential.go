@@ -39,10 +39,12 @@ type Credential struct {
 // under its planner's owner locks (api's planStatusChangeUnderLocks). seenBy calls it the same way
 // to leave out of an answer each issue that the caller cannot see: the issues of a 409
 // PARENT_STATUS_CONFLICT (seenConflictIssues), the children of a 409 FOREIGN_CHILD_OPEN and the
-// checks that a result's check value matches. No caller builds a restricted member's credential,
-// so the change that turns on restricted member kinds for writes must change each of these calls:
-// each write check, the retraction's second check, the status change's check of its named issue
-// and seenBy.
+// checks that a result's check value matches. A project's production-events state route asks it of
+// the project of another project's failure the route would judge, in the write's transaction
+// (api's stateReaches). No caller builds a restricted member's credential, so the change that turns
+// on restricted member kinds for writes must change each of these calls: each write check, the
+// production-events state route's among them, the retraction's second check, the status change's
+// check of its named issue, and seenBy.
 func CredentialCovers(cred Credential, project string, private bool) bool {
 	if cred.Browser {
 		return true

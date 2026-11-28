@@ -23,6 +23,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legionseed"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pglisten"
@@ -124,6 +126,47 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliveryseed.Fixture, legion
 	}
 	t.Logf("stored %d facts rows and %d filings of %s", len(rows), len(filings), legion.Project)
 	return deliveries, legion
+}
+
+// deployRule is the rule of the deploy source that reads repo as a pass reads it
+// (delivery.DeployRules over every project's settings), its DeployRepo repo.
+func deployRule(t testing.TB, pool *store.Pool, repo string) delivery.DeliverySettings {
+	t.Helper()
+	projects, err := delivery.ListProjectSettings(t.Context(), pool)
+	if err != nil {
+		t.Fatalf("read the delivery settings: %v", err)
+	}
+	for _, rule := range delivery.DeployRules(projects) {
+		if strings.EqualFold(rule.DeployRepo, repo) {
+			rule.DeployRepo = repo
+			return rule
+		}
+	}
+	t.Fatalf("no deploy source reads %s", repo)
+	return delivery.DeliverySettings{}
+}
+
+// eventsSource is a source that reads the project's posted deploys.
+var eventsSource = delivery.SourceInput{Kind: delivery.SourceKindEvents}
+
+// putSources saves project's delivery settings through delivery.PutProjectSettings, in a
+// transaction of its own: delivery on, authors as the population rule, and sources.
+func putSources(t testing.TB, pool *store.Pool, project string, authors []string, sources ...delivery.SourceInput) delivery.ProjectSettings {
+	t.Helper()
+	return putProjectSettings(t, pool, delivery.ProjectSettingsInput{
+		Project: project, Delivery: true, Sources: sources, PopulationAuthors: authors, ExcludedRepos: []string{},
+	})
+}
+
+// putProjectSettings saves input through delivery.PutProjectSettings, in a transaction of its own
+// (deliveryseed.SaveSettings).
+func putProjectSettings(t testing.TB, pool *store.Pool, input delivery.ProjectSettingsInput) delivery.ProjectSettings {
+	t.Helper()
+	saved, err := deliveryseed.SaveSettings(t.Context(), pool, input, model.Actor{Kind: "system", ID: "evals-test"})
+	if err != nil {
+		t.Fatalf("save the delivery settings of %s: %v", input.Project, err)
+	}
+	return saved
 }
 
 // leaveInputsUnread clears every stored pull request's attribution inputs, as a row stored before
@@ -311,7 +354,7 @@ func (r *refresherRig) changesHead(t *testing.T) delivery.ChangeCursor {
 // evalDayChanges is every eval_days change of an eval logged after seq, as `<eval id> <first
 // day>..<last day>`, in seq order. An eval_days change that names no day is left out: the
 // refresher's word that the day rows stand at the delivery settings (delivery.SettingsApplied),
-// that it recorded the settings they stand built under (recordBuiltUnder), or that the project
+// that it recorded the rules they stand built under (recordRules, recordRule), or that the project
 // judging the delivery views moved (delivery.JudgingMoved).
 func (r *refresherRig) evalDayChanges(t *testing.T, after int64) []string {
 	t.Helper()

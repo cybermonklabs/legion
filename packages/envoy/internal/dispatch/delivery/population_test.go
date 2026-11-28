@@ -1,16 +1,31 @@
 package delivery
 
 import (
+	"cmp"
+	"slices"
 	"testing"
 	"time"
 )
 
-func testSettings() DeliverySettings {
-	return DeliverySettings{
+// testRules is one source repository's rule, acme/widgets', with the population that reads it.
+func testRules() *SourceRules {
+	return testRulesOf(DeliverySettings{
 		DeployRepo:        "acme/widgets",
 		PopulationAuthors: []string{"octocat", "octocat-agent", "octocat-agent[bot]"},
 		ExcludedRepos:     []string{"acme/dojo", "acme/widgets-smoke"},
+	})
+}
+
+// testRulesOf is the SourceRules of rules and their populations' union, as the settings cache
+// holds them: what NewSourceRules makes of the projects that saved them, without the database.
+func testRulesOf(rules ...DeliverySettings) *SourceRules {
+	var authors, excluded []string
+	for _, rule := range rules {
+		authors = append(authors, rule.PopulationAuthors...)
+		excluded = append(excluded, rule.ExcludedRepos...)
 	}
+	ordered := slices.SortedFunc(slices.Values(rules), func(a, b DeliverySettings) int { return cmp.Compare(a.DeployRepo, b.DeployRepo) })
+	return newSourceRules(ordered, Population{Authors: sortedSet(authors), ExcludedRepos: sortedSet(excluded)}, nil)
 }
 
 func testWindow() TimeWindow {
@@ -22,7 +37,7 @@ func testWindow() TimeWindow {
 
 func TestIsPopulationPR(t *testing.T) {
 	t.Parallel()
-	settings := testSettings()
+	rules := testRules()
 	window := testWindow()
 	inWindow := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
 
@@ -105,7 +120,7 @@ func TestIsPopulationPR(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := IsPopulationPR(tt.pr, settings, window)
+			got, err := IsPopulationPR(tt.pr, rules, window)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got none")
@@ -117,6 +132,46 @@ func TestIsPopulationPR(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Errorf("IsPopulationPR() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// A pull request is judged a task pull request by the rule of its own source repository
+// (dispatch://INFRA-978, D1): with two sources in two repositories, a task-labelled merge of
+// either is a task pull request and an unlabelled merge of either is unclassified, while a merge
+// of a repository no source reads is neither, whatever its labels.
+func TestATaskPullRequestIsJudgedAgainstItsOwnDeployRepository(t *testing.T) {
+	t.Parallel()
+	rules := testRulesOf(
+		DeliverySettings{DeployRepo: "acme/widgets", PopulationAuthors: []string{"octocat"}},
+		DeliverySettings{DeployRepo: "acme/gadgets", PopulationAuthors: []string{"octocat"}},
+	)
+	merged := time.Date(2026, 1, 15, 0, 0, 0, 0, time.UTC)
+	for _, one := range []struct {
+		name    string
+		repo    string
+		labels  []string
+		want    bool
+		wantErr bool
+	}{
+		{name: "the second source's task pull request is a task pull request", repo: "acme/gadgets", labels: []string{"task"}},
+		{name: "the first source's task pull request is a task pull request", repo: "acme/widgets", labels: []string{"task"}},
+		{name: "the second source's non-task pull request is in the population", repo: "acme/gadgets", labels: []string{"non-task"}, want: true},
+		{name: "the second source's unlabelled pull request is unclassified", repo: "acme/gadgets", wantErr: true},
+		{name: "a repository no source reads is never a task pull request", repo: "acme/other", want: true},
+	} {
+		t.Run(one.name, func(t *testing.T) {
+			pr := RawPullRequest{Repo: one.repo, Number: 7, Author: "octocat", Labels: one.labels, MergedAt: merged}
+			got, err := IsPopulationPR(pr, rules, testWindow())
+			if one.wantErr {
+				if err == nil {
+					t.Fatalf("IsPopulationPR of %s = %v, want the unclassified error of its own repository's rule", one.repo, got)
+				}
+				return
+			}
+			if err != nil || got != one.want {
+				t.Fatalf("IsPopulationPR of %s%v = %v (%v), want %v", one.repo, one.labels, got, err, one.want)
 			}
 		})
 	}

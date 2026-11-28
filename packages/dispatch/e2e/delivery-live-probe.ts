@@ -222,7 +222,6 @@ type EvalsField = Exclude<keyof EvalListResponse, "freshness">;
  *  freshness, which a live body keeps as they were last sent. A record, so a field the response
  *  gains fails the type check until it is named here. */
 const MEASURE_FIELDS: Readonly<Record<MeasureField, true>> = {
-  flags_source: true,
   measures: true,
   status: true,
   targets: true,
@@ -306,7 +305,7 @@ function isServerFrame(value: unknown): value is DeliveryServerFrame {
 
 const isTimeline = (body: DeliveryLiveBody): body is DeliveryTimelineWithMeasures => "prs" in body;
 const isMeasures = (body: DeliveryLiveBody): body is DeliveryMeasuresResponse =>
-  "flags_source" in body;
+  "unowned_p0" in body;
 const isPipeline = (body: DeliveryLiveBody): body is DeliveryPipelineResponse => "days" in body;
 const isEvals = (body: DeliveryLiveBody): body is EvalListResponse => "total" in body;
 

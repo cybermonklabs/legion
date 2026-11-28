@@ -1189,15 +1189,22 @@ test("API client reaches every remaining documented endpoint", async () => {
   await api.whoAmI();
   await api.logout();
   await api.githubRest("repos/acme/dispatch");
-  await api.getDeliverySettings();
-  await api.putDeliverySettings(
+  await api.getProjectDeliverySettings("CORE");
+  await api.putProjectDeliverySettings(
+    "CORE",
     {
-      deploy_repo: "acme/widgets",
-      deploy_workflow_path: ".github/workflows/deploy.yml",
-      excluded_repos: [],
+      delivery: true,
+      sources: [
+        {
+          kind: "github_workflow",
+          repo: null,
+          deploy_workflow_path: ".github/workflows/deploy.yml",
+          production_job_names: ["widgets-release"],
+          pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
+        },
+      ],
       population_authors: ["octocat"],
-      pr_checks_workflow_path: ".github/workflows/pr-checks.yml",
-      production_job_names: ["widgets-release"],
+      targets: { "deploy-frequency": 20, "failed-deploy-recovery": "off" },
     },
     keyed("put-4")
   );
@@ -1242,8 +1249,8 @@ test("API client reaches every remaining documented endpoint", async () => {
     ["GET", "/auth/whoami"],
     ["POST", "/auth/logout"],
     ["GET", "/api/github/rest/repos/acme/dispatch"],
-    ["GET", "/api/v1/settings/delivery"],
-    ["PUT", "/api/v1/settings/delivery"],
+    ["GET", "/api/v1/projects/CORE/settings/delivery"],
+    ["PUT", "/api/v1/projects/CORE/settings/delivery"],
   ]);
 });
 

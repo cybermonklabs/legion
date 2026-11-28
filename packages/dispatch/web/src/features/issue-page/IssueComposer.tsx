@@ -1,6 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { Actor } from "../../api/types";
 import { pageComposer } from "../../theme/classes";
 import {
@@ -19,7 +20,6 @@ import {
 import { type StatementAnchor, sameStatement, saveCommentEdit } from "../conversation/send-request";
 import { AgentName, type AgentStateWords } from "../refs/AgentName";
 import type { RefPickerWords } from "../refs/ref-picker";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { useMediaQuery } from "../shell/useDialog";
 import { FOOT_HEIGHT_PROPERTY, HEADER_SCROLLS_QUERY } from "./identity-block";
 import type { TreeNode } from "./issue-tree";

@@ -2,7 +2,7 @@ import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { type RefObject, useMemo } from "react";
 
 import { dismissedThreadsQuery, inboxThreadsQuery } from "../../api/queries";
-import { useIsHuman } from "../../hooks/useIsHuman";
+import { useHoldsPersonScope } from "../../hooks/useHoldsPersonScope";
 import type { InboxShow } from "../refs/routes";
 import type { InboxListRow } from "./list-row";
 import { useMotionHold } from "./motion-hold";
@@ -15,9 +15,9 @@ export interface InboxThreadRows {
   readonly asOf: string | undefined;
   /** Whether the list draws every thread row it will draw from this read: the read of the list
    *  showing has settled with an error, or with rows the pointer hold has handed on (`rows`), or
-   *  this list reads none - asks only, or a principal that is no person. A read that lands while
-   *  a pointer travels over the list is not drawn until the pointer settles, and until then the
-   *  list holds none of its rows. */
+   *  this list reads none - asks only, or a viewer whose credential lacks the `person` scope. A
+   *  read that lands while a pointer travels over the list is not drawn until the pointer
+   *  settles, and until then the list holds none of its rows. */
   readonly ready: boolean;
   readonly rows: readonly InboxListRow[];
   /** Reads the next page of the Dismissed view, or undefined where there is none to read: the
@@ -48,17 +48,17 @@ export function useInboxThreadRows({
   /** Which of the reader's two lists is showing. */
   show: InboxShow;
 }): InboxThreadRows {
-  // The reader's own threads, in one unpaged read. The route needs the `person` scope, which a
-  // signed-in browser holds, so the list only asks once the sign-in read says the principal is a
-  // user; neither read is made for the view that is not showing.
-  const human = useIsHuman();
+  // The reader's own threads, in one unpaged read. The route needs the `person` scope, so the
+  // list only asks once a read says the viewer's credential holds it (`useHoldsPersonScope`);
+  // neither read is made for the view that is not showing.
+  const holdsPerson = useHoldsPersonScope();
   const threads = useQuery({
     ...inboxThreadsQuery(),
-    enabled: human && !asksOnly && show === "inbox",
+    enabled: holdsPerson && !asksOnly && show === "inbox",
   });
   const dismissed = useInfiniteQuery({
     ...dismissedThreadsQuery(),
-    enabled: human && !asksOnly && show === "dismissed",
+    enabled: holdsPerson && !asksOnly && show === "dismissed",
   });
   const pages = dismissed.data?.pages;
   // One array per set of pages, and the same array until they change: the motion hold adopts what
@@ -70,7 +70,7 @@ export function useInboxThreadRows({
   // A refetch can land while a pointer travels between rows; adopt it once that pointer settles.
   const adopted = useMotionHold(read, listRef);
   const listed = asksOnly ? [] : (adopted ?? []);
-  const reads = human && !asksOnly;
+  const reads = holdsPerson && !asksOnly;
   const shownRead = show === "dismissed" ? dismissed : threads;
   return {
     // The mark of the read these rows came from: the Dismissed view's is its first page's, the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -270,8 +271,8 @@ type freshnessPayload struct {
 }
 
 // TestFreshnessOnlySettingsWritesLogNoChangeButNotify: the freshness writes every GitHub event and
-// every reconcile pass make log no change, and each committed one notifies delivery_freshness with
-// the row's three freshness values.
+// every reconcile pass make on a source log no change, and each committed one notifies
+// delivery_freshness with the source's three freshness values.
 func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -287,17 +288,17 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 		write func() error
 		want  func(freshnessPayload) bool
 	}{
-		{"RecordEventAt", func() error { return RecordEventAt(ctx, pool) }, func(p freshnessPayload) bool {
+		{"RecordEventAt", func() error { return RecordEventAt(ctx, pool, deliveryRepo) }, func(p freshnessPayload) bool {
 			if p.LastEventAt == nil || p.LastReconcileAt != nil || p.LastError != nil {
 				return false
 			}
 			eventAt = *p.LastEventAt
 			return true
 		}},
-		{"RecordReconcileSuccess", func() error { return RecordReconcileSuccess(ctx, pool, reconciledAt) }, func(p freshnessPayload) bool {
+		{"RecordReconcileSuccess", func() error { return RecordReconcileSuccess(ctx, pool, deliveryRepo, reconciledAt) }, func(p freshnessPayload) bool {
 			return sameTime(p.LastEventAt, eventAt) && sameTime(p.LastReconcileAt, reconciledAt) && p.LastError == nil
 		}},
-		{"RecordReconcileError", func() error { return RecordReconcileError(ctx, pool, "rate limited") }, func(p freshnessPayload) bool {
+		{"RecordReconcileError", func() error { return RecordReconcileError(ctx, pool, deliveryRepo, "rate limited") }, func(p freshnessPayload) bool {
 			return sameTime(p.LastReconcileAt, reconciledAt) && p.LastError != nil && *p.LastError == "rate limited"
 		}},
 	}
@@ -325,28 +326,29 @@ func TestFreshnessOnlySettingsWritesLogNoChangeButNotify(t *testing.T) {
 	}
 }
 
-// TestRecordEventAtStampsTheDatabasesClock: last_event_at is the database's now(), not the calling
-// process's clock: with this process's clock two hours ahead of the database's, the stamp is a
-// moment the database's clock reached just now. It never moves backward: a later stamp already
-// in the row stays.
+// TestRecordEventAtStampsTheDatabasesClock: a source's last_event_at is the database's now(), not
+// the calling process's clock: with this process's clock two hours ahead of the database's, the
+// stamp is a moment the database's clock reached just now. It never moves backward: a later stamp
+// already in the row stays.
 func TestRecordEventAtStampsTheDatabasesClock(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	pool = laggingDatabaseClock(t, ctx, pool, 2*time.Hour)
 	seedDeliverySettings(t, ctx, pool)
-	if err := RecordEventAt(ctx, pool); err != nil {
+	const sourceEventAt = `select last_event_at from project_deploy_sources where project_key = '` + deliveryProject + `'`
+	if err := RecordEventAt(ctx, pool, deliveryRepo); err != nil {
 		t.Fatalf("RecordEventAt: %v", err)
 	}
-	if age := databaseAge(t, ctx, pool, `select last_event_at from delivery_settings where singleton`); !justNow(age) {
+	if age := databaseAge(t, ctx, pool, sourceEventAt); !justNow(age) {
 		t.Fatalf("last_event_at is %v before the database's now(), want a moment within its last minute", age)
 	}
-	if _, err := pool.Exec(ctx, `update delivery_settings set last_event_at = now() + interval '1 hour' where singleton`); err != nil {
+	if _, err := pool.Exec(ctx, `update project_deploy_sources set last_event_at = now() + interval '1 hour' where project_key = $1`, deliveryProject); err != nil {
 		t.Fatalf("stamp last_event_at an hour ahead: %v", err)
 	}
-	if err := RecordEventAt(ctx, pool); err != nil {
+	if err := RecordEventAt(ctx, pool, deliveryRepo); err != nil {
 		t.Fatalf("RecordEventAt: %v", err)
 	}
-	if age := databaseAge(t, ctx, pool, `select last_event_at from delivery_settings where singleton`); age == nil || *age > -59*time.Minute {
+	if age := databaseAge(t, ctx, pool, sourceEventAt); age == nil || *age > -59*time.Minute {
 		t.Fatalf("last_event_at is %v before the database's now() after a stamp behind the row's, want the row's an hour ahead kept", age)
 	}
 }
@@ -404,7 +406,7 @@ func TestTheFreshnessPayloadStaysUnderTheNotifyLimit(t *testing.T) {
 		"control characters":   strings.Repeat("\x01", 5000),
 		"four-byte characters": strings.Repeat("\U0001F600", 5000),
 	} {
-		if err := RecordReconcileError(ctx, pool, message); err != nil {
+		if err := RecordReconcileError(ctx, pool, deliveryRepo, message); err != nil {
 			t.Fatalf("RecordReconcileError with 5,000 %s: %v", name, err)
 		}
 		notification := nextNotification(t, ctx, conn, 5*time.Second)
@@ -582,25 +584,25 @@ func TestRunJobAndGroupAndSettingsChangesAreLogged(t *testing.T) {
 	assertKinds("a deleted session group", before, "session_group")
 
 	before = latestChange(t, ctx, pool)
-	if _, err := PutSettings(ctx, pool, settings, actor); err != nil {
-		t.Fatalf("PutSettings unchanged: %v", err)
+	if _, err := putTestRule(ctx, pool, settings, actor); err != nil {
+		t.Fatalf("save the settings unchanged: %v", err)
 	}
 	if changes := changesAfter(t, ctx, pool, before); len(changes) != 0 {
 		t.Fatalf("settings written again unchanged logged %+v, want nothing", changes)
 	}
 	settings.ProductionJobNames = []string{"widgets-release / production"}
-	if _, err := PutSettings(ctx, pool, settings, actor); err != nil {
-		t.Fatalf("PutSettings changed: %v", err)
+	if _, err := putTestRule(ctx, pool, settings, actor); err != nil {
+		t.Fatalf("save the settings changed: %v", err)
 	}
 	assertKinds("a settings change", before, "settings")
 }
 
-// TestTheSameSettingsSavedByAnotherPersonLogNoChange: a save of the delivery settings that moves
-// only who saved them and when (updated_by and updated_at, which PutSettings writes on every save)
-// logs no settings change and announces nothing on SettingsChannel (migration 20261120111107), so
-// no reader begins anything for it: no day row, delivery window or intake reads either column. A
-// save that moves a value still announces its change, whoever makes it; that it logs one is
-// TestRunJobAndGroupAndSettingsChangesAreLogged's.
+// TestTheSameSettingsSavedByAnotherPersonLogNoChange: a save of a project's delivery settings that
+// moves only who saved them and when (updated_by and updated_at, which PutProjectSettings writes on
+// every save) logs no settings change and announces nothing on SettingsChannel (migration
+// 20261123010254, as 20261120111107 for the singleton), so no reader begins anything for it: no day
+// row, delivery window or intake reads either column. A save that moves a value logs and announces
+// its change, carrying the project, whoever makes it.
 //
 // Postgres hands a listener the notifications of committed transactions in commit order, so a
 // sentinel sent after the save has committed is the next notification on the channel unless the
@@ -610,7 +612,7 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	settings := seedDeliverySettings(t, ctx, pool)
 	listener := listenConn(t, ctx, pool, SettingsChannel)
 	before := latestChange(t, ctx, pool)
-	saved, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "user", ID: "someone-else"})
+	saved, err := putTestRule(ctx, pool, settings, model.Actor{Kind: "user", ID: "someone-else"})
 	if err != nil {
 		t.Fatalf("save the same settings as another person: %v", err)
 	}
@@ -629,11 +631,15 @@ func TestTheSameSettingsSavedByAnotherPersonLogNoChange(t *testing.T) {
 	}
 
 	settings.PRChecksRollupJobName = new("checks-complete")
-	if _, err := PutSettings(ctx, pool, settings, model.Actor{Kind: "user", ID: "a-third-person"}); err != nil {
+	if _, err := putTestRule(ctx, pool, settings, model.Actor{Kind: "user", ID: "a-third-person"}); err != nil {
 		t.Fatalf("save a new roll-up job: %v", err)
 	}
-	if notification := notified(t, listener); notification.Payload != "" {
-		t.Errorf("a new roll-up job saved by another person announced %q on %s, want the settings' empty announcement", notification.Payload, SettingsChannel)
+	changes := changesAfter(t, ctx, pool, before)
+	if len(changes) == 0 || slices.ContainsFunc(changes, func(c Change) bool { return c.Kind != ChangeKindSettings || c.Repo != deliveryProject }) {
+		t.Errorf("a new roll-up job saved by another person logged %+v, want settings changes of %s alone", changes, deliveryProject)
+	}
+	if notification := notified(t, listener); notification.Payload != deliveryProject {
+		t.Errorf("a new roll-up job saved by another person announced %q on %s, want the project %s", notification.Payload, SettingsChannel, deliveryProject)
 	}
 }
 

@@ -430,33 +430,34 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // answered by its own arm, and every other kind is a delivery row, which moves only a view that
 // reads the delivery rows (touchedByDeliveryRow, behind that test).
 //
-// The rows the named kinds write are rows no delivery view reads, but for two: the timeline, the
+// The rows the named kinds write are rows no delivery view reads, but for three: the timeline, the
 // measures and the Pipeline read the current versions of the evals that judge or rank their
-// figures (deliveryLiveClasses.evalVersions), so a version of one of those marks them here, and
-// they answer under the delivery settings recorded with the day rows, which the refresher's
-// commit that brings the rows to the settings moves.
+// figures (deliveryLiveClasses.evalVersions), and the timeline and the measures fold the failure
+// measures' day rows (deliveryLiveClasses.evalDays), so a version of one of those evals, or a
+// write of those rows, marks them here; and they answer under the rules recorded with the day
+// rows, which the refresher's commit that brings the rows to the settings moves.
 //
-// A change of the delivery settings row marks no evals view. Such a view reads the settings and
-// the day rows together: the deploy repository recorded with the rows chooses the rows of the
-// evals that read it (evals.DeployRepoIn, evals.DeployRepoOf), the one setting the list read
-// takes, and the judged names are what the refresher built the rows under. A recompute at the
-// settings change would answer the new settings over rows the refresher has not rewritten yet, a
-// state the inputs never had where one save moves the deploy repository and a judged name
+// A change of the delivery settings marks no evals view. Such a view reads the settings and the
+// day rows together: the source repositories recorded with the rows choose the rows of the evals
+// that read them (evals.DeployReposIn, evals.DeployRepoOf), the one setting the list read takes,
+// and the judged names are what the refresher built each repository's rows under. A recompute at
+// the settings change would answer the new settings over rows the refresher has not rewritten yet,
+// a state the inputs never had where one save moves a source's repository and a judged name
 // together. The refresher's commit that brings the rows to the settings marks what it moved: its
 // rewrite's eval_days changes, one of each eval whose rows moved under that eval's project, mark
-// the evals views of the projects whose rows moved, and, where the recorded deploy repository
-// moved, the commit that records it (the rewrite's, or the page's where no row moved) logs one
-// eval_days change of no eval (delivery.SettingsApplied), which marks every evals view. Each marks
-// at once (markChangesLocked). A change that moves no row and not the deploy repository moves
-// nothing an evals view reads, and marks none.
+// the evals views of the projects whose rows moved, and, where the recorded source repositories
+// moved (one gained or lost), the commit that records them logs one eval_days change of no eval
+// (delivery.SettingsApplied), which marks every evals view. Each marks at once
+// (markChangesLocked). A change that moves no row and no source repository moves nothing an evals
+// view reads, and marks none.
 //
-// A delivery view answers under the same recorded settings (recordedDeliverySettings,
-// evals.BuiltSettingsIn), so a page shows the state the Evals tab shows: the change of the
-// settings row marks every one (touchedByDeliveryRow), since the row holds the freshness it states
-// and every setting the record does not keep, and its recompute answers the old rule still; the
-// commit that records the new settings marks every one again, at once, through each change it
-// logs, all of which carry the rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite): the
-// settings applied, and each eval_days change of its rewrite.
+// A delivery view answers under the same recorded rules (readDeliveryRules, evals.BuiltSettingsIn),
+// so a page shows the state the Evals tab shows: the change of a project's settings marks every
+// one (touchedByDeliveryRow), since the settings hold the freshness it states and every setting the
+// record does not keep, and its recompute answers the old rule still; the commit that records the
+// new rules marks every one again, at once, through each change it logs, all of which carry the
+// rewrite's mark (delivery.EvalDaysWrittenBySettingsRewrite): the rules recorded
+// (delivery.SettingsRecorded), the settings applied, and each eval_days change of its rewrite.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
 	case delivery.ChangeKindIssueFacts:
@@ -482,24 +483,29 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// fact, a filing, the settings row) was logged: a view woken by the input would read the
 		// rows before the rewrite, and the eval_days change of the rewrite is what wakes it. The
 		// eval_days change of no eval is the refresher's word that the rows stand at the delivery
-		// settings under a deploy repository that moved (delivery.SettingsApplied), which every
+		// settings under source repositories that moved (delivery.SettingsApplied), which every
 		// evals view reads, whatever its project.
 		//
-		// Every eval_days change that carries the settings rewrite's mark, that word and each
-		// change of the rewrite's rows, is logged by the commit that records the delivery settings
-		// the rows stand built under, which every delivery view answers under: it marks every view
-		// that reads the delivery rows.
+		// Every eval_days change that carries the settings rewrite's mark, that word, the word that
+		// the rules are recorded (delivery.SettingsRecorded) and each change of the rewrite's rows,
+		// is logged by a commit that records the rules the rows stand built under, which every
+		// delivery view answers under: it marks every view that reads the delivery rows.
 		//
 		// A new version of an eval a delivery view reads (its definition or one of its series)
-		// marks every view of that kind too, and readings and other day rows mark none: the
-		// timeline's and the measures' KPIs and the Pipeline's lead-time cards are judged by the
-		// targets of the delivery evals, and the Pipeline ranks its slowest jobs by the min_n of
-		// pr-ci's job series, each of the project whose published default repository is the deploy
-		// repository (evals.Store.DeployRepoEvals), which a register write sets and a project's
-		// seed first writes. Which project that is, no view holds, so the version in any project
-		// marks it, and a recompute that reads the same evals sends nothing. The refresher's
-		// commit that moves that project (delivery.JudgingMoved) marks every such view too; a
-		// person's write of a default repository marks none until it does.
+		// marks every view of that kind too, and readings mark none: the timeline's and the
+		// measures' KPIs and the Pipeline's lead-time cards are judged by the targets of the
+		// delivery evals, and the Pipeline ranks its slowest jobs by the min_n of pr-ci's job
+		// series, each of the project whose deploy source reads the deploy repository, a source
+		// that names no repository reading its project's published default
+		// (evals.Store.DeployRepoEvals), which a register write sets and a project's seed first
+		// writes. Which project that is, no view holds, so the version in any project marks it,
+		// and a recompute that reads the same evals sends nothing. The refresher's commit that
+		// moves that project (delivery.JudgingMoved) marks every such view too; a person's write
+		// of a default repository marks none until it does. Other day rows mark a delivery view
+		// only where its answer folds them: the timeline's and the measures' failure measures are
+		// the three failure evals' day rows of the delivery-on project
+		// (evals.Store.DeploymentFailures), which no view names either, so a write of them in any
+		// project marks those views.
 		if view.spec.kind == evalsView {
 			return view.spec.project == change.Repo || delivery.SettingsApplied(change)
 		}
@@ -509,14 +515,25 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		if delivery.JudgingMoved(change) {
 			return len(view.spec.classes().evalVersions) > 0
 		}
-		return change.Kind == delivery.ChangeKindEvalVersions && slices.ContainsFunc(view.spec.classes().evalVersions, func(slug string) bool {
-			return change.Ref == evals.EvalID(change.Repo, slug)
-		})
+		named := func(slug string) bool { return change.Ref == evals.EvalID(change.Repo, slug) }
+		switch change.Kind {
+		case delivery.ChangeKindEvalVersions:
+			return slices.ContainsFunc(view.spec.classes().evalVersions, named)
+		case delivery.ChangeKindEvalDays:
+			return slices.ContainsFunc(view.spec.classes().evalDays, named)
+		}
+		return false
 	case delivery.ChangeKindIssueFilings:
 		// One filing of a Legion session. No view reads a filing: the refresher does, and
 		// rewrites the day's Legion rows, whose eval_days change marks the evals view; the
 		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
 		// the delivery views read the delivery rows alone.
+		return false
+	case delivery.ChangeKindProductionEvents:
+		// One write of the record of deploys and failed changes (dispatch://INFRA-978). No view
+		// reads the record: the refresher does, and rewrites the three failure evals' day rows of
+		// each project the row counts for, whose eval_days change marks that project's evals view
+		// and every view that folds those rows: the timeline and the measures (above).
 		return false
 	default:
 		// A delivery row. A view that reads none moves by other things: a Legion board by a read

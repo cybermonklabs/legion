@@ -281,184 +281,231 @@ type Registered struct {
 // section of its own for an eval of the catalogue whose doc_block names no block (ensure), would
 // replace what the write set at the next boot (R5).
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
-	if err := validateRegistration(change); err != nil {
+	written, err := s.RegisterWith(ctx, change.Project, nil, change)
+	if err != nil {
 		return Registered{}, err
 	}
-	evalID := EvalID(change.Project, change.Slug)
-	var answer Registered
-	err := s.inWrite(ctx, change.Project, func(ctx context.Context, w *writeTx) error {
-		answer = Registered{}
-		if err := lockEval(ctx, w.Tx, evalID); err != nil {
+	return written[0], nil
+}
+
+// RegisterWith writes each of changes, every one an eval of project, as Register writes one, in
+// one transaction with fn, the caller's own work, so the caller's rows and the evals' versions
+// commit together or not at all: the delivery settings route saves a project's settings and the
+// targets it sets on that project's evals in one write (dispatch://INFRA-978, R3). The transaction
+// is inWrite's, with its ledger and its second attempt where the first found the project's
+// `evals-md` removed, so fn runs again in the new transaction too and must write nothing it cannot
+// write twice. The evals' locks are taken first, before fn runs, since fn may write and so hold a
+// transaction id, and inWrite takes every lock it waits for before that (lockEvals), but for the
+// change log's lock a delivery settings write's trigger takes after that write, which inWrite's
+// comment names; each change then runs as Register's does. The answer holds what each change left,
+// in the order of changes.
+// fn may be nil.
+func (s *Store) RegisterWith(ctx context.Context, project string, fn func(ctx context.Context, tx pgx.Tx) error, changes ...Registration) ([]Registered, error) {
+	evalIDs := make([]string, len(changes))
+	for index, change := range changes {
+		if change.Project != project {
+			return nil, fmt.Errorf("a register write of %s names an eval of %s", project, change.Project)
+		}
+		if err := validateRegistration(change); err != nil {
+			return nil, err
+		}
+		evalIDs[index] = EvalID(change.Project, change.Slug)
+	}
+	var answers []Registered
+	err := s.inWrite(ctx, project, func(ctx context.Context, w *writeTx) error {
+		answers = make([]Registered, len(changes))
+		if err := lockEvals(ctx, w.Tx, evalIDs); err != nil {
 			return err
 		}
-		current, found, err := newestDefinition(ctx, w.Tx, evalID)
-		if err != nil {
-			return err
-		}
-		series, err := currentSeries(ctx, w.Tx, evalID)
-		if err != nil {
-			return err
-		}
-		// key is the fold key the eval's stored figures hold before the write.
-		key := foldKeyOf(Entry{Definition: current, Series: slices.Collect(maps.Values(series))})
-		if found && current.Computed() {
-			if field := computationField(change, series); field != "" {
-				return fieldRefusal(CodeFieldComputed, field,
-					"%s is a field of the computation of %s, which its code defines (source %s): a register write of a computed eval sets "+
-						"its target, target_inclusive and target_judges, the min_n of %s's series %s, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
-					field, evalID, current.Source, SlugPRCI, SeriesJobs)
-			}
-		}
-		for index, one := range change.Series {
-			if one.MinN.Set && !rankedByMinN(current, one.Series) {
-				return fieldRefusal(CodeFieldInvalid, fmt.Sprintf("series[%d].min_n", index),
-					"series %s of %s: min_n is the fewest timed results a job needs before it is ranked among %s's slowest jobs, and no read ranks this series by one: only %s's series %s takes a min_n",
-					one.Series, evalID, SlugPRCI, SlugPRCI, SeriesJobs)
-			}
-		}
-		if !current.Computed() {
-			if index, count, total := seriesPastLimit(series, len(change.Series), func(index int) string { return change.Series[index].Series }); index >= 0 {
-				return fieldRefusal(CodeSeriesLimit, fmt.Sprintf("series[%d].series", index), "%s", seriesLimitReason(evalID, change.Series[index].Series, count, total))
-			}
-		}
-		next := current
-		if !found {
-			next = firstDefinition(change.Project, change.Slug, change.Caller)
-		}
-		change.applyTo(&next, w.now)
-		next.Version, next.WrittenVia, next.WrittenBy, next.CreatedAt = current.Version+1, ViaRegister, change.Caller.Recorded(), w.now
-		// Every version the write would store is judged here (CheckTarget, definitionTooLarge,
-		// seriesTooLarge), after the copy forward and before the document work and the inserts
-		// below, so a refused write stores nothing. The definition's version is stored where the
-		// eval holds none, where the write changes a field of it, and where doc_text is a method the
-		// eval's section does not hold yet, which gives it block, the id of the method's new block:
-		// it is judged holding the longer of block and the block it holds now. Its target is judged
-		// in its range there, its unit's or its delivery judges' (CheckTarget, rangedJudges), and
-		// where the body names the target, the unit or the judges and stores no version, so a body
-		// naming a target outside the range it leaves is refused whatever the eval holds; a write
-		// of none of them that stores no version of the definition, a write of a series alone,
-		// leaves the standing version as it is and is not judged by it.
-		block := uuid.NewString()
-		writesDefinition := !found || change.DocText.Set || !sameDefinition(current, next)
-		if writesDefinition || change.Target.Set || change.Unit.Set || change.TargetJudges.Set {
-			if err := CheckTarget(next.Unit, next.Target, rangedJudges(next)...); err != nil {
+		if fn != nil {
+			if err := fn(ctx, w.Tx); err != nil {
 				return err
 			}
 		}
-		if writesDefinition {
-			judged := next
-			if (change.DocText.Set || (!found && next.DocBlock == "")) && len(judged.DocBlock) < len(block) {
-				judged.DocBlock = block
-			}
-			if err := definitionTooLarge(judged); err != nil {
-				return err
-			}
-		}
-		// Each version of a series the write stores, in the order the body names the series, each
-		// once (validateRegistration); standing is the eval's series as the write leaves them, so
-		// the first series an eval with none registers is its headline.
-		standing := maps.Clone(series)
-		var seriesWrites []seriesWrite
-		for index, seriesChange := range change.Series {
-			existing, has := standing[seriesChange.Series]
-			nextSeries := existing
-			if !has {
-				nextSeries = firstSeries(evalID, seriesChange.Series, len(standing) == 0, true, "")
-			}
-			seriesChange.applyTo(&nextSeries, w.now)
-			if has && sameSeries(existing, nextSeries) {
-				continue
-			}
-			nextSeries.Version, nextSeries.CreatedAt = existing.Version+1, w.now
-			if err := seriesTooLarge(nextSeries, fmt.Sprintf("series[%d].", index)); err != nil {
-				return err
-			}
-			standing[nextSeries.Series] = nextSeries
-			seriesWrites = append(seriesWrites, seriesWrite{version: nextSeries, relist: has && existing.Listed != nextSeries.Listed})
-		}
-		// The section's document work runs here, before the versions are stored, and queues the
-		// document's writes for the commit: nothing where the write leaves the eval's section as
-		// it is.
-		switch {
-		case change.DocText.Set:
-			document, documentFound, err := lockDocument(ctx, w)
+		for index, change := range changes {
+			answer, err := s.register(ctx, w, change)
 			if err != nil {
 				return err
 			}
-			held, err := s.holdsMethod(ctx, w, document, documentFound, current.DocBlock, change.DocText.Value)
-			if err != nil {
-				return err
-			}
-			// A method the eval's section holds already is no change: its block and the
-			// definition stand as they are.
-			if !held {
-				next.DocBlock = block
-				if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
-					return err
-				}
-			}
-		case change.DocBlock.Set:
-			document, documentFound, err := lockDocument(ctx, w)
-			if err != nil {
-				return err
-			}
-			held := false
-			if documentFound {
-				blocks, err := s.documents.Blocks(ctx, document.id)
-				if err != nil {
-					return fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
-				}
-				held = hasBlock(blocks, change.DocBlock.Value)
-			}
-			if !held {
-				return fieldRefusal(CodeFieldInvalid, "doc_block", "doc_block %q names no block of the project's %s document, which holds the eval's method",
-					change.DocBlock.Value, DocumentSlug)
-			}
-		case !found && next.DocBlock == "":
-			document, documentFound, err := lockDocument(ctx, w)
-			if err != nil {
-				return err
-			}
-			next.DocBlock = block
-			if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
-				return err
-			}
-		}
-		answer.Definition = current
-		if !found || !sameDefinition(current, next) {
-			stored, err := insertDefinition(ctx, w.Tx, next)
-			if err != nil {
-				return err
-			}
-			answer.Definition, answer.Wrote = stored, true
-		}
-		// relisted is the repository of each row of a series the write listed or unlisted.
-		var relisted []string
-		for _, write := range seriesWrites {
-			stored, inserted, err := insertSeries(ctx, w.Tx, write.version)
-			if err != nil {
-				return err
-			}
-			if !inserted {
-				return fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", write.version.Version, write.version.Series, evalID)
-			}
-			if write.relist && !answer.Definition.Computed() {
-				repos, err := relistDays(ctx, w.Tx, answer.Definition, stored)
-				if err != nil {
-					return err
-				}
-				relisted = append(relisted, repos...)
-			}
-			series[stored.Series], answer.Wrote = stored, true
-		}
-		answer.Series = sortedSeries(series)
-		if found && !answer.Definition.Computed() && foldKeyOf(Entry{Definition: answer.Definition, Series: answer.Series}) != key {
-			return markMovedKey(ctx, w.Tx, answer.Definition, relisted)
+			answers[index] = answer
 		}
 		return nil
 	})
 	if err != nil {
+		return nil, err
+	}
+	return answers, nil
+}
+
+// register is one change of Register in w, the change validated already and its eval's lock held
+// (RegisterWith).
+func (s *Store) register(ctx context.Context, w *writeTx, change Registration) (Registered, error) {
+	evalID := EvalID(change.Project, change.Slug)
+	answer := Registered{}
+	current, found, err := newestDefinition(ctx, w.Tx, evalID)
+	if err != nil {
 		return Registered{}, err
+	}
+	series, err := currentSeries(ctx, w.Tx, evalID)
+	if err != nil {
+		return Registered{}, err
+	}
+	// key is the fold key the eval's stored figures hold before the write.
+	key := foldKeyOf(Entry{Definition: current, Series: slices.Collect(maps.Values(series))})
+	if found && current.Computed() {
+		if field := computationField(change, series); field != "" {
+			return Registered{}, fieldRefusal(CodeFieldComputed, field,
+				"%s is a field of the computation of %s, which its code defines (source %s): a register write of a computed eval sets "+
+					"its target, target_inclusive and target_judges, the min_n of %s's series %s, owner_role, person, issue_key, links, state, replaced_by, doc_text and doc_block",
+				field, evalID, current.Source, SlugPRCI, SeriesJobs)
+		}
+	}
+	for index, one := range change.Series {
+		if one.MinN.Set && !rankedByMinN(current, one.Series) {
+			return Registered{}, fieldRefusal(CodeFieldInvalid, fmt.Sprintf("series[%d].min_n", index),
+				"series %s of %s: min_n is the fewest timed results a job needs before it is ranked among %s's slowest jobs, and no read ranks this series by one: only %s's series %s takes a min_n",
+				one.Series, evalID, SlugPRCI, SlugPRCI, SeriesJobs)
+		}
+	}
+	if !current.Computed() {
+		if index, count, total := seriesPastLimit(series, len(change.Series), func(index int) string { return change.Series[index].Series }); index >= 0 {
+			return Registered{}, fieldRefusal(CodeSeriesLimit, fmt.Sprintf("series[%d].series", index), "%s", seriesLimitReason(evalID, change.Series[index].Series, count, total))
+		}
+	}
+	next := current
+	if !found {
+		next = firstDefinition(change.Project, change.Slug, change.Caller)
+	}
+	change.applyTo(&next, w.now)
+	next.Version, next.WrittenVia, next.WrittenBy, next.CreatedAt = current.Version+1, ViaRegister, change.Caller.Recorded(), w.now
+	// Every version the write would store is judged here (CheckTarget, definitionTooLarge,
+	// seriesTooLarge), after the copy forward and before the document work and the inserts below,
+	// so a refused write stores nothing. The definition's version is stored where the eval holds
+	// none, where the write changes a field of it, and where doc_text is a method the eval's section
+	// does not hold yet, which gives it block, the id of the method's new block: it is judged
+	// holding the longer of block and the block it holds now. Its target is judged in its range
+	// there, its unit's or its delivery judges' (CheckTarget, rangedJudges), and where the body
+	// names the target, the unit or the judges and stores no version, so a body naming a target
+	// outside the range it leaves is refused whatever the eval holds; a write of none of them that
+	// stores no version of the definition, a write of a series alone, leaves the standing version
+	// as it is and is not judged by it.
+	block := uuid.NewString()
+	writesDefinition := !found || change.DocText.Set || !sameDefinition(current, next)
+	if writesDefinition || change.Target.Set || change.Unit.Set || change.TargetJudges.Set {
+		if err := CheckTarget(next.Unit, next.Target, rangedJudges(next)...); err != nil {
+			return Registered{}, err
+		}
+	}
+	if writesDefinition {
+		judged := next
+		if (change.DocText.Set || (!found && next.DocBlock == "")) && len(judged.DocBlock) < len(block) {
+			judged.DocBlock = block
+		}
+		if err := definitionTooLarge(judged); err != nil {
+			return Registered{}, err
+		}
+	}
+	// Each version of a series the write stores, in the order the body names the series, each once
+	// (validateRegistration); standing is the eval's series as the write leaves them, so the first
+	// series an eval with none registers is its headline.
+	standing := maps.Clone(series)
+	var seriesWrites []seriesWrite
+	for index, seriesChange := range change.Series {
+		existing, has := standing[seriesChange.Series]
+		nextSeries := existing
+		if !has {
+			nextSeries = firstSeries(evalID, seriesChange.Series, len(standing) == 0, true, "")
+		}
+		seriesChange.applyTo(&nextSeries, w.now)
+		if has && sameSeries(existing, nextSeries) {
+			continue
+		}
+		nextSeries.Version, nextSeries.CreatedAt = existing.Version+1, w.now
+		if err := seriesTooLarge(nextSeries, fmt.Sprintf("series[%d].", index)); err != nil {
+			return Registered{}, err
+		}
+		standing[nextSeries.Series] = nextSeries
+		seriesWrites = append(seriesWrites, seriesWrite{version: nextSeries, relist: has && existing.Listed != nextSeries.Listed})
+	}
+	// The section's document work runs here, before the versions are stored, and queues the
+	// document's writes for the commit: nothing where the write leaves the eval's section as it is.
+	switch {
+	case change.DocText.Set:
+		document, documentFound, err := lockDocument(ctx, w)
+		if err != nil {
+			return Registered{}, err
+		}
+		held, err := s.holdsMethod(ctx, w, document, documentFound, current.DocBlock, change.DocText.Value)
+		if err != nil {
+			return Registered{}, err
+		}
+		// A method the eval's section holds already is no change: its block and the definition
+		// stand as they are.
+		if !held {
+			next.DocBlock = block
+			if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, current.DocBlock, next.DocBlock, change.DocText.Value, change.Caller); err != nil {
+				return Registered{}, err
+			}
+		}
+	case change.DocBlock.Set:
+		document, documentFound, err := lockDocument(ctx, w)
+		if err != nil {
+			return Registered{}, err
+		}
+		held := false
+		if documentFound {
+			blocks, err := s.documents.Blocks(ctx, document.id)
+			if err != nil {
+				return Registered{}, fmt.Errorf("read the blocks of the %s document of %s: %w", DocumentSlug, w.project, err)
+			}
+			held = hasBlock(blocks, change.DocBlock.Value)
+		}
+		if !held {
+			return Registered{}, fieldRefusal(CodeFieldInvalid, "doc_block", "doc_block %q names no block of the project's %s document, which holds the eval's method",
+				change.DocBlock.Value, DocumentSlug)
+		}
+	case !found && next.DocBlock == "":
+		document, documentFound, err := lockDocument(ctx, w)
+		if err != nil {
+			return Registered{}, err
+		}
+		next.DocBlock = block
+		if err := s.writeMethod(ctx, w, document, documentFound, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
+			return Registered{}, err
+		}
+	}
+	answer.Definition = current
+	if !found || !sameDefinition(current, next) {
+		stored, err := insertDefinition(ctx, w.Tx, next)
+		if err != nil {
+			return Registered{}, err
+		}
+		answer.Definition, answer.Wrote = stored, true
+	}
+	// relisted is the repository of each row of a series the write listed or unlisted.
+	var relisted []string
+	for _, write := range seriesWrites {
+		stored, inserted, err := insertSeries(ctx, w.Tx, write.version)
+		if err != nil {
+			return Registered{}, err
+		}
+		if !inserted {
+			return Registered{}, fmt.Errorf("version %d of series %s of %s was written by a write that holds no lock of the eval", write.version.Version, write.version.Series, evalID)
+		}
+		if write.relist && !answer.Definition.Computed() {
+			repos, err := relistDays(ctx, w.Tx, answer.Definition, stored)
+			if err != nil {
+				return Registered{}, err
+			}
+			relisted = append(relisted, repos...)
+		}
+		series[stored.Series], answer.Wrote = stored, true
+	}
+	answer.Series = sortedSeries(series)
+	if found && !answer.Definition.Computed() && foldKeyOf(Entry{Definition: answer.Definition, Series: answer.Series}) != key {
+		if err := markMovedKey(ctx, w.Tx, answer.Definition, relisted); err != nil {
+			return Registered{}, err
+		}
 	}
 	return answer, nil
 }

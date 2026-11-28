@@ -402,6 +402,30 @@ export function putProjectDefaultRepository(
   );
 }
 
+/** `GET /api/v1/projects/{key}/settings/delivery`: `project`'s delivery settings, each source with
+ *  the repository it reads (`resolved_repo`), and the targets read back from its eval rows; `null`
+ *  for a project with none. Every reader of the project reads them. */
+export function getProjectDeliverySettings(project: string, options: ApiOptions = {}) {
+  return get("/api/v1/projects/{key}/settings/delivery", { params: { key: project } }, options);
+}
+
+/** `PUT /api/v1/projects/{key}/settings/delivery`: updates `project`'s delivery settings (a
+ *  top-level field left out keeps its stored value, `null` clears a field that may be empty,
+ *  `sources` present replaces the list, and a `targets` key changes that target alone), as its
+ *  settings tab saves them, after the server proves its GitHub App can read each source's
+ *  repository. A person's call by default. */
+export function putProjectDeliverySettings(
+  project: string,
+  input: Body<"/api/v1/projects/{key}/settings/delivery", "put">,
+  options: ApiOptions = {}
+) {
+  return put(
+    "/api/v1/projects/{key}/settings/delivery",
+    { body: input, params: { key: project } },
+    options
+  );
+}
+
 /** `POST /api/v1/projects/{key}/evals`: a person's register write of one of `project`'s evals.
  *  On a computed eval it sets how the number is judged and who answers for it, a series' min_n
  *  among them, never how the number is computed. */

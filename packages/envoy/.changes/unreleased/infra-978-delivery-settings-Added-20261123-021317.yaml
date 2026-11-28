@@ -1,0 +1,52 @@
+kind: Added
+body: |-
+  Each project has its own delivery settings at `GET` and `PUT /api/v1/projects/{key}/settings/delivery`:
+  an on or off switch, one or more deploy sources, the population rule, the failure sources with
+  the day they count from, and each target, which is a new version of the project's eval row.
+  A `github_workflow` source names the repository of its workflow, or none, and then reads the
+  project's default repository. An `events` source reads the deploys a system posts. A
+  repository is the deploy source of one project with delivery on at most (`409
+  DELIVERY_REPOSITORY_SHARED`), whose answer names the other project only to a caller who sees
+  it. The answer gives each source its `reconciled_through`. A `PUT`
+  keeps the stored value of every top-level field its body leaves out (`null` clears a field that
+  may be empty, `sources` present replaces the list, and a `targets` key changes that target
+  alone). The project settings tab sends `{"delivery": false}` alone with delivery off, and with
+  delivery on the fields it edits and only the targets the reader changed; the route keeps every
+  field and target the body leaves out, so a target another write moved while the tab was open
+  stands.
+  `GET` and `PUT /api/v1/settings/delivery` keep answering in this release and are removed in the
+  next one. Each deploy and each failed change is a row of
+  `production_events`, read, posted and judged at `GET` and `POST
+  /api/v1/projects/{key}/production-events` and `PUT .../{id}/state`. A person rejects, re-counts
+  and restores a failed change there, and the project's controller rejects and re-counts one:
+  Dispatch asks the project's Legion daemon which session is its controller at the moment of the
+  write (`GET /legion/v1/controller`, which the daemon serves from this release on), and refuses the
+  write `503 LEGION_CONTROLLER_UNREAD` where the daemon answers `404`, as an earlier build does, or
+  gives no answer within 2 s. Change fail rate, failed
+  deployment recovery time and the new deployment rework rate read those rows; the pending
+  state, the upper bound and change fail rate's `per_pr` series are removed.
+  The measures answer (`GET /api/v1/delivery/measures`, the timeline's `measures` and the live
+  measures view) states them at `change_failure_rate` (`{failed, total, rate}`, an object that is
+  never null, with each leaf null where the window holds no row of its eval),
+  `failed_deployment_recovery` and `deployment_rework_rate` (each null alike). While a release
+  rolls, the Delivery page of the release before this one reads `change_failure_rate.per_pr`,
+  `change_failure_rate.per_deploy` and `time_to_restore.median_minutes` with no null guard, so
+  the answer keeps those objects with every leaf null in every window, and computes none of
+  them; they go in the next release, with `GET` and `PUT /api/v1/settings/delivery`.
+  An after-merge check result stays bound to its failure when a replay finds an earlier deploy.
+  A posted deploy is one to production that succeeded: `POST .../production-events` refuses another
+  environment or status with `400 PRODUCTION_EVENT_INPUT`. An automatic failure (`check_fail`,
+  `revert`, `incident_issue`) is written only for a deploy that counts for its project, is listed
+  by `GET .../production-events` of each project whose failure measures count it (its deploy
+  counts for the project, delivery on, a failure source counting its signal, the deploy finished
+  on or after `failures_measured_since`), whatever project's row it is, and is rejected,
+  re-counted and restored through each of their `PUT .../{id}/state` routes under the same rule,
+  where the caller's credential covers the failure's own project (a token naming one project
+  writes a private project's row only where it names it); a failure keeps its first restore
+  whatever `restored_by_deploy` names. An automatic failure refused because its deploy counted
+  for other projects alone
+  stays refused: no later write makes its row, not even after a source move, a rule change or a
+  default-repository move makes that deploy count for its project.
+time: 2026-11-23T02:13:17Z
+custom:
+    Issue: INFRA-978

@@ -1,10 +1,11 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useSubscribers } from "../../hooks/useHoldsPersonScope";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
 import { ArtifactBlobView, ArtifactHeader } from "../artifacts/ArtifactHeader";
@@ -34,10 +35,9 @@ import { useProjectArtifact } from "./useProjectArtifact";
  */
 function DocumentSubscribers({ artifact }: { readonly artifact: Artifact }): ReactNode {
   const queryClient = useQueryClient();
-  const subscribers = useQuery({
-    queryKey: ["subscribers", artifact.id],
-    queryFn: () => api.getArtifactSubscribers(artifact.id),
-  });
+  // Read under the `person` scope, once a read says the viewer's credential holds it
+  // (`useSubscribers`).
+  const subscribers = useSubscribers({ id: artifact.id, kind: "document" });
   const agentText = useAgentText();
   // The press carries the document it unsubscribes from, its id and its name: the route takes the
   // id, and the sentence of a stopped unsubscribe the name, from the press rather than from the

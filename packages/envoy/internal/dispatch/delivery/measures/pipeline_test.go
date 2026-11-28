@@ -2,6 +2,7 @@ package measures
 
 import (
 	"math"
+	"reflect"
 	"slices"
 	"strconv"
 	"testing"
@@ -188,7 +189,7 @@ func TestPRChecksTimesWholeRunsFromStartToCompletion(t *testing.T) {
 	c.add(3, 32, 5, "cancelled", 8)
 	c.add(4, 31, 30, "failure", 8)
 	c.add(5, 24, 30, "success", 8)
-	run, _, _ := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults)
+	run, _ := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults)
 
 	assertCell(t, "run.days[6]", run.Days[6].Cell, 2, new(56.5), new(85.7), 2, 0, 1, new(1.0))
 	assertCell(t, "run.days[5]", run.Days[5].Cell, 1, new(30.0), new(30.0), 0, 1, 0, new(0.0))
@@ -211,7 +212,7 @@ func TestSlowestJobsRankBySevenDayMedianOnceAJobHasEnoughResults(t *testing.T) {
 	for i := range SlowestMinResults - 1 {
 		c.add(int64(1000+i), 30, 130, "success", 8, job("tasks / run (one task)", 120))
 	}
-	_, slowest, _ := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults)
+	_, slowest := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults)
 
 	names := make([]string, len(slowest))
 	for i, j := range slowest {
@@ -226,11 +227,11 @@ func TestSlowestJobsRankBySevenDayMedianOnceAJobHasEnoughResults(t *testing.T) {
 }
 
 // TestTheSlowestJobsTableIsTheHeadOfTheRankingByTheMinNItIsGiven: FoldSlowestJobs ranks every job
-// with as many timed results as it is given, and the Pipeline's table (PRChecks) is the first
-// SlowestJobs of that one ranking. Six jobs with one result fewer than SlowestMinResults each rank
-// at that many, slowest first, and the table shows the first five of them; at SlowestMinResults
-// none ranks and the table is empty; at 0 a job whose one result has no duration, and so no
-// median, is still left out.
+// with as many timed results as it is given, and the Pipeline's table (PRChecksTimings) is the
+// first SlowestJobs of that one ranking. Six jobs with one result fewer than SlowestMinResults each
+// rank at that many, slowest first, and the table shows the first five of them; at
+// SlowestMinResults none ranks and the table is empty; at 0 a job whose one result has no
+// duration, and so no median, is still left out.
 func TestTheSlowestJobsTableIsTheHeadOfTheRankingByTheMinNItIsGiven(t *testing.T) {
 	var c ciRuns
 	jobs := []ciJob{job("a", 10), job("b", 60), job("c", 30), job("d", 40), job("e", 50), job("f", 20)}
@@ -250,10 +251,10 @@ func TestTheSlowestJobsTableIsTheHeadOfTheRankingByTheMinNItIsGiven(t *testing.T
 	if !slices.Equal(names(ranked), want) {
 		t.Fatalf("the ranking at %d results = %v, want %v", SlowestMinResults-1, names(ranked), want)
 	}
-	if _, table, _ := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults-1); !slices.Equal(names(table), want[:SlowestJobs]) {
+	if _, table := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults-1); !slices.Equal(names(table), want[:SlowestJobs]) {
 		t.Errorf("the table at %d results = %v, want the ranking's first %d, %v", SlowestMinResults-1, names(table), SlowestJobs, want[:SlowestJobs])
 	}
-	if _, table, _ := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults); len(table) != 0 {
+	if _, table := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults); len(table) != 0 {
 		t.Errorf("the table at %d results = %v, want none: every job holds %d", SlowestMinResults, names(table), SlowestMinResults-1)
 	}
 	untimed := append(slices.Clone(parts), timingPart(time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), JobSeriesPrefix+"no duration", []sample{{outcome: OutcomeSuccess}}))
@@ -276,12 +277,18 @@ func failingFixture() ciRuns {
 	return c
 }
 
+// rollsUp is a roll-up lookup (FailingJobs' rollupOf) that answers name for every repository.
+func rollsUp(name string) func(repo string) string {
+	return func(string) string { return name }
+}
+
 // TestFailingJobsCoverTheLast24HoursWithoutTheRollup is test_pipeline.py:114-137 and
 // dump-failing.py: the roll-up and a skipped job add no result, a cancelled run's failed job adds
 // no failure, and a failure before the last 24 hours is absent.
 func TestFailingJobsCoverTheLast24HoursWithoutTheRollup(t *testing.T) {
 	c := failingFixture()
-	run, _, failing := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "checks-complete", SlowestMinResults)
+	run, _ := PRChecksTimings(c.runs, c.jobs, pipelineDays, SlowestMinResults)
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp("checks-complete"))
 
 	lastFailed := time.Date(2026, 10, 2, 10, 30, 0, 0, time.UTC)
 	want := []FailingJob{
@@ -301,11 +308,11 @@ func TestFailingJobsCoverTheLast24HoursWithoutTheRollup(t *testing.T) {
 	assertCell(t, "run.total", run.Total, 4, new(30.0), new(30.0), 1, 3, 1, new(0.25))
 }
 
-// TestFailingJobsWithoutARollupLeaveNothingOut: with no roll-up job set, the job that only reports
-// the others' result is tallied like any other.
+// TestFailingJobsWithoutARollupLeaveNothingOut: with no roll-up job set (a lookup that answers ""
+// for every repository), the job that only reports the others' result is tallied like any other.
 func TestFailingJobsWithoutARollupLeaveNothingOut(t *testing.T) {
 	c := failingFixture()
-	_, _, failing := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults)
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp(""))
 	names := make([]string, len(failing))
 	for i, j := range failing {
 		names[i] = j.Name
@@ -315,13 +322,34 @@ func TestFailingJobsWithoutARollupLeaveNothingOut(t *testing.T) {
 	}
 }
 
+// TestEachRunLeavesOutItsOwnRepositorysRollup: a run leaves out the roll-up job its own
+// repository's rule names (rollupOf of its repository), and tallies a job named as another
+// repository's roll-up like any other. acme/widgets rolls up on checks-complete and acme/gadgets on
+// all-green, a failing run of each holds both jobs failed, and the one failure each name keeps is
+// the run of the repository that does not roll up on it.
+func TestEachRunLeavesOutItsOwnRepositorysRollup(t *testing.T) {
+	var c ciRuns
+	c.add(1, 32, 30, "failure", 9, job("checks-complete", 1, "failure"), job("all-green", 1, "failure"))
+	c.add(2, 32, 30, "failure", 10, job("checks-complete", 1, "failure"), job("all-green", 1, "failure"))
+	c.runs[1].Repo = "acme/gadgets"
+	rollups := map[string]string{"acme/widgets": "checks-complete", "acme/gadgets": "all-green"}
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, func(repo string) string { return rollups[repo] })
+	got := make([]string, len(failing))
+	for i, j := range failing {
+		got[i] = j.Name + " " + strconv.Itoa(j.Failures) + " " + j.LastRunURL
+	}
+	if want := []string{"all-green 1 " + runURL(1), "checks-complete 1 " + runURL(2)}; !slices.Equal(got, want) {
+		t.Fatalf("failing = %v, want %v", got, want)
+	}
+}
+
 // TestFailingJobsStopAtNow: the failing-jobs table covers the 24 hours before now and nothing
 // after it, so a pinned `at` in the past never counts a run that completed later that day.
 func TestFailingJobsStopAtNow(t *testing.T) {
 	c := failingFixture()
 	// Completed at 12:30 on Oct 2, half an hour after pipelineNow.
 	c.add(6, 32, 20, "failure", 12, job("build / unit", 19, "failure"), job("lint", 5, "failure"), job("typecheck", 3, "failure"))
-	_, _, failing := PRChecks(c.runs, c.jobs, pipelineDays, pipelineNow, "checks-complete", SlowestMinResults)
+	failing := FailingJobs(c.runs, c.jobs, pipelineNow, rollsUp("checks-complete"))
 
 	byName := map[string]FailingJob{}
 	for _, f := range failing {
@@ -351,7 +379,7 @@ func TestAFailingJobsLastRunIsTheSameInEveryRunOrder(t *testing.T) {
 		for i, run := range runs {
 			ids[i] = run.RunID
 		}
-		_, _, failing := PRChecks(runs, c.jobs, pipelineDays, pipelineNow, "", SlowestMinResults)
+		failing := FailingJobs(runs, c.jobs, pipelineNow, rollsUp(""))
 		if len(failing) != 1 || failing[0].Failures != 3 || !failing[0].LastFailedAt.Equal(lastFailed) || failing[0].LastRunURL != runURL(9) {
 			t.Fatalf("failing jobs of runs listed %v = %+v, want build / unit failing 3 times, last in run 9 at %s", ids, failing, lastFailed)
 		}
@@ -431,12 +459,12 @@ func TestDeployJobTimingsFollowEachNamedJob(t *testing.T) {
 		jobsByRun[id] = rows
 	}
 
-	timings := DeployJobs(runs, jobsByRun, []DeployJobCard{
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: []DeployJobCard{
 		{CardID: "staging_e2e", Production: delivery.Production{JobNames: []string{stagingE2EJob}}},
 		{CardID: "staging_apply", Production: delivery.Production{JobNames: []string{stagingApplyJob}}},
 		{CardID: "production_apply", Production: delivery.Production{JobNames: []string{productionApplyJob}}},
 		{CardID: "never", Production: delivery.Production{JobNames: []string{"never-run / job"}}},
-	}, pipelineDays)
+	}}}, pipelineDays)
 	if len(timings) != 4 {
 		t.Fatalf("timings = %d, want one per card", len(timings))
 	}
@@ -452,6 +480,43 @@ func TestDeployJobTimingsFollowEachNamedJob(t *testing.T) {
 		t.Errorf("never-run timing = {job %q, %d days}, want its name and 7 days", never.Job, len(never.Days))
 	}
 	assertCell(t, "never-run.total", never.Total, 0, nil, nil, 0, 0, 0, nil)
+}
+
+// TestDeployCardsReadTheRepositorysOwnRule: each source repository's deploy cards are its own
+// rule's (dispatch://INFRA-978, D1). Of the two repositories one project's sources read, one naming
+// staging jobs and one naming an apply step, DeployCards of each repository's rule
+// (delivery.DeployRules) follows that repository's production jobs, apply step and staging jobs
+// alone.
+func TestDeployCardsReadTheRepositorysOwnRule(t *testing.T) {
+	rules := delivery.DeployRules([]delivery.ProjectSettings{{
+		Project: "ACME", Delivery: true, DefaultRepo: new("acme/widgets"),
+		Sources: []delivery.DeploySource{
+			{SourceRule: delivery.SourceRule{
+				Kind: delivery.SourceKindGitHubWorkflow, DeployWorkflowPath: new("deploy.yml"), ProductionJobNames: []string{productionApplyJob},
+				StagingE2EJobName: new(stagingE2EJob), StagingApplyJobName: new(stagingApplyJob), PRChecksWorkflowPath: new("ci.yml"),
+			}},
+			{SourceRule: delivery.SourceRule{
+				Kind: delivery.SourceKindGitHubWorkflow, Repo: new("acme/gadgets"), DeployWorkflowPath: new("ship.yml"), ProductionJobNames: []string{"ship"},
+				ProductionApplyStepName: new("Apply gadgets"), PRChecksWorkflowPath: new("ci.yml"),
+			}},
+		},
+	}})
+	want := map[string][]DeployJobCard{
+		"acme/gadgets": {{CardID: CardProductionApply, Production: delivery.Production{JobNames: []string{"ship"}, ApplyStep: new("Apply gadgets")}}},
+		"acme/widgets": {
+			{CardID: CardProductionApply, Production: delivery.Production{JobNames: []string{productionApplyJob}}},
+			{CardID: CardStagingE2E, Production: delivery.Production{JobNames: []string{stagingE2EJob}}},
+			{CardID: CardStagingApply, Production: delivery.Production{JobNames: []string{stagingApplyJob}}},
+		},
+	}
+	if len(rules) != len(want) {
+		t.Fatalf("DeployRules = %+v, want one rule for each of %d repositories", rules, len(want))
+	}
+	for _, rule := range rules {
+		if got := DeployCards(rule); !reflect.DeepEqual(got, want[rule.DeployRepo]) {
+			t.Errorf("DeployCards of %s = %+v, want its own rule's %+v", rule.DeployRepo, got, want[rule.DeployRepo])
+		}
+	}
 }
 
 // TestTheProductionCardMergesItsNamesAndCountsOnlyAppliedJobs proves one card follows both names
@@ -478,7 +543,9 @@ func TestTheProductionCardMergesItsNamesAndCountsOnlyAppliedJobs(t *testing.T) {
 		runs = append(runs, run)
 		jobsByRun[id] = rows
 	}
-	timings := DeployJobs(runs, jobsByRun, []DeployJobCard{{CardID: "production_apply", Production: delivery.Production{JobNames: []string{newName, oldName}, ApplyStep: new(step)}}}, pipelineDays)
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: runs, Jobs: jobsByRun, Cards: []DeployJobCard{
+		{CardID: "production_apply", Production: delivery.Production{JobNames: []string{newName, oldName}, ApplyStep: new(step)}},
+	}}}, pipelineDays)
 	if timings["production_apply"].Job != newName+" or "+oldName {
 		t.Errorf("job = %q, want both names", timings["production_apply"].Job)
 	}
@@ -494,12 +561,12 @@ func TestProductionCardUsesOneAppliedListedJobPerRun(t *testing.T) {
 		Repo: "acme/widgets", RunID: 5, Kind: delivery.DeliveryRunKindDeploy, StartedAt: started,
 		CompletedAt: new(appliedAt), Conclusion: new(delivery.DeliveryRunConclusionSuccess), URL: runURL(5),
 	}
-	timings := DeployJobs([]delivery.DeliveryRun{run}, map[int64][]delivery.DeliveryRunJob{run.RunID: {
+	timings := DeployJobsOf([]SourceDeployRuns{{Runs: []delivery.DeliveryRun{run}, Jobs: map[int64][]delivery.DeliveryRunJob{run.RunID: {
 		{Name: stoodDownName, StartedAt: new(at(32, 9, 0)), CompletedAt: new(stoodDownAt), Conclusion: new(delivery.DeliveryJobConclusionSuccess), ApplyStep: new(step), ApplyStepConclusion: new(delivery.DeliveryJobConclusionSkipped)},
 		{Name: appliedName, StartedAt: new(at(32, 9, 0)), CompletedAt: new(appliedAt), Conclusion: new(delivery.DeliveryJobConclusionSuccess), ApplyStep: new(step), ApplyStepConclusion: new(delivery.DeliveryJobConclusionSuccess)},
-	}}, []DeployJobCard{{
+	}}, Cards: []DeployJobCard{{
 		CardID: "production_apply", Production: delivery.Production{JobNames: []string{stoodDownName, appliedName}, ApplyStep: new(step)},
-	}}, pipelineDays)
+	}}}}, pipelineDays)
 	assertCell(t, "production_apply.total", timings["production_apply"].Total, 1, new(30.0), new(30.0), 1, 0, 0, new(1.0))
 }
 

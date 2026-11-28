@@ -2309,7 +2309,7 @@ func TestALastWindowOverRepositoriesTakesTheLaterWriteOfATie(t *testing.T) {
 		if project := r.day(t, evalID, "depth", "", window.From); project.LastValue == nil || *project.LastValue != want.value {
 			t.Fatalf("the project's row of the %d. holds the last value %s, want %g, the later write's", want.day, showValue(project.LastValue), want.value)
 		}
-		rows, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{entry}, "", []string{"acme/a", "acme/b"}, window, nil)
+		rows, err := DayWindowIn(t.Context(), r.database.Pool, []string{r.project}, []Entry{entry}, nil, []string{"acme/a", "acme/b"}, window, nil)
 		if err != nil {
 			t.Fatalf("read the window of the %d.: %v", want.day, err)
 		}

@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
-	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -75,12 +74,6 @@ type measuresFixture struct {
 
 const measuresFixtureWindow = "from=2026-08-30T00:00:00Z&to=2026-09-27T20:00:00Z"
 
-// noFailureSourceJSON is a measures answer's change_failure_rate while no failure source exists
-// (flags_source none): the object, every count 0 and every rate null. A page of an earlier build
-// reads its rates with no null guard, so the object is never null.
-const noFailureSourceJSON = `"change_failure_rate":{"per_pr":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null},` +
-	`"per_deploy":{"confirmed":0,"pending":0,"rejected":0,"reverts":0,"total":0,"rate":null,"confirmed_or_pending":0,"upper_bound_rate":null}}`
-
 // seedMeasuresFixture writes the fixture's settings, issues, pull requests, runs and jobs through
 // the same store calls intake and reconcile use, so Dispatch derives each PR's deploy from the
 // stored rows (containment.go FirstShippingApply) as it does in production.
@@ -97,13 +90,11 @@ func seedMeasuresFixture(t *testing.T, database *store.Store) measuresFixture {
 		t.Fatalf("decode fixture: %v", err)
 	}
 
-	if _, err := delivery.PutSettings(ctx, pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, pool, delivery.DeliverySettings{
 		DeployRepo: fixture.Settings.DeployRepo, DeployWorkflowPath: fixture.Settings.DeployWorkflowPath,
 		ProductionJobNames: fixture.Settings.ProductionJobNames, PRChecksWorkflowPath: fixture.Settings.PRChecksWorkflowPath,
 		PopulationAuthors: fixture.Settings.PopulationAuthors,
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 
 	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
@@ -212,13 +203,11 @@ func assertMeasuresSpread(t *testing.T, name string, got measures.Spread, median
 
 func seedMeasuresSettings(t *testing.T, database *store.Store) {
 	t.Helper()
-	if _, err := delivery.PutSettings(t.Context(), database.Pool, delivery.DeliverySettings{
+	saveDeliveryRule(t, database.Pool, delivery.DeliverySettings{
 		DeployRepo: "acme/widgets", DeployWorkflowPath: ".github/workflows/deploy.yml",
 		ProductionJobNames: []string{"widgets-release / widgets-release"}, PRChecksWorkflowPath: ".github/workflows/pr-checks.yml",
 		PopulationAuthors: []string{"octocat"},
-	}, model.Actor{Kind: "system", ID: "test"}); err != nil {
-		t.Fatalf("seed settings: %v", err)
-	}
+	})
 }
 
 func TestGetDeliveryMeasuresWithoutSettingsIs404(t *testing.T) {
@@ -391,18 +380,21 @@ func TestGetDeliveryTimelineCarriesTheMeasuresOfItsWindow(t *testing.T) {
 			t.Fatalf("GET timeline?%s: status = %d, body = %s", query, response.Code, response.Body.String())
 		}
 		var timeline struct {
-			Measures *deliveryMeasuresResponse `json:"measures"`
+			Measures json.RawMessage `json:"measures"`
 		}
-		if err := json.Unmarshal(response.Body.Bytes(), &timeline); err != nil {
-			t.Fatalf("decode timeline?%s: %v", query, err)
+		if err := json.Unmarshal(response.Body.Bytes(), &timeline); err != nil || len(timeline.Measures) == 0 {
+			t.Fatalf("decode timeline?%s: %v, measures = %s, want the measures answer", query, err, timeline.Measures)
 		}
-		if timeline.Measures == nil {
-			t.Fatalf("timeline?%s carries no measures", query)
+		var got deliveryMeasuresResponse
+		if err := json.Unmarshal(timeline.Measures, &got); err != nil {
+			t.Fatalf("decode timeline?%s's measures: %v", query, err)
 		}
-		got, want := *timeline.Measures, getDeliveryMeasures(t, handler, query)
-		if !strings.Contains(response.Body.String(), noFailureSourceJSON) {
-			t.Errorf("timeline?%s carries no %s with no failure source", query, noFailureSourceJSON)
-		}
+		want := getDeliveryMeasures(t, handler, query)
+		// No row of the failure measures' evals is stored: each of their members reads null, as
+		// does every member the previous Delivery page reads.
+		written := decodeWrittenMeasures(t, "timeline?"+query, timeline.Measures)
+		requireNullMembers(t, "timeline?"+query, written.tree, modernFailureMembers...)
+		requireLegacyReadsNull(t, "timeline?"+query, written.tree)
 		if got.ComputedAt.IsZero() {
 			t.Errorf("timeline?%s: measures.computed_at is zero", query)
 		}
@@ -449,21 +441,12 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 		t.Errorf("len(daily) = %d, want 29", len(result.Daily))
 	}
 
-	if body.FlagsSource != "none" {
-		t.Errorf("flags_source = %q, want none", body.FlagsSource)
-	}
-	// No failure source exists, so the change failure rate measures nothing and time to restore
-	// has no median: a 0 would be a measured rate, which a target would judge met.
-	if result.ChangeFailureRate != (measures.ChangeFailureRate{}) {
-		t.Errorf("change_failure_rate = %+v with flags_source none, want every count 0 and every rate null", result.ChangeFailureRate)
-	}
-	if !strings.Contains(string(raw), noFailureSourceJSON) {
-		_, answered, _ := strings.Cut(string(raw), `"change_failure_rate"`)
-		t.Errorf("the answer carries no %s with flags_source none; it answers %.400s", noFailureSourceJSON, answered)
-	}
-	if result.TimeToRestore.MedianMinutes != nil {
-		t.Errorf("time_to_restore.median_minutes = %v, want null", *result.TimeToRestore.MedianMinutes)
-	}
+	// No row of the three failure measures' evals is stored, so each reads no value: a 0 would be
+	// a measured rate, which a target would judge met. The members the previous Delivery page
+	// reads are null too, as in every window.
+	written := decodeWrittenMeasures(t, "measures?"+measuresFixtureWindow, raw)
+	requireNullMembers(t, "measures?"+measuresFixtureWindow, written.tree, modernFailureMembers...)
+	requireLegacyReadsNull(t, "measures?"+measuresFixtureWindow, written.tree)
 	if len(body.UnownedP0) != 1 || body.UnownedP0[0] != (delivery.UnownedIssue{Key: "ACME-103", Title: "Production deploy gate flakes"}) {
 		t.Errorf("unowned_p0 = %+v, want [{ACME-103 Production deploy gate flakes}]", body.UnownedP0)
 	}
@@ -476,9 +459,9 @@ func TestGetDeliveryMeasuresComputesTheFixture(t *testing.T) {
 	if body.Status.DeploysPerDay == nil || *body.Status.DeploysPerDay || body.Status.MergeToProduction == nil || *body.Status.MergeToProduction {
 		t.Errorf("status = %+v, want the fixture to miss deploys a day and merge to production", body.Status)
 	}
-	if verdict, upper := body.Status.ChangeFailureRate, body.Status.ChangeFailureRateUpperBound; verdict != nil || upper != nil {
-		// flags_source none measures no failure rate, so there is nothing to judge, met or missed.
-		t.Errorf("status.change_failure_rate is set %t and its upper bound %t, want no verdict with no failure source", verdict != nil, upper != nil)
+	if body.Status.ChangeFailureRate != nil {
+		// No stored row measures the change failure rate, so there is nothing to judge, met or missed.
+		t.Errorf("status.change_failure_rate = %v, want no verdict with no stored row", *body.Status.ChangeFailureRate)
 	}
 	timeline := getDeliveryTimeline(t, handler, measuresFixtureWindow)
 	if body.Freshness != timeline.Freshness {

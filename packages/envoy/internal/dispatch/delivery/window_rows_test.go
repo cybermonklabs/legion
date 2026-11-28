@@ -16,17 +16,17 @@ import (
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's one read of a window
-// (ReadWindowRows) answers what the two reads it stands for answer (ReadMergedRows and
+// TestAWindowsReadAnswersWhatItsTwoReadsAnswer: a delivery route's read of a window's runs
+// (ReadWindowRuns) answers what the two reads it stands for answer (ReadMergedRows and
 // ReadDeploys, which read every apply run to the present and the window's deploys apart), over
 // generated histories of deploy runs on main and off it, re-runs, rows stored before created_at,
 // production jobs that succeeded, failed, were cancelled or stood down, failed guards beside them,
 // and pull requests merged anywhere among them, for windows that end inside the history and one
-// that ends past it: the same pull requests and the same Deploys, earlier rows included; apply
-// runs that are the first of every apply run, the rest created after the window ends; each apply
-// run's production jobs, with failedJobs its failed jobs too, as every job it holds says; and every
-// pull request of the window and of the earlier rows shipping first with the run it ships first
-// with over every apply run, and each deploy shipping the same pull requests.
+// that ends past it: the same Deploys, earlier rows included; apply runs that are the first of
+// every apply run, the rest created after the window ends; each apply run's production jobs, with
+// failedJobs its failed jobs too, as every job it holds says; and every pull request of the window
+// and of the earlier rows shipping first with the run it ships first with over every apply run,
+// and each deploy shipping the same pull requests.
 //
 // The two reads share code with the read they are compared to, so each window is also held to the
 // seeded history read whole and judged apart from every window read (windowTruth.check): the
@@ -34,7 +34,7 @@ import (
 // job they hold; the pull requests are those stored as merged in the window; and every pull request
 // that a deploy of the window ships first, whenever it merged, is among the window's or the
 // earlier rows and is shipped by that deploy alone. The read with deploys false (the Pipeline's
-// lead times) answers the same rows and no Deploys.
+// lead times) answers the same apply runs and no Deploys.
 //
 // The comparison fails where no window's apply runs stopped short of every apply run, and where no
 // pull request of any window or of its earlier rows is first shipped by a run created after the
@@ -69,14 +69,12 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 			wantApplies := ProductionApplies(wantMerged.ApplyRuns, wantMerged.ApplyJobs, production).Applies
 			for _, failedJobs := range []bool{false, true} {
 				label := label + ", failed jobs " + strconv.FormatBool(failedJobs)
-				merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, true)
+				applyRows, deploys, err := ReadWindowRuns(ctx, pool, settings, from, to, failedJobs, true)
 				if err != nil {
-					t.Fatalf("%s: ReadWindowRows: %v", label, err)
+					t.Fatalf("%s: ReadWindowRuns: %v", label, err)
 				}
+				merged := MergedRows{PullRequests: wantMerged.PullRequests, ApplyRuns: applyRows.Runs, ApplyJobs: applyRows.Jobs}
 				windows++
-				if !reflect.DeepEqual(merged.PullRequests, wantMerged.PullRequests) {
-					t.Fatalf("%s: the pull requests differ from ReadMergedRows'", label)
-				}
 				if !reflect.DeepEqual(deploys, wantDeploys) {
 					t.Fatalf("%s: the deploys differ from ReadDeploys':\n got:  %+v\n want: %+v", label, deploys, wantDeploys)
 				}
@@ -114,16 +112,16 @@ func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
 				}
 				shippedAfterEnd += truth.check(t, label, settings, from, to, merged, deploys)
 
-				bare, none, err := ReadWindowRows(ctx, pool, settings, from, to, failedJobs, false)
+				bare, none, err := ReadWindowRuns(ctx, pool, settings, from, to, failedJobs, false)
 				if err != nil {
-					t.Fatalf("%s: ReadWindowRows without deploys: %v", label, err)
+					t.Fatalf("%s: ReadWindowRuns without deploys: %v", label, err)
 				}
 				if !reflect.DeepEqual(none, Deploys{}) {
 					t.Fatalf("%s: the read without deploys answers the deploys %+v, want none", label, none)
 				}
-				if !reflect.DeepEqual(bare, merged) {
-					t.Fatalf("%s: the read without deploys answers %d pull requests and the apply runs %v, want the read with them's %d and %v",
-						label, len(bare.PullRequests), runIDsOf(bare.ApplyRuns), len(merged.PullRequests), runIDsOf(merged.ApplyRuns))
+				if !reflect.DeepEqual(bare, applyRows) {
+					t.Fatalf("%s: the read without deploys answers the apply runs %v, want the read with them's %v",
+						label, runIDsOf(bare.Runs), runIDsOf(applyRows.Runs))
 				}
 			}
 		}
@@ -167,9 +165,10 @@ func readWindowTruth(t *testing.T, ctx context.Context, pool *store.Pool, produc
 	return windowTruth{runs: runs, jobs: jobs, applies: ProductionApplies(runs, jobs, production).Applies, prs: prs}
 }
 
-// check holds one window's ReadWindowRows answer with deploys (merged and deploys) to the history
-// read whole, and answers how many pull requests of the window or of its earlier rows are first
-// shipped by a run created after to, each of which it also holds to be among the apply runs read.
+// check holds one window's ReadWindowRuns answer with deploys (merged, its apply runs beside the
+// window's pull requests, and deploys) to the history read whole, and answers how many pull
+// requests of the window or of its earlier rows are first shipped by a run created after to, each
+// of which it also holds to be among the apply runs read.
 func (h windowTruth) check(t *testing.T, label string, settings DeliverySettings, from, to time.Time, merged MergedRows, deploys Deploys) int {
 	t.Helper()
 	id := func(pr DeliveryPullRequest) string { return pr.Repo + "#" + strconv.Itoa(pr.Number) }
@@ -480,10 +479,17 @@ func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *te
 		}
 	}
 
-	merged, deploys, err := ReadWindowRows(ctx, pool, settings, from, to, false, true)
+	applyRows, deploys, err := ReadWindowRuns(ctx, pool, settings, from, to, false, true)
 	if err != nil {
-		t.Fatalf("ReadWindowRows: %v", err)
+		t.Fatalf("ReadWindowRuns: %v", err)
 	}
+	// A route reads the window's own pull requests beside each source repository's runs
+	// (ReadWindowRuns reads none).
+	prs, err := ListPullRequestsInWindow(ctx, pool, from, to)
+	if err != nil {
+		t.Fatalf("ListPullRequestsInWindow of the window: %v", err)
+	}
+	merged := MergedRows{PullRequests: prs, ApplyRuns: applyRows.Runs, ApplyJobs: applyRows.Jobs}
 	if len(deploys.Applies) != 1 || deploys.Applies[0].RunID != 1 {
 		t.Fatalf("the window's deploys = %+v, want run 1 alone", deploys.Applies)
 	}

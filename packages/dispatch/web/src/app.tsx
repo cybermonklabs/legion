@@ -15,7 +15,7 @@ import { Link, Navigate, Route, Routes, useLocation, useNavigate } from "react-r
 import { api, isNoIdentity, isUnauthorized } from "./api/client";
 import { useEventFeed } from "./api/event-feed";
 import { useLiveSocketPill } from "./api/live-socket";
-import { userAgentStateQuery, whoAmIQuery } from "./api/queries";
+import { whoAmIQuery } from "./api/queries";
 import { askSignInAgain } from "./api/query-client";
 import type { AuthenticatedUser } from "./api/types";
 import { useLiveViews } from "./features/agent-view/live-views";
@@ -103,6 +103,7 @@ import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator
 import { useKeyedWrite, useRefusalOfSubject } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
 import { DOCUMENT_SCROLL_ATTRIBUTE, useFootInset } from "./hooks/useFootInset";
+import { useHoldsPersonScope, useUserAgentState } from "./hooks/useHoldsPersonScope";
 import {
   backdrop50,
   badgeBlocking,
@@ -297,8 +298,10 @@ function ShellMessagePage({ children, title }: { children?: ReactNode; title: st
 /**
  * The Inbox page, in two named groups in this order:
  *
- * - **Heading**: the page's title, then **Answered by you**. Too narrow for both on one line,
- *   the link moves whole to a line of its own under the title; the title never shortens.
+ * - **Heading**: the page's title, then **Answered by you**, drawn where the viewer's credential
+ *   holds the `person` scope the answers are read under (`useHoldsPersonScope`). Too narrow for
+ *   both on one line, the link moves whole to a line of its own under the title; the title never
+ *   shortens.
  * - **Inbox**: the list and the row the reader is reading (`Inbox`), below the heading at every
  *   width. From the reading column's width, and below it while the reader has a row open, it
  *   fills the height left under the heading (`useInboxFillsViewport`); otherwise the page
@@ -310,14 +313,17 @@ function InboxPage(): ReactNode {
   // fills the viewport (`fillsViewport` below) and the Inbox divides the height left under the
   // heading; otherwise the page scrolls as ever.
   const fillsViewport = useInboxFillsViewport();
+  const holdsPerson = useHoldsPersonScope();
   return (
     <section className={fillsViewport ? "flex min-h-0 flex-1 flex-col" : undefined}>
       {/* Only the page links to the answers page; the drawer's Inbox stays a peek. */}
       <div className="mb-4 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
         <h1 className="text-[22px] font-semibold tracking-tight">Inbox</h1>
-        <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
-          Answered by you
-        </Link>
+        {holdsPerson ? (
+          <Link className={`text-sm ${linkText} ${linkHoverText}`} to={ANSWERS_PATH}>
+            Answered by you
+          </Link>
+        ) : null}
       </div>
       <Inbox />
     </section>
@@ -480,29 +486,37 @@ function NavigationContents({
         user={user}
       />
       {/* Identity is chrome: who you are and how to leave are read once, while the navigation
-          above is read on every visit, so the footer sits under it rather than over it. */}
+          above is read on every visit, so the footer sits under it rather than over it. An agent
+          viewer is shown by its label and offered no sign-out: its bearer is no session of this
+          browser's, so `POST /auth/logout` has nothing to end and refuses it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
-        {/* The login is the way in to the reader's own page: what they wrote and what reached
-            them, which no other surface lists. The underline is what tells the link from the
-            text around it, which colour alone does not. */}
-        <p className={`px-2 text-sm ${railMutedText}`}>
-          Signed in as{" "}
-          <Link
-            className={`underline ${railAccentText} ${railAccentHoverText}`}
-            onClick={onClose}
-            to={buildPersonPath(user.login)}
-          >
-            {user.login}
-          </Link>
-        </p>
-        <button
-          className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
-          disabled={signOutPending}
-          onClick={onSignOut}
-          type="button"
-        >
-          Sign out
-        </button>
+        {user.kind === "user" ? (
+          <>
+            {/* The login is the way in to the reader's own page: what they wrote and what reached
+                them, which no other surface lists. The underline is what tells the link from the
+                text around it, which colour alone does not. */}
+            <p className={`px-2 text-sm ${railMutedText}`}>
+              Signed in as{" "}
+              <Link
+                className={`underline ${railAccentText} ${railAccentHoverText}`}
+                onClick={onClose}
+                to={buildPersonPath(user.login)}
+              >
+                {user.login}
+              </Link>
+            </p>
+            <button
+              className={`mt-1 px-2 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 ${railAccentText} ${railAccentHoverText}`}
+              disabled={signOutPending}
+              onClick={onSignOut}
+              type="button"
+            >
+              Sign out
+            </button>
+          </>
+        ) : (
+          <p className={`px-2 text-sm ${railMutedText}`}>Signed in as {user.login}</p>
+        )}
         {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
@@ -670,9 +684,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // mounts that view and the one the person left (`MountedLiveViews`, below `<Routes>`), so it
   // is the one thing about the live view the router still decides.
   const frontLiveView = liveViewSessionOf(location.pathname) ?? null;
-  // The person's pins, which the shell owns rather than the rail: the registry keeps a sleeping
+  // Whether the viewer is a person, which decides what the shell draws: for an agent viewer no
+  // Inbox and no Peek (`AuthenticatedUser.kind`). What the shell reads of a person's own lists it
+  // asks under the `person` scope's one gate (`useHoldsPersonScope`), whoever the viewer is.
+  const person = user.kind === "user";
+  // The viewer's pins, which the shell owns rather than the rail: the registry keeps a sleeping
   // pinned view and discards a sleeping unpinned one (`live-views.ts`, D8), and the rail is not
-  // on the page while the sidebar is collapsed or its sheet is closed.
+  // on the page while the sidebar is collapsed or its sheet is closed. A viewer whose credential
+  // lacks the `person` scope has none (`usePinnedAgents`).
   const liveViews = useLiveViews();
   const pinnedAgents = usePinnedAgents();
   useEffect(() => {
@@ -690,10 +709,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // leaves the key whole, so the next load writes the lot again, in the same order. The key the
   // run began under is held here rather than read back from storage, because the key outlives
   // the first write now: an effect that runs again - React runs it twice under StrictMode -
-  // would otherwise write every id a second time.
+  // would otherwise write every id a second time. Each write needs the `person` scope, so the run
+  // waits for a read that says the viewer's credential holds it (`useHoldsPersonScope`), and a
+  // viewer without it moves none.
   const writePin = useAgentPinWrite();
+  const holdsPerson = useHoldsPersonScope();
   const migrated = useRef<string | null>(null);
   useEffect(() => {
+    if (!holdsPerson) return;
     const key = legacyPinnedAgentsKey(user.login);
     if (migrated.current === key) return;
     const kept = window.localStorage.getItem(key);
@@ -705,12 +728,14 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
       }
       window.localStorage.removeItem(key);
     })();
-  }, [user.login, writePin]);
+  }, [holdsPerson, user.login, writePin]);
   const connection = useLiveSocketPill();
   // One number for the Inbox, composed in one place (`useInboxCount.ts`): the work
   // waiting on the reader plus the threads they have not read.
   const inboxCount = useInboxCount();
-  const unreadReplies = totalUnreadReplies(useQuery(userAgentStateQuery()).data);
+  // The viewer's conversations with sessions (`useUserAgentState`): a viewer whose credential
+  // lacks the `person` scope has none, and asks for none.
+  const unreadReplies = totalUnreadReplies(useUserAgentState().data);
 
   const mainRef = useRef<HTMLElement | null>(null);
   useKeyboardFit(mainRef, fillsViewport);
@@ -1011,7 +1036,8 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
               <Link className="shrink-0 text-lg font-semibold" to="/">
                 Dispatch
               </Link>
-              {routeIsInbox(location.pathname) ? (
+              {/* An agent viewer has no Inbox to count or peek at (`person`). */}
+              {!person ? null : routeIsInbox(location.pathname) ? (
                 <span className={inboxBadgeClass}>{inboxLabel}</span>
               ) : (
                 <>
@@ -1153,6 +1179,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
+                <Route element={<ProjectPage />} path="/projects/:key/settings" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
                 <Route element={<InboxPage />} path="/credentials/*" />
                 <Route element={<MachineLoginRoute />} path="/credentials/machine" />

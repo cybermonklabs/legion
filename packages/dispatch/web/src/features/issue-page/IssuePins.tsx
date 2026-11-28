@@ -2,6 +2,7 @@ import { type InfiniteData, useQuery, useQueryClient } from "@tanstack/react-que
 import { type ReactNode, useRef } from "react";
 import { Link } from "react-router-dom";
 
+import { EVENT_FRESH } from "../../api/query-refresh";
 import type { DispatchEvent, DisplayTree } from "../../api/types";
 import { PinButton } from "../../components/PinButton";
 import { pageInkText, pageMutedText, pageQuietText } from "../../theme/classes";
@@ -18,7 +19,6 @@ import {
 } from "../issue/pins";
 import { EditedMark } from "../refs/PostMarks";
 import { type PostDeletion, postDeletion } from "../refs/post-marks";
-import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath } from "../refs/routes";
 import { textSourceKind, textSourceOf } from "../refs/text-references";
 import { DeletedLine, lineOrKindWord, useNodeLine } from "./node-line";

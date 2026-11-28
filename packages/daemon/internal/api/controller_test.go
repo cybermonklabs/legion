@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/controller"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
@@ -760,4 +763,115 @@ func TestControllerGitHubCredentialWhenGitHubIsRateLimited(t *testing.T) {
 	if body := refusal.Body.String(); strings.Contains(body, "token-for") {
 		t.Errorf("the refusal is %s, want it to carry no token", body)
 	}
+}
+
+// newControllerRouteHarness is a harness whose daemon runs under the kubernetes runtime, as a
+// deployment's does, so the controller route names that runtime, and leaves the controller to the
+// operator, whose capability the operator's bearer mints.
+func newControllerRouteHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Steps:      config.DesignGateRootIssues.Steps(),
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), RuntimeName: "kubernetes",
+	}).Handler
+	return h
+}
+
+// controllerAsked is `GET /legion/v1/controller` asked as Dispatch asks it, with no credential and
+// no contract, which must answer 200; its body is decoded strictly, so a member ControllerResponse
+// does not declare fails the decode.
+func controllerAsked(t *testing.T, h *harness) ControllerResponse {
+	t.Helper()
+	recorder := h.request(http.MethodGet, "/legion/v1/controller", nil, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("GET /legion/v1/controller = %d, want 200; body %s", recorder.Code, recorder.Body)
+	}
+	var answer ControllerResponse
+	decodeInto(t, recorder, &answer)
+	return answer
+}
+
+// unreadableController is a controller record whose every read fails, as a store whose database
+// went away does.
+type unreadableController struct{ ControllerStore }
+
+func (unreadableController) Controller(context.Context, string) (controller.Record, bool, error) {
+	return controller.Record{}, false, errors.New("the database went away")
+}
+
+// TestTheControllerRouteAnswersTheRegisteredSessionOrNone: `GET /legion/v1/controller`, asked with
+// no credential, answers `{}` while no session is registered, the `controllerLocator` key absent as
+// the state leaves it out; once ses_controller registers with the capability the operator's bearer
+// minted, the locator the state shows of the same record (ControllerLocatorOf) under the daemon's
+// runtime, member for member; `{}` again once a later mint replaces that capability, which no
+// session holds yet; and the successor once it registers with the new one. A record the store
+// cannot read is the daemon's refusal, 500.
+func TestTheControllerRouteAnswersTheRegisteredSessionOrNone(t *testing.T) {
+	h := newControllerRouteHarness(t)
+	none := func(when string) {
+		t.Helper()
+		recorder := h.request(http.MethodGet, "/legion/v1/controller", nil, nil)
+		if recorder.Code != http.StatusOK || strings.TrimSpace(recorder.Body.String()) != "{}" {
+			t.Fatalf("GET /legion/v1/controller %s = %d %s, want 200 and {}", when, recorder.Code, recorder.Body)
+		}
+	}
+	names := func(when, session string) {
+		t.Helper()
+		record, found, err := h.store.Controller(h.ctx, testProject)
+		if err != nil || !found {
+			t.Fatalf("%s: read the controller record: found %v, %v", when, found, err)
+		}
+		want := ControllerLocatorOf("kubernetes", record)
+		if want == nil || want.SessionID != session {
+			t.Fatalf("%s: the state's locator of the record is %+v, want %s's, so this test proves nothing", when, want, session)
+		}
+		got := controllerAsked(t, h).ControllerLocator
+		if got == nil || got.Runtime != want.Runtime || got.External != want.External || got.SessionID != want.SessionID ||
+			!got.RegisteredAt.Equal(want.RegisteredAt) || got.PluginContract != want.PluginContract {
+			t.Fatalf("GET /legion/v1/controller %s names %+v, want the state's locator of the record, %+v", when, got, want)
+		}
+		if got.Runtime != "kubernetes" || !got.External || got.RegisteredAt.IsZero() {
+			t.Fatalf("GET /legion/v1/controller %s names %+v, want the external kubernetes record of %s with its registration's time", when, got, session)
+		}
+	}
+
+	none("before any capability is minted")
+	capability := h.mintedSecret()
+	none("before any session registers")
+	h.registeredController(capability, "ses_controller")
+	names("once ses_controller registered", "ses_controller")
+	successor := h.mintedSecret()
+	none("once a later mint replaced the capability")
+	h.registeredController(successor, "ses_successor")
+	names("once ses_successor registered", "ses_successor")
+
+	unread := NewServer("127.0.0.1", 8437, Options{
+		Project: testProject, Controller: unreadableController{}, RuntimeName: "kubernetes",
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}).Handler
+	recorder := httptest.NewRecorder()
+	unread.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/legion/v1/controller", nil))
+	wantRefusal(t, recorder, http.StatusInternalServerError, "controller unavailable")
+}
+
+// TestControllerRouteGoldens: what `GET /legion/v1/controller` answers, each written from the
+// route's own answer: controller-none.json before any session registered, and controller.json once
+// ses_controller has, its registeredAt and pluginContract pinned to state.json's own, since the
+// first is the registration's clock and the second this build's contract, which moves with every
+// entry. So the contract's LegionControllerResponse (packages/contracts/src/legion-api.ts) and
+// Dispatch's reader (packages/envoy/internal/dispatch/legion's Client.Controller) read the
+// daemon's own bytes.
+func TestControllerRouteGoldens(t *testing.T) {
+	h := newControllerRouteHarness(t)
+	golden(t, "controller-none.json", controllerAsked(t, h))
+	h.registeredController(h.mintedSecret(), "ses_controller")
+	answer := controllerAsked(t, h)
+	if answer.ControllerLocator == nil {
+		t.Fatal("GET /legion/v1/controller names no controller once ses_controller registered")
+	}
+	answer.ControllerLocator.RegisteredAt = time.Date(2126, 9, 22, 9, 16, 40, 0, time.UTC)
+	answer.ControllerLocator.PluginContract = 46
+	golden(t, "controller.json", answer)
 }

@@ -16,7 +16,12 @@ import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
 import { answerRequests } from "../../__tests__/network";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
-import type { ArchitectureSource, InboxRow, IssueSummary } from "../../api/types";
+import type {
+  ArchitectureSource,
+  AuthenticatedUser,
+  InboxRow,
+  IssueSummary,
+} from "../../api/types";
 import { withWaitingOnPerson } from "../inbox/inbox-fixture";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
@@ -96,7 +101,10 @@ function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
 }
 
 /** `path` is the address the page opens at, or the reader's history, oldest first, ending at that
- *  address: a page with history behind it draws a Go back button beside it. `sources` is what
+ *  address: a page with history behind it draws a Go back button beside it. `login` is the person
+ *  `/auth/whoami` answers, `null` for an answer that never comes, or the answer itself, which the
+ *  test settles; an agent it answers holds no scope (`GET /api/v1/whoami` names none).
+ *  `sources` is what
  *  `GET /projects/CORE/architecture-sources` answers: the project's sources (a non-empty list
  *  opens it on Architecture; `[]`, the default, on Issues, as every render here expects unless it
  *  says otherwise), an `ApiError` for a failure, or `"pending"` for a lookup that never
@@ -113,7 +121,7 @@ function renderPage(
       proven_sessions: false,
     },
   ],
-  login: string | null = "alice",
+  login: string | null | Promise<AuthenticatedUser> = "alice",
   inboxRows: InboxRow[] = [],
   sources: ArchitectureSource[] | ApiError | "pending" = []
 ) {
@@ -126,9 +134,12 @@ function renderPage(
   const whoAmI = spyOn(api, "whoAmI");
   if (login === null) {
     whoAmI.mockImplementation(() => Promise.withResolvers<never>().promise);
-  } else {
+  } else if (typeof login === "string") {
     whoAmI.mockResolvedValue({ event_head: "0", kind: "user", login });
+  } else {
+    whoAmI.mockReturnValue(login);
   }
+  const whoAmIScopes = spyOn(api, "whoAmIScopes").mockResolvedValue([]);
 
   const listProjects = spyOn(api, "listProjects").mockResolvedValue(projects);
   const listIssues = spyOn(api, "listIssues").mockResolvedValue([]);
@@ -169,6 +180,7 @@ function renderPage(
     listProjectArtifacts.mockRestore();
     listProjects.mockRestore();
     whoAmI.mockRestore();
+    whoAmIScopes.mockRestore();
   };
   return {
     listProjectArchitectureSources,
@@ -177,6 +189,7 @@ function renderPage(
     listIssues,
     listProjectArtifacts,
     listProjects,
+    queryClient,
     restore,
     view,
     whoAmI,
@@ -301,6 +314,79 @@ test("renders header, tabs, and the Issues panel; /documents selects Documents",
   }
 });
 
+test("/settings selects the Settings tab, which holds the project's delivery settings", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  // A project that names a default repository, which the section shows read-only.
+  const core = {
+    created_at: "2026-09-10T00:00:00Z",
+    default_repo: "acme/core",
+    gated_steps: [],
+    key: "CORE",
+    name: "Core",
+    open_asks: 0,
+    proven_sessions: false,
+  };
+  const page = renderPage("/projects/CORE", [core]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(screen.getByRole("tab", { name: "Settings" }));
+    expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/settings");
+    expect(screen.getByRole("tab", { name: "Settings" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "Settings" });
+    expect(await within(panel).findByRole("heading", { name: "Delivery" })).toBeDefined();
+    // The section reads the project's own settings, and shows its default repository.
+    expect(await within(panel).findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(within(panel).getByLabelText("Default repository")).toHaveValue("acme/core");
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("CORE");
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+  }
+});
+
+test("another project's settings tab shows nothing of the last project's save", async () => {
+  const user = userEvent.setup();
+  const getProjectDeliverySettings = spyOn(api, "getProjectDeliverySettings").mockResolvedValue(
+    null
+  );
+  const refusal = "acme/core cannot be read by the Dispatch GitHub App";
+  const putProjectDeliverySettings = spyOn(api, "putProjectDeliverySettings").mockRejectedValue(
+    new ApiError(409, { code: "DELIVERY_SETTINGS_ACCESS", error: refusal })
+  );
+  const project = (key: string, name: string) => ({
+    created_at: "2026-09-10T00:00:00Z",
+    gated_steps: [],
+    key,
+    name,
+    open_asks: 0,
+    proven_sessions: false,
+  });
+  // The reader came from OTHER's settings tab to CORE's, and goes back to OTHER's.
+  const page = renderPage(
+    ["/projects/OTHER/settings", "/projects/CORE/settings"],
+    [project("CORE", "Core"), project("OTHER", "Other")]
+  );
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    await user.click(await screen.findByRole("button", { name: "Save delivery settings" }));
+    expect(await screen.findByText(refusal)).toBeInTheDocument();
+    expect(putProjectDeliverySettings.mock.calls[0]?.[0]).toBe("CORE");
+
+    await user.click(screen.getByRole("button", { name: "Go back" }));
+    await screen.findByRole("heading", { name: "Other" });
+    expect(await screen.findByRole("switch", { name: "Delivery" })).not.toBeChecked();
+    expect(getProjectDeliverySettings).toHaveBeenCalledWith("OTHER");
+    expect(screen.queryByText(refusal)).not.toBeInTheDocument();
+  } finally {
+    page.restore();
+    getProjectDeliverySettings.mockRestore();
+    putProjectDeliverySettings.mockRestore();
+  }
+});
+
 test("shows a compact blocker link only when asks await the viewer", async () => {
   const waiting = renderPage("/projects/CORE", undefined, "alice", [inboxRow()]);
   try {
@@ -323,6 +409,46 @@ test("shows a compact blocker link only when asks await the viewer", async () =>
     expect(screen.queryByRole("link", { name: /Blocked on you/ })).not.toBeInTheDocument();
   } finally {
     clear.restore();
+  }
+});
+
+// The asks the pill counts are read under the `person` scope, which an agent viewer's credential
+// may not hold: the page asks for them once a read says the viewer's credential holds it, so
+// neither the wait for whoami nor an agent's answer asks, and a person's answer that comes late
+// asks then.
+test("an agent viewer whose whoami is still loading makes no person-scope read", async () => {
+  const agentAnswer = Promise.withResolvers<AuthenticatedUser>();
+  const agent = renderPage("/projects/CORE", undefined, agentAnswer.promise, [inboxRow()]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(agent.whoAmI).toHaveBeenCalled();
+    expect(agent.getInbox).not.toHaveBeenCalled();
+    const viewer: AuthenticatedUser = {
+      event_head: "0",
+      kind: "agent",
+      login: "alice",
+      session: null,
+    };
+    agentAnswer.resolve(viewer);
+    await waitFor(() =>
+      expect(agent.queryClient.getQueryData<AuthenticatedUser>(["whoami"])).toEqual(viewer)
+    );
+    expect(agent.getInbox).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link", { name: /Blocked on you/ })).not.toBeInTheDocument();
+  } finally {
+    agent.restore();
+  }
+
+  const personAnswer = Promise.withResolvers<AuthenticatedUser>();
+  const person = renderPage("/projects/CORE", undefined, personAnswer.promise, [inboxRow()]);
+  try {
+    await screen.findByRole("heading", { name: "Core" });
+    expect(person.getInbox).not.toHaveBeenCalled();
+    personAnswer.resolve({ event_head: "0", kind: "user", login: "alice" });
+    expect(await screen.findByRole("link", { name: "Blocked on you · 1" })).toBeInTheDocument();
+    expect(person.getInbox).toHaveBeenCalledTimes(1);
+  } finally {
+    person.restore();
   }
 });
 

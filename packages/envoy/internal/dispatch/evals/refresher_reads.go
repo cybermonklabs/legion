@@ -112,12 +112,16 @@ func (s *Store) readRefresherEvents(ctx context.Context, after, safe int64, limi
 }
 
 // deliveryItemDays is each pull request and run where its row stands now: the UTC day of the pull
-// request's merge and of the run's start, by primary key, nil for a pull request not merged and
-// for a row no longer stored. With the pull requests come their PR-checks runs, each with its
-// start day: a PR-checks run counts for the project its pull request counts for (attribution), so
-// a change of the pull request moves which project counts each of its runs, whichever day the run
-// started on. They are read through delivery_runs_pull_request (migration 20261117100020), a probe
-// of the index for each pull request.
+// request's merge and of the run's start, nil for a pull request not merged and for a row no
+// longer stored. A run's row is read by its primary key. A pull request's is read by its repository
+// in lower case, the form the record of production events names a pull request in
+// (prodevents.ParsePullRequest), so a posted deploy's pull request finds the merge of a repository
+// GitHub spells otherwise, through delivery_pull_requests_lower_repo (migration 20261127200930),
+// one descent for each pull request. With the pull requests come their PR-checks runs, each with
+// its start day: a PR-checks run counts for the project its pull request counts for (attribution),
+// so a change of the pull request moves which project counts each of its runs, whichever day the
+// run started on. They are read by the repository as given through delivery_runs_pull_request
+// (migration 20261117100020), a probe of the index for each pull request.
 func (s *Store) deliveryItemDays(ctx context.Context, prs map[string]pullRequestRef, runs map[string]runRef) ([]deliveryItem, error) {
 	at := map[string]*time.Time{}
 	checks := map[string]bool{}
@@ -129,7 +133,7 @@ func (s *Store) deliveryItemDays(ctx context.Context, prs map[string]pullRequest
 		rows, err := s.database.Pool.Query(ctx, `
 			select given.member, request.merged_at
 			from unnest($1::text[], $2::text[], $3::int[]) as given(member, repo, number)
-			join delivery_pull_requests request on request.repo = given.repo and request.number = given.number
+			join delivery_pull_requests request on lower(request.repo) = lower(given.repo) and request.number = given.number
 			where request.merged_at is not null
 		`, members, repos, numbers)
 		if err != nil {
@@ -513,11 +517,18 @@ func (s *Store) heldDays(ctx context.Context, family string, projects, slugs []s
 }
 
 // deliveryInputStart is the earliest moment a delivery day can hold input: the first merge of a
-// pull request (delivery_pull_requests_merged_at) and the first start of a deploy or PR-checks run
-// of any of repos, the repositories whose rows are kept per deploy repository (one probe of
-// delivery_runs_kind_started_at for each repository and kind), nil where neither exists.
-func (s *Store) deliveryInputStart(ctx context.Context, repos []string) (*time.Time, error) {
+// pull request (delivery_pull_requests_merged_at), the first start of a deploy or PR-checks run of
+// any of repos, the repositories whose rows are kept per deploy repository (one probe of
+// delivery_runs_kind_started_at for each repository and kind), and the start of each events
+// repository among them (keptRepo.since, its first posted deploy's day); nil where none exists.
+func (s *Store) deliveryInputStart(ctx context.Context, repos []keptRepo) (*time.Time, error) {
 	var earliest *time.Time
+	names := []string{}
+	for _, repo := range repos {
+		if !IsEventsRepo(repo.rule.DeployRepo) {
+			names = append(names, repo.rule.DeployRepo)
+		}
+	}
 	if err := s.database.Pool.QueryRow(ctx, `
 		select least(
 			(select min(merged_at) from delivery_pull_requests where merged_at is not null),
@@ -525,8 +536,14 @@ func (s *Store) deliveryInputStart(ctx context.Context, repos []string) (*time.T
 				cross join lateral (select least(
 					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $2),
 					(select min(started_at) from delivery_runs where repo = kept.repo and kind = $3)) as first) runs))
-	`, nonNil(repos), string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
+	`, names, string(delivery.DeliveryRunKindDeploy), string(delivery.DeliveryRunKindPRChecks)).Scan(&earliest); err != nil {
 		return nil, fmt.Errorf("read the first delivery input: %w", err)
+	}
+	for _, repo := range repos {
+		if IsEventsRepo(repo.rule.DeployRepo) && (earliest == nil || repo.since.Before(*earliest)) {
+			since := repo.since
+			earliest = &since
+		}
 	}
 	return earliest, nil
 }

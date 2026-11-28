@@ -37,6 +37,16 @@ export const whoAmIQuery = () =>
     queryFn: () => api.whoAmI(),
   });
 
+/** The scopes the caller's own credential holds (`GET /api/v1/whoami`, `api.whoAmIScopes`), one
+ *  key for every reader: Settings offers Set P0 where they name `p0`, and an agent viewer's
+ *  surfaces ask the routes behind the `person` scope only where they name `person`
+ *  (`useHoldsPersonScope`). */
+export const whoAmIScopesQuery = () =>
+  queryOptions({
+    queryKey: ["whoami-scopes"],
+    queryFn: () => api.whoAmIScopes(),
+  });
+
 /** Every ask the viewer can see, as the Inbox lists them. */
 export const inboxQuery = () =>
   queryOptions({
@@ -550,13 +560,12 @@ export const deliveryPipelineQuery = (view: DeliveryLiveView & { kind: "pipeline
     queryFn: (context) => subscribeLive(context, view),
   });
 
-/** The delivery timeline's configuration record, or `null` until someone sets it: the Settings
- *  section's form reads it, while the Delivery page's setup form starts from the `null` the
- *  timeline's `DELIVERY_NOT_CONFIGURED` already implies and reads nothing. */
-export const deliverySettingsQuery = () =>
+/** One project's delivery settings, or `null` for a project that has none: its settings tab's
+ *  delivery section reads and edits them (`DeliverySettingsSection`). */
+export const projectDeliverySettingsQuery = (project: string) =>
   queryOptions({
-    queryKey: ["delivery-settings"],
-    queryFn: () => api.getDeliverySettings(),
+    queryKey: ["project-delivery-settings", project],
+    queryFn: () => api.getProjectDeliverySettings(project),
   });
 
 /** Where the next page of an offset-paged list starts, for an infinite query's

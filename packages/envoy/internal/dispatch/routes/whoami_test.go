@@ -54,11 +54,19 @@ func standInEventLog(ctx *AppContext, head int64) {
 // holds the horizon while it waits; the wait itself reads no warning (waitEventsStart).
 func storeRouter(t *testing.T, database *store.Store) http.Handler {
 	t.Helper()
+	return storeRouterWith(t, database, nil)
+}
+
+// storeRouterWith is storeRouter with configure applied to its options before the context is
+// built, for a row that needs a credential the plain router configures none of: the shared agent
+// token, or the check of a token the secrets broker issued. A nil configure changes nothing.
+func storeRouterWith(t *testing.T, database *store.Store, configure func(*AppContextOptions)) http.Handler {
+	t.Helper()
 	broker := events.NewBroker()
 	documents := docs.New(docs.Deps{Store: database, Events: broker})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 	people := store.NewPgPeopleStore(database.Pool, testSigningKey, nil)
-	ctx, err := BuildAppContext(AppContextOptions{
+	options := AppContextOptions{
 		SigningKey:        testSigningKey,
 		People:            people,
 		Identity:          identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
@@ -68,7 +76,11 @@ func storeRouter(t *testing.T, database *store.Store) http.Handler {
 		Lifetime:          t.Context(),
 		HorizonStallAfter: horizontest.StallWarning,
 		HorizonWarnEvery:  horizontest.StallWarning,
-	})
+	}
+	if configure != nil {
+		configure(&options)
+	}
+	ctx, err := BuildAppContext(options)
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}

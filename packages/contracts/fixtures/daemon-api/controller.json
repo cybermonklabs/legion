@@ -1,0 +1,9 @@
+{
+  "controllerLocator": {
+    "runtime": "kubernetes",
+    "external": true,
+    "sessionId": "ses_controller",
+    "registeredAt": "2126-09-22T09:16:40Z",
+    "pluginContract": 46
+  }
+}

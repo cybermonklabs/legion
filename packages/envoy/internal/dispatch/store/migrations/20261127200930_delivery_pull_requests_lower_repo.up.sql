@@ -1,0 +1,23 @@
+-- pgmigrate:non-transactional
+-- 20261127200930_delivery_pull_requests_lower_repo.up.sql
+--
+-- The index behind the reads that find a stored pull request by a name in lower case
+-- (dispatch://INFRA-978, R7 and R12). delivery_pull_requests keeps a pull request's repository as
+-- GitHub spells it, while the record of production events names each pull request a deploy ships
+-- or a failure blames as `owner/repo#n` in lower case (delivery.PullRequestName, api's
+-- pullRequestRef). The day-row refresher's read of the merges of the pull requests a page names
+-- (evals' deliveryItemDays), which a posted deploy's pull requests reach, and the production
+-- signals' read of the issues of the pull requests a deploy ships (signals' storedDeployFacts)
+-- each compare `lower(repo)` and the number, which the primary key on (repo, number) cannot serve:
+-- through this index each is one descent for each pull request it asks for.
+--
+-- It is built `concurrently`, outside the runner's transaction, because the pull-request intake and
+-- the reconcile write delivery_pull_requests on every merge they record. A plain build holds SHARE on
+-- it for one read of the table, which blocks every one of those writes until it ends. A concurrent
+-- build takes SHARE UPDATE EXCLUSIVE, which no ordinary read or write waits on, at the cost of two
+-- passes over the table and a wait for the transactions already open, each wait bounded at five
+-- seconds and tried again as the runner tries every lock wait (pgmigrate.ExecNonTransactional). A
+-- failed build leaves an INVALID index of this name on delivery_pull_requests, which the runner
+-- drops with DROP INDEX CONCURRENTLY and builds again on its next attempt or boot. The release
+-- before this one reads the table as it did and writes this index as it writes the others.
+create index concurrently if not exists delivery_pull_requests_lower_repo on delivery_pull_requests (lower(repo), number);

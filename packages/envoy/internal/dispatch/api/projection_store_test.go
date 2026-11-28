@@ -546,7 +546,7 @@ var runtimeTableSites = map[string]runtimeTableSite{
 	// them, none of which is projected.
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.nameWrite: update table":            {},
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.urlWrite: update table":             {},
-	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisions: delete from table":      {},
+	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.collisionsAmong: delete from table": {},
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.ownerWrite: update table":           {},
 	"packages/envoy/internal/dispatch/store/repo_rename_pass.go#store.ownerCollisions: delete from table": {},
 	// A migration runner's version table, which its caller names: schema_migrations for

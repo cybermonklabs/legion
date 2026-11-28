@@ -2,6 +2,7 @@ package evals
 
 import (
 	"embed"
+	"io/fs"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -27,10 +28,10 @@ import (
 // no value. A listed series is one the list read folds; pr-ci's job series are not, and are read
 // by the items route alone. A series is a headline one where a card of the eval states it, every
 // cut of a Legion series included (R6: a chart draws the cut it needs, and no toggle picks one),
-// and a control one where it qualifies another (change-fail-rate's upper bound, pr-ci's job
-// series). An eval's primary series is the one its target judges, or the one its card leads with;
-// an eval whose series are parts of equal standing (a bar per role, a count per class of filing)
-// has none, and a target set on it names the series it judges.
+// and a control one where it qualifies another (pr-ci's job series). An eval's primary series is
+// the one its target judges, or the one its card leads with; an eval whose series are parts of
+// equal standing (a bar per role, a count per class of filing) has none, and a target set on it
+// names the series it judges.
 //
 // The seeded targets are main's (measures.DefaultTargets) where main sets one, and off where it
 // sets none: "at least" is an inclusive target of a higher_better eval, "under" a strict one of a
@@ -41,13 +42,20 @@ import (
 // the min_n each job's series takes. A job's name is data, so no seeded row can name each job.
 const SeriesJobs = measures.JobSeriesPrefix + "*"
 
+// SlugDeploymentReworkRate is the slug of the eval of deploys that restored a counted failure
+// (dispatch://INFRA-978, R11), whose rows the record of deploys and failures builds.
+const SlugDeploymentReworkRate = "deployment-rework-rate"
+
 // catalogueEntry is one computed eval of the catalogue: the fields its version 1 holds in every
 // project (all but its id, its project, its doc block, its state and its writer, which Ensure
-// sets), its series, and the body of its method block (methods/<slug>.md).
+// sets), its series, the body of its method block (methods/<slug>.md), and each method text an
+// earlier release's seed wrote into its section (methods/earlier/<slug>/), which the seed replaces
+// with the catalogue's where no one has edited it since (ensure).
 type catalogueEntry struct {
 	definition Definition
 	series     []Series
 	body       string
+	earlier    []string
 }
 
 // methods holds the body of each eval's method block, one file per slug: how the eval is
@@ -57,6 +65,15 @@ type catalogueEntry struct {
 //go:embed methods/*.md
 var methods embed.FS
 
+// earlierMethods holds each method text an earlier release's catalogue wrote into an eval's
+// section, whole, as that release's catalogueEntry.method built it: one file per text, in a
+// directory per slug (methods/earlier/<slug>/<n>.md, 1 the oldest). A release that changes a
+// method the releases before it seeded adds the text they wrote, so a section that still holds it
+// gets the new one.
+//
+//go:embed methods/earlier
+var earlierMethods embed.FS
+
 // methodBody is the embedded body of slug's method block. A slug with no file is a catalogue
 // written without its prose, which this package's tests read at their start, so it panics.
 func methodBody(slug string) string {
@@ -65,6 +82,24 @@ func methodBody(slug string) string {
 		panic("evals: the catalogue eval " + slug + " has no method: " + err.Error())
 	}
 	return string(text)
+}
+
+// earlierMethodsOf is each embedded earlier method text of slug (earlierMethods), in the order of
+// their names; none for an eval whose method no release has changed.
+func earlierMethodsOf(slug string) []string {
+	files, err := fs.Glob(earlierMethods, "methods/earlier/"+slug+"/*.md")
+	if err != nil {
+		panic("evals: read the earlier methods of " + slug + ": " + err.Error())
+	}
+	texts := make([]string, len(files))
+	for i, file := range files {
+		text, err := earlierMethods.ReadFile(file)
+		if err != nil {
+			panic("evals: read the earlier method " + file + ": " + err.Error())
+		}
+		texts[i] = string(text)
+	}
+	return texts
 }
 
 // method is the text of the eval's method block: its question and the decision it changes, the
@@ -167,19 +202,16 @@ var catalogue = []catalogueEntry{
 			Question: "What share of deploys broke production?",
 			Decision: "Whether changes need more tests or review before they ship, because too many deploys break production.",
 			FailureModes: []FailureMode{
-				{Mode: "A failure that nobody flagged is not counted.", Guard: "No failure source exists yet, so the eval reads \"no data\" rather than a rate of 0."},
-				{Mode: "A pending flag is not in the rate until the dora role confirms it.", Guard: "The `upper_bound` series is the rate if every pending flag were confirmed."},
-				{Mode: "A deploy that shipped two broken pull requests could count twice.", Guard: "Each share counts a deploy once, whatever number of flags name it."},
+				{Mode: "A failure that a signal records counts at once, so a signal that was wrong raises the rate.", Guard: "A person or the project's controller rejects it with a reason: the rate leaves it out, and the record keeps it with that reason and who rejected it."},
+				{Mode: "A failure from a source the project did not turn on is not counted, so a project that turns on few sources reads a low rate.", Guard: "The project's delivery settings name the failure sources it counts, and a person's flag counts whenever any source is on."},
+				{Mode: "A deploy that two failures blame could count twice.", Guard: "The rate counts each deploy once, whatever number of failures blame it."},
+				{Mode: "A window before the project measured failures would read a rate of 0.", Guard: "The eval reads \"no data\" before the project's `failures_measured_since` and names that day."},
 			},
 			Unit: unitRatio, Direction: DirectionLowerBetter,
 			Target: new(measures.DefaultTargets.ChangeFailureRate.Value), TargetInclusive: measures.DefaultTargets.ChangeFailureRate.Inclusive, TargetJudges: []string{measures.SeriesPerDeploy + ".rate"},
-			Kind: KindDelivery, Source: SourceFoldChangeFailureRate,
+			Kind: KindDelivery, Source: SourceFoldChangeFailRate,
 		},
-		series: []Series{
-			primary(headline(measures.SeriesPerDeploy, unitRatio, AggRatio)),
-			control(headline(measures.SeriesUpperBound, unitRatio, AggRatio)),
-			headline(measures.SeriesPerPR, unitRatio, AggRatio),
-		},
+		series: []Series{primary(headline(measures.SeriesPerDeploy, unitRatio, AggRatio))},
 	},
 	{
 		definition: Definition{
@@ -188,14 +220,29 @@ var catalogue = []catalogueEntry{
 			Question: "How long does production stay broken after a deploy breaks it?",
 			Decision: "Whether rollbacks and fixes must reach production faster.",
 			FailureModes: []FailureMode{
-				{Mode: "A failure that nobody flagged has no recovery time.", Guard: "No failure source exists yet, so the eval reads \"no data\" rather than a time."},
-				{Mode: "A failure whose fix has not deployed is left out, so the newest failures are missing.", Guard: "The flag stays stored, and its time counts once the fix deploys."},
+				{Mode: "A failure that is not restored yet has no recovery time, so the newest failures are missing from the median.", Guard: "`not_restored` counts them beside the median, on the day of their deploy."},
+				{Mode: "A restore that nobody records leaves its failure open.", Guard: "A revert's own deploy restores its failure, and a person marks the deploy that restored any other."},
 				{Mode: "A median hides one long outage among short ones.", Guard: "The day rows store every recovery time, not only the median."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindDelivery, Source: SourceFoldTimeToRestore,
+			Kind: KindDelivery, Source: SourceFoldRecovery,
 		},
 		series: []Series{timing},
+	},
+	{
+		definition: Definition{
+			Slug:     SlugDeploymentReworkRate,
+			Name:     "Deployment rework rate",
+			Question: "What share of deploys were made to restore production after a failure?",
+			Decision: "Whether failures cost too many unplanned deploys, so that changes need more care before they ship.",
+			FailureModes: []FailureMode{
+				{Mode: "A deploy that restores a failure nobody recorded is not counted as rework.", Guard: "A person flags the failure on the deploy that caused it, and marks the deploy that restored it."},
+				{Mode: "A deploy that restores a failure and ships other changes counts as rework whole.", Guard: "The rate counts each deploy once, whatever it ships."},
+			},
+			Unit: unitRatio, Direction: DirectionLowerBetter,
+			Kind: KindDelivery, Source: SourceFoldReworkRate,
+		},
+		series: []Series{primary(headline(measures.SeriesReworkDeploys, unitRatio, AggRatio))},
 	},
 	{
 		definition: Definition{
@@ -480,10 +527,11 @@ var catalogue = []catalogueEntry{
 	},
 }
 
-// The bodies are read once, when the package starts, so a catalogue entry with no method file
-// fails every test of the package and every binary that links it.
+// The bodies and the earlier methods are read once, when the package starts, so a catalogue entry
+// with no method file fails every test of the package and every binary that links it.
 func init() {
 	for i := range catalogue {
-		catalogue[i].body = methodBody(catalogue[i].definition.Slug)
+		slug := catalogue[i].definition.Slug
+		catalogue[i].body, catalogue[i].earlier = methodBody(slug), earlierMethodsOf(slug)
 	}
 }

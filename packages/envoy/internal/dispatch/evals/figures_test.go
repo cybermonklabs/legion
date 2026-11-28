@@ -13,6 +13,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -182,13 +183,17 @@ func (r *refresherRig) figuresFolded(t *testing.T) map[string]time.Time {
 // before that day that holds one of them folded by FoldStatistics, and every day before it that
 // holds one folded alone over its headline series, each over its rows' parts and, in a
 // repository's cut, the zero part of each series of the eval a day of them holds no row of
-// (cutZeros, withZeros), as a read of the rows folds them. No list is sorted before the fold, so
-// every quantile merges and sorts its samples. The folds are the code's own (FoldStatistics,
-// withZeros, encodeFigures), so a few stored figures are held to values worked out by hand as well
-// (expectPinnedFigures).
+// (cutZeros, withZeros), as a read of the rows folds them, each pull request that several rows time
+// counted once (shippedOnce). No list is sorted before the fold, so every quantile merges and sorts
+// its samples. The folds are the code's own (FoldStatistics, withZeros, shippedOnce, encodeFigures),
+// so a few stored figures are held to values worked out by hand as well (expectPinnedFigures).
 func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 	t.Helper()
 	ctx := t.Context()
+	deployRepos, err := DeployReposIn(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the recorded deploy repositories: %v", err)
+	}
 	truth := map[string]figureRow{}
 	for project, through := range r.figuresFolded(t) {
 		page, err := r.registry.Current(ctx, []string{project}, "", 1000, 0)
@@ -208,6 +213,13 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 		if err != nil {
 			t.Fatalf("read the cuts of %s: %v", project, err)
 		}
+		unionAdded := map[string]bool{}
+		for _, cut := range cuts {
+			if !unionAdded[cut.repo] && deployRepos.hasRepo(project, cut.deployRepo) {
+				unionAdded[cut.repo] = true
+				cuts = append(cuts, figureCut{repo: cut.repo, deployRepo: unionDeployRepo})
+			}
+		}
 		for _, cut := range cuts {
 			repo, deployRepo := cut.repo, cut.deployRepo
 			var entries []Entry
@@ -216,7 +228,7 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 					entries = append(entries, entry)
 				}
 			}
-			byEval := r.cutRows(t, project, cut, entries, through)
+			byEval := r.cutRows(t, project, cut, deployRepos, entries, through)
 			for _, entry := range entries {
 				held := byEval[entry.Definition.EvalID]
 				listed, headline := listedAndHeadline(entry)
@@ -225,19 +237,15 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 				}
 				slices.SortFunc(held, func(a, b WindowRow) int {
 					return cmp.Or(a.Part.Day.Compare(b.Part.Day), strings.Compare(a.owner, b.owner), strings.Compare(a.repo, b.repo),
-						strings.Compare(a.Part.Series, b.Part.Series))
+						strings.Compare(a.deployRepo, b.deployRepo), strings.Compare(a.Part.Series, b.Part.Series))
 				})
 				key := foldKeyOf(entry)
 				zeros := cutZeros(entry.Definition, held)
+				allParts := shippedOnce(held)
 				within := func(from, to time.Time) ([]WindowRow, []measures.DayPart) {
-					var rows []WindowRow
-					var parts []measures.DayPart
-					for _, row := range held {
-						if !row.Part.Day.Before(from) && row.Part.Day.Before(to) {
-							rows, parts = append(rows, row), append(parts, row.Part)
-						}
-					}
-					return rows, withZeros(parts, zeros)
+					lo := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(from) })
+					hi := sort.Search(len(held), func(i int) bool { return !held[i].Part.Day.Before(to) })
+					return held[lo:hi], withZeros(allParts[lo:hi], zeros)
 				}
 				for end := held[0].Part.Day.AddDate(0, 0, 1); !end.After(through); end = end.AddDate(0, 0, 1) {
 					for _, n := range FigureLengths {
@@ -247,8 +255,10 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 							continue
 						}
 						via, oldest := map[string]int{}, rows[0].UpdatedAt
+						for _, part := range parts {
+							via[part.Series] += part.ViaRepository
+						}
 						for _, row := range rows {
-							via[row.Part.Series] += row.Part.ViaRepository
 							if row.UpdatedAt.Before(oldest) {
 								oldest = row.UpdatedAt
 							}
@@ -290,11 +300,13 @@ func (r *refresherRig) truthFigures(t *testing.T) map[string]figureRow {
 // (eval_project_owners), each under the project's eval id of its slug, stored under the cut's
 // repository, or, of the project's own, under legionfacts.DefaultRepo where the cut's repository is
 // the one the project publishes as its default (eval_days_defaults); of its eval's writer (the
-// computation's of a computed eval, the readings' of a logged one); of the cut's deploy repository
-// where its eval is keyed by the deploy repository and of none otherwise; its via_repository
-// counted only where the project reads the key through the repository (o.via); and its samples
-// only where its fold reads them, a computed eval's and a logged quantile's.
-func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, entries []Entry, through time.Time) map[string][]WindowRow {
+// computation's of a computed eval, the readings' of a logged one); where its eval is keyed by the
+// deploy repository, of the cut's deploy repository, or of each deploy repository recorded for the
+// project (deployRepos, DeployRepos.Of) for its union cut (unionDeployRepo), each row keeping the
+// deploy repository it is stored under for the folds' order, and of none otherwise; its
+// via_repository counted only where the project reads the key through the repository (o.via); and
+// its samples, with their sample keys, only where its fold reads them, a computed eval's and a logged quantile's.
+func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, deployRepos *DeployRepos, entries []Entry, through time.Time) map[string][]WindowRow {
 	t.Helper()
 	evals := make(map[string]Entry, len(entries))
 	for _, entry := range entries {
@@ -302,7 +314,7 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, entr
 	}
 	rows, err := r.database.Pool.Query(t.Context(), `
 		select o.project_key || substr(d.eval_id, length(o.owner) + 1), d.writer, d.deploy_repo, o.owner, d.repo, d.series, d.day,
-			d.n, d.sum, d.num, d.den, d.max, d.samples, d.last_value, d.last_at, nullif(d.counts, '{}'),
+			d.n, d.sum, d.num, d.den, d.max, d.samples, d.sample_keys, d.last_value, d.last_at, nullif(d.counts, '{}'),
 			case when o.via then d.via_repository else 0 end, d.updated_at
 		from eval_project_owners o join eval_days d on d.project_key = o.owner
 		where o.project_key = $1 and d.listed and d.day < $2
@@ -317,7 +329,7 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, entr
 	var writer, deployRepo string
 	part := &row.Part
 	if _, err := pgx.ForEachRow(rows, []any{&row.EvalID, &writer, &deployRepo, &row.owner, &row.repo, &part.Series, &part.Day, &part.N, &part.Sum,
-		&part.Num, &part.Den, &part.Max, &part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
+		&part.Num, &part.Den, &part.Max, &part.Samples, &row.sampleKeys, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &row.UpdatedAt}, func() error {
 		entry, held := evals[row.EvalID]
 		ownWriter, ownDeployRepo := "readings", ""
 		if entry.Definition.Computed() {
@@ -326,11 +338,11 @@ func (r *refresherRig) cutRows(t *testing.T, project string, cut figureCut, entr
 		if KeyedByDeployRepo(entry.Definition) {
 			ownDeployRepo = cut.deployRepo
 		}
-		if held && writer == ownWriter && deployRepo == ownDeployRepo {
+		if held && writer == ownWriter && (deployRepo == ownDeployRepo || ownDeployRepo == unionDeployRepo && deployRepos.hasRepo(project, deployRepo)) {
 			if !entry.Definition.Computed() && !slices.ContainsFunc(entry.Series, func(series Series) bool { return series.Series == part.Series && series.Agg == AggQuantile }) {
-				part.Samples = nil
+				part.Samples, row.sampleKeys = nil, nil
 			}
-			row.Range, row.UpdatedAt = RangeWindow, row.UpdatedAt.UTC()
+			row.Range, row.UpdatedAt, row.deployRepo = RangeWindow, row.UpdatedAt.UTC(), deployRepo
 			utcPart(part)
 			byEval[row.EvalID] = append(byEval[row.EvalID], row)
 		}
@@ -437,9 +449,21 @@ func writtenFigures(before, after map[string]figureRow) []string {
 // published default), every range of FigureLengths whose span holds D and that ends no later than
 // through, and D's own day row; and those day rows alone, each of which a write of its moved rows
 // must write, since its stamp moved.
-func figureReach(before, after map[string]DayRow, through map[string]time.Time, readers map[string][]string, defaults map[string]string) (map[string]bool, []string) {
+func figureReach(before, after map[string]DayRow, through map[string]time.Time, readers map[string][]string, defaults map[string]string, deployRepos *DeployRepos) (map[string]bool, []string) {
 	reach := map[string]bool{}
 	var days []string
+	record := func(project, cut, deployRepo string, day time.Time, evalID string, limit time.Time) {
+		for _, n := range FigureLengths {
+			for end := day.AddDate(0, 0, 1); !end.After(day.AddDate(0, 0, n)) && !end.After(limit); end = end.AddDate(0, 0, 1) {
+				reach[rangeLine(project, cut, deployRepo, n, end, evalID)] = true
+			}
+		}
+		line := dayFigureLine(project, cut, deployRepo, day, evalID)
+		if !reach[line] {
+			reach[line] = true
+			days = append(days, line)
+		}
+	}
 	note := func(moved DayRow) {
 		for _, row := range asReaders(moved, readers) {
 			limit, built := through[row.ProjectKey]
@@ -447,15 +471,9 @@ func figureReach(before, after map[string]DayRow, through map[string]time.Time, 
 			if !row.Listed || !held || !built || !row.Day.Before(limit) {
 				continue
 			}
-			for _, n := range FigureLengths {
-				for end := row.Day.AddDate(0, 0, 1); !end.After(row.Day.AddDate(0, 0, n)) && !end.After(limit); end = end.AddDate(0, 0, 1) {
-					reach[rangeLine(row.ProjectKey, cut, row.DeployRepo, n, end, row.EvalID)] = true
-				}
-			}
-			line := dayFigureLine(row.ProjectKey, cut, row.DeployRepo, row.Day, row.EvalID)
-			if !reach[line] {
-				reach[line] = true
-				days = append(days, line)
+			record(row.ProjectKey, cut, row.DeployRepo, row.Day, row.EvalID, limit)
+			if deployRepos.hasRepo(row.ProjectKey, row.DeployRepo) && readsDeployRepo(slugOf(row.ProjectKey, row.EvalID)) {
+				record(row.ProjectKey, cut, unionDeployRepo, row.Day, row.EvalID, limit)
 			}
 		}
 	}
@@ -497,7 +515,11 @@ func (r *refresherRig) expectRewrites(t *testing.T, what string, before figureSt
 	t.Helper()
 	after := r.figureState(t)
 	expectTruth(t, what, after.figures, r.truthFigures(t))
-	reach, days := figureReach(before.days, after.days, r.figuresFolded(t), r.ownerReaders(t), r.publishedDefaults(t))
+	deployRepos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the recorded deploy repositories: %v", err)
+	}
+	reach, days := figureReach(before.days, after.days, r.figuresFolded(t), r.ownerReaders(t), r.publishedDefaults(t), deployRepos)
 	written := writtenFigures(before.figures, after.figures)
 	if moves && (len(days) == 0 || len(written) == 0) {
 		t.Errorf("%s moved %d listed day rows and wrote %d stored rows, and the check needs it to move one", what, len(days), len(written))
@@ -566,6 +588,10 @@ func (r *refresherRig) expectFoldedInTx(t *testing.T, what string, before, after
 		t.Fatalf("read the day rows' transactions: %v", err)
 	}
 	readers, defaults := r.ownerReaders(t), r.publishedDefaults(t)
+	deployRepos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the recorded deploy repositories: %v", err)
+	}
 	wrote := map[string][]string{}
 	var xmin string
 	var stored DayRow
@@ -574,13 +600,17 @@ func (r *refresherRig) expectFoldedInTx(t *testing.T, what string, before, after
 			if cut, held := cutOfRow(stored.ProjectKey, row.ProjectKey, row.Repo, defaults); held {
 				line := dayFigureLine(row.ProjectKey, cut, row.DeployRepo, row.Day.UTC(), row.EvalID)
 				wrote[line] = append(wrote[line], xmin)
+				if deployRepos.hasRepo(row.ProjectKey, row.DeployRepo) && readsDeployRepo(slugOf(row.ProjectKey, row.EvalID)) {
+					union := dayFigureLine(row.ProjectKey, cut, unionDeployRepo, row.Day.UTC(), row.EvalID)
+					wrote[union] = append(wrote[union], xmin)
+				}
 			}
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("read the day rows' transactions: %v", err)
 	}
-	reach, days := figureReach(before.days, after.days, r.figuresFolded(t), readers, defaults)
+	reach, days := figureReach(before.days, after.days, r.figuresFolded(t), readers, defaults, deployRepos)
 	for _, line := range days {
 		if stored, held := after.figures[line]; held && !slices.Contains(wrote[line], stored.xmin) {
 			t.Errorf("%s: the stored row of %s was written by transaction %s, and its day rows by %v", what, line, stored.xmin, wrote[line])
@@ -764,9 +794,7 @@ func TestEachChangeRewritesExactlyTheFiguresItsMovedDaysReach(t *testing.T) {
 	// Stop after the settings rewrite commits to check what a view reads before the refold.
 	settings := deliveries.Settings
 	settings.StagingE2EJobName = new("no-such-job")
-	if _, err := delivery.PutSettings(t.Context(), r.database.Pool, settings, model.Actor{Kind: "system", ID: "figures-test"}); err != nil {
-		t.Fatalf("rename the staging e2e job: %v", err)
-	}
+	r.putSettings(t, settings, model.Actor{Kind: "system", ID: "figures-test"})
 	r.pageAlone(t)
 	readers, defaults := r.ownerReaders(t), r.publishedDefaults(t)
 	named := map[staleCut][]string{}
@@ -890,7 +918,11 @@ func TestADayRowABuildWithNoFiguresWritesIsFoldedByTheNextPass(t *testing.T) {
 		update eval_days_cursor set position = head.seq, at = head.at
 		from (select seq, at from delivery_changes order by seq desc limit 1) as head where name = $1`, changesCursor)
 	stale := r.figureState(t)
-	if reach, days := figureReach(state.days, stale.days, r.figuresFolded(t), r.ownerReaders(t), r.publishedDefaults(t)); len(days) == 0 {
+	deployRepos, err := DeployReposIn(t.Context(), r.database.Pool)
+	if err != nil {
+		t.Fatalf("read the recorded deploy repositories: %v", err)
+	}
+	if reach, days := figureReach(state.days, stale.days, r.figuresFolded(t), r.ownerReaders(t), r.publishedDefaults(t), deployRepos); len(days) == 0 {
 		t.Fatalf("the write moved no day row (%d figures reached)", len(reach))
 	}
 	truth := r.truthFigures(t)
@@ -1159,7 +1191,7 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 
 // listState is what the eval list's read of project's cut repos (none or one repository) folds,
 // read once for any number of reads of the cut (readListState): the project's evals, the deploy
-// repository their rows stand recorded under (DeployRepoIn), the first day of each series
+// repositories their rows stand recorded under (DeployReposIn), the first day of each series
 // (FirstDaysIn), and, by eval, the day rows of repos over the span of every range the reads name,
 // from the earliest range's first day to the latest range's end, as one DayWindowIn read with no
 // compare range answers them (each a RangeWindow row). A check of every read of a first paint
@@ -1167,12 +1199,13 @@ func (r *refresherRig) listValues(t *testing.T, project string, repos []string, 
 // read again for each read, those DayWindowIn statements kept each first-paint test waiting
 // 15 minutes on CI.
 type listState struct {
-	q                   delivery.Querier
-	project, deployRepo string
-	repos               []string
-	entries             []Entry
-	firsts              map[string]map[string]time.Time
-	rows                map[string][]WindowRow
+	q           delivery.Querier
+	project     string
+	deployRepos *DeployRepos
+	repos       []string
+	entries     []Entry
+	firsts      map[string]map[string]time.Time
+	rows        map[string][]WindowRow
 }
 
 // readListState reads project's listState of repos for reads whose windows and compare ranges are
@@ -1193,10 +1226,10 @@ func readListStateIn(t *testing.T, q delivery.Querier, project string, repos []s
 	ctx := t.Context()
 	state := listState{q: q, project: project, repos: repos, entries: entries, rows: map[string][]WindowRow{}}
 	var err error
-	if state.deployRepo, err = DeployRepoIn(ctx, q); err != nil {
+	if state.deployRepos, err = DeployReposIn(ctx, q); err != nil {
 		t.Fatal(err)
 	}
-	if state.firsts, err = FirstDaysIn(ctx, q, state.entries, state.deployRepo); err != nil {
+	if state.firsts, err = FirstDaysIn(ctx, q, state.entries, state.deployRepos); err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
 	span := ranges[0]
@@ -1208,7 +1241,7 @@ func readListStateIn(t *testing.T, q delivery.Querier, project string, repos []s
 			span.To = one.To
 		}
 	}
-	rows, err := DayWindowIn(ctx, q, []string{project}, state.entries, state.deployRepo, repos, span, nil)
+	rows, err := DayWindowIn(ctx, q, []string{project}, state.entries, state.deployRepos, repos, span, nil)
 	if err != nil {
 		t.Fatalf("read %s's day rows of %v over %s: %v", project, repos, daysText(span), err)
 	}
@@ -1231,7 +1264,7 @@ func (s listState) values(t *testing.T, window Range, compare *Range) (stated, f
 	offered := FiguresOffered(s.repos, window, compare)
 	if offered {
 		var err error
-		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.deployRepo, s.repos, window, compare); err != nil {
+		if stored, err = ReadStoredFiguresIn(t.Context(), s.q, []string{s.project}, s.entries, s.repos, window, compare); err != nil {
 			t.Fatalf("read %s's stored figures: %v", s.project, err)
 		}
 	}
@@ -1276,17 +1309,18 @@ func dayIn(day time.Time, of Range) bool {
 }
 
 // cutRead is what cutValues selects the rows of a read's cut from, read once for the reads of one
-// state: project's evals, the deploy repository their rows stand recorded under, the default
+// state: project's evals, the deploy repositories their rows stand recorded under, the default
 // repository the project publishes ("" for none), the first day of each series (FirstDaysIn, which
 // the fold reads as the list read's does), each key whose rows the project reads with whether it
 // reads them through the repository (eval_project_owners: its own key, false, and its owner keys),
 // and every stored day row.
 type cutRead struct {
-	project, deployRepo, published string
-	entries                        []Entry
-	firsts                         map[string]map[string]time.Time
-	via                            map[string]bool
-	rows                           map[string]DayRow
+	project, published string
+	deployRepos        *DeployRepos
+	entries            []Entry
+	firsts             map[string]map[string]time.Time
+	via                map[string]bool
+	rows               map[string]DayRow
 }
 
 // readCut reads project's cutRead.
@@ -1299,13 +1333,13 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 		t.Fatalf("read %s's evals: %v", project, err)
 	}
 	read.entries = page.Items
-	if read.deployRepo, err = DeployRepoIn(ctx, pool); err != nil {
+	if read.deployRepos, err = DeployReposIn(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
 	if read.published, err = PublishedDefaultIn(ctx, pool, project); err != nil {
 		t.Fatal(err)
 	}
-	if read.firsts, err = FirstDaysIn(ctx, r.database.Pool, read.entries, read.deployRepo); err != nil {
+	if read.firsts, err = FirstDaysIn(ctx, r.database.Pool, read.entries, read.deployRepos); err != nil {
 		t.Fatalf("read the first days of %s's evals: %v", project, err)
 	}
 	owners, err := pool.Query(ctx, `select owner, via from eval_project_owners where project_key = $1`, project)
@@ -1333,7 +1367,7 @@ func (r *refresherRig) readCut(t *testing.T, project string) cutRead {
 // names the repository the project publishes as its default (owners.go). An owner key's row is read
 // under the project's eval id of its slug (asReader), its via_repository counted only where the
 // project reads the key through the repository (viaAsRead). Of each eval it keeps the rows of the
-// deploy repository its read reads (DeployRepoOf), and of each row what the read sends of it: the
+// deploy repositories its read reads (DeployRepoOf), and of each row what the read sends of it: the
 // owner key and the repository it is stored under, which the fold orders a day's rows by
 // (sortWindowRows); the samples of a series whose fold reads them (readsSamples), the write of a
 // last value only in a read of more than one repository, and no counts where it holds none. The
@@ -1364,7 +1398,7 @@ func (c cutRead) cutValues(t *testing.T, repos []string, window Range, compare *
 		}
 		evalID := asReader(owner, c.project, row.EvalID)
 		entry, listed := entries[evalID]
-		if !listed || row.DeployRepo != DeployRepoOf(entry.Definition, c.deployRepo) {
+		if !listed || !slices.Contains(DeployRepoOf(entry.Definition, c.deployRepos), row.DeployRepo) {
 			continue
 		}
 		part := row.DayPart
@@ -1809,7 +1843,7 @@ func TestTheMovedDaysAreFoundThroughEachKeyAndCutTheProjectReadsThem(t *testing.
 	store(ownCut, 3, foldKey, 0)
 
 	entries, spans := map[string]Entry{evalID: entryOf("a")}, map[string]daySpan{evalID: {first: day(0), last: day(2)}}
-	scope := figureScope{build: testBuild, project: project, through: day(30)}
+	scope := figureScope{build: testBuild, project: project, through: day(30), repos: &recordedRepos{}}
 	lineOf := func(eval string, cut figureCut, days ...int) []string {
 		var lines []string
 		for _, at := range days {
@@ -1950,7 +1984,7 @@ func TestTheStampsOfAFoldAreReadByProbesOfTheDaysItsSpansNameAndNoOtherRow(t *te
 			readEvals = append(readEvals, EvalID(key, slug))
 		}
 	}
-	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10)}
+	scope := figureScope{build: testBuild, project: project, through: probed.AddDate(0, 0, 10), repos: &recordedRepos{}}
 	read := slices.Sorted(maps.Keys(keysRead(t, pool, project)))
 	if want := []string{plain, picked, project}; !slices.Equal(read, want) {
 		t.Fatalf("%s reads the keys %v, want %v: the check needs the keys it reads and not the others", project, read, want)
@@ -2411,7 +2445,7 @@ func paramEstimate(t *testing.T, args []any) int {
 			bytes += arrayHeaderBytes + (4+8)*len(value)
 		case []*float64:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
-		case time.Time:
+		case int64, time.Time:
 			bytes += 8
 		case []time.Time:
 			bytes += arrayHeaderBytes + (4+8)*len(value)
@@ -2936,7 +2970,7 @@ func TestAStatementOfTheStoredFiguresHoldsAtMostItsBoundAsPgxEncodesIt(t *testin
 		return filled
 	}
 	far := time.Date(9999, 12, 31, 0, 0, 0, 0, time.UTC)
-	scope := figureScope{build: long(0, 300), project: long(0, 200)}
+	scope := figureScope{build: long(0, 300), project: long(0, 200), repos: &recordedRepos{}}
 	var ranges []rangeFigureRow
 	for _, shape := range []struct {
 		name                 string
@@ -3039,7 +3073,7 @@ func TestTheRoutesBoundsAreTheStatementBoundAtTheLargestKeys(t *testing.T) {
 	}
 	project := "P" + strings.Repeat("9", maxProjectKeyBytes-1)
 	evalID := EvalID(project, strings.Repeat("s", maxKeyBytes))
-	scope := figureScope{build: strings.Repeat("b", maxKeyBytes), project: project}
+	scope := figureScope{build: strings.Repeat("b", maxKeyBytes), project: project, repos: &recordedRepos{}}
 	repo, deployRepo := strings.Repeat("r", maxKeyBytes), strings.Repeat("d", maxKeyBytes)
 	if len(evalID) != maxEvalIDBytes || len(project) != maxProjectKeyBytes {
 		t.Fatalf("an eval id of %d bytes and a project key of %d, want %d and %d", len(evalID), len(project), maxEvalIDBytes, maxProjectKeyBytes)
@@ -3165,7 +3199,7 @@ func TestARowPastTheStatementBoundIsWrittenAlone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin: %v", err)
 	}
-	if err := writeFigures(ctx, tx, figureScope{build: testBuild, project: r.project}, figureWrites{ranges: rows}); err != nil {
+	if err := writeFigures(ctx, tx, figureScope{build: testBuild, project: r.project, repos: &recordedRepos{}}, figureWrites{ranges: rows}); err != nil {
 		_ = tx.Rollback(ctx)
 		t.Fatalf("write three range rows, one past the bound of a statement: %v", err)
 	}
@@ -3627,4 +3661,437 @@ func BenchmarkTheFoldOfOneCutOfSixEvals(b *testing.B) {
 		folds = foldTimedCut(b, groups, keys, days, through, workers)
 	}
 	b.ReportMetric(float64(folds), "folds/op")
+}
+
+// TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository: over the settled three-source
+// history, OMEGA reads one deploy repository and ALPHA reads two; both projects' deploy-frequency
+// over the last seven days is answered by the stored figures of their union cut (`deploy_repo`
+// `*`), bit for bit the fold of their day rows, counting each source repository under its own rule.
+func TestAFigureOfADeployEvalReadsTheProjectsOwnDeployRepository(t *testing.T) {
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.settle(t)
+	ctx := t.Context()
+	window := Range{From: refresherToday.AddDate(0, 0, -6), To: refresherToday.AddDate(0, 0, 1)}
+	if !FiguresOffered(nil, window, nil) {
+		t.Fatalf("the stored figures offer no read of %v", window)
+	}
+	repos, err := DeployReposIn(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for project, want := range map[string]struct {
+		stored bool
+		n      int
+	}{"OMEGA": {true, 1}, "ALPHA": {true, 2}} {
+		page, err := r.registry.Current(ctx, []string{project}, "", 200, 0)
+		if err != nil {
+			t.Fatalf("read %s's evals: %v", project, err)
+		}
+		index := slices.IndexFunc(page.Items, func(entry Entry) bool { return entry.Definition.Slug == SlugDeployFrequency })
+		if index < 0 {
+			t.Fatalf("%s holds no deploy-frequency eval", project)
+		}
+		entry := page.Items[index]
+		firsts, err := FirstDaysIn(ctx, r.database.Pool, []Entry{entry}, repos)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rows, err := DayWindowIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, repos, nil, window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		folded := SeriesValuesOf(entry, rows, firsts[entry.Definition.EvalID], window, nil)
+		n := 0
+		for _, row := range rows {
+			if row.Part.Series == "deploys" {
+				n += row.Part.N
+			}
+		}
+		if n != want.n {
+			t.Errorf("%s's day rows of deploy-frequency count %d deploys over the week, want %d", project, n, want.n)
+		}
+		stored, err := ReadStoredFiguresIn(ctx, r.database.Pool, []string{project}, []Entry{entry}, nil, window, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		values, _, ok := stored.SeriesValues(entry, firsts[entry.Definition.EvalID], window, nil)
+		if ok != want.stored {
+			t.Fatalf("the stored figures answer %s's deploy-frequency: %t, want %t", project, ok, want.stored)
+		}
+		if ok && !reflect.DeepEqual(values, folded) {
+			t.Errorf("the stored figures of %s's deploy-frequency answer %+v, the day rows' fold %+v", project, values, folded)
+		}
+	}
+}
+
+// TestAProjectWithTwoDeployRepositoriesReadsItsStoredFigures (dispatch://INFRA-978, R14; plan
+// T19 path 2): over the settled three-source history, ALPHA holds two GitHub deploy sources
+// (acme/alpha-app and acme/alpha-ops) and OMEGA holds a GitHub source and an events source with a
+// posted deploy. For both projects, ReadStoredFiguresIn answers every deploy-keyed eval over the
+// last seven days and over a compare range from the stored figures of the project's union cut
+// (`deploy_repo` `*`), and each value equals the fold of the day rows bit for bit; ALPHA's union
+// cut counts both repositories' deploys (2) and OMEGA's counts its GitHub deploy and its posted
+// deploy (2).
+func TestAProjectWithTwoDeployRepositoriesReadsItsStoredFigures(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.now = refresherToday.AddDate(0, 0, 6).Add(12 * time.Hour)
+	r.settle(t)
+	ctx := t.Context()
+	// Seven-day window starting on sourcesDay (the first input day) so DataSince <= window.From.
+	window := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 7)}
+	compare := Range{From: sourcesDay.AddDate(0, 0, -7), To: sourcesDay}
+	if !FiguresOffered(nil, window, &compare) {
+		t.Fatalf("the stored figures offer no read of %v against %v", window, compare)
+	}
+	repos, err := DeployReposIn(ctx, r.database.Pool)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		project string
+		deploys float64
+	}{
+		{"ALPHA", 2},
+		{"OMEGA", 2},
+	} {
+		state := r.readListState(t, check.project, nil, window, compare)
+		stated, folded, fromFigures := state.values(t, window, &compare)
+		evalID := EvalID(check.project, SlugDeployFrequency)
+		if !fromFigures[evalID] {
+			t.Errorf("%s's %s was not answered from the stored figures", check.project, evalID)
+		}
+		if stated[evalID] != folded[evalID] {
+			t.Errorf("%s's stored figures of %s differ from the fold of its day rows at byte %d",
+				check.project, evalID, firstDiffering(stated[evalID], folded[evalID]))
+		}
+		for _, entry := range state.entries {
+			if !KeyedByDeployRepo(entry.Definition) {
+				continue
+			}
+			id := entry.Definition.EvalID
+			if !fromFigures[id] {
+				t.Errorf("%s's deploy-keyed eval %s was not answered from the stored figures", check.project, id)
+			}
+			if stated[id] != folded[id] {
+				t.Errorf("%s's stored figures of %s differ from the fold of its day rows at byte %d",
+					check.project, id, firstDiffering(stated[id], folded[id]))
+			}
+		}
+		var values []SeriesValues
+		if err := json.Unmarshal([]byte(stated[evalID]), &values); err != nil {
+			t.Fatalf("decode %s's deploy-frequency values: %v", check.project, err)
+		}
+		var got *float64
+		for _, series := range values {
+			if series.Series.Series == "deploys" {
+				got = series.Window["deploys"]
+			}
+		}
+		if got == nil || *got != check.deploys {
+			t.Errorf("%s's stored deploy-frequency counts %v deploys over %s, want %.0f (repos %v)",
+				check.project, got, daysText(window), check.deploys, repos.Of(check.project))
+		}
+		if rows := r.count(t, `select count(*) from eval_range_figures where project_key = $1 and repo = '' and deploy_repo = '*' and eval_id = $2`,
+			check.project, evalID); rows == 0 {
+			t.Errorf("%s holds no stored range figures under the union cut '*' for %s", check.project, evalID)
+		}
+	}
+}
+
+// TestAWriteToOneDeployRepositoryRefoldsTheProjectsUnionCut (dispatch://INFRA-978, R14; plan T19
+// path 2): over the settled three-source history, ALPHA reads two deploy repositories
+// (acme/alpha-app and acme/alpha-ops). A new deploy run written to one of them (acme/alpha-ops) is
+// built by the pass after it, which refolds ALPHA's union cut (`deploy_repo` `*`) in the writing
+// transaction beside acme/alpha-ops' own cut: ALPHA's stored figures read the new count (3 deploys,
+// up from 2), bit for bit the fold of its day rows, and every stored figure row of ALPHA's union
+// cut matches the day rows.
+func TestAWriteToOneDeployRepositoryRefoldsTheProjectsUnionCut(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.now = refresherToday.AddDate(0, 0, 6).Add(12 * time.Hour)
+	r.settle(t)
+	recordDeletes(t, r.rig)
+	window := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 7)}
+	evalID := EvalID("ALPHA", SlugDeployFrequency)
+	readDeploys := func(what string) float64 {
+		t.Helper()
+		state := r.readListState(t, "ALPHA", nil, window)
+		stated, folded, fromFigures := state.values(t, window, nil)
+		if !fromFigures[evalID] {
+			t.Fatalf("%s: ALPHA's %s was not answered from the stored figures", what, evalID)
+		}
+		if stated[evalID] != folded[evalID] {
+			t.Fatalf("%s: ALPHA's stored figures of %s differ from the fold of its day rows at byte %d",
+				what, evalID, firstDiffering(stated[evalID], folded[evalID]))
+		}
+		var values []SeriesValues
+		if err := json.Unmarshal([]byte(stated[evalID]), &values); err != nil {
+			t.Fatalf("%s: decode ALPHA's deploy-frequency values: %v", what, err)
+		}
+		for _, series := range values {
+			if series.Series.Series == "deploys" && series.Window["deploys"] != nil {
+				return *series.Window["deploys"]
+			}
+		}
+		t.Fatalf("%s: ALPHA's deploy-frequency holds no deploys value: %+v", what, values)
+		return 0
+	}
+	if got := readDeploys("before the write"); got != 2 {
+		t.Fatalf("before the write ALPHA counts %.0f deploys, want 2", got)
+	}
+	before := r.figureState(t)
+	r.deployRun(t, alphaOps, 2009, sourcesDay.Add(16*time.Hour), opsJob)
+	r.pass(t)
+	after := r.figureState(t)
+	if got := readDeploys("after the write"); got != 3 {
+		t.Errorf("after a deploy run in %s, ALPHA's stored deploy-frequency counts %.0f deploys, want 3", alphaOps, got)
+	}
+	// The union cut's day figure row of sourcesDay was written in the writing transaction.
+	unionDay := dayFigureLine("ALPHA", "", "*", sourcesDay, evalID)
+	row, held := after.figures[unionDay]
+	if !held {
+		t.Fatalf("after the write ALPHA holds no stored day figure row %s", unionDay)
+	}
+	if was, had := before.figures[unionDay]; had && was.xmin == row.xmin {
+		t.Errorf("the write to %s left %s at transaction %s instead of refolding the union cut", alphaOps, unionDay, row.xmin)
+	}
+	// The day row of acme/alpha-ops and the union cut's day figure row share one transaction.
+	var dayXmin string
+	if err := r.database.Pool.QueryRow(t.Context(), `
+		select xmin::text from eval_days
+		where project_key = $1 and eval_id = $2 and deploy_repo = $3 and series = 'deploys' and repo = '' and day = $4
+	`, sourceKey(alphaOps), EvalID(sourceKey(alphaOps), SlugDeployFrequency), alphaOps, sourcesDay).Scan(&dayXmin); err != nil {
+		t.Fatalf("read the transaction that wrote %s's day row: %v", alphaOps, err)
+	}
+	if row.xmin != dayXmin {
+		t.Errorf("%s was written by transaction %s, and %s's day row by %s: want the union cut folded in the writing transaction",
+			unionDay, row.xmin, alphaOps, dayXmin)
+	}
+}
+
+// TestAnEventsOnlyProjectsLatePostedDeployReadsThroughItsStoredFigures (dispatch://INFRA-978, R14;
+// plan T19 path 2): a project whose delivery settings hold an events source alone settles with one
+// posted deploy on sourcesDay, so its figures are built through refresherToday + FigureLead. A
+// second deploy posted later for refresherToday (a day already built) is written by the pass after
+// it and folded into the project's union cut (`deploy_repo` `*`), so the read of the last seven
+// days answers the new count (2 deploys, up from 1) through the stored figures, bit for bit the
+// fold of its day rows.
+func TestAnEventsOnlyProjectsLatePostedDeployReadsThroughItsStoredFigures(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	pool := r.database.Pool
+	r.exec(t, "the events-only project", `insert into projects (key, name, default_assignee, next_number, default_repo)
+		values ('POSTS', 'Posts', 'alice', 1, null)`)
+	putSources(t, pool, "POSTS", []string{"dev-ana"}, eventsSource)
+	r.post(t, "POSTS", "release-1", refresherToday.AddDate(0, 0, -6).Add(15*time.Hour))
+	r.settle(t)
+	window := Range{From: refresherToday.AddDate(0, 0, -6), To: refresherToday.AddDate(0, 0, 1)}
+	evalID := EvalID("POSTS", SlugDeployFrequency)
+	readDeploys := func(what string) float64 {
+		t.Helper()
+		state := r.readListState(t, "POSTS", nil, window)
+		stated, folded, fromFigures := state.values(t, window, nil)
+		if !fromFigures[evalID] {
+			t.Fatalf("%s: POSTS's %s was not answered from the stored figures", what, evalID)
+		}
+		if stated[evalID] != folded[evalID] {
+			t.Fatalf("%s: POSTS's stored figures of %s differ from the fold of its day rows at byte %d",
+				what, evalID, firstDiffering(stated[evalID], folded[evalID]))
+		}
+		var values []SeriesValues
+		if err := json.Unmarshal([]byte(stated[evalID]), &values); err != nil {
+			t.Fatalf("%s: decode POSTS's deploy-frequency values: %v", what, err)
+		}
+		for _, series := range values {
+			if series.Series.Series == "deploys" && series.Window["deploys"] != nil {
+				return *series.Window["deploys"]
+			}
+		}
+		t.Fatalf("%s: POSTS's deploy-frequency holds no deploys value: %+v", what, values)
+		return 0
+	}
+	if got := readDeploys("before the late post"); got != 1 {
+		t.Fatalf("before the late post POSTS counts %.0f deploys, want 1", got)
+	}
+	r.post(t, "POSTS", "release-2", refresherToday.Add(time.Hour))
+	r.pass(t)
+	if got := readDeploys("after the late post"); got != 2 {
+		t.Errorf("after the late post POSTS's stored deploy-frequency counts %.0f deploys, want 2", got)
+	}
+	if rows := r.count(t, `select count(*) from eval_range_figures where project_key = 'POSTS' and repo = '' and deploy_repo = '*' and eval_id = $1`,
+		evalID); rows == 0 {
+		t.Errorf("POSTS holds no stored range figures under the union cut '*' for %s", evalID)
+	}
+}
+
+// TestAReleaseRebuildKeepsTheUnionCutsStoredFigures (dispatch://INFRA-978, R14; plan T19 path 2):
+// over the settled three-source history (ALPHA with two GitHub deploy sources, OMEGA with a GitHub
+// source and an events source), a release whose rebuild moves day values of a deploy-keyed eval
+// stages and flips the union cut's stored figures (`deploy_repo` `*`) alongside the day rows so
+// that after the flip every stored figure of the union cut equals the fold of the rows that stand,
+// and ReadStoredFiguresIn serves the union cut for both projects.
+func TestAReleaseRebuildKeepsTheUnionCutsStoredFigures(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.now = refresherToday.AddDate(0, 0, 6).Add(12 * time.Hour)
+	r.settle(t)
+	// Corrupt a day row of one of ALPHA's deploy repositories and fold its figures, as an earlier
+	// build whose rules differed leaves them; then release a new build so stageFigures must overlay
+	// the staged day row into the union cut and flip its stored figures back to truth.
+	r.exec(t, "move a day of acme/alpha-ops deploy-frequency", `
+		update eval_days set n = n + 3, sum = coalesce(sum, 0) + 3
+		where project_key = $1 and eval_id = $2 and deploy_repo = $3 and repo = '' and day = $4
+	`, sourceKey(alphaOps), EvalID(sourceKey(alphaOps), SlugDeployFrequency), alphaOps, sourcesDay)
+	r.pass(t)
+	window := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 7)}
+	r.release("union-release-build")
+	r.settle(t)
+	expectTruth(t, "after the release rebuild", r.storedFigures(t), r.truthFigures(t))
+	for _, check := range []struct {
+		project string
+		deploys float64
+	}{{"ALPHA", 2}, {"OMEGA", 2}} {
+		state := r.readListState(t, check.project, nil, window)
+		stated, folded, fromFigures := state.values(t, window, nil)
+		evalID := EvalID(check.project, SlugDeployFrequency)
+		if !fromFigures[evalID] {
+			t.Errorf("%s's %s was not answered from the stored figures after the rebuild", check.project, evalID)
+		}
+		if stated[evalID] != folded[evalID] {
+			t.Errorf("%s's stored figures of %s differ from the fold of its day rows at byte %d",
+				check.project, evalID, firstDiffering(stated[evalID], folded[evalID]))
+		}
+		var values []SeriesValues
+		if err := json.Unmarshal([]byte(stated[evalID]), &values); err != nil {
+			t.Fatalf("decode %s's deploy-frequency values: %v", check.project, err)
+		}
+		var got *float64
+		for _, series := range values {
+			if series.Series.Series == "deploys" {
+				got = series.Window["deploys"]
+			}
+		}
+		if got == nil || *got != check.deploys {
+			t.Errorf("%s's stored deploy-frequency counts %v deploys after the rebuild, want %.0f", check.project, got, check.deploys)
+		}
+	}
+}
+
+// windowDeploys is the window value of the deploys series of deploy-frequency values as the eval
+// list states them (SeriesValues, JSON), nil where they hold none.
+func windowDeploys(t *testing.T, stated string) *float64 {
+	t.Helper()
+	var values []SeriesValues
+	if err := json.Unmarshal([]byte(stated), &values); err != nil {
+		t.Fatalf("decode deploy-frequency's values: %v", err)
+	}
+	for _, series := range values {
+		if series.Series.Series == "deploys" {
+			return series.Window["deploys"]
+		}
+	}
+	return nil
+}
+
+// TestAPrecedingBuildsFiguresReadTheDayRowsOfTheUnionCutUntilItsReleaseFoldsIt (dispatch://INFRA-978,
+// R14; plan T19 path 2; cmd/dispatch/README.md, "Two builds at once"): the release before this one
+// stores no union cut (`deploy_repo` `*`) and marks each project's figures built all the same. Over
+// the settled three-source history (ALPHA reads two GitHub deploy repositories, OMEGA a GitHub
+// source and an events source with a posted deploy), its database is made: every union row gone,
+// the repositories' own stored rows standing, and OMEGA's figures marked built by the release
+// before's own statement, which names no union cut. A process of this release then serves it: from
+// before its first pass, through the pass that begins the release's rebuild, until the rebuild
+// flips, every deploy-keyed eval of both projects is stated from its day rows, each the fold of
+// them, deploy-frequency counting each project's two deploys; once the flip has landed the union
+// cuts, each project's union cut is marked folded through its figures' last end day and every such
+// eval is stated from the stored figures again, the fold of the rows that stand. A union row a
+// process of the release before then deletes, as its fold of a day it writes does, takes its
+// project's mark back before that day, so ALPHA's read of the day states its deploy evals from the
+// day rows again, OMEGA's from the stored figures, and the refresher's next passes fold ALPHA's
+// union cut again from there and mark it folded. Red where a read of a project whose figures are
+// marked built serves its union cut whether or not one is folded: the reads of the release
+// before's database then state no data of the deploy evals, which the day rows count.
+func TestAPrecedingBuildsFiguresReadTheDayRowsOfTheUnionCutUntilItsReleaseFoldsIt(t *testing.T) {
+	t.Parallel()
+	r := newRefresherRig(t)
+	r.seedSources(t)
+	r.post(t, "OMEGA", "release-1", sourcesDay.Add(15*time.Hour))
+	r.now = refresherToday.AddDate(0, 0, 6).Add(12 * time.Hour)
+	r.settle(t)
+	window, compare := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 7)}, Range{From: sourcesDay.AddDate(0, 0, -7), To: sourcesDay}
+	// expect checks that each deploy-keyed eval of ALPHA and OMEGA over window and compare is stated
+	// from the stored figures where stored says so of its project, from its day rows otherwise, each
+	// the fold of its day rows, and that deploy-frequency counts the project's two deploys.
+	expect := func(what string, stored map[string]bool) {
+		t.Helper()
+		for _, project := range []string{"ALPHA", "OMEGA"} {
+			state := r.readListState(t, project, nil, window, compare)
+			stated, folded, fromFigures := state.values(t, window, &compare)
+			keyed := 0
+			for _, entry := range state.entries {
+				id := entry.Definition.EvalID
+				if !KeyedByDeployRepo(entry.Definition) {
+					continue
+				}
+				keyed++
+				if fromFigures[id] != stored[project] {
+					t.Errorf("%s: %s is stated from the stored figures %t, want %t", what, id, fromFigures[id], stored[project])
+				}
+				if stated[id] != folded[id] {
+					t.Errorf("%s: %s is stated in %d bytes that differ from the fold of its day rows' %d at byte %d", what, id, len(stated[id]), len(folded[id]),
+						firstDiffering(stated[id], folded[id]))
+				}
+			}
+			if keyed == 0 {
+				t.Fatalf("%s: %s holds no eval keyed by the deploy repository, and the check needs some", what, project)
+			}
+			if got := windowDeploys(t, stated[EvalID(project, SlugDeployFrequency)]); got == nil || *got != 2 {
+				t.Errorf("%s: %s's deploy-frequency counts %v deploys over %s, want 2", what, project, got, daysText(window))
+			}
+		}
+	}
+	both := func(stored bool) map[string]bool { return map[string]bool{"ALPHA": stored, "OMEGA": stored} }
+	expect("built whole", both(true))
+	built := r.figuresBuilt(t)
+	r.exec(t, "drop every union row of the stored ranges, as the release before stores none", `delete from eval_range_figures where deploy_repo = '*'`)
+	r.exec(t, "drop every union row of the stored days", `delete from eval_day_figures where deploy_repo = '*'`)
+	r.exec(t, "drop OMEGA's mark of built figures", `delete from eval_figures_built where project_key = 'OMEGA'`)
+	r.exec(t, "mark OMEGA's figures built by the release before's statement", `
+		insert into eval_figures_built (project_key, through, built_by, updated_at) values ('OMEGA', $1, 'release-before', now())
+		on conflict (project_key) do update set through = excluded.through, updated_at = excluded.updated_at
+		where eval_figures_built.through < excluded.through`, built["OMEGA"])
+	if again := r.figuresBuilt(t); !maps.EqualFunc(again, built, time.Time.Equal) {
+		t.Fatalf("the release before's database marks the figures built through %v, want %v as they stood", again, built)
+	}
+	if n := r.count(t, `select count(*) from eval_range_figures where project_key in ('ALPHA', 'OMEGA') and deploy_repo not in ('', '*') and eval_id = any($1)`,
+		[]string{EvalID("ALPHA", SlugDeployFrequency), EvalID("OMEGA", SlugDeployFrequency)}); n == 0 {
+		t.Fatal("the release before's database holds no stored range row of a deploy repository of deploy-frequency, and the check needs those it serves")
+	}
+	r.release("union-build")
+	expect("the release before's database, before the release's first pass", both(false))
+	r.pass(t)
+	if r.count(t, `select count(*) from eval_rebuilds where state = 'building'`) > 0 {
+		expect("while the release's rebuild builds", both(false))
+	} else {
+		t.Log("the release's first pass flipped its rebuild")
+	}
+	r.settle(t)
+	if n := r.count(t, `select count(*) from eval_figures_built where project_key in ('ALPHA', 'OMEGA') and union_through is distinct from through`); n != 0 {
+		t.Errorf("once the release's rebuild flipped, %d projects' union cuts stand marked folded other than through their figures' last end day", n)
+	}
+	expect("once the release's rebuild flipped", both(true))
+	expectTruth(t, "once the release's rebuild flipped", r.storedFigures(t), r.truthFigures(t))
+	r.exec(t, "delete a union row of ALPHA's, as the release before's fold of a day it writes deletes it",
+		`delete from eval_day_figures where project_key = 'ALPHA' and deploy_repo = '*' and day = $1`, sourcesDay)
+	expect("after the release before deleted a union row of ALPHA's", map[string]bool{"ALPHA": false, "OMEGA": true})
+	r.settle(t)
+	expect("once the refresher folded ALPHA's union cut again", both(true))
+	expectTruth(t, "once the refresher folded ALPHA's union cut again", r.storedFigures(t), r.truthFigures(t))
 }

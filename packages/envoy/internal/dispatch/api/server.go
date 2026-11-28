@@ -786,8 +786,14 @@ type RouteMux interface {
 // started the relay, or at once under the test hooks.
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
-	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
-		PostSystemMessage: s.postSystemMessage}
+	return Background{
+		Wait:              s.waitBackground,
+		ResumeDeliveries:  s.resumeOwedDeliveries,
+		EventHead:         s.eventFeedHead,
+		EventHorizon:      s.horizon,
+		Agent:             s.dashboardAgent,
+		PostSystemMessage: s.postSystemMessage,
+	}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -809,6 +815,12 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// Agent answers the agent a request's Authorization header proves, resolved by the code every
+	// route of the table resolves its caller by and answered as GET /api/v1/whoami answers it,
+	// and false where that route would answer no agent or the credential is a read-only token,
+	// which saves nothing (dashboardAgent). GET /auth/whoami draws the dashboard for it when the
+	// request carries no browser credential.
+	Agent func(*http.Request) (AgentCaller, bool)
 	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
 	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
 	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
