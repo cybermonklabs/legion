@@ -1926,6 +1926,58 @@ func TestARestartedRootsNextSlotIsTheFirstStartOfItsNewRun(t *testing.T) {
 	}
 }
 
+// setBackThenShelvedWindow is a window from 09:00 to 11:00 recorded under main, its inputs reaching
+// back to the daemon's boot at 08:00, in which a todo the daemon writes back is followed by another
+// issue event before the issue's leave. ACME-2, a root promoted at 08:05, plans from 08:20 through
+// the window. ACME-1, a child filed todo under it at 08:25, waits at admitted. At 10:10 ACME-1's own
+// architect closes it done, which the record's daemon sets back (workflow's sessionStatusWrite): no
+// leave follows, and its session writes todo again 0.33 s later. At 10:15 its session writes
+// backlog, the controller's set_status, and ACME-1 leaves the workflow at 10:15:00.25. Nothing of
+// ACME-1 follows.
+func setBackThenShelvedWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
+	b.reaches(time.Hour)
+	b.boot(clock(8, 0))
+	promotedRoot(b, clock(8, 5), "ACME-2", "a2")
+	b.rootDesigned(clock(8, 20), "ACME-2")
+	b.file(clock(8, 25), "ACME-1", filing{Title: "Write the export's header row", Parent: "ACME-2", Tree: "ACME-2", Status: "todo", Rank: "b1"})
+	b.changed(clock(10, 10), "ACME-1", b.session("ACME-1", claim.RoleArchitect), setStatus(record.DoneStatus))
+	b.daemonWrites(clock(10, 10).Add(330*time.Millisecond), "ACME-1", "todo")
+	b.daemonWrites(clock(10, 15), "ACME-1", "backlog")
+	b.leaves(shelvedLeft, "ACME-1", "backlog")
+	return b.build()
+}
+
+// shelvedLeft is the moment the record's daemon writes ACME-1's leave in setBackThenShelvedWindow,
+// the leave its session's backlog at 10:15 causes.
+var shelvedLeft = clock(10, 15).Add(250 * time.Millisecond)
+
+// The leave of an issue belongs to the issue's last issue event before it, and a todo enters the
+// issue after that leave only where it is that event (traceBuilder.maybeEnter): a later issue event
+// of the issue before the leave ends the todo's wait for a leave, whatever it is. The test reads
+// setBackThenShelvedWindow's trace: the todo the daemon wrote back after the architect's done is
+// followed by the backlog, whose leave at 10:15:00.25 makes no entry, and ACME-1 stands in no
+// phase from then on. It fails where the todo waits on through the backlog, read right after an
+// issue event out of the workflow, the done, for which the leave the backlog caused enters ACME-1
+// again, at admitted, to the window's end.
+func TestALeaveBelongsToTheLastIssueEventBeforeIt(t *testing.T) {
+	t.Parallel()
+	trace, err := BuildTrace(setBackThenShelvedWindow(t))
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	iss := trace.Issues["ACME-1"]
+	if leaves := iss.Leaves; len(leaves) != 1 || !leaves[0].At.Equal(shelvedLeft) {
+		t.Fatalf("the trace reads ACME-1's leaves as %+v, want one at %s", leaves, stamp(shelvedLeft))
+	}
+	if i := slices.IndexFunc(iss.Entries, func(entry Entry) bool { return !entry.At.Before(shelvedLeft) }); i >= 0 {
+		t.Errorf("the trace enters ACME-1 at %s, after its leave at %s, want no entry after it", stamp(iss.Entries[i].At), stamp(shelvedLeft))
+	}
+	if visit := iss.openVisit(); visit != nil || iss.visitAt(clock(10, 30)) != nil {
+		t.Errorf("the trace holds ACME-1 in %+v after its leave at %s, want it in no phase", visit, stamp(shelvedLeft))
+	}
+}
+
 // One issue's events keep Dispatch's own order, the order of their sequence, in which the daemon
 // reads Dispatch's stream, whatever their stamps (readTrace). The test replays
 // restartStampedBackwardWindow under main: the backlog applies first and ACME-1 leaves, the todo is

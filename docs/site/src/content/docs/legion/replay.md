@@ -727,6 +727,9 @@ So the replay reads an event that is stamped before the event that Dispatch wrot
 Dispatch's stamps and the daemon's lines come from two clocks, so Dispatch can stamp both writes of the controller's restart before the daemon's line of the leave that the backlog causes.
 The daemon applies the todo only once it has applied that leave, so the replay enters the issue again after the leave's own lines: the leave, the linger of a root's tree, and the slot that the leave gives back.
 So the run that the todo begins is a run of its own, and the slot that the record gives the issue next is the first start of that run, by which the line ranks the issue's tree (assumption 36).
+A leave belongs to the issue's last issue event before it, so a todo enters the issue after a leave only where the todo is that event.
+Where another issue event of the issue comes between the todo and the leave, or the issue's phase moves, the todo enters nothing at that leave.
+For example, the daemon sets an architect's done on its own issue back to todo, with no leave, and a later backlog then takes the issue out: that leave runs nothing again.
 A move to todo from out of the workflow waits while the replay's own record holds the issue in the workflow.
 It then enters when the replay's issue leaves the workflow, at its recorded offset from the record's leave of the issue before it, so a run that the record starts again after its done starts again after the replay's done.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.

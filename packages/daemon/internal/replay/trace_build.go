@@ -860,8 +860,9 @@ type traceBuilder struct {
 	parked map[string]uint64
 	// awaitingLeave is, by issue, a todo read while the issue stood in a visit, right after an
 	// issue event of it that took it out of the workflow, which waits for the daemon's leave of it
-	// (maybeEnter); reentering is, by issue, such a todo whose leave the trace has read, which
-	// enters the issue once the leave's lines are read (reenter).
+	// while it is the issue's last issue event (maybeEnter); reentering is, by issue, such a todo
+	// whose leave the trace has read, which enters the issue once the leave's lines are read
+	// (reenter).
 	awaitingLeave map[string]DispatchEvent
 	reentering    map[string]reentry
 	// sessions is each session the events show running a claim, by the claim's issue, in the order
@@ -1197,24 +1198,22 @@ func (b *traceBuilder) childFiled(iss *IssueTrace, event DispatchEvent) {
 // waits for the daemon's leave of it (awaitingLeave): Dispatch stamped both, as it stamps the
 // backlog and the todo of the controller's restart of a root, before the daemon's line of the leave
 // the first caused, and the daemon applied the todo only once it had applied that leave, so the
-// todo enters the issue after that leave (reenter). An issue event of the issue showing a status of
-// the workflow's own before that leave shows the daemon kept the issue in its run, and so does a
-// move of its phase (moved): the todo then waits for no leave.
+// todo enters the issue after that leave (reenter). A leave belongs to the issue's last issue event
+// before it, so the todo waits only while it is that event: any later issue event of the issue ends
+// its wait, and a move of its phase does too (moved), since the issue's run went on. So a todo the
+// daemon wrote back over an architect's done, which brought no leave, enters nothing at the leave
+// a later backlog causes.
 func (b *traceBuilder) maybeEnter(iss *IssueTrace, event DispatchEvent) {
 	if iss.Project != b.t.Project {
 		return
 	}
+	delete(b.awaitingLeave, iss.Key)
 	switch {
 	case event.Issue.Status != "todo":
-		if !record.OutOfWorkflow(event.Issue.Status) {
-			delete(b.awaitingLeave, iss.Key)
-		}
 	case iss.openVisit() == nil:
 		b.enter(iss, event, event.At)
 	case takenOutBefore(iss):
-		if _, waits := b.awaitingLeave[iss.Key]; !waits {
-			b.awaitingLeave[iss.Key] = event
-		}
+		b.awaitingLeave[iss.Key] = event
 	}
 }
 
