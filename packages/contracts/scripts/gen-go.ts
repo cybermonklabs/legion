@@ -815,8 +815,8 @@ const SessionLiveWindow = ${SESSION_LIVE_WINDOW_MS} * time.Millisecond
 
 // SessionClaimStale is how long a session's role claim may go unrefreshed before a reader treats
 // the process that wrote it as gone, which allows three missed heartbeats at SessionHeartbeat.
-// Generated from SESSION_CLAIM_STALE_MS in packages/contracts so session.ClaimStaleAfter and the
-// Legion daemon's copy of it, which times its last re-hold of a notice, are one number.
+// Generated from SESSION_CLAIM_STALE_MS in packages/contracts so session.ClaimStaleAfter and
+// sessiontiming.ClaimStale, its export for a Go module outside this one, are one number.
 const SessionClaimStale = ${SESSION_CLAIM_STALE_MS} * time.Millisecond
 
 // ListenerCallTimeout is how long one attempt of an envoy-client call waits for the listener,

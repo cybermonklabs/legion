@@ -3323,12 +3323,12 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // learns that: it publishes under the claim's own lock and marks the claim asked when the publish
 // reached a session (outbox's updateAsk, supervise's Machine.PublishUpdateAsk). An ask whose role
 // topic no live session held (notify.ErrNoHolder) marks nothing and is lost, not given, so the
-// next sweep that finds the claim ready asks it again (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4). The round waits for every claim it asks until its bound, and a claim
-// marked over an ask it never read would hold the round, and every answered worker's next task,
-// to that bound for an answer nobody asked it for. A mark made here, at the enqueue, could be
-// neither taken back by the row it was made for nor kept from a row it was not made for: the row
-// can run before the mark is written, and a second row of the round can run after it.
+// next sweep that finds the claim ready asks it again (dispatch://INFRA-4109 R4). The round waits
+// for every claim it asks until its bound, and a claim marked over an ask it never read would hold
+// the round, and every answered worker's next task, to that bound for an answer nobody asked it
+// for. A mark made here, at the enqueue, could be neither taken back by the row it was made for nor
+// kept from a row it was not made for: the row can run before the mark is written, and a second
+// row of the round can run after it.
 //
 // So that one ask of a round is in flight per claim, a claim whose ask of this round still waits
 // in the outbox is skipped (store's QueuedUpdateAsks): one indexed read for the issue, made only

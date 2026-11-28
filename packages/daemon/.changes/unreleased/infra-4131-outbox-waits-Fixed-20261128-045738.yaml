@@ -1,0 +1,62 @@
+kind: Fixed
+body: |-
+  The daemon's outbox no longer runs a waiting row every 64 seconds for as long as it waits. A row
+  that publishes a message to a role (a notice, a controller notice, a merge-queue removal, a
+  merge-holds change, a merge forward, a hook prompt, a phase end, a role message or an update ask)
+  now reads the role's claim in the daemon's own record before each publish. While the role has no
+  claim, because its start is still owed, or its launch has not registered a session, the row
+  publishes nothing. While a launch has not said it is ready, or the claim is suspended by any
+  source but the idle release, the row publishes at most once for that launch. When the claim
+  says it is ready, every row that waits for it runs at once. A new session takes its role's name
+  only at its first turn, or 30 seconds after its ready, so a publish refused because no session
+  holds the role yet runs again at that turn, or 30 seconds after the ready. Each refusal that the
+  claim record cannot explain runs again on a backoff that doubles from 1 second and stops at 5
+  minutes, so a row runs at most 12 times an hour. Every publish of a row carries the row's own
+  key. A notice and a role message that no pause holds end with no publish when their role has no
+  claim, where before they ended after one publish. An update ask ends there with no publish, as
+  before.
+
+  A row that waits for another event of the daemon's own runs at that event. A start behind a
+  pending delivery runs when a turn confirms that task, or the task is retired or dropped. A
+  merger's start, or a held message, behind a closed design gate runs when the gate opens. The
+  other waits the daemon records run at their events too: a claim that stops, a tree that runs
+  again, a role stop or a workspace check that finishes, an earlier notice to the same architect
+  that ends. Between events such a row waits on the same capped backoff. A wait whose end the
+  daemon does not record, such as a Dispatch that does not serve a route yet, keeps its backoff of
+  at most 64 seconds.
+
+  A notice is never given up while its architect's claim stands. A notice that the listener
+  answers `receipt_timeout` keeps its row and is sent again on the capped backoff until its
+  architect takes it, or its architect's claim fails or retires. The line `outbox notice not
+  re-held again` is no longer written for a count, and a catch-up keeps its claims on the decisions
+  it names until a publish of it is taken.
+
+  A waiting row is logged once when its wait starts (`outbox row waits`, at Info), once when it
+  has waited 30 minutes, and once when it ends (`outbox row's wait ended`, at Info, with how long it
+  waited and its attempts). The 30-minute line is `outbox row's role is ready and took nothing for
+  30 minutes` at Error where the role's claim said it was ready and the listener did not take the
+  row, and `outbox row has waited 30 minutes` at WARN for every other wait. Every other attempt
+  logs at Debug, and a refusal that keeps such a row no longer logs `outbox row failed` at Error at
+  each attempt. Each ready of a claim is logged at Info as `supervise: ready`, with the claim and
+  the generation of its launch, so the log shows each ready beside each launch (`supervise:
+  launched`).
+
+  A boot no longer fails with `read held catch-ups: context deadline exceeded` after a long orphan
+  reconciliation. The boot ran the reconciliation and the restore of the held catch-ups on one
+  budget of 30 seconds, and the reconciliation ends without failing the boot when that budget runs
+  out. On 2026-11-27 INFRA's boot spent 28 of its 30 seconds in the reconciliation, which replaced
+  the repository cache pods that the release had drifted, one after another, so the restore after
+  it had no time left. Now the restore runs on a budget of 30 seconds of its own, and the
+  reconciliation stops at 15 seconds inside the boot's budget. The boot makes and repairs no
+  repository cache: the orphan sweep passes over the caches once when it begins, after the boot,
+  and after each of its reconciliations, each pass bound to one sweep interval. A pass that its
+  bound cuts short logs `reconcile orphans: the repository cache pass ran out of its bound; the
+  caches it did not reach wait for the next pass` at ERROR.
+
+  The migration `20261127174946_outbox_waits` adds seven columns to `outbox`, which keep the wait
+  of each row across a restart, and the index `outbox_wait_for`. An earlier release names its
+  columns in each read and write of `outbox` and ignores the seven, so a rollback takes no step for
+  them.
+time: 2026-11-28T04:57:38Z
+custom:
+    Issue: infra-4131

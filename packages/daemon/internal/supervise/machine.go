@@ -2572,8 +2572,7 @@ const (
 // whose lock it runs under. The outbox's update-ask row is the one caller (internal/daemon's
 // updateAsk). The sweep only enqueues the row and marks nothing (internal/daemon's askRound): an
 // ask counts once it reached a session, and an ask that reached none is lost, not given, so the
-// claim stays unasked and a later sweep asks it again (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4).
+// claim stays unasked and a later sweep asks it again (dispatch://INFRA-4109 R4).
 //
 // The order is what keeps an ask from being lost or given twice, and every step of it is inside
 // one locked section of this machine:

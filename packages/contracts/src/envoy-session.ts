@@ -39,12 +39,12 @@ export const SESSION_LIVE_WINDOW_MS = 300_000;
 /**
  * How long a session's role claim may go unrefreshed before a reader treats the process that
  * wrote it as gone. At `SESSION_HEARTBEAT_MS` this allows three missed heartbeats before a reader
- * assumes the holder is gone. The Legion daemon reads it to time the last copy of a notice the
- * listener could not forward (`noticeReholdDelays`, `packages/daemon/internal/daemon`). No role
- * resolution weighs it: a holder is judged by how long ago its registration was written, and a
- * session route's own write weighs no claim's freshness, since the route follows whichever process
- * heartbeated last. Generated into Go as `contracts.SessionClaimStale`, which the listener's
- * `session.ClaimStaleAfter` is, so the listener's window and the daemon's copy are one number.
+ * assumes the holder is gone. No role resolution weighs it: a holder is judged by how long ago its
+ * registration was written, and a session route's own write weighs no claim's freshness, since the
+ * route follows whichever process heartbeated last. Generated into Go as
+ * `contracts.SessionClaimStale`, which the listener's `session.ClaimStaleAfter` is, and which
+ * `packages/envoy/sessiontiming` exports as `ClaimStale` for a Go module outside Envoy's, so each
+ * of them is this one number.
  */
 export const SESSION_CLAIM_STALE_MS = 300_000;
 

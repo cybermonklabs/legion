@@ -1,13 +1,12 @@
 package daemon
 
-// An update round's ask counts once it reached a session (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4, verification's c-undelivered-ask-asked-again). The sweep enqueues the
-// ask and marks nothing; the outbox's row publishes it under the claim's own lock and marks the
-// claim asked only when the publish reached a session (updateAsk, supervise's
-// Machine.PublishUpdateAsk). So an ask that finds no live holder on the role's topic
-// (notify.ErrNoHolder) leaves the claim unasked, a later sweep asks it again, and the round ends
-// once it answers, long before its bound; an ask that reached a session is the only one its role
-// gets, whatever other row of the round runs before or after it.
+// An update round's ask counts once it reached a session (dispatch://INFRA-4109 R4, verification's
+// c-undelivered-ask-asked-again). The sweep enqueues the ask and marks nothing; the outbox's row
+// publishes it under the claim's own lock and marks the claim asked only when the publish reached a
+// session (updateAsk, supervise's Machine.PublishUpdateAsk). So an ask that finds no live holder on
+// the role's topic (notify.ErrNoHolder) leaves the claim unasked, a later sweep asks it again, and
+// the round ends once it answers, long before its bound; an ask that reached a session is the only
+// one its role gets, whatever other row of the round runs before or after it.
 //
 // These cases drive the pod-update rig of podupdate_test.go, whose role-message lane runs each ask
 // row the sweep wrote through the outbox's own executor, against a listener that refuses a topic

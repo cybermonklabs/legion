@@ -371,8 +371,8 @@ func (h *harness) markAsked(round string) {
 	}
 }
 
-// A claim is asked its round once an ask reached a session (dispatch://INFRA-4109 R4,
-// dispatch://INFRA-4131 R4), and the mark is written where the publish is (PublishUpdateAsk).
+// A claim is asked its round once an ask reached a session (dispatch://INFRA-4109 R4), and the
+// mark is written where the publish is (PublishUpdateAsk).
 // An ask that reached a session marks the claim at the clock, durably, and the next ask of the
 // round publishes nothing; an ask no session took marks nothing and the next ask publishes again;
 // a round the claim is not in is published nothing; a publish that fails marks nothing; and a

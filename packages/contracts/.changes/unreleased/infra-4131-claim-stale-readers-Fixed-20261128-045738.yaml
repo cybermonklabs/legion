@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The doc comment of `SESSION_CLAIM_STALE_MS` in `src/envoy-session.ts`, and the comment that
+  `bun run gen:go` writes on `contracts.SessionClaimStale`, no longer say that the Legion daemon
+  reads the value to time the last re-hold of a notice. The daemon no longer reads it, because it
+  no longer gives up a notice after a count of re-holds. The comments name the readers now: the
+  listener's `session.ClaimStaleAfter`, and `sessiontiming.ClaimStale` for a Go module outside
+  Envoy's.
+time: 2026-11-28T04:57:38Z
+custom:
+    Issue: infra-4131
