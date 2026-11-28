@@ -7,6 +7,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
@@ -74,6 +75,9 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 			continue
 		}
 		want := PhaseStatus(issue.Phase)
+		if issue.Phase == phase.Verifying {
+			want = record.DoneStatus
+		}
 		if want == "" || issue.DispatchStatus == "" || record.OutOfWorkflow(issue.DispatchStatus) || issue.DispatchStatus == want {
 			continue
 		}
