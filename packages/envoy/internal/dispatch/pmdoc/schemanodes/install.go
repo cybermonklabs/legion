@@ -2,10 +2,12 @@ package schemanodes
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"log/slog"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/pglisten"
 )
@@ -33,6 +35,10 @@ type Installer struct {
 	// Retry is how soon a failed read, or a value the install refused, is read again; zero is
 	// RetryInterval.
 	Retry time.Duration
+	// Clock is the clock the retry's timer runs on. Nil, which every deployment leaves it, is
+	// clock.Real(); a test hands a clocktest.Fake and moves it past the retry once Run has armed
+	// it, so the test reads the retry's interval off the timer rather than off the wall clock.
+	Clock clock.Clock
 	// OnSwitch runs after a read that moved the schema this process serves: the installed
 	// value changed, its version or any element of it. The server refreshes its row of the
 	// server process registry there and closes its document sockets
@@ -69,15 +75,16 @@ func InstallFromStore(ctx context.Context, db Beginner) error {
 }
 
 // Run installs the store's schema at once, then each time the wake is signalled, until ctx ends.
-// A read that fails, and a value the install refuses, is read again after the retry interval
-// unless a wake comes first.
+// A read that fails, and a value the install refuses, is read again after the retry interval on
+// the installer's clock (Clock) unless a wake comes first.
 func (i *Installer) Run(ctx context.Context) {
+	clk := cmp.Or[clock.Clock](i.Clock, clock.Real())
 	for {
 		var retry <-chan time.Time
-		var timer *time.Timer
+		var timer clock.Timer
 		if !i.reload(ctx) {
-			timer = time.NewTimer(i.retryInterval())
-			retry = timer.C
+			timer = clk.NewTimer(i.retryInterval())
+			retry = timer.C()
 		}
 		select {
 		case <-ctx.Done():

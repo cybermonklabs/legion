@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ const askPayloadIndex = "events_ask_payload_id"
 // and for two other sessions, with the window's start 72 hours and 7 days back. A window of 7
 // days holds the reader's deliveries 4 to 6 days old too.
 func TestTheAnswersReadAnswersMainsRows(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	ctx := context.Background()
 	since := f.now.Add(-72 * time.Hour)
@@ -174,19 +176,47 @@ func TestTheAnswersReadAnswersMainsRows(t *testing.T) {
 // order, and each column the same bytes the server sent, so a value that differs only in its type
 // or its time zone differs too. main's read must answer some row for each, so the comparison
 // holds something.
+//
+// The twelve reads run at once, each on a connection of its own from the fixture's pool, which
+// store.Open sizes far above twelve (sharedPoolSize, 64), so none waits for another. Each pair is
+// then compared on the test's goroutine, the one that may fail t, in the order the sessions and
+// windows are listed.
 func requireMainsRows(t *testing.T, f *answersFixture, step string) {
 	t.Helper()
+	type comparison struct {
+		subject, session string
+		since            time.Time
+		want, got        answerRows
+		wantErr, gotErr  error
+	}
+	var comparisons []comparison
 	for _, session := range []string{answersReader, answersAsker, noiseSession(3)} {
 		for _, window := range []time.Duration{72 * time.Hour, 7 * 24 * time.Hour} {
-			subject := fmt.Sprintf("after %s, %s's read since %v back", step, session, window)
-			since := f.now.Add(-window)
-			want := readAnswerRows(t, f.database, mainQuery, session, since)
-			got := readAnswerRows(t, f.database, query, session, since)
-			if len(want.raw) == 0 {
-				t.Errorf("%s: main's read answers no row, so the comparison holds nothing", subject)
-			}
-			sameAnswerRows(t, subject, got, want)
+			comparisons = append(comparisons, comparison{
+				subject: fmt.Sprintf("after %s, %s's read since %v back", step, session, window),
+				session: session,
+				since:   f.now.Add(-window),
+			})
 		}
+	}
+	var reads sync.WaitGroup
+	for i := range comparisons {
+		each := &comparisons[i]
+		reads.Go(func() { each.want, each.wantErr = queryAnswerRows(f.database, mainQuery, each.session, each.since) })
+		reads.Go(func() { each.got, each.gotErr = queryAnswerRows(f.database, query, each.session, each.since) })
+	}
+	reads.Wait()
+	for _, each := range comparisons {
+		if each.wantErr != nil {
+			t.Fatal(each.wantErr)
+		}
+		if each.gotErr != nil {
+			t.Fatal(each.gotErr)
+		}
+		if len(each.want.raw) == 0 {
+			t.Errorf("%s: main's read answers no row, so the comparison holds nothing", each.subject)
+		}
+		sameAnswerRows(t, each.subject, each.got, each.want)
 	}
 }
 
@@ -231,12 +261,24 @@ func (r answerRows) String() string {
 	return text.String()
 }
 
-// readAnswerRows runs statement for session since since, bound as List binds the read.
+// readAnswerRows runs statement for session since since, bound as List binds the read, and fails
+// t where the read fails.
 func readAnswerRows(t *testing.T, database *store.Store, statement, session string, since time.Time) answerRows {
 	t.Helper()
+	answered, err := queryAnswerRows(database, statement, session, since)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return answered
+}
+
+// queryAnswerRows runs statement for session since since, bound as List binds the read, and
+// answers why where the read fails, for a caller that reads off the test's goroutine, which alone
+// may fail the test (requireMainsRows).
+func queryAnswerRows(database *store.Store, statement, session string, since time.Time) (answerRows, error) {
 	rows, err := database.Pool.Query(context.Background(), statement, session, since, agentTopic(session))
 	if err != nil {
-		t.Fatalf("read %s's answers: %v", session, err)
+		return answerRows{}, fmt.Errorf("read %s's answers: %w", session, err)
 	}
 	defer rows.Close()
 	var answered answerRows
@@ -250,15 +292,15 @@ func readAnswerRows(t *testing.T, database *store.Store, statement, session stri
 		}
 		values, err := rows.Values()
 		if err != nil {
-			t.Fatalf("decode %s's answers: %v", session, err)
+			return answerRows{}, fmt.Errorf("decode %s's answers: %w", session, err)
 		}
 		answered.raw = append(answered.raw, raw)
 		answered.values = append(answered.values, values)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("read %s's answers: %v", session, err)
+		return answerRows{}, fmt.Errorf("read %s's answers: %w", session, err)
 	}
-	return answered
+	return answered, nil
 }
 
 // TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex holds the answers read (query) to
@@ -280,6 +322,7 @@ func readAnswerRows(t *testing.T, database *store.Store, statement, session stri
 // array on its rows: the check of the read of events, run on it, must fail under each plan, and
 // the test fails when it passes, since the check would then be one that cannot fail.
 func TestTheAnswersReadReadsOnlyTheSessionsWindowThroughItsIndex(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	ctx := context.Background()
 	var indexed bool

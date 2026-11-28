@@ -23,7 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // limitGitHub is a GitHub App API that records every request it is sent ("METHOD path
 // Authorization"): one repository (acme/web) and the installation covering it, token mints, the

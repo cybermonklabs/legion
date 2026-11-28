@@ -56,11 +56,12 @@
 // span instead (a socket's SetDeadline, a client's timeout option). InMain waits until a condition
 // holds, as Eventually does, under the bound of every other wait, for a wait in TestMain, which has
 // no t: it takes its deadline from the -timeout flag and the process's start, and returns an error
-// where the others fail the test. InHelper and ReceiveInHelper are InMain and Receive for a helper
-// whose callers hand it no t, such as clocktest's fake, and name that helper where InMain names
-// TestMain. A wait inside a testing/synctest bubble takes the t Bubble hands its function, since
-// the bubble's own t refuses to name a deadline: Bubble names what was left of the test's deadline
-// as the bubble began, past the bubble's start on its clock.
+// where the others fail the test; MainGiveUpAt names that moment, as GiveUpAt names a test's.
+// InHelper and ReceiveInHelper are InMain and Receive for a helper whose callers hand it no t, such
+// as clocktest's fake, and name that helper where InMain names TestMain. A wait inside a
+// testing/synctest bubble takes the t Bubble hands its function, since the bubble's own t refuses
+// to name a deadline: Bubble names what was left of the test's deadline as the bubble began, past
+// the bubble's start on its clock.
 //
 // A condition runs on the test goroutine, so a condition that reads a report which makes its fact
 // impossible (a process that exited, a daemon whose run returned) calls t.Fatalf itself and ends
@@ -298,8 +299,8 @@ func Next[T any](t testing.TB, what string, s *Stream[T], match func(T) bool) T 
 
 // GiveUpAt is the moment every wait in t but Eventually gives up: the test binary's deadline less
 // the margin, and false when the binary has no deadline (-timeout 0). It is the one reading of that
-// moment outside this package, for a call that takes a deadline or a span where Context gives a
-// context.
+// moment outside this package for a test, for a call that takes a deadline or a span where Context
+// gives a context; MainGiveUpAt is TestMain's.
 func GiveUpAt(t testing.TB) (time.Time, bool) {
 	return lessMargin(deadlineOf(t))
 }
@@ -387,7 +388,7 @@ func InMain(what string, holds func() bool) error {
 // give-up text names helper where InMain's names TestMain ("testwait: <helper>: gave up waiting
 // for <what> …"), and its bound and its parse of the command line are InMain's.
 func InHelper(helper, what string, holds func() bool) error {
-	end, bounded := mainGiveUpAt()
+	end, bounded := MainGiveUpAt()
 	if asked(end, bounded, holds) {
 		return nil
 	}
@@ -400,7 +401,7 @@ func InHelper(helper, what string, holds func() bool) error {
 // takes a value that came beside the timer, or writes "testwait: <helper>: gave up waiting for
 // <what> …" to stderr and returns the zero value and an error with the same text.
 func ReceiveInHelper[T any](helper, what string, ch <-chan T) (T, error) {
-	expired, stop := expiryAt(mainGiveUpAt())
+	expired, stop := expiryAt(MainGiveUpAt())
 	defer stop()
 	value, ok := received(ch, expired)
 	if !ok {
@@ -506,9 +507,14 @@ func expiryAt(end time.Time, bounded bool) (<-chan time.Time, func() bool) {
 	return currentClock().Timer(end)
 }
 
-// mainGiveUpAt is the moment a wait in TestMain gives up: the -timeout flag's deadline less
-// margin, and false under -timeout 0. It parses the command line when nothing has yet.
-func mainGiveUpAt() (time.Time, bool) {
+// MainGiveUpAt is the moment a wait in TestMain gives up (InMain): the -timeout flag's deadline,
+// counted from the process's start, less the margin, and false under -timeout 0. It is GiveUpAt for
+// code that has no t, a TestMain or a helper it calls, which hands the moment to a call that takes
+// a deadline or a span (storetest's RunEager bounds its connects by it). It is no later than a
+// test's GiveUpAt, since testing counts the -timeout from when m.Run starts its alarm. Before m.Run
+// the command line is not parsed yet, so it parses it when nothing has yet, as m.Run would; a
+// TestMain that sets a flag's default does so before the first call.
+func MainGiveUpAt() (time.Time, bool) {
 	if !flag.Parsed() {
 		flag.Parse()
 	}

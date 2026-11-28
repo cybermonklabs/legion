@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The document service's own write transactions under storetest's xid rig (INFRA-636, plan test
@@ -42,21 +43,34 @@ import (
 // only the settlement a test runs itself settles.
 func xidService(t *testing.T) (*Service, *store.Store, *storetest.XidTracer) {
 	t.Helper()
+	return xidServiceOn(t, storetest.Open(t))
+}
+
+// xidServiceOn is xidService on a traced pool of database, a database of the test's own (a clone
+// storetest made for it).
+func xidServiceOn(t *testing.T, database *store.Store) (*Service, *store.Store, *storetest.XidTracer) {
+	t.Helper()
 	tracer := storetest.NewXidTracer()
-	database := &store.Store{Pool: storetest.Traced(t, storetest.Open(t).Pool, tracer, nil)}
-	service := New(Deps{
-		Store:    database,
-		Events:   events.NewBroker(),
-		Identity: headerIdentity(database),
-		Origins:  testOrigins,
-		Settle:   time.Hour,
-	})
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, tracer, nil)}
+	service := New(xidDeps(traced))
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
 	})
-	return service, database, tracer
+	return service, traced, tracer
+}
+
+// xidDeps is what xidService builds its document service on database from, settling after an
+// hour.
+func xidDeps(database *store.Store) Deps {
+	return Deps{
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
+	}
 }
 
 // The rig is not vacuous: a transaction whose statements run back to back after its first write
@@ -213,9 +227,11 @@ func TestXidWindowRigJudgesAWriteThePollerNeverSaw(t *testing.T) {
 				storetest.RequireXidGapJudgment(t)
 			}
 			_, database, tracer := xidService(t)
-			// Blind for longer than the whole operation: no poll is sent while the transaction is
-			// open, so nothing but its own statements says it held an xid.
-			tracer.BlindPoller(time.Minute)
+			// Blind for the whole operation: no poll is sent while the transaction is open, so
+			// nothing but its own statements says it held an xid. Measure stops the poller when the
+			// operation ends, so the blindness ends on that, bounded only by the test binary's
+			// deadline less roomWaitMargin.
+			tracer.BlindPoller(testwait.Remaining(t, roomWaitMargin))
 			report := tracer.Measure(t, database.Pool, func() {
 				runRigTransaction(t, database, probe.gap)
 			})
@@ -302,9 +318,8 @@ func TestXidWindowSettlementVersionWrite(t *testing.T) {
 	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
 	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
 	// (requireMeasuredAlone).
-	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	artifactID, before, generation := settlementFixture(t, service, database, alice)
+	service, database, tracer, artifactID, before, generation := settlementFixture(t, alice)
 
 	report := tracer.Measure(t, database.Pool, func() {
 		service.settleRoomWithin(storetest.MarkXid(context.Background()), artifactID, generation, false)
@@ -327,9 +342,8 @@ func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
 	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
 	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
 	// (requireMeasuredAlone).
-	service, database, tracer := xidService(t)
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
-	artifactID, before, generation := settlementFixture(t, service, database, alice)
+	service, database, tracer, artifactID, before, generation := settlementFixture(t, alice)
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		insert into document_edit_notices (artifact_id, from_version, to_version, editors, last_editor, due_at)
@@ -362,35 +376,87 @@ func TestXidWindowClosedIssueSettlementVersionWrite(t *testing.T) {
 }
 
 // settlementFixture is the document the settlement window tests settle: one of the load harness's
-// large specs on issue DOC-1 with 20 open anchored asks, live in its room, where editor's browser
-// has bumped the revision token and the room has stored that update durably. It answers the
+// large specs on issue DOC-1 with 20 open anchored asks, on a clone of the template that holds
+// them (settlementTemplate), live in a room of the test's own document service, where editor's
+// browser has bumped the revision token and the room has stored that update durably. It answers
+// that service on a traced pool of the clone and the pool's tracer, as xidService does, and the
 // document, its latest version and the room generation a settlement of it runs at.
-func settlementFixture(t *testing.T, service *Service, database *store.Store, editor model.Actor) (string, int, uint64) {
+func settlementFixture(t *testing.T, editor model.Actor) (service *Service, database *store.Store, tracer *storetest.XidTracer, artifactID string, before int, generation uint64) {
 	t.Helper()
-	spec, quotes := storetest.XidSpec("DOC", 1)
-	artifactID := createDocument(t, database, "# First")
-	seedServiceText(t, service, artifactID, spec)
-	step := len(quotes) / 24
-	for i := range 20 {
-		seedAnchoredAsk(t, service, artifactID, fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), quotes[i*step], quotes[i*step])
-	}
+	service, database, tracer = xidServiceOn(t, storetest.OpenFilled(t, settlementTemplate(t)))
+	artifactID = settlementSeeded.artifactID
 	editAsConnectedPeer(t, service, artifactID, 1, editor, replaceRun("Revision token r0", "Revision token r1"))
-	before := latestVersionNumber(t, service, artifactID)
+	before = latestVersionNumber(t, service, artifactID)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to reach persistence: %v", err)
-	}
-	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
-		t.Fatalf("wait for live updates to become durable: %v", err)
-	}
-	state := service.room(artifactID)
-	state.mu.Lock()
-	generation := state.roomGeneration
-	state.mu.Unlock()
-	t.Logf("xid fixture: document of %d bytes with 20 open anchored asks", len(spec))
-	return artifactID, before, generation
+	generation = roomGeneration(t, service, artifactID)
+	t.Logf("xid fixture: document of %d bytes with 20 open anchored asks, cloned from the template %q",
+		settlementSeeded.specBytes, settlementTemplateKey)
+	return service, database, tracer, artifactID, before, generation
+}
+
+// settlementTemplateKey names the template the settlement window tests clone (storetest.Filled).
+const settlementTemplateKey = "docs settlement fixture"
+
+// settlementSeeded is what settlementTemplate's Fill wrote: the document's id and the size of its
+// text. Every clone holds the template's rows, so it is every clone's; storetest makes the
+// template inside a sync.Once, which every caller of OpenFilled passes before it reads this.
+var settlementSeeded struct {
+	artifactID string
+	specBytes  int
+}
+
+// settlementTemplate is the template settlementFixture clones: the load harness's large spec on
+// issue DOC-1 with 20 open anchored asks, written through a document service of the Fill's own on
+// the template (xidDeps, untraced), as each test's own service wrote them before there was a
+// template, and left as that service stored them: the document at version 1, its text and the
+// asks' marks durable in its history, and the settlement they owe still owed (its
+// pending-settlement row). Fill runs on the goroutine of the test that asks first, so the seed
+// helpers fail that test, t, on an error.
+//
+// Before it returns, Fill waits for that service's own work to end and shuts it down: Postgres
+// refuses to clone a database another session holds. Shutdown settles each resident room whose
+// document owes a settlement, which would leave the template at version 2 and each test's
+// settlement only the peer's one-run edit to version, so Fill first closes the room unsettled
+// (Quiesce). The pending row stays, and the room each test loads arms its settlement from it
+// (onLoadDocument), as the seeding's own edits armed it.
+func settlementTemplate(t *testing.T) storetest.Filled {
+	return storetest.Filled{Key: settlementTemplateKey, Fill: func(ctx context.Context, database *store.Store) (err error) {
+		service := New(xidDeps(database))
+		// Deferred, so a seed helper that fails t (t.Fatal) shuts the service down as well. The
+		// shutdown is waited for through the shared wait, as every wait of the Fill is.
+		defer func() {
+			var shutdownErr error
+			testwait.Returns(t, "the seeding's document service to shut down", func() { shutdownErr = service.Shutdown(ctx) })
+			if shutdownErr != nil && err == nil {
+				err = fmt.Errorf("shut down the seeding's document service: %w", shutdownErr)
+			}
+		}()
+		spec, quotes := storetest.XidSpec("DOC", 1)
+		artifactID := createDocument(t, database, "# First")
+		seedServiceText(t, service, artifactID, spec)
+		step := len(quotes) / 24
+		for i := range 20 {
+			seedAnchoredAsk(t, service, artifactID, fmt.Sprintf("00000000-0000-4000-8000-%012d", i+1), quotes[i*step], quotes[i*step])
+		}
+		// The room's updates are durable once roomGeneration has read its generation, which this
+		// template keeps no use for; the room then closes unsettled and the service's work ends.
+		roomGeneration(t, service, artifactID)
+		wait := testwait.Context(t)
+		for _, step := range []struct {
+			what string
+			run  func(context.Context) error
+		}{
+			{"the seeded document's room to close unsettled", service.Quiesce},
+			{"the seeding's document work to end", service.IdleForTest},
+		} {
+			testwait.Returns(t, step.what, func() { err = step.run(wait) })
+			if err != nil {
+				return fmt.Errorf("wait for %s: %w", step.what, err)
+			}
+		}
+		settlementSeeded.artifactID, settlementSeeded.specBytes = artifactID, len(spec)
+		return nil
+	}}
 }
 
 // The edit-notice sweep claims a due notice, then reads both versions it names, parses them to

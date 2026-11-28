@@ -17,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The rig reads the machine's load as the machine's, not as the code's gap (storetest.XidGap):
@@ -338,15 +339,21 @@ const xidPlantedSleep = 8 * time.Millisecond
 // xidHandoffNice is the niceness the window's thread takes beside the crowding processes in
 // TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes: a weight low enough that, woken, it cannot
 // take the CPU from them, so it waits its turn on the run queue. SCHED_IDLE is lower still, and
-// needs no privilege either; niceness 19 is enough, its handoffs waiting 622 to 1,206 ms in 20 of 20
-// runs (2026-11-21).
-const xidHandoffNice = 19
+// needs no privilege either. The weight sets how long that turn takes, and the row asserts a wait
+// of 1 ms: at niceness 19 the handoffs waited 622 to 1,206 ms in 20 of 20 runs (2026-11-21), about
+// a thousand times that, and most of the row's time. So it is the lowest niceness of 5, 10 and 15
+// whose 20 runs at -count=20 all passed with the thread's and the runtime's waits each at least
+// 10 ms, ten times the row's floor: on a 4-CPU amd64 build-cluster pod at main (AMD EPYC 9B45, Job
+// legion-ci-infra6340-6pnvk, 2026-11-28), the smaller of the two waits was 23.966 to 57.752 ms at
+// niceness 5, 53.973 to 162.228 ms at 10, 168.316 to 551.988 ms at 15 and 216.972 to 1,368.981 ms
+// at 19, every run passing at each; at niceness 0 it fell to 9.812 ms.
+const xidHandoffNice = 5
 
 // A system call the code makes after the runtime hands its goroutine back is the code's time, and
 // no wait for a CPU around it is taken out of it. With one P, the window's goroutine yields behind
 // a spinning goroutine while its thread is pinned to a CPU other processes crowd, so when the
-// runtime hands the goroutine back the woken thread waits its turn on that CPU, at niceness 19
-// for a second, all of it runnable on the runtime too; then the goroutine sleeps 8 ms in a system
+// runtime hands the goroutine back the woken thread waits its turn on that CPU, at niceness
+// xidHandoffNice, all of it runnable on the runtime too; then the goroutine sleeps 8 ms in a system
 // call (nanosleep). The gap must read at least the 8 ms made, and break D6. A formula that took a
 // run-queue wait out of the gap wherever the clocks put it read one such gap at 0.225 ms made (a
 // tester's run, 2026-11-21), a D6 break unseen: the wait the trace tied to no handoff came out of
@@ -385,7 +392,7 @@ func TestXidWindowRigReadsASleepAfterAHandoffAsTheCodes(t *testing.T) {
 				return nil
 			})
 		}()
-		if err := <-failed; err != nil {
+		if err := testwait.Receive(t, "the window's goroutine to end its transaction", failed); err != nil {
 			t.Fatal(err)
 		}
 	})

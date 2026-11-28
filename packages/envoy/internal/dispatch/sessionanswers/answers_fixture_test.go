@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -53,10 +54,18 @@ func agentTopic(session string) string { return contracts.LegacyAgentSubject(ses
 // fixture began. Each item and each event is an insert of its own, as the route that writes it
 // makes it, and the inserts go to the server in one batch (send).
 type answersFixture struct {
-	t        *testing.T
+	// t is what the fixture's writes fail through (failer).
+	t        failer
 	database *store.Store
-	now      time.Time
 	batch    *pgx.Batch
+	answersValues
+}
+
+// answersValues is what the fixture wrote that its tests read, and that the edit steps change as
+// they write: the database's now when the fixture began, each owner's last sequence, each event,
+// and the items the edit steps change.
+type answersValues struct {
+	now time.Time
 	// seqs is the last sequence each owner's events took, by the owner's key.
 	seqs map[string]int
 	// events is each event the fixture wrote, with the topics its published_destinations hold.
@@ -95,20 +104,104 @@ func (d fixtureDocument) owner() eventOwner {
 	return eventOwner{artifactID: &d.id, key: d.id, topicStem: "notifications.dispatch.document.AN." + d.slug + "."}
 }
 
-// newAnswersFixture writes the fixture into a new database, then vacuums and analyzes it, so the
-// planner costs each read over the fixture's statistics.
+// answersTemplate is the template the tests of the answers fixture clone (newAnswersFixture). Its
+// Fill (writeAnswersFixture) writes the fixture once per test binary, and TestMain names it
+// (storetest.MainEager), so the binary writes it before the tests, and each test clones it instead
+// of writing about 13,000 statements and vacuuming them itself.
+var answersTemplate = storetest.Filled{Key: "the answers fixture", Fill: writeAnswersFixture}
+
+// answersWritten is what answersTemplate's Fill wrote. The Fill sets it, once: storetest runs a
+// Filled's Fill once per test binary, before m.Run under MainEager, and otherwise inside the
+// sync.Once that each OpenFilled of the template waits on, so each test reads it after the Fill
+// set it. No test changes it: each takes a copy of its own (newAnswersFixture).
+var answersWritten answersValues
+
+// newAnswersFixture answers the answers fixture on a clone of answersTemplate, with a copy of what
+// the template's Fill wrote (answersWritten) that is t's alone: the edit steps change the copy as
+// they write the clone, and a test that runs beside t sees neither.
+//
+// A test copies what the Fill wrote rather than building it again without writing it: such a build
+// would still encode the arguments of the fixture's 13,000 statements in each test, and would need
+// ids that come out the same in each build, where the fixture's are random (uuid.NewString).
+func newAnswersFixture(t *testing.T) *answersFixture {
+	t.Helper()
+	// OpenFilled first: where TestMain made no template, it runs the Fill, which sets
+	// answersWritten.
+	database := storetest.OpenFilled(t, answersTemplate)
+	return &answersFixture{t: t, database: database, batch: &pgx.Batch{}, answersValues: answersWritten.copy()}
+}
+
+// copy is a copy of v that shares nothing the edit steps change: each item, with the ask whose
+// thread a comment is in pointing at the copy of that ask; the sequences, which each event takes
+// the next of; and the events, which each event appends to. What an item points to (an ask's
+// answer, a comment's anchor) is shared, since the fixture's writes replace those pointers and
+// never write through them.
+func (v answersValues) copy() answersValues {
+	asks := map[*fixtureAsk]*fixtureAsk{}
+	ask := func(original *fixtureAsk) *fixtureAsk {
+		if original == nil {
+			return nil
+		}
+		if copied, ok := asks[original]; ok {
+			return copied
+		}
+		copied := *original
+		asks[original] = &copied
+		return &copied
+	}
+	comment := func(original *writtenComment) *writtenComment {
+		copied := *original
+		copied.ask = ask(original.ask)
+		return &copied
+	}
+	message := func(original *writtenMessage) *writtenMessage {
+		copied := *original
+		return &copied
+	}
+	return answersValues{
+		now:    v.now,
+		seqs:   maps.Clone(v.seqs),
+		events: slices.Clone(v.events),
+		items: answersItems{
+			answered:        ask(v.items.answered),
+			inAnswersThread: comment(v.items.inAnswersThread),
+			declined:        ask(v.items.declined),
+			open:            ask(v.items.open),
+			inOpenThread:    comment(v.items.inOpenThread),
+			onIssue:         comment(v.items.onIssue),
+			mention:         comment(v.items.mention),
+			onIssueMessage:  message(v.items.onIssueMessage),
+			aimed:           message(v.items.aimed),
+		},
+	}
+}
+
+// writeAnswersFixture is answersTemplate's Fill: it writes the fixture through database, then
+// vacuums and analyzes it, so the planner costs each read of a clone over the fixture's
+// statistics, which the clone copies with the template's files. It keeps what it wrote in
+// answersWritten.
 //
 // Besides the items each session's list holds (writeItems), it writes three sets of events that
 // the read must not read (writeNoise): events delivered to the reader in the window that are an
 // agent's or of another type (issue.updated); 4,000 person events of the five types in the
 // window, delivered to 20 other sessions and never to the reader; and 300 person events of the
 // five types, 4 to 6 days old, delivered to the reader.
-func newAnswersFixture(t *testing.T) *answersFixture {
-	t.Helper()
-	f := &answersFixture{t: t, database: storetest.Open(t), batch: &pgx.Batch{}, seqs: map[string]int{}}
-	ctx := context.Background()
+func writeAnswersFixture(ctx context.Context, database *store.Store) (err error) {
+	// The fixture's writes fail through fillFailer, whose panic is the Fill's error.
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		failure, ok := recovered.(fillFailure)
+		if !ok {
+			panic(recovered)
+		}
+		err = failure.err
+	}()
+	f := &answersFixture{t: fillFailer{}, database: database, batch: &pgx.Batch{}, answersValues: answersValues{seqs: map[string]int{}}}
 	if err := f.database.Pool.QueryRow(ctx, `select now()`).Scan(&f.now); err != nil {
-		t.Fatalf("read the fixture's now: %v", err)
+		f.t.Fatalf("read the fixture's now: %v", err)
 	}
 	f.exec(`insert into projects (key, name, default_assignee) values ('AN', 'Answers', 'alice')`)
 	// AN-1 is routed to the reader; AN-2 is routed to a role and claimed by the reader. AN-3
@@ -121,12 +214,35 @@ func newAnswersFixture(t *testing.T) *answersFixture {
 	f.writeNoise()
 	f.send()
 	if _, err := f.database.Pool.Exec(ctx, `vacuum (analyze)`); err != nil {
-		t.Fatalf("vacuum and analyze the fixture: %v", err)
+		f.t.Fatalf("vacuum and analyze the fixture: %v", err)
 	}
-	return f
+	answersWritten = f.answersValues
+	return nil
 }
 
-// answersItems are items the fixture delivered to the reader that the edit steps change.
+// failer is what the fixture's writes fail through, and stop at: the test's t where a test writes
+// (the edit steps), and fillFailer where the template's Fill writes, which has no test.
+type failer interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
+// fillFailer is the failer of the template's Fill (writeAnswersFixture). Its Fatalf panics with a
+// fillFailure, which the Fill recovers and answers as its error, so the write stops at its first
+// failure as a test's Fatalf stops it.
+type fillFailer struct{}
+
+func (fillFailer) Helper() {}
+
+func (fillFailer) Fatalf(format string, args ...any) {
+	panic(fillFailure{err: fmt.Errorf(format, args...)})
+}
+
+// fillFailure is the panic of fillFailer's Fatalf.
+type fillFailure struct{ err error }
+
+// answersItems are items the fixture delivered to the reader that the edit steps change. A test
+// takes a copy of each (answersValues.copy).
 type answersItems struct {
 	// answered is the reader's ask that a person answered, and inAnswersThread a person's reply
 	// in its thread.
@@ -280,7 +396,7 @@ func (f *answersFixture) exec(statement string, arguments ...any) {
 }
 
 // send sends the fixture's batch, every statement in the one transaction that a pipeline runs
-// in, and fails the test at the first statement that fails.
+// in, and fails the test, or the template's Fill (failer), at the first statement that fails.
 func (f *answersFixture) send() {
 	f.t.Helper()
 	queued := f.batch.QueuedQueries

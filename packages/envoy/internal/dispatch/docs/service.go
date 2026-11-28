@@ -1673,6 +1673,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// production, so a test whose service runs on a fake fires the settlement by moving the fake
 	// past delay, and reads the deadline it was armed for (Armed).
 	owner, record := weak.Make(s), weak.Make(state)
+	due := s.clock.Now().Add(delay)
 	timer := s.clock.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
@@ -1694,7 +1695,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 		}
 		s.settleRoom(room, generation)
 	})
-	state.settle = timer
+	state.settle, state.settleDue = timer, due
 	s.attachSettleTimer(timerID, timer)
 }
 

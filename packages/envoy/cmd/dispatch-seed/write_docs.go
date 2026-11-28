@@ -211,6 +211,15 @@ func renderVersion(markdown string) (string, []model.ArtifactBlock, string, erro
 	return rendered, blocks, rows[firstTable][1].ID, nil
 }
 
+// The markdown size bands versionBytes draws a version's size in, by the names the report counts
+// them under (run.bands).
+const (
+	band1To5KB     = "1-5 KB"
+	band5To10KB    = "5-10 KB"
+	band10To20KB   = "10-20 KB"
+	band100To660KB = "100-660 KB"
+)
+
 // versionBytes is how much markdown version number of document holds, and the band the report
 // counts it in. Only the latest version of a large document is large: every other version of it
 // is an ordinary one. The other reading is about 4 GB of markdown, which does not fit the disk
@@ -218,14 +227,14 @@ func renderVersion(markdown string) (string, []model.ArtifactBlock, string, erro
 // their latest version").
 func (r *seedRun) versionBytes(document documentPlan, number int) (int, string) {
 	if document.Large && number == document.Versions {
-		return largeBandMin + r.random.IntN(largeBandMax-largeBandMin), "100-660 KB"
+		return largeBandMin + r.random.IntN(largeBandMax-largeBandMin), band100To660KB
 	}
 	switch draw := r.random.Float64(); {
 	case draw < 0.5:
-		return versionBandMin + r.random.IntN(4<<10), "1-5 KB"
+		return versionBandMin + r.random.IntN(4<<10), band1To5KB
 	case draw < 0.8:
-		return 5<<10 + r.random.IntN(5<<10), "5-10 KB"
+		return 5<<10 + r.random.IntN(5<<10), band5To10KB
 	default:
-		return 10<<10 + r.random.IntN(10<<10), "10-20 KB"
+		return 10<<10 + r.random.IntN(10<<10), band10To20KB
 	}
 }

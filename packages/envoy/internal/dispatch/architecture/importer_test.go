@@ -24,6 +24,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -348,21 +349,32 @@ func writeStatus(w http.ResponseWriter, status int) {
 }
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
-// storetest.Main.
+// storetest.MainEager.
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.MainEager(m))
 }
+
+// fixtureKeyPEM is the PEM of the one App key every client this package's tests build signs with,
+// generated once per test binary on first use: generating a 2048-bit key costs 70-200 ms, more on
+// a loaded runner, and no test here needs a key of its own. A client only reads the key, and
+// rsa.PrivateKey signs safely from many goroutines, so parallel tests share it.
+var fixtureKeyPEM = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
+})
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it.
 func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	pemText, err := fixtureKeyPEM()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base)
 	if err != nil {
@@ -868,11 +880,27 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 	}
 }
 
-// Two server processes (two Importer instances, no shared mutex) syncing one
-// project while its head keeps moving: each projection takes the source's
-// row lock first, so delete+reinsert never deadlocks in Postgres, every sync
-// succeeds, and the projection is always one whole snapshot's worth of
-// components.
+// Two server processes (two Importer instances, no shared mutex) syncing one project while its
+// head keeps moving, made to meet at the lock of the project's source rows: the two projections
+// serialize on that lock, so neither fails; the one that finds the other committed first is
+// superseded and retried; and the source is left with one whole snapshot's worth of components.
+//
+// The meeting is forced rather than left to chance. Process A's projection is held at the point
+// right after it took the lock (afterSourcesLocked), and process B's sync starts only then, so
+// B's projection comes to the lock while A holds it. The test waits for whichever comes first of
+// the two things B can then do: queue behind A's lock, which is what the lock is for, or pass the
+// lock and reach the same point itself, which it can only do when the projection takes no lock.
+// Then it lets both go on. A projection that reaches that point while A is held waits there for
+// A to be let go: one that went on alone would write and commit its whole projection while A
+// had written nothing, and A, let go after it, would delete those components and insert its own
+// without a conflict, so a missing lock would pass.
+//
+// With the lock, B waits, A commits, and B finds the row written since its load, is superseded,
+// and retries from the load: both syncs succeed and no failure is dropped. Without it, both
+// projections write the same component ids at once, and the second to insert one fails on
+// components_pkey. That failure would not show in either sync's answer: recordFailure finds the
+// row superseded by the other's commit and drops it, and the flight retries. So both importers
+// count each failure recordFailure drops (afterFailureSuperseded), and the test wants none.
 func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -897,27 +925,58 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	processes := []*Importer{
-		NewImporter(database, client, events.NewBroker()),
-		NewImporter(database, client, events.NewBroker()),
+	a, b := NewImporter(database, client, events.NewBroker()), NewImporter(database, client, events.NewBroker())
+	// Cleanups run last registered first, and the pool's is storetest.Open's above, so these end
+	// the flights before the pool closes under them.
+	t.Cleanup(a.Close)
+	t.Cleanup(b.Close)
+	held := make(chan pgx.Tx, 1)
+	release := make(chan struct{})
+	letGo := sync.OnceFunc(func() { close(release) })
+	// Registered after Close, so a test that fails while a projection is held lets it go before
+	// Close waits for the flights.
+	t.Cleanup(letGo)
+	// Set before any sync runs, since every sync of either process reads them.
+	var dropped atomic.Int64
+	var locks atomic.Int32
+	for _, process := range []*Importer{a, b} {
+		process.afterFailureSuperseded = func() { dropped.Add(1) }
+		// The first projection to get here is A's, since B's sync starts only once A's is held:
+		// it hands the test its transaction. It and any projection that gets here before the test
+		// lets A go wait for that; every later one, a retry among them, goes straight on.
+		process.afterSourcesLocked = func(tx pgx.Tx) {
+			if locks.Add(1) == 1 {
+				held <- tx
+			}
+			<-release
+		}
 	}
 
-	for round := range 30 {
-		var wait sync.WaitGroup
-		failures := make([]error, len(processes))
-		for n, process := range processes {
-			wait.Add(1)
-			go func() {
-				defer wait.Done()
-				_, failures[n] = process.Sync(ctx, "CORE", archRepo)
-			}()
+	answeredA := syncInBackground(a)
+	holder := testwait.Receive(t, "process A's projection to hold the lock of the source rows", held)
+	answeredB := syncInBackground(b)
+	met := testwait.Until(t, "process B's projection to queue behind A's lock of the source rows, or to pass that lock (what was last read)", func() (string, bool) {
+		select {
+		case answer := <-answeredB:
+			t.Fatalf("process B's sync answered %+v (err %v) while A held the lock of the source rows; want it queued behind that lock or held past it",
+				answer.source, answer.err)
+		default:
 		}
-		wait.Wait()
-		for n, err := range failures {
-			if err != nil {
-				t.Fatalf("round %d process %d: %v", round, n, err)
-			}
+		if locks.Load() >= 2 {
+			return "B passed the lock while A held it", true
 		}
+		waiters, err := storetest.LockWaiters(ctx, holder)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%d backends queued behind A's lock", waiters), waiters >= 1
+	})
+	t.Logf("as A held the lock of the source rows: %s", met)
+	letGo()
+	answerA := waitForSync(t, answeredA, "process A's sync")
+	answerB := waitForSync(t, answeredB, "process B's sync")
+	if answerA.err != nil || answerB.err != nil {
+		t.Fatalf("process A answered err %v, process B err %v; want both syncs to succeed", answerA.err, answerB.err)
 	}
 
 	var components, snapshotsInUse int
@@ -934,6 +993,9 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 	if components != 60 || snapshotsInUse != 1 || lastCommit != projectedCommit {
 		t.Fatalf("components=%d snapshots in use=%d last_commit=%s projected=%s; want 60 components from one snapshot at last_commit",
 			components, snapshotsInUse, lastCommit, projectedCommit)
+	}
+	if got := dropped.Load(); got != 0 {
+		t.Fatalf("%d failures were dropped as superseded: a projection failed under a sync the other process committed, which the source row's lock is there to prevent; want none", got)
 	}
 }
 
@@ -1448,17 +1510,34 @@ func TestComponentFactsRecordWhenAComponentWasMadeAndChanged(t *testing.T) {
 // lands the deadline on the row (and emits one sync_failed), so the Settings
 // row and the ticker's next tick both see why nothing imported. Only the
 // process stopping suppresses the record.
+//
+// The deadline runs on the importer's clock (Importer.Clock), a fake of each half's own that the
+// test moves past syncTimeout only once the sync is held at its blob read and the flight has armed
+// the deadline. A deadline of real time could pass while the sync still loads its source row, as
+// it did on a loaded machine: the load then fails with the deadline, and the sync returns it
+// unrecorded, since no row was loaded to record it on. Held at the blob read, the sync has its
+// row, so the deadline it meets there is the one this test is about.
 func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
-	// Not parallel: it writes the package variable syncTimeout, which every sync of the parallel
-	// tests reads; and it holds the cancelled caller's answer to a second of the cancel.
-	previous := syncTimeout
-	syncTimeout = 300 * time.Millisecond
-	t.Cleanup(func() { syncTimeout = previous })
+	t.Parallel()
+	// It runs beside the package's other tests: syncTimeout keeps production's value, each half's
+	// deadline runs on a fake clock of its own and each database is its own, so it writes nothing
+	// another test reads. Its one bound of wall time, the cancelled caller's answer within a second
+	// of the cancel, measures an answer that syncAfter gives from a select on the caller's own
+	// context, with no query and no GitHub read in it, so the tests running beside it do not delay
+	// that answer by anything near a second.
+	start := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
 
 	fake := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer, database := newImporterFixture(t, fake)
+	deadlines := clocktest.New(start)
+	importer.Clock = deadlines
 
-	source, err := importer.Sync(context.Background(), "CORE", archRepo)
+	answered := syncInBackground(importer)
+	fake.blobs.waitHeld(t)
+	deadlines.AwaitArmedAt(t, "the flight's deadline, syncTimeout after it began", start.Add(syncTimeout))
+	deadlines.Advance(syncTimeout)
+	answer := waitForSync(t, answered, "the sync held past its deadline")
+	source, err := answer.source, answer.err
 	if err == nil || !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("held blob: err=%v, want the deadline", err)
 	}
@@ -1470,34 +1549,48 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 	}
 
 	// A caller that goes away is answered at once with its own cancellation,
-	// and the flight it left behind still records the deadline it meets.
+	// and the flight it left behind still records the deadline it meets. The
+	// caller hangs up once its flight is held at the blob read, and its answer
+	// is waited for before the fake moves, so the flight's deadline cannot have
+	// ended the flight and answered the caller in its place.
 	fake2 := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer2, database2 := newImporterFixture(t, fake2)
+	deadlines2 := clocktest.New(start)
+	importer2.Clock = deadlines2
 	ctx, cancel := context.WithCancel(context.Background())
-	cancelled := make(chan time.Time, 1)
+	// returned is written before the answer is sent and read after it is received, so the channel
+	// orders the two.
+	var returned time.Time
+	answered2 := make(chan syncAnswer, 1)
 	go func() {
-		time.Sleep(100 * time.Millisecond)
-		cancel()
-		cancelled <- time.Now()
+		source, err := importer2.Sync(ctx, "CORE", archRepo)
+		returned = time.Now()
+		answered2 <- syncAnswer{source: source, err: err}
 	}()
-	_, err = importer2.Sync(ctx, "CORE", archRepo)
-	returned := time.Now()
+	fake2.blobs.waitHeld(t)
+	cancel()
+	cancelled := time.Now()
+	err = waitForSync(t, answered2, "the cancelled caller").err
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled caller: err=%v, want its own cancellation", err)
 	}
-	if waited := returned.Sub(<-cancelled); waited > time.Second {
+	if waited := returned.Sub(cancelled); waited > time.Second {
 		t.Fatalf("the cancelled caller returned %v after the cancel; want it answered at once", waited)
 	}
 	// Close would cancel the flight, which is the one thing that suppresses
 	// the record, so wait for the record first and let Close wait the flight
-	// out before reading what it wrote.
-	var lastError *string
-	for until := time.Now().Add(10 * time.Second); lastError == nil && time.Now().Before(until); time.Sleep(10 * time.Millisecond) {
+	// out before reading what it wrote. The flight is still held at its blob
+	// read, and meets its deadline once the fake passes it.
+	deadlines2.AwaitArmedAt(t, "the abandoned flight's deadline, syncTimeout after it began", start.Add(syncTimeout))
+	deadlines2.Advance(syncTimeout)
+	lastError := testwait.Until(t, "the abandoned flight to record the deadline it met", func() (*string, bool) {
+		var recorded *string
 		if err := database2.Pool.QueryRow(context.Background(),
-			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {
+			`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&recorded); err != nil {
 			t.Fatalf("read row: %v", err)
 		}
-	}
+		return recorded, recorded != nil
+	})
 	importer2.Close()
 	if err := database2.Pool.QueryRow(context.Background(),
 		`select last_error from architecture_sources where project_key = 'CORE'`).Scan(&lastError); err != nil {

@@ -9,11 +9,13 @@
 package architecture
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -224,8 +226,8 @@ func (i *Importer) flight(ctx context.Context, project, repo string) (*syncFligh
 	stop := context.AfterFunc(i.owner, abandon)
 	defer stop()
 	// The deadline is the flight's own, counted from when it began rather than
-	// from when its first caller arrived.
-	syncCtx, cancel := context.WithTimeout(base, syncTimeout)
+	// from when its first caller arrived, on the importer's clock (Importer.Clock).
+	syncCtx, cancel := cmp.Or[clock.Clock](i.Clock, clock.Real()).WithTimeout(base, syncTimeout)
 	defer cancel()
 	// Each try runs in a held scope (githubreads.Hold) of the attempt syncCtx carries when a
 	// leased import started the flight, since syncCtx keeps the starter's values: a try another

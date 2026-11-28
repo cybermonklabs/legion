@@ -20,6 +20,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -106,6 +107,12 @@ type Importer struct {
 	// runs records nothing. Nil records nothing.
 	GitHubReads githubreads.Recorder
 
+	// Clock is the clock each flight's deadline (syncTimeout) runs on. Nil, which every
+	// deployment leaves it, is clock.Real(); a test hands a clocktest.Fake and moves it past the
+	// deadline once the flight has armed it, rather than waiting the deadline out on the wall
+	// clock.
+	Clock clock.Clock
+
 	// owner outlives every caller: the process stopping (Close) is the only
 	// thing that cancels a flight, since a flight runs on behalf of callers
 	// that have since left.
@@ -143,6 +150,27 @@ type Importer struct {
 	afterFlightTaken func()
 	afterSyncRefusal func()
 	afterCalledAt    func()
+
+	// afterFailureSuperseded runs in recordFailure each time it finds the source row superseded
+	// (another write committed since this sync's load) and so drops the import failure it was
+	// handed, whatever failed (a GitHub read, the model or the projection), answering
+	// errSuperseded in its place. The flight then retries, and a retry that succeeds leaves that
+	// failure on no row, in no event and in no caller's answer: this is the one place it is seen.
+	// Nil, which every deployment leaves it, observes nothing. The package's test of two
+	// processes syncing one source counts it, because a projection that failed under the other
+	// process's sync, which the source row's lock is there to prevent, would otherwise pass as a
+	// retry.
+	afterFailureSuperseded func()
+
+	// afterSourcesLocked runs in project each time lockProjectSources has returned without an
+	// error, before the projection reads or writes anything else, and is handed the projection's
+	// transaction, which then holds the row lock of every source of the project. Nil, which every
+	// deployment leaves it, observes nothing. The package's test of two processes syncing one
+	// source holds the first process here, with that lock held, and reads through the transaction
+	// whether the second process queues behind it (storetest.LockWaiters), so the two projections
+	// meet at the lock every time rather than by chance. The transaction is the hook's to read
+	// only until it returns: the projection goes on with it then.
+	afterSourcesLocked func(tx pgx.Tx)
 }
 
 // NewImporter wires the importer to the database, the GitHub App client (nil
@@ -657,6 +685,9 @@ func (i *Importer) project(
 	if err != nil {
 		return model.ArchitectureSource{}, err
 	}
+	if i.afterSourcesLocked != nil {
+		i.afterSourcesLocked(tx)
+	}
 	if moved {
 		return i.abortMoved(ctx, tx, source.ArchitectureSource)
 	}
@@ -899,6 +930,9 @@ func (i *Importer) recordFailure(ctx context.Context, source loadedSource, failu
 	}
 	if locked.superseded {
 		// Another write committed since this sync's load: a failure met before it is stale.
+		if i.afterFailureSuperseded != nil {
+			i.afterFailureSuperseded()
+		}
 		return model.ArchitectureSource{}, errSuperseded
 	}
 

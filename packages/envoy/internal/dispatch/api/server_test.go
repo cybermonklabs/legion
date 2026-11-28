@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -373,6 +374,44 @@ func newTestServer(t testing.TB, options testServerOptions) (http.Handler, *stor
 // delivery hub and open sockets a socket test reads.
 func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Handler, *store.Store, Deps, *server) {
 	t.Helper()
+	return buildTestServer(t, options, t.Cleanup)
+}
+
+// newStoppableTestServer is newRegisteredTestServer for a server that has to stop before its test
+// ends: the one a filled template's Fill stands up (storetest.Filled), whose template must hold no
+// session of the server's once Fill returns, long before t's cleanups run. It runs on a lifetime
+// of its own, ended by stop, which then runs the steps newRegisteredTestServer leaves to t's
+// cleanups, in the order those run: the wait for the server's background work
+// (waitBackgroundOf), its removal from the quiet wait's registry and its document service's
+// Shutdown. stop runs them once, however often it is called. It closes no pool: the server runs on
+// options.store, whose owner closes it once stop has returned.
+func newStoppableTestServer(t testing.TB, options testServerOptions) (handler http.Handler, deps Deps, stop func()) {
+	t.Helper()
+	if options.lifetime == nil {
+		options.lifetime = t.Context()
+	}
+	lifetime, end := context.WithCancel(options.lifetime)
+	options.lifetime = lifetime
+	var steps []func()
+	handler, _, deps, _ = buildTestServer(t, options, func(step func()) { steps = append(steps, step) })
+	// A sync.Once, not sync.OnceFunc: a step that ends its test (testwait's Fatalf at the deadline)
+	// leaves through runtime.Goexit, which sync.OnceFunc turns into panic(nil).
+	var once sync.Once
+	return handler, deps, func() {
+		once.Do(func() {
+			end()
+			for _, step := range slices.Backward(steps) {
+				step()
+			}
+		})
+	}
+}
+
+// buildTestServer builds the server newRegisteredTestServer and newStoppableTestServer answer,
+// handing each step that has to run once the server is done to atEnd, in the order they register:
+// t.Cleanup for newRegisteredTestServer, which runs them last first.
+func buildTestServer(t testing.TB, options testServerOptions, atEnd func(func())) (http.Handler, *store.Store, Deps, *server) {
+	t.Helper()
 	settle := options.settle
 	if settle == 0 {
 		settle = 20 * time.Millisecond
@@ -406,7 +445,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Store: database, Persistence: documentPersistence, Events: broker, Settle: settle, Identity: socketIdentity,
 		Origins: origins,
 	})
-	t.Cleanup(func() {
+	atEnd(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
 		}
@@ -492,11 +531,14 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.mentionLookupBound = options.mentionLookupBound
 	served.afterIssueLoad = options.afterIssueLoad
 	served.withRelatedBound(options.relatedBound)
+	// The quiet wait (awaitQuietDatabase) finds the server by its database's name and waits out its
+	// background work and its document service's; registerQuietServerUntil counts its read workers too.
+	registerQuietServerUntil(atEnd, database, served, documentService)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
 	// listener. A broadcast's deliveries and a keyed handler outlive the client that started them,
 	// so a test that did not wait for them would close its database under a worker still writing.
-	t.Cleanup(func() { waitBackgroundOf(t, served) })
+	atEnd(func() { waitBackgroundOf(t, served) })
 	return mux, database, deps, served
 }
 
@@ -2523,45 +2565,220 @@ func TestUnauthenticatedLargeIssueBodyIsRejectedBeforeDecoding(t *testing.T) {
 // without -race both call them: the xid-window tests (built without -race only), and the
 // read-only results and drive tests (built with it too).
 
-// awaitSettledDocuments waits until no document owes a settlement and no backend has held an xid
-// for a quiet spell, so a test that needed settlement to run first measures its request alone.
+// awaitSettledDocuments waits until no document owes a settlement, nothing the servers on database
+// run past their requests is left and no other backend holds an xid (awaitQuietDatabase), so a
+// test that needed settlement to run first measures its request alone.
 func awaitSettledDocuments(t *testing.T, database *store.Store) {
 	t.Helper()
 	awaitQuietDatabase(t, database, true)
 }
 
-// awaitQuietDatabase waits until no backend has held an xid for a quiet spell and, where settled
-// asks it, no document owes a settlement either. A document of a closed issue owes its settlement
-// until the issue reopens - a closed issue settles nothing, and the reopen arms what it owes
-// (docs' settlement) - so a request made on a closed issue waits for the quiet alone. The quiet
-// spell is what the measurement needs (no background writer beside it), not a bound: the wait ends
-// only once the database has held quiet that long, and its one bound is the test binary's deadline
-// (testwait.Until), whose failure says whether the last read found the database busy.
+// awaitQuietDatabase waits until no writer runs beside a measurement on database: nothing the test
+// servers on it run past their requests is left, no other backend of it holds an xid and, where
+// settled asks it, no document owes a settlement either. A document of a closed issue owes its
+// settlement until the issue reopens - a closed issue settles nothing, and the reopen arms what it
+// owes (docs' settlement) - so a request made on a closed issue waits for the rest alone.
+//
+// It waits on that work itself, not on a spell of quiet. Each read (quietBusy) asks every server
+// registered on database (registerQuietServer), in this order: whether its boot mark is still
+// being taken; whether it counts detached work or a read worker running (backgroundWork); whether
+// its mention sender holds a send (mentionSender.idle); then, joining each, whether a refresh of a
+// project's statistics runs (termStats) and whether its document service has work
+// (docs.Service.IdleForTest). It then reads the database once: another backend's xid and, where
+// settled, a pending settlement. A read that finds work says which, and the wait reads again at
+// testwait's pace, so a writer that starts while it waits is waited for too. Its one bound is the
+// test binary's deadline (testwait.Until), whose failure names what the last read found busy. A
+// database no server is registered on fails at once, naming it: the wait would know nothing of
+// the work that runs on it.
 func awaitQuietDatabase(t *testing.T, database *store.Store, settled bool) {
 	t.Helper()
-	const quiet = 300 * time.Millisecond
-	what := "the database to fall quiet (busy at the last read)"
-	if settled {
-		what = "documents to finish settling and the database to fall quiet (busy at the last read)"
+	awaitQuiet(t, database, settled, nil)
+}
+
+// quietRead is what a read of the quiet wait tells the one hearing it (awaitQuiet): joining names a
+// writer the read is about to join, before a join that blocks for as long as that writer runs, and
+// busy is what the read found busy, told as the read ends and empty for a read that found nothing.
+type quietRead struct {
+	joining string
+	busy    string
+}
+
+// awaitQuiet is awaitQuietDatabase on any testing.TB, telling heard, when it is set, of each join
+// a read is about to block on and of each read's end: the quiet wait's state table
+// (quiet_wait_test.go) reads that the wait found its held writer busy through it.
+func awaitQuiet(t testing.TB, database *store.Store, settled bool, heard func(quietRead)) {
+	t.Helper()
+	name := database.Pool.Config().ConnConfig.Database
+	if len(quietServersOn(name)) == 0 {
+		t.Fatalf("awaitQuietDatabase: no test server is registered on database %s, so nothing tells the wait what runs there past a request (newRegisteredTestServer and newRepairFixtureOn register theirs)", name)
 	}
-	var calm time.Time
-	testwait.Until(t, what, func() (bool, bool) {
-		var busy bool
-		if err := database.Pool.QueryRow(context.Background(), `
-			select ($1::boolean and exists (select 1 from doc_settlements_pending))
-			    or exists (select 1 from pg_stat_activity
-			               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid())
-		`, settled).Scan(&busy); err != nil {
-			t.Fatalf("read settlement state: %v", err)
-		}
-		switch {
-		case busy:
-			calm = time.Time{}
-		case calm.IsZero():
-			calm = time.Now()
-		case time.Since(calm) >= quiet:
-			return busy, true
-		}
-		return busy, false
+	if heard == nil {
+		heard = func(quietRead) {}
+	}
+	ctx := testwait.Context(t)
+	what := "the work the servers on database " + name + " run past their requests to end and no other backend to hold an xid (busy at the last read)"
+	if settled {
+		what = "every document to settle, " + what
+	}
+	testwait.Until(t, what, func() (string, bool) {
+		busy := quietBusy(t, ctx, database, name, settled, heard)
+		heard(quietRead{busy: busy})
+		return busy, busy == ""
 	})
+}
+
+// quietBusy is one read of the quiet wait (awaitQuietDatabase) on database, whose name is name:
+// what it found busy, the first in the wait's order, or "" when it found nothing. A join of a
+// statistics refresh that found one running reads busy too, once that refresh has ended, so the
+// next read asks every server again.
+func quietBusy(t testing.TB, ctx context.Context, database *store.Store, name string, settled bool, heard func(quietRead)) string {
+	t.Helper()
+	servers := quietServersOn(name)
+	for index, quiet := range servers {
+		served, at := quiet.served, fmt.Sprintf("server %d", index+1)
+		if mark := served.bootMark; mark != nil {
+			select {
+			case <-mark:
+			default:
+				return at + ": its boot mark is still being taken"
+			}
+		}
+		if workRunning(&served.detached) {
+			return at + ": detached work is running"
+		}
+		if workRunning(served.readWorkers) {
+			return at + ": a read worker is running"
+		}
+		if !served.mentions.idle() {
+			return at + ": the mention sender holds a send"
+		}
+	}
+	projects := quietProjects(t, database)
+	joined := map[*docs.Service]bool{}
+	for index, quiet := range servers {
+		served, at := quiet.served, fmt.Sprintf("server %d", index+1)
+		for _, project := range projects {
+			refresh := fmt.Sprintf("%s: the refresh of project %s's statistics", at, project)
+			heard(quietRead{joining: refresh})
+			select {
+			case result := <-served.termStats.DoChan(project, func() (any, error) { return nil, nil }):
+				if result.Shared {
+					return refresh + " was running"
+				}
+			case <-ctx.Done():
+				return refresh + " is running: " + ctx.Err().Error()
+			}
+		}
+		if quiet.documents == nil || joined[quiet.documents] {
+			continue
+		}
+		joined[quiet.documents] = true
+		heard(quietRead{joining: at + ": its document service's work"})
+		if err := quiet.documents.IdleForTest(ctx); err != nil {
+			return at + ": its document service: " + err.Error()
+		}
+	}
+	var xid, owed bool
+	if err := database.Pool.QueryRow(context.Background(), `
+		select exists (select 1 from pg_stat_activity
+		               where datname = current_database() and backend_xid is not null and pid <> pg_backend_pid()),
+		       $1::boolean and exists (select 1 from doc_settlements_pending)
+	`, settled).Scan(&xid, &owed); err != nil {
+		t.Fatalf("read whether another backend holds an xid or a document owes its settlement: %v", err)
+	}
+	switch {
+	case xid:
+		return "another backend of the database holds an xid"
+	case owed:
+		return "a document owes its settlement"
+	}
+	return ""
+}
+
+// quietProjects reads every project key of database: the keys a statistics refresh runs under
+// (ensureSearchTermStats), which the quiet wait joins, read as the statistics pass reads them
+// (searchTermStatsProjects).
+func quietProjects(t testing.TB, database *store.Store) []string {
+	t.Helper()
+	projects, err := searchTermStatsProjects(context.Background(), database.Pool)
+	if err != nil {
+		t.Fatalf("read the projects whose statistics may be refreshing: %v", err)
+	}
+	return projects
+}
+
+// workRunning reports whether work counts work running now, without waiting for it; a nil counter,
+// a server's read workers where nothing counts them, counts none.
+func workRunning(work *backgroundWork) bool {
+	if work == nil {
+		return false
+	}
+	work.mu.Lock()
+	defer work.mu.Unlock()
+	return work.running > 0
+}
+
+// idle reports whether the sender holds no send: none queued, parked or in flight (held, from
+// which a send leaves only once its try has returned, claimedDuring). While it holds none its
+// claims refresh writes nothing either (refreshHeldClaims). The quiet wait reads it; production
+// never asks.
+func (m *mentionSender) idle() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.held) == 0
+}
+
+// quietServer is a server the quiet wait waits out, with the document service it serves, nil for
+// a server with none of its own.
+type quietServer struct {
+	served    *server
+	documents *docs.Service
+}
+
+// quietServers is every server an API test stood up through newRegisteredTestServer or
+// newRepairFixtureOn and whose test has not ended, and every server newStoppableTestServer stood up
+// and no stop has stopped, by the name of the database it runs on: the servers awaitQuietDatabase
+// waits out. A traced and an untraced store of one database share the name, so a wait given either
+// finds the same servers.
+var quietServers = struct {
+	sync.Mutex
+	byDatabase map[string][]*quietServer
+}{byDatabase: map[string][]*quietServer{}}
+
+// registerQuietServer records served, and documents, the document service it serves, as running
+// on database until t ends (registerQuietServerUntil).
+func registerQuietServer(t testing.TB, database *store.Store, served *server, documents *docs.Service) {
+	registerQuietServerUntil(t.Cleanup, database, served, documents)
+}
+
+// registerQuietServerUntil records served, and documents, the document service it serves, as
+// running on database until the step it hands atEnd runs. It also counts the read workers served
+// starts past their requests (readWorkers, goReadWorker), which production leaves uncounted, so the
+// wait sees them; a test that sets a counter of its own afterwards, as the drive rig does, replaces
+// this one, and the wait reads whichever the field holds when it reads.
+func registerQuietServerUntil(atEnd func(func()), database *store.Store, served *server, documents *docs.Service) {
+	served.readWorkers = &backgroundWork{}
+	name := database.Pool.Config().ConnConfig.Database
+	entry := &quietServer{served: served, documents: documents}
+	quietServers.Lock()
+	quietServers.byDatabase[name] = append(quietServers.byDatabase[name], entry)
+	quietServers.Unlock()
+	atEnd(func() {
+		quietServers.Lock()
+		defer quietServers.Unlock()
+		kept := slices.DeleteFunc(quietServers.byDatabase[name], func(registered *quietServer) bool { return registered == entry })
+		if len(kept) == 0 {
+			delete(quietServers.byDatabase, name)
+			return
+		}
+		quietServers.byDatabase[name] = kept
+	})
+}
+
+// quietServersOn is a copy of the servers registered on the database named name, in the order they
+// were registered.
+func quietServersOn(name string) []*quietServer {
+	quietServers.Lock()
+	defer quietServers.Unlock()
+	return slices.Clone(quietServers.byDatabase[name])
 }

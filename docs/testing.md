@@ -894,9 +894,9 @@ statement, or says on its first line, in a `// Not parallel:` comment, why it ca
 
 The ten of them whose tests open a database (architecture, duty, events, files, processes,
 redeliver, routes, sessionanswers, startup and pglisten) run 4 at once: each `TestMain` calls
-`storetest.SetDefaultParallel` before `storetest.Main` or `storetest.Run`, and
-`storetest.DefaultParallel` says why it is 4. Each test has a database of its own
-(`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
+`storetest.SetDefaultParallel` before `storetest.Main`, `storetest.MainEager` or
+`storetest.Run`, and `storetest.DefaultParallel` says why it is 4. Each test has a database of its
+own (`storetest.Open`), a NATS account of its own (`testnats`, in redeliver), or nothing it shares.
 
 `internal/dispatch/refs` follows the same rule and runs 4 at once through the same
 `storetest.SetDefaultParallel`. Five of its tests stay serial, each with its comment: the grammar
@@ -1160,6 +1160,23 @@ version. A run keeps one template for each version its tests ask for, each built
 template below it, and the package's `TestMain` drops them all when the run ends. A test that
 moves its clone further forward applies only the migrations past its version (`migrateAbove`),
 not the whole history again.
+
+`storetest` makes each template once per test binary, and under `storetest.Main` the first test
+that asks for one pays for it: Open's took 3.8 to 8.5 s of that one test's time in CI's envoy-go job.
+A package whose `TestMain` is `storetest.MainEager(m)` (or `storetest.RunEager` around another
+harness's Main) has Open's template made before its first test runs, and writes one line to stderr
+for it (`storetest: template "<key>" made in <d>`).
+The time moves from that test to `TestMain` and is not saved: it stays in the package's time, so
+a run of one test by name in such a package pays for the template even where that test opens no
+database.
+`go test -list` makes no template, and a template that cannot be made fails each test that asks
+for it, with the error, as under `Main`.
+A package whose tests each need the same rows names a `storetest.Filled`, a key and a `Fill`: its
+template is a file copy of Open's, as the store package's per-version templates are copies of the
+nearest one below them, into which `Fill` writes the rows once before the template is closed to
+connections, and each test that calls `OpenFilled` gets a clone of it, statistics included.
+`MainEager(m, filled...)` makes each filled template its `TestMain` names before the tests too;
+any other is made by the first test that asks for it.
 
 A pgx pool a daemon test opens holds four connections, unless `LEGION_TEST_PG_DSN` sets a size of
 its own (`pool_max_conns`), which it keeps. pgx sizes a pool with no size of its own at the greater

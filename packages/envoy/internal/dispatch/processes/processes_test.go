@@ -3,25 +3,28 @@ package processes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
-// storetest.Main.
+// storetest.MainEager.
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
-	os.Exit(storetest.Main(m))
+	os.Exit(storetest.MainEager(m))
 }
 
 // fingerprints is the fingerprint list a process holding setting (DISPATCH_SIGNING_KEY's form)
@@ -52,23 +55,100 @@ func quickRegistry(t *testing.T) {
 	setInterval(t, &LiveWindow, time.Second)
 }
 
+// instanceHolding is what a process holding setting registers, its registry's timers on clk, or on
+// the real clock where clk is nil.
+func instanceHolding(t *testing.T, commit, setting string, clk clock.Clock) Instance {
+	t.Helper()
+	return Instance{Commit: commit, DashboardBuild: "build-" + commit, SigningKeys: fingerprints(t, setting), Clock: clk}
+}
+
 // register registers a process holding setting and deregisters it when the test ends, unless the
 // test has.
 func register(t *testing.T, database *store.Store, commit, setting string) (*Registration, error) {
 	t.Helper()
-	registration, err := Register(context.Background(), database.Pool, Instance{
-		Commit: commit, DashboardBuild: "build-" + commit, SigningKeys: fingerprints(t, setting),
-	})
+	return registerInstance(t, database, instanceHolding(t, commit, setting, nil))
+}
+
+// registerInstance registers instance and deregisters it when the test ends, unless the test has.
+// Of t it calls Cleanup alone, so it may run off the test goroutine (startRegister).
+func registerInstance(t *testing.T, database *store.Store, instance Instance) (*Registration, error) {
+	registration, err := Register(context.Background(), database.Pool, instance)
 	if err == nil {
 		t.Cleanup(func() { _ = registration.Deregister(context.Background()) })
 	}
 	return registration, err
 }
 
+// registered is what one Register returned.
+type registered struct {
+	registration *Registration
+	err          error
+}
+
+// startRegister runs Register for a process holding setting on a goroutine of its own, its
+// registry's timers on fake, and sends what Register returned on results. A process it admits is
+// deregistered when the test ends.
+func startRegister(t *testing.T, database *store.Store, fake *clocktest.Fake, commit, setting string, results chan<- registered) {
+	t.Helper()
+	instance := instanceHolding(t, commit, setting, fake)
+	go func() {
+		registration, err := registerInstance(t, database, instance)
+		results <- registered{registration, err}
+	}()
+}
+
+// awaitTry waits until the Register that sends on results has either returned, which it reports
+// with what Register returned, or armed the timer of its next try on fake. beside is how many
+// timers on fake are not that Register's: the heartbeats of registrations already admitted on it,
+// each of which keeps one tick armed. Register arms a timer of its own only between a refused try
+// and the next, so more than beside armed while it has not returned is its next try waiting on
+// fake. Register starts the heartbeat of a process it admits before it returns, and that tick can
+// be read as a next try just before what Register returned is sent; the move the caller then makes
+// fires that tick alone, and the next read finds what Register returned.
+func awaitTry(t *testing.T, fake *clocktest.Fake, beside int, results <-chan registered) (registered, bool) {
+	t.Helper()
+	var got registered
+	returned := false
+	testwait.Until(t, "Register to return, or to arm its next try on the fake clock", func() (string, bool) {
+		select {
+		case got = <-results:
+			returned = true
+			return "Register returned", true
+		default:
+		}
+		armed := fake.Armed()
+		return fmt.Sprintf("Register has not returned, and %d timers are armed on the fake beside %d heartbeats: %v",
+			len(armed)-beside, beside, armed), len(armed) > beside
+	})
+	return got, returned
+}
+
+// driveRegister moves fake one HeartbeatInterval at a time, each move once the Register that sends
+// on results has armed its next try there (awaitTry, whose beside this is), until that Register
+// returns, and returns what it returned. The fake moves only here, and Register's wait runs on it
+// alone, so a refusing peer that is live by the database's now() stays live through the wait
+// however far the fake moves, and the wait ends at its give-up without the test waiting for it.
+func driveRegister(t *testing.T, fake *clocktest.Fake, beside int, results <-chan registered) registered {
+	t.Helper()
+	for {
+		if got, returned := awaitTry(t, fake, beside, results); returned {
+			return got
+		}
+		fake.Advance(HeartbeatInterval)
+	}
+}
+
 // mustRegister is register for a process that must be accepted.
 func mustRegister(t *testing.T, database *store.Store, commit, setting string) *Registration {
 	t.Helper()
-	registration, err := register(t, database, commit, setting)
+	return mustRegisterHolding(t, database, commit, setting, nil)
+}
+
+// mustRegisterHolding is mustRegister with the registry's timers on clk, or on the real clock where
+// clk is nil (instanceHolding).
+func mustRegisterHolding(t *testing.T, database *store.Store, commit, setting string, clk clock.Clock) *Registration {
+	t.Helper()
+	registration, err := registerInstance(t, database, instanceHolding(t, commit, setting, clk))
 	if err != nil {
 		t.Fatalf("register a process holding %q: %v", setting, err)
 	}
@@ -346,10 +426,11 @@ func TestPruneRemovesRowsOlderThanTenMinutesAndKeepsNewerOnes(t *testing.T) {
 // its own, and the refusal records nothing and says what to do. Key sets that overlap with the
 // current keys swapped, which is the middle of a rotation, are accepted, and so is a key set no
 // live process shares when the only other row is a process gone. A peer that refuses heartbeats
-// throughout, so its refusal stands through Register's wait for it to lapse.
+// throughout, so its refusal stands through Register's wait for it to lapse. That wait runs on a
+// fake clock which each row moves one try at a time (driveRegister), so a refusal costs the row
+// Register's tries and no span of its own.
 func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
-	// Not parallel: its rows write the package variables HeartbeatInterval and LiveWindow
-	// (setInterval, quickRegistry), which every registration reads.
+	t.Parallel()
 	for _, c := range []struct {
 		name, peer, mine string
 		stale            bool
@@ -367,18 +448,24 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 		{name: "another key, but the peer is gone", peer: "K0", mine: "K9", stale: true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			if c.stale {
-				// A gone process does not heartbeat back into Live.
-				setInterval(t, &HeartbeatInterval, time.Hour)
-			} else {
-				quickRegistry(t)
-			}
+			t.Parallel()
 			database := storetest.Open(t)
-			peer := mustRegister(t, database, "c1", c.peer)
+			// A gone process does not heartbeat back into Live: its heartbeat ticks on a clock
+			// nothing moves. A live one heartbeats on the real clock every HeartbeatInterval, so it
+			// stays live by the database's now() however long the row takes.
+			var peerClock clock.Clock
+			if c.stale {
+				peerClock = clocktest.New(time.Now())
+			}
+			peer := mustRegisterHolding(t, database, "c1", c.peer, peerClock)
 			if c.stale {
 				ageHeartbeat(t, database, peer.ID, LiveWindow+time.Second)
 			}
-			registration, err := register(t, database, "c2", c.mine)
+			fake := clocktest.New(time.Now())
+			results := make(chan registered, 1)
+			startRegister(t, database, fake, "c2", c.mine, results)
+			got := driveRegister(t, fake, 0, results)
+			registration, err := got.registration, got.err
 			if !c.refused {
 				if err != nil {
 					t.Fatalf("a process holding %q beside a peer holding %q was refused: %v", c.mine, c.peer, err)
@@ -413,9 +500,7 @@ func TestRegisterRefusesAKeySetALivePeerDoesNotShare(t *testing.T) {
 // this test takes on the table, and released together, which is the moment two reads without the
 // registry's own lock would both find the registry empty.
 func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
-	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
-	// (quickRegistry), which every registration reads.
-	quickRegistry(t)
+	t.Parallel()
 	database := storetest.Open(t)
 	gate, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -426,20 +511,25 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 		t.Fatalf("hold the registry: %v", err)
 	}
 
-	var wg sync.WaitGroup
-	results := make([]error, 2)
-	for i, setting := range []string{"K0", "K1"} {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, results[i] = register(t, database, "c1", setting)
-		}()
+	fake := clocktest.New(time.Now())
+	pending := make(chan registered, 2)
+	for _, setting := range []string{"K0", "K1"} {
+		startRegister(t, database, fake, "c1", setting, pending)
 	}
 	storetest.WaitForLockWaiters(t, gate, 2)
 	if err := gate.Rollback(context.Background()); err != nil {
 		t.Fatalf("release the registry: %v", err)
 	}
-	wg.Wait()
+	// Neither registration can return a refusal before the fake passes Register's give-up, so
+	// the first to return is one the registry admitted, or one that failed. The other is moved
+	// through its tries beside the admitted one's heartbeat, which ticks on the same fake: each
+	// move fires its tick too, and that beat keeps the admitted row live.
+	first := testwait.Receive(t, "the first of the two registrations to return", pending)
+	beside := 0
+	if first.err == nil {
+		beside = 1
+	}
+	results := []error{first.err, driveRegister(t, fake, beside, pending).err}
 
 	refused := 0
 	for _, err := range results {
@@ -463,17 +553,71 @@ func TestTwoRegistrationsAtOnceWithKeysOfTheirOwnAreSerialised(t *testing.T) {
 // its last heartbeat, and a newcomer whose key set it does not share - a dev sign-in server
 // restarted after a kill, whose key is minted per process - is refused beside it at first.
 // Register waits for the row to lapse instead of refusing at once, and admits the newcomer then.
+// The row ages with Register's clock, a fake the test moves one try at a time, so by the
+// database's now() it lapses exactly when that clock has reached LiveWindow since the row's last
+// beat: after one HeartbeatInterval, where a wait that gave up too soon would already have
+// refused, and before Register's give-up, LiveWindow and one HeartbeatInterval after the first
+// refusal.
 func TestARefusalBesideARowThatStopsHeartbeatingIsAdmittedOnceTheRowLapses(t *testing.T) {
-	// Not parallel: it writes the package variables HeartbeatInterval and LiveWindow
-	// (quickRegistry), which every registration reads.
-	quickRegistry(t)
+	t.Parallel()
 	database := storetest.Open(t)
 	var dead string
 	underRegistryLock(t, database, func(tx pgx.Tx) { dead = livePeer(t, tx, "K9") })
 
-	registration, err := register(t, database, "c2", "K0")
+	fake := clocktest.New(time.Now())
+	// The row was written at the database's now() just before, so its last beat stands where
+	// Register's clock starts.
+	lastBeat := fake.Now()
+	// admittedBeside reads whether the registry holds a row beside the dead one. A refused try
+	// records nothing, and a try that admits writes its row before Register starts the admitted
+	// process's heartbeat, whose first tick awaitTry can read as a next try armed: so a try after
+	// which Register armed another, with the dead row alone in the registry, was refused.
+	admittedBeside := func() bool {
+		t.Helper()
+		var rows int
+		if err := database.Pool.QueryRow(context.Background(),
+			`select count(*) from server_processes where instance <> $1`, dead).Scan(&rows); err != nil {
+			t.Fatalf("count the registry's rows beside the dead one: %v", err)
+		}
+		return rows > 0
+	}
+	results := make(chan registered, 1)
+	startRegister(t, database, fake, "c2", "K0", results)
+	if got, returned := awaitTry(t, fake, 0, results); returned {
+		t.Fatalf("a process beside a row still live returned %v from its first try; want it refused, and waiting for the row to lapse", got.err)
+	}
+	if admittedBeside() {
+		t.Fatalf("a process beside a row still live was admitted at its first try; want it refused, and waiting for the row to lapse")
+	}
+	refused := 1
+	var got registered
+	for {
+		// The row stops heartbeating, and ages as Register's clock moves: it is dated, by the
+		// database's now(), as far back as the fake will stand past the row's last beat once the
+		// move below is made. It is dated before the move, since the move fires Register's next try
+		// at once, so that try reads the row at the age it has on Register's clock: live while
+		// that clock is short of LiveWindow, and lapsed from the try at LiveWindow on.
+		ageHeartbeat(t, database, dead, fake.Now().Add(HeartbeatInterval).Sub(lastBeat))
+		fake.Advance(HeartbeatInterval)
+		next, returned := awaitTry(t, fake, 0, results)
+		if returned {
+			got = next
+			break
+		}
+		if !admittedBeside() {
+			refused++
+		}
+	}
+	registration, err := got.registration, got.err
 	if err != nil {
 		t.Fatalf("a process beside a row that stopped heartbeating was refused: %v", err)
+	}
+	// The row stays live until Register's clock reaches LiveWindow, which is what makes a wait
+	// that gives up one HeartbeatInterval after the first refusal refuse here: a row that lapsed
+	// by the second try would admit the newcomer whatever the give-up.
+	if refused < 2 {
+		t.Errorf("Register's tries beside the dead row were refused %d times before it was admitted, want the first and at least one after it, while Register's clock was short of LiveWindow (%v) since the row's last beat",
+			refused, LiveWindow)
 	}
 	if got := liveIDs(t, database); !slices.Equal(got, []string{registration.ID}) {
 		t.Errorf("live = %v, want the admitted process %s alone, the dead row %s lapsed", got, registration.ID, dead)

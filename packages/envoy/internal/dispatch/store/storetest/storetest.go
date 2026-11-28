@@ -7,8 +7,15 @@
 // migration in its declared execution mode is most of the Postgres work a test would
 // otherwise do, so a package's wall time would scale with its test count times the speed of the
 // Postgres it runs against; a clone costs one create database. Open's template is one of the
-// templates OpenFrom makes, each once per key by the first test that asks for it: Open's key is
-// openKey, and this tree's runner migrates it.
+// templates made once per key, as OpenFrom's are (makeTemplate): Open's key is openKey, and this
+// tree's runner migrates it. A filled template (Filled) is a copy of Open's into which a Fill
+// writes rows once, for tests that each need the same rows; OpenFilled clones it.
+//
+// Under Main, the default, each template is made by the first test that asks for it, and that test
+// pays for it: Open's took 3.8 to 8.5 s in CI's envoy-go job. A package whose TestMain is MainEager
+// (or RunEager) has Open's template, and each filled template it names, made in TestMain before any
+// test runs, so no test pays for them; any other template is still made by the first test that
+// asks.
 //
 // A clone copies the template's files (strategy file_copy). Postgres's default from 15, strategy
 // wal_log, writes every page of the template into the write-ahead log instead: 6.4 MB of the
@@ -40,6 +47,7 @@ import (
 	"os"
 	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -83,26 +91,94 @@ const openKey = "this tree's runner (storetest.Open)"
 // t when DISPATCH_TEST_DATABASE_URL is unset.
 func Open(t testing.TB) *store.Store {
 	t.Helper()
-	return OpenFrom(t, openKey, migrateWithThisTree)
+	return openTemplate(t, openKey, makeOpen)
 }
 
 // migrateWithThisTree migrates the database databaseURL names with this tree's runner, and turns
 // autovacuum off for embeddings (embeddingsStatistics): Open's template. It closes its pool before
 // it returns, so the template is left with no connection.
 func migrateWithThisTree(databaseURL string) error {
+	return throughStore(databaseURL, func(ctx context.Context, database *store.Store) error {
+		if err := database.Migrate(ctx); err != nil {
+			return err
+		}
+		if _, err := database.Pool.Exec(ctx, embeddingsStatistics); err != nil {
+			return fmt.Errorf("turn autovacuum off for embeddings: %w", err)
+		}
+		return nil
+	})
+}
+
+// throughStore runs write on a store opened on the database databaseURL names, and closes the
+// store's pool before it returns, so write leaves the database with no connection of the store's:
+// a template's migrate (migrateWithThisTree), and a Filled's Fill, which runs on a second store
+// opened beside this one (fillThroughStore).
+func throughStore(databaseURL string, write func(ctx context.Context, database *store.Store) error) error {
 	ctx := context.Background()
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		return fmt.Errorf("open the database: %w", err)
 	}
 	defer database.Pool.Close()
-	if err := database.Migrate(ctx); err != nil {
-		return err
-	}
-	if _, err := database.Pool.Exec(ctx, embeddingsStatistics); err != nil {
-		return fmt.Errorf("turn autovacuum off for embeddings: %w", err)
-	}
-	return nil
+	return write(ctx, database)
+}
+
+// fillThroughStore runs fill, a Filled's Fill, on a store opened on the template databaseURL
+// names, closes every pool of that store before it returns, and answers the backend pid of each
+// connection those pools closed. Postgres ends a backend a moment after its client closes the
+// connection, so those backends can still be listed on the template as fill returns:
+// noSessionLeftOpen waits for them to end rather than take them for sessions fill left open.
+//
+// Each pool records a connection as it closes it (pgxpool's BeforeClose). store.Open builds the
+// production configuration and takes no hook, so the store fill is given is a second pool opened
+// from the configuration of throughStore's, with the record added. The pools the given store opens
+// on demand (store.Pool.Rooms and the rest) copy its configuration, record included, as does a
+// pool fill opens from database.Pool.Config(); a pool fill leaves open closes nothing, so its
+// connections are in no record. throughStore's own pool holds only the connection store.Open
+// pinged on, recorded before fill runs, and closes as throughStore returns. A connection no pool
+// closes is in no record either: one fill opens otherwise, or takes out of a pool
+// (store.Pool.Listener hijacks one), and closes itself.
+func fillThroughStore(databaseURL string, fill func(ctx context.Context, database *store.Store) error) ([]int32, error) {
+	var closed closedConnections
+	err := throughStore(databaseURL, func(ctx context.Context, opened *store.Store) error {
+		for _, connection := range opened.Pool.AcquireAllIdle(ctx) {
+			closed.record(connection.Conn())
+			connection.Release()
+		}
+		config := opened.Pool.Config()
+		config.BeforeClose = closed.record
+		pool, err := pgxpool.NewWithConfig(ctx, config)
+		if err != nil {
+			return fmt.Errorf("open the Fill's pool: %w", err)
+		}
+		database := &store.Store{Pool: store.NewPool(pool)}
+		defer database.Pool.Close()
+		return fill(ctx, database)
+	})
+	return closed.backends(), err
+}
+
+// closedConnections holds the backend pid of each connection a Fill's pools closed
+// (fillThroughStore). A pool closes its connections on goroutines of its own, and a pool the Fill
+// left open, which copied the record, can close one after the record was read, so it is locked.
+type closedConnections struct {
+	mu   sync.Mutex
+	pids []int32
+}
+
+// record keeps connection's backend pid. Postgres's pid is an int4, which pgconn hands out as a
+// uint32.
+func (c *closedConnections) record(connection *pgx.Conn) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pids = append(c.pids, int32(connection.PgConn().PID()))
+}
+
+// backends is a copy of the pids recorded so far.
+func (c *closedConnections) backends() []int32 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.pids)
 }
 
 // embeddingsStatistics turns autovacuum off for embeddings in Open's template, and so in every
@@ -124,38 +200,55 @@ func migrateWithThisTree(databaseURL string) error {
 const embeddingsStatistics = `alter table embeddings set (autovacuum_enabled = false, toast.autovacuum_enabled = false)`
 
 // ready makes sure the package's TestMain runs Run, skips t when DISPATCH_TEST_DATABASE_URL is
-// unset, and opens the admin pool, once. It makes no template: each is made by the first test that
-// asks for it (OpenFrom). The server's URL is kept as DISPATCH_TEST_DATABASE_URL names it, with no
-// bound of this package's (shared.server), so no connect inherits the bound of the test that opened
-// the pool. Each connect string this package hands out instead takes, when it is made, the seconds
-// left until the test binary's deadline less testwait's margin (testdb.WithConnectDeadline), not
-// pgx's default (two minutes in a pool, no bound through pgx.Connect): a clone's store, Empty's
-// URL, and the URL each template's migrate is given, made by the test that asks for the template
-// when it asks (OpenFrom). The admin pool's connections take that bound as each is made
-// (openAdmin). A pool opened from such a string measures its bound from when the string was made:
-// a connection it makes s seconds later can end s seconds past the binary's deadline less the
-// margin, which a migrate, made and run at once, and a test's own store keep within the margin
-// unless the test runs on for longer than it. The admin URL is read before the Once, so a URL that
-// cannot be read fails each test that asks, and never leaves the Once done with no admin pool for
-// a later test to call.
+// unset, and opens the admin pool, once: here, in the first test that asks, unless RunEager opened
+// it before the tests. It makes no template: RunEager makes Open's and the filled templates its
+// TestMain names, and the first test that asks makes any other (OpenFrom, OpenFilled). The
+// server's URL is kept as DISPATCH_TEST_DATABASE_URL names it, with no bound of this package's
+// (shared.server), so no connect inherits the bound of whoever opened the pool. Each connect string
+// this package hands out instead takes, when it is made, the seconds left until the test binary's
+// deadline less testwait's margin (testdb.WithConnectDeadline), not pgx's default (two minutes in
+// a pool, no bound through pgx.Connect): a clone's store, Empty's URL, and the URL each template's
+// migrate or Fill is given, made by whoever makes the template when it makes it (makeTemplate:
+// the test that asks, or RunEager, whose bound is testwait.MainGiveUpAt). The admin pool's
+// connections take that bound as each is made (openAdmin). A pool opened from such a string
+// measures its bound from when the string was made: a connection it makes s seconds later can end
+// s seconds past the binary's deadline less the margin, which a migrate, made and run at once, and
+// a test's own store keep within the margin unless the test runs on for longer than it. The admin
+// URL is read (serverFromEnv) before the Once, so a URL that cannot be read fails each test that
+// asks, and never leaves the Once done with no admin pool for a later test to call.
 func ready(t testing.TB) {
 	t.Helper()
 	if !shared.main {
 		t.Fatal("storetest.Open needs the package's TestMain to be: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }, or storetest.Run around another harness's Main")
 	}
-	raw := os.Getenv(DatabaseURLEnv)
-	if raw == "" {
+	raw, set, err := serverFromEnv()
+	if !set {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
-	if _, err := url.Parse(raw); err != nil {
-		// url.Parse's own error quotes the URL it was given, which carries a credential.
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+	if err != nil {
+		t.Fatal(err)
 	}
 	end, bounded := testdb.ConnectEnd(t)
 	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
 	if shared.err != nil {
 		t.Fatalf("open the admin pool: %v", shared.err)
 	}
+}
+
+// serverFromEnv reads DISPATCH_TEST_DATABASE_URL for ready and eagerServer: raw is its value, set
+// is whether it names one, and err, where it does not parse, is a fixed text that carries nothing
+// of the URL. url.Parse's error quotes the URL, and even the error it wraps can (an invalid port's
+// quotes what follows the authority's last colon, which for a password holding an unescaped '#',
+// '/' or '?' is the password's first part).
+func serverFromEnv() (raw string, set bool, err error) {
+	raw = os.Getenv(DatabaseURLEnv)
+	if raw == "" {
+		return "", false, nil
+	}
+	if _, err = url.Parse(raw); err != nil {
+		return "", true, errors.New(DatabaseURLEnv + " does not parse")
+	}
+	return raw, true, nil
 }
 
 // clone returns a store on a new database cloned from template, dropped after t ends. The store's
@@ -247,7 +340,7 @@ func Empty(t testing.TB) string {
 	t.Helper()
 	ready(t)
 	name := randomName(t, "dispatch_test_")
-	if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
+	if err := adminExec(t, cloneStatement(name, emptyTemplate)); err != nil {
 		t.Fatalf("create empty database: %v", err)
 	}
 	testcleanup.Add(t, func() { dropDatabase(name) })
@@ -257,8 +350,8 @@ func Empty(t testing.TB) string {
 	return testdb.WithConnectDeadline(t, databaseURL(shared.server, name))
 }
 
-// templates are the templates this test binary made, by key, each once: Open's (openKey) and each
-// OpenFrom caller's. Run drops every one of them.
+// templates are the templates this test binary made, by key, each once: Open's (openKey), each
+// OpenFrom caller's and each Filled's. Run drops every one of them.
 var templates = struct {
 	sync.Mutex
 	byKey map[string]*templateDatabase
@@ -272,18 +365,211 @@ type templateDatabase struct {
 	err  error
 }
 
+// emptyTemplate is the database Open's template, each OpenFrom caller's and Empty's database copy:
+// template1, the one Postgres copies where a create database names none.
+const emptyTemplate = "template1"
+
 // OpenFrom is Open for a database migrate brings to its schema instead of this tree's runner
 // alone: it returns a store on a new database cloned from the template of key, dropped after t
-// ends. The template is made once per key in the test binary, by the first test that asks: a new
-// empty database whose connection string migrate is given, which migrate migrates and leaves
-// with no connection open. That string's connect bound is the seconds left, when the template is
-// made, until the binary's deadline less testwait's margin (testdb.WithConnectDeadline with the
-// test that asks), so a template first asked for long after the admin pool opened still fails on
-// pgx's error inside the margin. A template whose migrate failed, or ended its test, fails every
+// ends. The template is made once per key in the test binary (makeTemplate), by the first test
+// that asks, or, for Open's key, by RunEager before the tests: a new empty database whose
+// connection string migrate is given, which migrate migrates and leaves with no connection open.
+// That string's connect bound is the seconds left, when the template is made, until the binary's
+// deadline less testwait's margin (testdb.WithConnectEnd with the connect end of the test that
+// asks, or RunEager's), so a template first asked for long after the admin pool opened still fails
+// on pgx's error inside the margin. A template whose migrate failed, or ended its test, fails every
 // test that asks for it again.
 func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) *store.Store {
 	t.Helper()
+	return openTemplate(t, key, func(end time.Time, bounded bool) (string, error) {
+		return makeTemplate(key, end, bounded, emptyTemplate, "migrate", func(_, databaseURL string) error {
+			return migrate(databaseURL)
+		})
+	})
+}
+
+// Filled is a template that holds rows, for the tests of a package that each need the same rows:
+// Fill writes them once, into a copy of Open's template, and each test that asks (OpenFilled)
+// clones the result instead of writing them itself.
+//
+// Key names the template in the test binary, in the one namespace OpenFrom's keys are in, so no
+// OpenFrom call and no other Filled names it. The template is made once per Key, with the Fill of
+// whoever makes it: RunEager, where the package's TestMain names the Filled, otherwise the first
+// test that asks, as OpenFrom's templates are.
+//
+// The template is a file copy of Open's (cloneStatement), so it holds every migration and runs
+// none again, and it runs with JIT off (testdb.WithoutJIT). Fill writes through database, a store
+// opened on the template whose connects end by the maker's connect end (testdb.WithConnectEnd);
+// ctx has no deadline, as a migrate's context has none. Once Fill returns the store's pools are
+// closed, and the template is closed to connections. Fill closes anything else it opens before it
+// returns: Postgres refuses to clone a database another session is connected to. So before the
+// template is closed, storetest reads the sessions still connected to it (noSessionLeftOpen), and
+// where Fill left one open the template is not made: its error names Key and each such session's
+// application_name, state and query. storetest ends none of them, since ending one would hide the
+// leak. It first waits for Postgres to end the backends of the connections that database's pools
+// closed as Fill returned, and of any pool Fill opened from database.Pool.Config() and closed: each
+// of those pools records the connections it closes (fillThroughStore). A connection Fill opens
+// otherwise, or takes out of a pool (store.Pool.Listener), and closes is in no record, and Postgres
+// can still list it when storetest reads, which fails the template as a session left open does; a
+// Fill that needs a connection of its own takes it from such a pool. A filled template whose Fill
+// failed or left a session open, or whose Open template could not be made, fails every test that
+// asks for it, with the error.
+type Filled struct {
+	// Key names the template in the test binary.
+	Key string
+	// Fill writes the template's rows through database.
+	Fill func(ctx context.Context, database *store.Store) error
+}
+
+// OpenFilled is Open for a test that needs filled's rows: it returns a store on a new database
+// cloned from filled's template, dropped after t ends. It skips t when DISPATCH_TEST_DATABASE_URL
+// is unset. Where RunEager has not made them, the first test that asks makes Open's template, then
+// filled's (Filled).
+func OpenFilled(t testing.TB, filled Filled) *store.Store {
+	t.Helper()
+	return openTemplate(t, filled.Key, func(end time.Time, bounded bool) (string, error) {
+		return makeFilled(filled, end, bounded)
+	})
+}
+
+// openTemplate is what Open, OpenFrom and OpenFilled share: it makes sure t can have a database
+// (ready), has maker answer the template of key under t's connect end (testdb.ConnectEnd), failing
+// t where it could not be made, and returns a store on a new database cloned from it, dropped after
+// t ends.
+func openTemplate(t testing.TB, key string, maker func(end time.Time, bounded bool) (string, error)) *store.Store {
+	t.Helper()
 	ready(t)
+	end, bounded := testdb.ConnectEnd(t)
+	name, err := maker(end, bounded)
+	if err != nil {
+		t.Fatalf("prepare template database %q: %v", key, err)
+	}
+	return clone(t, name)
+}
+
+// makeOpen answers Open's template, made where no caller has made it yet (makeTemplate). It is
+// the one place Open's template is defined, for Open, makeFilled and RunEager.
+func makeOpen(end time.Time, bounded bool) (string, error) {
+	return makeTemplate(openKey, end, bounded, emptyTemplate, "migrate", func(_, databaseURL string) error {
+		return migrateWithThisTree(databaseURL)
+	})
+}
+
+// makeFilled answers filled's template, made where no caller has made it yet (makeTemplate), as a
+// copy of Open's, which it makes first where no caller has. Where Open's could not be made it
+// answers Open's error, which is every later caller's too, since Open's is made once. Once the
+// Fill has returned, and before the template is closed to connections, the template fails where
+// the Fill left a session connected to it (noSessionLeftOpen).
+func makeFilled(filled Filled, end time.Time, bounded bool) (string, error) {
+	open, err := makeOpen(end, bounded)
+	if err != nil {
+		return "", fmt.Errorf("prepare the template it copies, %q: %w", openKey, err)
+	}
+	return makeTemplate(filled.Key, end, bounded, open, "fill", func(name, databaseURL string) error {
+		closed, err := fillThroughStore(databaseURL, filled.Fill)
+		if err != nil {
+			return err
+		}
+		return noSessionLeftOpen(filled.Key, name, closed, end, bounded)
+	})
+}
+
+// leftOpenQueryShown is how many characters of a session's query noSessionLeftOpen's error
+// quotes; a longer query is cut there and ends in "…". Postgres keeps up to
+// track_activity_query_size of it, 1 kB by default, and an error that quoted that much of each
+// session would bury the key.
+const leftOpenQueryShown = 200
+
+// noSessionLeftOpen answers an error where a Filled's Fill, whose key is key, returned leaving a
+// session connected to its template, the database template names. Postgres refuses to clone a
+// database another session is connected to: each clone waits five seconds for the session to end,
+// then fails with an error that names only the template's random database ("is being accessed by
+// other users"), not the Filled whose Fill left the session. The error names key and each session
+// found, by its application_name, its state and its query (cut to leftOpenQueryShown). It ends
+// none of them: ending one would hide the Fill's leak.
+//
+// It reads pg_stat_activity on an admin connection, whose wait is adminExecUntil's (bounded by end
+// where bounded). That connection is on the server's postgres database, so it is never among the
+// sessions read, and only client backends count: an autovacuum worker can be on the template, and
+// a clone ends one rather than fail. closed are the backends of the connections the Fill's pools
+// closed (fillThroughStore), which Postgres can still list for a moment. It waits through testwait
+// (InHelper, whose one bound is the binary's deadline less testwait's margin) until none of them is
+// listed, which comes true as soon as Postgres has ended them; any session listed then is one the
+// Fill left open, and it fails at once.
+//
+// Only a Fill is checked. A migrate, this tree's runner (migrateWithThisTree) or an OpenFrom
+// caller's, closes connections no pool records: the runner closes the ones it takes out of its
+// pool for a migration that runs outside a transaction, and an OpenFrom caller's migrate opens its
+// own from the URL. The check could not tell their backends, still ending, from a session left
+// open, so it would fail migrates that left none.
+func noSessionLeftOpen(key, template string, closed []int32, end time.Time, bounded bool) error {
+	connection, err := acquireAdminUntil(end, bounded)
+	if err != nil {
+		return err
+	}
+	defer connection.Release()
+	var sessions []templateSession
+	var readErr error
+	what := fmt.Sprintf("Postgres to end the backends of the %d connections that the pools of Filled %q closed as its Fill returned, on its template %s", len(closed), key, template)
+	if err := testwait.InHelper("storetest", what, func() bool {
+		sessions, readErr = templateSessions(connection, template)
+		return readErr != nil || !slices.ContainsFunc(sessions, func(session templateSession) bool {
+			return slices.Contains(closed, session.pid)
+		})
+	}); err != nil {
+		return err
+	}
+	if readErr != nil {
+		return fmt.Errorf("read the sessions connected to the template database: %w", readErr)
+	}
+	if len(sessions) == 0 {
+		return nil
+	}
+	found := make([]string, len(sessions))
+	for i, session := range sessions {
+		found[i] = fmt.Sprintf("application_name %q, state %q, query %q", session.application, session.state, session.query)
+	}
+	return fmt.Errorf("the Fill of Filled %q returned with %d session(s) still connected to its template %s, which Postgres refuses to clone; a Fill closes each connection it opens before it returns, and storetest ends none: %s",
+		key, len(sessions), template, strings.Join(found, "; "))
+}
+
+// templateSession is a client session connected to a template database, as pg_stat_activity lists
+// it.
+type templateSession struct {
+	pid                       int32
+	application, state, query string
+}
+
+// templateSessions reads the client sessions connected to template, oldest first, each query cut
+// to leftOpenQueryShown characters.
+func templateSessions(connection *pgxpool.Conn, template string) ([]templateSession, error) {
+	rows, err := connection.Query(context.Background(), `
+		select pid, coalesce(application_name, ''), coalesce(state, ''),
+			left(coalesce(query, ''), $2) || case when length(query) > $2 then '…' else '' end
+		from pg_stat_activity
+		where datname = $1 and backend_type = 'client backend'
+		order by backend_start, pid`, template, leftOpenQueryShown)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (templateSession, error) {
+		var session templateSession
+		err := row.Scan(&session.pid, &session.application, &session.state, &session.query)
+		return session, err
+	})
+}
+
+// makeTemplate answers the template of key, which it makes once per key in the test binary, through
+// the one entry Open, OpenFrom, OpenFilled and RunEager share (templates), where no caller has made
+// it yet: a new database that copies from's files (cloneStatement), runs with JIT off, is brought
+// to what the template holds by fill, given its name and its connection string, and is then closed
+// to connections. end and bounded are its maker's connect end, a test's (testdb.ConnectEnd) or
+// RunEager's (testwait.MainGiveUpAt): they bound each of its admin statements' wait
+// (adminExecUntil) and the connects of fill's connection string (testdb.WithConnectEnd). step
+// names fill in fill's error ("<step> template database: …") and in the error a fill that ended
+// its test leaves. A caller after the maker gets what the maker got: the template's database, or
+// why it could not be made.
+func makeTemplate(key string, end time.Time, bounded bool, from, step string, fill func(name, databaseURL string) error) (string, error) {
 	templates.Lock()
 	entry := templates.byKey[key]
 	if entry == nil {
@@ -292,42 +578,44 @@ func OpenFrom(t testing.TB, key string, migrate func(databaseURL string) error) 
 	}
 	templates.Unlock()
 	entry.once.Do(func() {
-		// Set first, and cleared only once migrate returns, so a migrate that ends its test
+		// Set first, and cleared only once fill returns, so a fill that ends its test
 		// (t.Fatal) leaves a template no later test clones.
-		entry.err = fmt.Errorf("the test that made it ended before its migrate returned")
+		entry.err = fmt.Errorf("the test that made it ended before its %s returned", step)
 		suffix, err := randomSuffix()
 		if err != nil {
 			entry.err = err
 			return
 		}
 		name := "dispatch_template_" + suffix
-		// The template is a file copy of template1, for the reason each clone of it is one.
-		if err := adminExec(t, "create database "+name+" strategy file_copy"); err != nil {
+		// The template is a file copy of from, for the reason each clone of it is one.
+		if err := adminExecUntil(end, bounded, cloneStatement(name, from)); err != nil {
 			entry.err = fmt.Errorf("create template database: %w", err)
 			return
 		}
 		// Named once it exists, so Run drops exactly the templates that were made.
 		entry.name = name
-		if err := adminExec(t, testdb.WithoutJIT(name)); err != nil {
+		if err := adminExecUntil(end, bounded, testdb.WithoutJIT(name)); err != nil {
 			entry.err = fmt.Errorf("turn JIT off on the template database: %w", err)
 			return
 		}
-		if err := migrate(testdb.WithConnectDeadline(t, databaseURL(shared.server, entry.name))); err != nil {
-			entry.err = fmt.Errorf("migrate template database: %w", err)
+		connect, err := testdb.WithConnectEnd(databaseURL(shared.server, name), end, bounded)
+		if err != nil {
+			entry.err = err
+			return
+		}
+		if err := fill(name, connect); err != nil {
+			entry.err = fmt.Errorf("%s template database: %w", step, err)
 			return
 		}
 		// Postgres refuses to clone a database another session is connected to. Refusing
 		// connections to the template keeps any stray session from making a clone wait or fail.
-		if err := adminExec(t, "alter database "+entry.name+" with allow_connections false"); err != nil {
+		if err := adminExecUntil(end, bounded, "alter database "+name+" with allow_connections false"); err != nil {
 			entry.err = fmt.Errorf("close template database to connections: %w", err)
 			return
 		}
 		entry.err = nil
 	})
-	if entry.err != nil {
-		t.Fatalf("prepare template database %q: %v", key, entry.err)
-	}
-	return clone(t, entry.name)
+	return entry.name, entry.err
 }
 
 // cloneStatement returns the create database that makes name a copy of template's files rather
@@ -336,14 +624,24 @@ func cloneStatement(name, template string) string {
 	return "create database " + name + " template " + template + " strategy file_copy"
 }
 
-// adminExec runs statement, one a test makes (clone, Empty, OpenFrom), on the admin pool. Its wait
-// for one of the pool's connections ends by the connect end (testdb.ConnectEnd), or a second from
-// now where less than one is left: testdb.TimeoutUntil, the rule each new connection's connect
-// bound follows (openAdmin). That one bound ends the wait whatever it waits for: the pool's
-// semaphore, while drops or other statements hold all four of its connections (MaxConns); a new
-// connection's connect, where the pool has none idle; and pgxpool's ping of a connection idle more
-// than a second. So past the connect end the wait for a busy pool and that ping get one second,
-// and a new connection's connect has a second of its own. A drop holds a connection for up to
+// adminExec runs statement, one a test makes (clone, Empty), on the admin pool, its wait for one of
+// the pool's connections bounded by t's connect end (testdb.ConnectEnd): adminExecUntil, which
+// says why.
+func adminExec(t testing.TB, statement string) error {
+	end, bounded := testdb.ConnectEnd(t)
+	return adminExecUntil(end, bounded, statement)
+}
+
+// adminExecUntil runs statement on the admin pool: one a test makes (adminExec, and makeTemplate
+// for the test that asks for a template), or one RunEager makes in TestMain (makeTemplate). Its
+// wait for one of the pool's connections ends by end, the connect end of the test
+// (testdb.ConnectEnd) or of TestMain (testwait.MainGiveUpAt), or a second from now where less than
+// one is left: testdb.TimeoutUntil, the rule each new connection's connect bound follows
+// (openAdmin). That one bound ends the wait whatever it waits for: the pool's semaphore, while
+// drops or other statements hold all four of its connections (MaxConns); a new connection's
+// connect, where the pool has none idle; and pgxpool's ping of a connection idle more than a
+// second. So past the connect end the wait for a busy pool and that ping get one second, and a new
+// connection's connect has a second of its own. A drop holds a connection for up to
 // testdb.NoDeadlineConnectTimeout while the server holds its login, so a statement whose wait had
 // no bound waited for four such drops past the connect end, into go test's alarm
 // (TestATestsAdminStatementEndsByTheConnectEndWhileDropsHoldThePool, and in CI
@@ -353,17 +651,32 @@ func cloneStatement(name, template string) string {
 // that second (TestATestsAdminStatementPastTheConnectEndStillRuns): a deadline on the statement
 // failed docs' leak-check child, whose template, under load, was still being made 5 s past its
 // connect end. So a statement that hangs once it has its connection, on a server that accepted it
-// and never answers, is bounded only by go test's alarm, as at main: the connect end is too short
-// a bound for it, and this package names no other. Where t names no deadline the wait has none.
-// A failed wait says how long it waited and its bound ("wait for an admin connection (waited 1.001s
-// of a 1s bound)"), so a reader can tell a wait that ran out from one that never waited
-// (TestATestsAdminStatementPastTheConnectEndStillRuns skips only on the first). The wait is
-// measured from before its deadline is set, so one that ran out reads at least its bound.
-func adminExec(t testing.TB, statement string) error {
+// and never answers, is bounded only by go test's alarm, as at main, and in TestMain, where m.Run
+// has not started that alarm yet, by cmd/go's kill: the connect end is too short a bound for it,
+// and this package names no other. Without bounded (a t that names no deadline, or TestMain under
+// -timeout 0) the wait has none. A failed wait says how long it waited and its bound ("wait for an
+// admin connection (waited 1.001s of a 1s bound)"), so a reader can tell a wait that ran out from
+// one that never waited (TestATestsAdminStatementPastTheConnectEndStillRuns skips only on the
+// first). The wait is measured from before its deadline is set, so one that ran out reads at least
+// its bound.
+func adminExecUntil(end time.Time, bounded bool, statement string) error {
+	connection, err := acquireAdminUntil(end, bounded)
+	if err != nil {
+		return err
+	}
+	defer connection.Release()
+	_, err = connection.Exec(context.Background(), statement)
+	return err
+}
+
+// acquireAdminUntil is adminExecUntil's wait for one of the admin pool's connections, with its
+// bound and its error, for a caller that runs more than one statement on the connection
+// (noSessionLeftOpen). The caller releases it.
+func acquireAdminUntil(end time.Time, bounded bool) (*pgxpool.Conn, error) {
 	began := time.Now()
 	ctx, cancel := context.Background(), func() {}
 	bound := "no"
-	if end, bounded := testdb.ConnectEnd(t); bounded {
+	if bounded {
 		timeout := testdb.TimeoutUntil(end)
 		bound = "a " + timeout.String()
 		ctx, cancel = context.WithTimeout(context.Background(), timeout)
@@ -372,11 +685,9 @@ func adminExec(t testing.TB, statement string) error {
 	waited := time.Since(began)
 	cancel()
 	if err != nil {
-		return fmt.Errorf("wait for an admin connection (waited %s of %s bound): %w", waited.Round(time.Millisecond), bound, err)
+		return nil, fmt.Errorf("wait for an admin connection (waited %s of %s bound): %w", waited.Round(time.Millisecond), bound, err)
 	}
-	defer connection.Release()
-	_, err = connection.Exec(context.Background(), statement)
-	return err
+	return connection, nil
 }
 
 // DefaultParallel is how many tests of a package run at once when its TestMain calls
@@ -388,8 +699,8 @@ func adminExec(t testing.TB, statement string) error {
 const DefaultParallel = 4
 
 // SetDefaultParallel sets the test binary's default -parallel to DefaultParallel. A package's
-// TestMain calls it before Main or Run, and so before m.Run parses the command line, where a
-// -parallel still wins.
+// TestMain calls it before Main, Run, MainEager or RunEager, and so before the command line is
+// parsed (by m.Run, or by RunEager before it), where a -parallel still wins.
 func SetDefaultParallel() {
 	if err := flag.Set("test.parallel", strconv.Itoa(DefaultParallel)); err != nil {
 		panic("storetest: set the default -parallel: " + err.Error())
@@ -398,13 +709,17 @@ func SetDefaultParallel() {
 
 // Main runs the package's tests, then drops every template they were cloned from beside their
 // databases' drops, and waits for all of them. A package whose tests call Open uses it as its
-// TestMain: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
+// TestMain: func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }. It is the default: each
+// template is made by the first test that asks for it, which pays for it. MainEager makes Open's
+// and the filled templates before the tests instead.
 func Main(m *testing.M) int { return Run(m.Run) }
 
 // Run is Main for a package whose tests also need another harness's Main, which runs m.Run
 // itself: run runs the package's tests through that Main, and Run then does what Main does after
 // them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
 // func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
+// As under Main, each template is made by the first test that asks for it (RunEager is the form
+// that makes them before run).
 //
 // Its wait for the drops is bounded, as testdb.Run's is and for its reasons
 // (testdb.TeardownDeadline: testdb.TeardownGrace past the -timeout, counted from the start of the
@@ -450,6 +765,89 @@ func Run(run func() int) int {
 		shared.admin.Close()
 	}
 	return withDropFails(code)
+}
+
+// MainEager is Main for a package whose tests should not pay for its templates: before the tests
+// it makes Open's template, then each of filled's (Filled), as RunEager says. Such a package's
+// TestMain is func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m, filled...)) }, where
+// filled are the Filled its tests pass to OpenFilled, or none.
+func MainEager(m *testing.M, filled ...Filled) int { return RunEager(m.Run, filled...) }
+
+// RunEager is Run, but before run it makes Open's template, then each of filled's templates, in
+// order, each once, through the entries Open, OpenFrom and OpenFilled read (makeTemplate), so the
+// tests find them made and none pays for them. Under Main the first test that calls Open pays for
+// Open's template, 3.8 to 8.5 s in CI's envoy-go job; under RunEager TestMain pays it. The time
+// moves from that test to TestMain and is not saved: it stays in the package's time, which go test
+// prints beside the package. So a run of one test by name, even one that opens no database, pays
+// for every template RunEager makes, where under Main it pays only for those it asks for.
+//
+// After each template it writes one line to stderr: `storetest: template "<key>" made in <d>`, or
+// `storetest: template "<key>" could not be made after <d>: <error>`. A template that could not be
+// made does not stop the run: its entry keeps the error, and each test that asks for the template
+// fails with it, as each test that asks for one whose first maker failed does under Main. It makes
+// nothing, and the tests skip or fail as they do under Main, where DISPATCH_TEST_DATABASE_URL is
+// unset or cannot be parsed, and where the command line names -test.list: go test -list runs
+// TestMain and no test, and packages/envoy/scripts/database-skips.sh runs it in CI.
+//
+// It reads the command line (-test.list, -test.timeout) before run, and so parses it, as m.Run
+// would: a package whose TestMain calls SetDefaultParallel calls it before RunEager. Its connect
+// end is testwait.MainGiveUpAt, the -timeout flag's deadline from the process's start less
+// testwait's margin, which is no later than any test's (testdb.ConnectEnd). It opens the admin
+// pool with that end, as ready would with a test's (openAdmin), so the pool's new connections take
+// it for the rest of the run; each of its admin statements' wait ends by it (adminExecUntil); and
+// each template's migrate and Fill are given a connection string bounded by it
+// (testdb.WithConnectEnd). go test's alarm starts only in m.Run, so a statement that hangs once it
+// has its connection is bounded here only by cmd/go's kill; the time RunEager takes is the
+// binary's before Run, which testdb.TeardownGrace's margin under that kill counts.
+func RunEager(run func() int, filled ...Filled) int {
+	if raw, ok := eagerServer(); ok {
+		makeEagerly(raw, filled)
+	}
+	return Run(run)
+}
+
+// eagerServer is the server RunEager makes its templates on, DISPATCH_TEST_DATABASE_URL, and false
+// where it makes none: the variable is unset or cannot be parsed, for which ready skips or fails
+// each test that asks, or the command line names -test.list, under which m.Run lists the tests and
+// runs none. It parses the command line when nothing has yet, as m.Run would.
+func eagerServer() (string, bool) {
+	raw, set, err := serverFromEnv()
+	if !set || err != nil {
+		return "", false
+	}
+	if !flag.Parsed() {
+		flag.Parse()
+	}
+	list := flag.Lookup("test.list")
+	return raw, list == nil || list.Value.String() == ""
+}
+
+// makeEagerly opens the admin pool on raw, as ready would, and makes Open's template, then each of
+// filled's, under TestMain's connect end (testwait.MainGiveUpAt), writing one line to stderr for
+// each. Where the admin pool could not be opened it makes none, and each line says why; ready then
+// fails each test that asks with the same error, as under Main.
+func makeEagerly(raw string, filled []Filled) {
+	end, bounded := testwait.MainGiveUpAt()
+	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
+	made := func(key string, build func() (string, error)) {
+		began := time.Now()
+		var err error
+		if shared.err != nil {
+			err = fmt.Errorf("open the admin pool: %w", shared.err)
+		} else {
+			_, err = build()
+		}
+		took := time.Since(began).Round(time.Millisecond)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "storetest: template %q could not be made after %s: %v\n", key, took, err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "storetest: template %q made in %s\n", key, took)
+	}
+	made(openKey, func() (string, error) { return makeOpen(end, bounded) })
+	for _, each := range filled {
+		made(each.Key, func() (string, error) { return makeFilled(each, end, bounded) })
+	}
 }
 
 // withDropFails prints each drop that failed and answers code, or 1 where code is 0 and one did.
@@ -586,10 +984,11 @@ func dropDatabase(name string) {
 
 // openAdmin opens the admin pool, on the server raw names, that every database and template is
 // created and dropped through, and keeps raw as the server's URL (shared.server), with no bound of
-// this package's. The pool outlives the test that opens it and makes connections for later tests,
-// so a connection's connect timeout is not one fixed when the pool opened: each new connection a
-// test's statement asks for takes the seconds left until end as it is made (testdb.TimeoutUntil),
-// so one made late ends on pgx's own error with testwait's margin left, not after go test's alarm.
+// this package's. The pool outlives whoever opens it, the first test that asks (ready) or RunEager,
+// and makes connections for later tests, so a connection's connect timeout is not one fixed when
+// the pool opened: each new connection a test's statement asks for takes the seconds left until
+// end, the opener's connect end, as it is made (testdb.TimeoutUntil), so one made late ends on
+// pgx's own error with testwait's margin left, not after go test's alarm.
 // A connection a drop asks for (teardown) takes testdb.NoDeadlineConnectTimeout instead, as at
 // main: Run waits for the drops after the tests, when go test's alarm has stopped, and once end
 // has passed the tests' bound is a second (TimeoutUntil's floor), which a loaded server's login

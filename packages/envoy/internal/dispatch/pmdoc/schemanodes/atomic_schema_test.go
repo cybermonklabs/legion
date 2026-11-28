@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -16,13 +18,15 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
 // serverMain is where the server registers the schema channel. The test reads it, because what
 // makes the reinstall safe is that the registration is a Wake and not a Handle.
@@ -224,12 +228,28 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 				_ = pmdoc.HasLinkKinds()
 				_ = pmdoc.IsTypedBlock("claim")
 				_ = pmdoc.BlockPointers(tree)
+				// Yield after each whole-value read, so the installer, whose reinstall each
+				// round waits on, runs between the readers' reads instead of competing with
+				// eight busy loops for the CPUs. Every reader still reads continuously through
+				// each reinstall.
+				runtime.Gosched()
 			}
 		}()
 	}
 
 	wake := make(chan struct{}, 1)
-	installer := &Installer{Store: pool, Wake: wake, Retry: 10 * time.Millisecond}
+	// Each read that moves the installed schema signals switched. A round's flip moves it once,
+	// since the store holds what the flip wrote until the next round's flip, so the one place in
+	// switched holds the round's signal and no older one. The send never blocks, so a switch no
+	// round waits for never holds up the installer's goroutine, and with it Run's return once the
+	// test stops it.
+	switched := make(chan struct{}, 1)
+	installer := &Installer{Store: pool, Wake: wake, Retry: 10 * time.Millisecond, OnSwitch: func() {
+		select {
+		case switched <- struct{}{}:
+		default:
+		}
+	}}
 	installing, stopInstalling := context.WithCancel(ctx)
 	var reinstalls sync.WaitGroup
 	reinstalls.Add(1)
@@ -253,13 +273,11 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 		}
 		// Each flip is installed before the next is written, so the readers read through a
 		// reinstall every round however long one read of the store takes on a loaded machine;
-		// a fixed pause between flips let the installer read only one of them there.
-		deadline := time.Now().Add(10 * time.Second)
-		for pmdoc.SchemaVersion() != version {
-			if time.Now().After(deadline) {
-				t.Fatalf("round %d: the installer never installed version %d within 10s of the flip that wrote it", round, version)
-			}
-			time.Sleep(time.Millisecond)
+		// a fixed pause between flips let the installer read only one of them there. The flip
+		// moves what the process serves, so the read that installs it runs OnSwitch.
+		testwait.Receive(t, fmt.Sprintf("round %d: the installer's switch (OnSwitch) to version %d, which the round's flip wrote", round, version), switched)
+		if installed := pmdoc.SchemaVersion(); installed != version {
+			t.Fatalf("round %d: the installer switched to version %d, want version %d, which the round's flip wrote", round, installed, version)
 		}
 	}
 	stopInstalling()
@@ -286,20 +304,25 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 // requireAFailedReadKeepsTheValueAndIsMadeAgain holds a read that fails to leaving the installed
 // value where it is, and to being made again after the retry interval: not before it, or a store
 // that is down would be read as fast as it fails, and the server's installer, which sets no
-// interval of its own, waits RetryInterval.
+// interval of its own, waits RetryInterval. The installer's retry runs on a fake clock the test
+// moves (driveRetries), so the interval is read off the timer the installer arms, and a retry
+// armed for RetryInterval rather than the one it was given fails at that timer.
 func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Context) {
 	t.Helper()
 	if interval := (&Installer{}).retryInterval(); interval != RetryInterval {
 		t.Errorf("an installer given no retry interval reads a failed store again after %v, want RetryInterval (%v): the server's installer sets none", interval, RetryInterval)
 	}
 	before := pmdoc.SchemaJSON()
+	// Any interval but RetryInterval: the timer the installer arms tells the two apart.
 	const retry = 20 * time.Millisecond
-	unreachable := &unreachableStore{}
-	installer := &Installer{Store: unreachable, Retry: retry}
-	running, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	fake := clocktest.New(time.Now())
+	running, stop := context.WithCancel(ctx)
 	defer stop()
-	installer.Run(running)
-	requireReadAgainAfter(t, "a store that cannot be read", unreachable.reads, retry)
+	unreachable := &unreachableStore{readRecord{now: fake.Now, end: stop}}
+	ended := startRun(running, &Installer{Store: unreachable, Retry: retry, Clock: fake})
+	driveRetries(t, "a store that cannot be read", fake, &unreachable.readRecord, retry)
+	testwait.Receive(t, fmt.Sprintf("the end of the installer's run on a store that cannot be read, which the store makes at its read %d", endingRead), ended)
+	requireReadAgainAfter(t, "a store that cannot be read", unreachable.times(), retry)
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a read that failed changed the installed schema")
 	}
@@ -309,19 +332,24 @@ func requireAFailedReadKeepsTheValueAndIsMadeAgain(t *testing.T, ctx context.Con
 // installing nothing, with the process still serving the schema it had, and so to running no
 // switch: the document sockets the server holds were admitted on the schema it still serves. The
 // installer reads such a store again after its retry interval, as it reads one that failed, and
-// not before: the next read can find the store a migration has corrected.
+// not before: the next read can find the store a migration has corrected. The retry runs on a
+// fake clock the test moves, as in requireAFailedReadKeepsTheValueAndIsMadeAgain.
 func requireARefusedValueKeepsTheValueAndIsReadAgain(t *testing.T, ctx context.Context, pool *store.Pool, built int) {
 	t.Helper()
 	before := pmdoc.SchemaJSON()
 	setStoreVersion(t, ctx, pool, 0)
+	// OnSwitch runs on Run's goroutine, and the count is read once that goroutine has ended.
 	switches := 0
+	// Any interval but RetryInterval: the timer the installer arms tells the two apart.
 	const retry = 20 * time.Millisecond
-	counted := &countedStore{pool: pool}
-	installer := &Installer{Store: counted, Retry: retry, OnSwitch: func() { switches++ }}
-	running, stop := context.WithTimeout(ctx, 300*time.Millisecond)
+	fake := clocktest.New(time.Now())
+	running, stop := context.WithCancel(ctx)
 	defer stop()
-	installer.Run(running)
-	requireReadAgainAfter(t, "a store whose schema fails validation", counted.reads, retry)
+	counted := &countedStore{readRecord: readRecord{now: fake.Now, end: stop}, pool: pool}
+	ended := startRun(running, &Installer{Store: counted, Retry: retry, Clock: fake, OnSwitch: func() { switches++ }})
+	driveRetries(t, "a store whose schema fails validation", fake, &counted.readRecord, retry)
+	testwait.Receive(t, fmt.Sprintf("the end of the installer's run on a store whose schema fails validation, which the store makes at its read %d", endingRead), ended)
+	requireReadAgainAfter(t, "a store whose schema fails validation", counted.times(), retry)
 	if string(pmdoc.SchemaJSON()) != string(before) {
 		t.Errorf("a schema that fails validation was installed")
 	}
@@ -331,16 +359,73 @@ func requireARefusedValueKeepsTheValueAndIsReadAgain(t *testing.T, ctx context.C
 	setStoreVersion(t, ctx, pool, built)
 }
 
-// requireReadAgainAfter holds reads, the moments an installer read a store it could not install
-// from, to a second read and more, each at least retry after the one before.
+// startRun runs installer's Run on a goroutine of its own until ctx ends, and answers a channel
+// that closes once Run has returned: the test drives the installer's clock meanwhile, so it
+// cannot wait for Run on its own goroutine.
+func startRun(ctx context.Context, installer *Installer) <-chan struct{} {
+	ended := make(chan struct{})
+	go func() {
+		defer close(ended)
+		installer.Run(ctx)
+	}()
+	return ended
+}
+
+// driveRetries moves fake, the installer's clock, through the installer's retries until record's
+// endingRead-th read, which ends the run. After each read before that one it waits until the
+// installer has armed its retry and moves the fake to it, which lets the next read come. It fails
+// at once when the retry armed is not the one timer pending, due retry after the read, the fake
+// standing where the read found it, so an installer that waits RetryInterval rather than the
+// retry it was given fails at its first retry. It fails at once, too, when a read comes before its
+// retry was armed and the fake moved past it: on the fake, a retry of zero fires as it is armed and
+// is never seen pending, so a retry that does not wait shows as a read that came too soon.
+func driveRetries(t *testing.T, what string, fake *clocktest.Fake, record *readRecord, retry time.Duration) {
+	t.Helper()
+	start := fake.Now()
+	for read := 1; ; read++ {
+		reads := testwait.Until(t, fmt.Sprintf("read %d of %s (the moments of the reads made, on the installer's clock)", read, what), func() ([]time.Time, bool) {
+			reads := record.times()
+			return reads, len(reads) >= read
+		})
+		// The fake moves only below, by retry once after each read before this one, so a read
+		// stamped before the last of those moves came before the retry that was to let it.
+		if want := start.Add(time.Duration(read-1) * retry); !reads[read-1].Equal(want) {
+			t.Fatalf("read %d of %s came at %v on the installer's clock, want %v, once the fake had moved past the retry after each of the %d reads before it: a retry that does not wait reads that store as fast as it fails",
+				read, what, reads[read-1], want, read-1)
+		}
+		if read == endingRead {
+			return
+		}
+		// What is armed is read before the count of reads, so a count that has not moved past
+		// read says no read came once the retry was armed.
+		var armed []time.Time
+		made := testwait.Until(t, fmt.Sprintf("the retry the installer arms on its clock after read %d of %s, or another read (the count of reads made)", read, what), func() (int, bool) {
+			armed = fake.Armed()
+			made := len(record.times())
+			return made, made > read || len(armed) > 0
+		})
+		if made > read {
+			t.Fatalf("read %d of %s came before the retry after read %d was armed and the fake moved past it (%d reads made, %d timers armed: %v): a retry that does not wait reads that store as fast as it fails",
+				read+1, what, read, made, len(armed), armed)
+		}
+		if want := fake.Now().Add(retry); !slices.EqualFunc(armed, []time.Time{want}, time.Time.Equal) {
+			t.Fatalf("after read %d of %s the installer armed %v on its clock, the fake at %v; want its one retry, due %v later at %v: an installer that waits another interval than the retry it was given reads that store when it was not told to",
+				read, what, armed, fake.Now(), retry, want)
+		}
+		fake.Advance(retry)
+	}
+}
+
+// requireReadAgainAfter holds reads, the moments on the installer's clock at which it read a store
+// it could not install from, to a second read and more, each at least retry after the one before.
 func requireReadAgainAfter(t *testing.T, what string, reads []time.Time, retry time.Duration) {
 	t.Helper()
 	if len(reads) < 2 {
-		t.Errorf("%s was read %d times in 300ms at a %v retry, want it read again", what, len(reads), retry)
+		t.Errorf("%s was read %d times before the installer's run returned, at a %v retry, want it read again", what, len(reads), retry)
 	}
 	for index := 1; index < len(reads); index++ {
 		if gap := reads[index].Sub(reads[index-1]); gap < retry {
-			t.Errorf("read %d of %s came %v after the read before it, want at least the retry interval %v (%d reads in 300ms): a retry that does not wait reads that store as fast as it fails",
+			t.Errorf("read %d of %s came %v after the read before it, want at least the retry interval %v (%d reads before the run returned): a retry that does not wait reads that store as fast as it fails",
 				index+1, what, gap, retry, len(reads))
 			break
 		}
@@ -491,25 +576,64 @@ func decodeSchema(t *testing.T, body []byte) pmdoc.BlockSchema {
 	return value
 }
 
-// unreachableStore is a store no read reaches, which records when each read of it was made. Run
-// reads it on the test's own goroutine, so the record needs no lock.
-type unreachableStore struct{ reads []time.Time }
+// endingRead is the read of unreachableStore or countedStore that ends the installer's run: the
+// third, so the reads the test holds take in two retries, the one after the first read and the
+// one after a retry.
+const endingRead = 3
+
+// readRecord is what unreachableStore and countedStore keep of their reads: the moment of each on
+// the installer's clock (now, reads), and the end of the installer's run (end, which cancels Run's
+// context), which record calls at the endingRead-th read. Run reads the store on a goroutine of its
+// own while the test reads the record to know when to move the installer's clock (driveRetries), so
+// mu guards reads.
+type readRecord struct {
+	now   func() time.Time
+	end   context.CancelFunc
+	mu    sync.Mutex
+	reads []time.Time
+}
+
+// record notes a read made at the installer's clock's now, and ends the installer's run where it
+// is the endingRead-th.
+func (r *readRecord) record() {
+	r.mu.Lock()
+	r.reads = append(r.reads, r.now())
+	made := len(r.reads)
+	r.mu.Unlock()
+	if made == endingRead {
+		r.end()
+	}
+}
+
+// times is the moment of each read made so far, on the installer's clock, earliest first.
+func (r *readRecord) times() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.reads)
+}
+
+// unreachableStore is a store no read reaches, which records when each read of it was made and
+// ends the installer's run at its endingRead-th read (readRecord).
+type unreachableStore struct {
+	readRecord
+}
 
 var errUnreachable = errors.New("the store is unreachable")
 
 func (s *unreachableStore) BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error) {
-	s.reads = append(s.reads, time.Now())
+	s.record()
 	return nil, errUnreachable
 }
 
-// countedStore is the store's pool, which records when each read of it began. Run reads it on the
-// test's own goroutine, so the record needs no lock.
+// countedStore is the store's pool, which records when each read of it began and ends the
+// installer's run at its endingRead-th read (readRecord). That read fails, since the context it
+// begins its transaction on is Run's; the test holds only when it began.
 type countedStore struct {
-	pool  *store.Pool
-	reads []time.Time
+	readRecord
+	pool *store.Pool
 }
 
 func (s *countedStore) BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
-	s.reads = append(s.reads, time.Now())
+	s.record()
 	return s.pool.BeginTx(ctx, options)
 }

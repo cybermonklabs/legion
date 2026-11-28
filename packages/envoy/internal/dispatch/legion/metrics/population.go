@@ -556,7 +556,7 @@ func TreeLinks(ctx context.Context, pool *store.Pool, project string) (map[strin
 // which holds no statistics on actor's fields, can take the partial index on a session's id
 // (events_session_actor_created_at_idx) for a selective one and read every session event of the
 // log to intersect it with the issues' rows. TestTheRoleEventsReadReadsTheIssuesRowsByIssue holds
-// the plan to the issues' index over a million events.
+// the plan to the issues' index under the statistics of a million-event log.
 const roleEventsStatement = `
 	with scoped as materialized (
 		select issue_key, actor, created_at from events where issue_key = any($1))

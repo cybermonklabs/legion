@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed/embedtest"
@@ -38,26 +39,31 @@ func (c *countingEmbedder) Embed(_ context.Context, texts []string, _ InputType)
 	return make([][]float32, len(texts)), nil
 }
 
+// Successive calls wait out the limiter's interval between them. The test runs in a synctest
+// bubble, the limiter built inside it, so the limiter's clock, its waits and the times
+// countingEmbedder records are the bubble's: each gap is measured on the clock the limiter waits
+// on, and the waits take no real time.
 func TestRateLimitedEmbedderPacesSuccessiveCallsAtLeastTheFloorApart(t *testing.T) {
-	inner := &countingEmbedder{}
-	limiter := NewRateLimitedEmbedder(inner)
-	limiter.setInterval(20 * time.Millisecond) // scaled down from rateLimitFloor for a fast test
+	synctest.Test(t, func(t *testing.T) {
+		inner := &countingEmbedder{}
+		limiter := NewRateLimitedEmbedder(inner)
 
-	ctx := context.Background()
-	for range 3 {
-		if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
-			t.Fatalf("Embed: %v", err)
+		ctx := context.Background()
+		for range 3 {
+			if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
 		}
-	}
-	if len(inner.calls) != 3 {
-		t.Fatalf("calls = %d, want 3", len(inner.calls))
-	}
-	for i := 1; i < len(inner.calls); i++ {
-		gap := inner.calls[i].Sub(inner.calls[i-1])
-		if gap < 20*time.Millisecond {
-			t.Errorf("gap between call %d and %d = %v, want at least 20ms", i-1, i, gap)
+		if len(inner.calls) != 3 {
+			t.Fatalf("calls = %d, want 3", len(inner.calls))
 		}
-	}
+		for i := 1; i < len(inner.calls); i++ {
+			gap := inner.calls[i].Sub(inner.calls[i-1])
+			if gap < 20*time.Millisecond {
+				t.Errorf("gap between call %d and %d = %v, want at least 20ms", i-1, i, gap)
+			}
+		}
+	})
 }
 
 func TestRateLimitedEmbedderBacksOffImmediatelyOnThrottle(t *testing.T) {
@@ -216,19 +222,24 @@ func TestRateLimitedEmbedderBackOffHalvesTheRate(t *testing.T) {
 	}
 }
 
+// Untroubled calls at the floor leave the interval there: adjust floors the recovery at
+// rateLimitFloor. The test runs in a synctest bubble, the limiter built inside it, so the four
+// waits of the floor between its five calls, 3s in all, pass on the bubble's clock, in no real time.
 func TestRateLimitedEmbedderNeverRecoversBelowTheFloor(t *testing.T) {
-	inner := &countingEmbedder{}
-	limiter := NewRateLimitedEmbedder(inner) // starts at rateLimitFloor already
+	synctest.Test(t, func(t *testing.T) {
+		inner := &countingEmbedder{}
+		limiter := NewRateLimitedEmbedder(inner) // starts at rateLimitFloor already
 
-	ctx := context.Background()
-	for range 5 {
-		if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
-			t.Fatalf("Embed: %v", err)
+		ctx := context.Background()
+		for range 5 {
+			if _, err := limiter.Embed(ctx, []string{"x"}, InputDocument); err != nil {
+				t.Fatalf("Embed: %v", err)
+			}
 		}
-	}
-	if got := limiter.Interval(); got != rateLimitFloor {
-		t.Errorf("Interval() after 5 successes starting at the floor = %v, want %v (floored)", got, rateLimitFloor)
-	}
+		if got := limiter.Interval(); got != rateLimitFloor {
+			t.Errorf("Interval() after 5 successes starting at the floor = %v, want %v (floored)", got, rateLimitFloor)
+		}
+	})
 }
 
 func TestRateLimitedEmbedderNeverBacksOffPastTheCeiling(t *testing.T) {
