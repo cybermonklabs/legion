@@ -846,10 +846,11 @@ func (c *stepClaimant) reconnect() {
 
 // serve reads every frame the daemon sends sh until the connection closes: it answers the
 // protocol negotiation and the state probe, and acknowledges each prompt and hands it to the walk,
-// whose take starts its turn.
+// whose take starts its turn. The test can end while it answers a frame the daemon sent just
+// before: the answer its own close at the end cut short is no failure (shim.cutShort).
 func (c *stepClaimant) serve(sh *shim) {
 	reply := func(frame shimwire.Frame) {
-		if err := sh.writer.WriteFrame(frame); err != nil {
+		if err := sh.writer.WriteFrame(frame); err != nil && !sh.cutShort(err) {
 			c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 		}
 	}

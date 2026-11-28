@@ -1057,6 +1057,8 @@ type shim struct {
 	conn   net.Conn
 	lines  *bufio.Reader
 	writer *shimwire.Writer
+	// ended is set as the test ends, just before the test's own close of conn (end).
+	ended atomic.Bool
 }
 
 // dialShim connects to the worker stream at address and says hello with bootToken, returning
@@ -1067,8 +1069,7 @@ func dialShim(t *testing.T, address, bootToken string) *shim {
 	if err != nil {
 		t.Fatalf("dial the worker stream %s: %v", address, err)
 	}
-	t.Cleanup(func() { conn.Close() })
-	s := &shim{t: t, conn: conn, lines: bufio.NewReader(conn), writer: shimwire.NewWriter(conn)}
+	s := newTestShim(t, conn)
 	s.send(shimwire.Hello2{BootToken: bootToken})
 	if frame := s.next(); frame.FrameType() != shimwire.TypeHelloAck {
 		t.Fatalf("the daemon answered the hello with %#v, want hello_ack", frame)
@@ -1081,6 +1082,21 @@ func (s *shim) send(frame shimwire.Frame) {
 	if err := s.writer.WriteFrame(frame); err != nil {
 		s.t.Fatalf("send %s: %v", frame.FrameType(), err)
 	}
+}
+
+// end is the test's own close of the connection as the test ends. It marks the shim ended
+// first, so a write that close cuts short is known for one (cutShort).
+func (s *shim) end() {
+	s.ended.Store(true)
+	_ = s.conn.Close()
+}
+
+// cutShort is whether err, a failed write to the daemon, is a write the test's own close at its
+// end cut short (end): a reader of the test's was answering a frame the daemon sent just before,
+// and no daemon is left to miss the answer. Every other failed write is a failure, a close of the
+// connection the test did not make and the daemon's close of its own end among them.
+func (s *shim) cutShort(err error) bool {
+	return s.ended.Load() && errors.Is(err, net.ErrClosed)
 }
 
 // next is the next frame the daemon sends.

@@ -297,11 +297,12 @@ func (c *convergeClaimant) serve() {
 	}
 }
 
-// send writes one frame to the daemon; the reader and the step both write.
+// send writes one frame to the daemon; the reader and the step both write. The reader's answer
+// the test's own close at its end cut short is no failure (shim.cutShort).
 func (c *convergeClaimant) send(frame shimwire.Frame) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.sh.writer.WriteFrame(frame); err != nil {
+	if err := c.sh.writer.WriteFrame(frame); err != nil && !c.sh.cutShort(err) {
 		c.p.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
 }
