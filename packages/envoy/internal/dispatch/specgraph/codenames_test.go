@@ -1,6 +1,6 @@
 package specgraph
 
-//ci:reads packages/envoy/cmd/spec-check/testdata/** codeNamesTexts reads each file under ../../../cmd/spec-check/testdata for TestCodeNamesIsItsFormAtTheMergeBase
+//ci:reads packages/envoy/cmd/spec-check/testdata/** codeNamesTexts reads each file under ../../../cmd/spec-check/testdata for TestCodeNamesIsItsFormWithNoByteCheck
 
 import (
 	"bytes"
@@ -10,7 +10,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -87,16 +86,17 @@ var codeNamesRows = []struct {
 	{text: "", want: nil},
 }
 
-// CodeNames gives, for each text, the names that its form at the merge base gives
-// (codeNamesAtMergeBase), in the same order: it only skips an expression where the text or the
-// word holds no character the expression must match. The two forms are held equal over each text
+// CodeNames gives, for each text, the names that its form with no byte check gives
+// (codeNamesWithNoByteCheck), in the same order: it only skips an expression where the text or the
+// word holds no character the expression must match, so its byte checks never change what it
+// gives, for each expression as it stands. The two forms are held equal over each text
 // of the testdata of this package and of spec-check (each line of each file, each string scalar of
 // each YAML document, and each string of each JSON value), each text of TestCodeNames, and the
 // edge table codeNamesEdges. Each testdata directory must give a file, and the test logs how many
 // texts it held, so a wrong path cannot pass it with no text. The texts, each once, are judged in
 // parallel groups of at most 64 KiB, or of one longer text, so that no one leaf runs the slower
 // form over all of them.
-func TestCodeNamesIsItsFormAtTheMergeBase(t *testing.T) {
+func TestCodeNamesIsItsFormWithNoByteCheck(t *testing.T) {
 	t.Parallel()
 	texts := map[string]bool{}
 	for _, dir := range []string{"testdata", "../../../cmd/spec-check/testdata"} {
@@ -128,8 +128,8 @@ func TestCodeNamesIsItsFormAtTheMergeBase(t *testing.T) {
 		t.Run(fmt.Sprintf("texts %d to %d", start, end-1), func(t *testing.T) {
 			t.Parallel()
 			for _, text := range group {
-				if got, want := CodeNames(text), codeNamesAtMergeBase(text); !slices.Equal(got, want) {
-					t.Errorf("CodeNames(%q) = %q, and its form at the merge base gives %q", Cut(text), got, want)
+				if got, want := CodeNames(text), codeNamesWithNoByteCheck(text); !slices.Equal(got, want) {
+					t.Errorf("CodeNames(%q) = %q, and its form with no byte check gives %q", Cut(text), got, want)
 				}
 			}
 		})
@@ -138,10 +138,10 @@ func TestCodeNamesIsItsFormAtTheMergeBase(t *testing.T) {
 	t.Logf("%d rows of TestCodeNames and %d texts of the edge table: %d texts, each once, in %d groups", len(codeNamesRows), len(codeNamesEdges), len(sorted), groups)
 }
 
-// CodeNames and its form at the merge base give the same names for each text the fuzzer writes,
+// CodeNames and its form with no byte check give the same names for each text the fuzzer writes,
 // from the edge table and the texts of TestCodeNames. Go runs the seeds alone, as a test does,
 // unless -fuzz names this target.
-func FuzzCodeNamesIsItsFormAtTheMergeBase(f *testing.F) {
+func FuzzCodeNamesIsItsFormWithNoByteCheck(f *testing.F) {
 	for _, text := range codeNamesEdges {
 		f.Add(text)
 	}
@@ -149,8 +149,8 @@ func FuzzCodeNamesIsItsFormAtTheMergeBase(f *testing.F) {
 		f.Add(row.text)
 	}
 	f.Fuzz(func(t *testing.T, text string) {
-		if got, want := CodeNames(text), codeNamesAtMergeBase(text); !slices.Equal(got, want) {
-			t.Fatalf("CodeNames(%q) = %q, and its form at the merge base gives %q", Cut(text), got, want)
+		if got, want := CodeNames(text), codeNamesWithNoByteCheck(text); !slices.Equal(got, want) {
+			t.Fatalf("CodeNames(%q) = %q, and its form with no byte check gives %q", Cut(text), got, want)
 		}
 	})
 }
@@ -205,6 +205,9 @@ var codeNamesEdges = func() []string {
 		"Test", "Tests", "Test_", "TestA", "xTestA", "Test1", "Testament", "Test\u00c9", "TestA.", "TestA/TestB", "TestA-TestB", "aTest_b", "TestTest",
 		"pkg.Symbol", "pkg.symbol", "Pkg.Symbol", "pkg.\u00c9", "p.S", "e.g.", "i.e.", "e.G", "example.com",
 		"readSet", "readSET", "iPhone", "mmHg", "r\u00e9adSet", "readS\u00e9t",
+		// The A and Z edges of the ASCII capitals that lowerCamel and packageSymbol must find.
+		"readZip", "pkg.Zap", "readAll", "pkg.Api", "readZip,", "pkg.Zap.", "readAll;", "pkg.Api!",
+		"\u201creadZip\u201d", "\u201cpkg.Zap\u201d", "\"readAll\"", "'pkg.Api'", "(readZip)", "\u00abpkg.Api\u00bb",
 		strings.Repeat("a", 100000),
 		strings.Repeat("a", 100000) + ".go",
 		"Test" + strings.Repeat("A", 100000),
@@ -296,15 +299,17 @@ func jsonStrings(texts []string, value any) []string {
 	return texts
 }
 
-// codeNamesAtMergeBase is the form of CodeNames at the merge base of INFRA-6355's pull request,
-// commit 467dfdcae9cbb5d9d1c9b2eb34c48a5daac0c527: its body as it stands there, over copies of the
-// expressions it reads there, each named with base before its name. productNames and
-// quoteOrBracket are shared, since the pull request does not change them.
-func codeNamesAtMergeBase(text string) []string {
-	found := baseBacktickSpan.FindAllString(text, -1)
-	for _, token := range strings.Fields(baseBacktickSpan.ReplaceAllString(text, " ")) {
+// codeNamesWithNoByteCheck is CodeNames with no byte check before an expression: the body of
+// CodeNames before the byte checks, as it stands at the merge base of INFRA-6355's pull request,
+// commit 467dfdcae9cbb5d9d1c9b2eb34c48a5daac0c527, over the expressions of the package as they
+// stand. The pull request changes no expression, so at the pull request it is the form of
+// CodeNames at the merge base; and since it reads the expressions as they stand, a later change
+// to an expression is held to that expression's byte check too.
+func codeNamesWithNoByteCheck(text string) []string {
+	found := backtickSpan.FindAllString(text, -1)
+	for _, token := range strings.Fields(backtickSpan.ReplaceAllString(text, " ")) {
 		word := strings.TrimLeftFunc(token, func(r rune) bool { return strings.ContainsRune(`"'<`, r) || quoteOrBracket(r) })
-		if baseEndsWithCall.MatchString(word) {
+		if endsWithCall.MatchString(word) {
 			found = append(found, strings.TrimRightFunc(word, func(r rune) bool {
 				return strings.ContainsRune(`.,;:!?"'`, r) || unicode.Is(unicode.Pf, r)
 			}))
@@ -315,37 +320,18 @@ func codeNamesAtMergeBase(text string) []string {
 		if word == "" || slices.Contains(productNames, word) {
 			continue
 		}
-		if baseFileEnding.MatchString(word) || baseSlashBetweenLetters.MatchString(word) || baseUnderscoreBetween.MatchString(word) ||
-			baseLowerCamel.MatchString(word) || basePackageSymbol.MatchString(word) {
+		if fileEnding.MatchString(word) || slashBetweenLetters.MatchString(word) || underscoreBetween.MatchString(word) ||
+			lowerCamel.MatchString(word) || packageSymbol.MatchString(word) {
 			found = append(found, word)
 			continue
 		}
-		for _, name := range baseNameRun.FindAllString(word, -1) {
-			if baseGoTestName(name) {
+		for _, name := range nameRun.FindAllString(word, -1) {
+			if goTestName(name) {
 				found = append(found, name)
 			}
 		}
 	}
 	return found
-}
-
-// The expressions of codenames.go and selector.go that CodeNames reads at the merge base, as they
-// stand there.
-var (
-	baseBacktickSpan        = regexp.MustCompile("`[^`\n]+`")
-	baseFileEnding          = regexp.MustCompile(`(?i)\.(?:go|ts|tsx|js|jsx|mjs|cjs|py|md|yaml|yml|json|jsonl|toml|sh|bash|sql|rs|lean|v|txt|html|css|proto|lock|mod|cfg|ini|env)$`)
-	baseSlashBetweenLetters = regexp.MustCompile(`[A-Za-z]/[A-Za-z]`)
-	baseEndsWithCall        = regexp.MustCompile(`[\p{L}\p{N}_]\(\)`)
-	baseUnderscoreBetween   = regexp.MustCompile(`[A-Za-z0-9]_[A-Za-z0-9]`)
-	baseLowerCamel          = regexp.MustCompile(`^[a-z][a-z0-9]+[A-Z][a-z][A-Za-z0-9]*$`)
-	basePackageSymbol       = regexp.MustCompile(`^[a-z][a-z0-9]*\.[A-Z][A-Za-z0-9_]*$`)
-	baseNameRun             = regexp.MustCompile(`[\p{L}\p{N}_]+`)
-	baseTopLevelTestName    = regexp.MustCompile(`^Test(?:[A-Z0-9_][A-Za-z0-9_]*)?$`)
-)
-
-// baseGoTestName is goTestName at the merge base, over baseTopLevelTestName.
-func baseGoTestName(name string) bool {
-	return name != "Test" && baseTopLevelTestName.MatchString(name)
 }
 
 // An id is words of lower-case ASCII letters and digits joined by single hyphens, with no word that
