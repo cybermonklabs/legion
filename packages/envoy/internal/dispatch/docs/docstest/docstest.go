@@ -151,7 +151,9 @@ func Dial(t testing.TB, url string, header http.Header, artifactID string, doc *
 	})
 	got := testwait.Receive(t, fmt.Sprintf("document %s's room to answer the upgrade of %s", artifactID, url), answered)
 	if got.err != nil {
-		t.Fatal(got.err)
+		// Through Fatalf, which a caller that dials again overrides to take the refusal
+		// (cmd/dispatch's lenientT).
+		t.Fatalf("%v", got.err)
 	}
 	testcleanup.Add(t, got.peer.Close)
 	return got.peer

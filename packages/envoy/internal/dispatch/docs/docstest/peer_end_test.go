@@ -481,3 +481,42 @@ func TestShutdownWaitsForTheServicesShutdownAndFailsByName(t *testing.T) {
 		requireGiveUp(t, test, "the document service's shutdown to return 30s before the test binary's deadline")
 	})
 }
+
+// fatalfTaker is a test whose Fatalf hands its failure back to the row as a panic, as a caller
+// that dials again does (cmd/dispatch's lenientT): only Fatalf is overridden.
+type fatalfTaker struct{ *testing.T }
+
+type takenFatalf struct{ text string }
+
+func (f fatalfTaker) Fatalf(format string, args ...any) {
+	panic(takenFatalf{fmt.Sprintf(format, args...)})
+}
+
+// A room that refuses the upgrade is reported through Fatalf, the one method a caller that dials
+// again overrides to take the refusal, and not through Fatal, which such a caller cannot take.
+func TestDialReportsARefusalThroughFatalf(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "the room is closing", http.StatusServiceUnavailable)
+	}))
+	testcleanup.Add(t, server.Close)
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	taken := func() (taken *takenFatalf) {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if got, ok := recovered.(takenFatalf); ok {
+					taken = &got
+					return
+				}
+				panic(recovered)
+			}
+		}()
+		Dial(fatalfTaker{t}, url, http.Header{}, "doc", crdt.New())
+		return nil
+	}()
+	if taken == nil {
+		t.Fatal("Dial returned a peer from a room that refused the upgrade")
+	}
+	if !strings.Contains(taken.text, `503 Service Unavailable "the room is closing"`) {
+		t.Errorf("Dial's refusal = %q, want the room's refusal of the upgrade, with its status and its words", taken.text)
+	}
+}
