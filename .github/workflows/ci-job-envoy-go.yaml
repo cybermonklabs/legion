@@ -53,7 +53,7 @@ jobs:
       # One leg's failure leaves the others running, so each reports its own packages.
       fail-fast: false
       matrix:
-        leg: [1, 2, 3, 4, 5]
+        leg: [1, 2, 3, 4, 5, 6]
     # The unit step's -timeout must fire before the runner cancels the job, so a hung test prints
     # the dump that names it: about 2 minutes of setup, then the unit step's own timeout-minutes of
     # 30 (its comment below says why 30), then the connections report's own 1, within 35.
@@ -154,7 +154,7 @@ jobs:
       # packages starts no job with a database. go_legs.py prints the leg's packages only once
       # `go list ./...` and the file agree, no package in two places; a package the file does not
       # name (a pull request that adds one and no line in .github/go-legs.yaml, which this job,
-      # held back on a pull request, does not run) runs in leg 5, the last, which `unlisted` names,
+      # held back on a pull request, does not run) runs in leg 6, the last, which `unlisted` names,
       # with a warning in every leg, so a merge group neither fails on it nor runs it nowhere; and
       # `set -o pipefail` is what fails the step when go_legs.py refuses the file, rather than test
       # what xargs got; .github/scripts/ci_job_reads.py's
@@ -173,7 +173,10 @@ jobs:
       # database_skips=UNKNOWN and fails too, a leg that holds none of them prints
       # database_skips=NONE, and a failed test of any package of the leg fails it. The skips of the
       # rest of the module are not counted; hold_envoy_legs holds every package of the broker's
-      # table to a leg here, so each is counted in one. The -timeout 20m bounds each package's
+      # table to a leg here, so each is counted in one. cmd/cipherd runs in legs 1 and 2, a group of
+      # its tests each, which go_legs.py pipes in as -run=^(...)$ beside the package: the script
+      # counts the skips of the tests that -run selects, so each of its tests is counted in the one
+      # leg that runs it. The -timeout 20m bounds each package's
       # test binary, and a leg's packages run several at a time, so one that starts late ends up to
       # 20 minutes after its own start: the step's own limit of 30 leaves a package that starts
       # within the first 10 minutes its whole -timeout, and so its dump, and no leg's packages sum

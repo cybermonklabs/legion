@@ -1802,10 +1802,10 @@ def hold_envoy_legs(entry: dict, root=ENVOY) -> None:
 
 hold_envoy_legs(ENVOY_LEGS)
 # The packages the unit legs run: what they list, a package split by test across legs once
-# (`- cmd/listener: 1`, though only race legs split one today), and each package `go list ./...`
-# prints that no place names, which envoy-go's last leg runs (leg_run_packages), read from the
-# module rather than from the file, so the gate's Run covers a new package's test files before
-# anyone lists it.
+# (`- cmd/cipherd: 1`, as cmd/cipherd and internal/dispatch/legion are), and each package
+# `go list ./...` prints that no place names, which envoy-go's last leg runs (leg_run_packages),
+# read from the module rather than from the file, so the gate's Run covers a new package's test
+# files before anyone lists it.
 ENVOY_GO_PACKAGES = go_legs.go_packages(ENVOY)
 ENVOY_UNIT_PACKAGES = leg_run_packages(ENVOY_LEGS, ENVOY_PLAIN_JOB, ENVOY_GO_PACKAGES)
 ENVOY_RACE_LEG_PACKAGES = go_legs.job_packages(ENVOY_LEGS[ENVOY_RACE_JOB])

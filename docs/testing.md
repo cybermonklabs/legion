@@ -928,10 +928,10 @@ go test -timeout 20m ./internal/dispatch/legion/
 A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
-`.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
-its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A
-package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs once in a
-leg of each of two jobs, a plain one and a race one, each in a mode of its own.
+`.github/go-legs.yaml` names for it, or, as `internal/daemon`, `cmd/listener` and `cmd/cipherd` do,
+in a group of its tests in each of several legs of one job (or under `elsewhere`, with the job that
+runs it). A package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs
+once in a leg of each of two jobs, a plain one and a race one, each in a mode of its own.
 When you add, remove, rename or move a package of either module, change its line there in the same
 change. A package `go list ./...` prints and the file does not name still runs, in exactly one
 leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg

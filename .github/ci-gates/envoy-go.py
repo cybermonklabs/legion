@@ -55,10 +55,10 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # tree, its command and the writer hold's client among them (DATABASE_SKIPS_PKGS less
     # DEFAULT_EXCEPT; hold_envoy_legs holds each of those to a leg here). The Run names every
     # package the unit legs run (ENVOY_UNIT_PACKAGES, from leg_run_packages): those go-legs.yaml
-    # lists in them, and each package `go list ./...` prints that no place names, which leg 5, the
-    # job `unlisted` names, runs - so a change to only such a package's test files starts this
-    # job. Each leg runs the step over its own share, so the legs together compile and run those
-    # packages, each once.
+    # lists in them, and each package `go list ./...` prints that no place names, which leg 6, the
+    # last of the job `unlisted` names, runs - so a change to only such a package's test files
+    # starts this job. Each leg runs the step over its own share, so the legs together compile and
+    # run those packages, each once.
     # It names those and not the superset ./...: the module but the race lane's packages other
     # than those whose skips the legs count (the auth service's natscallout runs in a leg too),
     # internal/integration, which the integration step tests, the text checks, which the

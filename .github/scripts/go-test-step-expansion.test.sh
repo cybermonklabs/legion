@@ -239,7 +239,7 @@ skipping = {name: {test for command in ex.commands_of(step) for test in ex.skip_
             for name, step in steps.items()}
 print(len(steps), " ".join(test + ":" + str(sum(test in tests for tests in skipping.values()))
                            for test in audited_scripts.BACKEND_COUNT_TESTS))')" \
-    "5 TestEverySecretFormNamesTheSourceItUses:5 TestNoSecretFormAsksTheBrokerForACredential:5 TestUseCommandOutsideASessionReachesTheMachineSource:5 TestTheChainSkipsAbsenceAndStopsOnABrokenSource:5 TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:5")"
+    "6 TestEverySecretFormNamesTheSourceItUses:6 TestNoSecretFormAsksTheBrokerForACredential:6 TestUseCommandOutsideASessionReachesTheMachineSource:6 TestTheChainSkipsAbsenceAndStopsOnABrokenSource:6 TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:6")"
 
 # The script stops at exit 2 on the first step it cannot read, and it runs by hand, so nothing
 # told the pull request that made a step unreadable: #4319 moved the skips step behind
