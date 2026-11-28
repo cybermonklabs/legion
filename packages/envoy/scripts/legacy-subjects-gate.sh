@@ -468,9 +468,11 @@ fi
 # names as another address of the same NATS servers. A listener container on another bus (a
 # load-test stack's listeners on their own NATS) is named and not read; one on this bus that is
 # missed, by an address no --bus-alias named, is named by its durable instead (the judge's census),
-# so nothing opens on it.
+# so nothing opens on it. With no --bus-alias the list is [], which is what jq's $ARGS.positional
+# gives for no argument, so no jq is started for it.
+bus_aliases='[]'
 bus_urls=$(jq -r '.urls // ""' "$work/identity.json")
-bus_aliases=$(jq -cn '$ARGS.positional' --args ${aliases[@]+"${aliases[@]}"})
+[ -z "${aliases[0]+set}" ] || bus_aliases=$(jq -cn '$ARGS.positional' --args ${aliases[@]+"${aliases[@]}"})
 
 # --- the listeners in the cluster -----------------------------------------------------------------
 pods_error=""
@@ -836,7 +838,18 @@ if [ -n "$census_name" ] && [ -s "$work/census-lines.jsonl" ]; then
     else
       verdict=$(jq -cn --arg head "$head" --arg error "$(first_line "$work/compare.err")" '{verdict: "unknown", detail: "GitHub could not compare \($head): \($error)"}')
     fi
-    jq -cn --arg build "$build" --argjson verdict "$verdict" '{key: $build, value: $verdict}' >>"$work/build-verdicts.jsonl"
+    # Each verdict is one line of JSON that the jq below reads with --slurpfile. A build name of
+    # these plain characters needs no escape in JSON, and a verdict of one line is one JSON value
+    # here (a jq printed it, or it is one of the literals above), so printf writes a line of the
+    # same value jq would build. Anything else (an empty or a second line, as a compare file of none
+    # or two documents gives, or a value too long to pass as an argument) still goes to jq, whose
+    # error stops the gate as it did.
+    if [[ $build != *[!@/._0123456789abcdefghijklmnopqrstuvwxyz-]* && -n $verdict && $verdict != *$'\n'* ]] &&
+      (( ${#build} + ${#verdict} <= 4096 )); then
+      printf '{"key":"%s","value":%s}\n' "$build" "$verdict" >>"$work/build-verdicts.jsonl"
+    else
+      jq -cn --arg build "$build" --argjson verdict "$verdict" '{key: $build, value: $verdict}' >>"$work/build-verdicts.jsonl"
+    fi
   done <"$work/builds"
   jq --slurpfile verdicts "$work/build-verdicts.jsonl" '.builds = ($verdicts | from_entries)' "$work/facts.json" >"$work/facts.tmp" &&
     mv "$work/facts.tmp" "$work/facts.json"
