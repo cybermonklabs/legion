@@ -771,9 +771,9 @@ export function readNextTreePage(
 
 /**
  * The ids the page draws the rows of the nodes `page` brought by, `page` being a next page merged
- * into `held`: each node of it whose id `held` draws no node by, since a node the page repeats - a
- * parent or a context node the answer held already, or the block of an ask it held, whose row is
- * drawn by that block - is no node it brought. Each is the id its rows are
+ * into `held`: each node of it whose id `held` draws no node by, since a node whose row is drawn
+ * already - the block of an ask the answer held, whose row is drawn by that block - is no node it
+ * brought. Each is the id its rows are
  * drawn by, from the issue read and the asks read the page holds, which the tree is built from
  * (`tree-nodes.ts`' `nodeIdsIn`): a decision and a statement by its block in its document, an ask
  * by the block the asks read names it was indexed from. Where the page holds no issue read, each
