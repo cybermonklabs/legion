@@ -2369,25 +2369,32 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     // A steered run's non-terminal end sets neither flag: the host holds the steered message,
-    // which `ctx.hasPendingMessages()` answers, and goes on with it, so the turn ends at the
-    // run's terminal end, whose pass reports it, once. Red when an end at which the host holds a
-    // message is taken for a turn closed with no pass and sends a report of its own, after a
-    // phase worker's settle: work done at no turn's end, and with it in place CI's run of the
-    // real host's steering case (legion-stall-watchdog-omp.test.ts) found the message gone by
-    // the time the pane's next `agent_end` handler read it.
+    // which `ctx.hasPendingMessages()` answers, and starts a run for it, whose end reports the
+    // turn: here its pass, once, whose settle is the run's first and is answered by the run's own
+    // continuation. Red when an end at which the host holds a message is taken for a turn closed
+    // with no pass: the phase worker then settles at no turn's end, warns that the reminder it
+    // earned is not sent, and reports, and the steered run's pass gets no continuation. With that
+    // settle in place, CI's run of the real host's steering case
+    // (legion-stall-watchdog-omp.test.ts) found the message gone by the time the pane's next
+    // `agent_end` handler read it.
     test("an end at which the host holds a message to go on with sends no activity report", async () => {
-      const architect = await bootStalling({ role: "architect", issue: "REPO-43" });
-      await architect.starts();
+      const worker = await bootStalling({});
+      await worker.starts();
+      await worker.arrives(assignment);
 
-      await hook(architect.handlers, "agent_end")(endedOn("Reading the steer."), {
-        ...architect.context,
-        hasPendingMessages: () => true,
+      const { warnings } = await loggedWarnings(async () => {
+        await hook(worker.handlers, "agent_end")(endedOn("Reading the steer."), {
+          ...worker.context,
+          hasPendingMessages: () => true,
+        });
       });
-      expect(activityReports(architect)).toEqual([]);
+      expect(warnings).toEqual([]);
+      expect(activityReports(worker)).toEqual([]);
 
-      await architect.settles("Answered the steer.");
-      await architect.ends(endedOn("Answered the steer."));
-      expect(activityReports(architect)).toEqual([reportOf(architect, null)]);
+      await worker.starts();
+      expect(await worker.settles("Answered the steer.")).toEqual(followUp("handoff_complete"));
+      await worker.ends(endedOn("Answered the steer."));
+      expect(activityReports(worker)).toEqual([reportOf(worker, null)]);
     });
 
     // A phase worker's turn closed with no pass settles its reminder at its `agent_end`, so the

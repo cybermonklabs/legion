@@ -1045,9 +1045,10 @@ export default function legionExtension(pi: PiApi): void {
     const passReported = !subagent && reportingStopPasses.delete(sessionID);
     // The host closed the turn — it goes on with nothing, holds no message, and waits on no
     // background job's result, which starts the next run and gets the pass the host defers until
-    // then — and no pass reported it. A turn whose end finds a message waiting has not ended: the
-    // host goes on with the message, and the run's terminal end, whose pass reports the turn,
-    // comes after it.
+    // then — and no pass reported it. An end at which the host holds a message is no turn's end:
+    // the host starts a run for that message, and that run's end reports the turn, by its pass or
+    // here. The pinned host starts none after an interrupt-reason abort that left only follow-ups
+    // or held steers queued, which no Legion pane queues.
     const closedWithNoPass =
       !subagent &&
       !passReported &&

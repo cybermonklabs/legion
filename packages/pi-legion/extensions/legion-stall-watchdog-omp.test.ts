@@ -556,8 +556,8 @@ test.skipIf(skip)(
     // watch reads none of it and closes the run's calls at either end, because the host writes
     // every call's `tool_execution_end` before a run's `turn_end` and `agent_end` — so no call of
     // the run is open at that point — and because the turn after it is a turn of its own, which a
-    // ladder judging the ended run's calls would abort (`legion.ts`'s `agent_end` handler, and
-    // the case in `legion.test.ts` that drives `willContinue`).
+    // ladder judging the ended run's calls would abort (the stall watch's `agent_end` handler in
+    // `legion.ts`, and the case in `legion.test.ts` that drives `willContinue`).
     const ends = await pane.until("the two run ends this session reported", async () => {
       const seen = await pane.agentEnds();
       return seen.length >= 2 ? seen : undefined;
