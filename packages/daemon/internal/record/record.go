@@ -2042,7 +2042,7 @@ func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixM
 // from one again, or the one that replaced this.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
 	if openedAt.IsZero() {
-		return c.Generation == 0
+		return true
 	}
 	return openedAt.Equal(c.OpenedAt)
 }
