@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/config"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -17,7 +18,7 @@ import (
 // listenerCredentialWait is how long the listener's start waits out a refusal of its NATS
 // credential (bus.WithCredentialWait), counted from its first try to connect, across its connects:
 // the main client's and the stream's reconcile on it, then the role lane's and the session
-// consumers' (natsStart.option). main passes it to runListener, which makes the start with it
+// consumers' (natsStart.options). main passes it to runListener, which makes the start with it
 // (newNATSStart). A server refuses a new nkey until it reloads a configuration
 // that names it, and a hub's servers reload only once the kubelet has refreshed each one's mounted
 // configuration. On 2026-11-22 the last of a hub's servers reloaded a session listener's new nkey
@@ -37,31 +38,41 @@ const listenerCredentialWait = 180 * time.Second
 // each on a connection of its own and each tried again by the start rule (cmd/listener/README.md,
 // "Start") but for a refusal of the credential that outlasts wait, which ends the start
 // (connectListener, openStartConnection). wait is the credential wait of the whole start, counted
-// from began, the first connect's first try (option), and refusal the last refusal of the
+// from began, the first connect's first try (options), and refusal the last refusal of the
 // credential a connect is waiting out: nil before the first refusal and from the moment that
-// connect gets in (admitted), whatever the step it belongs to does after.
+// connect gets in (admitted), whatever the step it belongs to does after. clock is the clock the
+// start counts its bound by, and extra the options each of its connects takes after its wait:
+// clock.Real and none in main's start (newNATSStart). A test of the start gives it a
+// clocktest.Fake and the environment its nkey seed is in (heldStart), and hands the same fake to
+// each connect (bus.WithStartClock), so it reads and moves past each wait the start asks for.
 type natsStart struct {
 	wait    time.Duration
 	once    sync.Once
 	began   time.Time
 	refusal atomic.Pointer[string]
+	clock   clock.Clock
+	extra   []bus.ConnectOption
 }
 
-// newNATSStart is a start that waits out a refusal of the credential for up to wait.
-func newNATSStart(wait time.Duration) *natsStart { return &natsStart{wait: wait} }
+// newNATSStart is a start that waits out a refusal of the credential for up to wait, on the
+// process's clock.
+func newNATSStart(wait time.Duration) *natsStart {
+	return &natsStart{wait: wait, clock: clock.Real()}
+}
 
-// option is the option each connect of the start takes: what is left of the start's wait, counted
-// from the first connect's first try, which the first call marks, handing each refusal to refused
-// and the connect's getting in to admitted as the bus meets them (bus.WithCredentialWait). Behind a
-// hub whose servers reload a new nkey one at a time, the main client can get in through the one
-// server that has reloaded while the role lane or the session-consumer connection meets one that
-// has not, so each waits out that refusal under the same bound. A connect made once the bound has
-// passed gets no wait (a bound of zero or less): it tries ten times, a second apart, whatever the
-// error, as every connect did before the wait. A dial that fails for another reason than a refusal
-// gets those ten tries whatever is left of the bound.
-func (s *natsStart) option() bus.ConnectOption {
-	s.once.Do(func() { s.began = time.Now() })
-	return bus.WithCredentialWait(s.wait-time.Since(s.began), s.refused, s.admitted)
+// options are the options each connect of the start takes: what is left of the start's wait,
+// counted from the first connect's first try, which the first call marks, handing each refusal to
+// refused and the connect's getting in to admitted as the bus meets them (bus.WithCredentialWait),
+// then the start's extra options. Behind a hub whose servers reload a new nkey one at a time, the
+// main client can get in through the one server that has reloaded while the role lane or the
+// session-consumer connection meets one that has not, so each waits out that refusal under the
+// same bound. A connect made once the bound has passed gets no wait (a bound of zero or less): it
+// tries ten times, a second apart, whatever the error, as every connect did before the wait. A
+// dial that fails for another reason than a refusal gets those ten tries whatever is left of the
+// bound.
+func (s *natsStart) options() []bus.ConnectOption {
+	s.once.Do(func() { s.began = s.clock.Now() })
+	return append([]bus.ConnectOption{bus.WithCredentialWait(s.wait-s.clock.Now().Sub(s.began), s.refused, s.admitted)}, s.extra...)
 }
 
 // refused records err as the last refusal of the credential.
@@ -114,11 +125,11 @@ func startFailureLine(err error, start *natsStart, environment func(string) (str
 // startSessionDelivery opens the listener's session-consumer connection (connectSessionDelivery)
 // as a connect of the start: on cfg's servers, with inactiveThreshold and the listener's main
 // client, stream, and, on an edge listener, its inbox prefix (edgeGrant.connectOptions), waiting out
-// a refusal of the credential under the start's bound (natsStart.option), which /healthz reports
+// a refusal of the credential under the start's bound (natsStart.options), which /healthz reports
 // while it lasts, and forgotten once its connect gets in, before the check of the server's version
 // that follows it.
 func startSessionDelivery(cfg config.Service, inactiveThreshold time.Duration, stream *bus.Client, logger *logging.Logger, edge *edgeGrant, start *natsStart) (*sessionDelivery, error) {
-	return connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, stream, logger, append(edge.connectOptions(), start.option())...)
+	return connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, stream, logger, append(edge.connectOptions(), start.options()...)...)
 }
 
 // healthz is next, answering /healthz, behind the start's own answer while it waits out a refusal

@@ -20,8 +20,11 @@ export type LegionNoticeSubject<
 > = `${typeof LEGION_NOTICE_TOPIC_PREFIX}${Project}.${Issue}`;
 
 /** The Go daemon's controller topic for `project` (the project token): the notice family's one
- * member that names no issue, since no issue key can be `controller`. What the Go daemon publishes
- * here is listed at `notify.ControllerTopic` (packages/daemon/internal/notify). */
+ * member that names no issue, since no issue key can be `controller`. A Go daemon of an earlier
+ * release publishes its controller notices here; a current one publishes them to the controller's
+ * role topic (`ROLE_TOPIC_PREFIX` and `legion-<project>-controller`, the daemon outbox's
+ * `controllerNotice`, which lists what they are), and the controller follows this one too, so it
+ * still hears a daemon not yet upgraded. */
 export function legionControllerNoticeSubject<Project extends string>(
   project: Project
 ): LegionNoticeSubject<Project, "controller"> {

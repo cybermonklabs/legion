@@ -57,7 +57,8 @@ func TestAGrantedServerHoldsEachUserToItsGrant(t *testing.T) {
 		t.Fatalf("connect as the granted user: %v", err)
 	}
 	t.Cleanup(user.Close)
-	admin, err := natsgo.Connect(granted.AdminURL, natsgo.Timeout(dialTimeout), natsgo.NoReconnect())
+	// The admin's credential is in its URL, so the connect presents no seed of its own.
+	admin, err := ConnectSeed(t, granted.AdminURL, "")
 	if err != nil {
 		t.Fatalf("connect as the admin: %v", err)
 	}

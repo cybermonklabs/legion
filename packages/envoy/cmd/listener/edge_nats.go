@@ -31,7 +31,7 @@ import (
 
 // connectListenerBus opens the listener's main client as instance, one try of the start that
 // connectListener makes by the start rule. Its connect, every listener's, an edge one's included,
-// waits out a refusal of its credential for up to start's wait (natsStart.option,
+// waits out a refusal of its credential for up to start's wait (natsStart.options,
 // bus.WithCredentialWait), handing each refusal to start, which /healthz answers 503 naming while
 // it lasts and which forgets it once the connect has got in (natsStart.admitted). Every listener
 // but an edge one (edge nil) owns the stream (bus.ConnectOwningStream, listenerStreamOptions): it
@@ -54,7 +54,7 @@ import (
 func connectListenerBus(cfg config.Service, edge *edgeGrant, instance string, start *natsStart) (*bus.Client, error) {
 	name := bus.WithName("envoy-listener " + instance)
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), name, start.option())...)
+		return bus.ConnectOwningStream(cfg.NATSURLs, append(append(listenerStreamOptions(cfg), name), start.options()...)...)
 	}
 	readStream := bus.WithStartCheck(func(client *bus.Client) error {
 		if err := edgeStreamPresent(client, edgeStreamRead); err != nil {
@@ -62,7 +62,7 @@ func connectListenerBus(cfg config.Service, edge *edgeGrant, instance string, st
 		}
 		return nil
 	})
-	return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithSilentCutDetection(), name, readStream, start.option())...)
+	return bus.Connect(cfg.NATSURLs, append(append(edge.connectOptions(), bus.WithSilentCutDetection(), name, readStream), start.options()...)...)
 }
 
 // edgeStreamReadFailed is the error of an edge listener's read of the stream at its start

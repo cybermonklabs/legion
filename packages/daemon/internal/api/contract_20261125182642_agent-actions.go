@@ -104,9 +104,11 @@ import (
 // /legion/v1/agents/stop`, `retry`, `suspend` and `resume`, which answer AgentActionResponse
 // (AnswerAgentAction), and `POST /legion/v1/issues/pod-update`, which answers PodUpdateResponse
 // (AnswerPodUpdate). Each answer arrived whole with its routes, so no contract below this entry
-// records either, no caller below it is served one, and neither is ever shaped: each is one of the
-// entry's `identityAnswers`, which shapeAnswer serves as written (identityAnswer). No key and no
-// value of any other answer moved at this entry.
+// records either, and no caller below it is served one. The pod update is never shaped: it is the
+// entry's one `identityAnswers`, which shapeAnswer serves as written (identityAnswer). The agent
+// actions' answer was one too, until the claim start entry (contract_20261127094305_claim-start.go)
+// added `phaseNotRestarted` to it; shapeAnswer names it now. No key and no value of any other
+// answer moved at this entry.
 const agentActionsContract = 20261125182642
 
 func init() {
@@ -127,7 +129,7 @@ func init() {
 			// did.
 			{ID: AnswerPodUpdate, Routes: []string{"POST /legion/v1/issues/pod-update"}, Since: agentActionsContract},
 		},
-		identityAnswers: []AnswerID{AnswerAgentAction, AnswerPodUpdate},
+		identityAnswers: []AnswerID{AnswerPodUpdate},
 		enumeratedFields: []EnumeratedField{
 			// `state`, `suspendedBy` and `suspensionHeldBy` of what four of the six agent actions
 			// answer (AgentActionResponse). All three arrived with that answer at

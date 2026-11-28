@@ -1318,7 +1318,7 @@ var errAuthenticationTimeout = errors.New("nats: authentication timeout")
 //   - a credential the server still refuses at the try's end (startCredentialRefused) ends the
 //     start. It is the listener's own configuration, and a restarted pod reads its credential
 //     again, but each try's connect has first waited it out under start's bound
-//     (connectListenerBus, natsStart.option, bus.WithCredentialWait), since a hub that reloads a
+//     (connectListenerBus, natsStart.options, bus.WithCredentialWait), since a hub that reloads a
 //     new nkey refuses it until its servers have reloaded; /healthz answers 503 naming the refusal
 //     meanwhile (natsStart.healthz), and the last line names the credential (startFailureLine).
 //     It is asked before every case that tries again, since an edge listener's read wraps the
@@ -1472,7 +1472,7 @@ var errServerConnectionLimit = errors.New("nats: maximum connections exceeded")
 
 // endStartOnNATS ends a start whose main connect failed with err: it exits with
 // startFailureLine's line. A connect begun once the start's bound had passed waits nothing and
-// tells the start of no refusal (natsStart.option), so a refusal of the credential err carries
+// tells the start of no refusal (natsStart.options), so a refusal of the credential err carries
 // (bus.AuthorizationRefused) is recorded first (natsStart.refused), and the line names the
 // credential all the same.
 func endStartOnNATS(err error, start *natsStart) {
@@ -1741,8 +1741,8 @@ const natsReleaseRefusedLine = "nats-server release below the listener's floor; 
 // sockets', the role lane's), until it succeeds, by the start rule (cmd/listener/README.md,
 // "Start"). Each such connection reads the settings the start's own connect (connectListener) has
 // already taken - its servers, its credential, its proxy and the remote-NATS rule - and each
-// connect waits out a refusal of the credential under start's bound (natsStart.option, which open
-// passes), so only the credential ends the process here:
+// connect waits out a refusal of the credential under start's bound (natsStart.options, which
+// open passes), so only the credential ends the process here:
 //   - a refusal under the NATS grant (nats.ErrPermissionViolation) is tried again after
 //     waitOutGrantRefusal, which logs refusedLine;
 //   - a server whose release the listener refuses (natsversion.RefusedRelease) after the same
@@ -2600,7 +2600,7 @@ func runListener(credentialWait time.Duration) {
 	// Each try opens a connection of its own and subscribes its relay's replies on it, and a try
 	// that fails closes it: the connection holds one reply subscription, so a later try's relay,
 	// whose inbox is new, needs a new connection. Each try's connect waits out a refusal of the
-	// credential under the start's bound (startSessionDelivery, natsStart.option), and a refusal
+	// credential under the start's bound (startSessionDelivery, natsStart.options), and a refusal
 	// that outlasts it ends the start (openStartConnection).
 	var delivery *sessionDelivery
 	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
@@ -2633,7 +2633,7 @@ func runListener(credentialWait time.Duration) {
 	var sockets *relaySockets
 	if edge != nil {
 		socketsClient := openStartConnection(logger, start, "relay socket connection failed; retrying", "relay socket connection failed", relaySocketsRefusedLine, func() (*bus.Client, error) {
-			return bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection(), start.option())...)
+			return bus.Connect(cfg.NATSURLs, append(append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection()), start.options()...)...)
 		})
 		sockets = newRelaySockets(socketsClient, brokerTokenAuth, logger)
 	}

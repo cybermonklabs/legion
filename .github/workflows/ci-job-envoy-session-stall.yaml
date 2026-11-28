@@ -115,6 +115,14 @@ jobs:
       - name: Stall test of pi-envoy
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
+      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
+      # private Slack channel, through the listener's own signed webhook, reaches the session that
+      # holds the role after its pod is killed and its session relaunched, and after a new session
+      # claims the role, and never reaches a session holding another role.
+      - name: Role topics across a relaunch
+        run: bun run test extensions/role-topics.test.ts
+        working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
@@ -135,6 +143,25 @@ jobs:
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real
+      # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
+      # the real secrets broker for the proxy placeholder of a result grant, the real CLI, run
+      # as its child, writes with that placeholder alone through the broker's airlock proxy,
+      # which puts the run's results token in its place, and the real Dispatch server stores the
+      # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two
+      # brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and
+      # one for their proxy ports. It builds from this tree ./cmd/cipherd, ./cmd/dev-oidc-issuer,
+      # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
+      # on this job's Postgres; it needs no container and no fixed port.
+      - name: A CI job's result through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry

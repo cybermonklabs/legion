@@ -18,6 +18,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/buildversion"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 )
 
@@ -68,10 +69,12 @@ type connectOpts struct {
 	logger          *slog.Logger
 	keeperStepGuard time.Duration
 	// credentialWait, credentialRefused and credentialAdmitted are WithCredentialWait's bound and
-	// reports, and startCheck WithStartCheck's check.
+	// reports, startClock the clock that start reads and waits on (WithStartClock; clock.Real by
+	// default), and startCheck WithStartCheck's check.
 	credentialWait     time.Duration
 	credentialRefused  func(error)
 	credentialAdmitted func()
+	startClock         startClock
 	startCheck         func(*Client) error
 	closedHook         func()
 	closeSettleBound   time.Duration
@@ -103,7 +106,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: clock.Real()}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -379,7 +382,7 @@ func WithStreamMessageReads() ConnectOption {
 // admitted is still called when it gets in. A start in the background (WithConnectInBackground)
 // never fails, so it ignores the option.
 //
-// cmd/listener alone passes it, through its start (natsStart.option): to the main client, the role
+// cmd/listener alone passes it, through its start (natsStart.options): to the main client, the role
 // lane (ConnectRoleLane) and the session-consumer connection (ConnectSessionConsumers), each a
 // connect of the listener's start, so a listener started before the hub's servers have reloaded
 // its new nkey connects once they have, where it would exit and be restarted.
@@ -387,6 +390,18 @@ func WithCredentialWait(bound time.Duration, refused func(error), admitted func(
 	return clientOption(func(o *connectOpts) {
 		o.credentialWait, o.credentialRefused, o.credentialAdmitted = bound, refused, admitted
 	})
+}
+
+// WithStartClock replaces the clock that WithCredentialWait's start reads its bound by and waits
+// on, the process's (clock.Real), with c: each wait after a refusal, and after a dial that failed
+// otherwise, is one wait on c's After (waitOutCredentialRefusals). A test of a program that
+// connects through this package hands it a clocktest.Fake, which reports each wait the start arms
+// (Armed), so the test reads the wait the start asks for and moves the start's time past it
+// without waiting it out; the schedule itself is this package's, and a try takes on that clock
+// only what the test moves it. It is exported for those tests, as WithKeepInterval is: no
+// deployment sets it, and no caller outside a test may.
+func WithStartClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.startClock = c })
 }
 
 // WithStartCheck has the constructor's start in the foreground (Connect's or ConnectOwningStream's)
@@ -911,7 +926,7 @@ func credentialStart(urls []string, ownsStream bool, opts connectOpts, settings 
 			opts.credentialRefused(err)
 		}
 	}
-	return waitOutCredentialRefusals(opts.credentialWait, refused, wallStartClock, func() (*Client, error) {
+	return waitOutCredentialRefusals(opts.credentialWait, refused, opts.startClock, func() (*Client, error) {
 		client, failedAt, err := checkedStart(urls, ownsStream, opts, settings, dialer, 1, 0)
 		if err != nil && failedAt != stepDial && !startRefusal(failedAt, err) {
 			return nil, endsStart{err}

@@ -44,6 +44,24 @@ test("a wait returns once its condition holds, and moves no clock", async () => 
   expect(Date.now()).toBe(date);
 });
 
+test("a wait takes each turn through the turn it is given", async () => {
+  let answered = false;
+  void turn()
+    .then(turn)
+    .then(() => {
+      answered = true;
+    });
+  let taken = 0;
+  await turnsUntil(() => answered, "answered", {
+    turn: async () => {
+      taken += 1;
+      await turn();
+    },
+  });
+  expect(answered).toBe(true);
+  expect(taken).toBeGreaterThan(0);
+});
+
 test("a wait that never ends fails at its real-time bound, naming what it waited for", async () => {
   const failure = await turnsUntil(() => false, "answered", {
     boundMs: 100,

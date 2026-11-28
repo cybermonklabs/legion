@@ -3637,7 +3637,8 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// One read and one merge decide this registration's topics, which are both the row it
 		// stores and the filter of the session's own consumer (store.Registry.PlanInterest). The
 		// claim of the controller role behind a project's notice lane
-		// (notifications.legion.<project>.controller, the daemon's notify.ControllerTopic) is read
+		// (notifications.legion.<project>.controller, where a Legion daemon of an earlier
+		// release publishes its controller notices) is read
 		// for the topics the body names and for the row it already holds together, since either
 		// may name that lane, which its holder registers because a Legion controller receives
 		// that lane from its own consumer now and from no core subscription of its own

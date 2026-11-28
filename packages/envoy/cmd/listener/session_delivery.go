@@ -362,7 +362,7 @@ func (d *sessionDelivery) resumeHeld(r *http.Request, sessionID string) {
 // warns that no stream subject captures (sessionDelivery.stream); no consumer filter is judged on
 // it (sessionConsumerFilter). options are the connection's own beside its name: in edge mode, the
 // listener's inbox prefix (edgeGrant.connectOptions), and, from main's start, the start's
-// credential wait (startSessionDelivery, natsStart.option).
+// credential wait (startSessionDelivery, natsStart.options).
 //
 // Every session takes its messages from the consumer this connection manages, so the start waits
 // until it opens: main tries it again, with the relay's reply subscription on it, by the start rule
@@ -1345,11 +1345,15 @@ func (l *sessionLocks) releaser(sessionID string, held *sessionLock) func() {
 // does not match as soon as it looks for its next one, at a pull request or a message on its agent
 // subject (fenceFilterWrite's doc states that cost), so a message stored before the next
 // registration widened the filter would never be delivered. A Legion controller's notice lane
-// (notifications.legion.<project>.controller) is one of the row's topics while the session holds
-// that project's controller role, and this filter is the whole of how it reaches the controller,
-// so a notice published while the controller was away is delivered from the stream when it
-// returns. SessionConsumers filters on every form of each subject the list names, reduced to
-// filters that do not overlap (bus.SessionConsumerFilters).
+// (notifications.legion.<project>.controller, where a Legion daemon of an earlier release
+// publishes) is one of the row's topics only while the session holds that project's controller
+// role. A session whose role claim was freed while it was away registers again without the lane,
+// and gets the lane back only once it claims the role again, at the consumer's position then, so
+// a notice stored on the lane while it was away is not delivered to it (the loss of 2026-11-23).
+// A current daemon publishes controller notices to the controller's role topic instead, which
+// reaches the role's live holder as a forward on its agent subject. SessionConsumers filters on
+// every form of each subject the list names, reduced to filters that do not overlap
+// (bus.SessionConsumerFilters).
 //
 // These kinds of topic are left out, though the row may store them:
 //

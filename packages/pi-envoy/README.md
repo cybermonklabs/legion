@@ -114,6 +114,57 @@ to a role nobody holds for an hour, unless its sender set `keep: false`, and han
 session that claims the role, so `/resume <id>` of the named session within that hour still gets
 them: that session's own record of the claim is acted on, and it claims the role again.
 
+A deployment can name, for each role, topics its holder follows while it holds the role:
+`ENVOY_ROLE_TOPICS`, a JSON object from role name to a list of topics, which a pod's launch sets
+as it sets `ENVOY_SESSION_ROLE`. For example, every message posted in a private Slack channel,
+mention or not, for the session holding an alert owner's role:
+
+```sh
+ENVOY_ROLE_TOPICS='{"ops-owner": ["notifications.slack.*.C0ALERTS.message"]}'
+```
+
+Each time a hold of a named role lands in this process, however it was taken (the launch's role,
+`envoy_role_set`, the Legion plugin's claim, a hold restored after a hand-back), the session
+follows that role's topics and registers them at once, so its consumer is filtered on them from
+the claim on rather than from the next heartbeat. A subject can be wanted twice, by the role and
+by the session itself (a topic it followed with `envoy_subscribe`, or one its transcript
+remembers), and it stays followed while either wants it. When the role ends, the subjects only
+the role wanted are closed, each exactly, and taken out of the listener's registry, as a plugin's
+role notices are; the session's own stay followed, the base of a `>` topic included. So a
+relaunched session follows them again as soon as it takes the role, a new session that claims it
+follows them too, and a session holding any other role follows none of them, though every pod
+carries the same variable. `envoy_unsubscribe` of a subject the held role wants keeps it, saying
+it lasts while the session holds the role, and drops only the session's own want of it;
+`envoy_subscribe` of one makes it the session's own too, so the role's end leaves it.
+`envoy_role_set` says which it now follows. They are not one plugin's: a move to another role
+with `envoy_role_set` closes them and follows the new role's. A topic an edge listener refuses
+leaves the role's and is not followed again for it until the role ends.
+
+A process that ends closes nothing, so the listener's row still holds the role's topics when that
+session id resumes. The resumed session follows as its own only what its transcript remembers as
+its own. The topics of the role it wants (its launch's role, its transcript's, else the role lane
+its own row holds) it opens before its first registration, so the follow stamps the transcript
+restored carry over and a post the stream kept while it was down is shown, but only where the
+listener names this session or nobody as the role's holder: where another session holds the role,
+the backlog on its topics is that session's, and nothing opens. A read that fails, and a 404 that
+names a lapsed holder which is another session, open nothing for the same reason; the claim opens
+them where it lands, so what the stream kept meanwhile is lost to this session rather than read by
+two. A claim refused naming this same
+session id (another process's claim, standing until its live window ends) keeps them open, so a
+post sent meanwhile is shown once the claim lands; a claim refused naming another holder closes
+them. Once after a resume, the pass reads the session's row and takes out every role topic nothing
+follows, reading again on a later pass if the read fails. A resumed daemon-launched controller,
+which unregisters every Slack topic an earlier session registered, keeps the role's by the same
+rule.
+
+A role name is read as the listener reads a claim's. Each topic must be one the notification
+stream stores and no subject private to one session, no longer than the listener's 4,032 bytes,
+with a wildcard only as a whole token and `>` only as the last one, a rule stricter than the
+listener's own; a value that is not such an object, two keys the listener reads as one role (the
+same key twice included) or a topic refused this way refuses the whole variable: no role follows
+any topic of it, the plugin logs `envoy: ENVOY_ROLE_TOPICS is refused, so no role follows a topic
+it names: <why>`, and each session start says the same. Unset, no role follows anything.
+
 `envoy_list()` shows the union of the local subscriptions and the listener's persisted interest
 registry. Each reported interest identifies whether it is `live`, `registry`, or `both`, so
 temporary registration drift does not hide the extension's actual delivery state.

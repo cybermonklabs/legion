@@ -58,6 +58,7 @@ import {
   startEnvoyStack,
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import {
   NATS_START_HOOK_MS,
   NATS_STOP_HOOK_MS,
@@ -67,6 +68,7 @@ import {
   useNatsServerDirectory,
 } from "@legion/envoy-client/test/nats-server";
 import { runReplayGrantScenario } from "@legion/envoy-client/test/replay-grant-scenario";
+import { routeAnswer } from "@legion/envoy-client/test/route-answers";
 import { startStallProxy } from "@legion/envoy-client/test/stall-proxy";
 import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario";
 import { consumerDelivery, projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
@@ -89,7 +91,7 @@ import { testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { timeLeft } from "@legion/test-fixtures/wait";
+import { settled, timeLeft } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -353,19 +355,14 @@ const acceptOnce =
       ? { accepted: true, ...(body !== undefined && { body }) }
       : { code: "ACCEPT_ALREADY_ACCEPTED", status: 409 };
 
-/** The accept route's response for `answer` to an accept of `attempt`, carrying back the request's
- *  key (`key`) as Dispatch's keyed layer does. The resend ignores the echo: the client asks again
- *  under its key whatever the answer carries, and reads the echo only to settle a fresh 4xx
- *  refusal that echoes exactly its key. */
+/** The accept route's response for `answer` to an accept of `attempt`. */
 function acceptResponse(
   attempt: number,
   answer: AcceptAnswer,
-  messageID = DIRECT_MESSAGE_ID,
-  key: string | null = null
+  messageID = DIRECT_MESSAGE_ID
 ): Response {
   if ("reject" in answer) throw new TypeError(answer.reject);
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (key !== null) headers["Idempotency-Key"] = key;
   if (!("accepted" in answer)) {
     return new Response(JSON.stringify({ code: answer.code, error: "refused" }), {
       headers,
@@ -452,6 +449,8 @@ async function bootDirectSession(
   const replyWaiters: { readonly count: number; readonly resolve: () => void }[] = [];
   globalThis.fetch = async (input, init) => {
     const url = new URL(input.toString());
+    // This Dispatch runs the keyed layer: its answers to a keyed write carry the key back, and a
+    // failed accept is asked again under its key.
     if (url.pathname.startsWith("/api/v1/messages/")) {
       const authorization = new Headers(init?.headers).get("Authorization");
       if ((init?.method ?? "GET") === "POST" && url.pathname.endsWith("/accept")) {
@@ -461,12 +460,18 @@ async function bootDirectSession(
           body: JSON.parse(init?.body?.toString() ?? "null"),
           path: url.pathname,
         });
-        return acceptResponse(
-          Number(url.pathname.split("/").at(-2)),
-          await (options.accept ?? acceptOnce())(accepts.length),
-          url.pathname.split("/").at(-4),
-          new Headers(init?.headers).get("Idempotency-Key")
-        );
+        const answer = await (options.accept ?? acceptOnce())(accepts.length);
+        // The keyed layer judged each accept, its refusals too, so each names the request's key
+        // back, which is what lets the client ask again under it.
+        return keyedLayer(
+          (_input: string | URL | Request, _init?: RequestInit) =>
+            acceptResponse(
+              Number(url.pathname.split("/").at(-2)),
+              answer,
+              url.pathname.split("/").at(-4)
+            ),
+          { judged: () => true }
+        )(input, init);
       }
       // The session asks Dispatch nothing else about a direct message but its reply and, where
       // the event carried the body in part, the read of the message whole: a row that expects
@@ -4112,6 +4117,277 @@ describe("envoy OMP extension", () => {
     ]);
   });
 
+  // A resumed session opens the topics the deployment names for the role its transcript records
+  // before its first registration, so the follow stamps it restored carry over. It opens them only
+  // where the listener names this session or nobody as the role's holder: where another session
+  // holds the role, the stream's backlog on its topics is that session's, and this one would be
+  // shown it before its soft claim was refused.
+  test("a resumed session opens a recorded role's topics before its first registration only where no other session holds the role", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const role = "legion-controller";
+    const cases = [
+      { holder: "ses_other_holder", opens: false },
+      { holder: "ses_resumed_roles", opens: true },
+      { holder: undefined, opens: true },
+    ] as const;
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ [role]: [alerts] });
+    try {
+      for (const { holder, opens } of cases) {
+        const registrations: string[][] = [];
+        globalThis.fetch = async (input, init) => {
+          const url = new URL(input.toString());
+          const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+          if (url.pathname === `/v1/roles/${role}` && (init?.method ?? "GET") === "GET") {
+            return holder === undefined
+              ? Response.json({ error: "no live holder" }, { status: 404 })
+              : response({ role, holder, last_seen: Date.now(), state: "live" });
+          }
+          if (url.pathname === "/v1/roles/set") {
+            if (holder === "ses_other_holder") {
+              return Response.json(
+                { error: `role ${role} is held by ${holder}`, role, holder },
+                { status: 409 }
+              );
+            }
+            return response({
+              session_id: body?.session_id,
+              machine_id: "test",
+              dir: "/tmp",
+              topics: [`notifications.role.${role}`],
+            });
+          }
+          if (url.pathname === "/v1/interests/subscribe") {
+            registrations.push(Array.isArray(body?.topics) ? body.topics : []);
+          }
+          return responseWithRegistration(input, init, {});
+        };
+        // A fresh module instance for each case, as every row of this file takes one: the query
+        // keys the cache, and each instance reads the ENVOY_ROLE_TOPICS set above when created.
+        const { default: envoyExtension }: EnvoyModule = await import(
+          `./envoy.ts?resume-opens-${holder ?? "nobody"}`
+        );
+        const fixture = createPi();
+        await envoyExtension(fixture.pi);
+        const resumed = {
+          ...sessionContext("ses_resumed_roles"),
+          sessionManager: {
+            ...sessionContext("ses_resumed_roles").sessionManager,
+            getBranch: () => [{ type: "custom", customType: "envoy-role-claim", data: { role } }],
+          },
+        };
+        await fixture.handlers.get("session_start")?.({}, resumed);
+        expect(registrations.length).toBeGreaterThan(0);
+        expect({ holder, carried: registrations[0]?.includes(alerts) ?? false }).toEqual({
+          holder,
+          carried: opens,
+        });
+        await fixture.handlers.get("session_shutdown")?.({}, resumed);
+      }
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
+  // A resumed session opens its wanted role's topics before its claim, and an own-id refusal
+  // keeps them open for the next pass. A `/new` to another session must not leave that session
+  // following them: it holds no role and wants none, so the pass closes them and its registration
+  // carries none.
+  test("a host move to a new session closes the topics a resumed session opened for a role no hold landed for", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const role = "legion-controller";
+    const resumed = "ses_move_resumed";
+    const fresh = "ses_move_new";
+    const registrations: { session: string; topics: string[] }[] = [];
+    const unregistered: string[][] = [];
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === `/v1/roles/${role}` && (init?.method ?? "GET") === "GET") {
+        // Nobody holds it, so the resume opens its topics.
+        return Response.json({ error: "no live holder" }, { status: 404 });
+      }
+      if (url.pathname === "/v1/roles/set") {
+        // The standing claim of another process under the resumed session's own id.
+        return Response.json(
+          { error: `role ${role} is held by ${resumed}`, role, holder: resumed },
+          { status: 409 }
+        );
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        unregistered.push(Array.isArray(body?.topics) ? body.topics : []);
+        return response({});
+      }
+      if (url.pathname === "/v1/interests/subscribe") {
+        registrations.push({
+          session: String(body?.session_id ?? ""),
+          topics: Array.isArray(body?.topics) ? body.topics : [],
+        });
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ [role]: [alerts] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?role-topics-move");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const resumedContext = {
+        ...sessionContext(resumed),
+        sessionManager: {
+          ...sessionContext(resumed).sessionManager,
+          getBranch: () => [{ type: "custom", customType: "envoy-role-claim", data: { role } }],
+        },
+      };
+      await fixture.handlers.get("session_start")?.({}, resumedContext);
+      expect(registrations.some((call) => call.topics.includes(alerts))).toBe(true);
+      // The resume opened them, and the own-id refusal kept them: still followed, and nothing
+      // was taken out of the row. A change that closed them on that refusal fails here.
+      expect(await followedTopics(fixture.tools, resumedContext)).toContain(alerts);
+      expect(unregistered).toEqual([]);
+
+      // `/new`: another session, which records no role and wants none.
+      const moved = sessionContext(fresh);
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, moved);
+      // The pass closes what the resume opened: the subjects leave the row, and the session
+      // follows them no longer, so no later registration of this session can carry them.
+      expect(unregistered.flat()).toContain(alerts);
+      expect(await followedTopics(fixture.tools, moved)).not.toContain(alerts);
+      expect(registrations.some((call) => call.session === fresh)).toBe(true);
+      await fixture.handlers.get("session_shutdown")?.({}, moved);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
+  // A resumed session whose role is named only by its own row's lane, with no claim record and no
+  // launch role. An own-id refusal leaves the role unsettled, so the pass keeps its topics and the
+  // next pass reads the rows again and claims afresh; settling it there would leave the role
+  // claimed by nobody in this process, since `desiredRole` reads no rows once a host is settled.
+  test("a lane-only role keeps its topics through an own-id refusal, and the next pass claims it again", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const role = "legion-controller";
+    const session = "ses_lane_only";
+    const claims: string[] = [];
+    const unregistered: string[][] = [];
+    // Set by the row to make the listener refuse the row read, as an outage does.
+    let rowReadFails = false;
+    // Set by the row to make the listener answer 404: the registry holds no key for the session.
+    let rowIs404 = false;
+    // How many times the listener was asked for this session's row.
+    let rowReads = 0;
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === `/v1/interests/${session}`) {
+        rowReads += 1;
+        if (rowReadFails) return Response.json({ error: "listener unavailable" }, { status: 503 });
+        if (rowIs404) return Response.json({ error: "no interests for session" }, { status: 404 });
+        // The row names the role on its lane alone: no claim record, no launch role.
+        return response({
+          session_id: session,
+          machine_id: "test",
+          dir: "/tmp",
+          topics: [`notifications.role.${role}`],
+        });
+      }
+      if (url.pathname === `/v1/roles/${role}` && (init?.method ?? "GET") === "GET") {
+        return response({ role, holder: session, last_seen: Date.now(), state: "live" });
+      }
+      if (url.pathname === "/v1/roles/set") {
+        claims.push(String(body?.role ?? ""));
+        // Another process's standing claim under this same session id.
+        return Response.json(
+          { error: `role ${role} is held by ${session}`, role, holder: session },
+          { status: 409 }
+        );
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        unregistered.push(Array.isArray(body?.topics) ? body.topics : []);
+        return response({});
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ [role]: [alerts] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?lane-only-role");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      // A branch with no role record: the session is resumed, so the pass reads the rows, and
+      // its row's lane is the only thing that names the role.
+      const context = {
+        ...sessionContext(session),
+        sessionManager: {
+          ...sessionContext(session).sessionManager,
+          getBranch: () => [{ type: "text", text: "resumed" }],
+        },
+      };
+      await fixture.handlers.get("session_start")?.({}, context);
+
+      // The pass claimed the lane's role and was refused by its own id: the topics stay followed,
+      // nothing left the row, and the role is unsettled.
+      expect(claims).toEqual([role]);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      expect(unregistered).toEqual([]);
+
+      // The sentence `envoy_unsubscribe` answers while the claim is still refused: no role is
+      // held, so it names the role being claimed, which is the window this line runs in.
+      const unsubscribe = fixture.tools.find((tool) => tool.name === "envoy_unsubscribe");
+      if (unsubscribe === undefined) throw new Error("envoy_unsubscribe was not registered");
+      const kept = await unsubscribe.execute("", { topics: [alerts] });
+      expect(JSON.stringify(kept.content)).toContain(
+        `Kept (they last while this session claims role ${role})`
+      );
+
+      // The next pass reads the rows again and claims the same role, rather than leaving it to
+      // nobody.
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(claims).toEqual([role, role]);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+
+      // A pass whose row read fails says nothing about the role: it must not read as "no role"
+      // and settle the session as wanting none, which would close the lane role's topics for
+      // good. They stay followed, and the pass after it reads the row again and claims.
+      rowReadFails = true;
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      rowReadFails = false;
+      await fixture.handlers.get("session_start")?.({}, context);
+      expect(claims.length).toBeGreaterThan(2);
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+
+      // The listener's 404 for a session its registry holds no key for (a fork's parent this
+      // process left, reaped after its grace) is a known answer, not a read that failed: the pass
+      // settles on it. Read as a failure, no pass would ever settle this session and each
+      // heartbeat would walk the lineage again.
+      rowIs404 = true;
+      await fixture.handlers.get("session_start")?.({}, context);
+      const readsAfterSettling = rowReads;
+      await fixture.handlers.get("session_start")?.({}, context);
+      // Settled on the 404, so the pass after it walks the lineage no more. Read as a failure,
+      // nothing would ever settle and every pass would read the row again.
+      expect(rowReads).toBe(readsAfterSettling);
+      rowIs404 = false;
+
+      // A pass for a session that holds no role and wants none closes what an earlier pass
+      // opened: the role each pass decided is that pass's alone, never the one before it.
+      const other = sessionContext("ses_lane_other");
+      await fixture.handlers.get("session_switch")?.({ reason: "new" }, other);
+      expect(await followedTopics(fixture.tools, other)).not.toContain(alerts);
+      await fixture.handlers.get("session_shutdown")?.({}, other);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
+  });
+
   test("registers no dispatch_* tool where Dispatch is configured: agents run the dispatch command", async () => {
     process.env.DISPATCH_URL = "http://127.0.0.1:8767";
     process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
@@ -5263,9 +5539,14 @@ console.log(JSON.stringify(args));
           recordWrites.uploads += 1;
           keep(body.content ?? "");
           const name = body.name ?? "";
+          const slug = name.replace(/\./g, "-");
           if (!recordDocuments.some((document) => document.name === name))
-            recordDocuments.push({ id: "doc-decisions", name, slug: name.replace(/\./g, "-") });
-          return Response.json({ artifact: { id: "doc-decisions" } });
+            recordDocuments.push({ id: "doc-decisions", name, slug });
+          return Response.json(
+            routeAnswer("POST /api/v1/projects/{key}/artifacts", {
+              artifact: { id: "doc-decisions", name, slug, project: "INFRA" },
+            })
+          );
         }
         if (url.endsWith("/edits")) {
           const body = JSON.parse(String(init?.body ?? "{}")) as {
@@ -5273,7 +5554,9 @@ console.log(JSON.stringify(args));
           };
           recordWrites.appends += 1;
           for (const op of body.ops ?? []) keep(op.markdown ?? "");
-          return Response.json({ applied: body.ops?.length ?? 0 });
+          return Response.json(
+            routeAnswer("POST /api/v1/artifacts/{id}/edits", { applied: body.ops?.length ?? 0 })
+          );
         }
         return other(input, init);
       };
@@ -5316,7 +5599,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       await fixture.handlers.get("tool_result")?.(
@@ -5495,7 +5781,10 @@ console.log(JSON.stringify(args));
           stderr: () => {},
           readText: (path) => readFileSync(path, "utf8"),
           cwd: configDirectory,
-          fetchImpl: (async () => Response.json({})) as typeof fetch,
+          // The write's own answer, its route's row with its key named back, as Dispatch's.
+          fetchImpl: keyedLayer((input: string | URL | Request, init?: RequestInit) =>
+            responseWithRegistration(input, init, {})
+          ) as typeof fetch,
         }
       );
       const readLedger = () =>
@@ -6597,6 +6886,104 @@ console.log(JSON.stringify(args));
     // role's followed topics as the bridge documents.
     await claimEnvoyRole("ses_role_bound", "legion-reviewer", context);
     expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
+  });
+
+  // A subject the deployment names for a role (`ENVOY_ROLE_TOPICS`) that the session also wants
+  // itself stays followed while either wants it: the session's unsubscribe leaves it to the held
+  // role, its subscribe makes a role's subject its own too, and the role's end closes only what
+  // the role alone wanted, each subject exactly, so the base of a `>` topic the session follows
+  // itself stays followed.
+  test("a subject both the session's own and the held role's stays followed while either wants it", async () => {
+    const alerts = "notifications.slack.*.C0ALERTS.message";
+    const base = "notifications.github.acme.app";
+    const unregistered: string[][] = [];
+    // A registration that carries the base after the role's end unregistered it with its `.>`.
+    let closedBase = false;
+    const baseBack = Promise.withResolvers<void>();
+    globalThis.fetch = async (input, init) => {
+      const url = new URL(input.toString());
+      const body = init?.body === undefined ? undefined : JSON.parse(init.body.toString());
+      if (url.pathname === "/v1/roles/set") {
+        const claimed = typeof body?.role === "string" ? body.role : "";
+        return response({
+          session_id: "ses_two_claims",
+          machine_id: "test",
+          dir: "/tmp/envoy-omp-test",
+          topics: [`notifications.role.${claimed}`],
+        });
+      }
+      if (url.pathname === "/v1/interests/unsubscribe") {
+        const topics: string[] = Array.isArray(body?.topics) ? body.topics : [];
+        unregistered.push(topics);
+        if (topics.includes(base)) closedBase = true;
+        return response({});
+      }
+      if (url.pathname === "/v1/interests/subscribe" && closedBase) {
+        if (Array.isArray(body?.topics) && body.topics.includes(base)) baseBack.resolve();
+      }
+      return responseWithRegistration(input, init, {});
+    };
+    const previous = process.env.ENVOY_ROLE_TOPICS;
+    process.env.ENVOY_ROLE_TOPICS = JSON.stringify({ "legion-controller": [alerts, `${base}.>`] });
+    try {
+      // A fresh module instance, as every row of this file takes one: the query keys the cache,
+      // and this instance must read the ENVOY_ROLE_TOPICS set above when it is created.
+      const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?two-claims");
+      const fixture = createPi();
+      await envoyExtension(fixture.pi);
+      const context = sessionContext("ses_two_claims");
+      await fixture.handlers.get("session_start")?.({}, context);
+      const tool = (name: string) => {
+        const found = fixture.tools.find((candidate) => candidate.name === name);
+        if (found === undefined) throw new Error(`${name} was not registered`);
+        return found;
+      };
+
+      // The session follows the alert topic and the `>` topic's base itself, then takes the role.
+      await tool("envoy_subscribe").execute("", { topics: [alerts, base] });
+      const claimed = await tool("envoy_role_set").execute("", { role: "legion-controller" });
+      expect(claimed.details.following).toEqual([alerts, base, `${base}.>`]);
+
+      // Its unsubscribe of the alert topic leaves it to the role, so the holder still hears it.
+      const dropped = await tool("envoy_unsubscribe").execute("", { topics: [alerts] });
+      expect(dropped.details).toEqual({ removed: [], kept: [alerts] });
+      expect(await followedTopics(fixture.tools, context)).toContain(alerts);
+      expect(unregistered).toEqual([]);
+
+      // The role's end closes what the role alone wanted, the alert topic now among it, and
+      // leaves the base the session follows itself.
+      await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
+      let left = await followedTopics(fixture.tools, context);
+      expect(left).not.toContain(alerts);
+      expect(left).not.toContain(`${base}.>`);
+      expect(left).toContain(base);
+      expect(unregistered.flat()).toEqual(expect.arrayContaining([alerts, `${base}.>`]));
+      // The client's unsubscribe expands the closed `.>` to its base too, so the session
+      // registers again and the base goes back into its row.
+      await settled("the registration that puts the base back into the row", baseBack.promise);
+
+      // Back on the role, the session subscribes to the alert topic the role alone wanted: it is
+      // its own too now, so the role's end leaves it followed.
+      await tool("envoy_role_set").execute("", { role: "legion-controller" });
+      await tool("envoy_subscribe").execute("", { topics: [alerts] });
+      await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
+      left = await followedTopics(fixture.tools, context);
+      expect(left).toContain(alerts);
+      expect(left).toContain(base);
+      expect(left).not.toContain(`${base}.>`);
+
+      // A plugin's subscription that lasts beyond any role is the session's own too: back on the
+      // role, whose open follows `base.>` for it alone, the plugin subscribes to `base.>` with no
+      // role, and the role's end leaves it followed.
+      await tool("envoy_role_set").execute("", { role: "legion-controller" });
+      await subscribeLegionNotice("ses_two_claims", `${base}.>`, context);
+      await tool("envoy_role_set").execute("", { role: "legion-reviewer" });
+      left = await followedTopics(fixture.tools, context);
+      expect(left).toContain(`${base}.>`);
+    } finally {
+      if (previous === undefined) delete process.env.ENVOY_ROLE_TOPICS;
+      else process.env.ENVOY_ROLE_TOPICS = previous;
+    }
   });
 
   // Contract entry 20261125170509: a Legion claim names the session it replaces, as the daemon's registration
@@ -13202,26 +13589,34 @@ console.log(JSON.stringify(args));
       process.env.DISPATCH_URL = "http://dispatch.test";
       process.env.DISPATCH_TOKEN = DISPATCH_TOKEN;
       const replies: unknown[] = [];
-      globalThis.fetch = async (input, init) => {
-        const path = new URL(input.toString()).pathname;
-        if (path === "/v1/interests/subscribe") {
-          return response({
-            session_id: "ses_delivery",
-            machine_id: "test",
-            dir: "/tmp",
-            topics: ["notifications.agent.ses_delivery"],
-            delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
-          });
-        }
-        if (path === REPLY) {
-          replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
-          return new Response(
-            JSON.stringify({ code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" }),
-            { status: 409, headers: { "Content-Type": "application/json" } }
-          );
-        }
-        return response({});
-      };
+      // Behind Dispatch's keyed layer, whose own refusal of a repeat that already ran names the
+      // reply's key back.
+      globalThis.fetch = keyedLayer(
+        async (input: string | URL | Request, init?: RequestInit) => {
+          const path = new URL(input.toString()).pathname;
+          if (path === "/v1/interests/subscribe") {
+            return response({
+              session_id: "ses_delivery",
+              machine_id: "test",
+              dir: "/tmp",
+              topics: ["notifications.agent.ses_delivery"],
+              delivery: consumerDelivery("ses_delivery", { streamID: TEST_STREAM_ID }),
+            });
+          }
+          if (path === REPLY) {
+            replies.push(JSON.parse(init?.body?.toString() ?? "{}"));
+            return new Response(
+              JSON.stringify({
+                code: IDEMPOTENCY_KEY_COMMITTED,
+                error: "this request already ran",
+              }),
+              { status: 409, headers: { "Content-Type": "application/json" } }
+            );
+          }
+          return response({});
+        },
+        { judged: () => true }
+      ) as typeof fetch;
       const warnings: string[] = [];
       const stopSink = logger.registerLogSink((entry) => {
         if (entry.level === "warn") warnings.push(entry.message);
@@ -21808,8 +22203,8 @@ console.log(JSON.stringify(args));
 // A real natsd and a real listener: the session registers for a consumer, and the listener
 // relays it. There is no second rollout state to prove any more — a listener whose grant cannot
 // give a consumer refuses the registration, and the session receives nothing at all.
-// Reserved out here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` has stopped the stack writing into it.
+// Reserved out here, at the file's module scope. Once the `describe` has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("against a real natsd and Envoy listener", () => {

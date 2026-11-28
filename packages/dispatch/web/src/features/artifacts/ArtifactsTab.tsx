@@ -33,6 +33,7 @@ import {
   parseIssuePath,
   parseNodeReference,
   referenceHref,
+  unknownToShell,
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { type TextSource, textSourceOf } from "../refs/text-references";
@@ -462,7 +463,9 @@ function ArtifactRow({
  *  before a file is picked, and every artifact the issue holds. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
   const { pathname } = useLocation();
-  const route = parseIssuePath(pathname);
+  // Today's page alone draws this tab, and it knows no address of the new issue page alone, as
+  // `main` does not (`unknownToShell`).
+  const route = unknownToShell(pathname) ? undefined : parseIssuePath(pathname);
   const issueKey = route?.key;
   const [filter, setFilter] = useState("");
   // One sentence covers every control of the strip: a closed issue takes neither a new document
