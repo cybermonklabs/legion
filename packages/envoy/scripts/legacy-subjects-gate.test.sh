@@ -606,15 +606,82 @@ first_reading_with() {
   first_reading_secs "$((hours * 3600))" "$@"
 }
 
-# first_reading_secs SECONDS_AGO READER [ARG...] is first_reading_with, moved SECONDS_AGO seconds.
-first_reading_secs() {
-  local seconds=$1
+# first_reading_inputs prints the hash of the case directory's first-reading inputs: each path, its
+# type, its mode and its bytes in a stable order, independent of copy times.
+# calls, record.json and earlier.json are reading bookkeeping, not fixture answers.
+# Only a second reading uses the hub's statefulset{.json,.fail}, configmaps/ and configmap.fail,
+# the auth service's broker{.json,.fail}, release-gate{,-listeners}.{out,rc} and release-gate.args
+# for the pin reads, census.cut for the connection census, compare/ for its build checks, and
+# bsdbin/ for the case that puts a BSD wc on PATH for its second reading.
+# Keep all of job.log: the first reading reads its non-census rows.
+first_reading_inputs() {
+  LC_ALL=C tar -C "$FAKE" --sort=name --format=gnu --mtime=@0 --owner=0 --group=0 \
+    --anchored --no-wildcards \
+    --exclude=./calls --exclude=./record.json --exclude=./earlier.json \
+    --exclude=./statefulset.json --exclude=./statefulset.fail \
+    --exclude=./configmaps --exclude=./configmap.fail \
+    --exclude=./broker.json --exclude=./broker.fail \
+    --exclude=./release-gate.out --exclude=./release-gate.rc \
+    --exclude=./release-gate-listeners.out --exclude=./release-gate-listeners.rc \
+    --exclude=./release-gate.args --exclude=./census.cut --exclude=./compare --exclude=./bsdbin \
+    -cf - . | sha256sum
+}
+
+# The first readings this group took, one for each reader with its arguments: the directory each
+# ran in, the hash of its inputs, its exit status and its output.
+declare -A first_dirs=() first_inputs=() first_statuses=() first_outputs=()
+
+# keep_first_reading DIR READER [ARG...] runs READER ARG... on the case directory DIR.
+keep_first_reading() {
+  local -x FAKE=$1
   shift
   "$@"
+}
+
+# first_reading_secs SECONDS_AGO READER [ARG...] is first_reading_with, moved SECONDS_AGO seconds.
+# The group takes one first reading for each reader with its arguments, in a copy of the first
+# case directory that asks for it, and a later case whose first-reading inputs hash the same uses
+# it: its status and output, the Job manifest it made, and its record moved so that it finished
+# SECONDS_AGO seconds before this call, as a reading taken now and moved that far would read. A
+# case whose inputs differ takes its own first reading, as every case did before the sharing.
+first_reading_secs() {
+  local seconds=$1 reader inputs record_dir=$FAKE now=null
+  shift
+  printf -v reader '%q ' "$@"
+  # An existing record makes the gate refuse the path. A racer writes to the original case
+  # directory, and a fixed log timestamp must be judged against the clock of this read.
+  if [[ ! -e "$FAKE/record.json" && ! -L "$FAKE/record.json" &&
+        ! -e "$FAKE/record.racer" && ! -e "$FAKE/log_at" ]]; then
+    inputs=$(first_reading_inputs)
+    if [ -z "${first_dirs[$reader]:-}" ]; then
+      record_dir="$root/first-reading-${#first_dirs[@]}"
+      cp -a "$FAKE" "$record_dir"
+      keep_first_reading "$record_dir" "$@"
+      first_dirs[$reader]=$record_dir
+      first_inputs[$reader]=$inputs
+      first_statuses[$reader]=$status
+      first_outputs[$reader]=$output
+    elif [ "$inputs" = "${first_inputs[$reader]}" ]; then
+      record_dir=${first_dirs[$reader]}
+      status=${first_statuses[$reader]}
+      output=${first_outputs[$reader]}
+    fi
+  fi
+  if [ "$record_dir" = "$FAKE" ]; then
+    "$@"
+  else
+    printf -v now '%(%s)T' -1
+    # The fake kubectl writes only this Job manifest and calls at a cacheable first reading.
+    if [ -f "$record_dir/created-job.json" ]; then
+      cp "$record_dir/created-job.json" "$FAKE/created-job.json"
+    fi
+  fi
   [ "$status" = 4 ] || fail "the first reading exited $status, want 4 (FIRST READING); output:"$'\n'"$output"
-  if [ -f "$FAKE/record.json" ]; then
-    jq --argjson s "$seconds" '.started_at -= $s | .finished_at -= $s | .read_at = (.started_at | todate)
-      | .listeners |= map(.read_at -= $s)' "$FAKE/record.json" >"$FAKE/earlier.json"
+  if [ -f "$record_dir/record.json" ]; then
+    jq --argjson s "$seconds" --argjson now "$now" '
+      ($s + (.finished_at - ($now // .finished_at))) as $shift
+      | .started_at -= $shift | .finished_at -= $shift | .read_at = (.started_at | todate)
+      | .listeners |= map(.read_at -= $shift)' "$record_dir/record.json" >"$FAKE/earlier.json"
   fi
   rm -f "$FAKE/record.json"
   : >"$FAKE/calls"
