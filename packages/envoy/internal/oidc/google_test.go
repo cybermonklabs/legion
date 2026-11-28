@@ -60,7 +60,7 @@ func TestVerifyGoogleIdentityReadsTheAccount(t *testing.T) {
 // a verifier of https://accounts.google.com. A token of either spelling that fails is refused
 // for what is wrong with it, not as another issuer's: the class is what an operator reads, and
 // what a caller that tries several verifiers takes "not mine" from (ErrIssuer). Both spellings
-// also pick Google's verifier (Issues), and no other issuer does.
+// also pick Google's verifier (LazyVerifier.Issues), and no other issuer does.
 func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	issuer := oidctest.New(t)
 	signing := oidctest.NewKey(t, "google-signing-key")
@@ -77,7 +77,7 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 		if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrAudience) {
 			t.Errorf("iss %q for another audience: err = %v, want %v", spelling, err, ErrAudience)
 		}
-		if !google.Issues(raw) {
+		if !DiscoveredVerifier(google).Issues(raw) {
 			t.Errorf("iss %q does not pick Google's verifier", spelling)
 		}
 	}
@@ -87,7 +87,7 @@ func TestGooglesSchemelessIssuerIsGooglesOwn(t *testing.T) {
 	if _, err := google.VerifyGoogleIdentity(context.Background(), raw); !errors.Is(err, ErrIssuer) {
 		t.Errorf("another issuer: err = %v, want %v", err, ErrIssuer)
 	}
-	if google.Issues(raw) {
+	if DiscoveredVerifier(google).Issues(raw) {
 		t.Errorf("another issuer picks Google's verifier")
 	}
 }

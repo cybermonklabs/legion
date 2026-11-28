@@ -16,6 +16,7 @@
         "annotations": {
           "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
           "karpenter.sh/do-not-disrupt": "true",
+          "legion.dev/leak-checker-manifest-sha256": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
           "legion.dev/pod-shape": "{\"image\":\"ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef\",\"resources\":{\"limits\":{\"cpu\":\"1\",\"ephemeral-storage\":\"10Gi\",\"memory\":\"4Gi\"},\"requests\":{\"cpu\":\"1\",\"ephemeral-storage\":\"1Gi\",\"memory\":\"4Gi\"}},\"disk\":\"20Gi\"}"
         },
         "labels": {
@@ -115,9 +116,6 @@
           }
         ],
         "enableServiceLinks": false,
-        "nodeSelector": {
-          "legion.dev/pool": "legion"
-        },
         "priorityClassName": "legion",
         "restartPolicy": "Always",
         "runtimeClassName": "gvisor",
@@ -129,14 +127,6 @@
           "runAsUser": 1000
         },
         "terminationGracePeriodSeconds": 30,
-        "tolerations": [
-          {
-            "effect": "NoSchedule",
-            "key": "legion.dev/pool",
-            "operator": "Equal",
-            "value": "legion"
-          }
-        ],
         "volumes": [
           {
             "name": "issue",

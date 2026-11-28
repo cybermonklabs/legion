@@ -20,6 +20,7 @@ import (
 // paste's text is "Bar.". refs.PlanBlocks indexes only the first holder of an id, so the
 // version's two "Foo." blocks take p1 and p2, each once.
 func TestClosedVersionBlocksCountsOnlyTheFirstHolderOfAnID(t *testing.T) {
+	t.Parallel()
 	for name, pasted := range map[string]string{"paste": "Foo.", "edited paste": "Bar."} {
 		t.Run(name, func(t *testing.T) {
 			live, liveBlocks, err := documentBlocks(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{
@@ -112,6 +113,7 @@ const closedSpec = "Ship it after dispatch://CORE-2.\n\n:::ask{#region urgency=\
 // matched whole: every block of it takes the id the live document gives it, an untyped block
 // included, and the ask block holds the version's text of it, not the state the sweep wrote.
 func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", closedSpec, "")
@@ -171,6 +173,7 @@ func TestHeldVersionBlocksMatchesEveryBlockOfAVersionBehindOnlyInAskStates(t *te
 // paragraph the id of the row that holds version 1's text of it, so the edited paragraph keeps
 // its id with version 1's text, and no block holds the edit, which no version holds.
 func TestHeldVersionBlocksGivesAnEditedUntypedBlockItsRowWithTheVersionsText(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", "Ship it after dispatch://CORE-2.\n\nPlain paragraph.\n", "")
 	if tick := reconcileBlockIndex(t, service, ""); tick.Documents != 1 || tick.OwedDocuments != 0 {
@@ -207,6 +210,7 @@ func TestHeldVersionBlocksGivesAnEditedUntypedBlockItsRowWithTheVersionsText(t *
 // the id of its own row, in version 1's order, and the inserted paragraph, which no version holds,
 // takes none.
 func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	spec := createOwedDocument(t, database, service, "CORE-1", "", "spec", "Same.\n\nSame.\n\nOther.\n\nSame.\n", "")
@@ -262,6 +266,7 @@ func TestHeldVersionBlocksGivesIdenticalParagraphsTheirOwnRows(t *testing.T) {
 // matched. In "counts agree" a paragraph of new text is all that sets the live document apart,
 // and each paragraph of the version takes the id of its live copy, in order.
 func TestClosedVersionBlocksMatchesRepeatedTextWithNoRowOnlyWhenItsCountsAgree(t *testing.T) {
+	t.Parallel()
 	const stored = "Same.\n\nSame.\n\nOther.\n\nSame.\n"
 	for _, test := range []struct {
 		name       string
@@ -319,6 +324,7 @@ func TestClosedVersionBlocksMatchesRepeatedTextWithNoRowOnlyWhenItsCountsAgree(t
 // matched by that text across the blocks it moved past. In neither does the typed paragraph take
 // a block of the version.
 func TestHeldVersionBlocksMatchesAVersionAcrossCrossedEdits(t *testing.T) {
+	t.Parallel()
 	for _, mode := range []string{"rows", "deploy"} {
 		t.Run(mode, func(t *testing.T) {
 			database, service := blockIndexService(t)

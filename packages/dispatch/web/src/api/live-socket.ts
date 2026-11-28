@@ -17,6 +17,7 @@ import { useSyncExternalStore } from "react";
 import { applyDelta, applyRevs } from "../features/delivery/lib/applyDelta";
 import type { DeliveryFreshness } from "../features/delivery/lib/freshness";
 import { ApiError } from "./client";
+import { askSignInAgain } from "./query-client";
 import { reachable, unreachable } from "./reachability";
 import type {
   DeliveryLiveBody,
@@ -508,7 +509,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     const now = Date.now();
     if (now - signInCheckedAt < SIGN_IN_CHECK_MS) return;
     signInCheckedAt = now;
-    void queryClient.invalidateQueries({ queryKey: ["whoami"] });
+    void askSignInAgain(queryClient);
   };
 
   const reconnecting = () => {

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A deploy counts as one with pull requests on the Delivery page (`deploys_with_prs` and
+  `with_prs_per_day` of `GET /api/v1/delivery/measures`) when it is the first production deploy of
+  at least one pull request, whenever that pull request merged and whatever the filters. The old
+  rule counted a deploy only when it shipped a pull request merged inside the reader's window,
+  which depends on the window and so cannot be a part of one day. Over the test history
+  `deploys_with_prs` moved by one deploy in 4 of 20 windows. A change of a pull request dated
+  before a measures view's window, and every change of a deploy run or of its jobs, whenever the
+  run was created, now makes the live page compute the measures view again.
+time: 2026-11-24T03:45:26Z
+custom:
+    Issue: INFRA-5576

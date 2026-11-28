@@ -8,12 +8,13 @@ import (
 
 // A relay whose session's record lapsed hands the messages it held to the consumer that stands,
 // and the session is delivered them when it registers again. A record lapses out of the bucket
-// five minutes after the last heartbeat (session.BucketMaxAge), short of the hour past which the
-// reaper deletes a record and its consumer together (session.GoneHorizon), and the reaper judges
-// the records the cache holds, so nothing takes that consumer away: a sleeping laptop's session
-// is exactly this case. The delete of the record alone is what the row makes of that lapse, since
-// the cache reports a record deleted and one lapsed the same way and the run's cancel reads
-// session_gone for both.
+// at the bucket's maximum age after the last heartbeat. In a bucket whose age is short of the
+// gone horizon, that is before the reaper deletes a record and its consumer together
+// (session.GoneHorizon): a bucket an older build created keeps a record five minutes until
+// ENVOY_SESSION_MAX_AGE raises it. The reaper judges the records the cache holds, so nothing
+// takes that consumer away: a sleeping laptop's session is exactly this case. The delete of the
+// record alone is what the row makes of that lapse, since the cache reports a record deleted and
+// one lapsed the same way and the run's cancel reads session_gone for both.
 //
 // The row holds the two facts the hand-over line's second half rests on - the consumer stands
 // after the hand-over, and the message the relay gave back reaches the session that registers
@@ -21,6 +22,7 @@ import (
 // (TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery), where the stop deleted the
 // consumer with the record and nobody is delivered them.
 func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, silent, stored := relayHoldingOneMessage(t, "ses_lapsed_handover_")
 
 	// The record alone, as a lapse takes it: no clean stop and no reap, so nothing deletes the
@@ -40,7 +42,7 @@ func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testin
 	// The session registers again, as a laptop that woke registers, and is delivered the message
 	// the hand-over gave back. The first stand-in's connection goes first, so the frame reaches
 	// the one that returned and no other.
-	silent.conn.Close()
+	silent.close()
 	returned := startSessionStandIn(t, rig.url, sessionID, answerDone)
 	// The registration starts a relay, whose restart at the ack floor deletes the consumer holding
 	// the message given back and creates it again.

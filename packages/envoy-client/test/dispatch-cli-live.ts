@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { type DispatchStack, useDispatchStackDirectory } from "./dispatch-stack";
 
@@ -43,9 +44,9 @@ export interface DispatchCliDirectories {
  * Every live file calls this once, at its own module scope, as
  * `const directories = useDispatchCliDirectories()`. The call cannot live in this module's body:
  * `useDispatchStackDirectory` and `temporaryDirectory` each register the `beforeAll` that makes a
- * directory and the `afterAll` that removes it where they are called, and `bun:test` takes the
- * scope of a hook from the point of the call, so a call made here would reserve one pair for
- * whichever file loaded this module first.
+ * directory and the `afterAll` that removes it (the stack's through a removal it does not wait
+ * for) where they are called, and `bun:test` takes the scope of a hook from the point of the call,
+ * so a call made here would reserve one pair for whichever file loaded this module first.
  */
 export function useDispatchCliDirectories(): DispatchCliDirectories {
   return {
@@ -160,6 +161,7 @@ export function dispatchCliLive(options: DispatchCliLiveOptions): DispatchCliLiv
   async function cli(command: string, issue: string, args: readonly string[]): Promise<string> {
     const child = Bun.spawn([process.execPath, ENTRY, command, "--issue", issue, ...args], {
       env: {
+        ...bunCacheOff,
         PATH: SHELL_PATH,
         HOME: directories.state,
         DISPATCH_STATE_DIR: directories.state,

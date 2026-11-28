@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/agentsecrets"
 	"github.com/sjawhar/legion/daemon/internal/api"
+	"github.com/sjawhar/legion/daemon/internal/cipher"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -98,14 +98,18 @@ func (r *firedRenewals) fire() {
 // renewingRegistrar is the daemon's Registrar over the agent-secrets client's own renewer, as
 // newRegistrar wires it, renewing on the test's fired renewals.
 type renewingRegistrar struct {
-	client   *agentsecrets.Client
+	client   *cipher.Client
 	renewals *firedRenewals
 }
 
 func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSession) (func(), error) {
-	return r.client.KeepPodSession(ctx, agentsecrets.PodSessionRenewal{
+	return r.client.KeepPodSession(ctx, cipher.PodSessionRenewal{
 		PodUID: s.PodUID, Session: s.Session, Thumbprint: s.Thumbprint, Generation: int64(s.Generation), Token: s.Token, After: r.renewals.after, Bound: s.Bound,
 	})
+}
+
+func (r renewingRegistrar) ReleasePodSessions(ctx context.Context, names []string) error {
+	return r.client.ReleasePodSessions(ctx, names)
 }
 
 // TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken drives the stop of a
@@ -125,6 +129,7 @@ func (r renewingRegistrar) KeepPodSession(ctx context.Context, s supervise.PodSe
 // reader that waited on its consumer would hold the answer until the write's own deadline, the
 // RPC timeout, ended the write unsent.
 func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testing.T) {
+	t.Parallel()
 	const (
 		pod        = "pod-uid-stopwait"
 		session    = "ses_stopwait"
@@ -184,10 +189,10 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		Runtime: rt, Conns: listener, Store: &outboxClaimStore{}, Specs: outboxSpecs{}, Clock: stillClock{}, Log: quietLogger(),
 		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
 		Timeouts:       supervise.Timeouts{Boot: time.Minute, RegistrationIntervals: 2, RPC: rpc, Probe: time.Hour, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract: api.DaemonAPIVersion,
+		PluginContract: api.DaemonAPIVersion(),
 		Secrets:        enrollsEveryPod{},
 		Registrar: renewingRegistrar{
-			client:   &agentsecrets.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()},
+			client:   &cipher.Client{URL: server.URL, HTTP: server.Client(), TokenFile: tokenFile, Log: quietLogger()},
 			renewals: renewals,
 		},
 		RefreshGate: supervise.NewRefreshGate(0),
@@ -303,7 +308,7 @@ func TestAStopDoesNotWaitOutTheRPCTimeoutWhileTheShimIsAskedForItsToken(t *testi
 		t.Fatal("the shim's hello never reached the machine")
 	}
 	for _, ev := range []supervise.Event{
-		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion},
+		supervise.RequestRegister{Claim: token, Generation: 1, Session: session, SessionFile: "/sessions/" + session + ".jsonl", PluginContract: api.DaemonAPIVersion()},
 		supervise.RequestReady{Claim: token, Generation: 1, Session: session},
 	} {
 		if err := machine.Handle(ctx, ev); err != nil {

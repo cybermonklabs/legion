@@ -1,0 +1,123 @@
+{
+  "message": {
+    "id": "2dc5b959-dc04-409f-953f-9462d75953ac",
+    "issue_key": "PDFD720CB-1",
+    "author": { "kind": "user", "id": "alice", "proven": true },
+    "body": "Can the list show who is in each thread?",
+    "target": "role:planner",
+    "in_reply_to": null,
+    "broadcast_id": null,
+    "created_at": "2026-11-26T11:38:05.855352Z",
+    "edited_at": null,
+    "deleted_at": null,
+    "deleted_by": null,
+    "deliveries": [
+      {
+        "message_id": "2dc5b959-dc04-409f-953f-9462d75953ac",
+        "attempt": 1,
+        "delivery": "aside",
+        "session_id": "",
+        "envelope_id": null,
+        "duplicate": false,
+        "state": "failed",
+        "error": "no holder for role planner",
+        "reply_id": null,
+        "created_at": "2026-11-26T11:38:05.855352Z",
+        "requested_by": { "kind": "user", "id": "alice", "proven": true },
+        "accepted_at": null,
+        "accepted_as": null
+      }
+    ],
+    "reply_block": null
+  },
+  "replies": [
+    {
+      "id": "077c7fbb-6966-4333-b54c-1fba00e4d358",
+      "issue_key": "PDFD720CB-1",
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "body": "Yes, each author once.",
+      "target": null,
+      "in_reply_to": "2dc5b959-dc04-409f-953f-9462d75953ac",
+      "broadcast_id": null,
+      "created_at": "2026-11-26T11:38:05.880674Z",
+      "edited_at": null,
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "reply_block": null
+    },
+    {
+      "id": "5dde05a0-2c62-45b6-a663-983e25746bae",
+      "issue_key": "PDFD720CB-1",
+      "author": { "kind": "user", "id": "alice", "proven": true },
+      "body": "In the order they first wrote?",
+      "target": "role:planner",
+      "in_reply_to": "077c7fbb-6966-4333-b54c-1fba00e4d358",
+      "broadcast_id": null,
+      "created_at": "2026-11-26T11:38:05.899178Z",
+      "edited_at": null,
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [
+        {
+          "message_id": "5dde05a0-2c62-45b6-a663-983e25746bae",
+          "attempt": 1,
+          "delivery": "aside",
+          "session_id": "",
+          "envelope_id": null,
+          "duplicate": false,
+          "state": "failed",
+          "error": "no holder for role planner",
+          "reply_id": null,
+          "created_at": "2026-11-26T11:38:05.899178Z",
+          "requested_by": { "kind": "user", "id": "alice", "proven": true },
+          "accepted_at": null,
+          "accepted_as": null
+        }
+      ],
+      "reply_block": null
+    },
+    {
+      "id": "5d027993-6dee-4e1b-ab6f-1cd215e57b14",
+      "issue_key": "PDFD720CB-1",
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "body": "Yes, in that order.",
+      "target": null,
+      "in_reply_to": "5dde05a0-2c62-45b6-a663-983e25746bae",
+      "broadcast_id": null,
+      "created_at": "2026-11-26T11:38:06.339159Z",
+      "edited_at": null,
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "reply_block": null
+    },
+    {
+      "id": "ada59c63-6df4-485a-99e3-93623a9da3c1",
+      "issue_key": "PDFD720CB-1",
+      "author": {
+        "kind": "session",
+        "id": "threads-planner",
+        "origin": { "session_title": "Planner (threads)" }
+      },
+      "body": "And each name once.",
+      "target": null,
+      "in_reply_to": "5dde05a0-2c62-45b6-a663-983e25746bae",
+      "broadcast_id": null,
+      "created_at": "2026-11-26T11:38:06.356844Z",
+      "edited_at": null,
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "reply_block": null
+    }
+  ]
+}

@@ -4,9 +4,10 @@
 #
 # Who runs it, and why it is a script: the "Read the lanes' PostgreSQL and time its provider"
 # step of .github/workflows/dispatch-browser.yaml's shard job and the step of that name in its
-# alone job. The two jobs repeat their step lists for the reason that file's head gives - a
-# composite action carries neither `timeout-minutes` nor `services:` - but that reason is a
-# composite action's and not a script's: a step that calls a script keeps its own
+# alone job. The two jobs repeat their step lists for the reason
+# .github/ci-notes/dispatch-browser.md#the-suite-its-two-lanes-and-the-budget-rule-every-job-follows
+# gives - a composite action carries neither `timeout-minutes` nor `services:` - but that
+# reason is a composite action's and not a script's: a step that calls a script keeps its own
 # `timeout-minutes`. So this body is written once, both steps call it, and a fix here is a fix
 # for both jobs. It stood as two copies, word for word apart from the stack count, until a
 # review read them together (dispatch://INFRA-1443).
@@ -44,14 +45,14 @@
 #               and the figure the provider records for itself can be held against them.
 #
 # It runs the same sequence the stacks' provider runs (packages/dispatch/e2e/harness-postgres.ts),
-# with this image's PostgreSQL 18 on port 55432, which no stack uses: the stacks take ports the
-# OS chooses. It calls `initdb`, `pg_ctl` and `psql` by name: .github/docker/browser.Dockerfile
-# appends the version directory to PATH and asserts all three are found at build time, so this
-# script writes no version directory of its own and a PostgreSQL major moving in that file moves
-# it here with no edit. The two browser steps still export DISPATCH_E2E_PG_BIN, which is the
-# harness's binaries provider's own input - a directory, not a PATH lookup - and is no part of
-# what this script reads; it could not read it in any case, since that export happens inside a
-# later step's `run:`.
+# with this image's PostgreSQL 18 on port 55432, which no stack uses: each stack's server listens
+# on a unix socket of its own and on no TCP port. It calls `initdb`, `pg_ctl` and `psql` by name:
+# .github/docker/browser.Dockerfile appends the version directory to PATH and asserts all three
+# are found at build time, so this script writes no version directory of its own and a PostgreSQL
+# major moving in that file moves it here with no edit. The two browser steps still export
+# DISPATCH_E2E_PG_BIN, which is the harness's binaries provider's own input - a directory, not a
+# PATH lookup - and is no part of what this script reads; it could not read it in any case, since
+# that export happens inside a later step's `run:`.
 #
 # Everything it writes goes under a directory of its own in $RUNNER_TEMP and is removed again,
 # so the checkout stays clean and nothing is left for the suite to find.

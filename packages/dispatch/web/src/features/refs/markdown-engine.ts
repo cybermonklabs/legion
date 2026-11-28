@@ -1,9 +1,19 @@
+import {
+  HARD_BREAK_PIECE,
+  referenceReading,
+  type WordsFormatting,
+  type WordsPiece,
+  wordsAreAddress,
+  wordsFormatting,
+  wordsPieceUnder,
+} from "@legion/contracts";
 import { documentFromJSON } from "@legion/proof-editor/document-json";
 import type { SoftBreaks } from "@legion/proof-editor/headless";
 import type {
   Attrs,
   DOMOutputSpec,
   DOMSerializer,
+  Mark,
   Node as ProseMirrorNode,
   Schema,
 } from "prosemirror-model";
@@ -14,8 +24,17 @@ import { compiledBlockSchema } from "../doc/schema";
 import { renderAskBlockShell, renderTypedBlock } from "../doc/typed-block-drawing";
 import type { ParsedBody, ParseRequest } from "./markdown-parse.worker";
 import { markdownWorkerThreshold } from "./markdown-worker-threshold";
-import { referenceSpans } from "./reference-spans";
-import { parseDispatchReference, shortForm } from "./routes";
+import { isPartyRoute } from "./party-references";
+import { keyMayNameIssue } from "./project-keys";
+import {
+  buildDispatchReference,
+  type DispatchReferenceRoute,
+  nodeRouteFromHref,
+  referenceHref,
+  referenceRouteFromHref,
+  shortForm,
+} from "./routes";
+import { readTextReferences, type TextReference } from "./text-references";
 import { rememberUpTo, type WorkerJob, WorkerQueue } from "./worker-queue";
 
 /** What a single newline inside a paragraph becomes, chosen per parse: `"space"` (the document
@@ -75,10 +94,11 @@ export interface MarkdownEngine {
    * holding a heading), is drawn as its literal fence lines around its formatted content rather
    * than refused or silently dropped, a Pandoc `::: warning` fence or a `::leaf` / `:text{` line
    * reads as paragraph text, and so does a `:::` opener inside 32 open container directives, the
-   * deepest the parser nests them (`directive-container.ts`), so none of them throws. Proof's
-   * schema has no node for CommonMark's raw-HTML spans (a bare tag-shaped substring outside a
-   * code span or fence, e.g. `<img src=x>`) or a mark span of a kind this schema does not carry,
-   * so the parser still throws for them. HTML-like text inside a code span or fence parses
+   * deepest the parser nests them (`directive-container.ts`), so none of them throws. A
+   * CommonMark raw-HTML span or block (a bare tag-shaped substring outside a code span or fence,
+   * e.g. `<img src=x>`) parses as an `html` node holding its literal characters, a block of HTML
+   * inside a paragraph of its own; a mark span of a kind this schema does not carry has no node,
+   * so the parser still throws for one. HTML-like text inside a code span or fence parses
    * safely as literal text, so nothing is escaped beforehand: escaping the whole source
    * regardless of context would print literal backslashes around any
    * code span or fence containing something tag-shaped. Reference-style links and images
@@ -517,56 +537,428 @@ export function renderWithEngine(
 export const markdownClassName =
   "dispatch-markdown prose prose-sm prose-slate break-words dark:prose-invert";
 
-/** Text outside code with every `dispatch://` reference written as its short form
- *  (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`), as a rendered body's link reads until its
- *  title resolves; a reference in code stays as its author wrote it, as it does in a body. */
-function shortenReferences(text: string): string {
-  let shortened = "";
-  let cursor = 0;
-  for (const { start, value } of referenceSpans(text, "dispatch://")) {
-    const route = parseDispatchReference(value);
-    if (route !== undefined) {
-      shortened += `${text.slice(cursor, start)}${shortForm(route)}`;
-      cursor = start + value.length;
-    }
-  }
-  return shortened + text.slice(cursor);
+/** What one reference a projected text writes resolved to, under its `dispatch://` reference
+ *  (`MarkdownHeadline.addresses`): `name`, what the reference reads as standing on its own - its
+ *  target's current name, or undefined where Dispatch answered that its target does not exist or
+ *  exists with no name of its own, where it reads as the words its author wrote (R8) - and
+ *  `mention`, what a party's mention of it reads as, undefined where the mention keeps its
+ *  author's words. An issue's name is its title alone, which the projection writes after its key
+ *  (`standingName`), so a surface that sets the key apart reads the title alone. A reference the
+ *  lookup does not answer has not been read yet. */
+export interface ReferenceName {
+  readonly name: string | undefined;
+  readonly mention: string | undefined;
 }
 
-/** The words a parsed document renders, on one line: text as it reads (references shortened),
- *  raw inline HTML as the literal characters a body shows for it, and every block boundary,
- *  hard break or other leaf a space. */
-function plainWords(doc: ProseMirrorNode): string {
-  const parts: string[] = [];
-  doc.descendants((node, _position, parent) => {
+/** What each reference a projected text writes resolved to, by its `dispatch://` reference: a
+ *  map, or a view over the sources a caller names references from, read through without a copy
+ *  of them (`plain-text.tsx`). `undefined` for a reference not read yet. */
+export interface ReferenceNameLookup {
+  get(reference: string): ReferenceName | undefined;
+}
+
+/** The words `answer` names a reference to `route` by standing on its own: an issue's key and
+ *  then its title, as a link to an issue reads (`RefLink`), and any other target's name.
+ *  Undefined where it names none. */
+function standingName(
+  route: DispatchReferenceRoute,
+  answer: ReferenceName | undefined
+): string | undefined {
+  const name = answer?.name;
+  return name === undefined || route.kind !== "issue" ? name : `${route.key} ${name}`;
+}
+
+/** What a caller knows of the references a projected text writes: what each one resolved to
+ *  (`names`); the question map of the document the text's source belongs to, which a `#id`
+ *  resolves against (`questions`) - absent for a caller that names no source, whose `#id` reads
+ *  as written, as a rendered body with no source links none; the references the text's own
+ *  markdown cites (`cited`, `citedReferences`), which the projection is held to as a rendered
+ *  body's link pass is (`ReferenceLinking.cited`): Markdown drops the backslash of an escaped
+ *  `\#q2`, so the words hold a `#q2` the source never wrote, and it stays those words; and the
+ *  keys of the projects the page holds (`projects`, `project-keys.ts`), so a word shaped like an
+ *  issue key whose prefix is no project - `UTF-16` - is no reference to read. A caller with no
+ *  markdown or no project list to read leaves either out, and every reference the words hold is
+ *  named. */
+export interface ReferenceNaming {
+  readonly names: ReferenceNameLookup;
+  readonly questions?: Readonly<Record<string, string>>;
+  readonly cited?: ReadonlySet<string>;
+  readonly projects?: ReadonlySet<string>;
+  /** Whether the caller reads none of the references the projection answers: a title drawn over
+   *  one record's text, where a name inside a name resolves nothing (`useReferenceTarget`). No
+   *  name ever takes a reference's place there, so a `dispatch://` address reads as its short
+   *  form (`dispatch://CORE-1/ask/a1` reads `CORE-1 ask`) and the title never shows the scheme.
+   *  For any other caller, a reference `names` does not hold is one not read yet, and it reads
+   *  as the words its author wrote until it resolves, as a rendered body's link does
+   *  (`RefLink`). */
+  readonly readsNone?: boolean;
+}
+
+/** Nothing known yet, shared so a projection that needs nothing keeps one identity across renders
+ *  and the layout effect it is a dependency of never re-runs for a fresh empty value. */
+export const NO_REFERENCE_NAMING: ReferenceNaming = { names: new Map() };
+
+/** What one text of a document projects to: its words, the `dispatch://` reference of every
+ *  reference it read outside code and a link's words, those of them it wrote a name for in place
+ *  of the words their author wrote, and whether it holds a `#id`, which only a question map
+ *  resolves. */
+interface ProjectedText {
+  readonly words: string;
+  readonly addresses: readonly string[];
+  readonly named: readonly string[];
+  readonly questions: boolean;
+}
+
+/** Where one line's references are written as the projection reads them: every one it read
+ *  (`ProjectedText.addresses`), and those of them it wrote a name for. */
+interface LineReferences {
+  readonly addresses: string[];
+  readonly named: string[];
+}
+
+/** Whether a rendered body draws a reference to `route` by name at all (`RefLink.tsx`'s
+ *  `linksReference` and `collectReferenceAnchors`): one that opens a page of this dashboard, and a
+ *  person, whom no page shows but who reads as their login (R5). Any other is its words. */
+function drawnByName(route: DispatchReferenceRoute): boolean {
+  return referenceHref(route) !== undefined || route.kind === "person";
+}
+
+/** What a candidate the one reader found names, as the projection reads it: its `dispatch://`
+ *  reference and the route behind it. An issue key names its issue whether or not the reader
+ *  was told the issue exists, since the read of that reference is what says so - where its
+ *  prefix is a project the page holds (`keyMayNameIssue`, the rule a rendered body's reader
+ *  keeps). Undefined for a candidate that names nothing - a `#id` no question map declares, a
+ *  key of no project - and for one a rendered body draws as its words (`drawnByName`). */
+function candidateTarget(
+  found: TextReference,
+  projects: ReadonlySet<string> | undefined
+): { reference: string; route: DispatchReferenceRoute } | undefined {
+  const route =
+    found.route ??
+    (found.form === "key" && keyMayNameIssue(found.text, projects)
+      ? { key: found.text, kind: "issue" as const }
+      : undefined);
+  if (route === undefined || !drawnByName(route)) {
+    return undefined;
+  }
+  return { reference: found.reference ?? buildDispatchReference(route), route };
+}
+
+/** The references `markdown` cites, each by its `dispatch://` reference (`candidateTarget`), read
+ *  by the one reader with the question map a caller holds: what `ReferenceNaming.cited` is. */
+export function citedReferences(
+  markdown: string,
+  questions: Readonly<Record<string, string>> | undefined
+): ReadonlySet<string> {
+  const cited = new Set<string>();
+  const reading = readTextReferences(markdown, { origin: window.location.origin, questions });
+  for (const found of reading.references) {
+    const target = candidateTarget(found, undefined);
+    if (target !== undefined) {
+      cited.add(target.reference);
+    }
+  }
+  return cited;
+}
+
+/**
+ * Text outside code and a link's words with every reference in it written as the renderer draws
+ * it, by the one reader of what a text cites (`readTextReferences`) and the facts `naming` holds:
+ * a `dispatch://` reference, a dashboard address, a short id, an issue key and - where `naming`
+ * holds its document's question map - a `#id`, each as the name its target resolved to, and as
+ * the words its author wrote until it resolves and where Dispatch answered that it has none, as
+ * a rendered body draws the words of a link whose title has not resolved (`RefLink`). For a
+ * caller that reads none of them (`ReferenceNaming.readsNone`), a `dispatch://` address reads as
+ * its short form instead, and every other form as written. A reference the text's source does
+ * not cite (`ReferenceNaming.cited`) is the words it is. Each reference read is added to
+ * `references` by its `dispatch://` reference, an issue key's being its issue's, and among those
+ * named where a name was written in its place.
+ */
+function nameReferences(
+  text: string,
+  naming: ReferenceNaming,
+  references: LineReferences
+): { words: string; questions: boolean } {
+  const reading = readTextReferences(text, {
+    origin: window.location.origin,
+    questions: naming.questions,
+  });
+  let words = "";
+  let cursor = 0;
+  for (const found of reading.references) {
+    const target = candidateTarget(found, naming.projects);
+    if (target === undefined || naming.cited?.has(target.reference) === false) {
+      continue;
+    }
+    references.addresses.push(target.reference);
+    const name =
+      naming.readsNone === true
+        ? undefined
+        : standingName(target.route, naming.names.get(target.reference));
+    if (name !== undefined) references.named.push(target.reference);
+    const drawn =
+      naming.readsNone === true && found.form === "address" && found.text.startsWith("dispatch://")
+        ? shortForm(target.route)
+        : (name ?? found.text);
+    words += `${text.slice(cursor, found.start)}${drawn}`;
+    cursor = found.end;
+  }
+  return { questions: reading.needs.questions, words: words + text.slice(cursor) };
+}
+
+/**
+ * What a link reads as, where that is not the words its author wrote, as a rendered body draws it
+ * (`RefLink.tsx`'s `collectReferenceAnchors`, by `@legion/contracts`'s `referenceReading`): a link
+ * whose words are its own address as its target's name, and a party's mention as the mention
+ * sign and the party's name (`ReferenceName.mention`), each once its target has resolved. For a
+ * caller that reads none of them (`ReferenceNaming.readsNone`), a link whose words are its own
+ * `dispatch://` address reads as its short form, as the bare address does. Undefined where the
+ * link reads as its words - an author's own words, words formatted in part or holding code or a
+ * hard break, an address that names nothing, a target not yet read or that Dispatch answered has
+ * no name - and the link's reference is added to `references` where it has one to read, and
+ * among those named where a name was written in place of its words.
+ */
+function linkDrawn(
+  href: string,
+  words: string,
+  formatting: WordsFormatting,
+  naming: ReferenceNaming,
+  references: LineReferences
+): string | undefined {
+  const origin = window.location.origin;
+  const route = wordsAreAddress(words, href)
+    ? referenceRouteFromHref(href, origin)
+    : nodeRouteFromHref(href, origin);
+  if (route === undefined || !drawnByName(route)) {
+    return undefined;
+  }
+  const reads = referenceReading({
+    address: href,
+    party: isPartyRoute(route),
+    words,
+    wordsFormatting: formatting,
+  });
+  if (reads === "words") {
+    return undefined;
+  }
+  const reference = buildDispatchReference(route);
+  references.addresses.push(reference);
+  if (naming.readsNone === true && reads !== "mention") {
+    return href.startsWith("dispatch://") ? shortForm(route) : undefined;
+  }
+  const answer = naming.names.get(reference);
+  const name = reads === "mention" ? answer?.mention : standingName(route, answer);
+  if (name !== undefined) references.named.push(reference);
+  return name;
+}
+
+/** The link mark over a text node, if any. */
+export function linkMarkOf(node: ProseMirrorNode): Mark | undefined {
+  return node.isText ? node.marks.find((mark) => mark.type.name === "link") : undefined;
+}
+
+/** Whether `parent`'s child at `index` is a hard break inside the link `link` marks: the text
+ *  after it carries the same link, which is how a parsed text holds a link whose words a hard
+ *  break cuts - the break itself holds no mark (`@legion/proof-editor`'s `withoutLeafMarks`). */
+function breaksLink(parent: ProseMirrorNode, index: number, link: Mark): boolean {
+  const next = parent.maybeChild(index + 1);
+  return (
+    parent.child(index).type.name === "hardbreak" &&
+    next !== null &&
+    next.isText &&
+    link.isInSet(next.marks)
+  );
+}
+
+/** The words of the link `link` marks, from `parent`'s child `index` on - the run of text nodes
+ *  formatting inside the link cuts its words into, and the hard breaks between them, each a
+ *  space - and how they are formatted, by the marks over each of those nodes
+ *  (`@legion/contracts`'s `wordsFormatting`, a hard break being `HARD_BREAK_PIECE`). */
+export function linkWordsAt(
+  parent: ProseMirrorNode,
+  index: number,
+  link: Mark
+): { words: string; formatting: WordsFormatting } {
+  let words = "";
+  const pieces: WordsPiece[] = [];
+  for (let at = index; at < parent.childCount; at += 1) {
+    const child = parent.child(at);
+    if (child.isText && link.isInSet(child.marks)) {
+      words += child.text ?? "";
+      pieces.push(wordsPieceUnder(child.marks));
+    } else if (breaksLink(parent, at, link)) {
+      words += " ";
+      pieces.push(HARD_BREAK_PIECE);
+    } else {
+      break;
+    }
+  }
+  return { formatting: wordsFormatting(pieces), words };
+}
+
+/** The words a parsed document renders, line by line, each line with the references it read:
+ *  text as it reads (references named, `nameReferences`), a link as it reads (`linkDrawn`), raw
+ *  inline HTML as the literal characters a body shows for it, and every leaf but a hard break a
+ *  space. A line ends at every block boundary, at a hard break, and at a newline in a text or an
+ *  HTML value - which is where a code block's lines end, and a block of HTML's, which the engine
+ *  draws as one `html` node holding all of its lines. A table's row is the exception: it reads as
+ *  one line, every boundary or break inside it a space, so its cells read in a row. An item of an
+ *  ordered list opens on its number, as a rendered body draws it: the list's `order` and the
+ *  item's place in it, written before the first words the item holds, wherever they stand, so
+ *  `1. Stand the harness up.` keeps its `1.` and `1. - a` reads `1. a`, never a line of `1.`
+ *  alone. A link's words name no reference of their own, as a rendered body links none there,
+ *  and a link a hard break cuts is read once, as the one link it is (`linkWordsAt`). */
+function plainLines(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText[] {
+  const lines: ProjectedText[] = [];
+  let words = "";
+  let references: LineReferences = { addresses: [], named: [] };
+  let questions = false;
+  // Where the table row being read ends: a node that starts before it is one of its cells.
+  let rowEnd = -1;
+  // The link being read, and whether a name was written in place of its words: the text nodes
+  // after its first, which formatting inside the link cuts its words into, then add nothing.
+  let reading: { link: Mark; drawn: boolean } | undefined;
+  // The numbers of the ordered list's items opened and not written yet, an item's after the
+  // items it stands in, and where the innermost of those items ends: written before the first
+  // words it holds, and dropped where it ends holding none.
+  let numbers: { readonly end: number; readonly text: string } | undefined;
+  const breakLine = (position: number): void => {
+    if (position < rowEnd) {
+      words += " ";
+      return;
+    }
+    lines.push({ ...references, questions, words });
+    words = "";
+    references = { addresses: [], named: [] };
+    questions = false;
+  };
+  // A reference never spans a newline (`@legion/contracts`' `reference-spans.ts`), so each line
+  // of a text is named on its own.
+  const write = (position: number, text: string, name: boolean): void => {
+    for (const [index, line] of text.split("\n").entries()) {
+      if (index > 0) {
+        breakLine(position);
+      }
+      if (numbers !== undefined && (position >= numbers.end || line.trim() !== "")) {
+        words += position < numbers.end ? numbers.text : "";
+        numbers = undefined;
+      }
+      if (!name) {
+        words += line;
+        continue;
+      }
+      const named = nameReferences(line, naming, references);
+      words += named.words;
+      questions ||= named.questions;
+    }
+  };
+  doc.descendants((node, position, parent, index) => {
+    const link = linkMarkOf(node);
+    if (reading !== undefined && link?.eq(reading.link) === true) {
+      if (!reading.drawn) {
+        write(position, node.text ?? "", false);
+      }
+      return true;
+    }
+    if (reading !== undefined && parent !== null && breaksLink(parent, index, reading.link)) {
+      // A link whose words a hard break cuts reads as its words, so the break is the line break
+      // it is everywhere else.
+      breakLine(position);
+      return true;
+    }
+    reading = undefined;
     if (node.isText) {
+      const text = node.text ?? "";
+      const href = link?.attrs.href;
+      if (link !== undefined && parent !== null) {
+        const written = linkWordsAt(parent, index, link);
+        const drawn =
+          typeof href === "string"
+            ? linkDrawn(href, written.words, written.formatting, naming, references)
+            : undefined;
+        reading = { drawn: drawn !== undefined, link };
+        write(position, drawn ?? text, false);
+        return true;
+      }
       const code =
         parent?.type.spec.code === true || node.marks.some((mark) => mark.type.spec.code === true);
-      parts.push(code ? (node.text ?? "") : shortenReferences(node.text ?? ""));
-    } else if (node.isBlock || node.isLeaf) {
-      parts.push(node.type.name === "html" ? String(node.attrs.value ?? "") : " ");
+      write(position, text, !code);
+    } else if (node.type.name === "html") {
+      write(position, String(node.attrs.value ?? ""), false);
+    } else if (node.isBlock || node.type.name === "hardbreak") {
+      breakLine(position);
+      if (node.type.name === "table_row" || node.type.name === "table_header_row") {
+        rowEnd = position + node.nodeSize;
+      }
+      if (node.type.name === "list_item" && parent?.type.name === "ordered_list") {
+        const order = parent.attrs.order;
+        const number = `${(typeof order === "number" ? order : 1) + index}. `;
+        const within = numbers !== undefined && position < numbers.end ? numbers.text : "";
+        numbers = { end: position + node.nodeSize, text: `${within}${number}` };
+      }
+    } else if (node.isLeaf) {
+      words += " ";
     }
     return true;
   });
-  return parts.join("");
+  breakLine(doc.content.size);
+  return lines;
 }
 
-/** A headline and whether it had to be cut to fit. */
+/** The words a parsed document renders, on one line: its lines (`plainLines`) a space apart. */
+function plainWords(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText {
+  const lines = plainLines(doc, naming);
+  return {
+    addresses: lines.flatMap((line) => line.addresses),
+    named: lines.flatMap((line) => line.named),
+    questions: lines.some((line) => line.questions),
+    words: lines.map((line) => line.words).join(" "),
+  };
+}
+
+/** The first of a parsed document's lines (`plainLines`) that holds any words, with the
+ *  references read on it alone; nothing where no line holds words. A line holding nothing but
+ *  an image or a break holds no words, since the projection draws neither, so the next line is
+ *  read; a line of HTML holds its literal characters, as the projection draws them, so a block
+ *  of HTML reads as its first line. */
+function firstLineOf(doc: ProseMirrorNode, naming: ReferenceNaming): ProjectedText {
+  return (
+    plainLines(doc, naming).find((line) => line.words.trim() !== "") ?? {
+      addresses: [],
+      named: [],
+      questions: false,
+      words: "",
+    }
+  );
+}
+
+/** A headline, whether it had to be cut to fit, and the references it read. */
 export interface MarkdownHeadline {
   readonly text: string;
   readonly cut: boolean;
+  /** The `dispatch://` reference of every reference the projection read, in the order it read
+   *  them: a caller that resolves their names (`usePlainHeadline`) hands them back in `naming`,
+   *  and one that does not ignores them. */
+  readonly addresses: readonly string[];
+  /** Those of `addresses` the projection wrote a name for in place of the words their author
+   *  wrote (`naming`), in the order it wrote them: for a caller that draws a reference only once
+   *  it has a name, as a chip does. */
+  readonly named: readonly string[];
+  /** Whether the projected text holds a `#id`, which only its document's question map names. */
+  readonly questions: boolean;
 }
 
 /**
  * A stored text projected to one line of plain words and cut to `max` characters, for a place
- * that can hold only a string: a reference link's text, a card's title, a hover tooltip. The
- * words are `tree`'s, drawn from the reading Go made of that text, so nothing on this page
- * parses markdown for a stored text. Formatting goes (a link's own styling is the formatting
- * there) and no syntax stays: `**Blocking:** the deploy` reads `Blocking: the deploy`, a code
- * span keeps its words, a `dispatch://` reference reads as its short form, and the cut happens
- * on the projected text, so it never splits a mark (nor a character outside the Basic
- * Multilingual Plane). Blocks and hard breaks become single spaces. `cut` says whether the
- * text was cut, which an ellipsis the author typed cannot fake.
+ * that can hold only a string: a reference link's text, a card's title, a hover tooltip, an
+ * `aria-label`. The words are `tree`'s, drawn from the reading Go made of that text, so nothing
+ * on this page parses markdown for a stored text. Formatting goes (a link's own styling is the
+ * formatting there) and no syntax stays: `**Blocking:** the deploy` reads `Blocking: the
+ * deploy`, a code span keeps its words, every reference reads as a rendered body draws it, by
+ * the facts `naming` holds (`nameReferences`, `linkDrawn`), and the cut happens on the projected
+ * text, so it never splits a mark (nor a character outside the Basic Multilingual Plane).
+ * Blocks and hard breaks become single spaces. `cut` says whether the text was cut, which an
+ * ellipsis the author typed cannot fake.
  *
  * `markdown` is for a text that carries no tree to take the words from. That is the three texts
  * Dispatch does not store — a refused broadcast send's row names its own text on hover
@@ -575,29 +967,46 @@ export interface MarkdownHeadline {
  * puts in front of one dashboard (`reference-target.ts`). It is read only where `tree` is
  * absent, and it is parsed, as everything about such a text is.
  *
+ * `naming` is what a caller has resolved for the references the last projection answered; a
+ * caller that leaves it out reads every reference as written. A title drawn over one record's
+ * text reads none of them, since a name inside a name resolves nothing, and says so
+ * (`ReferenceNaming.readsNone`, `useReferenceTarget`): a `dispatch://` reference reads there as
+ * its short form, and every other one as written.
+ *
+ * `firstLine` projects the text's first line alone (`firstLineOf`): the first line of the
+ * projection that holds any words - of a paragraph, a heading, a list item, a code block, a
+ * table's whole row, or a block of HTML, which reads as its own first line's literal characters
+ * (`<details>`) - the lines before it that hold none - an image alone, a break - passed over, for
+ * a place that shows the opening line of a text and no more of it. A text read from `markdown`
+ * is parsed with its soft breaks kept as line breaks for this reading, so a paragraph's first
+ * line is the line its author wrote; a tree's soft break is whatever Go's reading made of it, a
+ * space, so only a hard break ends that line. Only a node's line on the new issue page asks for
+ * it today, for a stored text it reads from its markdown (`node-line.tsx`, through
+ * `usePlainHeadline`); every other caller reads the whole text, which is the default. `cut` still
+ * says only whether the projected words were cut to `max`, and `addresses` holds only the line's
+ * own.
+ *
  * `undefined` where neither is given, until the engine has answered (one pre-paint commit once
  * it is loaded on the page, and for a parsed body until the worker's answer lands), and for a
  * tree the schema refuses or an engine that cannot load: the surfaces that show a headline
- * show their own words in its place (a reference link reads as its short form).
+ * show their own words in its place.
  */
 export function useMarkdownHeadline(
   tree: DisplayTree | undefined,
   max: number,
-  markdown?: string
+  markdown?: string,
+  naming: ReferenceNaming = NO_REFERENCE_NAMING,
+  firstLine = false
 ): MarkdownHeadline | undefined {
   const [headline, setHeadline] = useState<MarkdownHeadline>();
   useLayoutEffect(() => {
     const fit = (document: ProseMirrorNode | undefined): void => {
-      if (document === undefined) {
-        setHeadline(undefined);
-        return;
-      }
-      const characters = Array.from(plainWords(document).replace(/\s+/g, " ").trim());
-      const cut = characters.length > max;
-      setHeadline({
-        cut,
-        text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
-      });
+      const next =
+        document === undefined ? undefined : headlineOf(document, max, naming, firstLine);
+      // A projection again over facts that change nothing of the line - a name read for a
+      // reference it does not hold, a lookup made anew - keeps the headline in hand, so its
+      // caller draws nothing again.
+      setHeadline((current) => (sameHeadline(current, next) ? current : next));
     };
     if (tree !== undefined) {
       return drawWithEngine(tree, fit);
@@ -606,11 +1015,58 @@ export function useMarkdownHeadline(
       setHeadline(undefined);
       return;
     }
-    return renderWithEngine(markdown, undefined, "space", ({ parsed, pending }) => {
-      // A long body's headline waits for the worker rather than reading as its own source,
-      // and the headline left in place would be the one a frame before it produced.
-      fit(pending ? undefined : parsed);
-    });
-  }, [markdown, max, tree]);
+    return renderWithEngine(
+      markdown,
+      undefined,
+      firstLine ? "line" : "space",
+      ({ parsed, pending }) => {
+        // A long body's headline waits for the worker rather than reading as its own source,
+        // and the headline left in place would be the one a frame before it produced.
+        fit(pending ? undefined : parsed);
+      }
+    );
+  }, [firstLine, markdown, max, naming, tree]);
   return headline;
+}
+
+/** Whether two lists of references are the same, in the same order. */
+function sameReferences(one: readonly string[], other: readonly string[]): boolean {
+  return one.length === other.length && one.every((reference, at) => other[at] === reference);
+}
+
+/** Whether two headlines read the same: the same words, cut alike, from the same references,
+ *  named alike. */
+function sameHeadline(
+  one: MarkdownHeadline | undefined,
+  other: MarkdownHeadline | undefined
+): boolean {
+  if (one === undefined || other === undefined) return one === other;
+  return (
+    one.text === other.text &&
+    one.cut === other.cut &&
+    one.questions === other.questions &&
+    sameReferences(one.addresses, other.addresses) &&
+    sameReferences(one.named, other.named)
+  );
+}
+
+/** The headline of a parsed document (`useMarkdownHeadline`). The line is read from the parsed
+ *  document, never from the markdown, by the projection that reads a whole text, so the two
+ *  cannot disagree on what a line holds. */
+function headlineOf(
+  document: ProseMirrorNode,
+  max: number,
+  naming: ReferenceNaming,
+  firstLine: boolean
+): MarkdownHeadline {
+  const projected = firstLine ? firstLineOf(document, naming) : plainWords(document, naming);
+  const characters = Array.from(projected.words.replace(/\s+/g, " ").trim());
+  const cut = characters.length > max;
+  return {
+    addresses: projected.addresses,
+    named: projected.named,
+    questions: projected.questions,
+    cut,
+    text: cut ? `${characters.slice(0, max).join("")}…` : characters.join(""),
+  };
 }

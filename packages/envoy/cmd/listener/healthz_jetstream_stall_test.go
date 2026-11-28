@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // healthzWithin is how long /healthz may take to answer a JetStream that stopped answering: its
@@ -48,7 +49,7 @@ func startSubjectStallRelay(t *testing.T, uri string) *subjectStallRelay {
 	if err != nil {
 		t.Fatalf("parse NATS URL %q: %v", uri, err)
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := testport.ListenLoopback()
 	if err != nil {
 		t.Fatalf("listen for relay: %v", err)
 	}
@@ -141,6 +142,8 @@ func (r *subjectStallRelay) close() {
 // that check: 503 unhealthy, naming the dependency and the context's deadline. The negative control
 // is /healthz on the same rig before the stall: 200 healthy.
 func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.T) {
+	// Not parallel: it requires /healthz on a stalled JetStream to answer inside healthzWithin
+	// (3.5 s), half a second past its 3 s healthzBudget.
 	for _, stall := range []struct {
 		name     string
 		prefixes []string
@@ -182,7 +185,7 @@ func TestHealthzAnswersAJetStreamThatStoppedAnsweringInsideItsBudget(t *testing.
 			get := func() (int, map[string]any, time.Duration) {
 				recorder := httptest.NewRecorder()
 				started := time.Now()
-				healthzHandler(&state).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+				healthzHandler(&state, nil).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 				elapsed := time.Since(started)
 				var body map[string]any
 				_ = json.Unmarshal(recorder.Body.Bytes(), &body)

@@ -67,8 +67,8 @@ export function RouteReachUnknownMarker({
  *
  * `showRoute` names the route in the label, for the header, where the marker sits in the state
  * row rather than beside the route: a role as its address, a session by `AgentName`. A name can
- * be long, so only the route ellipsizes and the verdict stays whole, the rule `ClaimChip`
- * follows for a holder's name.
+ * be long, so in a box narrower than the whole chip the route and the verdict each shorten inside
+ * themselves, as `UnreachableRoute` says.
  */
 export function UnreachableRouteMarker({
   issue,
@@ -131,6 +131,16 @@ export function UnresponsiveRouteMarker({
   );
 }
 
+/**
+ * The chip that says an issue's route reaches nobody. Its groups, in this order: Mark (⚠), Route
+ * (the route, or the session it names, when `showRoute`) and Verdict ("Nobody holds it right now"
+ * or "Not running right now"); the explanation follows for screen readers only. The mark never
+ * shrinks. When a narrow cell, card or header row holds less than all of it, the chip gives way
+ * inside itself: with the route shown, the route alone ends in an ellipsis and the verdict keeps
+ * its words, as on `main`; with no route, the verdict ends in one. Each cut is under the chip's
+ * own title, which says it whole, and inside `NoTooltips`, which draws no title, each wraps
+ * inside itself.
+ */
 function UnreachableRoute({
   route,
   showRoute,
@@ -145,6 +155,7 @@ function UnreachableRoute({
   const sessionId = sessionOfAddress(route);
   // The words name the session as `AgentName` draws it on this surface.
   const explanation = `${sessionId === undefined ? `No running session holds ${route} right now` : `${text.sessionShown(sessionId, undefined)} is not running right now`}, so this issue's messages reach nobody at the moment. A session that is restarting or moving between boxes drops out of the listener for minutes and comes back under the same id, so this is a vacancy only when it is still true on a read ten minutes later; then staff the role, re-route it to a live holder, or clear the route and assign it.`;
+  const verdict = sessionId === undefined ? "Nobody holds it right now" : "Not running right now";
   return (
     <span
       className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-semibold ${tooltips ? `${calloutWarningBorder} ${calloutWarningBg} ${calloutWarningText}` : pageWaitingChip}`}
@@ -165,8 +176,16 @@ function UnreachableRoute({
           :
         </span>
       ) : null}
-      <span className="shrink-0">
-        {sessionId === undefined ? "Nobody holds it right now" : "Not running right now"}
+      <span
+        className={
+          tooltips
+            ? showRoute
+              ? "shrink-0"
+              : "min-w-0 truncate"
+            : "min-w-0 [overflow-wrap:anywhere]"
+        }
+      >
+        {verdict}
       </span>
       <span className="sr-only">. {explanation}</span>
     </span>

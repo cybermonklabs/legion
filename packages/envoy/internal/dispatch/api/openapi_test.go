@@ -1,9 +1,13 @@
 package api
 
+//ci:reads packages/contracts/schemas/dispatch-openapi.json TestARefusalStatusAlsoAnswersThePlainErrorBody (the path built runtime-relative ../../../../.., then read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)
+
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/contracts"
 )
 
 // openAPIDocumentForTest is as much of the document as these tests read: the operations by path
@@ -52,6 +58,7 @@ func readOpenAPI(t testing.TB) ([]byte, openAPIDocumentForTest) {
 // the same bytes: a map walked in its own order would make every run a diff, and no reader could
 // tell a real change from the walk.
 func TestOpenAPIDocumentIsTheSameBytesEveryRun(t *testing.T) {
+	t.Parallel()
 	first, second := renderOpenAPI(t), renderOpenAPI(t)
 	if !bytes.Equal(first, second) {
 		t.Fatalf("two runs wrote different bytes: %d and %d bytes", len(first), len(second))
@@ -65,6 +72,7 @@ func TestOpenAPIDocumentIsTheSameBytesEveryRun(t *testing.T) {
 // operation is a route a client is given no type for, and an operation that is no row is a route
 // nothing serves.
 func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
+	t.Parallel()
 	_, document := readOpenAPI(t)
 	described := map[string]bool{}
 	for pattern, item := range document.Paths {
@@ -95,6 +103,7 @@ func TestOpenAPIDocumentHasOneOperationPerMountedRoute(t *testing.T) {
 // generator renders as `unknown` or refuses outright, and nothing else in the pipeline would say
 // which reference it was.
 func TestOpenAPIDocumentDeclaresEverySchemaItReferences(t *testing.T) {
+	t.Parallel()
 	tree, document := readOpenAPITree(t)
 	references := map[string]bool{}
 	walkOpenAPI(tree, "", func(_ string, node map[string]any) {
@@ -156,6 +165,7 @@ func walkOpenAPI(node any, path string, visit func(path string, m map[string]any
 // else: a client generated from it keeps the hooks out of the API it offers, and a hook that lost
 // its mark would be offered as an ordinary route.
 func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
+	t.Parallel()
 	_, document := readOpenAPI(t)
 	marked := map[string]bool{}
 	for pattern, item := range document.Paths {
@@ -165,7 +175,18 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 			}
 		}
 	}
-	hooks := openAPIHookRoutes()
+	// The hooks are read as the rows a server with its test hooks mounts and one without does not,
+	// rather than off the declarations' TestHook, which is what the emitter marks by.
+	served := map[string]bool{}
+	for _, route := range (&server{}).routes() {
+		served[route.Method+" "+route.Pattern] = true
+	}
+	hooks := map[string]bool{}
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		if name := route.Method + " " + route.Pattern; !served[name] {
+			hooks[name] = true
+		}
+	}
 	if len(hooks) != 15 {
 		t.Fatalf("the table mounts %d test hooks with Deps.TestHooksEnabled, want 15", len(hooks))
 	}
@@ -181,10 +202,63 @@ func TestOpenAPIDocumentMarksEveryTestHookAndNothingElse(t *testing.T) {
 	}
 }
 
+// A status that answers a richer refusal (routeShape.Refusals) is answered with writeError's plain
+// body too, by the same handler: an issue PATCH answers 409 ISSUE_CHANGED and ISSUE_CLOSED beside
+// 409 FOREIGN_CHILD_OPEN. The default answer covers only the statuses the document does not name,
+// so such a status must name the plain body itself, beside the rich one, and must not require a
+// body to match exactly one of them, since the rich body carries code and error as well.
+func TestARefusalStatusAlsoAnswersThePlainErrorBody(t *testing.T) {
+	t.Parallel()
+	tree, _ := readOpenAPITree(t)
+	paths, _ := tree.(map[string]any)["paths"].(map[string]any)
+	plain := openAPISchemaPrefix + "ErrorBody"
+	checked := 0
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		name, method, pattern, shape := route.Method+" "+route.Pattern, route.Method, route.Pattern, route.Shape
+		for _, refusal := range shape.Refusals {
+			status := fmt.Sprint(refusal.Status)
+			operation, _ := paths[pattern].(map[string]any)[strings.ToLower(method)].(map[string]any)
+			response, _ := operation["responses"].(map[string]any)[status].(map[string]any)
+			schema, _ := response["content"].(map[string]any)["application/json"].(map[string]any)["schema"].(map[string]any)
+			alternatives, isAnyOf := schema["anyOf"].([]any)
+			if !isAnyOf {
+				t.Errorf("%s answers %s with %v, want an anyOf that holds %s beside its rich refusal", name, status, schema, plain)
+				continue
+			}
+			refs := make([]string, 0, len(alternatives))
+			for _, alternative := range alternatives {
+				if ref, isRef := alternative.(map[string]any)["$ref"].(string); isRef {
+					refs = append(refs, ref)
+				}
+			}
+			if !slices.Contains(refs, plain) || len(refs) < 2 {
+				t.Errorf("%s answers %s with %v, want %s beside its rich refusal", name, status, refs, plain)
+			}
+			checked++
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no route declares a refusal, so this test read nothing")
+	}
+	// The issue PATCH's 409 is the case that showed it: its rich body and the plain one.
+	patch, _ := paths["/api/v1/issues/{key}"].(map[string]any)["patch"].(map[string]any)
+	conflict, _ := patch["responses"].(map[string]any)["409"].(map[string]any)
+	encoded, err := json.Marshal(conflict)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{openAPISchemaPrefix + "ForeignChildOpenError", plain} {
+		if !strings.Contains(string(encoded), `"`+want+`"`) {
+			t.Errorf("PATCH /api/v1/issues/{key} answers 409 with %s, which does not name %s", encoded, want)
+		}
+	}
+}
+
 // The committed artifact is what the clients' types are rendered from, so a tree whose document
 // has moved on fails `go test` as well as `envoy-dispatch openapi --check`: nobody has to remember
 // to run the command.
 func TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites(t *testing.T) {
+	t.Parallel()
 	if !bytes.Equal(committedOpenAPI(t), renderOpenAPI(t)) {
 		t.Fatalf("%s is stale: run `go run ./cmd/dispatch openapi --out ../../%s` in packages/envoy and commit the result",
 			OpenAPIDocumentPath, OpenAPIDocumentPath)
@@ -204,6 +278,88 @@ func committedOpenAPI(t testing.TB) []byte {
 	return committed
 }
 
+// Each route that answers as_of (asOfAnswers) declares the query parameter as_of in the committed
+// OpenAPI document, which every generated client is written from, and no other GET operation
+// declares it. A client written from the document would otherwise send no cut to a route that
+// answers one, or offer a cut to a route that refuses it 400 AS_OF_NOT_SERVED. The read class
+// gives each row its kind, so a row that later joins the routes that answer as_of fails here until
+// its query struct declares the parameter. Each such operation's description also holds the
+// sentence its read entry gives the route (readEntry.AtACut), and no row of another kind has one.
+//
+// GET /api/v1/search answers as_of and does not declare it, on purpose: searchRouteQuery names
+// only the four members every build has served. A build released before GET /api/v1/search/results
+// answers GET /api/v1/search 200 with a member it does not know dropped, and the second path 404
+// no route. So a client sends every other member, as_of among them, to the second path
+// (everyBuildReadsSearch in packages/contracts), and the second path declares as_of.
+func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
+	type parameter struct {
+		Name string `json:"name"`
+		In   string `json:"in"`
+	}
+	type operation struct {
+		Description string      `json:"description"`
+		Parameters  []parameter `json:"parameters"`
+	}
+	var document struct {
+		Paths map[string]struct {
+			Get *operation `json:"get"`
+		} `json:"paths"`
+	}
+	if err := json.Unmarshal(committedOpenAPI(t), &document); err != nil {
+		t.Fatalf("decode the committed document: %v", err)
+	}
+	get := func(name string) *operation {
+		return document.Paths[strings.TrimPrefix(name, http.MethodGet+" ")].Get
+	}
+	// declaredElsewhere names, for a route that answers as_of and does not declare it, the route
+	// whose operation declares it for the same handler.
+	declaredElsewhere := map[string]string{"GET /api/v1/search": "GET /api/v1/search/results"}
+	asOf := parameter{Name: asOfParameter, In: "query"}
+	answers := 0
+	reads := declaredReads()
+	for _, name := range slices.Sorted(maps.Keys(reads)) {
+		read := get(name)
+		if read == nil {
+			t.Errorf("the document has no %s", name)
+			continue
+		}
+		declared := slices.Contains(read.Parameters, asOf)
+		kind := reads[name].AsOf
+		note := reads[name].AtACut
+		switch {
+		case kind == asOfAnswers && (note == "" || !strings.Contains(read.Description, note)):
+			t.Errorf("%s answers as_of, and its description in the document does not say what it answers at a cut: write it in the AtACut of the route's read class (routeDecl.Read, in the route's file)",
+				name)
+		case kind != asOfAnswers && note != "":
+			t.Errorf("the read class of %s says what it answers at a cut (AtACut), and the row refuses as_of", name)
+		}
+		if kind == asOfAnswers {
+			answers++
+		}
+		if sibling, elsewhere := declaredElsewhere[name]; elsewhere {
+			if kind != asOfAnswers || declared {
+				t.Errorf("%s is to answer as_of and leave its declaration to %s: its kind is %s and it declares as_of %v",
+					name, sibling, asOfKindName(kind), declared)
+			}
+			if other := get(sibling); other == nil || !slices.Contains(other.Parameters, asOf) {
+				t.Errorf("%s answers as_of, and neither it nor %s declares the parameter", name, sibling)
+			}
+			continue
+		}
+		switch {
+		case kind == asOfAnswers && !declared:
+			t.Errorf("%s answers as_of, and its operation declares no query parameter %s: add it to the route's query struct (routes_shapes.go)",
+				name, asOfParameter)
+		case kind != asOfAnswers && declared:
+			t.Errorf("%s refuses as_of 400 %s, and its operation declares the query parameter %s",
+				name, contracts.DispatchAsOfNotServed, asOfParameter)
+		}
+	}
+	if answers == 0 {
+		t.Fatal("no row of the read class answers as_of, so this test would pass on anything")
+	}
+}
+
 // A request body's required set is what its own Go fields tag `required:"true"`, and nothing
 // else. The "no omitempty" rule the other schemas take is Go's marshalling, which says what a
 // reader of a response always gets and nothing at all about what a caller must send: held to it,
@@ -212,6 +368,7 @@ func committedOpenAPI(t testing.TB) []byte {
 // sets are read apart here - one from the document the emitter writes, one from the Go fields by
 // reflection - and held equal, and neither can drift from the other without this failing.
 func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
+	t.Parallel()
 	_, document := readOpenAPI(t)
 	bodies, bothDirections := openAPIRequestBodyTypes()
 	if len(bodies) == 0 {
@@ -257,6 +414,7 @@ func TestOpenAPIRequestBodySchemasRequireWhatTheirFieldsTag(t *testing.T) {
 // since the emitter moves a query parameter's enum (queryParameters) and a nested object's by
 // the same call, and an enum left on an array there reads the same way to a client.
 func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
+	t.Parallel()
 	tree, _ := readOpenAPITree(t)
 	read := 0
 	var misplaced []string
@@ -293,6 +451,7 @@ func TestEveryEnumSitsWhereItsGoFieldPutsIt(t *testing.T) {
 // than its component schemas alone: a request body's nested objects are written where they
 // stand and carry a required of their own.
 func TestNoSchemaRequiresOneNameTwice(t *testing.T) {
+	t.Parallel()
 	tree, _ := readOpenAPITree(t)
 	read := 0
 	var repeated []string

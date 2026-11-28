@@ -21,6 +21,7 @@ const phaseEntryMovedBackVersion = 20261113090512
 // The negative control is the write of the column before the migration, which the database
 // refuses as a column it does not know.
 func TestEveryPhasesRowTheUpgradeFindsReadsMovedBackAndALaterInsertReadsForward(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryMovedBackVersion-1)

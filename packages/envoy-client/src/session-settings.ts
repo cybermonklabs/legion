@@ -69,7 +69,8 @@ export interface SessionSettings {
  * session does not read is said too: an `envoy` section, a file that cannot be used while
  * `DISPATCH_URL` replaces it, and an OpenCode-era `.opencode/envoy.json` (`warnings`). Last, for a
  * session that opens a NATS connection (`nats` not false), an Envoy that is on and takes no inbound
- * messages is said to, naming why (`inbound.off`: no NATS server, or the seed's refusal), and a
+ * messages is said to, naming why (`inbound.off`: no NATS server, or the seed's refusal), one that
+ * takes them through the listener's relay socket is said to carry no live view, and a
  * pass deadline the resolver raised to the heartbeat interval (`passDeadlineRaisedFrom`,
  * `envoySettings`) is said to have been raised, naming both values.
  */
@@ -116,6 +117,11 @@ function startNotice(
       `Envoy's inbound messages are off: ${envoy.inbound.off}; the Envoy tools still work`
     );
   }
+  if (envoy.enabled && nats && "relaySetting" in envoy.inbound) {
+    parts.push(
+      `Envoy's inbound messages come through the listener's relay socket (${envoy.inbound.relaySetting} is listener), which carries no live view: the Agents page shows nothing of this session's turns`
+    );
+  }
   if (envoy.enabled && envoy.passDeadlineRaisedFrom !== undefined) {
     parts.push(
       `Envoy's pass deadline is ${envoy.passDeadlineMs} ms, not the ${envoy.passDeadlineRaisedFrom} ms ENVOY_PASS_DEADLINE_MS names: a deadline inside one ${envoy.heartbeatMs} ms heartbeat interval would abandon every pass before the next tick, so the registration refresh the heartbeat posts for a stalled pass would never run`
@@ -131,22 +137,25 @@ function startNotice(
  * session passes nothing, and a trade names whatever `AGENT_SECRETS_SESSION` does. */
 export type SessionNameOption = { readonly session?: BrokerSessionName | undefined };
 
-/** Both sections from `file` (`dispatchSettings`, `envoySettings`), each resolved on its own, and
- * the session's start notice. A file whose location could not be worked out turns both off with
- * that error. `nats: false` is for a session that opens no NATS connection (`envoySettings`), whose
- * notice says nothing of inbound messages. */
-export function sessionSettings(
+/** Both sections from `file` (`dispatchSettings`, `envoySettings`), each resolved on its own and
+ * both at once, so a session whose sections each run a `!` command waits for the slower one rather
+ * than for both in turn; and the session's start notice. A file whose location could not be worked
+ * out turns both off with that error. `nats: false` is for a session that opens no NATS
+ * connection (`envoySettings`), whose notice says nothing of inbound messages. */
+export async function sessionSettings(
   file: SessionConfigFile,
   env: EnvoyEnvironment,
   options: { readonly cwd: string; readonly nats?: boolean | undefined } & SessionNameOption
-): SessionSettings {
+): Promise<SessionSettings> {
   if (file.path === null) {
     const off = offWithError(file.error);
     return { dispatch: off, envoy: off, notice: `${file.error}: Dispatch and Envoy are off` };
   }
-  const config = readEnvoyConfig(file.path, env, options);
-  const dispatch = dispatchSettings(env, config, { session: options.session });
-  const envoy = envoySettings(env, config, { nats: options.nats, session: options.session });
+  const config = await readEnvoyConfig(file.path, env, options);
+  const [dispatch, envoy] = await Promise.all([
+    dispatchSettings(env, config, { session: options.session }),
+    envoySettings(env, config, { nats: options.nats, session: options.session }),
+  ]);
   return {
     dispatch,
     envoy,
@@ -176,19 +185,26 @@ export interface SessionDispatch {
  * the configuration a caller uses, or null, or a throw. `commands: "kept"` never runs a `!` token
  * command: it takes the outcome one of the session's other Dispatch calls already kept in this
  * process, and with none Dispatch reads as off with an error saying so (`dispatchSettings`), for a
- * caller on a deadline such as the per-request feed of people's answers. */
-export function sessionDispatchSettings(
+ * caller on a deadline such as the per-request feed of people's answers. `tokenFiles` is the
+ * `dispatch` command's alone: it takes `DISPATCH_BROKER_TOKEN_FILE` and
+ * `DISPATCH_BROKER_DPOP_KEY_FILE`, which turn Dispatch off for every other caller. */
+export async function sessionDispatchSettings(
   file: SessionConfigFile,
   env: DispatchEnvironment,
-  options: { readonly cwd: string; readonly commands?: CommandMode | undefined } & SessionNameOption
-): SessionDispatch {
+  options: {
+    readonly cwd: string;
+    readonly commands?: CommandMode | undefined;
+    readonly tokenFiles?: boolean | undefined;
+  } & SessionNameOption
+): Promise<SessionDispatch> {
   if (file.path === null)
     return { dispatch: offWithError(file.error), warnings: [], missing: null };
-  const config = readEnvoyConfig(file.path, env, options);
+  const config = await readEnvoyConfig(file.path, env, options);
   return {
-    dispatch: dispatchSettings(env, config, {
+    dispatch: await dispatchSettings(env, config, {
       commands: options.commands,
       session: options.session,
+      tokenFiles: options.tokenFiles,
     }),
     warnings: config.kind === "read" ? config.warnings : [],
     missing: config.kind === "read" ? config.missing : null,
@@ -196,28 +212,28 @@ export function sessionDispatchSettings(
 }
 
 /** The Dispatch URL `file` and the environment configure now (`dispatchUrl`), read without its
- * token, so no `!` command runs; undefined when Dispatch is off before its token is read or the
- * file's location could not be worked out. What a caller on a deadline names to
+ * token's value, so no `!` command runs; undefined when Dispatch is off before its token is read or
+ * the file's location could not be worked out. What a caller on a deadline names to
  * `readSessionAnswers` while `sessionDispatchSettings(…, { commands: "kept" })` is off with an
  * error, so only a list read from that URL stands in. */
-export function sessionDispatchUrl(
+export async function sessionDispatchUrl(
   file: SessionConfigFile,
   env: DispatchEnvironment,
   options: { readonly cwd: string }
-): string | undefined {
+): Promise<string | undefined> {
   if (file.path === null) return undefined;
-  return dispatchUrl(env, readEnvoyConfig(file.path, env, options));
+  return dispatchUrl(env, await readEnvoyConfig(file.path, env, options));
 }
 
 /** Envoy from `file` (`envoySettings`), for a command that resolves Envoy alone. A file whose
  * location could not be worked out turns Envoy off with that error. */
-export function sessionEnvoySettings(
+export async function sessionEnvoySettings(
   file: SessionConfigFile,
   env: EnvoyEnvironment,
   options: { readonly cwd: string; readonly nats?: boolean | undefined } & SessionNameOption
-): EnvoySettings {
+): Promise<EnvoySettings> {
   if (file.path === null) return offWithError(file.error);
-  return envoySettings(env, readEnvoyConfig(file.path, env, options), {
+  return envoySettings(env, await readEnvoyConfig(file.path, env, options), {
     nats: options.nats,
     session: options.session,
   });

@@ -182,6 +182,34 @@ func TestAnotherSessionIsRefusedTheClaim(t *testing.T) {
 	h.wantState(StateRegistered)
 }
 
+// A daemon-launched controller whose Oh My Pi session changed (`/new`) registers the new session
+// with the daemon, and the fence refuses it (SameAgentRefusal, answered 409): the claim keeps its
+// recorded session and its state. The controller then exits (pi-legion's claimOnce), and the daemon
+// relaunches it on the session it recorded, which registers. So a session change never leaves a
+// ready controller registered under a session the daemon does not know, waiting on a role claim.
+// The control is the fence's session check taken out, which lets the new session register.
+func TestAControllersSessionChangeIsRefusedAndItIsRelaunchedOnItsRecordedSession(t *testing.T) {
+	h := newHarness(t)
+	h.reach(StateReady)
+
+	err := h.handle(RequestRegister{Claim: testToken, Generation: h.generation(), Session: "ses_after_new", SessionFile: "/after-new.jsonl"})
+	if !errors.Is(err, claim.SameAgentRefusal) {
+		t.Fatalf("register as the session after /new returned %v, want the same-agent refusal", err)
+	}
+	if got := h.store.load(testToken).Session; got != session {
+		t.Fatalf("stored session %q after the refusal, want the recorded %q", got, session)
+	}
+	h.wantState(StateReady)
+
+	h.observe(runtime.Gone)
+	h.wantState(StateLaunching)
+	if got := h.claim().Session; got != session {
+		t.Fatalf("relaunched on session %q, want the recorded %q", got, session)
+	}
+	h.register()
+	h.wantState(StateRegistered)
+}
+
 func TestAStaleGenerationIsFenced(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -456,7 +484,7 @@ func TestResumeRelaunchesTheSameSessionAfterTheSuspendedIncarnation(t *testing.T
 	suspended := h.locator()
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous == nil || *resume.Previous != suspended || resume.Spec.ResumeSessionFile != sessionFile || resume.Spec.Generation != 2 {
@@ -475,7 +503,7 @@ func TestResumeAfterARestartHasNoIncarnationToWaitOut(t *testing.T) {
 	h.reach(StateSuspended)
 	h.restart()
 
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 
 	resume := h.wantCalls("Resume", 1)[0]
 	if resume.Previous != nil || resume.Spec.ResumeSessionFile != sessionFile {
@@ -512,7 +540,7 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 			h.reach(state)
 			loc := h.locator()
 
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 
 			wantReleasedAt(t, h, testToken, loc)
 			h.wantState(StateRetired)
@@ -525,7 +553,7 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 		t.Run(string(state), func(t *testing.T) {
 			h := newHarness(t)
 			h.reach(state)
-			h.must(RequestStop{Claim: testToken})
+			h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 			wantReleasedWithNoLocator(t, h, testToken)
 			h.wantState(StateRetired)
 		})
@@ -537,14 +565,14 @@ func TestStopReleasesAndRetiresTheClaim(t *testing.T) {
 			t.Fatalf("spawn returned %v", err)
 		}
 		h.wantState(StateFailed)
-		h.must(RequestStop{Claim: testToken})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 		wantReleasedWithNoLocator(t, h, testToken)
 		h.wantState(StateRetired)
 	})
 	t.Run("retired", func(t *testing.T) {
 		h := newHarness(t)
-		h.must(RequestStop{Claim: testToken})
-		h.must(RequestStop{Claim: testToken})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
+		h.must(RequestStop{Claim: testToken, By: SuspendedByOperator})
 		h.wantCalls("Release", 1)
 		h.wantState(StateRetired)
 	})
@@ -572,7 +600,7 @@ func TestAStopThatFailsChangesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.rt.FailRelease(errBoom)
-	if err := h.handle(RequestStop{Claim: testToken}); !errors.Is(err, errBoom) {
+	if err := h.handle(RequestStop{Claim: testToken, By: SuspendedByOperator}); !errors.Is(err, errBoom) {
 		t.Fatalf("stop returned %v, want the runtime's error", err)
 	}
 	h.wantState(StateReady)
@@ -646,7 +674,7 @@ func TestASuspensionWhoseTaskCannotBeRetiredStillRevokesTheCapability(t *testing
 			if tc.restart {
 				h.restart()
 			}
-			h.must(RequestResume{Claim: h.token})
+			h.must(RequestResume{Claim: h.token, By: SuspendedByOperator})
 			if d, ok := h.store.delivery(h.token); ok {
 				t.Errorf("stored delivery %+v after the resume, want the finished phase's task retired", d)
 			}
@@ -683,7 +711,7 @@ func TestAnExitAfterTheDaemonEndedTheProcessIsAccepted(t *testing.T) {
 		ended func(*harness)
 	}{
 		{StateSuspended, func(h *harness) { h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator}) }},
-		{StateRetired, func(h *harness) { h.must(RequestStop{Claim: testToken}) }},
+		{StateRetired, func(h *harness) { h.must(RequestStop{Claim: testToken, By: SuspendedByOperator}) }},
 		{StateFailed, func(h *harness) {
 			for range 3 {
 				h.observe(runtime.Gone)
@@ -878,7 +906,7 @@ func TestAstraAFailedClaimStaysFailedAcrossARestart(t *testing.T) {
 	}
 	for _, ev := range []Event{
 		RequestSpawn{Claim: testToken},
-		RequestResume{Claim: testToken},
+		RequestResume{Claim: testToken, By: SuspendedByOperator},
 		RequestDeliver{Claim: testToken, Task: "try again"},
 		RequestRegister{Claim: testToken, Generation: h.generation(), Session: session, SessionFile: sessionFile},
 	} {

@@ -3,7 +3,7 @@
  *
  *  Two spec files share this: `machines.e2e.ts`, whose rows read a drawing against the clock,
  *  and `machines.stub.e2e.ts`, whose rows read only what the page draws from a fixed answer
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The layout strings, the cells they name
+ *  (packages/dispatch/README.md, "The stubbed layer"). The layout strings, the cells they name
  *  and the proportions each pane must hold live here so the two cannot drift apart.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
@@ -458,4 +458,19 @@ export async function stripIsOneRow(page: Page): Promise<boolean> {
           Math.abs(pick.getBoundingClientRect().top - picks[0].getBoundingClientRect().top) < 1
       )
     );
+}
+
+/** Every pick of the strip sits whole inside the strip's own box, so none is cut at its edge. */
+export async function stripPicksInside(page: Page): Promise<boolean> {
+  return await page.locator('[data-testid="window-strip"]').evaluate((strip) => {
+    const box = strip.getBoundingClientRect();
+    const picks = [...strip.querySelectorAll('[data-testid="window-pick"]')];
+    return (
+      picks.length > 0 &&
+      picks.every((pick) => {
+        const edge = pick.getBoundingClientRect();
+        return edge.left >= box.left - 0.5 && edge.right <= box.right + 0.5;
+      })
+    );
+  });
 }

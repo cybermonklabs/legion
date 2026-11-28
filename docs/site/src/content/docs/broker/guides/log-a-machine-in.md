@@ -70,7 +70,12 @@ with `--restart-with-sessions` at a quiet moment. If the restart fails, takes mo
 seconds, or leaves the unit's main process the same, `install` lets the helper take sessions again
 and exits with an error that says which; while systemd still holds a job for the unit, as after a
 restart that took too long, it leaves the helper draining until that restart lands or the minute
-passes, and says so.
+passes, and says so. If the restart succeeds but `install` cannot read the unit's main process
+before or after it (the read fails, or does not answer within 5 seconds), `install` cannot tell
+whether the restart replaced the helper. It tries to let the helper take sessions again only when
+it can read that systemd holds no job for the unit; while a job is queued, or when that read fails
+too, it leaves the helper draining, and the drain ends with the restart or by itself within the
+minute. Then it exits 2 with an error that names the read that failed and says it could not tell.
 
 A helper that answers on the socket but that the unit does not run (one started by hand) makes
 `install` stop before it writes anything, even when the unit file already matches: it lists that helper's sessions and exits 2 with `an
@@ -124,10 +129,13 @@ A Legion daemon does not log in this way: it logs in with its own Kubernetes Ser
 which no person approves ([Concepts](/legion/broker/concepts/#machine-login)), so no daemon login
 waits on this page. A pending login that names a service is one a broker opened before services
 logged in with their tokens; the page says no one can approve it, and you may deny it or let it
-expire. A pod has no operator, so its requests for your secrets come to you for approval. When the
-broker binds `legion-daemon` to the service accounts its pods run as (`BROKER_SERVICES`), each of
-its pods running as one of those accounts gets every secret `legion-daemon` owns at once, with no
-further approval ([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
+expire. A pod acts for no person unless the broker's `BROKER_POD_OPERATORS` maps its account to a
+person, so a Legion worker pod's requests for your secrets come to you for approval. A pod whose
+account the setting maps to you acts as you, on the terms of your dev box
+([Concepts](/legion/broker/concepts/#a-persons-pod)). When the broker binds `legion-daemon` to the
+service accounts its pods run as (`BROKER_SERVICES`), each of its pods running as one of those
+accounts gets every secret `legion-daemon` owns at once, with no further approval
+([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
 
 Back on the machine, `agent-secrets machine login` exits 0 and the helper logs
 `machine login issued; the helper holds a launcher credential`: the machine credential the approval

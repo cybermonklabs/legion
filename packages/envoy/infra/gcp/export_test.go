@@ -3,6 +3,17 @@ package gcp
 // CloudConfig is the hub VM's cloud-config document, for the tests outside the package.
 type CloudConfig = cloudConfig
 
+// ShellCommand starts a shell under its test's deadline, ShellCommandUntilTheTestDeadline one that
+// ends on an event of its own under the test's deadline alone, and ScriptContext and
+// UntilTheTestDeadline are the deadlines a test gives any other command it starts (shell_test.go),
+// for the tests outside the package.
+var (
+	ShellCommand                     = shellCommand
+	ShellCommandUntilTheTestDeadline = shellCommandUntilTheTestDeadline
+	ScriptContext                    = scriptContext
+	UntilTheTestDeadline             = untilTheTestDeadline
+)
+
 // ResolveNatsHub is newSettings' refusal, for gcp_test's refusal table, which needs no engine.
 func ResolveNatsHub(args *NatsHubArgs) error {
 	_, err := newSettings(args)
@@ -45,6 +56,9 @@ type ClusteredNatsHubSettings struct {
 	PodSelector                              map[string]string
 	Tailnet                                  *ClusteredHubTailnetSettings
 	Listener                                 *ClusteredHubListenerSettings
+	// RouteSecretName, RouteSecretKey and RouteStage are routeAuthorization's, all empty without
+	// it.
+	RouteSecretName, RouteSecretKey, RouteStage string
 }
 
 // ClusteredHubTailnetSettings is the resolved tailnet entry.
@@ -96,8 +110,14 @@ func ResolveClusteredNatsHub(args *ClusteredNatsHubArgs) (ClusteredNatsHubSettin
 			ClientNamespaces: l.clientNamespaces, CPU: l.cpu, Memory: l.memory, Env: l.env,
 		}
 	}
+	if r := s.route; r != nil {
+		settings.RouteSecretName, settings.RouteSecretKey, settings.RouteStage = r.secretName, r.secretKey, r.stage.String()
+	}
 	return settings, nil
 }
+
+// ClusteredHubRouteStages are routeAuthorization.stage's names, in their order.
+var ClusteredHubRouteStages = clusteredHubRouteStageNames[:]
 
 // ClusteredHubListenerNamed is the session listener args resolve, with its refusals naming path in
 // place of the input the listener is declared at, for the test that holds the listener's token
@@ -167,9 +187,12 @@ type DispatchSettings struct {
 	ProxyEphemeral     string
 	PprofPort          int
 	// ServerURL is DISPATCH_SERVER_URL and the url output (serverURL), and OutsideOrigin the
-	// second origin as rendered, "" when unset.
-	ServerURL     string
-	OutsideOrigin string
+	// second origin as rendered, "" when unset. SignInDomain and SignInWorkspaceDomains are
+	// DISPATCH_SIGNIN_DOMAIN and DISPATCH_SIGNIN_WORKSPACE_DOMAINS' entries as rendered.
+	ServerURL              string
+	OutsideOrigin          string
+	SignInDomain           string
+	SignInWorkspaceDomains []string
 }
 
 // ResolveDispatch resolves Dispatch's plain inputs for the external refusal and default tests.
@@ -180,24 +203,26 @@ func ResolveDispatch(args *DispatchArgs) (DispatchSettings, error) {
 	}
 	strategy := dispatchStrategyFor(s.replicas)
 	settings := DispatchSettings{
-		DatabaseVersion:    s.databaseVersion,
-		DatabaseTier:       s.databaseTier,
-		DeletionProtection: s.deletionProtection,
-		Namespace:          s.namespace,
-		Replicas:           s.replicas,
-		StrategyType:       strategy.strategyType,
-		AgentSecretsURL:    s.agentSecretsURL,
-		AppClientID:        s.appClientID,
-		AppID:              s.appID,
-		AppKeySecretName:   s.appKeySecretName,
-		AppKeySecretKey:    s.appKeySecretKey,
-		AppCPU:             s.appResources.appCPU,
-		AppMemory:          s.appResources.appMemory,
-		AppEphemeral:       s.appResources.appEphemeralStorage,
-		ProxyEphemeral:     s.appResources.proxyEphemeralStorage,
-		PprofPort:          s.pprofPort,
-		ServerURL:          s.serverURL(),
-		OutsideOrigin:      s.outsideOrigin,
+		DatabaseVersion:        s.databaseVersion,
+		DatabaseTier:           s.databaseTier,
+		DeletionProtection:     s.deletionProtection,
+		Namespace:              s.namespace,
+		Replicas:               s.replicas,
+		StrategyType:           strategy.strategyType,
+		AgentSecretsURL:        s.agentSecretsURL,
+		AppClientID:            s.appClientID,
+		AppID:                  s.appID,
+		AppKeySecretName:       s.appKeySecretName,
+		AppKeySecretKey:        s.appKeySecretKey,
+		AppCPU:                 s.appResources.appCPU,
+		AppMemory:              s.appResources.appMemory,
+		AppEphemeral:           s.appResources.appEphemeralStorage,
+		ProxyEphemeral:         s.appResources.proxyEphemeralStorage,
+		PprofPort:              s.pprofPort,
+		ServerURL:              s.serverURL(),
+		OutsideOrigin:          s.outsideOrigin,
+		SignInDomain:           s.signIn.domain,
+		SignInWorkspaceDomains: s.signInWorkspaceDomains,
 	}
 	if rolling := strategy.rollingUpdate; rolling != nil {
 		settings.RollingUpdate = &DispatchRollingUpdate{MaxUnavailable: rolling.maxUnavailable, MaxSurge: rolling.maxSurge}

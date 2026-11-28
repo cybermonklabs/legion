@@ -1,0 +1,21 @@
+kind: Fixed
+body: |-
+  A session plugin's NATS dial that the server closes during its handshake now fails at once, where
+  nats.js 2.29.3 waited out its whole 20 s timeout: a nats-server closes a client whose CONNECT
+  comes more than 2 s after its INFO (`-ERR 'Authentication Timeout'`), which a host whose event
+  loop is busy as it starts causes. `natsConnectionOptions` bounds each dial at 10 s
+  (`NATS_DIAL_TIMEOUT_MS`), and `connectNats` puts one bound of its own around the whole
+  `connect()` (the name lookup, each address and each server, which nats.js's `timeout` bounds one
+  at a time) and dials again after a failure, 250 ms first, doubling to 4 s, inside a budget
+  (`NATS_DIAL_PLAN`, `natsDialBudget`), but not after a failure no redial cures (`redialCures`): an
+  authorization refusal of a credential the next dial presents again, an error with no code, a
+  runtime error whose code starts `ERR_`, and nats.js's errors for its own options or credential
+  (`BAD_AUTHENTICATION`, `BAD_CREDS`, `INVALID_OPTION`, `NOT_FUNC`, `SERVER_OPT_NA`,
+  `WSS_REQUIRED`) and `TLS`. A dial past its bound tries no further address or server.
+  `registerWithRelay`
+  takes `relayMissing`, so the refusal of a session with no relay subject (`NoRelaySubjectError`)
+  and its outage notice say why. `inboundUnavailable` takes a second callback, told once when a
+  registration is accepted after an outage (`inboundRestoredNoticeText`).
+time: 2026-11-17T21:43:12Z
+custom:
+    Issue: pr4353

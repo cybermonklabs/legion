@@ -1,0 +1,16 @@
+[
+  {
+    "key": "ACME-12",
+    "status": "todo",
+    "priority": 2,
+    "resolved_priority": 2,
+    "priority_from": null,
+    "rank": "UUUk",
+    "labels": [],
+    "parent": "ACME-7",
+    "blocked_by": [],
+    "claim": null,
+    "resolved_repo": "acme/widgets",
+    "last_seq": 2
+  }
+]

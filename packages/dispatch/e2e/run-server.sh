@@ -10,6 +10,9 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # a Legion pane exports ENVOY_URL (the real listener), DISPATCH_URL and
 # DISPATCH_TOKEN_FILE, and a developer's shell can retain a GitHub App, a
 # cookie signing key, an Envoy token or a dashboard origin from other work.
+# Dispatch presents e2e/fake-listener-account-token as its identity at the fake
+# listener, which checks no bearer: a Dispatch with no identity refuses every
+# send for a role: route, and the rows mention roles.
 #
 # DATABASE_URL is the one required caller input. The harness has no fake
 # Postgres and e2e/seed.ts truncates the named database before every scenario,
@@ -114,6 +117,9 @@ fi
 # either sign-in.
 web_dist="${DISPATCH_E2E_SERVER_WEB_DIST:-../dispatch/web/dist}"
 dev_embedder=0
+# signin_secret_env holds the sign-in settings that are secrets (the shared cookie key, the
+# client's secret, the signing key); the exec below exports them rather than naming them to env.
+signin_secret_env=()
 case "${DISPATCH_E2E_SIGNIN:-}" in
   "")
     signin_env=(DISPATCH_DEV_SIGNIN=1)
@@ -122,7 +128,7 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
       dev_embedder=1
     fi
     if [ -n "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:-}" ]; then
-      signin_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
+      signin_secret_env+=(DISPATCH_DEV_SIGNIN_SHARED_KEY="$DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY")
     fi
     ;;
   oidc)
@@ -134,8 +140,10 @@ case "${DISPATCH_E2E_SIGNIN:-}" in
     signin_env=(
       DISPATCH_SIGNIN_ISSUER="http://127.0.0.1:$DISPATCH_E2E_SIGNIN_ISSUER_PORT"
       DISPATCH_SIGNIN_CLIENT_ID="$DISPATCH_E2E_SIGNIN_CLIENT_ID"
-      DISPATCH_SIGNIN_CLIENT_SECRET="$DISPATCH_E2E_SIGNIN_CLIENT_SECRET"
       DISPATCH_SIGNIN_GROUP="$DISPATCH_E2E_SIGNIN_GROUP"
+    )
+    signin_secret_env=(
+      DISPATCH_SIGNIN_CLIENT_SECRET="$DISPATCH_E2E_SIGNIN_CLIENT_SECRET"
       DISPATCH_SIGNING_KEY="$DISPATCH_E2E_SIGNING_KEY"
     )
     ;;
@@ -285,6 +293,16 @@ if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
 fi
 
+# Whether the server keeps a parent's status in line with its children's
+# (DISPATCH_PARENT_STATUS_RULE), read before the sweep below. Unset is the server's own off, which
+# every e2e run keeps, since none sets it. A caller that sets it
+# (`DISPATCH_PARENT_STATUS_RULE=on bun run dispatch:local`) gets that value passed on as it set it,
+# and the server refuses a value other than on or off.
+parent_status_rule_env=()
+if [ -n "${DISPATCH_PARENT_STATUS_RULE+set}" ]; then
+  parent_status_rule_env=(DISPATCH_PARENT_STATUS_RULE="$DISPATCH_PARENT_STATUS_RULE")
+fi
+
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -336,6 +354,26 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
+# The events outbox publishes through NATS, and this rig has none, so the server runs with
+# DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
+# reach one would log a reconnect loop for every run. The publisher is the only writer of what a
+# delivery states in the node and tuple store - `delivered_to`, a role's `held_by`, a session's
+# and a page's `part_of`, and the role, session and page nodes themselves (outbox.recordBatch) -
+# so a driver that proves those writes starts a NATS of its own (`go build
+# github.com/nats-io/nats-server/v2`, a direct dependency of packages/envoy) and names it in
+# DISPATCH_E2E_NATS_URLS, which this script hands the server as its NATS_URLS and which turns the
+# publisher on. It is a variable of this rig's own rather than NATS_URLS itself because a
+# developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
+# publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
+# variable a shell exported is still swept below, and a caller that names none gets exactly the
+# server every spec has always run against.
+nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
+if [ -n "$nats_urls" ]; then
+  nats_env=(NATS_URLS="$nats_urls")
+else
+  nats_env=(DISPATCH_NATS_DISABLED=1)
+fi
+
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -377,22 +415,27 @@ if [ -z "$server_bin" ]; then
   flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e ./cmd/dispatch
   server_bin=./dispatch-e2e
 fi
+# The settings that hold a secret, the caller's DATABASE_URL (password and all), the App key made
+# above and the sign-in keys (signin_secret_env), are exported and so reach the server through the
+# environment held-port.py and env hand on, never through their arguments, which every user of
+# the machine reads for as long as each runs. Every other setting is env's, as before.
+export DATABASE_URL="$database_url" DISPATCH_APP_PEM_B64="$app_pem"
+[ "${#signin_secret_env[@]}" -eq 0 ] || export "${signin_secret_env[@]}"
 exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
   "${signin_env[@]}" \
-  DATABASE_URL="$database_url" \
   DISPATCH_AGENT_TOKEN=e2e-token \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
-  DISPATCH_APP_PEM_B64="$app_pem" \
   DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$fake_github_port" \
   DISPATCH_IDENTITY=cookie \
   DISPATCH_INSECURE_COOKIE=1 \
   DISPATCH_LISTEN_HOST=127.0.0.1 \
-  DISPATCH_NATS_DISABLED=1 \
+  "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
+  "${parent_status_rule_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \
@@ -402,6 +445,7 @@ exec "${listen[@]}" env \
   DISPATCH_TEST_UNRECORDED_MARK_TTL="$unrecorded_mark_ttl" \
   DISPATCH_WEB_DIST="$web_dist" \
   ENVOY_URL="http://127.0.0.1:$fake_envoy_port" \
+  ENVOY_ACCOUNT_TOKEN_FILE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fake-listener-account-token" \
   "${gomaxprocs_env[@]}" \
   HOME=/nonexistent \
   XDG_CACHE_HOME=/nonexistent \

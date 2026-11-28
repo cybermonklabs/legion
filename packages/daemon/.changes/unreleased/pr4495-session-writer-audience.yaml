@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  A pod's session proxy can sign in to Cloud SQL with a token that only the launcher reads, and its
+  socket can admit only the launcher and the role's Oh My Pi process.
+  `runtime.kubernetes.session_database` takes an optional `writer_audience`: the full resource name
+  of a workload identity provider. `legion config check` and the daemon's boot load refuse it without
+  `impersonate_service_account`, refuse any other form, and refuse a value that, as it is or with an
+  `https:` prefix, is the audience of a token every role reads: the broker's two
+  (`agent_secrets.audience` and `exchange_audience`) or a projected `service_account_token` of
+  `pod.volumes`. When the member is set, each issue pod
+  and the controller's pod carry one projected ServiceAccount token of that audience, mounted only
+  under the launcher's roles directory, which no role sees, and each pod's `legion launcher` gets
+  `--session-writer-audience <audience>`. Its proxy exchanges the token at Google's security token
+  service and impersonates the account with the federated token for both of the Cloud SQL
+  connector's token sources, so it reads no credential of the pod. The socket then reads the
+  `SO_PEERCRED` of each connection (the socket's peer check): it admits the launcher and the
+  generation's Oh My Pi process, matched by its pid and its start time, and it closes every other
+  connection before it dials, with one log line that names the process. A generation with the
+  member starts only where `kernel.yama.ptrace_scope` reads 1 or more. With the member, the
+  controller's pod runs the launcher's roles-dir form for its one role. A pod whose writer audience
+  differs from the configuration has drifted. The deployment makes the pool, its provider and the
+  account's `roles/iam.workloadIdentityUser` for the pool's principal (docs/kubernetes.md,
+  "Selecting the store"). The daemon declares API contract 199 for the new launcher flag and the
+  start command's `agentExecutable`, so the daemon and the worker image move together.

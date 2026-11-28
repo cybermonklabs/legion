@@ -38,6 +38,7 @@ func mentionOf(sessionID string) []model.Mention {
 // Notify decided by the broker's own rule when it was written, its payload decoded from JSON - and
 // reads every topic it reached, in order.
 func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
+	t.Parallel()
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	asker := model.Actor{Kind: "session", ID: "session-asker"}
@@ -135,6 +136,40 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			want: []string{issueTopic + "comment.edited", claimantTopic},
 		},
 		{
+			name:  "a person's delete of a comment reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return commentEvent("comment.deleted", alice, model.Comment{}), ""
+			},
+			want: []string{issueTopic + "comment.deleted", claimantTopic},
+		},
+		{
+			name:  "a person's edit of a message reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.edited", alice, model.Message{Body: "Ship it Tuesday."}), ""
+			},
+			want: []string{issueTopic + "message.edited", claimantTopic},
+		},
+		{
+			name:  "a person's delete of a message reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", alice, model.Message{}), ""
+			},
+			want: []string{issueTopic + "message.deleted", claimantTopic},
+		},
+		{
+			name:  "a person's delete of a message its own target already had reaches the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", alice, model.Message{Target: new("session:session-other")}), ""
+			},
+			// Only a new targeted message is quiet (events.Quiet): a session that was sent the
+			// text must learn that it is withdrawn.
+			want: []string{issueTopic + "message.deleted", claimantTopic},
+		},
+		{
 			name:  "a person's resolution of a thread reaches the claimant",
 			claim: &claimant,
 			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
@@ -201,6 +236,33 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			},
 			forceNotify: true,
 			want:        []string{issueTopic + "comment.edited"},
+		},
+		{
+			name:  "an agent's delete of a comment that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return commentEvent("comment.deleted", other, model.Comment{}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "comment.deleted"},
+		},
+		{
+			name:  "an agent's edit of a message that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.edited", other, model.Message{Body: "Done, edited."}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "message.edited"},
+		},
+		{
+			name:  "an agent's delete of a message that notifies still does not reach the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				return messageEvent("message.deleted", other, model.Message{}), ""
+			},
+			forceNotify: true,
+			want:        []string{issueTopic + "message.deleted"},
 		},
 		{
 			name:  "a person's targeted message does not reach the claimant",
@@ -396,6 +458,25 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			want:       []string{issueTopic + "comment.edited", claimantTopic, askerTopic},
 		},
 		{
+			name:  "a person's delete of an ask reply reaches the claimant and the ask's followers",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				askID := seedAsk(t, database, "T-1", asker, "Ship it?")
+				seedFollower(t, database, askID, claimant.ID)
+				return commentEvent("comment.deleted", alice, model.Comment{AskID: &askID}), ""
+			},
+			want: []string{issueTopic + "comment.deleted", claimantTopic, askerTopic},
+		},
+		{
+			name:  "a person's delete of a reply to an agent's message reaches its author and the claimant",
+			claim: &claimant,
+			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
+				root := seedMessage(t, database, "T-1", messenger, "Status?", nil)
+				return messageEvent("message.deleted", alice, model.Message{InReplyTo: &root}), ""
+			},
+			want: []string{issueTopic + "message.deleted", claimantTopic, messengerTopic},
+		},
+		{
 			name:  "a person's issue update does not reach the claimant",
 			claim: &claimant,
 			arrange: func(t *testing.T, database *store.Store) (model.Event, string) {
@@ -426,6 +507,8 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each row has its own database and publisher, and reads the test's actors only.
+			t.Parallel()
 			database := storetest.Open(t)
 			seedIssue(t, database, "T-1", tc.route)
 			if tc.claim != nil {
@@ -470,6 +553,7 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 // event's recorded destinations, so an attempt that fails at a later destination is retried
 // without publishing to the claimant a second time.
 func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
+	t.Parallel()
 	const (
 		issueTopic    = "notifications.dispatch.issue.T-1.ask.answered"
 		claimantTopic = "notifications.agent.session-claimant"
@@ -490,7 +574,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 	stop := run(t, database, publisher, broker)
 	defer stop()
 
-	waitFor(t, 5*time.Second, "the first attempt backed off after reaching the claimant", func() bool {
+	waitFor(t, "the first attempt backed off after reaching the claimant", func() bool {
 		destinations, attempts := publishedDestinations(t, database, event.ID)
 		return attempts > 0 && slices.Contains(destinations, claimantTopic)
 	})
@@ -498,7 +582,7 @@ func TestRunRecordsTheClaimantRouteSoARetryDoesNotRepublishIt(t *testing.T) {
 		t.Fatalf("published_destinations after the first attempt = %#v, want the issue topic and the claimant", destinations)
 	}
 	publisher.setFailTopic("")
-	waitFor(t, 7*time.Second, "the retry published the event", func() bool {
+	waitFor(t, "the retry published the event", func() bool {
 		return publishedAt(t, database, event.ID) != nil
 	})
 	if got, want := topicsOf(publisher.all()), []string{issueTopic, claimantTopic, askerTopic}; !reflect.DeepEqual(got, want) {

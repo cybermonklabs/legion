@@ -1,9 +1,10 @@
 name: CI job tool-fallback-arm
 
-# The steps of ci.yaml's `tool-fallback-arm` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#tool-fallback-arm` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: [changes, ci-images]`
 # and the whole `if:` that decides whether these steps run, so this file carries no `if:` of its
-# own. The comment above that job says what the arm64 half proves and why it needs both jobs.
+# own. .github/ci-notes/ci.md#the-arm64-half-of-the-tool-fallback-proof, which that job's `# why:`
+# line names, says what the arm64 half proves and why it needs both jobs.
 #
 # The split is for the filters. The tool_fallback filter names this file beside ci.yaml and the
 # tool-fallback job's own file, so a change to these steps selects this job alone, where a change
@@ -16,13 +17,13 @@ name: CI job tool-fallback-arm
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -46,8 +47,8 @@ jobs:
     # 43 s, 45 s and 50 s (jobs 129726973920, 129733754662, 129745140461, 129743510021 and
     # 129721254112), where the tool-fallback job took 1,611 s to 2,007 s in those same five runs.
     # The reason is the shape of this job's faulted install. It reads ci_tools_fetch_fallback
-    # (.github/actions/setup-bun/action.yml line 174), which reads the second source alone and
-    # tries no primary (.github/scripts/ci-tools.sh lines 1259 to 1268), and the primary it does
+    # (`.github/actions/setup-bun/action.yml#ci_tools_fetch_fallback "$row"`), which reads the second source alone and
+    # tries no primary (`.github/scripts/ci-tools.sh#ci_tools_fetch_fallback()`), and the primary it does
     # not try is fetched by oven-sh/setup-bun, a Node action that calls no curl. The one fetch
     # the helper makes here is of npm, which answers. In the step list of job 129743510021 one
     # step alone is above 3 s: the faulted setup-bun at 32 s, which is the 107 MB npm download.
@@ -79,16 +80,19 @@ jobs:
     # Measured, this job sits far inside that budget: in run 44073112404 (2026-11-17) the whole
     # job took 76 s, 11:31:39Z to 11:32:55Z, the new cases 25 s of it and the two Bun halves 2 s
     # and 33 s, as before them.
-    # Each install step declares `timeout-minutes: 11`, for the reason the tool-fallback job's
-    # comment gives (.github/workflows/ci-job-tool-fallback.yaml). None of them carries
+    # Each install step declares `timeout-minutes: 11`, for the reason
+    # .github/ci-notes/ci-job-tool-fallback.md#the-jobs-budget-and-the-bound-every-install-step-carries
+    # gives. None of them carries
     # `continue-on-error`, so a held install here is loud by itself: the bound fails the job at
     # about 11.5 minutes, the steps after it are skipped, and the job uploads its log. The last
     # install of the job started 72 s into that measured run, so its bound ends near 12.7 minutes
     # in, and the limit of 40 is reached first only when the steps before an install take more
     # than about 28 minutes, which is a run already near the worst case above. The reading either
-    # way is a job with a log, which is what the twenty-four installs of tool-fallback cannot give
+    # way is a job with a log, which is what the twenty-six installs of tool-fallback cannot give
     # and why their clock exists.
     timeout-minutes: 40
+    env:
+      JOB_TIMEOUT_MINUTES: 40 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -96,9 +100,9 @@ jobs:
 
       # The same reading as the tool-fallback job's, over both halves of this one, and for the
       # same reason: no other arm64 job of this repository takes this reading of its runner, so
-      # nothing else says what one of those runners had (dispatch://INFRA-2605). The comment on
-      # that job's own pair (.github/workflows/ci-job-tool-fallback.yaml) says what the series
-      # shows and what it cannot.
+      # nothing else says what one of those runners had (dispatch://INFRA-2605). What the series
+      # shows and what it cannot is in the notes on that job's own pair,
+      # .github/ci-notes/ci-job-tool-fallback.md#what-the-machine-watch-records-and-what-it-cannot-show.
       - name: Start the machine watch over both halves
         run: .github/scripts/disk_watch.py start --path "$RUNNER_TEMP" --state "$RUNNER_TEMP/disk-watch.json"
 
@@ -266,8 +270,8 @@ jobs:
         run: .github/scripts/disk_watch.py report --state "$RUNNER_TEMP/disk-watch.json"
 
       # The proxy stops with this job, and the steps after this one must not be routed through
-      # it: the ci-ok-report step below runs actions/upload-artifact, which would otherwise
-      # upload through a proxy that is about to go. The rig writes the emptied variables, as it
+      # it: the ci-ok-report step below can read the run's jobs and post a check run with gh, which
+      # would otherwise go through a proxy that is about to go. The rig writes the emptied variables, as it
       # wrote the proxy ones.
       - name: Stop routing this job through the fault
         if: always()

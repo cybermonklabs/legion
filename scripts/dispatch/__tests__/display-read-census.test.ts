@@ -272,4 +272,39 @@ describe("reading production", () => {
       held.restore();
     }
   });
+
+  // An outage (`outage`: a 5xx, a 408 or a 429) is the server's weather and is read again; any
+  // other refusal is this run's own answer, thrown at once. Each read again waits a second.
+  test.each([408, 429, 503])("a read answered %i is read again, as an outage", async (status) => {
+    let calls = 0;
+    const held = holdDeadlines(() => {
+      calls += 1;
+      return calls === 1
+        ? Response.json({ code: "BUSY", error: "busy" }, { status })
+        : Response.json(["read"]);
+    });
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      const spend = { requests: 0 };
+      const read = await get<string[]>(config, "/api/v1/projects", new Rate(1000), spend);
+      expect(read).toEqual(["read"]);
+      expect(spend.requests).toBe(2);
+    } finally {
+      held.restore();
+    }
+  });
+
+  test("a read answered 404 is this run's own answer, thrown at once", async () => {
+    const held = holdDeadlines(() =>
+      Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 })
+    );
+    try {
+      const config = { url: "http://dispatch.test", credential: held.credential };
+      const spend = { requests: 0 };
+      await expect(get(config, "/api/v1/projects", new Rate(1000), spend)).rejects.toThrow("404");
+      expect(spend.requests).toBe(1);
+    } finally {
+      held.restore();
+    }
+  });
 });

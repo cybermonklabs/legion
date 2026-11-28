@@ -1,5 +1,12 @@
 package listenerwire_test
 
+// The listener's Go clients held to its wire package: wirecheck.Check type-checks them over
+// the export data of `go list -deps -export`, which it runs in each module's own directory, and
+// the load-test harness's main package is parsed for a listener route named outside its client.
+//ci:builds packages/envoy ./internal/cipher/wake ./internal/dispatch/envoy ./loadtest/listenerclient ./internal/testnats/cmd/refillrig TestListenerClientsUseListenerwire wirecheck.Check runs go list -deps -export over them in packages/envoy (internal/wirecheck/wirecheck.go goList)
+//ci:builds packages/daemon ./internal/notify ./internal/controller TestListenerClientsUseListenerwire wirecheck.Check runs go list -deps -export over them in packages/daemon (internal/wirecheck/wirecheck.go goList)
+//ci:reads packages/envoy/loadtest/*.go !**/*_test.go TestTheLoadTestCallsTheListenerOnlyThroughItsClient lists the load-test package's Go files and parses each, test files passed over (TestTheLoadTestCallsTheListenerOnlyThroughItsClient)
+
 import (
 	"go/ast"
 	"go/parser"
@@ -25,7 +32,7 @@ func TestListenerClientsUseListenerwire(t *testing.T) {
 		dir  string
 		pkgs []string
 	}{
-		{dir: "..", pkgs: []string{"./internal/broker/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"}},
+		{dir: "..", pkgs: []string{"./internal/cipher/wake", "./internal/dispatch/envoy", "./loadtest/listenerclient", "./internal/testnats/cmd/refillrig"}},
 		{dir: "../../daemon", pkgs: []string{"./internal/notify", "./internal/controller"}},
 	} {
 		for _, finding := range wirecheck.Check(t, clients.dir, clients.pkgs, wire, nil) {

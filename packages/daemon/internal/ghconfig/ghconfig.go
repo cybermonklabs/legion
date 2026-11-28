@@ -17,7 +17,10 @@
 // and the two wrappers read them from there and from nowhere else; a pod launched before that
 // ruling may still hold an `<owner>/<repo>` directory of its own, which no token is read out of,
 // and the Sandbox drift check reports both that and a root with no pairs file. The helper answers
-// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. In a pod the
+// git from the chosen directory's hosts.yml and treats git's `store` and `erase` as no-ops. Where
+// the bundle holds no directory for the owner git's request names, the helper reads that
+// repository from GitHub, and a fork takes the directory its parent, or else its source, routes
+// to (cmd/legion's forkUpstreamDir). In a pod the
 // root is a read-only Secret volume, which gh never needs to write: it writes under
 // GH_CONFIG_DIR only when told to
 // (`gh auth login`, `gh config set`) or when migrating a pre-2.40 hosts.yml into its
@@ -39,6 +42,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/sjawhar/legion/daemon/internal/rolefile"
+	"github.com/sjawhar/legion/daemon/internal/yamlerr"
 )
 
 // HostsFile is the name of gh's per-host credential file under GH_CONFIG_DIR.
@@ -108,11 +112,13 @@ func Hosts(token string) string {
 
 // TokenFromHosts reads the github.com token out of a hosts.yml, the one Hosts renders or gh's own
 // pre-2.40 shape without a `users` block. A file that does not parse, or that names no
-// github.com oauth_token (an empty file included), is an error naming the key.
+// github.com oauth_token (an empty file included), is an error naming the key. A file yaml.v3
+// cannot decode is refused naming the file and the line alone (yamlerr): its own text quotes the
+// document, and the token is the document's one value of note.
 func TokenFromHosts(data []byte) (string, error) {
 	var hosts hostsFile
 	if err := yaml.Unmarshal(data, &hosts); err != nil {
-		return "", fmt.Errorf("parse %s: %w", HostsFile, err)
+		return "", fmt.Errorf("parse %s: %s", HostsFile, yamlerr.Reason(err))
 	}
 	if hosts.GitHub.OAuthToken == "" {
 		return "", fmt.Errorf("%s names no github.com oauth_token", HostsFile)

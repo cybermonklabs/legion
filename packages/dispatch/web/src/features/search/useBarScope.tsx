@@ -3,7 +3,8 @@ import { useLocation } from "react-router-dom";
 
 import { borderDefault, textMutedOnSurface, textSecondaryOnSurface } from "../../theme/classes";
 import { useProjectArtifact } from "../document/useProjectArtifact";
-import { routeProjectOf } from "../refs/routes";
+import { useIssuePageChoice } from "../issue-page/choice";
+import { routeProjectOf, unknownToShell } from "../refs/routes";
 import { KeyHints } from "../shell/ShortcutHelp";
 import {
   type BarScopeLevel,
@@ -38,9 +39,10 @@ export interface BarScope {
  * and `Backspace` widens it to the project.
  *
  * Every value the page itself gives is read on the first render, the cursor because `useDialog`
- * takes the focus a frame later and the document's selection is no longer the page's once it
- * has, and the rest so that a hit the reader arrows past or opens cannot move what the chip
- * says and what an offer would act on before the bar closes.
+ * takes the focus in the commit that opens the bar, after that render, and the document's
+ * selection is no longer the page's once it has, and the rest so that a hit the reader arrows
+ * past or opens cannot move what the chip says and what an offer would act on before the bar
+ * closes.
  */
 export function useBarScope(
   /** What is in the box, as the person typed it: `Backspace` widens the chip on an empty box
@@ -48,13 +50,18 @@ export function useBarScope(
   query: string
 ): BarScope {
   const location = useLocation();
+  // Where the reader draws today's page, an address of the new issue page alone is in no issue
+  // or project, as on `main` (`unknownToShell`), and each value the page gives below says so.
+  const newPage = useIssuePageChoice()[0] === "outline";
   // The project of the page this open was made from (its own page, or an issue of it). It
   // narrows nothing: a search from a project page searches everything, as a search from
   // anywhere does. The route reads it to tell which issue a query that is a bare number names,
   // and a reader who wants this project alone adds its chip.
-  const [pageProject] = useState(() => routeProjectOf(location.pathname));
+  const [pageProject] = useState(() =>
+    unknownToShell(location.pathname, newPage) ? undefined : routeProjectOf(location.pathname)
+  );
   const [blockScope] = useState(scopeAtCursor);
-  const [projectScope] = useState(() => scopeOfProject(location.pathname));
+  const [projectScope] = useState(() => scopeOfProject(location.pathname, newPage));
   const [scopeLevel, setScopeLevel] = useState<BarScopeLevel>("page");
   // The issues the issue list had selected as this open was made, so no render of the list
   // behind the bar moves a chip the reader is looking at.
@@ -64,9 +71,15 @@ export function useBarScope(
   const [documentRoute] = useState(() => documentRouteOf(location.pathname, location.search));
   // The issue the bar was opened over, which is what an offer acts on while the chip is at page
   // level.
-  const [pageIssue] = useState(() => issueOfPage(location.pathname, location.search));
+  const [pageIssue] = useState(() => issueOfPage(location.pathname, location.search, newPage));
   const documentName = useProjectArtifact(documentRoute).data?.name;
-  const pageScope = scopeOfPage(location.pathname, location.search, documentName, selectedIssues);
+  const pageScope = scopeOfPage(
+    location.pathname,
+    location.search,
+    documentName,
+    selectedIssues,
+    newPage
+  );
   const scope =
     scopeLevel === "block" ? blockScope : scopeLevel === "project" ? projectScope : pageScope;
   // `Tab` narrows the chip to the block the writing cursor was in, and only where there was

@@ -10,8 +10,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/githubrate"
+
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubrest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
@@ -25,14 +28,17 @@ const leakCheckReadBound = 2 * time.Minute
 // the cause sentence quotes, and GitHub's refusals are a line of JSON.
 const refusalBodyBytes = 64 << 10
 
-// CheckRepository is the check's repository (CheckSlug), whose tarball a read fetches and which
-// the daemon's token for that read is narrowed to.
-var CheckRepository = ghrepo.MustParse(CheckSlug)
+// leakCheckCaller is one of the daemon's caller kinds (githubrate.WithCaller, internal/daemon's
+// rate reading): the read of the shared leak check, its token's mint included, which the reading
+// counts its calls on the installation the token is of by.
+const leakCheckCaller = "leak_check"
 
 // Source is the daemon's reader of the shared public leak check: it reads the check's repository
-// (CheckSlug) at the tag a pod's launcher names, with a read-only token of the daemon's own, and
-// answers the leak-check directory alone, packed (PackTarball), for the daemon to serve to that
-// launcher. It runs no gh and reads no gh configuration.
+// (Repository, the deployment's Setting.Repository) at the tag a pod's launcher names, with a
+// read-only token of the daemon's own, and answers the leak-check directory alone, packed
+// (PackTarballManifest), for the daemon to serve to that launcher. It runs no gh and reads no gh
+// configuration. The daemon builds one only for a deployment that names a check
+// (Setting.Configured).
 //
 // It keeps one copy per tag. Launchers that ask at once wait on the one read the first of them
 // started; a read that succeeded is kept for the life of the process, so every later ask at that
@@ -43,16 +49,21 @@ var CheckRepository = ghrepo.MustParse(CheckSlug)
 //
 // A Source is used through a pointer and never copied once it has been asked.
 type Source struct {
+	// Repository is the check's repository, whose tarball a read fetches, with a token minted on
+	// its owner's installation (Token); every cause sentence names it.
+	Repository ghrepo.Repository
 	// Token mints the read-only token the read is made with. Its error's text is what happened,
 	// in the words a cause sentence takes after RefusalPrefix (Cause): the daemon, which mints
 	// through its GitHub App and tells a mint GitHub refused from a narrowing it refused, writes
-	// that sentence, so this package imports nothing of the App's.
+	// that sentence, so this package imports nothing of the App's. The refusal wraps the error
+	// (Get), so a caller can read the App's own failure from it with errors.Is and errors.As.
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
-	// Client makes the read; nil is http.DefaultClient. Its redirect policy is Go's own, which
-	// follows GitHub's redirect to the tarball's host and drops the Authorization header on the
-	// way to another host.
+	// Client makes the read; nil is the daemon's REST client (githubrest.HTTPClient), whose calls
+	// the daemon's rate reading counts. Either way its redirect policy is Go's own, which follows
+	// GitHub's redirect to the tarball's host and drops the Authorization header on the way to
+	// another host.
 	Client *http.Client
 	// ReadBound is how long one read has; zero is leakCheckReadBound.
 	ReadBound time.Duration
@@ -74,17 +85,22 @@ type tagRead struct {
 }
 
 // Served is the check at Tag as the daemon serves it: Body is the packed leak-check directory
-// (PackTarball) and Frames the launcher_leak_check sequence that carries it
-// (shimwire.SplitLeakCheck), each frame declaring the body's digest. Body and Frames are shared by
-// every caller served the same read, so no caller writes to them.
+// (PackTarballManifest), ManifestSHA256 is the manifest of the files in that exact body, and
+// Frames the launcher_leak_check sequence that carries it, each frame declaring the body's digest.
+// Body and Frames are shared by every caller served the same read, so no caller writes to them.
 type Served struct {
-	Tag    string
-	Body   []byte
-	Frames []shimwire.LauncherLeakCheck
+	Tag            string
+	Body           []byte
+	ManifestSHA256 string
+	Frames         []shimwire.LauncherLeakCheck
 }
 
-// Get answers the check at tag, read once for every caller (Source). Every error is one cause
-// sentence (Cause).
+// Get answers the check at tag, read once for every caller (Source). Every error's text is one
+// cause sentence (Cause), and every error wraps what is underneath it where there is something:
+// the mint's own error (Token), the transport's, the caller's context's end, and the tarball's
+// own failure. A refusal GitHub's trouble caused answers TransientRead, so a caller tells a
+// refusal a later ask may pass from one it cannot by that and by the mint's own error, with
+// errors.Is and errors.As, never from the sentence.
 //
 // A tag not of the published shape (shimwire.ValidLeakCheckTag) is refused before any token is
 // minted or any request made, since a tag becomes a path of a GitHub API endpoint. Otherwise Get
@@ -93,15 +109,54 @@ type Served struct {
 // and the read goes on for every other caller waiting on it.
 func (s *Source) Get(ctx context.Context, tag string) (Served, error) {
 	if !shimwire.ValidLeakCheckTag(tag) {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil))
+		return Served{}, refused(Cause(fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag), nil), nil)
 	}
 	r := s.reading(ctx, tag)
 	select {
 	case <-r.done:
 		return r.served, r.err
 	case <-ctx.Done():
-		return Served{}, errors.New(Cause(fmt.Sprintf("the start stopped waiting for the daemon's read of %s at %s", CheckSlug, tag), ctx.Err()))
+		return Served{}, refused(Cause(fmt.Sprintf("the start stopped waiting for the daemon's read of %s at %s", s.Repository, tag), ctx.Err()), ctx.Err())
 	}
+}
+
+// TransientRead reports a refusal of Get that GitHub's trouble caused, which the same read may
+// pass when it is made again: no answer at all or a body that stops arriving (the transport
+// failing), the read's bound passing, an HTTP 5xx answer, GitHub's rate limit (a 429, or a 403
+// that carries it, githubrest.RateLimited), and a 401 where the Source forgets the token (Forget),
+// since the next read mints a fresh one. Every other refusal of Get is GitHub's answer or the
+// daemon's own, and reading again changes nothing: a tag not of the published shape, a 404 (the
+// tag is missing), a 401 the Source cannot forget, a 403 that is no rate limit, a tarball that
+// arrives whole and does not pack, and a mint that failed, whose own error underneath says
+// whether it was GitHub's trouble (Token). This package imports nothing of the App's, so a caller
+// that tells the App's trouble apart reads the mint's own error beside this answer.
+func TransientRead(err error) bool {
+	var refusal *readRefusal
+	return errors.As(err, &refusal) && refusal.transient
+}
+
+// readRefusal is a refusal of Get: sentence, its one cause sentence (Cause), is its whole text,
+// under is the error underneath it, nil where there is none, and transient says GitHub's trouble
+// caused it (TransientRead).
+type readRefusal struct {
+	sentence  string
+	under     error
+	transient bool
+}
+
+func (r *readRefusal) Error() string { return r.sentence }
+
+func (r *readRefusal) Unwrap() error { return r.under }
+
+// refused is the refusal whose text is sentence and which wraps under.
+func refused(sentence string, under error) error {
+	return &readRefusal{sentence: sentence, under: under}
+}
+
+// troubled is a refusal as refused makes one, marked transient: a read GitHub's trouble ended
+// (TransientRead).
+func troubled(sentence string, under error) error {
+	return &readRefusal{sentence: sentence, under: under, transient: true}
 }
 
 // reading is the read at tag: the one kept or running, or a new one, started on a context
@@ -142,62 +197,97 @@ func (s *Source) fill(ctx context.Context, tag string, r *tagRead) {
 // read mints the token, fetches GitHub's tarball of the check's repository at tag, packs its
 // leak-check directory and slices it into the sequence that carries it. ctx carries the read's
 // bound, which a refusal names where it ended the read. A 401 drops the token (Forget) before the
-// read is refused.
+// read is refused. Its calls, the mint's among them, count as leakCheckCaller's.
 func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Served, error) {
+	ctx = githubrate.WithCaller(ctx, leakCheckCaller)
 	token, err := s.Token(ctx)
 	if err != nil {
-		return Served{}, errors.New(Cause(err.Error(), nil))
+		return Served{}, refused(Cause(err.Error(), nil), err)
 	}
 	// GitHub answers the tarball route with a redirect to its download host
 	// (https://docs.github.com/en/rest/repos/contents#download-a-repository-archive-tar), which
 	// the client follows.
-	target := githubrest.RepositoryAPI(s.API, CheckRepository) + "/tarball/" + tag
+	target := githubrest.RepositoryAPI(s.API, s.Repository) + "/tarball/" + tag
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", CheckSlug, tag), err))
+		return Served{}, refused(Cause(fmt.Sprintf("the daemon could not ask GitHub for %s at %s", s.Repository, tag), err), err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
 	request.Header.Set("Accept", "application/vnd.github+json")
 	request.Header.Set("X-GitHub-Api-Version", "2022-11-28")
 	client := s.Client
 	if client == nil {
-		client = http.DefaultClient
+		client = githubrest.HTTPClient()
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return Served{}, readFailure(ctx, tag, bound, err)
+		return Served{}, s.readFailure(ctx, tag, bound, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if response.StatusCode == http.StatusUnauthorized && s.Forget != nil {
+		// A 401 is GitHub no longer taking the token: a Source that forgets it mints a fresh one
+		// for the next read, so that read may succeed and the 401 is GitHub's trouble too.
+		forgot := response.StatusCode == http.StatusUnauthorized && s.Forget != nil
+		if forgot {
 			s.Forget()
 		}
-		body, _ := io.ReadAll(io.LimitReader(response.Body, refusalBodyBytes))
-		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", CheckSlug, tag, response.StatusCode)
-		if strings.TrimSpace(string(body)) != "" {
-			what += ": " + firstLine(string(body))
+		// A read its bound cut, or that ended on an error, can stop inside a URL before its "@",
+		// which redact.Read drops rather than quote.
+		read, cut, _ := redact.ReadBounded(response.Body, refusalBodyBytes)
+		body := redact.Read(string(read), cut)
+		what := fmt.Sprintf("GitHub answered the read of %s at %s with HTTP %d", s.Repository, tag, response.StatusCode)
+		if strings.TrimSpace(body) != "" {
+			what += ": " + firstLine(body)
 		}
-		return Served{}, errors.New(Cause(what, nil))
+		if forgot || response.StatusCode >= http.StatusInternalServerError || githubrest.RateLimited(response, read) {
+			return Served{}, troubled(Cause(what, nil), nil)
+		}
+		return Served{}, refused(Cause(what, nil), nil)
 	}
-	body, err := PackTarball(response.Body)
+	// A body that stops arriving (the connection reset or cut short while it streams) is the
+	// transport failing, GitHub's trouble as a failed request is; a body that arrives whole and
+	// does not pack is GitHub's answer. Each is said as the tarball's own failure, and a read whose
+	// context ended as readFailure says it.
+	in := &bodyRead{r: response.Body}
+	body, manifest, err := PackTarballManifest(in)
 	if err != nil {
 		if ctx.Err() != nil {
-			return Served{}, readFailure(ctx, tag, bound, err)
+			return Served{}, s.readFailure(ctx, tag, bound, err)
 		}
-		return Served{}, errors.New(Cause(fmt.Sprintf("the tarball of %s at %s %s", CheckSlug, tag, err), nil))
+		cause := Cause(fmt.Sprintf("the tarball of %s at %s %s", s.Repository, tag, err), nil)
+		if in.err != nil {
+			return Served{}, troubled(cause, err)
+		}
+		return Served{}, refused(cause, err)
 	}
 	frames, err := shimwire.SplitLeakCheck(tag, body)
 	if err != nil {
-		return Served{}, errors.New(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err))
+		return Served{}, refused(Cause(fmt.Sprintf("the daemon could not slice the check it read at %s", tag), err), err)
 	}
-	return Served{Tag: tag, Body: body, Frames: frames}, nil
+	return Served{Tag: tag, Body: body, ManifestSHA256: manifest, Frames: frames}, nil
 }
 
-// readFailure is the cause of a read that did not arrive: the bound's own sentence where the
-// read's bound ended it, and the transport's error otherwise.
-func readFailure(ctx context.Context, tag string, bound time.Duration, err error) error {
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return errors.New(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", CheckSlug, tag, bound), nil))
+// bodyRead reads r and keeps the first error of a read other than the end of the body, so the
+// read can tell a body that stopped arriving from one that arrived whole and did not pack.
+type bodyRead struct {
+	r   io.Reader
+	err error
+}
+
+func (b *bodyRead) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && b.err == nil {
+		b.err = err
 	}
-	return errors.New(Cause(fmt.Sprintf("the daemon could not read %s at %s", CheckSlug, tag), err))
+	return n, err
+}
+
+// readFailure is the cause of a read that did not arrive, GitHub's trouble either way
+// (TransientRead): the bound's own sentence where the read's bound ended it, and the transport's
+// error otherwise.
+func (s *Source) readFailure(ctx context.Context, tag string, bound time.Duration, err error) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return troubled(Cause(fmt.Sprintf("the daemon's read of %s at %s did not finish within %s", s.Repository, tag, bound), nil), err)
+	}
+	return troubled(Cause(fmt.Sprintf("the daemon could not read %s at %s", s.Repository, tag), err), err)
 }

@@ -5,7 +5,8 @@ name: CI (dequeued pull request)
 # while that group's ci.yaml merge-group run, which nothing cancels, keeps its runners to the end
 # and decides nothing. That runner time is what this workflow takes back, for the one case
 # ci.yaml's own cancel act cannot see: that act cancels the older groups of the pull request a
-# new group of it replaced (the comment above ci.yaml's `cancel-started` says what it does), and
+# new group of it replaced (.github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top
+# says what it does), and
 # a pull request that left the queue builds no new group.
 #
 # Why pull_request_target. `dequeued` is an activity type of that event alone, and GitHub runs the
@@ -16,10 +17,9 @@ name: CI (dequeued pull request)
 #
 # Where the commit comes from. The `dequeued` payload carries no beforeCommit, so the job reads the
 # pull request's timeline with GraphQL and takes the newest RemovedFromMergeQueueEvent after the
-# newest AddedToMergeQueueEvent, which is the selection
-# packages/daemon/internal/ghautomerge/removal.go makes over the same two item types; that item's
-# `beforeCommit.oid` is the head of the group the queue had built, and its `reason` is read from
-# the same item. GitHub can show the event before the timeline holds it, so the read is made up to
+# newest AddedToMergeQueueEvent; that item's `beforeCommit.oid` is the head of the group the queue
+# had built, and its `reason` is read from the same item. GitHub can show the event before the
+# timeline holds it, so the read is made up to
 # seven times, ten seconds apart: a fixed list of attempts, which bounds the wait at one minute and
 # cannot spin. A read GitHub refuses counts as one of those attempts and leaves a warning of its
 # own, and no line about what the timeline holds, since a refused read read nothing: the attempts
@@ -59,18 +59,30 @@ jobs:
     # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
     # cannot hold a runner, and it is above the minute the timeline read can wait.
     timeout-minutes: 5
+    env:
+      JOB_TIMEOUT_MINUTES: 5 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
-    # scope: there is no checkout, and the GraphQL read is of a public repository's pull request,
-    # which GitHub serves to any valid token — the same ground on which ci.yaml's `cancel-started`
-    # holds `actions: write` alone and still checks out.
+    # scope: the checkout and the GraphQL read are of a public repository, which GitHub serves to
+    # any valid token — the same ground on which `.github/workflows/ci.yaml#cancel-started` holds `actions: write`
+    # alone and still checks out.
     permissions:
       actions: write
     steps:
+      # For .github/scripts/gh-read.sh alone. A pull_request_target run checks out the base
+      # branch's commit (github.sha), never the pull request's, so no code of the pull request
+      # runs here with this token.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
       - name: Cancel the removed group's ci.yaml run
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+          # Every call below waits out a spent API budget within this job's limit, and fails by
+          # name past it.
+          source .github/scripts/gh-read.sh
           query='query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
@@ -98,7 +110,7 @@ jobs:
           # group kept its runners — the one thing it exists to prevent.
           refused=0
           for attempt in 1 2 3 4 5 6 7; do
-            if removal=$(gh api graphql -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" \
+            if removal=$(gh_wait_reset gh api graphql -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" \
               -F number="$PR_NUMBER" -f query="$query" --jq "$select"); then
               [ -z "$removal" ] || break
               echo "read $attempt of 7 of pull request #$PR_NUMBER's timeline holds no removal after its newest queue entry"
@@ -128,7 +140,7 @@ jobs:
             echo "::warning::the removal names no beforeCommit, so there is no group head to look for and nothing is cancelled"
             exit 0
           fi
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+          runs=$(gh_wait_reset gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$before" --limit 20 --json databaseId,headSha,status,conclusion)
           doomed=$(jq -r --arg sha "$before" \
             '.[] | select(.headSha == $sha and .status != "completed") | .databaseId' <<<"$runs")
@@ -138,6 +150,6 @@ jobs:
           fi
           while read -r id; do
             echo "run $id is the ci.yaml merge-group run of the group whose head is $before, and it has not completed: force-cancel it"
-            gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
+            gh_wait_reset gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
               echo "::warning::force-cancel of run $id failed; it may have completed already"
           done <<<"$doomed"

@@ -1,15 +1,20 @@
-import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { quietConsoleError } from "../../__tests__/act-warnings";
 import { displayTree } from "../../__tests__/display-trees";
+import { realClock, settle } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { api } from "../../api/client";
+import { answerQuestionOf, NAMED_ASK, NAMED_QUESTION } from "../../__tests__/question-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
+  ArtifactText,
   AskRead,
   Comment,
   Decision,
@@ -17,8 +22,10 @@ import type {
   DisplayTree,
   IssueAskRow,
   IssueDecisions,
+  ReferenceTarget,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -126,8 +133,9 @@ beforeAll(async () => {
 
 afterEach(cleanup);
 
-function renderPanel() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPanel(
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter>
@@ -140,6 +148,32 @@ function renderPanel() {
 
 function list(name: string): HTMLElement {
   return screen.getByRole("region", { name });
+}
+
+/** The decisions document `issueView` is the read of, which a Change's send reads to count
+ *  which place of its quote is the decision's own (`changeAnchor`). */
+const DECISIONS_TEXT = [
+  "## Store notices in a table",
+  "A table keeps them queryable.",
+  "Unsure: the index may be slow.",
+  "## Name them notices",
+  "The person chose the name.",
+  "## Replaced",
+  "### Keep them in a file",
+  "A file was simpler.",
+].join("\n\n");
+
+/** Answers the decisions document's text read with `DECISIONS_TEXT` and the reading the server
+ *  sends of it. */
+function spyDecisionsText() {
+  return spyOn(api, "getArtifactText").mockImplementation(
+    async (): Promise<ArtifactText> => ({
+      markdown: DECISIONS_TEXT,
+      markdown_tree: displayTree(DECISIONS_TEXT),
+      token: "token",
+      version: 1,
+    })
+  );
 }
 
 test("the panel sorts the view into its four lists, in order", async () => {
@@ -220,10 +254,77 @@ test("Keep records the decision and moves it from Waiting for your review to You
   }
 });
 
+// A read of the decisions asked before a Keep answers the view from before it. Landing after the
+// Keep's answer, it would put the kept decision back under Waiting for your review, Keep and all.
+test("a read of the decisions asked before a Keep does not put the kept decision back as waiting", async () => {
+  const user = userEvent.setup();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const before = Promise.withResolvers<IssueDecisions>();
+  const read = spyOn(api, "getIssueDecisions")
+    .mockResolvedValueOnce(issueView())
+    .mockReturnValueOnce(before.promise);
+  const answer = Promise.withResolvers<DecisionKeep>();
+  const keep = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    // A refresh of the decisions, asked before the Keep and still out.
+    await act(async () => {
+      void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", "CORE-1"] });
+      await settle();
+    });
+    expect(read).toHaveBeenCalledTimes(2);
+
+    await user.click(within(waiting).getByRole("button", { name: "Keep" }));
+    await waitFor(() => expect(keep).toHaveBeenCalledTimes(1));
+    const kept: DecisionKeep = {
+      artifact_id: documentId,
+      block_id: "store",
+      changed_version: 3,
+      kept_at: "2026-11-02T00:00:00Z",
+      kept_by: "alice",
+    };
+    // The answer gives up the read still out and asks for the decisions again, after the Keep:
+    // Dispatch holds the decision kept then.
+    const view = issueView();
+    read.mockResolvedValueOnce({
+      ...view,
+      decisions: (view.decisions ?? []).map((row) =>
+        row.block_id === kept.block_id ? { ...row, kept, waiting_review: false } : row
+      ),
+    });
+    await act(async () => {
+      answer.resolve(kept);
+      await settle();
+    });
+    await waitFor(() =>
+      expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined()
+    );
+
+    // The read answers the view the server held before the Keep.
+    await act(async () => {
+      before.resolve(issueView());
+      await settle();
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(["decisions", "CORE-1"])?.fetchStatus).toBe("idle")
+    );
+    expect(
+      within(list("Waiting for your review")).queryByText("Store notices in a table")
+    ).not.toBeInTheDocument();
+    expect(within(list("Your decisions")).getByText("Store notices in a table")).toBeDefined();
+    expect(read).toHaveBeenCalledTimes(3);
+  } finally {
+    read.mockRestore();
+    keep.mockRestore();
+  }
+});
+
 test("Change opens the comment composer on decisions.md, quoting the decision's first paragraph, and posts it as the issue's comment", async () => {
   const user = userEvent.setup();
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
   const comment = spyOn(api, "createComment").mockResolvedValue({} as Comment);
+  const text = spyDecisionsText();
   try {
     renderPanel();
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
@@ -235,19 +336,278 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
     );
     await user.click(within(composer).getByLabelText("Your change"));
     await user.paste("Use a queue instead.");
-    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
 
     await waitFor(() => expect(comment).toHaveBeenCalled());
     expect(comment.mock.calls[0]?.slice(0, 2)).toEqual([
       "CORE-1",
       {
-        anchor: { artifact: documentId, quote: "A table keeps them queryable." },
+        anchor: { artifact: documentId, occurrence: 0, quote: "A table keeps them queryable." },
         body: "Use a queue instead.",
       },
     ]);
   } finally {
     read.mockRestore();
     comment.mockRestore();
+    text.mockRestore();
+  }
+});
+
+// Two places of the panel hold no markup and draw their text's plain-text projection: an open
+// question's link, and the name the Keep and the Change are given (the Change's form here). Each
+// drops the formatting and reads a `dispatch://` address as its target's name - the reading
+// list's `issue-open-question` and `issue-decision`. Drawn as the characters they are, each would
+// hold `**` and the address.
+test("an open question and the Change's name read their text's plain-text projection", async () => {
+  const user = userEvent.setup();
+  const question = "**Which** index does dispatch://CORE-2 need?";
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Warm dispatch://CORE-2 first",
+        text: "## Warm dispatch://CORE-2 first\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [
+      {
+        block_id: "q1",
+        id: questionId,
+        question,
+        question_tree: displayTree(question),
+      } as unknown as IssueAskRow,
+    ],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  }));
+  try {
+    renderPanel();
+    const open = await screen.findByRole("region", { name: "Open questions" });
+    expect(
+      await within(open).findByRole("link", {
+        name: "Which index does CORE-2 Cut the release need?",
+      })
+    ).toHaveAttribute("href", "/issues/CORE-1/spec#b-q1");
+    const waiting = list("Waiting for your review");
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    expect(
+      within(waiting).getByRole("form", { name: "Change Warm CORE-2 Cut the release first" })
+    ).toBeDefined();
+  } finally {
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+// A link under a decision names the statement it shaped by its first line (the decision card's
+// `decision-statement-line`), and never by the block's id. A link holds no markup, so the line
+// is the statement's text as plain words: the formatting is gone and a `dispatch://` address
+// reads as its target's name, as the same text reads in any other plain line. Drawn as the
+// characters it is, the link would hold `**Warm** dispatch://CORE-2 before the cut.`.
+test("a shaped block's link reads its first line as plain words, never by the block's id", async () => {
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Keep the notices queryable",
+        links: [
+          {
+            created_at: "2026-11-01T00:00:00Z",
+            created_version: 1,
+            from_block: "only",
+            stale: false,
+            to: graphNode({
+              block_id: "p1",
+              id: "CORE-1/spec#p1",
+              kind: "block",
+              text: "**Warm** dispatch://CORE-2 before the cut.",
+            }),
+          },
+        ],
+        text: "## Keep the notices queryable\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  const summary = spyOn(api, "getIssueSummary").mockImplementation(async (key) => ({
+    documents: [],
+    key,
+    project: "CORE",
+    status: "in_progress",
+    title: "Cut the release",
+  }));
+  try {
+    renderPanel();
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    const link = await within(waiting).findByRole("link", {
+      name: "Warm CORE-2 Cut the release before the cut.",
+    });
+    expect(link).toHaveAttribute("href", "/issues/CORE-1/spec#b-p1");
+    expect(within(waiting).queryByText(/Block p1/)).toBeNull();
+    expect(link.textContent).not.toContain("**");
+    expect(link.textContent).not.toContain("dispatch://");
+  } finally {
+    read.mockRestore();
+    summary.mockRestore();
+  }
+});
+
+/** The two statements a decision of the tab below shaped: the address its tie names, where the
+ *  tab links it, and the words the names read answers for it. */
+const SHAPED = [
+  {
+    block: "p1",
+    href: "/issues/CORE-1/spec#b-p1",
+    name: "Notices are stored.",
+    ref: "dispatch://CORE-1/spec#b-p1",
+  },
+  {
+    block: "p 2",
+    href: "/issues/CORE-1/spec#b-p%202",
+    name: "Old rows expire.",
+    ref: "dispatch://CORE-1/spec#b-p%202",
+  },
+] as const;
+
+/** A refusal of a read, as Dispatch answers one it cannot serve now. */
+const REFUSED = new ApiError(503, { code: "UNAVAILABLE", error: "the read is refused" });
+
+/** A decision that waits for review whose ties name their statements by address alone, as the
+ *  bare decisions read does today, so the words of each come from the names read alone. */
+function unnamedView(): IssueDecisions {
+  return {
+    decisions: [
+      decision({
+        block_id: "store",
+        heading: "Store notices in a table",
+        links: SHAPED.map(({ block, ref }) => ({
+          created_at: "2026-11-01T00:00:00Z",
+          created_version: 1,
+          from_block: "store-why",
+          stale: false,
+          to: graphNode({ block_id: block, id: `CORE-1/spec#${block}`, kind: "block", ref }),
+        })),
+        text: "## Store notices in a table\n\nA table keeps them queryable.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [],
+  };
+}
+
+// The statements a decision shaped are named by one batched read for the whole tab, and a
+// decision's read ties each by its address alone. With that read refused the tab says so with a
+// Retry, every statement is still a link to its block by the card's word for it, and the Retry
+// names them again, the same links by their own words.
+test("a refused read of the statements' names says so with a Retry, keeps every statement a link to its block, and the Retry names them", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(unnamedView());
+  const names = spyOn(api, "getReferenceTargets")
+    .mockRejectedValueOnce(REFUSED)
+    .mockImplementation(async (refs) => ({
+      targets: refs.flatMap((ref): ReferenceTarget[] => {
+        const named = SHAPED.find((one) => one.ref === ref);
+        return named === undefined ? [] : [{ gone: false, kind: "block", name: named.name, ref }];
+      }),
+    }));
+  try {
+    renderPanel();
+    const alert = await screen.findByRole("alert");
+    expect(
+      within(alert).getByText("Could not load the statements these decisions shaped.")
+    ).toBeInTheDocument();
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    const waiting = list("Waiting for your review");
+    const unnamed = within(waiting).getAllByRole("link", { name: "A statement it shaped" });
+    expect(unnamed).toHaveLength(SHAPED.length);
+    for (const [index, { href }] of SHAPED.entries()) {
+      expect(unnamed[index]).toHaveAttribute("href", href);
+    }
+
+    await user.click(retry);
+    await waitFor(() => {
+      for (const { href, name } of SHAPED) {
+        expect(within(waiting).getByRole("link", { name })).toHaveAttribute("href", href);
+      }
+    });
+    expect(within(waiting).queryByRole("link", { name: "A statement it shaped" })).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // One batched read of both statements, asked again by the Retry for the same two.
+    const asked = SHAPED.map(({ ref }) => ref).sort();
+    expect(names.mock.calls.map(([refs]) => [...refs])).toEqual([asked, asked]);
+  } finally {
+    read.mockRestore();
+    names.mockRestore();
+  }
+});
+
+// A Keep or a change the reader stopped may have been made: the card says so, and that its
+// button is a press of its own, rather than the stopped write's own words, which are a
+// composer's and promise a Retry the card does not offer.
+test("a Keep the reader stopped says it may have been made, not a message's words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new NetworkError("/api/v1/decisions/keep", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(within(waiting).getByRole("button", { name: "Keep" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(waiting).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the Keep of “Store notices in a table”", "made", {
+        anew: "Pressing Keep again sends a new Keep.",
+      })
+    );
+  } finally {
+    realClock();
+    queryClient.clear();
+    read.mockRestore();
+    keep.mockRestore();
+  }
+});
+
+test("a change the reader stopped says it may have been posted, not a message's words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const comment = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const text = spyDecisionsText();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
+    await user.click(within(composer).getByLabelText("Your change"));
+    await user.paste("Use a queue instead.");
+    await user.click(within(composer).getByRole("button", { name: "Send change" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(composer).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your change", "posted", { anew: "Send posts it again as a new comment." })
+    );
+  } finally {
+    realClock();
+    queryClient.clear();
+    read.mockRestore();
+    comment.mockRestore();
+    text.mockRestore();
   }
 });
 
@@ -372,6 +732,54 @@ test("a decision whose answer carried no reading is still drawn, quoted and mark
   }
 });
 
+// An open question is its ask's record, and a decision's heading is a record of `decisions.md`:
+// a `#id` in either names the question of that record's document, so the question's link and
+// the Keep's write read it as the question it names. Handed no record, both keep `#q2`.
+test("a #id in an open question and in a decision's heading names the question of its record", async () => {
+  const view: IssueDecisions = {
+    decisions: [
+      decision({
+        block_id: "only",
+        heading: "Settle #q2 first",
+        text: "## Settle #q2 first\n\nIt is cheap.",
+        waiting_review: true,
+      }),
+    ],
+    document: "dispatch://CORE-1/artifact/decisions-md",
+    open_questions: [
+      { block_id: "q1", id: questionId, question: "Decide #q2 now?" } as unknown as IssueAskRow,
+    ],
+  };
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(view);
+  for (const [kind, id, words] of [
+    ["ask", questionId, `Decide ${NAMED_QUESTION} now?`],
+    ["artifact", documentId, `Change Settle ${NAMED_QUESTION} first`],
+  ] as const) {
+    const answers = answerQuestionOf(kind, id);
+    const user = userEvent.setup();
+    const panel = renderPanel();
+    try {
+      if (kind === "ask") {
+        const open = await screen.findByRole("region", { name: "Open questions" });
+        expect(await within(open).findByRole("link", { name: words })).toBeDefined();
+      } else {
+        const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+        await waitFor(() =>
+          expect(waiting.querySelector(`[data-dispatch-ref="${NAMED_ASK}"]`)).not.toBeNull()
+        );
+        await user.click(within(waiting).getByRole("button", { name: "Change" }));
+        await waitFor(() =>
+          expect(within(waiting).getByRole("form", { name: words })).toBeDefined()
+        );
+      }
+    } finally {
+      panel.unmount();
+      answers.restore();
+    }
+  }
+  read.mockRestore();
+});
+
 // Each block of an answer that carried no reading cites what its own markdown holds and nothing
 // the decision's other blocks hold. The browser parsed that block's markdown to draw it, so a
 // `#q2` another block cites is no reference of this one: read from the whole decision, the
@@ -459,7 +867,8 @@ function refusedTree(text: string): DisplayTree {
 
 // A block whose tree cannot be drawn shows the text that body was handed, so each body is
 // handed its own block's text and no more: the decision's whole text in every one of them
-// would draw that text once per block, heading line and all.
+// would draw that text once per block, heading line and all. The heading is drawn from its own
+// node of the same tree, so it shows its own words when that node is refused.
 test("a block whose tree the engine refuses shows its own text alone", async () => {
   const text = "## Keep a log\n\nA log is enough.\n\nUnsure: the index may be slow.";
   const read = spyOn(api, "getIssueDecisions").mockResolvedValue(
@@ -472,10 +881,11 @@ test("a block whose tree the engine refuses shows its own text alone", async () 
     const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
     const fallbacks = await waitFor(() => {
       const found = waiting.querySelectorAll<HTMLElement>("[data-markdown-fallback]");
-      expect(found).toHaveLength(2);
+      expect(found).toHaveLength(3);
       return found;
     });
     expect([...fallbacks].map((body) => body.textContent)).toEqual([
+      "Keep a log",
       "A log is enough.",
       "Unsure: the index may be slow.",
     ]);

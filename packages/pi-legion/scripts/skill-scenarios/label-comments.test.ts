@@ -23,12 +23,17 @@ interface CommentFixture {
   readonly id: string;
   readonly author: object;
   readonly created_at: string;
-  readonly body: string;
+  /** Absent on a comment whose body Dispatch left out, as an answer at a cut leaves out the body
+   * of a comment edited or deleted since. */
+  readonly body?: string;
   readonly quote?: string;
+  /** Set on a comment its author deleted, which Dispatch serves with an empty body. */
+  readonly deleted_at?: string;
 }
 
-/** Three issues, one of them closed, and seven comments: two by sessions, one by a person at
- * exactly --until, and four by people inside the window, one of them on the closed issue. */
+/** Three issues, one of them closed, and eight comments: two by sessions, one by a person at
+ * exactly --until, four by people inside the window, one of them on the closed issue, and one by
+ * a person inside the window that its author deleted. */
 const COMMENTS: Record<string, CommentFixture[]> = {
   "ACME-1": [
     {
@@ -62,6 +67,13 @@ const COMMENTS: Record<string, CommentFixture[]> = {
       author: person("bob@example.com"),
       created_at: "2026-10-18T12:00:00Z",
       body: "You asked this already.",
+    },
+    {
+      id: "c8",
+      author: person("bob@example.com"),
+      created_at: "2026-10-21T08:00:00Z",
+      body: "",
+      deleted_at: "2026-10-21T09:00:00Z",
     },
   ],
 };
@@ -114,8 +126,12 @@ interface Sent {
 }
 
 /** One fake for both ends: Dispatch at dispatch.test and the model at its two hosts. `model`
- * answers a model request, given the comment text in its state and the try's number. */
-function world(model: (comment: string, attempt: number) => Response = answerWith) {
+ * answers a model request, given the comment text in its state and the try's number. `byIssue`
+ * is the comments Dispatch serves for each issue. */
+function world(
+  model: (comment: string, attempt: number) => Response = answerWith,
+  byIssue: Record<string, CommentFixture[]> = COMMENTS
+) {
   const sent: Sent[] = [];
   const attempts = new Map<string, number>();
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
@@ -124,7 +140,7 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
     if (url.host === "dispatch.test") {
       if (url.pathname === "/api/v1/issues") return json(ISSUES);
       const match = /^\/api\/v1\/issues\/([^/]+)\/comments$/.exec(url.pathname);
-      const comments = match?.[1] === undefined ? undefined : COMMENTS[match[1]];
+      const comments = match?.[1] === undefined ? undefined : byIssue[match[1]];
       if (comments === undefined) return json({ error: "not found", code: "NOT_FOUND" }, 404);
       return json(
         comments.map((comment) => ({
@@ -144,6 +160,9 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
                   orphaned: false,
                 },
           created_at: comment.created_at,
+          ...(comment.deleted_at === undefined
+            ? {}
+            : { deleted_at: comment.deleted_at, deleted_by: comment.author }),
         }))
       );
     }
@@ -205,6 +224,7 @@ const EXPECTED_SYSTEM_BLOCKS = [
 
 const EXPECTED_SUMMARY = [
   "comments: 4",
+  "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)",
   "first created_at: 2026-10-16T00:00:00Z",
   "last created_at: 2026-10-22T23:59:59.999999Z",
   "writing complaints (about_doc_writing yes): 2 of 4 (50.0%)",
@@ -338,6 +358,67 @@ test("it labels the people's comments in the window, and only those, and prints 
   expect(run.stdout.join("\n")).toBe(EXPECTED_SUMMARY.join("\n"));
 });
 
+// Dispatch serves a comment its author deleted with an empty body. Labelled, it would count as a
+// person's comment that raised none of the eleven complaints, so it is left out of what the judge
+// reads, and stdout says how many were left out and why.
+test("a deleted comment reaches no model call and no row, and stdout counts it as left out", async () => {
+  const out = path.join(dir("deleted"), "labels");
+  const { fetch, sent } = world();
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment></comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).not.toContain("c8");
+  expect(run.stdout).toContain(
+    "deleted comments left out: 1 (Dispatch serves a deleted comment with no body, so there is nothing of it to label)"
+  );
+});
+
+// A token that carries a cut reads Dispatch as of that cut, which leaves out the body of a comment
+// edited or deleted since. There are no words of it to label, and a label of a marker would count
+// as a person's comment that raised none of the eleven complaints, so it reaches no model call and
+// no row, and stdout counts it apart.
+test("a comment whose body Dispatch left out reaches no model call and no row, and stdout counts it", async () => {
+  const out = path.join(dir("left-out"), "labels");
+  const comments = {
+    ...COMMENTS,
+    "ACME-3": [
+      ...(COMMENTS["ACME-3"] ?? []),
+      { id: "c9", author: person("bob@example.com"), created_at: "2026-10-21T10:00:00Z" },
+    ],
+  };
+  const { fetch, sent } = world(answerWith, comments);
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  expect(run.stderr).toEqual([]);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment>null</comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).toEqual(["c1", "c7", "c4", "c6"]);
+  expect(run.stdout).toEqual([
+    ...EXPECTED_SUMMARY.slice(0, 2),
+    "comments whose words Dispatch left out: 1 (Dispatch read as of a past time leaves out the body of a comment edited or deleted since, so there is nothing of it to label)",
+    ...EXPECTED_SUMMARY.slice(2),
+  ]);
+});
+
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {
   const command = path.join(dir("gateway"), "key-command");
   writeFileSync(command, "#!/bin/sh\necho gateway-key\n");
@@ -369,11 +450,11 @@ test("the gateway route posts to <gateway>/v1/messages with the key the key comm
   }
 });
 
-test("a 429, a 5xx or a reply that skips a question is asked again", async () => {
+test("a 408, a 429, a 5xx or a reply that skips a question is asked again", async () => {
   const out = path.join(dir("retried"), "labels");
   const { fetch } = world((comment, attempt) => {
-    if (comment === "Too long." && attempt < 3) {
-      return new Response("overloaded", { status: attempt === 1 ? 529 : 429 });
+    if (comment === "Too long." && attempt < 4) {
+      return new Response("overloaded", { status: [529, 429, 408][attempt - 1] });
     }
     if (comment === "What is a <widget> & why?") {
       // The first reply answers one question only. The second answers each in another layout.

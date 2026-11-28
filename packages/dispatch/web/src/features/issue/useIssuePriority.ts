@@ -2,7 +2,8 @@ import type { IssuePriority } from "../../api/types";
 import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /** The priority's write, without `error`: a refused one shows a fixed line (`PriorityControl`),
- *  not the server's reason. `submit` takes a priority, or null to unset it. */
+ *  not the server's reason, and a stopped one what it may have done (`stopped`). `submit` takes a
+ *  priority, or null to unset it. */
 export type IssuePriorityWrite = Omit<IssueFieldWrite<IssuePriority | null>, "error">;
 
 /**
@@ -21,6 +22,7 @@ export function useIssuePriority(issueKey: string, host: IssuePriority | null): 
     pending: write.pending,
     retry: write.retry,
     shown: write.shown,
+    stopped: write.stopped,
     submit: write.submit,
   };
 }

@@ -9,9 +9,11 @@
 // round is opened on, and ReplacePod, which ends it — and this check drives the two as that sweep
 // drives them. The harness plays the sweep here as it plays the daemon's machine for boot tokens,
 // enrollments and sessions: it reads the drift, asks every worker of the pod, holds the pod while
-// one of them has not answered, and replaces it once both have. That is the round's early end;
-// the bound that ends a round whatever its workers answer (pod_update_grace_minutes) is the
-// daemon's alone, and that package's tests pin it.
+// one of them has not answered, and replaces it once both have. That is the round's early end as
+// far as the answers go: the daemon's own early end also waits while a turn runs or a claim's
+// activity report holds the round (internal/daemon's roundEnd.holding), and the bound that ends a
+// round whatever its workers answer (pod_update_grace_minutes) is the daemon's alone; that
+// package's tests pin both.
 //
 // Every pod of the run runs a stub agent (live_test.go's header), which reads no task and answers
 // nothing, so each worker's own side of the round is carried out as that role's agent in the pod
@@ -130,7 +132,7 @@ func (r *liveRig) checkPodUpdate() error {
 	for _, c := range workers {
 		turns = append(turns, &liveTurn{claim: c, from: mark})
 		tasked = append(tasked, c.name)
-		note("harness", "update round %s: %s is tasked to push its work and answer, as the sweep tasks every worker claim of issue %s", round, c.name, issue)
+		note("harness", "update round %s: %s is tasked with the steps of the update message (supervise.UpdateTask), as the sweep tasks every worker claim of issue %s", round, c.name, issue)
 	}
 	var inPod []string
 	for _, c := range r.claims {
@@ -527,7 +529,7 @@ func (r *liveRig) checkPodUpdateFleet() error {
 		for _, c := range round.workers {
 			round.turns = append(round.turns, &liveTurn{claim: c, from: mark})
 		}
-		note("harness", "update round over %s's pod %s: %s are tasked to push their work and answer",
+		note("harness", "update round over %s's pod %s: %s are tasked with the steps of the update message (supervise.UpdateTask)",
 			round.issue, short(round.uid), strings.Join(round.names(), " and "))
 	}
 

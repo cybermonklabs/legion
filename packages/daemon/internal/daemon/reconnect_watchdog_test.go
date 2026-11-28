@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -47,6 +51,7 @@ func (c *fakeConnStatus) set(connected bool, err error) {
 // signal instead: a warn every reconnectWarnEvery naming the downtime so far and the connection's
 // own LastError, and none at all while connected.
 func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) {
+	t.Parallel()
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}
@@ -81,11 +86,14 @@ func TestReconnectWatchdogWarnsWhileDisconnectedNotWhileConnected(t *testing.T) 
 // a downtime or a last-warned time left over from the previous disconnect. The connected interval
 // here outlasts warnEvery itself, so a broken reset's leftover clocks would already be overdue the
 // moment the second disconnect begins, and would warn within one poll tick of it — which the
-// no-warn check below would catch.
+// no-warn check below would catch. The two outages' errors print as two classes
+// (natsconn.ConnectionClass), which tell their warns apart.
 func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
+	t.Parallel()
+	const firstOutage, secondOutage = "nats: no servers available for connection", "connection refused"
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
-	conn := &fakeConnStatus{connected: false, err: errors.New("first outage")}
+	conn := &fakeConnStatus{connected: false, err: nats.ErrNoServers}
 	warnEvery := 1200 * time.Millisecond
 	w := &workflowRuntime{log: log, reconnectPollInterval: 5 * time.Millisecond, reconnectWarnEvery: warnEvery}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -93,23 +101,23 @@ func TestReconnectWatchdogResetsAfterReconnecting(t *testing.T) {
 	go func() { w.reconnectWatchdogWith(ctx, conn); close(done) }()
 
 	testwait.Eventually(t, "the watchdog warns about the first outage", func() bool {
-		return strings.Contains(logBuf.String(), "first outage")
+		return strings.Contains(logBuf.String(), firstOutage)
 	})
 	conn.set(true, nil)
 	time.Sleep(3 * warnEvery / 2)
 	logBuf.Reset()
-	conn.set(false, errors.New("second outage"))
+	conn.set(false, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
 
 	// With a broken reset, disconnectedSince and warnedAt would still be the first outage's —
 	// already more than warnEvery stale by now — so the very next poll tick would warn. A quarter
 	// of warnEvery is many poll ticks (poll interval is 5ms here), long enough to catch that.
 	time.Sleep(warnEvery / 4)
-	if strings.Contains(logBuf.String(), "second outage") {
+	if strings.Contains(logBuf.String(), secondOutage) {
 		t.Fatalf("warned about the second outage before its own fresh warnEvery elapsed (the reset is broken): %q", logBuf.String())
 	}
 
 	testwait.Eventually(t, "the watchdog warns about the second outage once its own warnEvery elapses", func() bool {
-		return strings.Contains(logBuf.String(), "second outage")
+		return strings.Contains(logBuf.String(), secondOutage)
 	})
 	msg := logBuf.String()
 	match := reconnectDowntimeRe.FindStringSubmatch(msg)
@@ -138,6 +146,7 @@ var reconnectDowntimeRe = regexp.MustCompile(`downtime=(\S+)`)
 // tripping it. The first warn must wait for the downtime itself to reach warnEvery, exactly as
 // pollHoldReleaseWith holds its own first warn for holdWarnAfter, then warn every warnEvery after.
 func TestReconnectWatchdogWarnsOnlyOnceDowntimeReachesWarnEvery(t *testing.T) {
+	t.Parallel()
 	logBuf := &syncBuffer{}
 	log := slog.New(slog.NewTextHandler(logBuf, nil))
 	conn := &fakeConnStatus{connected: true}

@@ -13,29 +13,37 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google/externalaccount"
+
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/sessionproxy"
 )
 
-// The pod-local metadata endpoint, which an issue pod's launcher serves when the pod runs in a GKE
-// Sandbox microVM and the deployment sets `runtime.kubernetes.sandbox.microvm.metadata`
-// (Config.Metadata). Under Workload Identity a pod gets its Google credential from the node's
-// metadata server, which a microVM's pod does not reach, so the launcher answers the paths Google's
-// clients read in that server's place and in its form (testdata/gke-metadata.json holds GKE's own
-// answers), and gets the access token it hands out the way GKE's server does: it exchanges the
-// pod's projected ServiceAccount token at Google's security token service.
+// The pod-local metadata endpoint, which the launcher of a pod that runs in a GKE Sandbox microVM
+// serves, an issue pod's roles container's or the project controller's pod's, when the deployment
+// sets `runtime.kubernetes.sandbox.microvm.metadata` (Config.Metadata). Under Workload Identity a
+// pod gets its Google credential from the node's metadata server, which a microVM's pod does not
+// reach, so the launcher answers the paths Google's clients read in that server's place and in its
+// form (testdata/gke-metadata.json holds GKE's own answers), and gets the access token it hands out
+// the way GKE's server does: it exchanges the pod's projected ServiceAccount token at Google's
+// security token service.
 //
-// MetadataAddress is where a pod's endpoint listens (MetadataConfig.listenAddress): on the loopback
-// every role shares, since a role has no network namespace of its own (role-init), and at a port
-// above 1024, since the pod runs as no root. MetadataHostVariable and MetadataIPVariable are where
-// Google's clients look for it: Go's compute/metadata and Python's google-auth read the first,
-// Node's gcp-metadata the second before the first. The launcher sets both, to the address it
-// listens at, in its own environment and on every generation it starts (metadataEnv).
-// WorkloadIdentityDirName is the directory the daemon mounts the projected token in, under the
-// roles directory, which every role's namespace covers (role-init), so no role reads the token
-// that the endpoint exchanges; WorkloadIdentityTokenFile is the token's file in it.
+// MetadataAddress is where a pod's endpoint listens (MetadataConfig.listenAddress): on the
+// container's loopback, which every role of an issue pod shares, since a role has no network
+// namespace of its own (role-init), and at a port above 1024, since the pod runs as no root.
+// MetadataHostVariable and MetadataIPVariable are where Google's clients look for it: Go's
+// compute/metadata and Python's google-auth read the first, Node's gcp-metadata the second before
+// the first. The launcher sets both, to the address it listens at, in its own environment and on
+// every generation it starts (metadataEnv).
+// WorkloadIdentityDirName is the directory in which the daemon mounts the projected token the
+// endpoint exchanges, and WorkloadIdentityTokenFile the token's file in it (Config.servedMetadata).
+// An issue pod mounts it under the roles directory, which every role's namespace covers
+// (role-init), so no role reads the token. The controller's pod, which has no roles directory,
+// mounts it under FixedRoot, where the controller's agent can read it: that gives the agent no
+// identity it lacks, since the endpoint hands it access tokens of the same Workload Identity
+// principal.
 const (
 	MetadataAddress           = "127.0.0.1:8169"
 	MetadataHostVariable      = "GCE_METADATA_HOST"
@@ -52,7 +60,8 @@ const (
 // which with the pool makes the token exchange's audience. address, tokenFile, tokenURL,
 // readTimeout and idleTimeout are a test's, which only this package's tests set: the zero value of
 // each is MetadataAddress, which a pod always listens on, the token the daemon mounts
-// (WorkloadIdentityDirName under the roles directory), Google's security token service,
+// (WorkloadIdentityDirName under the roles directory in an issue pod's container and under
+// FixedRoot in the controller's pod: Config.servedMetadata), Google's security token service,
 // metadataReadTimeout and metadataIdleTimeout. A test listens on a port of its own
 // (`127.0.0.1:0`), so no test holds the pod's, and names bounds short enough to wait out.
 type MetadataConfig struct {
@@ -63,6 +72,20 @@ type MetadataConfig struct {
 
 // listenAddress is where the endpoint listens.
 func (c MetadataConfig) listenAddress() string { return cmp.Or(c.address, MetadataAddress) }
+
+// servedMetadata is the endpoint's configuration as this launcher serves it: Metadata, whose
+// token file, where no test names one, is the one the daemon mounts, WorkloadIdentityTokenFile in
+// WorkloadIdentityDirName under the roles directory in an issue pod's container, and under
+// FixedRoot in the controller's pod, the single-role form, which has no roles directory.
+func (c Config) servedMetadata() MetadataConfig {
+	metadata := *c.Metadata
+	dir := c.RolesDir
+	if dir == "" {
+		dir = FixedRoot
+	}
+	metadata.tokenFile = cmp.Or(metadata.tokenFile, filepath.Join(dir, WorkloadIdentityDirName, WorkloadIdentityTokenFile))
+	return metadata
+}
 
 // httpServer is the endpoint's HTTP server over handler, with a bound on each way a client could
 // hold a connection of the launcher's open: metadataReadTimeout to send a request, its line and
@@ -85,12 +108,8 @@ const (
 	// metadataPrefix is the version of the metadata API Google's clients read. Every path under it
 	// needs the flavor header, as GKE's server has it; the two directories above it do not.
 	metadataPrefix = "/computeMetadata/v1/"
-	// stsTokenURL is the exchange GKE's own server makes.
-	stsTokenURL = "https://sts.googleapis.com/v1/token"
 	// workloadPoolSuffix ends every Workload Identity pool; the project is what comes before it.
 	workloadPoolSuffix = ".svc.id.goog"
-	// subjectTokenType is the projected ServiceAccount token's type, a JWT.
-	subjectTokenType = "urn:ietf:params:oauth:token-type:jwt"
 	// cloudPlatformScope is the scope of a token request that names none, as GKE's server has it.
 	cloudPlatformScope = "https://www.googleapis.com/auth/cloud-platform"
 	// tokenEarlyRefresh is how long before its expiry a cached token is exchanged again, so no
@@ -131,7 +150,7 @@ var accountScopes = []string{cloudPlatformScope, "https://www.googleapis.com/aut
 // launcher's own environment, so the launcher's own Google clients (the session database's proxy,
 // which signs in as the pod) read the endpoint too.
 func serveMetadata(ctx context.Context, cfg Config, logf func(format string, args ...any)) (<-chan struct{}, string) {
-	metadata := *cfg.Metadata
+	metadata := cfg.servedMetadata()
 	listener, err := net.Listen("tcp", metadata.listenAddress())
 	if err != nil {
 		logf("launcher: metadata: off reason=%v", err)
@@ -142,7 +161,6 @@ func serveMetadata(ctx context.Context, cfg Config, logf func(format string, arg
 		// A listener's address: Setenv refuses only a name or value holding '=' or NUL.
 		_ = os.Setenv(name, address)
 	}
-	metadata.tokenFile = cmp.Or(metadata.tokenFile, filepath.Join(cfg.RolesDir, WorkloadIdentityDirName, WorkloadIdentityTokenFile))
 	server := metadata.httpServer(newMetadataServer(ctx, metadata, logf))
 	served := make(chan struct{})
 	go func() {
@@ -236,7 +254,7 @@ func newMetadataServer(ctx context.Context, cfg MetadataConfig, logf func(format
 		ctx:       context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: exchangeTimeout}),
 		pool:      cfg.WorkloadPool,
 		audience:  "identitynamespace:" + cfg.WorkloadPool + ":" + cfg.IdentityProvider,
-		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, stsTokenURL),
+		tokenFile: cfg.tokenFile, tokenURL: cmp.Or(cfg.tokenURL, sessionproxy.STSTokenURL),
 		answers: metadataAnswers{
 			root:            metadataList("computeMetadata/"),
 			computeMetadata: metadataList("v1/"),
@@ -406,7 +424,7 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 	}
 	source, err := externalaccount.NewTokenSource(s.ctx, externalaccount.Config{
 		Audience:         s.audience,
-		SubjectTokenType: subjectTokenType,
+		SubjectTokenType: sessionproxy.JWTTokenType,
 		TokenURL:         s.tokenURL,
 		Scopes:           scopes,
 		CredentialSource: &externalaccount.CredentialSource{File: s.tokenFile},
@@ -428,8 +446,10 @@ func (s *metadataServer) tokenSource(scopes []string) (oauth2.TokenSource, error
 // exchangeFailed logs a failed exchange, at most once in exchangeFailureLogInterval: while the
 // service refuses the pod's token every request fails, and one line a minute says so. The reason is
 // the exchange's own error, which names the service's answer and never the token sent, cut to
-// maxFailureReason bytes at a character's start; it is quoted, as are the scopes a client named, so
-// neither can break the line.
+// maxFailureReason bytes at a character's start by redact.Bytes, which reads it whole through the
+// URL rule first, since the answer is the service's and a cut made first could end inside a URL's
+// userinfo, before its "@"; it is quoted, as are the scopes a client named, so neither can break
+// the line.
 func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	s.mu.Lock()
 	now := s.now()
@@ -441,14 +461,7 @@ func (s *metadataServer) exchangeFailed(scopes []string, err error) {
 	if quiet {
 		return
 	}
-	reason := err.Error()
-	if len(reason) > maxFailureReason {
-		cut := maxFailureReason
-		for cut > 0 && !utf8.RuneStart(reason[cut]) {
-			cut--
-		}
-		reason = reason[:cut]
-	}
+	reason, _ := redact.Bytes(err.Error(), maxFailureReason)
 	s.logf("launcher: metadata: token exchange failed scopes=%q reason=%q", strings.Join(scopes, ","), reason)
 }
 

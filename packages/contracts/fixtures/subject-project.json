@@ -14,7 +14,8 @@
     "notifications.team.>",
     "notifications.envoy.exceptions.>",
     "notifications.envoy.kept.>",
-    "notifications.envoy.resume.>"
+    "notifications.envoy.resume.>",
+    "notifications.envoy.takeover.>"
   ],
   "builders": [
     {
@@ -39,7 +40,8 @@
       "args": ["_", "lead-reviewer"],
       "want": "notifications.role._.lead-reviewer"
     },
-    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" }
+    { "fn": "legionWakeSubject", "args": ["priv"], "want": "notifications.legion.priv.wake" },
+    { "fn": "legionStateSubject", "args": ["infra"], "want": "notifications.legion.infra.state" }
   ],
   "issueProject": [
     { "key": "INFRA-12", "project": "INFRA", "ok": true },
@@ -195,6 +197,24 @@
       "ok": true
     },
     { "subject": "notifications.envoy.resume.ses_a", "project": "_", "repo": "", "ok": true },
+    {
+      "subject": "notifications.envoy.takeover.legion-priv-priv-1-architect.ses_a.0123",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.takeover.lead-reviewer.ses_a.0123",
+      "project": "_",
+      "repo": "",
+      "ok": true
+    },
+    {
+      "subject": "notifications.envoy.takeover.PRIV.lead-reviewer.ses_a.0123",
+      "project": "PRIV",
+      "repo": "",
+      "ok": true
+    },
     { "subject": "notifications.envoy.deliver.ses_a", "project": "_", "repo": "", "ok": true },
     { "subject": "notifications.somethingnew.PRIV.x", "project": "_", "repo": "", "ok": true },
     { "subject": "agent.stream.ses_a.frames", "project": "", "repo": "", "ok": false },

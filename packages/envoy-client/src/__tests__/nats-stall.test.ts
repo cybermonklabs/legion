@@ -12,8 +12,8 @@ import { natsConnectionOptions } from "../nats-connection";
 
 const codec = StringCodec();
 
-// Reserved here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` below has stopped the stack writing into it.
+// Reserved here, at the file's module scope. Once the `describe` below has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory();
 
 describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () => {
@@ -126,7 +126,7 @@ describe.skipIf(!envoyStackEnabled)("a NATS connection whose path freezes", () =
           redials.slice(0, stalledRedials).every((opened) => opened.subscribedAt === undefined)
         ).toBe(true);
         expect(redials[stalledRedials]?.subscribedAt).toBeDefined();
-        // nats.js abandons a dial after its 20 s timeout; the socket it opened must go with it, so
+        // nats.js abandons a dial after its dial timeout; the socket it opened must go with it, so
         // the client holds no socket to a redial it gave up on. The proxy never closes a stalled
         // connection, so its close is the client's. Real nats.js dial timers: the wait polls the
         // real clock.

@@ -10,17 +10,26 @@ import (
 
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // An upload writes the whole document's markdown over the live one, and that markdown names no
-// untyped block's id (GET /text renders none). The blocks it leaves unchanged keep the ids live
-// gave them, so the write tombstones no blockId attribute it did not change, and an anchor or a
-// reference keyed on such a block's id stays on it. Only a changed block, and every block holding
-// it, takes a fresh id; an id never moves onto other content (a swapped, retyped or replaced
-// block), a typed block's id is the one its markdown names, and a repeat live carries is kept for
-// its first holder alone.
+// untyped block's id (GET /text renders none), nor any id at all in a body an agent composed. The
+// blocks it leaves unchanged keep the ids live gave them, so the write tombstones no blockId
+// attribute it did not change, and an anchor or a reference keyed on such a block's id stays on
+// it; an ask keeping its id is what keeps the row holding a person's answer on the question it
+// answers. Only the changed block itself takes a fresh id, and an untyped container holding it
+// keeps its own, whose identity is its place in the tree (carryKept); an id never moves onto
+// other content (a swapped, retyped, moved or replaced block), a typed block whose markdown
+// names an id holds the one it names, and a repeat live carries is kept for its first holder
+// alone.
 func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
+	t.Parallel()
 	spec, _, _ := docstest.LoadSpec(rand.New(rand.NewPCG(715, 1)), "LOAD-1", 25_000)
+
+	// The ask each case below starts from, as the document holds it before the upload: the id is
+	// the document's, and state is the only server attribute it names.
+	const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
 
 	oneToken := func(t *testing.T, old, replacement string, wantTypes []string) {
 		t.Helper()
@@ -38,7 +47,7 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 		}
 		after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, old, replacement, 1))
 		t.Logf("upload of %d markdown bytes changing %q to %q: diff update %d bytes", len(markdown), old, replacement, diff)
-		requireOnlyTheChangedBlockAndItsAncestorsChangeID(t, live, after, wantTypes)
+		requireOnlyTheChangedLeafChangesID(t, live, after, wantTypes)
 	}
 	t.Run("a token in a top-level paragraph", func(t *testing.T) {
 		oneToken(t, "Revision token r0", "Revision token r1", []string{"paragraph"})
@@ -48,12 +57,12 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 	})
 
 	t.Run("an ask replaced by one naming no id", func(t *testing.T) {
-		const ask = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"open\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
 		for _, test := range []struct {
-			name string
-			edit func(string) string
+			name  string
+			edit  func(string) string
+			keeps bool
 		}{
-			{name: "with the same content", edit: func(markdown string) string { return markdown }},
+			{name: "with the same content", edit: func(markdown string) string { return markdown }, keeps: true},
 			{name: "with another question", edit: func(markdown string) string {
 				return strings.Replace(markdown, "Which transport should we expose?", "Which transport should we drop?", 1)
 			}},
@@ -78,16 +87,187 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 				if newAsk.Type != "ask" {
 					t.Fatalf("block 1 after the upload is a %s, want the ask", newAsk.Type)
 				}
-				if id, _ := storedBlockID(newAsk); id == "ask-1" || slices.Contains(blockIDsOf(live), id) {
-					t.Fatalf("the ask naming no id has id %q, a live block's; want a fresh one", id)
-				}
+				oldID, _ := storedBlockID(oldAsk)
+				newID, _ := storedBlockID(newAsk)
 				oldInner := blockIDsOf(&Node{Type: "doc", Children: oldAsk.Children})
-				for _, id := range blockIDsOf(&Node{Type: "doc", Children: newAsk.Children}) {
+				newInner := blockIDsOf(&Node{Type: "doc", Children: newAsk.Children})
+				if test.keeps {
+					if newID != oldID {
+						t.Errorf("the unchanged ask naming no id has id %q, want the live ask's %q", newID, oldID)
+					}
+					if !slices.Equal(newInner, oldInner) {
+						t.Errorf("the blocks inside the unchanged ask have ids %q, want live's %q", newInner, oldInner)
+					}
+					return
+				}
+				if newID == "ask-1" || slices.Contains(blockIDsOf(live), newID) {
+					t.Fatalf("the ask naming no id has id %q, a live block's; want a fresh one", newID)
+				}
+				for _, id := range newInner {
 					if slices.Contains(oldInner, id) {
 						t.Fatalf("a block inside the new ask took id %q from inside the replaced ask (%q)", id, oldInner)
 					}
 				}
 			})
+		}
+	})
+
+	t.Run("two asks of one question, both naming no id", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n" + ask + "\n" + strings.Replace(ask, "{#ask-1 ", "{#ask-2 ", 1) + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unnamed := strings.NewReplacer("{#ask-1 ", "{", "{#ask-2 ", "{").Replace(markdown)
+		if strings.Contains(unnamed, "#ask-") {
+			t.Fatalf("the upload still names an ask id:\n%s", unnamed)
+		}
+		after, diff := uploadOver(t, doc, frag, live, unnamed)
+		t.Logf("diff update %d bytes", diff)
+		for _, index := range []int{1, 2} {
+			got, _ := storedBlockID(after.Children[index])
+			want, _ := storedBlockID(live.Children[index])
+			if after.Children[index].Type != "ask" || got != want {
+				t.Errorf("block %d after the upload is a %s with id %q, want the ask holding live's %q; the document's ids are now %q, live's were %q", index, after.Children[index].Type, got, want, blockIDsOf(after), blockIDsOf(live))
+			}
+		}
+	})
+
+	t.Run("an unchanged ask the upload moves", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n" + ask + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(markdown, ":::ask{")
+		if start < 0 {
+			t.Fatalf("the rendered document holds no ask block:\n%s", markdown)
+		}
+		end := strings.Index(markdown[start:], "\n:::\n")
+		if end < 0 {
+			t.Fatalf("the ask block of the rendered document does not close:\n%s", markdown)
+		}
+		block := markdown[start : start+end+len("\n:::\n")]
+		moved := strings.Replace(markdown, block, "", 1) + "\n" + strings.Replace(block, "{#ask-1 ", "{", 1)
+		after, diff := uploadOver(t, doc, frag, live, moved)
+		t.Logf("diff update %d bytes", diff)
+		last := after.Children[len(after.Children)-1]
+		if last.Type != "ask" {
+			t.Fatalf("the last block after the upload is a %s, want the ask the upload moved there", last.Type)
+		}
+		if id, _ := storedBlockID(last); slices.Contains(blockIDsOf(live), id) {
+			t.Fatalf("the moved ask has id %q, a live block's; want a fresh one, since live's ids are %q", id, blockIDsOf(live))
+		}
+	})
+
+	t.Run("an uploaded ask naming an id of its own", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			named   string
+			carried bool
+		}{
+			{name: "the id the live ask carries", named: "ask-1", carried: true},
+			{name: "an id the live ask does not carry", named: "ask-9"},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				parsed, err := Parse("Opening paragraph.\n\n" + ask + "\nClosing paragraph.\n")
+				if err != nil {
+					t.Fatal(err)
+				}
+				doc, frag, live := writeLiveDocument(t, parsed)
+				markdown, err := Render(live)
+				if err != nil {
+					t.Fatal(err)
+				}
+				renamed := strings.Replace(markdown, "{#ask-1 ", "{#"+test.named+" ", 1)
+				if !strings.Contains(renamed, "{#"+test.named+" ") {
+					t.Fatalf("the upload names no ask %s:\n%s", test.named, renamed)
+				}
+				after, diff := uploadOver(t, doc, frag, live, renamed)
+				t.Logf("diff update %d bytes", diff)
+				newAsk := after.Children[1]
+				id, _ := storedBlockID(newAsk)
+				if newAsk.Type != "ask" || id != test.named {
+					t.Fatalf("block 1 after the upload is a %s with id %q, want the ask holding the id its markdown names, %q", newAsk.Type, id, test.named)
+				}
+				oldInner := blockIDsOf(&Node{Type: "doc", Children: live.Children[1].Children})
+				newInner := blockIDsOf(&Node{Type: "doc", Children: newAsk.Children})
+				if test.carried {
+					if !slices.Equal(newInner, oldInner) {
+						t.Errorf("the blocks inside the ask naming its own id have ids %q, want live's %q", newInner, oldInner)
+					}
+					return
+				}
+				for _, inner := range newInner {
+					if slices.Contains(oldInner, inner) {
+						t.Errorf("a block inside the ask naming %q took id %q from inside the live ask (%q)", test.named, inner, oldInner)
+					}
+				}
+			})
+		}
+	})
+
+	t.Run("an answered ask re-uploaded with no id and no server state", func(t *testing.T) {
+		const answered = ":::ask{#ask-1 urgency=\"med\" multiple=\"false\" state=\"answered\" answered_by=\"alice\" answered_at=\"2026-09-12T13:20:00Z\" selected=\"[&#x22;REST&#x22;]\" answer=\"Ship REST first.\"}\nWhich transport should we expose?\n\n- REST: Matches the existing platform\n- gRPC: Adds streaming\n:::\n"
+		parsed, err := Parse("Opening paragraph.\n\n" + answered + "\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		if got := fmt.Sprint(live.Children[1].Attrs["answer"]); got != "Ship REST first." {
+			t.Fatalf("the live ask holds answer %q, want the one it was written with", got)
+		}
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := strings.Index(markdown, ":::ask{")
+		if start < 0 {
+			t.Fatalf("the rendered document holds no ask block:\n%s", markdown)
+		}
+		opening, _, _ := strings.Cut(markdown[start:], "\n")
+		if !strings.Contains(opening, `state="answered"`) {
+			t.Fatalf("the rendered ask opens with %q, want the answered one", opening)
+		}
+		composed := strings.Replace(markdown, opening, `:::ask{urgency="med" multiple="false"}`, 1)
+		after, diff := uploadOver(t, doc, frag, live, composed)
+		t.Logf("diff update %d bytes", diff)
+		newAsk := after.Children[1]
+		got, _ := storedBlockID(newAsk)
+		want, _ := storedBlockID(live.Children[1])
+		if newAsk.Type != "ask" || got != want {
+			t.Fatalf("the answered ask after the upload is a %s with id %q, want the ask holding live's %q; the document's ids are now %q", newAsk.Type, got, want, blockIDsOf(after))
+		}
+	})
+
+	t.Run("a callout re-uploaded with no id", func(t *testing.T) {
+		parsed, err := Parse("Opening paragraph.\n\n:::callout{#note kind=\"warning\" title=\"Heads up\"}\nA note.\n:::\n\nClosing paragraph.\n")
+		if err != nil {
+			t.Fatal(err)
+		}
+		doc, frag, live := writeLiveDocument(t, parsed)
+		markdown, err := Render(live)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unnamed := strings.Replace(markdown, "{#note ", "{", 1)
+		if unnamed == markdown {
+			t.Fatalf("the rendered document names no callout note:\n%s", markdown)
+		}
+		after, diff := uploadOver(t, doc, frag, live, unnamed)
+		t.Logf("diff update %d bytes", diff)
+		newCallout := after.Children[1]
+		got, _ := storedBlockID(newCallout)
+		if want, _ := storedBlockID(live.Children[1]); newCallout.Type != "callout" || got != want {
+			t.Fatalf("block 1 after the upload is a %s with id %q, want the callout holding live's %q; the document's ids are now %q", newCallout.Type, got, want, blockIDsOf(after))
 		}
 	})
 
@@ -215,6 +395,232 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 	})
 }
 
+// An untyped container's identity is its place in the tree and not what it holds, so an upload
+// that keeps one keeps its id though its contents changed. A list that gains, loses or alters an
+// item is still that list, and an id minted for it would assert a new list exists where none
+// does, reparenting every untouched sibling onto it. A typed block keeps the rule it had: its id
+// is the one its markdown names, so one whose contents changed keeps it and carries its unchanged
+// children's, and one naming another id is another block, of which nothing is carried. A changed
+// block holding inline content is other content and still takes a fresh id, and so does a
+// container the alignment does not keep: one of another kind in that place, one under another
+// parent, and one live never held. A reference keyed on the container it keeps still names a
+// block the document holds. docs' test of the same name holds the same rule through the document
+// upload path and the store: the parent tuples a one-item edit of a 1,980-item list appends.
+func TestAnUploadKeepsAnUntypedContainersIDWhenItsContentsChange(t *testing.T) {
+	t.Parallel()
+	const listDocument = "Opening paragraph.\n\n- Alpha item\n- Beta item\n- Gamma item\n\nClosing paragraph.\n"
+
+	t.Run("a list whose one item's text changed keeps its id", func(t *testing.T) {
+		doc, frag, live, markdown := liveMarkdown(t, listDocument)
+		after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "Beta item", "Beta item, revised", 1))
+		t.Logf("diff update %d bytes", diff)
+		liveList, list := live.Children[1], after.Children[1]
+		if list.Type != "bullet_list" || len(list.Children) != 3 {
+			t.Fatalf("block 1 after the upload is a %s with %d children, want the three-item bullet list", list.Type, len(list.Children))
+		}
+		if got, want := blockIDOfNode(t, list), blockIDOfNode(t, liveList); got != want {
+			t.Errorf("the list holding the changed item has id %q, want live's %q", got, want)
+		}
+		for index, item := range list.Children {
+			if got, want := blockIDOfNode(t, item), blockIDOfNode(t, liveList.Children[index]); got != want {
+				t.Errorf("item %d (%q) has id %q, want live's %q", index, TextContent(item), got, want)
+			}
+		}
+	})
+
+	t.Run("a changed leaf takes a fresh id", func(t *testing.T) {
+		for _, test := range []struct {
+			name    string
+			old     string
+			edited  string
+			changed func(after *Node) *Node
+		}{
+			{
+				name:    "a top-level paragraph",
+				old:     "Closing paragraph.",
+				edited:  "Closing paragraph, revised.",
+				changed: func(after *Node) *Node { return after.Children[2] },
+			},
+			{
+				name:    "a paragraph inside the list item the upload keeps",
+				old:     "Beta item",
+				edited:  "Beta item, revised",
+				changed: func(after *Node) *Node { return after.Children[1].Children[1].Children[0] },
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				doc, frag, live, markdown := liveMarkdown(t, listDocument)
+				after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, test.old, test.edited, 1))
+				t.Logf("diff update %d bytes", diff)
+				changed := test.changed(after)
+				if changed.Type != "paragraph" || TextContent(changed) != test.edited {
+					t.Fatalf("the block the upload changed is a %s holding %q, want the paragraph holding %q", changed.Type, TextContent(changed), test.edited)
+				}
+				if id := blockIDOfNode(t, changed); slices.Contains(blockIDsOf(live), id) {
+					t.Errorf("the changed paragraph has live id %q, want a fresh one", id)
+				}
+			})
+		}
+	})
+
+	t.Run("a typed block keeps the id its markdown names", func(t *testing.T) {
+		const typedDocument = "Opening paragraph.\n\n" +
+			":::callout{#held kind=\"note\" title=\"\"}\nFirst inside.\n\nSecond inside.\n:::\n\n" +
+			"Closing paragraph.\n"
+		doc, frag, live, markdown := liveMarkdown(t, typedDocument)
+		liveCallout := live.Children[1]
+		if liveCallout.Type != "callout" || blockIDOfNode(t, liveCallout) != "held" || len(liveCallout.Children) != 2 {
+			t.Fatalf("block 1 of the live document is a %s with id %q and %d children, want the callout held of two paragraphs",
+				liveCallout.Type, blockIDOfNode(t, liveCallout), len(liveCallout.Children))
+		}
+		after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "Second inside.", "Second inside, revised.", 1))
+		t.Logf("the upload editing inside the callout: diff update %d bytes", diff)
+		callout := after.Children[1]
+		if got := blockIDOfNode(t, callout); got != "held" {
+			t.Errorf("the callout whose contents changed has id %q, want %q, the id its markdown names", got, "held")
+		}
+		if got, want := blockIDOfNode(t, callout.Children[0]), blockIDOfNode(t, liveCallout.Children[0]); got != want {
+			t.Errorf("the callout's unchanged paragraph has id %q, want live's %q", got, want)
+		}
+		if id := blockIDOfNode(t, callout.Children[1]); slices.Contains(blockIDsOf(live), id) {
+			t.Errorf("the callout's changed paragraph has live id %q, want a fresh one", id)
+		}
+
+		doc, frag, live, markdown = liveMarkdown(t, typedDocument)
+		renamed, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "{#held ", "{#renamed ", 1))
+		t.Logf("the upload naming the callout anew: diff update %d bytes", diff)
+		callout = renamed.Children[1]
+		if got := blockIDOfNode(t, callout); got != "renamed" {
+			t.Fatalf("the callout the upload names renamed has id %q", got)
+		}
+		for index, child := range callout.Children {
+			if id := blockIDOfNode(t, child); slices.Contains(blockIDsOf(live), id) {
+				t.Errorf("paragraph %d of the callout named anew has live id %q, want a fresh one: it is another block", index, id)
+			}
+		}
+	})
+
+	t.Run("a container the upload does not keep takes a fresh id", func(t *testing.T) {
+		for _, test := range []struct {
+			name     string
+			document string
+			old      string
+			written  string
+			list     func(after *Node) *Node
+		}{
+			{
+				name:     "another kind of list in its place",
+				document: listDocument,
+				old:      "- Alpha item\n- Beta item\n- Gamma item",
+				written:  "1. Alpha item\n2. Beta item\n3. Gamma item",
+				list:     func(after *Node) *Node { return after.Children[1] },
+			},
+			{
+				name:     "the same list under another parent",
+				document: listDocument,
+				old:      "- Alpha item\n- Beta item\n- Gamma item",
+				written:  "> - Alpha item\n> - Beta item\n> - Gamma item",
+				list:     func(after *Node) *Node { return after.Children[1].Children[0] },
+			},
+			{
+				name:     "a list live never held",
+				document: "Opening paragraph.\n\nClosing paragraph.\n",
+				old:      "Closing paragraph.",
+				written:  "- Alpha item\n- Beta item\n\nClosing paragraph.",
+				list:     func(after *Node) *Node { return after.Children[1] },
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				doc, frag, live, markdown := liveMarkdown(t, test.document)
+				replaced := strings.Replace(markdown, test.old, test.written, 1)
+				if replaced == markdown {
+					t.Fatalf("the rendered document does not hold %q:\n%s", test.old, markdown)
+				}
+				after, diff := uploadOver(t, doc, frag, live, replaced)
+				t.Logf("diff update %d bytes", diff)
+				list := test.list(after)
+				if list.Type != "bullet_list" && list.Type != "ordered_list" {
+					t.Fatalf("the block the upload wrote is a %s, want the list", list.Type)
+				}
+				if id := blockIDOfNode(t, list); slices.Contains(blockIDsOf(live), id) {
+					t.Errorf("the %s has live id %q, want a fresh one", list.Type, id)
+				}
+			})
+		}
+	})
+
+	t.Run("a reference naming the kept list still resolves", func(t *testing.T) {
+		doc, frag, live, markdown := liveMarkdown(t, listDocument)
+		listID := blockIDOfNode(t, live.Children[1])
+		reference := "dispatch://LOAD-1/spec#b-" + listID
+		cited, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, "Closing paragraph.", "Closing paragraph. See "+reference+".", 1))
+		t.Logf("the upload citing the list: diff update %d bytes", diff)
+		if got := blockIDOfNode(t, cited.Children[1]); got != listID {
+			t.Fatalf("the list the citing upload left unchanged has id %q, want %q", got, listID)
+		}
+		citedMarkdown, err := Render(cited)
+		if err != nil {
+			t.Fatal(err)
+		}
+		after, diff := uploadOver(t, doc, frag, cited, strings.Replace(citedMarkdown, "Beta item", "Beta item, revised", 1))
+		t.Logf("the upload editing the item: diff update %d bytes", diff)
+		stored, err := Render(after)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := text.Extract(stored, "")
+		if len(found) != 1 || found[0].Kind != "block" {
+			t.Fatalf("the markdown the upload stored holds %d references (%v), want the one block reference:\n%s", len(found), found, stored)
+		}
+		if !slices.Contains(blockIDsOf(after), found[0].Block) {
+			t.Fatalf("%s names a block the document no longer holds", text.TargetID(found[0]))
+		}
+		if got := blockIDOfNode(t, after.Children[1]); got != found[0].Block {
+			t.Fatalf("%s resolves past the bullet list, whose id is %q", text.TargetID(found[0]), got)
+		}
+	})
+}
+
+// A changed block that is no untyped container takes a fresh id, a leaf included, as the spec
+// has it: "A changed leaf still takes a fresh id" (carryKept). A frontmatter block is its text, so
+// one whose text changed is other content, and an anchor or a reference keyed on live's block must
+// not follow it there; the blocks beside it keep their ids.
+//
+// The frontmatter block is the one leaf an upload can change that a carry keeping every changed
+// block other than a textblock would give live's id. A changed paragraph, heading or code block
+// takes a fresh id under that carry too, so a case of one passes whatever the carry does with any
+// other block. The markdown writes no block of HTML (Parse refuses one, ErrBlockHTML): html is an
+// inline atom, which holds no block id, so a changed html atom changes the paragraph holding it,
+// a textblock. No markdown writes a changed hr: an hr holds no content and no attributes, and
+// `---`, `***` and `___` all read as the one hr node (parseBlock), so an upload rewriting one
+// leaves it unchanged, and it keeps its id as every unchanged block does.
+func TestAnUploadGivesAChangedLeafAFreshID(t *testing.T) {
+	t.Parallel()
+	const document = "---\ntitle: Alpha\n---\n\nOpening paragraph.\n\n- Alpha item\n- Beta item\n\nClosing paragraph.\n"
+	const old, edited = "title: Alpha", "title: Beta"
+	doc, frag, live, markdown := liveMarkdown(t, document)
+	if count := strings.Count(markdown, old); count != 1 {
+		t.Fatalf("the rendered document holds %q %d times, want once:\n%s", old, count, markdown)
+	}
+	after, diff := uploadOver(t, doc, frag, live, strings.Replace(markdown, old, edited, 1))
+	t.Logf("diff update %d bytes", diff)
+	if len(after.Children) != len(live.Children) {
+		t.Fatalf("the upload left %d top-level blocks, want live's %d", len(after.Children), len(live.Children))
+	}
+	changed := after.Children[0]
+	if want := "---\ntitle: Beta\n---"; changed.Type != "frontmatter" || TextContent(changed) != want {
+		t.Fatalf("block 0 after the upload is a %s holding %q, want the frontmatter holding %q", changed.Type, TextContent(changed), want)
+	}
+	if id := blockIDOfNode(t, changed); slices.Contains(blockIDsOf(live), id) {
+		t.Errorf("the changed %s has live id %q, want a fresh one", changed.Type, id)
+	}
+	for index, block := range after.Children[1:] {
+		if got, want := blockIDsOf(block), blockIDsOf(live.Children[index+1]); !slices.Equal(got, want) {
+			t.Errorf("the unchanged %s at block %d has ids %q, want live's %q", block.Type, index+1, got, want)
+		}
+	}
+}
+
 // writeLiveDocument writes tree into a fresh document's fragment and returns the document, the
 // fragment and the tree read back from it, as a room holds it.
 func writeLiveDocument(t *testing.T, tree *Node) (*crdt.Doc, *crdt.YXmlFragment, *Node) {
@@ -227,6 +633,23 @@ func writeLiveDocument(t *testing.T, tree *Node) (*crdt.Doc, *crdt.YXmlFragment,
 		t.Fatal(err)
 	}
 	return doc, frag, live
+}
+
+// liveMarkdown parses markdown into a fresh document (writeLiveDocument) and returns that
+// document, its fragment, the tree read back from it and the markdown that tree renders as,
+// which is what an upload over it writes.
+func liveMarkdown(t *testing.T, markdown string) (*crdt.Doc, *crdt.YXmlFragment, *Node, string) {
+	t.Helper()
+	parsed, err := Parse(markdown)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, frag, live := writeLiveDocument(t, parsed)
+	rendered, err := Render(live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc, frag, live, rendered
 }
 
 // uploadOver writes markdown over live as an upload does (ParseForWrite, then Update into the
@@ -247,10 +670,13 @@ func uploadOver(t *testing.T, doc *crdt.Doc, frag *crdt.YXmlFragment, live *Node
 	return after, len(crdt.EncodeStateAsUpdateV1(doc, before))
 }
 
-// requireOnlyTheChangedBlockAndItsAncestorsChangeID walks before and after in parallel, which
-// must have one shape, and requires exactly one text node to differ, every block holding it (of
-// wantTypes, outermost first) to carry an id before did not, and every other block to keep its id.
-func requireOnlyTheChangedBlockAndItsAncestorsChangeID(t *testing.T, before, after *Node, wantTypes []string) {
+// requireOnlyTheChangedLeafChangesID walks before and after in parallel, which must have one
+// shape, and requires exactly one text node to differ, the blocks holding it to be wantTypes
+// (outermost first), the innermost of them - the block the changed text sits in - to carry an id
+// before did not, and every other block to keep its id, each untyped container above the changed
+// text included: such a container's identity is its place in the tree and not its contents
+// (carryKept).
+func requireOnlyTheChangedLeafChangesID(t *testing.T, before, after *Node, wantTypes []string) {
 	t.Helper()
 	var changedText [][]int
 	var changedIDs []string
@@ -278,27 +704,26 @@ func requireOnlyTheChangedBlockAndItsAncestorsChangeID(t *testing.T, before, aft
 		t.Fatalf("the upload changed %d text nodes (%v), want 1", len(changedText), changedText)
 	}
 	changed := changedText[0]
-	var wantIDs, gotTypes []string
+	var gotTypes []string
 	node := before
 	for depth := 1; depth < len(changed); depth++ {
 		node = node.Children[changed[depth-1]]
-		wantIDs = append(wantIDs, fmt.Sprint(changed[:depth]))
 		gotTypes = append(gotTypes, node.Type)
 	}
 	if !slices.Equal(gotTypes, wantTypes) {
 		t.Fatalf("the changed text sits in %q, want %q", gotTypes, wantTypes)
 	}
-	if !slices.Equal(changedIDs, wantIDs) {
+	leaf := changed[:len(changed)-1]
+	if !slices.Equal(changedIDs, []string{fmt.Sprint(leaf)}) {
 		shown := changedIDs[:min(len(changedIDs), 8)]
-		t.Fatalf("%d of %d blocks changed id, want %d (the changed block and its ancestors, at %q); first changed: %q", len(changedIDs), blocks, len(wantIDs), wantIDs, shown)
+		t.Fatalf("%d of %d blocks changed id, want 1 (the block holding the changed text, at %v); first changed: %q", len(changedIDs), blocks, leaf, shown)
 	}
-	liveIDs := blockIDsOf(before)
 	node = after
 	for depth := 1; depth < len(changed); depth++ {
 		node = node.Children[changed[depth-1]]
-		if id, ok := storedBlockID(node); !ok || slices.Contains(liveIDs, id) {
-			t.Fatalf("the changed %s at %v has id %q, want a fresh one", node.Type, changed[:depth], id)
-		}
+	}
+	if id, ok := storedBlockID(node); !ok || slices.Contains(blockIDsOf(before), id) {
+		t.Fatalf("the changed %s at %v has id %q, want a fresh one", node.Type, leaf, id)
 	}
 }
 
@@ -310,4 +735,15 @@ func blockIDsOf(tree *Node) []string {
 		return true
 	})
 	return ids
+}
+
+// blockIDOfNode is node's stored block id, which every block of a written document carries
+// (EnsureBlockIDs).
+func blockIDOfNode(t *testing.T, node *Node) string {
+	t.Helper()
+	id, ok := storedBlockID(node)
+	if !ok {
+		t.Fatalf("the %s holding %q carries no block id", node.Type, TextContent(node))
+	}
+	return id
 }

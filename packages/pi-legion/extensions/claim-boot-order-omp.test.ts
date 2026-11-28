@@ -7,6 +7,7 @@ import {
   type Block,
   type Cleanup,
   call,
+  deleteRelayCapturingStreams,
   deliveryFor,
   messageStream,
   ompRoot,
@@ -16,7 +17,9 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { connect, headers, StringCodec } from "nats";
 import { z } from "zod";
 
@@ -71,23 +74,20 @@ const BOOT_TOKEN = fixtureSecret("boot");
  * (packages/daemon/internal/shimwire `Prompt`). */
 const TASK = "Legion task: implement INFRA-1573 and report.";
 
-/**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions
- * before it reads any RPC command, took about 27 s of wall time in a slow but normal pod, so the
- * waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
-
-/** How long one wait for something the started session owes a case may last once startup is over. */
-const STEP_DEADLINE_MS = 30_000;
-
-/** A case's own timeout: its startup, each of its waits and the cleanup of its processes. */
-const CASE_TIMEOUT_MS = 600_000;
+// Each case starts a cold Oh My Pi worker (its startup, which loads both extensions before it reads
+// any RPC command, took about 27 s of wall time in a slow but normal pod) and then waits on it, so
+// it needs more than Bun's 5000 ms default in every mode: `bun run test`'s workers declare 300000 ms
+// (`test-timeout-preload.ts`), but a run of this file alone takes no worker and keeps 5000 ms. Each
+// case therefore takes a guard of its own, as the cases of `legion-stall-watchdog-omp.test.ts` do:
+// the case calls `useRowGuard` for the shared wait's deadline and passes the same value as
+// `test`'s third argument for Bun's row kill, and the afterEach, whose cleanup kills a real Oh My
+// Pi, passes it as its own hook timeout.
+const COLD_PANE_GUARD_MS = 300_000;
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
@@ -173,6 +173,9 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   const kept = `KEPT-${randomUUID().slice(0, 8)}`;
   const connection = await connect({ servers: nats });
   cleanup.push(() => connection.close());
+  // No stream another suite left on this server may answer the frames
+  // (`deleteRelayCapturingStreams`).
+  await deleteRelayCapturingStreams(connection);
   const codec = StringCodec();
   let receipt: Promise<unknown> | undefined;
   let relayedSeq = 0;
@@ -253,8 +256,13 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     }
     // An unavailable Dispatch arms no run-end self-check, so every Messages request is a turn.
     if (url.pathname.startsWith("/api/")) return new Response("unavailable", { status: 503 });
-    // The Envoy listener: the role claim records its holder and hands the kept message over, the
-    // role read names the holder, and registration and any other read answer with an interest.
+    // The Envoy listener, which serves `/v1/` and nothing else: the role claim records its
+    // holder and hands the kept message over, the role read names the holder, and registration
+    // and any other `/v1/` read answer with an interest. A path outside it is a route this
+    // stand-in does not serve, and it is refused.
+    if (!url.pathname.startsWith("/v1/")) {
+      return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
+    }
     const sid = typeof body.session_id === "string" ? body.session_id : "";
     if (url.pathname === "/v1/roles/set") {
       if (body.role === CLAIM_TOKEN && roleHolder === "") {
@@ -288,7 +296,6 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
   let runsEnded = 0;
-  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -328,21 +335,19 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
     closed.error = error;
   });
 
-  const until = async <T>(
+  /** Waits through the shared wait until `probe` answers, and fails at once with the error the RPC
+   * stream closed on. What the cases wait on — a request reaching the stand-in, a frame omp
+   * prints — has no event of its own to await. */
+  const waitFor = async <T>(
     what: string,
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // The first wait spans Oh My Pi's startup, which no case can shorten.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
-    for (;;) {
+    const answered = await until(what, async () => {
       if (closed.error !== undefined) throw closed.error;
       const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-      // What the cases wait on — a request reaching the stand-in, a frame omp prints — has no
-      // event of its own to await.
-      await Bun.sleep(25);
-    }
+      return value === undefined ? undefined : { value };
+    });
+    return answered.value;
   };
 
   let taken = 0;
@@ -350,7 +355,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
   return {
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
@@ -367,7 +372,7 @@ async function startWorker(options: { readonly boundMs: number }): Promise<Worke
       prompt === undefined || prompt.success === true ? undefined : JSON.stringify(prompt),
     kept,
     async handedOver(what) {
-      const sent = await until(what, () => receipt);
+      const sent = await waitFor(what, () => receipt);
       await sent;
     },
     claimedAfterReadyMs: () => claimAt - readyAt,
@@ -427,6 +432,7 @@ async function stepUntilRead(worker: Worker, text: string, steps: number): Promi
 test.skipIf(skip)(
   "the daemon's task is the session's first turn, and the message kept for its role arrives inside that turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     // Past every wait of this case, so only the first turn can take the name.
     const worker = await startWorker({ boundMs: 120_000 });
     worker.deliver(TASK);
@@ -444,7 +450,7 @@ test.skipIf(skip)(
     expect(await worker.handOverOf(worker.kept)).toBe("run-active");
     read.reply("Read the task and the message.");
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The second state: the stand-in daemon sends no task at all, which is a role brought back with
@@ -458,6 +464,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a role brought back with no task takes its name at the bound, and the message kept for it starts its turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const boundMs = 5_000;
     const worker = await startWorker({ boundMs });
 
@@ -468,5 +475,5 @@ test.skipIf(skip)(
     expect(worker.turns).toHaveLength(1);
     woken.reply("Read the message.");
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );

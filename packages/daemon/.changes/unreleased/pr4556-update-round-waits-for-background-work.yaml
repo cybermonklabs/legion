@@ -1,0 +1,11 @@
+kind: Fixed
+custom:
+  Issue: pr4556
+body: |-
+  A pod update round no longer replaces its pod before its bound while a role reports background
+  work. Before the bound, the round now also waits while a role with a process in the round's pod
+  reports a running subagent, async job or Claude Code background task, has sent no activity
+  report, or sent its last report before its last turn started. The bound still ends every round.
+  The wait line and the bound's line name each role that holds the round, with the kinds it
+  reports. The update message and the role prompts tell each role to push, then to let each
+  subagent and background job finish, or stop it, and push what it made, before it answers.

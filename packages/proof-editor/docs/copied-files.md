@@ -1,7 +1,12 @@
 # Edits allowed in a copied file
 
-A file under `src/` copied from the `sjawhar/proof-sdk` fork (`AGENTS.md`, "Copied code", says which) differs from its counterpart only by the kinds of edit below, and by no others.
+A file under `src/` is a copy when the `sjawhar/proof-sdk` fork's commit 24a5fc94915cda5704897c497af6312c140db40d holds it at the same path; `src/directive-factories.ts` and `src/html-flow.ts` are copies from micromark (below), and the rest are legion's own.
+That commit stays the audit source when the upstream pin (`docs/upstream.md`) moves.
+The copies and the generated `upstream/` keep their MIT license (`LICENSE`); legion's own files, `scripts/` and `tests/` are Apache-2.0.
+
+A file copied from the fork differs from its counterpart only by the kinds of edit below, and by no others.
 Diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 root:src/<file>`: every line that differs is one of these kinds.
+Biome's formatter, linter and `assist` are off over the copies, in the first override of the root `biome.json`, so that this diff stays readable; an editor that organizes imports on save still reorders them.
 
 1. The import specifiers of upstream modules.
 
@@ -63,11 +68,11 @@ Diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 r
 25. `src/lib.ts` installs `mermaidCodeBlockPlugin` from `./mermaid-code-block-view` in place of upstream's `mermaidDiagramsPlugin` and takes the host's `drawMermaid` option (typed `MermaidDrawer`, imported from `./mermaid-svg`) for it, and `src/lib.css` drops its `.proof-mermaid-svg` rules, which that view's shadow-root sheet carries.
 
 26. The `block[]` attribute kind, which reads, writes and checks its values through `./block-pointers`.
-    In `src/block-schema.ts`: `BlockAttributeKind` gains `block[]`, `BlockAttributeSchema` gains `targets`, `validateBlockSchema` refuses `targets` on any other kind, and `parseAttribute`'s `block[]` case calls `parseBlockPointers` and `attributeText`, with its one conditional expression written as statements, joining the pointers with one space.
-    In `src/typed-block-commands.ts`: `TypedBlockCommandContext.documentRef`; `validateValue`'s `block[]` case calling `@legion/contracts`' `blockPointersProblem`; `findBlock` moved to `./block-pointers`, which returns the first holder of a repeated id; and `insert`, `retype` and `setAttributes` building their transaction first and handing it, with the block it replaces or changes, to `dispatchUnlessRefused`, which throws `blockPointerRefusal`'s refusal before it dispatches, so a refused command leaves the document unchanged.
+    In `src/block-schema.ts`: `BlockAttributeKind` gains `block[]`, `BlockAttributeSchema` gains `targets`, `validateBlockSchema` refuses `targets` on any other kind and a `parent` (`PARENT_ATTRIBUTE`, imported from `@legion/contracts`) that is no `block[]` attribute, and `parseAttribute`'s `block[]` case calls `parseBlockPointers` and `attributeText`, with its one conditional expression written as statements, joining the pointers with one space.
+    In `src/typed-block-commands.ts`: `TypedBlockCommandContext.documentRef`; `validateValue`'s `block[]` case calling `@legion/contracts`' `blockPointersProblem`, then its `parentProblem`, which refuses a parent holding more than one reference; `findBlock` moved to `./block-pointers`, which returns the first holder of a repeated id; and `insert`, `retype` and `setAttributes` building their transaction first and handing it, with the block it replaces or changes, to `dispatchUnlessRefused`, which throws `blockPointerRefusal`'s refusal before it dispatches, so a refused command leaves the document unchanged.
     `blockPointerRefusal` treats that block's pointers as already held only when its type is unchanged.
     In `src/lib.ts`: `CreateProofEditorOptions.documentRef`, passed to `createTypedBlockCommands`.
-    In `src/tests/block-schema.test.ts`: the imports of `DISPATCH_BLOCK_POINTER_VALUES`, `EditorState` and `createTypedBlockCommands`, and the suite's four cases for the kind.
+    In `src/tests/block-schema.test.ts`: the imports of `DISPATCH_BLOCK_POINTER_VALUES`, `EditorState`, `createTypedBlockCommands` and `validateBlockSchema`, `planTaskSchema`, and the suite's five cases for the kind, the shared table's and the plan task command's driven by `DISPATCH_BLOCK_POINTER_VALUES`.
 
 27. The manifest's `since` and `creatable_since`, read by `src/block-schema.ts`, `src/typed-block-commands.ts` and `src/lib.ts`.
     The `BlockSchema` types name the manifest's nodes and marks and each element's numbers.
@@ -76,7 +81,14 @@ Diff it against `jj --ignore-working-copy -R <proof-sdk> file show -r 24a5fc94 r
     `src/lib.ts`'s `installCreationGate` makes a markdown parse through `parserCtx` (a text/plain paste, a suggestion's accept) and an editable editor's `setMarkdown` throw for content holding a node, mark, typed block, attribute or enum value the editor may not create yet (`assertCreatable`), and puts `creatableDomParser` in `schema.cached`, so an HTML paste or drop reads no such node or mark, and `parsedDomAttrs` reads no typed block's section holding such an attribute or value.
     A read-only editor's `setMarkdown`, the collab sync and the headless engine still read all of them.
 
-28. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
+28. Editors that write no marks of Proof's own.
+    `src/lib.ts`'s `proofMarks` option (true by default): set to `false`, the editor installs neither `authoredTrackerPlugin`, nor `markPopoverPlugin` and `arrowCommentPlugin`, nor `dispatchActionBarPlugin`, and registers no popover hook.
+    So it offers no Comment, Suggest or Ask on a selection and writes no mark from one, records no authorship on what a person types, and its `commentOnSelection` answers false; `CreateProofEditorOptions` and `commentOnSelection`'s comment say so.
+    Dispatch sets it for a priority's description, which it saves as markdown; `tests/proof-marks.test.ts` holds both settings.
+
+29. `src/lib-headless.ts`'s parse processor installs `remarkKeepAddressesWhole` from `./whole-addresses` right after `remarkGfm`, and `src/lib.ts` installs that module's `libraryRemarkKeepAddressesWholePlugin` right after `gfm`, each with a comment saying why, so a bare `dispatch://` address is read whole by the headless engine and by the live editor's paste and `setMarkdown`.
+
+30. Annotations, casts and assertions that make a file type-check, each of which erases before runtime.
 
 ## The two micromark copies
 

@@ -4,6 +4,11 @@
   "license": "Apache-2.0",
   "type": "module",
   "exports": {
+    "./actor-text": {
+      "types": "./src/actor-text.ts",
+      "bun": "./src/actor-text.ts",
+      "default": "./dist/actor-text.js"
+    },
     "./askgate-marker": {
       "types": "./src/askgate-marker.ts",
       "bun": "./src/askgate-marker.ts",
@@ -28,6 +33,11 @@
       "types": "./src/consumer-delivery.ts",
       "bun": "./src/consumer-delivery.ts",
       "default": "./dist/consumer-delivery.js"
+    },
+    "./inbound-outage": {
+      "types": "./src/inbound-outage.ts",
+      "bun": "./src/inbound-outage.ts",
+      "default": "./dist/inbound-outage.js"
     },
     "./delivery": {
       "types": "./src/delivery.ts",
@@ -119,6 +129,26 @@
       "bun": "./src/excerpt.ts",
       "default": "./dist/excerpt.js"
     },
+    "./inbound-card": {
+      "types": "./src/inbound-card.ts",
+      "bun": "./src/inbound-card.ts",
+      "default": "./dist/inbound-card.js"
+    },
+    "./inbound-connection": {
+      "types": "./src/inbound-connection.ts",
+      "bun": "./src/inbound-connection.ts",
+      "default": "./dist/inbound-connection.js"
+    },
+    "./json-line-record": {
+      "types": "./src/json-line-record.ts",
+      "bun": "./src/json-line-record.ts",
+      "default": "./dist/json-line-record.js"
+    },
+    "./listener-relay": {
+      "types": "./src/listener-relay.ts",
+      "bun": "./src/listener-relay.ts",
+      "default": "./dist/listener-relay.js"
+    },
     "./machine": {
       "types": "./src/machine.ts",
       "bun": "./src/machine.ts",
@@ -138,6 +168,21 @@
       "types": "./src/process-ancestry.ts",
       "bun": "./src/process-ancestry.ts",
       "default": "./dist/process-ancestry.js"
+    },
+    "./process-exit": {
+      "types": "./src/process-exit.ts",
+      "bun": "./src/process-exit.ts",
+      "default": "./dist/process-exit.js"
+    },
+    "./process-group": {
+      "types": "./src/process-group.ts",
+      "bun": "./src/process-group.ts",
+      "default": "./dist/process-group.js"
+    },
+    "./relay-registration": {
+      "types": "./src/relay-registration.ts",
+      "bun": "./src/relay-registration.ts",
+      "default": "./dist/relay-registration.js"
     },
     "./secret-file": {
       "types": "./src/secret-file.ts",
@@ -171,6 +216,26 @@
     "./test/fake-dispatch": {
       "types": "./test/fake-dispatch.ts",
       "bun": "./test/fake-dispatch.ts"
+    },
+    "./test/keyed-layer": {
+      "types": "./test/keyed-layer.ts",
+      "bun": "./test/keyed-layer.ts"
+    },
+    "./test/nats-server": {
+      "types": "./test/nats-server.ts",
+      "bun": "./test/nats-server.ts"
+    },
+    "./test/relay-socket-stand-in": {
+      "types": "./test/relay-socket-stand-in.ts",
+      "bun": "./test/relay-socket-stand-in.ts"
+    },
+    "./test/replay-grant-scenario": {
+      "types": "./test/replay-grant-scenario.ts",
+      "bun": "./test/replay-grant-scenario.ts"
+    },
+    "./test/route-answers": {
+      "types": "./test/route-answers.ts",
+      "bun": "./test/route-answers.ts"
     },
     "./test/stall-proxy": {
       "types": "./test/stall-proxy.ts",
@@ -210,23 +275,30 @@
       "default": "./dist/transport.js"
     }
   },
+  "//": [
+    "test: each command's --timeout is at least twice the slowest row or hook it runs without a guard of its own, as #4437 read them under 8 busy loops on 2 CPUs (builds Jobs, 2026-11-19 to 2026-11-21), and longer than every bound of a wait in those rows, so a wait names a hang before the guard ends its row.",
+    "The first, 45000: the slowest row, nats-credential-deadlines.test.ts's switch whose first trade answers 503 and waits for ready, 13,404.06 ms (three runs in builds Job g4b-ec-first, legion-load-run-hbzpt, 2026-11-21, at #4437's round-4 tree 24b2e96b28), and the slowest hook, the temporary-directory afterEach dispatch-review.test.ts registers, 84.15 ms; nats-handshake.test.ts's slowest row, a server that never answers, which waits out its dial's whole 10 s bound on the process's clock, at most 10,104.52 ms (builds Jobs nt-t1-8 and nt-c1-8, 2026-11-20), and nats-dial-retry.test.ts's, the last dial's own error, at most 623.22 ms. Twice the slowest is 26,808.12 ms; the guard is 45000 rather than 30000 because `turnsUntil` (@legion/test-fixtures/fake-clock) bounds each of its waits at 30 s of real time by default, and the rows that wait through it with no bound of their own (nats-credential-deadlines.test.ts, nats-credential-keeper.test.ts, dispatch-credential-deadline.test.ts, nats-dial-retry.test.ts, envoy-config.test.ts, membership-held.test.ts) must name a hang before the guard ends them.",
+    "The second, 120000: the files whose rows, once they set no guard of their own, take more than half the first's. dispatch-write-outcomes.test.ts, whose every sequence of events took 16,382.88 ms under that load (builds Job d8-ec-first-8); broker-credential-signins.test.ts, whose closed client's slot took 16,094.57 ms (d8-ec-moved-8), and whose setDefaultTimeout(HANG_GUARD_MS) gives its rows the same 120000; askgate-record.test.ts's row of four writers, 25.67 s at most in a whole-suite run under 16 busy loops (8 x nproc); and dispatch-askgate.test.ts's row of twelve child process trees, 58.37 s at most in a whole-suite run under 16 busy loops, which 120000 holds 2.06 times.",
+    "These keep a guard of their own. The rows and hooks of the files the envoy-session-stall job runs with a bare `bun test <file>`, whose own guard is the only one that run has: nats-stall.test.ts, nats-credential.test.ts's hub behind the auth service (its beforeAll's Go build of natsd and calloutd, 300000, and its rows), test/session-stall.ts, design-gate-advice, moved-approval-advice and comment-mention.live.test.ts, and dispatch-keyed-resend-live.test.ts (its beforeAll 600000, its afterAll 60000, its rows 120000), ci-results.live.test.ts (its beforeAll 600000, its afterAll hooks 60000, its rows 120000 and 180000) and ci-result-refusal-log.live.test.ts (its beforeAll 600000, its afterAll 60000, its row 180000). nats-credential-deadlines.test.ts's three ready rows (READY_ROW_MS, 65000), each two `turnsUntil` waits of READY_WAIT_MS, 30 s, one after the other, longer together than the first command's guard. The rows of the files whose setDefaultTimeout(HANG_GUARD_MS) sets Bun's kill at 120000 for a bare `bun test <file>`: broker-credential, broker-credential-signins, device-login, dispatch-config, envoy-config, envoy-settings, membership-held, nats-auth, nats-credential, process-group, secret-file, session-settings and session-timing.test.ts, with nats-auth.test.ts's Docker hooks (NATS_START_HOOK_MS, NATS_STOP_HOOK_MS) and envoy-config.test.ts's rows as they were before #4437. In such a run that kill alone holds: a shared wait reads the command line's guard, Bun's 5000 ms there, so broker-credential-signins.test.ts's span(16_000) is refused at once. And every other row that keeps the guard it had before #4437 and holds no shared wait, such as dispatch-cli.test.ts's rows that print another call's stored answer as no answer of their own (30000)."
+  ],
   "scripts": {
-    "build": "bun build src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout 30000",
+    "build": "bun build src/actor-text.ts src/askgate-marker.ts src/askgate-new-asks.ts src/bearer.ts src/broker-credential.ts src/consumer-delivery.ts src/delivery.ts src/delivery-ledger.ts src/dispatch-cli.ts src/dispatch-command.ts src/dispatch-config.ts src/dispatch-cwd.ts src/dispatch-execute.ts src/dispatch-first.ts src/dispatch-http.ts src/dispatch-picture-tools.ts src/dispatch-pictures.ts src/dispatch-session-directory.ts src/dispatch-session-state.ts src/dispatch-subscribe.ts src/envoy-config.ts src/envoy-settings.ts src/errors.ts src/excerpt.ts src/inbound-card.ts src/inbound-connection.ts src/inbound-outage.ts src/json-line-record.ts src/listener-relay.ts src/machine.ts src/nats-connection.ts src/nats-credential.ts src/process-ancestry.ts src/process-exit.ts src/process-group.ts src/relay-registration.ts src/secret-file.ts src/session-answers.ts src/session-settings.ts src/slack-post.ts src/stream-topics.ts src/tmux-place.ts src/tmux-place-cache.ts src/tmux-server.ts src/tool-contract.ts src/transport.ts --root src --outdir dist --target bun --format esm",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --timeout 45000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns 'src/__tests__/dispatch-askgate.test.ts' --path-ignore-patterns 'src/__tests__/askgate-record.test.ts' --path-ignore-patterns 'src/__tests__/broker-credential-signins.test.ts' --path-ignore-patterns 'src/__tests__/dispatch-write-outcomes.test.ts' && bun test --timeout 120000 --preload @legion/test-fixtures/row-deadline src/__tests__/dispatch-askgate.test.ts src/__tests__/askgate-record.test.ts src/__tests__/broker-credential-signins.test.ts src/__tests__/dispatch-write-outcomes.test.ts",
     "lint": "bunx biome check src/ bin/ test/"
   },
   "dependencies": {
-    "@legion/broker-client": "workspace:*",
+    "@legion/cipher-client": "workspace:*",
     "@legion/contracts": "workspace:*",
     "@toon-format/toon": "^4.1.1",
     "nats": "^2.29.2",
     "zod": "4.3.6"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
+    "ajv": "8.20.0",
     "typescript": "^5.3.0"
   }
 }

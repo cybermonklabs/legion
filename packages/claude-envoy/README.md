@@ -36,7 +36,8 @@ message from Dispatch's Agents page as that person's own turn.
   Dispatch is on or off, a checkout's
   `.opencode/envoy.json`, which is not read, is one `envoy: <file> is not read: mkdir -p … && mv …`
   line while the checkout has no `.envoy/envoy.json`. The `dispatch` command reads the file
-  `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set. A subagent's Bash can lack what the
+  `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set (`dispatch login` reads none, and
+  `dispatch proxy` none without `DISPATCH_TOKEN_BROKER=1`). A subagent's Bash can lack what the
   hook writes there (Claude Code issue 46696); its `dispatch` command, finding no
   `DISPATCH_HOST`, then takes host `claude` from the `CLAUDE_CODE_CHILD_SESSION=1` Claude Code sets
   in every Bash, and reads `CLAUDE_CONFIG_DIR` itself. With Dispatch configured,
@@ -86,7 +87,8 @@ message from Dispatch's Agents page as that person's own turn.
   or disconnected, comes again and is delivered once, for up to 72 hours. A
   `notifications.team.<name>` topic is stored and delivered like any other followed topic. The
   resume point is kept in `replay-<session id>.json` with the ledger below.
-  `packages/envoy/AGENTS.md`, "Session consumers", states the rule.
+  `packages/envoy/docs/architecture.md`, "Runtime shape" (its "Session consumers" item), states
+  the listener's side.
 - Nothing is fetched back: a message published while the session was not running, restarting or
   disconnected (NATS restarting, the connection dropped) waits in that consumer and is delivered
   when the session returns, the same way as any other, with a line saying when it was published
@@ -95,6 +97,14 @@ message from Dispatch's Agents page as that person's own turn.
   The server pings NATS every 10 seconds and drops a connection that leaves two pings unanswered,
   so a connection that stops answering without closing is left within 30 seconds and redialed,
   and the listener restarts the relay at the consumer's ack floor.
+  A connection nats.js closes for good is replaced too. nats.js gives up after a repeated
+  authorization refusal under an nkey seed or no credential, and when the session's broker token
+  cannot sign the hub's greeting (a hub that sends no nonce). The server dials a new connection
+  as it dialed at start, warning of each redial on stderr, subscribes the relay subject on it and
+  registers a new epoch, so the listener restarts the relay at the ack floor. Until then the
+  session is told once that it receives nothing, naming why, and once that it receives again. A
+  dial that fails for good (an authorization refusal under a seed) is dialed again at the next
+  heartbeat, and a `/clear` made meanwhile completes on the new connection.
   What the consumer does not hold: anything older than 72 hours, anything from before the session
   followed the topic, and anything from before it first registered; a `/clear` starts afresh, as a
   new session does. What the session was delivered, and where it read to, are kept in
@@ -103,7 +113,26 @@ message from Dispatch's Agents page as that person's own turn.
   to 20,000 messages in 72 hours); a crash between handing a message over and recording it
   can deliver it twice, never lose it. A message that fails three times is replaced by one notice
   naming it. A registration the listener can give no consumer is refused by name, and the server
-  says once on stderr that Envoy inbound is unavailable and asks again at every heartbeat.
+  says once, on stderr and as a notice to the session, that Envoy inbound is unavailable, and asks
+  again at every heartbeat. When a registration is accepted after that, it says once on stderr that
+  the session receives again, and tells the session once, as a notice, that Envoy inbound is
+  restored and that what the stream stored meanwhile arrives now. A registration the listener
+  answers with the bus-outage 503 (its message bus did not answer) is held for two minutes from
+  the first such answer, also where its retry got no answer or a 5xx that names no reason; after
+  that the server says once that the registration is not recorded for certain, since the retry
+  may have landed, and, when one is accepted, that the listener recorded one. A retry the
+  listener refuses with a reason, such as `consumer_limit`, is told at once as Envoy inbound
+  unavailable. A refusal or a lost relay subject after that notice is told once more, as Envoy
+  inbound unavailable, and the accepted registration after it says that Envoy inbound is
+  restored. An edge listener's 503 `repositories_unknown` (it could not read the repositories of
+  the session's projects) is told at once as Envoy GitHub topics withheld: the listener withholds
+  the messages of the session's GitHub topics. If the listener already held the session's
+  registration, it kept that registration and the session's consumer, so the session receives its
+  other messages; if it held none, the session receives nothing until a registration is accepted.
+  The notice and the stderr line say both. The accepted registration after it says that the
+  listener follows those topics again. A refusal or a lost relay subject after that notice is told
+  once more, as Envoy inbound unavailable. A session whose shutdown has begun registers nothing,
+  and is told neither that Envoy inbound is unavailable nor that it is restored.
 - No receipt is published. A role message reaches this session as a forward the listener stored on
   the session's own subject, which its consumer relays and whose `done` answers for it; the
   listener waits only for the stream's acknowledgement that it stored the forward. A frame's reply
@@ -118,7 +147,9 @@ message from Dispatch's Agents page as that person's own turn.
   so Dispatch learns what the session takes without waiting for a heartbeat. With no capability
   the listener refuses every targeted delivery (`session … does not advertise aside`) and
   Dispatch shows the session as taking no messages, which is the right answer for a session
-  nothing can reach.
+  nothing can reach. A plain `envoy_send` names no mode, so the listener stores it, and it
+  answers `no_receiver` with no `recipient_state`: the sender reads that the session runs but
+  takes no message into its conversation now, and never that it is `live`.
 - A targeted Dispatch delivery the shared renderer rejects is never shown to the model: when it
   names a message, the server posts `Invalid Dispatch targeted delivery frame` to
   `POST /api/v1/messages/{id}/reply` so the attempt fails visibly; otherwise it is logged and dropped.
@@ -140,7 +171,11 @@ message from Dispatch's Agents page as that person's own turn.
   decided on the standing claim: the listener grants it to the process that claim names, grants
   it once nobody renewed that claim inside its live window, and otherwise refuses it naming this
   very session, which keeps the role and the record here and asks again on the next heartbeat.
-  Only a refusal naming a different session ends the role and removes the record. Every healthy
+  Only a refusal naming a different session ends the role and removes the record. Every claim
+  that lands, the tool's, a restore's, a heartbeat's or a Legion pane's, writes each warning the
+  listener answers it with to stderr, naming the role and the session, such as that it handed over
+  no message of the replaced session and why; `envoy_role_set` also returns them beside the
+  interest row, as `warnings`. Every healthy
   registration heartbeat checks and reasserts the role if the listener lost it, and it confirms
   the role only when the lookup names this session *and* this process and reports no hand-back
   (`handed_back`); each heartbeat also renews the claims this process holds, whatever topics
@@ -176,14 +211,16 @@ message from Dispatch's Agents page as that person's own turn.
   session's Bash first), with `ENVOY_URL` and `ENVOY_TOKEN_FILE` or `ENVOY_TOKEN` over its `envoy`
   section. With Envoy off it sends nothing and exits 1, saying why. It sends through envoy-client's
   own send (`createEnvoyClient().send`), the transport every other client uses: one idempotency key
-  on every attempt, so the listener stores the message at most once; an attempt with no answer or a
-  5xx sent again under that key; and the listener's URL named only as `urlForText` names it, never
-  its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
+  on every attempt, so the listener stores the message at most once; an attempt with no answer, a
+  408 or a 5xx sent again under that key; and the listener's URL named only as `urlForText` names
+  it, never its user info. It sends the session its shell names (`ENVOY_SESSION_ID`, else
   `CLAUDE_CODE_SESSION_ID`) as `source_session`, so the listener's limit on each session's sending
   counts its messages. A send the listener stored without this machine's credential (a listener
   that asks for none takes one whose broker trade failed) prints its `Sent` line, exits 0, and
   writes one line to stderr naming why it went without the credential, and where the refusal is
-  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived is not a
+  final (a revoked sign-in) that it is, with its remedy. A send that may have arrived (an attempt
+  that got no answer, a 408 or a 5xx: the listener writes no 408, and a hop in front of it can
+  answer one after it forwarded the send) is not a
   failure: it exits 75 (`EX_TEMPFAIL`), names the key, and prints the command that sends it again
   under that key, which the listener drops as a repeat if the first copy arrived: `cd <dir> &&
   [ENVOY_CONFIG_FILE=<file>] [ENVOY_URL=…] [ENVOY_TOKEN_FILE=…] [ENVOY_SESSION_ID=…] bun <the
@@ -194,9 +231,12 @@ message from Dispatch's Agents page as that person's own turn.
   different message under the same key, and where its `ENVOY_URL` is not a plain http(s) URL (one
   with user info of any length, say) the URL is never printed; either way only the key is printed,
   with how to resend the original. A resend under a key exits 75 on any failure, since the send
-  before it may have arrived. Any other refusal, one for the sender's rate among them, prints the
-  listener's own sentence after `Claude Envoy send failed: `, exits 1 and is not sent again; so
-  does a listener that refused the connection or whose name did not resolve.
+  before it may have arrived. A send whose idempotency key another sender's message already holds
+  stored nothing: it prints `Claude Envoy send not delivered: …`, naming that message's event id,
+  and exits 1; run again without the key, it goes under a new one. Any other refusal, one for the
+  sender's rate among them, prints the listener's own sentence after `Claude Envoy send failed: `,
+  exits 1 and is not sent again; so does a listener that refused the connection or whose name did
+  not resolve.
 
 ## What a delivered line carries
 
@@ -236,7 +276,8 @@ which Claude Code sets fresh in every Bash command and moves to the new id on `/
 `DISPATCH_SESSION_ID` inherited from a parent session is ignored. A write that makes the session
 follow an ask prints `Following ask <id> on <issue>: …` once per ask, after its result; a result
 longer than 25,000 characters is written to a file the output names. It reads the envoy.json
-below on every call.
+below on every call. `dispatch login` acts as no session and reads no envoy.json, and
+`dispatch proxy` reads it only under `DISPATCH_TOKEN_BROKER=1`.
 
 Dispatch asks remain on native Dispatch.
 An Envoy delivery is one-way ingress, not a remote
@@ -255,8 +296,32 @@ codex plugin marketplace add cybermonklabs/legion
 codex plugin add codex-envoy@legion-plugins
 ```
 
+The package's `bin/dispatch` is the `dispatch` command for a terminal of your own, and its npm
+`bin`. Run there what the plugin's `dispatch` tool cannot hold: the tool ends a command after
+120 s, and the device login of a machine with no identity of its own,
+`dispatch login --device --person <address>`, waits until that person approves its code. Run it
+from the installed plugin, or from npm:
+
+```bash
+"${CODEX_HOME:-$HOME/.codex}"/plugins/cache/legion-plugins/codex-envoy/<version>/bin/dispatch login --device --person <address>
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address>
+```
+
+Where the deployment serves Dispatch sign-ins, the same command with `--scope person` (or
+`--scope none`) signs a session or tool in to Dispatch alone instead: the person approves the code
+on Dispatch's machine-login page, ticking the scopes it may hold, and the login enrolls no session
+and reads no secret:
+
+```bash
+npx --package @sjawhar/codex-envoy dispatch login --device --person <address> --scope person
+```
+
+It runs `dist/dispatch.js` with `bun`, as the plugin's server does, and follows the link npm
+makes for a package `bin` to find it.
+
 `bun scripts/build.ts --codex-out <dir>` builds it from this tree into a directory outside the
-repository: `codex/`'s manifests, hooks and README, this package's skills and a fresh `dist/`.
+repository: `codex/`'s manifests, hooks, README and `bin/dispatch`, this package's skills and a
+fresh `dist/`.
 A skill that sets `disable-model-invocation: true`, which Codex's validator refuses, is shipped
 with Codex's own form of it, an `agents/openai.yaml` whose `policy.allow_implicit_invocation`
 is `false`: the skill stays out of the model's context until a person names it as `$<skill>`.
@@ -350,7 +415,7 @@ reads, to `dispatch-writing-specs`, which the session loads by name.
 reviewer's pair, `thermonuclear-code-quality` and `thermonuclear-deep-review`, ships here too, so
 one copy of each rubric reaches both harnesses. The other root skills
 stay out of this plugin: they belong to Legion's roles (the architect, controller, oracle and retro
-skills, and the phase workers' `legion-worker` and `simplify-settled-diff`) (`skills/AGENTS.md`). A phase worker on Claude Code gets them from the
+skills, and the phase workers' `legion-worker` and `simplify-settled-diff`; the partition is in `scripts/pi-plugin-prepack.sh` at the repository root). A phase worker on Claude Code gets them from the
 generated `legion/` plugin (below). Link another root skill here only when a standalone Claude
 Code session needs it.
 
@@ -376,7 +441,9 @@ Claude Code when `legion.yaml` sets `worker_backends: {<role>: claude}` (tmux ru
   error once Claude Code ended a step without taking it or exited; a relayed frame is `done` on
   that answer.
 
-`legion/` is generated by `scripts/build.ts` from Legion's worker skills and task agents; the
+`legion/` is generated by `scripts/build.ts`: it copies the skills `@sjawhar/pi-legion` ships
+(staged by `scripts/pi-plugin-prepack.sh --stage-skills @sjawhar/pi-legion`) and turns that
+package's task agents (`packages/pi-legion/agents/`) into Claude Code's agent format. The
 release builds it with the bundle and packs it into the published package (below), and nobody
 edits it by hand. A standalone Claude Code session doesn't load it.
 
@@ -475,6 +542,25 @@ both committed files to none; the range is a field of the entry's source, not a 
 entry.
 A checkout's `package.json` version names no release either, for the same reason: the build job
 writes the release's version into the manifest it packs.
+On npm 12 or later, `claude plugin update claude-envoy@legion-plugins` fails with
+`code EALLOWREMOTE`, unless the one command allows a fetch from a URL:
+
+```sh
+npm_config_allow_remote=all claude plugin update claude-envoy@legion-plugins
+```
+
+Claude Code fetches the package by its tarball URL on the registry
+(`https://registry.npmjs.org/@sjawhar/claude-envoy/-/claude-envoy-<version>.tgz`) and not by its
+name. npm 12 sets `allow-remote` to `none` by default, and with that setting it refuses to fetch a
+package from a URL: `Could not download @sjawhar/claude-envoy@2.31.4 from the npm registry: code
+EALLOWREMOTE` (Claude Code 2.1.325, npm 12.0.1). The same package fetched by its name passes, and
+the package declares no dependencies, so the cause is in how Claude Code asks npm and no change to
+this package or to the marketplace entry removes it. The variable applies to that one command, so
+every other install on the machine keeps npm's default.
+In a shell that a Claude Code session started, `CLAUDE_CONFIG_DIR` names that session's
+configuration directory, so put `env -u CLAUDE_CONFIG_DIR` in front of the command to update the
+default `~/.claude`. Each scope that holds the plugin (user, project) updates on its own, so run
+the update in each one.
 Each release publishes its own changelog entries into its GitHub release body, rendered from the
 fragments its own commits added, and each fragment stays under `.changes/unreleased/`.
 `CHANGELOG.md` is the history before that and stops where the fragments begin.
@@ -485,7 +571,9 @@ Nothing has to be enabled on the machine: the plugin carries a Claude Code mod (
 loaded by the `modules` key of `hooks/hooks.json`), and the mod and this server meet on a Unix
 socket of the session's own (`hooks/mod-protocol.ts`, `src/mod-link.ts`). Claude Code 2.1.310 or
 newer runs the mod; below that it never connects, and a terminal session advertises no delivery
-mode, so Dispatch refuses a message to it rather than reporting it delivered.
+mode, so Dispatch refuses a message to it rather than reporting it delivered. The same holds for
+a session started with `--bare` or `--safe-mode`, and one whose settings turn hooks or mods off
+(`disableAllHooks`, or `allowManagedModsOnly` or `allowManagedHooksOnly` in managed settings).
 
 That socket is `claude-envoy/ce-<hash of the session id>.sock` under `XDG_RUNTIME_DIR`, and
 under Claude Code's own configuration directory — `CLAUDE_CONFIG_DIR`, else `$HOME/.claude` —
@@ -519,17 +607,31 @@ token beside it, and its token only beside its own server. An `envoy` section in
 file is not read, which the channel server's notice says, and a checkout's file that is not valid
 refuses Dispatch alone, only while `DISPATCH_URL` is unset. The chosen file's `dispatch` section
 (`enabled`, `serverUrl`, `token`) and `envoy` section (`enabled`, `url`, `natsUrls`, `token`,
-`natsSeed`, `natsAuth`) are resolved each on its own; `enabled: false` turns one off, a missing file
-contributes nothing (each section is then on only when its variables name it), and a `token` or
-`natsSeed` starting with `!` is a command whose trimmed output is the value. `DISPATCH_URL`,
-`DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`, `ENVOY_TOKEN_FILE`,
-`ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED` and `NATS_AUTH` each override their own
-field; a file's token or seed goes with a variable's server only when it is the file's own. With
+`natsSeed`, `natsAuth`, `inbound`) are resolved each on its own; `enabled: false` turns one off, a
+missing file contributes nothing (each section is then on only when its variables name it), and a
+`token` or `natsSeed` starting with `!` is a command whose trimmed output is the value.
+`DISPATCH_URL`, `DISPATCH_TOKEN_FILE`, `DISPATCH_TOKEN`, `ENVOY_URL`, `ENVOY_NATS_URL`,
+`ENVOY_TOKEN_FILE`, `ENVOY_TOKEN`, `NATS_NKEY_SEED_FILE`, `NATS_NKEY_SEED`, `NATS_AUTH` and
+`ENVOY_INBOUND` each override their own field; a file's token or seed goes with a variable's server
+only when it is the file's own. With
 `NATS_AUTH=broker` and no seed the NATS connection presents the session's own broker token, which
 a hub's NATS auth service admits to that session's subjects alone, and a `/clear` moves it to the
-new id's token before the new id's relay subject is subscribed. The `open-asks` hook
+new id's token before the new id's relay subject is subscribed. With `ENVOY_INBOUND=listener` (or
+`"inbound": "listener"`), a Claude Code or Codex session takes its inbound messages through the
+listener's relay socket, `<ENVOY_URL>/v1/sessions/<id>/relay`, over HTTPS alone, with the session's
+own broker token, rather than over NATS, and a `/clear` or `/new` opens the socket again for the
+new id; it is refused beside `ENVOY_NATS_URL` or `envoy.natsUrls`, naming both, with a bearer for
+the listener, with no broker route, and for a process that names no session. With the setting, a
+listener at a plain http address of another machine turns Envoy off as a whole, its tools
+included, a NATS server named or not (the token would cross the network unencrypted; a conflict
+with a NATS server is named first; this machine's own listener may be plain http, and a session
+not set to `listener` keeps plain http). The
+socket carries no agent stream, so neither live view
+takes its control subject and the Agents page shows nothing of the session's turns, which the
+start notice says. The `open-asks` hook
 hands the file on to the session's Bash as `ENVOY_CONFIG_FILE` beside `DISPATCH_HOST=claude`, and
-the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set; a
+the `dispatch` command reads the file `ENVOY_CONFIG_FILE` names whenever `DISPATCH_HOST` is set
+(but for `dispatch login`, and for `dispatch proxy` without `DISPATCH_TOKEN_BROKER=1`); a
 Bash with neither, as a subagent's can be, has `CLAUDE_CODE_CHILD_SESSION=1` and takes this plugin's
 rule. With Envoy off the channel server lists no tool, refuses every call with
 `Envoy is off for this session: <why>` (the section's notice or error), subscribes nothing, and
@@ -665,17 +767,23 @@ bash packages/claude-envoy/scripts/smoke-session-title.sh
 bun run --cwd packages/claude-envoy lint
 bun run --cwd packages/claude-envoy typecheck
 bun run --cwd packages/claude-envoy test
+(cd packages/claude-envoy && bun test --timeout=60000 tests/mod.test.ts)   # one file
 bun packages/claude-envoy/scripts/build.ts --out "$(mktemp -d)"
 ```
 
 `bun run --cwd packages/claude-envoy verify-build "$(mktemp -d)/built.tar"` builds the plugin
 twice and compares the two builds, which is what the release's build job runs; nothing in a
 checkout holds a built copy to compare against.
+`bun packages/claude-envoy/scripts/build.ts --codex-out <dir>` builds the Codex plugin ("Codex
+CLI" above).
+The real-binary tests skip unless `LEGION_TEST_CLAUDE` names a Claude Code binary.
 `tests/answers-claude.test.ts` runs the real Claude Code, the release `.claude-code-pin` at the
 repository root pins, against a stand-in Messages endpoint and Dispatch: the list reaches the model
-at startup, on `--resume`, after `/compact` and in a subagent. It skips without `LEGION_TEST_CLAUDE`
-naming the binary, except on GitHub Actions, where `.github/actions/install-claude-code` installs
-the pin. Locally:
+at startup, on `--resume`, after `/compact` and in a subagent. It skips without `LEGION_TEST_CLAUDE`,
+except on GitHub Actions, where `.github/actions/install-claude-code` installs the pin.
+`tests/envoy-channel-stall.test.ts` runs a real NATS server and Envoy listener, which it builds
+with Go, so it runs only with `LEGION_E2E_ENVOY_STACK=1` and `go` on `PATH`.
+Locally:
 
 ```bash
 mkdir -p "$TMPDIR/claude-code" && bun add --cwd "$TMPDIR/claude-code" --exact --no-save "@anthropic-ai/claude-code@$(<.claude-code-pin)"

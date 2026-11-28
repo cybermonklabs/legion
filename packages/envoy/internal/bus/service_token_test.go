@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -14,8 +15,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/sjawhar/envoy/internal/broker/natscallout"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/config"
+	"github.com/sjawhar/envoy/internal/cipher/natscallout"
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -51,7 +53,7 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	}
 	var mu sync.Mutex
 	var presented []string
-	services, err := natscallout.ParseServices("listener/example-hub/*=" + serviceTokenAccount)
+	services, err := config.ParseNATSServices("listener/example-hub/*=" + serviceTokenAccount)
 	require.NoError(t, err)
 	service, err := natscallout.Start(t.Context(), natscallout.Settings{
 		URLs: []string{url}, SeedFile: write("service.seed", keys.ServiceSeed),
@@ -79,8 +81,8 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 	})
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
-	ready, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
+	// No span of its own: the service can report ready late on a loaded machine with nothing wrong.
+	ready := testwait.Context(t)
 	require.NoError(t, service.Ready(ready))
 	count := func(token string) int {
 		mu.Lock()
@@ -107,38 +109,114 @@ func TestAServiceTokenClientReconnectsBeforeItsTokenLapses(t *testing.T) {
 
 	later := unsignedToken(time.Now().Add(50 * time.Minute))
 	require.NoError(t, os.WriteFile(tokenFile, []byte(later), 0o600))
-	testwait.WithinPolling(t, 10*time.Second, 50*time.Millisecond, "the probe and the reconnect with the later token", func() bool {
-		return count(later) == 2 && nc.Stats().Reconnects == 1
+	testwait.Until(t, "the probe and the reconnect with the later token", func() (string, bool) {
+		presented, reconnects := count(later), nc.Stats().Reconnects
+		return fmt.Sprintf("the later token presented %d time(s), %d reconnect(s)", presented, reconnects), presented == 2 && reconnects == 1
 	})
-	testwait.Eventually(t, "the connection back up", nc.IsConnected)
+	testwait.Until(t, "the connection to be back up", func() (fmt.Stringer, bool) { return nc.Status(), nc.IsConnected() })
 	require.Never(t, func() bool { return count(later) > 2 || nc.Stats().Reconnects > 1 }, 3*time.Second, 100*time.Millisecond, "the client reconnected more than once")
 	require.Equal(t, 1, count(first))
 }
 
-// natscredGoroutines is how many goroutines run natscred's code, a keeper or the watcher of its
-// connection's close, and how many of those are a service's keeper (serviceCredential.Keep).
-func natscredGoroutines() (all, keepers int) {
-	for _, trace := range goroutinetest.Traces() {
-		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
-			all++
-		}
-		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
-			keepers++
-		}
-	}
-	return all, keepers
+// natscredDump is what one dump of every goroutine says of natscred's goroutines
+// (natscredGoroutines).
+type natscredDump struct {
+	// all is how many goroutines run natscred's code, a keeper or the watcher of its connection's
+	// close, and keepers how many of those are a service's keeper (serviceCredential.Keep).
+	all, keepers int
+	// dispatchers is how many goroutines run a nats.go connection's callback dispatcher
+	// (asyncCBDispatcher), which runs a connection's ClosedCB.
+	dispatchers int
+	// stuck is whether some natscred goroutine runs and nothing the dump shows is on its way to end
+	// any of them: every natscred goroutine is parked, and every dispatcher is idle, parked waiting
+	// for a callback (sync.Cond.Wait).
+	stuck bool
 }
 
-// requireNoNatscredGoroutine waits up to five seconds for no natscred goroutine to run, and fails
-// naming how many still do, and how many of those are service keepers, when.
+// natscredGoroutines reads one dump of every goroutine (natscredDump).
+//
+// Why a correct tree is never stuck once its connection's Close has returned: a keeper ends only
+// when its context ends, and only its watcher (natscred's untilClosed, woken by the connection's
+// CLOSED event) or a callback (a ClosedCB, on the dispatcher) can end that context. nats.go hands
+// the CLOSED event to the watcher, and queues a callback for the dispatcher, before Close returns,
+// and readies the goroutine it hands one to in that step; the runtime readies every goroutine
+// waiting on a context's Done channel when the context ends, and every goroutine waiting on a
+// channel when it is closed. So until the keeper has gone, one of the keeper, its watcher and the
+// dispatchers is runnable, running or waiting on a lock. A keeper that ends only at a timer of its
+// own (its token's renewal), however it waits for that timer, is stuck as soon as its connection's
+// close has been handed out.
+func natscredGoroutines() natscredDump {
+	dump := natscredDump{stuck: true}
+	for _, trace := range goroutinetest.Traces() {
+		state := traceState(trace)
+		// The runtime prints the package path's last element with its dots escaped,
+		// github.com/nats-io/nats%2ego, so the match is on the method alone.
+		dispatcher := strings.Contains(trace, ".(*asyncCallbacksHandler).asyncCBDispatcher(")
+		if dispatcher {
+			dump.dispatchers++
+		}
+		if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.") {
+			// A goroutine running natscred's code is judged by that rule alone, even on a
+			// dispatcher: a keeper started there without its go waits in its own select, and the
+			// dispatcher's rule would keep it from ever being stuck.
+			dump.all++
+			dump.stuck = dump.stuck && parked(state)
+			if strings.Contains(trace, "github.com/sjawhar/envoy/natscred.(*serviceCredential).Keep(") {
+				dump.keepers++
+			}
+			continue
+		}
+		if dispatcher {
+			dump.stuck = dump.stuck && state == "sync.Cond.Wait"
+		}
+	}
+	dump.stuck = dump.stuck && dump.all > 0
+	return dump
+}
+
+// parked reports whether a goroutine in state waits on an event no running code is about to
+// bring: a select, a channel's receive or send, a sleep, a condition or a wait group, whatever
+// timer it waits with. A goroutine waiting on a lock (sync.Mutex, sync.RWMutex, semacquire) is not
+// parked, since the lock's holder lets it go: a correct keeper takes its connection's lock on its
+// way out (RemoveStatusListener), which nats.go's own goroutines also take. Neither is one running,
+// runnable, preempted, in a system call or in IO wait, which the kernel ends.
+func parked(state string) bool {
+	switch state {
+	case "select", "select (no cases)", "chan receive", "chan send", "chan receive (nil chan)", "chan send (nil chan)",
+		"sleep", "sync.Cond.Wait", "sync.WaitGroup.Wait":
+		return true
+	}
+	return false
+}
+
+// traceState is the state a goroutine trace's header line names, "goroutine <id> [<state>]:",
+// without how long the goroutine has waited in it (", 2 minutes").
+func traceState(trace string) string {
+	header, _, _ := strings.Cut(trace, "\n")
+	_, state, _ := strings.Cut(header, "[")
+	state, _, _ = strings.Cut(state, "]")
+	state, _, _ = strings.Cut(state, ",")
+	return state
+}
+
+// requireNoNatscredGoroutine waits for no natscred goroutine to run, and fails, naming how many
+// still do and how many of those are service keepers, when, as soon as the ones left are stuck
+// (natscredGoroutines). It ends on one of those two facts, never on a span: a keeper left beside
+// its closed connection ends by itself at its token's renewal, about 40 minutes on with this
+// file's 50-minute tokens (natscred.ServiceRenewBefore is 10), so a wait that ended only on the
+// count would pass that keeper under any deadline past that, and a span short of it would be a
+// guess at how slow a keeper's exit may be. The test binary's deadline (testwait.UntilPolling) is
+// only a hang guard, for a natscred goroutine that never parks and never ends: one that runs for
+// ever, or waits on a lock its holder never lets go.
 func requireNoNatscredGoroutine(t *testing.T, when string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for all, keepers := natscredGoroutines(); all != 0; all, keepers = natscredGoroutines() {
-		if time.Now().After(deadline) {
-			t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, want none", all, keepers, when)
-		}
-		time.Sleep(50 * time.Millisecond)
+	var last natscredDump
+	testwait.UntilPolling(t, 50*time.Millisecond, "no natscred goroutine to run "+when, func() (string, bool) {
+		last = natscredGoroutines()
+		return fmt.Sprintf("%+v", last), last.all == 0 || last.stuck
+	})
+	if last.all != 0 {
+		t.Fatalf("%d natscred goroutines, %d of them service keepers, still run %s, each parked where no running code can wake it, want none", last.all, last.keepers, when)
 	}
 }
 
@@ -149,7 +227,9 @@ func requireNoNatscredGoroutine(t *testing.T, when string) {
 // connection presenting a service token and sees its keeper, so the count can see one, then runs
 // the client of TestAClosedConnectionIsReplacedOnceAndCloseLeavesNoneOpen on that token until a
 // replacement is discarded and the client closed, and requires every natscred goroutine gone. The
-// control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left.
+// control is the keeper stopped by ClosedCB alone, as at ac2334299e: one keeper is left, parked
+// until its token's renewal, and the row fails on it as soon as the client's Close has returned
+// (requireNoNatscredGoroutine), not when a span runs out.
 func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 	unsetNkeyEnvironment(t)
 	requireNoNatscredGoroutine(t, "before the test, left by an earlier one")
@@ -164,9 +244,14 @@ func TestADiscardedReplacementConnectionLeavesNoKeeperRunning(t *testing.T) {
 	_, url := testnats.Start(t)
 	nc, err := bus.Dial("keeper-count", []string{url}, lookup)
 	require.NoError(t, err)
-	testwait.WithinPolling(t, 5*time.Second, 50*time.Millisecond, "the live connection's keeper", func() bool {
-		_, keepers := natscredGoroutines()
-		return keepers == 1
+	// The control of the stuck rule: with the connection live, its keeper and the keeper's watcher
+	// wait for the token's renewal and the connection's close, and its callback dispatcher waits for a
+	// callback, which is the stuck state the row fails on once the connection has closed. So the dump
+	// must show the keeper, a dispatcher and stuck, or the rule cannot fire with this nats.go and this
+	// runtime (a dispatcher name or a wait state it does not know), and every row it judges would pass.
+	testwait.UntilPolling(t, 50*time.Millisecond, "the live connection's keeper, its callback dispatcher and the stuck state", func() (string, bool) {
+		dump := natscredGoroutines()
+		return fmt.Sprintf("%+v", dump), dump.keepers == 1 && dump.dispatchers >= 1 && dump.stuck
 	})
 	nc.Close()
 	requireNoNatscredGoroutine(t, "after that connection closed")

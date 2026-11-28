@@ -1,0 +1,78 @@
+{
+  "id": 1506,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 11,
+  "type": "ask.answered",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-17T07:00:52.130053Z",
+  "payload": {
+    "anchor": null,
+    "answer": {
+      "at": "2026-10-17T07:00:52.141822927Z",
+      "id": "b5",
+      "selected": [],
+      "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+      "user": "alice@example.com"
+    },
+    "artifact_id": null,
+    "author": {
+      "id": "01a13dca-e979-7264-af32-f654ef57a6f5",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "host": "lor",
+        "machine": "lorem ipsum d",
+        "pane": "lo",
+        "session_title": "lorem ipsum dolor sit ",
+        "tmux": "lorem i"
+      }
+    },
+    "block_artifact": {
+      "id": "159f127b-9c2c-471b-a039-40c5c55e3247",
+      "primary": true,
+      "slug": "lore"
+    },
+    "block_id": "cf58bc4c-071c-48ba-a957-bc621416b8f4",
+    "created_at": "2026-10-17T06:51:56.491532Z",
+    "edited_at": null,
+    "id": "1332e96f-cd37-4d4b-9acf-fe7200335499",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 1492,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor ",
+        "id": "b4",
+        "label": "lorem ipsum dol"
+      }
+    ],
+    "previous_answer": {
+      "at": "2026-10-17T07:00:22.566180407Z",
+      "selected": [],
+      "text": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor ",
+      "user": "alice@example.com"
+    },
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+    "referenced_by_count": 3,
+    "revision": 1,
+    "state": "answered",
+    "urgency": "high"
+  }
+}

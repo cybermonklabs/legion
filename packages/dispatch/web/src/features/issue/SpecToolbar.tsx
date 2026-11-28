@@ -54,6 +54,8 @@ export function SpecToolbar({
         {toolbar.versions.map((item) => (
           <option key={item.number} value={item.number}>
             Version {item.number}
+            {/* A version's summary, as its writer gave it: the reading list's
+                `spec-version-summary`. */}
             {item.named && item.summary !== null ? ` — ${item.summary}` : ""}
           </option>
         ))}

@@ -13,6 +13,7 @@ import (
 // reads, in quotes and footnote definitions included, is the list-spacing-in-containers and
 // footnote-placement corpus documents', which the fixtures compare with the engine's reading.
 func TestBrowserListSpacingRefusesWhatItCannotRead(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// refused holds a shape only the browser editor and this parser read alike; readable, when
@@ -112,6 +113,7 @@ func TestBrowserListSpacingRefusesWhatItCannotRead(t *testing.T) {
 // quoted-item-typed-block-code-ending-in-a-blank-line, which lock the tree that parser reads;
 // this test names the spread those documents turn on.
 func TestQuotedItemsAreTightWhereTheirTypedBlocksEndInBlankLines(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		markdown string
@@ -148,6 +150,7 @@ func TestQuotedItemsAreTightWhereTheirTypedBlocksEndInBlankLines(t *testing.T) {
 // list, and an exit at the start of a line needs two. Each document below carries the spread that
 // parser was measured reading for it, and the list under test is each document's first.
 func TestQuotedListsAreSpreadWhereTheBrowserEditorsExitLands(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		markdown string
@@ -254,6 +257,7 @@ func TestQuotedListsAreSpreadWhereTheBrowserEditorsExitLands(t *testing.T) {
 // typed block with a list item around it, whose lines and the blank lines next to it that parser
 // counts otherwise.
 func TestCorpusErrorsOfItemSpreadReadOtherwiseAreRefused(t *testing.T) {
+	t.Parallel()
 	for name, refusal := range map[string]string{
 		"ordered-item-callout-holding-a-definition-opening-on-a-later-line":                       typedDefinitionInItem,
 		"item-callout-holding-a-definition-opening-on-a-later-line":                               typedDefinitionInItem,
@@ -296,6 +300,7 @@ func TestCorpusErrorsOfItemSpreadReadOtherwiseAreRefused(t *testing.T) {
 // reason: a reader that lifted it for another reason would still pass. The spread branch stands for
 // the reader that reads one of them instead.
 func TestAListInADefinitionInATypedBlockIsReadSpreadAsTheBrowserReadsItOrRefused(t *testing.T) {
+	t.Parallel()
 	for _, markdown := range []string{
 		":::callout{}\n[^f]: - a\n\n    - b\n:::\n\nText[^f].\n",
 		":::callout{}\n[^f]:\n    - x\n      \n      note\n:::\n\nText[^f].\n",

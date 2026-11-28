@@ -15,14 +15,15 @@ import {
 import { useDialog } from "../shell/useDialog";
 
 /**
- * The page's own "are you sure", for a table action that closes an issue: the same small modal
- * `EpicNameDialog` uses, so it traps focus, closes on Escape and gives focus back to the
- * control the reader came from. Never `window.confirm`, which a browser may suppress and which
- * cannot name what is about to happen in the page's own words.
+ * The page's own "are you sure", for a table action that closes an issue or that first moves an
+ * epic into work: the same small modal `EpicNameDialog` uses, so it traps focus, closes on
+ * Escape and gives focus back to the control the reader came from. Never `window.confirm`, which
+ * a browser may suppress and which cannot name what is about to happen in the page's own words.
  */
 export function ConfirmDialog({
   title,
   body,
+  changes,
   confirmLabel,
   onCancel,
   onConfirm,
@@ -31,6 +32,8 @@ export function ConfirmDialog({
   title: string;
   /** What the action will do, in full: what it touches and what it closes. */
   body: ReactNode;
+  /** Each change the action makes before the one the reader asked for, one line each. */
+  changes?: readonly string[];
   confirmLabel: string;
   onCancel: () => void;
   onConfirm: () => void;
@@ -54,6 +57,16 @@ export function ConfirmDialog({
         >
           <h2 className={`text-base font-semibold ${textPrimaryOnSurface}`}>{title}</h2>
           <p className={`text-sm ${textSecondaryOnSurface}`}>{body}</p>
+          {changes === undefined ? null : (
+            <ul
+              aria-label="Changes"
+              className={`list-disc space-y-1 pl-5 text-sm ${textPrimaryOnSurface}`}
+            >
+              {changes.map((change) => (
+                <li key={change}>{change}</li>
+              ))}
+            </ul>
+          )}
           <div className="flex items-center justify-end gap-2">
             <button
               className={`min-h-11 rounded-lg border px-3 py-2 text-sm font-medium ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`}

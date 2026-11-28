@@ -1,0 +1,11 @@
+{
+  "answers": [
+    {
+      "answer": "state",
+      "addKeyPaths": ["issues.*.pairNote"]
+    }
+  ],
+  "routes": [],
+  "answerRows": [],
+  "enumeratedRows": []
+}

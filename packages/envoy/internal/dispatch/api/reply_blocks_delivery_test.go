@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -59,11 +60,12 @@ func requireItemIndexed(t *testing.T, database *store.Store, step, query, itemID
 // and an older build's write leave it, and it answers as it does for any other comment: the reply
 // carries the block, and the comment is indexed by the same transaction.
 func TestACommentDeliveryReplyNamesABlockOfAnOwedComment(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)
 	defer listener.Close()
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "A callback reply to an owed comment", "before")
 	body := "Can this ship?\n\nOr should it wait?"
 	mentioned := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
@@ -98,6 +100,7 @@ func TestACommentDeliveryReplyNamesABlockOfAnOwedComment(t *testing.T) {
 // a message whose block state is owed and is answered as any other reply is: it carries the
 // block, and the message is indexed by the same transaction.
 func TestAMessageDeliveryReplyNamesABlockOfAnOwedMessage(t *testing.T) {
+	t.Parallel()
 	live := true
 	sent := []map[string]any{}
 	listener := sessionListener(t, &live, &sent)

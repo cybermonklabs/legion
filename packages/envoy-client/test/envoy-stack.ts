@@ -1,5 +1,6 @@
 import { closeSync, mkdirSync, openSync, readFileSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import type { Subprocess } from "bun";
 import { z } from "zod";
@@ -37,17 +38,18 @@ export interface EnvoyStack {
  * Two calls reserve two directories, which is what a file that starts two stacks needs.
  *
  * The call cannot live in this module's body: `temporaryDirectory` registers the `beforeAll`
- * that makes the directory and the `afterAll` that removes it where it is called, and Bun
- * evaluates an imported module once per process, so a hook here would take the scope of
- * whichever test file imported this one first.
+ * that makes the directory where it is called, and Bun evaluates an imported module once per
+ * process, so a hook here would take the scope of whichever test file imported this one first.
  *
- * Module scope rather than the `describe` body that starts the stack, because Bun runs a
- * scope's `afterAll` hooks in the order they were registered: a directory reserved beside the
- * stack would be removed before the `afterAll` that stops the processes writing into it, where
- * a file's own `afterAll` runs after every `describe` of the file has finished.
+ * The `afterAll` hands the directory to a removal in a process of its own and does not wait for it
+ * (`removeInBackground`): the directory holds the stack's built binaries, and on a slow disk their
+ * removal can outlast Bun's default hook limit of 5 s, which Bun reports as a hook that timed out
+ * and a failed file. So no removal of it runs under a time limit of the runner. The hook is
+ * registered at module scope so that it runs after every `describe` of the file has stopped the
+ * processes writing into the directory.
  */
 export function useEnvoyStackDirectory(): string {
-  return temporaryDirectory("envoy-stack");
+  return temporaryDirectory("envoy-stack", { removeInBackground: true });
 }
 
 /**
@@ -67,8 +69,8 @@ export type PortChosen = (server: StackServer, port: number) => Promise<void>;
 export interface EnvoyStackOptions {
   /**
    * The directory the stack works in, which the caller reserved with
-   * {@link useEnvoyStackDirectory} and the fixture removes again. It exists and is empty when
-   * `startEnvoyStack` is called, and one stack has it to itself.
+   * {@link useEnvoyStackDirectory}, whose `afterAll` hands it to a removal of its own. It exists
+   * and is empty when `startEnvoyStack` is called, and one stack has it to itself.
    */
   readonly work: string;
   /**
@@ -86,7 +88,8 @@ export interface EnvoyStackOptions {
 export const ENVOY_MODULE = path.resolve(import.meta.dir, "../../envoy");
 const READY_TIMEOUT_MS = 60_000;
 const TAIL_LINES = 10;
-const STOP_GRACE_MS = 10_000;
+/** How long `stopProcess` gives a process to stop on its signal before it kills it. */
+export const STOP_GRACE_MS = 10_000;
 
 /** What a rig builds, and how it names itself when the build cannot run. */
 export interface GoBuild {
@@ -207,26 +210,38 @@ export interface ReadyBudget {
 
 const ENVOY_READY: ReadyBudget = { timeoutMs: READY_TIMEOUT_MS, tailLines: TAIL_LINES };
 
-/** Polls `ready` until it holds, throwing when `child` exits first or the budget passes. */
+/**
+ * Polls `ready` until it holds, throwing when `child` exits first or the budget passes. The budget
+ * bounds each check too: `ready` is handed a signal that aborts when the budget passes, for a
+ * check that waits on a server's answer, and a check still pending then counts as not ready, so a
+ * server that takes a check and never answers it fails the wait by name rather than holding it.
+ * A budget of 0 or less, a caller's deadline spent before the wait began, ends the wait at once:
+ * one check, or two about 100 ms apart when the first answers false before the spent signal fires.
+ */
 export async function awaitReady(
   what: string,
   child: Subprocess,
   log: string,
   budget: ReadyBudget,
-  ready: () => Promise<boolean>
+  ready: (signal: AbortSignal) => Promise<boolean>
 ): Promise<void> {
-  const deadline = Date.now() + budget.timeoutMs;
+  const timeoutMs = Math.max(0, budget.timeoutMs);
+  const spent = AbortSignal.timeout(timeoutMs);
+  const passed = Promise.withResolvers<false>();
+  spent.addEventListener("abort", () => passed.resolve(false), { once: true });
   for (;;) {
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `${what} exited (${child.exitCode ?? child.signalCode}): ${tail(log, budget.tailLines)}`
       );
     }
-    if (await ready().catch(() => false)) return;
-    if (Date.now() > deadline) {
-      throw new Error(
-        `${what} was not ready within ${budget.timeoutMs} ms: ${tail(log, budget.tailLines)}`
-      );
+    if (await Promise.race([ready(spent).catch(() => false), passed.promise])) return;
+    if (spent.aborted) {
+      const why =
+        timeoutMs > 0
+          ? `within ${timeoutMs} ms`
+          : `by its deadline, which had passed ${-budget.timeoutMs} ms before its wait began`;
+      throw new Error(`${what} was not ready ${why}: ${tail(log, budget.tailLines)}`);
     }
     await Bun.sleep(100);
   }
@@ -239,9 +254,16 @@ const JszSchema = z.object({
     .optional(),
 });
 
-/** `url`'s JSON answer read with `schema`; undefined when it answers no 2xx or another shape. */
-async function getJson<T>(url: string, schema: z.ZodType<T>): Promise<T | undefined> {
-  const response = await fetch(url, { signal: AbortSignal.timeout(2_000) });
+/** `url`'s JSON answer read with `schema`; undefined when it answers no 2xx or another shape. The
+ *  read ends at 2 s, or when `signal` aborts. */
+async function getJson<T>(
+  url: string,
+  schema: z.ZodType<T>,
+  signal: AbortSignal
+): Promise<T | undefined> {
+  const response = await fetch(url, {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(2_000)]),
+  });
   if (!response.ok) return undefined;
   const parsed = schema.safeParse(await response.json());
   return parsed.success ? parsed.data : undefined;
@@ -270,7 +292,7 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
  * shortens the session windows the session states are judged by.
  *
  * The stack works in `options.work`, which the caller reserved with
- * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it when the file
+ * {@link useEnvoyStackDirectory}: `stop` leaves it, and the fixture removes it once the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  *
  * No port is free between its choice and its server's bind. natsd takes no socket, so it binds
@@ -303,14 +325,16 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
     const natsArgs = ["-p", "-1", "-m", "-1", "-store_dir", path.join(work, "nats-store")];
     const natsd = startServer({
       command: [path.join(bin, "natsd"), ...natsArgs],
-      env: { PATH, HOME: natsHome },
+      env: { ...bunCacheOff, PATH, HOME: natsHome },
       log: natsLog,
     });
     processes.push(natsd);
-    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async () => {
+    await awaitReady("natsd", natsd, natsLog, ENVOY_READY, async (signal) => {
       const reported = natsdAddresses(natsLog);
       if (reported === undefined) return false;
-      return (await getJson(`http://${reported.monitor}/healthz`, StatusSchema))?.status === "ok";
+      return (
+        (await getJson(`http://${reported.monitor}/healthz`, StatusSchema, signal))?.status === "ok"
+      );
     });
     // Ready means natsd reported both addresses, and its log only grows.
     const addresses = natsdAddresses(natsLog);
@@ -347,15 +371,16 @@ export async function startEnvoyStack(options: EnvoyStackOptions): Promise<Envoy
       listener,
       listenerLog,
       ENVOY_READY,
-      async () => (await getJson(`${envoyUrl}/healthz`, StatusSchema))?.status === "healthy"
+      async (signal) =>
+        (await getJson(`${envoyUrl}/healthz`, StatusSchema, signal))?.status === "healthy"
     );
     await awaitReady(
       "natsd's ENVOY_NOTIFICATIONS stream",
       natsd,
       natsLog,
       ENVOY_READY,
-      async () => {
-        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema);
+      async (signal) => {
+        const jsz = await getJson(`${monitor}/jsz?streams=true`, JszSchema, signal);
         return (jsz?.account_details ?? []).some((account) =>
           (account.stream_detail ?? []).some((stream) => stream.name === "ENVOY_NOTIFICATIONS")
         );

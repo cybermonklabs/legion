@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  An edge listener now closes its relay socket `4403` once the broker answers the token's person
+  held, and `1013` once whether that person may still act cannot be read (a not-held answer past
+  its deadline). The relay client reopens after each as it already does for those codes: after 1 s
+  doubling to a minute after `4403`, and after 5 s doubling to a minute after `1013`.
+time: 2026-11-25T20:48:38Z
+custom:
+    Issue: pr5557

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 )
 
 // checkoutDelay is how long the jj the cases below start sleeps before a checkout, and
@@ -33,7 +35,7 @@ func slowCheckoutTools(t *testing.T, delay time.Duration) map[string]string {
 	tools := testTools(t)
 	wrapper := filepath.Join(t.TempDir(), "jj")
 	script := "#!/bin/sh\ncase \" $* \" in *' sparse reset '*) sleep " + strconv.FormatFloat(delay.Seconds(), 'f', -1, 64) + " ;; esac\nexec '" + tools["jj"] + "' \"$@\"\n"
-	if err := os.WriteFile(wrapper, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(wrapper, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	tools["jj"] = wrapper
@@ -46,7 +48,7 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 	t.Helper()
 	run := newLocalRunner(t)
 	run.timeout = budget
-	run.runner = NewRunner(budget, slowCheckoutTools(t, delay))
+	run.tools = slowCheckoutTools(t, delay)
 	return run
 }
 
@@ -54,12 +56,14 @@ func slowCheckoutRunner(t *testing.T, delay, budget time.Duration) *recordingRun
 // writes the issue's whole working copy, is given CheckoutTimeout, and a command carrying no
 // bound of its own — `jj workspace update-stale`, which only a workspace that already exists runs,
 // among them — the runner's slow-command budget. The shared clone's size-following steps share one
-// CloneTimeout and are TestTheSharedClonesCloneIsBoundedByCloneTimeout's, so this case passes
-// over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
+// CloneTimeout (TestProvisionClonesThroughTemporarySiblingWithCredentialReset on the tmux runtime,
+// TestTheFillGivesTheCachesVerificationAndTheDeltaTheirOwnBounds in an issue pod), so this case
+// passes over them (isSharedCloneStep). A fresh workspace and one provisioned a second time are read
 // together, so both paths through Provision are covered.
 func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
+	t.Parallel()
 	run := newLocalRunner(t)
-	req := feedRequest(t, run, provisionRequest(t))
+	req := provisionRequest(t)
 	checkouts, stale := 0, 0
 	for _, round := range []string{"a fresh workspace", "a workspace that already exists"} {
 		before := len(run.Calls())
@@ -67,9 +71,8 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 			t.Fatalf("provision %s: %v", round, err)
 		}
 		for _, call := range run.Calls()[before:] {
-			// The shared clone's own size-following steps carry what remains of CloneTimeout, and
-			// are TestTheSharedClonesCloneIsBoundedByCloneTimeout's: they are recognised here the
-			// way that case recognises them, and left to it.
+			// The shared clone's own size-following steps carry what remains of CloneTimeout: they
+			// are recognised here by isSharedCloneStep, and left to the tests named above.
 			if isSharedCloneStep(call.Argv) {
 				continue
 			}
@@ -102,6 +105,7 @@ func TestProvisionBoundsEachCommandByItsOwnBudget(t *testing.T) {
 // holds the whole tree: the checkout is bounded by CheckoutTimeout, an hour, and not by that
 // budget.
 func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
+	t.Parallel()
 	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
 	pushRemoteBranch(t, run.remote, "main", "history.txt")
 	working, err := Provision(context.Background(), run, provisionRequest(t))
@@ -124,6 +128,7 @@ func TestProvisionChecksOutPastTheRunnersBudget(t *testing.T) {
 // is bounded by that bound and by no other, so a request that gives it one second (CheckoutBound)
 // ends the checkout there, inside the five seconds the runner's own budget would have allowed it.
 func TestProvisionFailsWhenTheCheckoutOutlivesItsBound(t *testing.T) {
+	t.Parallel()
 	run := slowCheckoutRunner(t, checkoutDelay, checkoutBudget)
 	req := provisionRequest(t)
 	req.CheckoutBound = time.Second

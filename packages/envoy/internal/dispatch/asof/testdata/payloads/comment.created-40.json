@@ -1,0 +1,53 @@
+{
+  "id": 40,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 23,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a14374-cfa9-7543-a55a-bad410b85d58",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor si",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+      "session_title": "lorem ipsum dolor sit amet"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-10-16T15:43:39.196348Z",
+  "payload": {
+    "id": "eed013f9-fb52-49d5-bce9-6aa0b223ee47",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a14374-cfa9-7543-a55a-bad410b85d58",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor si",
+        "host": "lor",
+        "machine": "lorem ipsum dolor si",
+        "session_title": "lorem ipsum dolor sit amet"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-16T15:43:39.20316Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "suppress_route": false,
+    "suppressed_authors": null
+  }
+}

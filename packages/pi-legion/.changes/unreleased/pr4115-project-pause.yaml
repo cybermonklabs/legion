@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  The controller's `legion` tool has `pause` (with a `reason`) and `resume`, which pause and resume
+  the controller's project. `read_state`'s summary prints the pause while the project is paused and
+  the last pause, with who ended it and when, while it runs. It also prints `wakes waiting <n>`,
+  how many wakes the daemon's pacing holds until their turn, and when the next one is due.
+  `read_release_records` counts a wake that a pause held as `heldByPause` and leaves it out of the
+  wake-to-first-turn seconds. Where that wake's issue was released before it, the wake ends the
+  release in the pod-hours released and in the share of releases woken within ten minutes. The
+  plugin speaks daemon API contract 178.

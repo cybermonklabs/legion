@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  Dispatch's event stream relay no longer publishes a reset event log's rows as the events after
+  the ones it published. A reset of the log (the browser suite's e2e/seed.ts deletes it and
+  restarts its ids between scenarios; `truncate events restart identity` does the same) could
+  commit between a read's reset check and its page of the log, or before a gap re-read, which skips
+  that check. Once the new log held rows above the old cursor, the page read them. The relay
+  published them, moved its cursor onto a row of the new log, and no later check saw the reset.
+  So no subscription ended: events subscriptions and the delivery hub stayed on the new log without
+  its rows at or below the old cursor, and the hub never recomputed its views. Each page is now
+  read only while the row at the cursor still carries the created_at the relay read, in the page's
+  own statement. A page that this check refuses publishes nothing, and the relay ends the
+  generation.
+time: 2026-11-26T12:35:43Z
+custom:
+    Issue: INFRA-3904

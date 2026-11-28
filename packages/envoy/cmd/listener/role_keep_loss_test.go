@@ -24,13 +24,14 @@ import (
 // settled is claim, forward, confirm - the cursor carries a claimed-but-unconfirmed sequence, and
 // the next drain forwards that copy again under the same stable id.
 func TestAKeptCopyItsDrainNeverForwardedStillReachesTheRolesHolder(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const (
 		role   = "kept-claimed-then-lost"
 		holder = "ses_kept_claimed_then_lost"
 	)
 	item := listenerTestEnvelope(contracts.RoleTopicPrefix+role, "kept-claimed-then-lost-00")
-	if _, kept := keepRoleMessage(harness.config, role, item); !kept {
+	if _, err := keepRoleMessage(harness.config, role, item); err != nil {
 		t.Fatalf("keep the copy; the listener log says why:\n%s", harness.logs.String())
 	}
 	key := roleForwardDedupePrefix + item.DedupeKey

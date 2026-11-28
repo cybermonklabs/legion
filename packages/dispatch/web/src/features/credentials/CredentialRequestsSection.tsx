@@ -1,4 +1,4 @@
-import { awaitsDecision } from "@legion/contracts";
+import { awaitsDecision, signInScopes } from "@legion/contracts";
 import { useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
@@ -17,18 +17,22 @@ import {
 } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { Timestamp } from "../refs/Timestamp";
+import { signInScopesText } from "../settings/dispatch-scope-choices";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { brokerPage } from "./brokerPage";
 import { CredentialSessionLines } from "./CredentialSessionLines";
-import { useMachineCodePage } from "./capabilities";
+import { brokerPage } from "./logic/brokerPage";
+import { useMachineCodePage } from "./logic/capabilities";
+import { credentialSessionNamesAnyone } from "./logic/session";
 import { type CredentialRequests, credentialPendingQuery } from "./pending";
-import { credentialSessionNamesAnyone } from "./session";
 
 const rowLineClass = "flex flex-wrap items-center gap-2 text-sm";
 const rowLinkClass = `${rowLineClass} rounded-lg outline-none focus-visible:ring-2 ${focusVisibleRing} ${linkText} ${linkHoverText}`;
 
-/** What a request's kind is called on its line. */
+/** What a request's kind is called on its line. A machine login's record whose `dispatch_scopes`
+ *  is a list is a Dispatch sign-in, decided on the same page but holding no session or secret. */
 function requestKindLabel(row: CredentialPendingRow): string {
+  if (signInScopes(row) !== null) return "Dispatch sign-in";
   return row.kind === "launcher_credential" ? "Machine login" : "Secret request";
 }
 
@@ -38,14 +42,31 @@ function requestIdentifiers(row: CredentialPendingRow): string {
 }
 
 /** What every request's first line shows, pending or expired: its kind, what it names, and when
- *  it was asked. */
+ *  it was asked. A Dispatch sign-in's line also names the scopes it asks for, in the words Settings
+ *  uses for them, a word this build does not know as itself, and "no scope" where it asks for
+ *  none. */
 function RequestSummary({ row }: { row: CredentialPendingRow }): ReactNode {
+  const asked = signInScopes(row);
   return (
     <>
       <LabelPill>{requestKindLabel(row)}</LabelPill>
       <span>{requestIdentifiers(row)}</span>
+      {asked === null ? null : <span>asks for {signInScopesText(asked)}</span>}
       <Timestamp at={row.requested_at} className={textMutedOnCanvas} />
     </>
+  );
+}
+
+/** What a Dispatch sign-in's row says under its line in place of a session: a sign-in names no
+ *  session, so the reason its request gave, verbatim, is what tells one session or tool's sign-in
+ *  from another's; a sign-in that gave none says so. */
+function SignInReasonLine({ reason }: { reason: string }): ReactNode {
+  return (
+    <span className={`${textMutedOnCanvas} whitespace-pre-wrap [overflow-wrap:anywhere]`}>
+      {/* The reason the request gave, as it typed it: the reading list's
+          `credential-request-reason`. */}
+      {reason === "" ? "It gives no reason." : reason}
+    </span>
   );
 }
 
@@ -96,15 +117,18 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
   const submitGuard = useSubmitGuard();
   const label =
     `Dismiss expired ${requestKindLabel(row).toLowerCase()} ${requestIdentifiers(row)}`.trimEnd();
-  // The row shows a refused dismissal itself, under its own line.
-  const dismiss = useKeyedWrite<void>({
+  // The row shows a refused dismissal itself, under its own line. The press carries the request
+  // it dismisses and the name it shows by, so a Retry and the words it ends with are of that
+  // request whatever this row is drawn for by then.
+  const dismiss = useKeyedWrite({
     inline: true,
-    label: () => label,
+    label: (press: { readonly label: string; readonly recordId: string }) => press.label,
     onSettled: () => {
       submitGuard.release();
       void queryClient.invalidateQueries({ queryKey: credentialPendingQuery().queryKey });
     },
-    write: (_variables, bounds) => api.dismissCredentialRequest(row.record_id, bounds),
+    method: "POST",
+    write: ({ recordId }, bounds) => api.dismissCredentialRequest(recordId, bounds),
   });
 
   return (
@@ -116,7 +140,9 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
           aria-label={label}
           className={secondaryButtonCompact}
           disabled={dismiss.isPending}
-          onClick={() => submitGuard.guard(() => dismiss.mutate())}
+          onClick={() =>
+            submitGuard.guard(() => dismiss.mutate({ label, recordId: row.record_id }))
+          }
           type="button"
         >
           Dismiss
@@ -131,9 +157,15 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
           </>
         )}
       </p>
+      {/* A dismissal the reader stopped may have been made, and Dismiss is a press of its own,
+          under a key of its own: it never makes the stopped dismissal again. */}
       {dismiss.isError ? (
         <p className={`mt-0.5 text-xs ${dangerText}`}>
-          {apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
+          {dismiss.error instanceof SendStoppedError
+            ? stoppedWriteNote("the dismissal of this request", "made", {
+                anew: "Pressing Dismiss again sends a new dismissal.",
+              })
+            : apiErrorMessage(dismiss.error, "Could not dismiss this request.")}
         </p>
       ) : null}
     </>
@@ -150,7 +182,9 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
  *  `status` stays `listed`). Calls `useAgents` once for every row in the list (before either early
  *  return, so the hook always runs), rather than once per `CredentialSessionLines` instance, for
  *  every row's directory and machine; the shell's one poller (`AgentRegistryPoller`) refreshes
- *  that list, so N listed rows never phase N polls of their own (LEGION-587's review, round 3). */
+ *  that list, so N listed rows never phase N polls of their own (LEGION-587's review, round 3). A
+ *  Dispatch sign-in names no session, so its row shows its reason where another shows its session
+ *  (`SignInReasonLine`). */
 export function CredentialRequestsSection({
   credentials: { requests, status },
 }: {
@@ -180,13 +214,17 @@ export function CredentialRequestsSection({
           <li key={row.record_id}>
             {awaitsDecision(row) ? <PendingRowLine row={row} /> : <ExpiredRowLines row={row} />}
             <div className="mt-0.5 flex flex-col gap-0.5 text-xs">
-              <CredentialSessionLines
-                agents={agents}
-                isError={isError}
-                isPending={isPending}
-                refilling={refilling}
-                session={row.session}
-              />
+              {signInScopes(row) === null ? (
+                <CredentialSessionLines
+                  agents={agents}
+                  isError={isError}
+                  isPending={isPending}
+                  refilling={refilling}
+                  session={row.session}
+                />
+              ) : (
+                <SignInReasonLine reason={row.reason} />
+              )}
             </div>
           </li>
         ))}

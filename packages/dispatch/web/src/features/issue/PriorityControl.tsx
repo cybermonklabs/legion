@@ -145,7 +145,7 @@ export function PriorityEditor({
       </span>
       {write.failed ? (
         <QueryError
-          message={`Could not update the priority of ${issueKey}.`}
+          message={write.stopped ?? `Could not update the priority of ${issueKey}.`}
           onRetry={write.retry}
           retrying={write.pending}
         />

@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/persistence"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // Shutdown's drain waits for each room's appends to land before it settles the room, and a
@@ -25,6 +26,10 @@ import (
 // the settlement's start (beforeSettleStart), in process: a bound on the version's write would
 // also time the settlement's own database work, which says nothing about how it is woken.
 func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
+	// Not parallel: it holds the settlement's start to within 50 ms of the append's commit, in
+	// process, and among the package's parallel tests under the race detector on 4 vCPU the start
+	// came 66 ms after (build-cluster run legion-race-docsfive6-1): the scheduler's delay, not the
+	// drain's. Alone, the bound still tells a woken wait from one that polls.
 	const held = 500 * time.Millisecond
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
@@ -37,7 +42,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 		}
 	}
 	appends := &heldStore{VersionedStore: persist, room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	var wakes atomic.Int64
 	service.settlementWoke = func(room string) {
@@ -105,6 +110,7 @@ func TestShutdownsDrainWakesOnceWhenARoomsHeldAppendLands(t *testing.T) {
 // gives up after about 100 ms and leaves the document to resume, as it always has. What the wait
 // costs is the question: one lock statement with a bounded wait, not a try-lock every millisecond.
 func TestShutdownsSettlementLockWaitIsOneStatement(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	tracer := &statementTracer{}
 	traced := storetest.TracedStore(t, database, tracer)

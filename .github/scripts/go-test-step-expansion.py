@@ -43,9 +43,12 @@ edit to either step's text is refused (a step whose script is not its pinned tex
 the step and the first line that differs, and on that line each test its -run or -skip names and
 the pin does not, or the other way round) and the two cannot come to name different tests.
 ci_job_reads.py's hold_plugin_pack_tests() refuses, at import, a name in that list that the
-package no longer declares and a test of agentmodels_omp_test.go the list does not name. What CI
-does not see is what this script decides: a (package, function) pair two steps of one run run
-without a declared reason, and one some step compiles while no step runs it.
+package no longer declares and a test of agentmodels_omp_test.go the list does not name. And
+go-test-step-expansion.test.sh runs this script's step reader, with no `go` command, over every
+`go test` step of the head, so a step this script would refuse fails the pull request that makes
+it unreadable rather than the next hand run. What CI does not see is what this script decides: a
+(package, function) pair two steps of one run run without a declared reason, and one some step
+compiles while no step runs it.
 
 It starts no service and needs no Postgres, no NATS, no Docker and no Pulumi: it never runs a
 test. `go test -list` builds the test binary and asks it for its names, and each `TestMain` of the
@@ -63,7 +66,7 @@ merge base in a clone under a temporary directory:
     python3 .github/scripts/go-test-step-expansion.py > "$TMPDIR/head.txt"; echo "head: $?"
     git clone --no-local "$(cd "$store" && realpath "$(cat git_target)")" "$TMPDIR/base"
     git -C "$TMPDIR/base" checkout <merge base>
-    cp .github/scripts/go-test-step-expansion.py "$TMPDIR/base/.github/scripts/"
+    cp .github/scripts/go-test-step-expansion.py .github/scripts/audited_scripts.py "$TMPDIR/base/.github/scripts/"
     (cd "$TMPDIR/base" && python3 .github/scripts/go-test-step-expansion.py) > "$TMPDIR/base.txt"
     echo "base: $?"
     grep '^PAIR' "$TMPDIR/head.txt" > "$TMPDIR/head.pairs"
@@ -73,6 +76,9 @@ merge base in a clone under a temporary directory:
 It reads the repository root off its own path, so the copy under the temporary directory checks
 itself and not the workspace it was copied from, and it reads a step's directory and its
 comment-free lines with `ci_filter_coverage`'s own helpers, which sit beside it in both trees.
+Which steps run an audited script, and what they then run, it reads from `audited_scripts.py`,
+which it imports; a merge base older than that module does not hold it, so the recipe copies it
+beside the tool, with this head's AUDITED_SCRIPTS and the base's scripts, whose digests it checks.
 Each job of ci.yaml holds its steps in a `ci-job-<id>.yaml` of its own, so the set of documents
 it reads is ci.yaml and every workflow a job of it calls, which it derives with that module's
 `called_workflows` (`documents()` below says why it loads them itself).
@@ -103,10 +109,21 @@ How it reads a step:
     it under one of the wrappers GO_WRAPPERS names (`race_memory.py go test …`) is the go command
     behind them: neither changes which test functions run. A value holding `$` and a wrapper that
     tuple does not name are refused rather than guessed at;
+  * a step of a matrix job that writes `${{ matrix.<key> }}` in its run: is one step per row of
+    the job's matrix, each with the row's value written in, since each row is a job of its own:
+    a legs job's go test step (`go_legs.py … ${{ matrix.leg }} ${{ strategy.job-total }} |
+    xargs go test …`) runs each leg's packages in that leg alone, and `${{ strategy.job-total }}`
+    is the number of rows. A matrix of lists is read, and nothing else: an
+    `include`, an `exclude` or a matrix an expression computes is refused, as is a key no row
+    has;
   * a step whose run: is the path of a script AUDITED_SCRIPTS names
-    (`packages/envoy/scripts/database-skips.sh`), alone or followed by one of the argument lists
+    (`packages/envoy/scripts/database-skips.sh` and `packages/envoy/scripts/backend-count.sh`), alone
+    or followed by one of the argument lists
     its entry reads, is read as the `go test` command that entry gives for those arguments, in
-    the module it names. A step whose run: holds that script's file name anywhere else, or with
+    the module it names; a legs step whose run: is `set -o pipefail` and a lister piped to `xargs
+    <that path> <an argument list its entry's xargs reads>`, run from that module (envoy-go's unit
+    legs), is read as the lister piped to the go test that entry gives, the leg's packages
+    appended. A step whose run: holds that script's file name anywhere else, or with
     arguments its entry does not list, is refused, since each entry reads its script only as
     called with what it lists; the test is on the run's raw text, so no quoting, substitution or
     comment hides the script from it. A
@@ -117,9 +134,11 @@ How it reads a step:
     of the script, pinned by the script's SHA-256. An edit to the script makes the entry stale,
     and this script refuses the step, naming the file, until someone reads the script again and
     updates the entry. A step that runs any other script is read as before, from its own run:
-    alone, so a `go test` inside that script is not seen: envoy-go's "Count the store-form rows
-    on each backend" runs `packages/envoy/scripts/backend-count.sh`, whose `go test` takes its
-    packages and test names from the step's arguments, and no entry reads it yet;
+    alone, so a `go test` inside that script is not seen: a step that runs a script from the
+    repository root and holds no `go test` of its own is skipped, which is how envoy-go's
+    "Count the store-form rows on each backend" (backend-count.sh) was read as running nothing
+    until its entry in .github/scripts/audited_scripts.py, and its five tests' second run was in
+    neither verdict;
   * a `Benchmark…` name a listing prints is left out of both verdicts: no step passes `-bench`,
     so `go test` builds those functions and runs none of them, and reading every one of them as
     compiled and unrun would say that over and over and name no hole anyone can close.
@@ -134,6 +153,7 @@ pair is run twice undeclared and none is unrun, 1 when one is, 2 when it cannot 
 from __future__ import annotations
 
 import hashlib
+import itertools
 import re
 import shlex
 import subprocess
@@ -142,6 +162,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
+from audited_scripts import Unreadable, names_audited, reading_of
 from ci_filter_coverage import called_workflows, script_lines, step_workdir
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -176,6 +197,13 @@ class Exception_:
     requirement: str
 
 
+ENVOY_GO = ".github/workflows/ci-job-envoy-go.yaml"
+ENVOY_GO_RACE = ".github/workflows/ci-job-envoy-go-race.yaml"
+ENVOY_UNIT_STEP = "Unit test envoy Go package"
+ENVOY_RACE_STEP = ("Race-test delivery, the store, the bus, the listener, the registry store, the session cache, "
+                   "kvwatch, the NATS credentials, the NATS auth service and the sign-in code flow")
+
+
 EXCEPTIONS = (
     Exception_(
         steps=frozenset({
@@ -187,15 +215,18 @@ EXCEPTIONS = (
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): envoy-smoke's pulumilive step over infra/host keeps "
             "running the whole package, untagged tests included, because envoy-smoke runs on a "
-            "Dispatch-only change where envoy-infra-go does not, and in such a run those untagged "
-            "tests would otherwise run nowhere."
+            "Dispatch-only change where envoy-infra-build does not, and in such a run those untagged "
+            "tests would otherwise run nowhere. A -run of the tagged tests alone would make "
+            "check-ci-filters.sh's rule 15 hold envoy_infra_build's filter to every file envoy-smoke "
+            "reads, the listener image's inputs among them, and so start envoy-infra-build on each "
+            "change to the image to spare the twenty untagged tests' 0.17 s in envoy-smoke (job "
+            "137289139653)."
         ),
     ),
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
             (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
         }),
         package="github.com/sjawhar/envoy/internal/dispatch/docs",
         functions=(
@@ -205,57 +236,44 @@ EXCEPTIONS = (
         requirement=(
             "R2 (dispatch://INFRA-1408/spec): the two render-reuse storms run fewer seeds and "
             "fewer edits under the race detector (raceEnabled), so envoy-go's plain step is their "
-            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one. The "
-            "third step is the cleanup detector's, declared with the rest of the package below."
+            "full-size run and envoy-go-race-docs is the detector's run of the shrunk one."
         ),
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-race.yaml", "Race-test delivery, the store, the bus, the listener, the registry store, the session cache, kvwatch, the NATS credentials and the NATS auth service"),
+            (".github/workflows/ci-job-envoy-go.yaml",
+             "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/natscallout",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=("TestACalloutStormAfterAServerRestartAdmitsEveryConnection",),
         requirement=(
             "c-callout-available (the NATS auth service's verification): five hundred "
             "connections reconnect at once after a server restart and every one is admitted. The "
             "restart storm opens two hundred under the race detector (raceEnabled), whose cost per "
-            "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go's "
-            "plain step is its full-size run and envoy-go-race the detector's run of the smaller one."
+            "in-process connect fails the setup at five hundred on a loaded runner, so envoy-go-alone's "
+            "plain step is its full-size run, on a runner nothing else loads, and envoy-go-race the "
+            "detector's run of the smaller one. The unit legs run the package whole, for the reason the "
+            "next entry gives."
         ),
     ),
     Exception_(
         steps=frozenset({
-            (".github/workflows/ci-job-envoy-go-race-docs.yaml", "Race-test the document service"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
+            (ENVOY_GO_RACE, ENVOY_RACE_STEP),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
+        package="github.com/sjawhar/envoy/internal/cipher/natscallout",
         functions=None,
         requirement=(
-            "A3 (dispatch://INFRA-1413/artifact/verification-md#b-k3): envoy-go-docs-finalizers "
-            "runs this package in a Go mode no other step runs it in, GODEBUG=checkfinalizers=1, "
-            "and with -v, because the package's own count of the services its tests left alive is "
-            "printed from TestMain after they have run and a package-list run drops it. The mode "
-            "is what the job is for, and a cleanup the detector reports can be any test's, so the "
-            "lane takes the package whole rather than a -run of part of it."
-        ),
-    ),
-    Exception_(
-        steps=frozenset({
-            (".github/workflows/ci-job-envoy-go.yaml", "Test what the race build cannot run at all or at full size"),
-            (".github/workflows/ci-job-envoy-go-docs-finalizers.yaml", "Test the document service under the cleanup detector"),
-        }),
-        package="github.com/sjawhar/envoy/internal/dispatch/docs",
-        functions=(
-            "TestARoomFedOnlyByAgentWritesKeepsMemoryWithinTheBound",
-            "TestUploadsOverOpenAnchorsKeepMemoryWithinTheBound",
-            "TestUploadsToARoomInUseKeepMemoryWithinTheBound",
-        ),
-        requirement=(
-            "R2 (dispatch://INFRA-1408/spec) and A3 (dispatch://INFRA-1413): these three bound a "
-            "room's memory, which the race build cannot measure, so the race listing does not "
-            "hold them and envoy-go's plain step is their one measured run. The finalizers lane "
-            "runs them as part of the package under its own mode, for the reason above."
+            "The writer hold's rows of the NATS auth service read the broker's hold row from "
+            "Postgres and skip without BROKER_TEST_DATABASE_URL, and envoy-go-race's step runs "
+            "without -v, where a skip prints nothing. envoy-go's step \"Unit test envoy Go package\" "
+            "runs the package through packages/envoy/scripts/database-skips.sh, "
+            "which counts that run's skips and fails on any, so a hold row that stopped running "
+            "fails the pull request; envoy-go-race keeps the package's race run. The count takes "
+            "the package whole, since go test -json of a -run would leave a skip it did not select "
+            "uncounted."
         ),
     ),
     Exception_(
@@ -278,9 +296,9 @@ EXCEPTIONS = (
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
             (".github/workflows/ci-job-airlock-lean.yaml", "Fuzz the Go airlock against the model"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("FuzzAirlock",),
         requirement=(
             "R3 (dispatch://INFRA-1408/spec): airlock-lean holds the Go airlock to its Lean model, "
@@ -288,8 +306,8 @@ EXCEPTIONS = (
             ".github/actions/install-elan/** and packages/envoy/scripts/airlock-lean-axioms.sh - "
             "so on such a change envoy-go does not run and the seed corpus would run nowhere. Its "
             "own two steps are the corpus comparison and the 120-second fuzz, which seeds from "
-            "that same corpus, so both name the function. envoy-go's step \"Count the database "
-            "broker suites' skips\" runs every broker package but the race lane's through "
+            "that same corpus, so both name the function. envoy-go's step \"Unit test envoy Go "
+            "package\" runs every broker package through "
             "packages/envoy/scripts/database-skips.sh, so a listing counts the function run there "
             "too, but it skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS "
             "records, so the corpus runs only in airlock-lean."
@@ -298,16 +316,16 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
         functions=("TestModelAgreesOnHostShapes",),
         requirement=(
             "The same reason as FuzzAirlock above: airlock-lean's corpus comparison runs the host "
             "shapes a rules file may hold through both the Go validation and the Lean model's, "
             "with AIRLOCK_MODEL set, and runs on changes that do not start envoy-go. envoy-go's "
-            "step \"Count the database broker suites' skips\" runs every broker package but the "
-            "race lane's through packages/envoy/scripts/database-skips.sh, so a listing counts "
+            "step \"Unit test envoy Go package\" runs every broker package through "
+            "packages/envoy/scripts/database-skips.sh, so a listing counts "
             "the function run there too, but it skips there for want of AIRLOCK_MODEL, as that "
             "script's EXPECTED_SKIPS records, so the comparison runs only in airlock-lean. The fuzz "
             "step runs FuzzAirlock alone and does not name it."
@@ -316,17 +334,34 @@ EXCEPTIONS = (
     Exception_(
         steps=frozenset({
             (".github/workflows/ci-job-airlock-lean.yaml", "Compare the Go airlock with the model over the seed corpus"),
-            (".github/workflows/ci-job-envoy-go.yaml", "Count the database broker suites' skips"),
+            (ENVOY_GO, ENVOY_UNIT_STEP),
         }),
-        package="github.com/sjawhar/envoy/internal/broker/airlock",
-        functions=("TestTheModelReadsAHostlessEntryWithGuidance",),
+        package="github.com/sjawhar/envoy/internal/cipher/proxyrules",
+        functions=("TestTheModelRefusesAHostlessEntry",),
         requirement=(
             "The same reason as TestModelAgreesOnHostShapes above: airlock-lean's corpus "
             "comparison runs a host-less entry carrying guidance, a field the generator never "
-            "writes, through both the Go airlock and the Lean model's, with AIRLOCK_MODEL set. "
-            "envoy-go's step \"Count the database broker suites' skips\" lists it too, and it "
-            "skips there for want of AIRLOCK_MODEL, as that script's EXPECTED_SKIPS records, so "
-            "the comparison runs only in airlock-lean."
+            "writes, through both the Go validation and the Lean model's, which each refuse it, "
+            "with AIRLOCK_MODEL set. envoy-go's step \"Unit test envoy Go package\" "
+            "lists it too, and it skips there for want of AIRLOCK_MODEL, as that script's "
+            "EXPECTED_SKIPS records, so the comparison runs only in airlock-lean."
+        ),
+    ),
+    Exception_(
+        steps=frozenset({
+            (ENVOY_GO, ENVOY_UNIT_STEP),
+            (".github/workflows/ci-job-envoy-go-build.yaml", "Test pmdoc's tables in a build without inlining"),
+        }),
+        package="github.com/sjawhar/envoy/internal/dispatch/pmdoc",
+        functions=None,
+        requirement=(
+            "pmdoc's readers must read a table in every build, whatever its inlining. "
+            "envoy-go-build runs pmdoc's table tests and its display fixture test in a build made "
+            "with -gcflags=all=-l, a mode no other step builds pmdoc in: goldmark builds pmdoc's "
+            "readers through an interface Go's initialization order does not look through, so a "
+            "reader that copied a variable of pmdoc was handed nil in that build alone, and each "
+            "table failed to read there while it passed in envoy-go's unit step. The two runs "
+            "answer different questions."
         ),
     ),
 )
@@ -338,45 +373,22 @@ STATUS = re.compile(r"^(ok|FAIL|\?)\s+(\S+)")
 SHELL_VAR = re.compile(r"\$(?:([A-Za-z_][A-Za-z0-9_]*)|\{([A-Za-z_][A-Za-z0-9_]*)\})")
 FOR_LINE = re.compile(r"^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*;\s*do$")
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)=\$\((.+)\)$")
-XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?P<test>go\s+test\b.*)$")
+# `… | xargs <command>`: the command is resolved through AUDITED_SCRIPTS where it is a script the
+# table names (the API's legs: `xargs scripts/database-skips.sh …`), then read as any other line
+# is (go_command below), and refused unless what is left is a go test. So a step that pipes a
+# lister into a go test under `env`, variables and a wrapper (the document service's legs:
+# `xargs env GODEBUG=… RACE_MEM_LIMIT_KB=… race_memory.py go test …`) is read as that go test,
+# and `xargs timeout 60 go test`, `xargs env -C dir go test` or `xargs go vet` are refused.
+# `xargs -r` (`--no-run-if-empty`) runs nothing on empty input, which changes no test the command
+# runs when it runs, so it is read past.
+XARGS = re.compile(r"^(?P<lister>.+?)\s*\|\s*xargs\s+(?:(?:-r|--no-run-if-empty)\s+)?(?P<test>\S.*)$")
+# A matrix value as a run: writes it, which GitHub replaces before the shell reads the line.
+MATRIX_VALUE = re.compile(r"\$\{\{\s*matrix\.([A-Za-z_][A-Za-z0-9_-]*)\s*\}\}")
+# How many jobs the matrix makes, as a run: writes it (a legs step hands it to go_legs.py).
+JOB_TOTAL = re.compile(r"\$\{\{\s*strategy\.job-total\s*\}\}")
 TAGGED_TESTS = ".github/scripts/go-tagged-tests.sh"
 
 
-@dataclass(frozen=True)
-class AuditedScript:
-    """A script a step runs, read by a person: the module it moves into before its tests, the one
-    `go test` it runs there for each argument list a step passes it (the run:'s text after the
-    script's path, "" for none), and the SHA-256 of the text that reading was of."""
-
-    module: str
-    commands: dict[str, str]
-    sha256: str
-
-
-# Each script a step of ci.yaml's router runs as its whole run: line, read by a person, with the
-# one `go test` it runs for each argument list a step passes it.
-AUDITED_SCRIPTS = {
-    # It moves into packages/envoy (`cd "$(dirname "$0")/.."`) and runs one `go test -json
-    # -count=1` over its packages, then counts the skips in its report. With no package argument it
-    # runs its DEFAULT_PACKAGES, ./internal/broker/... and ./cmd/broker/, less the import paths its
-    # DEFAULT_EXCEPT's `grep -Ev '/internal/broker/natscallout$'` takes out of `go list` of them (the
-    # race lane's packages under the tree, ci_job_reads.DATABASE_SKIPS_PATTERN), with no -tags,
-    # -race, -run or -skip, under -timeout "${GO_TEST_TIMEOUT:-15m}". A package argument replaces
-    # those packages, `--race` adds -race, `--timeout D` sets the -timeout, and `--var NAME`
-    # decides only whether it runs at all. With `--report FILE` it reads a report and runs no test.
-    # envoy-go's count step passes the first argument list below, whose command is that run in the
-    # listing form this script reads, and envoy-go-race-api's race step the second.
-    "packages/envoy/scripts/database-skips.sh": AuditedScript(
-        module="packages/envoy",
-        commands={
-            "--timeout 20m": "go list ./internal/broker/... ./cmd/broker/ | grep -Ev '/internal/broker/natscallout$' | "
-                             "xargs go test -json -count=1 -timeout 20m",
-            "--var DISPATCH_TEST_DATABASE_URL --var BROKER_TEST_DATABASE_URL --race --timeout 70m ./internal/dispatch/api/":
-                "go test -json -count=1 -race -timeout 70m ./internal/dispatch/api/",
-        },
-        sha256="63269be64d58884d1e539a965a2f70e2024d3de79abb7fc4efc98bb5f55b5cb4",
-    ),
-}
 # A variable a step sets before its command, as the steps write it: GODEBUG=checkfinalizers=1.
 # A value holding `$` is left for the caller to refuse, since what it expands to is the shell's.
 ENV_PREFIX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[^$]*$")
@@ -411,14 +423,22 @@ class Step:
     name: str
     workdir: str  # repository-relative, as the file writes it
     script: str
+    # The matrix row this copy of the step is, `leg 2`, or "" for a step of no matrix. Each row
+    # is a job of its own with the row's values written into the run:, so each is read apart, but
+    # all of them are the one step the file writes.
+    row: str = ""
 
     @property
     def label(self) -> str:
-        return f"{self.workflow}'s {self.job} / {self.name}"
+        shown = f"{self.name} ({self.row})" if self.row else self.name
+        return f"{self.workflow}'s {self.job} / {shown}"
 
     # The file and the step's name, which is what an EXCEPTIONS entry declares: a step name is
     # unique within the file that holds it, while a job id is ci.yaml's and the name of the step
     # may be another file's too (release-envoy-infra.yaml has its own "Unit test envoy-infra").
+    # A matrix row is keyed on its step's own name, not the row: the rows of a legs step run
+    # disjoint shares of one step's tests, so a pair one row runs is a pair that step runs, and an
+    # entry declared on the step holds for whichever row its tests fall in.
     @property
     def key(self) -> tuple[str, str]:
         return (self.workflow, self.name)
@@ -495,10 +515,12 @@ def documents() -> dict:
 
 
 def steps_of(found: dict) -> list[Step]:
-    """Every step of those documents whose run: holds a `go test` and whose directory is one of
-    the three modules. The directory and the comment-free lines are read with
-    check-ci-filters.sh's own helpers (ci_filter_coverage.step_workdir, script_lines), so this
-    tool and the gate agree on what a step runs and where."""
+    """Every step of those documents whose run: holds a `go test`, or names an AUDITED_SCRIPTS
+    script, and whose directory is one of the three modules. A step of a matrix job that writes a
+    matrix value is one step per row, read with the row's values written in. The directory and the
+    comment-free lines are read with check-ci-filters.sh's own helpers
+    (ci_filter_coverage.step_workdir, script_lines), so this tool and the gate agree on what a
+    step runs and where."""
     steps = []
     for path, document in found.items():
         for job, body in (document.get("jobs") or {}).items():
@@ -508,65 +530,80 @@ def steps_of(found: dict) -> list[Step]:
                     continue
                 workdir = step_workdir(document, body, step)
                 name = step.get("name") or f"step {index + 1}"
-                audited = audited_step(path, job, name, workdir, script)
-                if audited is not None:
-                    steps.append(audited)
+                # The one test of whether a run: names an audited script, which reading_of starts
+                # from too, so a step that reaches it here is one that test names.
+                audited = bool(names_audited(script))
+                if not audited and (workdir not in MODULE_DIRS
+                                    or not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script)))):
                     continue
-                if workdir not in MODULE_DIRS:
-                    continue
-                if not re.search(r"\bgo\s+test\b", "\n".join(script_lines(script))):
-                    continue
-                steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=script))
+                for row, text in rows_of(path, job, name, body, script):
+                    read = audited_step(path, job, name, workdir, text, row)
+                    if read is not None:
+                        steps.append(read)
+                    elif workdir in MODULE_DIRS:
+                        steps.append(Step(workflow=path, job=job, name=name, workdir=workdir, script=text, row=row))
     return steps
 
 
-def spellings(path: str, workdir: str) -> set[str]:
-    """The ways a run: in workdir names path, a repository-relative file: its path from workdir
-    behind `./`, and bare where that path holds a `/` (a bare name without one is looked up on
-    PATH by the shell, not in the directory)."""
-    if workdir in ("", "."):
-        relative = path
-    elif path.startswith(f"{workdir}/"):
-        relative = path[len(workdir) + 1:]
-    else:
-        return set()
-    return {f"./{relative}"} | ({relative} if "/" in relative else set())
+def rows_of(path: str, job: str, name: str, body: dict, script: str) -> list[tuple[str, str]]:
+    """The step's run: text once, with no row (""), or, when the run: writes a matrix value, once
+    per row of the job's matrix, with the row's label (`leg 2`) and its values written in, since
+    each row is a job of its own: a legs job's step (`go_legs.py … ${{ matrix.leg }} ${{
+    strategy.job-total }} | xargs …`) runs each leg's packages in that leg alone. The step keeps its
+    own name in every row (Step.row holds the row), so an EXCEPTIONS entry declared on the step
+    holds whichever leg its tests fall in."""
+    if not MATRIX_VALUE.search(script):
+        return [("", script)]
+    rows = matrix_rows(f"{path}'s {job} / {name}", body)
+    found = []
+    for row in rows:
+        def value(match: re.Match[str], row: dict = row) -> str:
+            if match.group(1) not in row:
+                raise Refused(f"{path}'s {job} / {name}: its run: writes matrix.{match.group(1)}, "
+                              f"which no row of the job's matrix has")
+            return str(row[match.group(1)])
+        label = ", ".join(f"{key} {row[key]}" for key in row)
+        found.append((label, JOB_TOTAL.sub(str(len(rows)), MATRIX_VALUE.sub(value, script))))
+    return found
 
 
-def audited_step(workflow: str, job: str, name: str, workdir: str, script: str) -> Step | None:
-    """The step a run: that is the path of an AUDITED_SCRIPTS script makes, alone or followed by
-    an argument list its entry reads, read as that entry's command for those arguments in its
-    module, or None where the run's text holds no such script's file name. A run whose text holds
-    one anywhere else - an operator, another command, a `$(…)`, a comment, another line, an
-    argument list the entry does not read - is refused rather than read or skipped: the test is
-    on the raw text, before any shell reading, so no quoting or substitution hides the script
-    from it. So is a script whose text no longer has its entry's SHA-256."""
-    label = f"{workflow}'s {job} / {name}"
-    named = [path for path in AUDITED_SCRIPTS if Path(path).name in script]
-    if not named:
+def matrix_rows(label: str, body: dict) -> list[dict]:
+    """The rows of a job's matrix of lists, each the values one of its jobs gets, in GitHub's
+    order. Any other shape is refused rather than guessed at: an `include` or `exclude` changes the
+    rows in ways this reading does not follow, and a matrix an expression computes is known only
+    when the run starts."""
+    matrix = ((body or {}).get("strategy") or {}).get("matrix")
+    if not isinstance(matrix, dict) or not matrix:
+        raise Refused(f"{label}: its run: writes a matrix value, and the job has no matrix of lists to read it from")
+    if "include" in matrix or "exclude" in matrix or not all(isinstance(v, list) and v for v in matrix.values()):
+        raise Refused(f"{label}: its job's matrix is not a matrix of lists alone, which is the one shape read here")
+    keys = list(matrix)
+    return [dict(zip(keys, values)) for values in itertools.product(*(matrix[key] for key in keys))]
+
+
+def audited_step(workflow: str, job: str, name: str, workdir: str, script: str, row: str = "") -> Step | None:
+    """The step a run: that is an AUDITED_SCRIPTS script makes: audited_scripts.reading_of's
+    reading of it, in its entry's module - the one reading of such a step, which check-ci-filters.sh's
+    TAG_RUNS rule takes too - or None where the run's text holds no such script's file name. A
+    run: that names one in a form no entry reads (reading_of's Unreadable) is refused by step, as is a
+    script whose text no longer has its entry's SHA-256. For a legs step the reading is the lister
+    piped into the entry's go test, which read_block's xargs branch then reads, with the packages
+    the lister prints. `row` is the matrix row the run: is, kept on the step."""
+    label = f"{workflow}'s {job} / {name}" + (f" ({row})" if row else "")
+    try:
+        reading = reading_of(workdir, script)
+    except Unreadable as unreadable:
+        raise Refused(f"{label}: {unreadable}") from None
+    if reading is None:
         return None
-    # Only the shell's own blanks and the line's end: Python's strip() also takes Unicode spaces,
-    # which bash reads as part of the name.
-    alone = script.strip(" \t\n")
-    # The path is the text up to the first space, and the arguments the text after it, compared
-    # with each listed argument list as written: one space between words, nothing else.
-    spelled, _, arguments = alone.partition(" ")
-    # The literal spelling, compared with no path normalization: `path/` and `path/.` resolve to
-    # the file in Python and name nothing the shell can run.
-    matches = [path for path in named if spelled in spellings(path, workdir)]
-    if (len(named) != 1 or len(matches) != 1 or any(c.isspace() for c in spelled)
-            or arguments not in AUDITED_SCRIPTS[matches[0]].commands):
-        raise Refused(f"{label}: names {', '.join(named)} in a form no AUDITED_SCRIPTS entry "
-                      "reads: an entry reads a run: that is that one path, alone or followed by "
-                      "an argument list the entry lists")
-    path = matches[0]
-    entry = AUDITED_SCRIPTS[path]
-    digest = hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
-    if digest != entry.sha256:
-        raise Refused(f"{label}: {path} has SHA-256 {digest}, and its AUDITED_SCRIPTS entry was "
-                      f"read from {entry.sha256}; read the script again and update the entry's "
+    digest = hashlib.sha256((ROOT / reading.path).read_bytes()).hexdigest()
+    if digest != reading.entry.sha256:
+        raise Refused(f"{label}: {reading.path} has SHA-256 {digest}, and its entry in "
+                      f".github/scripts/audited_scripts.py's AUDITED_SCRIPTS was read from "
+                      f"{reading.entry.sha256}; read the script again and update the entry's "
                       "commands and digest")
-    return Step(workflow=workflow, job=job, name=name, workdir=entry.module, script=entry.commands[arguments])
+    return Step(workflow=workflow, job=job, name=name, workdir=reading.entry.module, row=row,
+                script=reading.script)
 
 
 def commands_of(step: Step) -> list[GoTest]:
@@ -606,10 +643,17 @@ def read_block(step: Step, lines: list[str], variables: dict[str, str],
         piped = XARGS.match(line)
         if piped:
             lister = expand(piped.group("lister"), variables)
-            packages = shell(lister, step.directory, f"{step.label}: {lister}").split()
-            if not packages:
+            printed = shell(lister, step.directory, f"{step.label}: {lister}").split()
+            if not printed:
                 raise Refused(f"{step.label}: `{lister}` printed no package")
-            found.append(parse_go_test(step, expand(piped.group("test"), variables), packages))
+            # An AUDITED_SCRIPTS script piped into here was resolved to its go test by audited_step
+            # before this step was made; what is left must be a go test, under `env`, variables
+            # and a wrapper at most.
+            tail = expand(piped.group("test"), variables)
+            words, command = go_command(tail)
+            if not (len(words) > 1 and words[0] == "go" and words[1] == "test"):
+                raise Refused(f"{step.label}: `{tail}`, what this step pipes into xargs, is no go test")
+            found.append(parse_go_test(step, command, printed))
             continue
 
         words, command = go_command(line)
@@ -634,6 +678,11 @@ def go_command(line: str) -> tuple[list[str], str]:
     of what is left - a `-run` pattern above all - is the line's own.
     """
     rest = line.strip()
+    # `xargs env NAME=value … <command>`: xargs runs a program, not a shell, so a step that must
+    # set a variable for the command it pipes into writes `env`. It changes no test the command
+    # runs, so it is dropped as the variables themselves are.
+    if rest.split(None, 1)[:1] == ["env"] and len(rest.split(None, 1)) == 2:
+        rest = rest.split(None, 1)[1]
     while True:
         head = rest.split(None, 1)
         if len(head) == 2 and ENV_PREFIX.match(head[0]):
@@ -671,10 +720,12 @@ def skip_names(pattern: str) -> list[str] | None:
     return names if all(NAME.match(name) for name in names) else None
 
 
-def parse_go_test(step: Step, text: str, packages: list[str]) -> GoTest:
-    """The packages, -tags, -race, -run and -skip of one `go test` command."""
-    command = GoTest(step=step, text=text, packages=list(packages))
-    words = shlex.split(text)
+def parse_go_test(step: Step, text: str, appended: list[str]) -> GoTest:
+    """The packages, -tags, -race, -run and -skip of one `go test` command, read with the words
+    `appended` after its own, as xargs appends what its lister printed: a packages list, and, for
+    a leg that runs a group of a package's tests, an anchored `-run=^(…)$` before the package."""
+    command = GoTest(step=step, text=text, packages=[])
+    words = shlex.split(text) + list(appended)
     position = words.index("test") + 1
     while position < len(words):
         word = words[position]

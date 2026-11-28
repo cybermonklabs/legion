@@ -1,0 +1,67 @@
+{
+  "id": 188832,
+  "issue_key": null,
+  "artifact_id": "93538c41-d80d-470b-8b7f-5a24997e4f05",
+  "project": "ACME",
+  "seq": 3,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1708c-1459-7298-8fc6-6e59db682fec",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum",
+      "cwd": "lorem ipsum dolor sit",
+      "tmux": "lorem ip",
+      "pane": "lore",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-04T20:34:28.256706Z",
+  "payload": {
+    "id": "ddb7ab57-c45a-47f2-b879-bfbab5c6e51b",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1708c-1459-7298-8fc6-6e59db682fec",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit",
+        "host": "lor",
+        "pane": "lore",
+        "tmux": "lorem ip",
+        "machine": "lorem ipsum",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsum dolor"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": null,
+    "created_at": "2026-11-04T20:34:28.260419Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": "93538c41-d80d-470b-8b7f-5a24997e4f05",
+    "project_key": "ACME",
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "artifact_slug": "lorem ipsum dolor si",
+    "thread_logins": [],
+    "suppress_route": false,
+    "references_changed": [
+      {
+        "id": "93538c41-d80d-470b-8b7f-5a24997e4f05",
+        "ref": "dispatch://ACME",
+        "kind": "artifact"
+      }
+    ]
+  }
+}

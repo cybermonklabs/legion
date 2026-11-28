@@ -20,7 +20,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // The way back of migration 20261111225552 is one text standing in two files: the header of the
@@ -69,7 +68,7 @@ const (
 	// wayBackHeredoc opens the block in every file and wayBackTerminator closes it. What stands
 	// between them is what psql reads on its standard input, which is the transaction
 	// upgradeRecoveryReadsAnswer sends in one exec.
-	wayBackHeredoc    = "psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'"
+	wayBackHeredoc    = "PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1 <<'SQL'"
 	wayBackTerminator = "SQL"
 	// wayBackRecoveryStatements is how many statements stand between the phase entry's block's
 	// begin and its commit. The header, the guide and this test all call them the eleven, so a
@@ -234,6 +233,7 @@ func assertOneWayBackText(t *testing.T, file, header, extract string) {
 // TestTheWayBackExtractIsTheGuidesWayBackBlock holds it to the guide. Neither half alone is the
 // guarantee: together they are the one this test gave while it read the guide itself.
 func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
+	t.Parallel()
 	header := wayBackBlockOfTheHeader(t, phaseEntryMigrationFile)
 	// The shape of the block is read here as well as where it runs, so a header broken in a tree
 	// with no database still fails this check by name rather than passing it unread.
@@ -255,6 +255,7 @@ func TestTheUpgradesWayBackBlockIsOneTextInTheHeaderAndTheGuide(t *testing.T) {
 // half alone is the guarantee: together they are the one this test gave while it read the guide
 // itself.
 func TestTheArchitectEntryUpgradesWayBackBlockIsOneTextInItsHeadersAndTheGuide(t *testing.T) {
+	t.Parallel()
 	for _, file := range []string{architectStalledNoticesMigrationFile, architectUpgradeMigrationFile, claimHandshakeMigrationFile,
 		entryVerbatimMigrationFile} {
 		assertOneWayBackText(t, file, wayBackBlockOfTheHeader(t, file), architectEntryWayBackExtract)
@@ -532,7 +533,7 @@ func upgradeRecoveryReadsAnswer(t *testing.T, pool *store.Pool, token claim.Toke
 // What the second run reads is the record that daemon kept current: the token on the phases row.
 // The fill numbers the role entry 1 and finds no start row to take a task from, so the record
 // holds no task of that entry and the sweep sends the line the daemon composes for a worker
-// already in its phase (workflow.ResumePhaseTask, through Engine.SendOwedEntry), at entry 1.
+// already in its phase (workflow's Engine.ResumeTask, through Engine.SendOwedEntry), at entry 1.
 //
 // The control is this same half under the zeroing way back: the six entry columns left standing
 // at zero and this migration's version row left where it is. Migrate then applies nothing, the
@@ -566,7 +567,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: key,
 		Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
 	records := record.NewStore()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
@@ -635,7 +636,7 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		t.Fatalf("the sweep after the roll-forward sent %s %+v, want the one start of entry 1: a role whose task that daemon lost is what the re-arm exists to send again",
 			key, starts)
 	}
-	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: workflow.ResumePhaseTask(issue), entry: 1}
+	want := sweptStart{id: starts[0].id, role: claim.RoleTester, task: resumeTaskOf(t, pool, w.engine, key), entry: 1}
 	if starts[0] != want {
 		t.Fatalf("the start the sweep sent %s = %+v, want %+v: the record holds no task of that entry, so what is sent is the line the daemon composes for a worker already in its phase",
 			key, starts[0], want)

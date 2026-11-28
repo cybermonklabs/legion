@@ -1,10 +1,12 @@
 import { expect, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { answerAgentStates } from "../../__tests__/send-answers";
 import { ApiError, api } from "../../api/client";
 import { userAgentStateQuery } from "../../api/queries";
+import { DispatchQueryClient } from "../../api/query-client";
 import type {
   Message,
   UserAgentState,
@@ -54,6 +56,111 @@ test("a read asked before a mark answered does not put back the unread count the
   ).toBe(0);
 });
 
+/** Each session's unread count as a test writes it: `{ A: 1 }` is session A with one reply unread. */
+type Counts = Readonly<Record<string, number>>;
+
+function statesOf(counts: Counts): UserAgentStates {
+  return Object.fromEntries(
+    Object.entries(counts).map(([session, unread]) => [session, { unread_replies: unread }])
+  );
+}
+
+/**
+ * The agent-state read under Dispatch's own client, with something on the page showing it: every
+ * request is answered by the test, with what the server held when the request reached it.
+ * `answerAll` answers each request out, and each one the answers set going, until none is out.
+ */
+function agentStatesServed(initial: Counts) {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  let held = initial;
+  let requests = 0;
+  const out: (() => void)[] = [];
+  const observer = new QueryObserver(queryClient, {
+    queryFn: () => {
+      requests += 1;
+      const answer = statesOf(held);
+      const { promise, resolve } = Promise.withResolvers<UserAgentStates>();
+      out.push(() => resolve(answer));
+      return promise;
+    },
+    queryKey: userAgentStateQuery().queryKey,
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  /** One turn of the real loop: the late-reads lane holds each answer one such turn. */
+  const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
+  return {
+    answerAll: async () => {
+      for (let step = 0; step < 50; step += 1) {
+        await turn();
+        const query = queryClient
+          .getQueryCache()
+          .find({ queryKey: userAgentStateQuery().queryKey });
+        if (out.length === 0 && query?.state.fetchStatus === "idle") return;
+        out.shift()?.();
+      }
+    },
+    counts: (): Counts =>
+      Object.fromEntries(
+        Object.entries(
+          queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey) ?? {}
+        ).map(([session, state]) => [session, state.unread_replies])
+      ),
+    queryClient,
+    requests: () => requests,
+    serverHolds: (counts: Counts) => {
+      held = counts;
+    },
+    stop: unsubscribe,
+  };
+}
+
+// The read a mark's answer cancels was asked for news of its own: here a second session's new
+// reply, whose event asked the query again. Once the answer is in the query is asked again, and
+// that read brings B's reply beside the mark, as the cancelled read would have. Left out, B's
+// count stays 0 on every badge until the next event aimed at the query.
+test("a mark's answer that cancels a read asks again, so another session's new reply is counted", async () => {
+  const served = agentStatesServed({ A: 1, B: 0 });
+  try {
+    await served.answerAll();
+    expect(served.counts()).toEqual({ A: 1, B: 0 });
+
+    // B replies: the server counts it, and the reply's event asks the query again.
+    served.serverHolds({ A: 1, B: 1 });
+    void served.queryClient.invalidateQueries({ queryKey: userAgentStateQuery().queryKey });
+    expect(served.requests()).toBe(2);
+    // The reader opens A's conversation while that read is out: the mark reaches the server, and
+    // its answer is put into the query.
+    served.serverHolds({ A: 0, B: 1 });
+    storeAgentState(served.queryClient, "A", { unread_replies: 0 });
+    expect(served.counts()).toEqual({ A: 0, B: 0 });
+
+    await served.answerAll();
+    expect(served.counts()).toEqual({ A: 0, B: 1 });
+    expect(served.requests()).toBe(3);
+  } finally {
+    served.stop();
+  }
+});
+
+// A mark answered while the page's first read is still out: the answer names one session, and the
+// first read, which the mark cancels, was the only read asked for every other one. Asked again
+// once the answer is in, the query brings them all.
+test("a mark's answer that lands during the first load leaves every other session's count to arrive", async () => {
+  const served = agentStatesServed({ A: 1, B: 1, C: 2 });
+  try {
+    expect(served.requests()).toBe(1);
+    served.serverHolds({ A: 0, B: 1, C: 2 });
+    storeAgentState(served.queryClient, "A", { unread_replies: 0 });
+    expect(served.counts()).toEqual({ A: 0 });
+
+    await served.answerAll();
+    expect(served.counts()).toEqual({ A: 0, B: 1, C: 2 });
+    expect(served.requests()).toBe(2);
+  } finally {
+    served.stop();
+  }
+});
+
 const SESSION = "planner-session";
 
 function reply(id: string): Message {
@@ -63,6 +170,7 @@ function reply(id: string): Message {
     broadcast_id: null,
     created_at: "2026-10-03T12:00:00Z",
     deliveries: [],
+    ...messageCorrectionFields(),
     id,
     in_reply_to: "message-1",
     issue_key: null,

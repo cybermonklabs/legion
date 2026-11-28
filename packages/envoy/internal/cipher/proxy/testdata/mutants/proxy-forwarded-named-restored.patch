@@ -1,0 +1,17 @@
+# proxy-forwarded-named-restored: serveBound sets back the command's Forwarded and X-Forwarded-*
+# headers even where its Connection header names them, so those reach the service.
+# must fail: TestAForwardingHeaderTheCommandNamesInConnectionStopsAtTheProxy
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/bound.go
++++ b/packages/envoy/internal/cipher/proxy/bound.go
+@@ -597,7 +597,8 @@
+ 			// reason.
+ 			for _, name := range forwardedHeaders {
+ 				values, sent := pr.In.Header[name]
+-				if sent && !httpguts.HeaderValuesContainsToken(r.Header["Connection"], name) {
++				// MUTANT: set back whatever the command's Connection header names.
++				if sent {
+ 					pr.Out.Header[name] = values
+ 				}
+ 			}

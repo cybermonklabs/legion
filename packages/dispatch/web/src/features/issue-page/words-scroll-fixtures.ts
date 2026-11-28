@@ -1,0 +1,74 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+import {
+  type CssBlock,
+  ruleDeclarations,
+  topLevelBlocks,
+  withoutComments,
+} from "../../theme/css-source";
+
+/** One rule of `styles.css`: its selector list, kept whole, since a comma inside `:is(…)`
+ *  separates no selectors, and its declarations, each written `property: value`. */
+export interface StyleRule {
+  readonly declared: ReadonlySet<string>;
+  readonly selectors: string;
+}
+
+/**
+ * The rules of `styles.css` that give a block in a node's words a sideways scroll of its own
+ * (decision 282): each names `[data-node-words]` and declares `overflow-x: auto`. A unit test's
+ * DOM applies the rules a test gives it, and `getComputedStyle` reads them back, but it never
+ * loads `styles.css`: a case that reads what these rules do appends them itself
+ * (`wordsScrollSheet`). Throws where `styles.css` holds none, so no case passes on no rules.
+ */
+export function wordsScrollRules(): StyleRule[] {
+  const css = withoutComments(
+    readFileSync(join(import.meta.dir, "..", "..", "styles.css"), "utf8")
+  );
+  // Each rule at any depth: an at-rule's block (`@media`, `@supports`) holds rules of its own.
+  const rulesOf = (sheet: string): CssBlock[] =>
+    topLevelBlocks(sheet).flatMap((block) =>
+      block.prelude.startsWith("@") ? rulesOf(block.body) : [block]
+    );
+  const rules = rulesOf(css).flatMap(({ body, prelude }) => {
+    const declared = new Set(
+      ruleDeclarations(body).map(({ property, value }) => `${property}: ${value}`)
+    );
+    return prelude.includes("[data-node-words]") && declared.has("overflow-x: auto")
+      ? [{ declared, selectors: prelude }]
+      : [];
+  });
+  if (rules.length === 0)
+    throw new Error("no rule of styles.css scrolls a block in a node's words");
+  return rules;
+}
+
+/** `wordsScrollRules` as one style sheet, for the test to append to the document and remove. */
+export function wordsScrollSheet(): HTMLStyleElement {
+  const sheet = document.createElement("style");
+  sheet.textContent = wordsScrollRules()
+    .map(({ declared, selectors }) => `${selectors} { ${[...declared].join("; ")}; }`)
+    .join("\n");
+  return sheet;
+}
+
+/**
+ * Lays the content of each element `selectors` names out past its box sideways, until the answer
+ * is called, as a wide table's or a long line of code's is laid out in the browser. A unit test's
+ * DOM lays nothing out, so there every box holds its content (its scroll width and its client
+ * width both 0) and none has anywhere to scroll.
+ */
+export function overflowing(selectors: string): () => void {
+  const own = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+  Object.defineProperty(Element.prototype, "scrollWidth", {
+    configurable: true,
+    get(this: Element) {
+      return this.matches(selectors) ? 1 : (own?.get?.call(this) ?? 0);
+    },
+  });
+  return () => {
+    if (own === undefined) Reflect.deleteProperty(Element.prototype, "scrollWidth");
+    else Object.defineProperty(Element.prototype, "scrollWidth", own);
+  };
+}

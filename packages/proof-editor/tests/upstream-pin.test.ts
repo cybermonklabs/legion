@@ -1,8 +1,8 @@
 /**
  * The pin has to carry every fix the fork's `library` line carries, and `upstream/` — the
- * declarations tsc reads in its place (AGENTS.md § The upstream boundary) — has to be what the
- * pinned sources emit. Both otherwise fail silently: nothing in this repository reads those
- * editor modules until a browser renders a document with them, and a stale declaration is a
+ * declarations tsc reads in its place (docs/upstream.md, "Resolving the modules") — has to be
+ * what the pinned sources emit. Both otherwise fail silently: nothing in this repository reads
+ * those editor modules until a browser renders a document with them, and a stale declaration is a
  * shape tsc believes and the runtime does not have.
  *
  * Each fix case below is one member of that line. The proof-mark rendering fix is checked by
@@ -249,9 +249,10 @@ test("the pinned dependency renders every Mermaid diagram type with its own rend
   );
 });
 
-// The timeout is explicit because the case spawns tsc over the whole upstream closure — two
-// TypeScript programs — and that is the work, not a hang. Bun's 5 s default is under the cost on
-// a two-core runner, where the timeout would read exactly like a stale `upstream/`.
+// The guard is explicit because the case runs a `bun` process that builds two TypeScript programs
+// over the whole upstream closure, with no time limit of its own, and that is the work, not a
+// hang. Under 8 busy loops on 2 CPUs it took 23.3 s (package.json's `"//"` note), about half the
+// package script's `--timeout`, where a timeout would read exactly like a stale `upstream/`.
 test("upstream/ is what the pinned sources emit", async () => {
   const generator =
     await Bun.$`bun ${join(import.meta.dir, "..", "scripts", "upstream-declarations.ts")} --check`

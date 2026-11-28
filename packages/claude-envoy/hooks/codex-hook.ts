@@ -15,7 +15,7 @@
 
 import { rm } from "node:fs/promises"
 import { formatOpenAsksSummary } from "@legion/envoy-client/dispatch-execute"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { AnswerCut, DispatchClient } from "@legion/envoy-client/dispatch-http"
 import { messageFor } from "@legion/envoy-client/errors"
 import { sessionConfigFile, sessionDispatchSettings } from "@legion/envoy-client/session-settings"
 import { z } from "zod"
@@ -127,7 +127,7 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
 
   const chosen = sessionConfigFile("codex", process.env)
-  const { dispatch, warnings } = sessionDispatchSettings(chosen, process.env, {
+  const { dispatch, warnings } = await sessionDispatchSettings(chosen, process.env, {
     cwd: input.cwd,
     session: input.session_id,
   })
@@ -140,11 +140,15 @@ async function sessionStart(raw: unknown): Promise<void> {
   }
   process.stdout.write(`${CODEX_DISPATCH_NOTE}\n\n`)
   try {
+    // Under a token that carries a cut, Dispatch answers at that cut: the summary names a person
+    // that the answer left out as left out at the cut, as `dispatch open-asks` does, not as
+    // `asked of nobody`, and prints no `Left out at <cut>:` line (session-hook.ts's `openAsks`).
+    const cut = new AnswerCut()
     const snapshot = await new DispatchClient(dispatch.url, dispatch.credential, fetch, {
       signal: AbortSignal.timeout(OPEN_ASKS_TIMEOUT_MS),
-    }).openAsks(input.session_id)
+    }).openAsks(input.session_id, undefined, cut)
     process.stdout.write(
-      `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url)}\n`,
+      `Dispatch authored-ask summary:\n${formatOpenAsksSummary(snapshot, dispatch.publicUrl ?? dispatch.url, { asOf: cut.cut })}\n`,
     )
   } catch (error) {
     process.stdout.write(`Dispatch authored-ask summary unavailable: ${messageFor(error)}\n`)

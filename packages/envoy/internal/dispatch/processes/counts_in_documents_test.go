@@ -1,5 +1,8 @@
 package processes
 
+//ci:reads docs/site/src/content/docs/dispatch/running-dispatch.md internal/dispatch/processes/counts_in_documents_test.go reads it: the cadences it states must equal processes.HeartbeatInterval and processes.LiveWindow
+//ci:reads packages/envoy/cmd/dispatch/README.md TestTheDocumentsStateTheCadencesThisPackageHolds docnumbers.Check under ../../../../..: the heartbeat and live-window seconds it states must equal the same two constants
+
 import (
 	"path/filepath"
 	"testing"
@@ -28,6 +31,7 @@ import (
 // renewal from its caller and fixes neither: those numbers are internal/dispatch/delivery's
 // intakeHoldTTL and intakeHoldRenew, and delivery registers them itself.
 func TestTheDocumentsStateTheCadencesThisPackageHolds(t *testing.T) {
+	t.Parallel()
 	const (
 		site   = "docs/site/src/content/docs/dispatch/running-dispatch.md"
 		readme = "packages/envoy/cmd/dispatch/README.md"

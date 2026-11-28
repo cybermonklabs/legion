@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  `LegionTurnOutcomeRequest`, the body of `POST /legion/v1/claims/turn-outcome`, takes two
+  optional fields (daemon API contract 232): `httpStatus`, the HTTP status the provider refused the
+  turn with, an integer from 100 to 599, and `unprompted`, true for a turn that ran no prompt the
+  daemon sent, which the daemon then judges from the report. `LegionTurnOutcomeResponse` keeps its
+  `failed` field, and a daemon of this release answers it true only for the report of such a turn
+  that the provider refused with a status that cannot clear, which fails the claim; a run of
+  turns the provider refused fails no claim. The `turn-outcome.json` fixture carries
+  `failed: false`.
+time: 2026-11-23T22:18:21.976763556Z
+custom:
+  Issue: INFRA-4508

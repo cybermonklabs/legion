@@ -53,7 +53,8 @@ func treeOf(root *cobra.Command) string {
 // they are, `start` without --check-config, and the commands a program runs hidden. Each case
 // after the walk is a full invocation against a test double, with its exit code and effect.
 func TestLegionTreeGolden(t *testing.T) {
-	got := treeOf(newRoot(io.Discard, io.Discard))
+	// Not parallel: it sets environment variables of the whole process (legionState).
+	got := treeOf(newRoot(io.Discard, io.Discard, processWorkspace()))
 	if *updateTree {
 		if err := os.WriteFile(treeGolden, []byte(got), 0o644); err != nil {
 			t.Fatal(err)
@@ -71,7 +72,7 @@ func TestLegionTreeGolden(t *testing.T) {
 		legions := legionState(t)
 		config, _ := workflowConfig(t, 13370, "")
 		code, stdout, stderr := legionRun(t, "config", "check", "--config", config)
-		if want := demoCheckConfigOK + tmuxCapabilityGaps; code != 0 || stdout != want || stderr != "" {
+		if want := demoCheckConfigOK + tmuxCapabilityGaps + tmuxPauseUnavailable; code != 0 || stdout != want || stderr != "" {
 			t.Fatalf("legion config check = %d, stdout %q, stderr %q; want 0 and %q", code, stdout, stderr, want)
 		}
 		if _, found, err := registry.Find(legions, "DEMO"); err != nil || found {
@@ -125,7 +126,7 @@ func TestLegionTreeGolden(t *testing.T) {
 		}
 	})
 	t.Run("a mutant that keeps config-reference at the top fails the walk", func(t *testing.T) {
-		mutant := newRoot(io.Discard, io.Discard)
+		mutant := newRoot(io.Discard, io.Discard, processWorkspace())
 		moved := newConfigReferenceCommand(io.Discard, io.Discard)
 		moved.Use = "config-reference --json"
 		mutant.AddCommand(moved)

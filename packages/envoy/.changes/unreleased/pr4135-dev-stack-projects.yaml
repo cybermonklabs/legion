@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+  `scripts/dev-stack.sh` seeds a private project's pod: the account
+  `system:serviceaccount:legion-priv:legion-priv-worker`, which `BROKER_EXCHANGE_ACCOUNTS` maps to
+  `PRIV` for `carol@example.com` and `BROKER_SERVICE_LOGINS` binds as the service `legion-priv`,
+  with its exchange and pod tokens minted by the stack's issuer and exported as
+  `DEV_STACK_PRIV_EXCHANGE_TOKEN_FILE` and `DEV_STACK_PRIV_POD_TOKEN_FILE`. With
+  `--project-access`, the broker asks the stack's own Dispatch about projects
+  (`BROKER_PROJECT_ACCESS_URL`, with a token of its own account), and Dispatch admits that account
+  to its access routes (`DISPATCH_OIDC_ACCOUNTS` and `DISPATCH_ACCESS_ACCOUNTS`). The option also
+  starts the airlock: the broker's proxy, and `dev-airlock-stands` in one docker container
+  (`DEV_STACK_AIRLOCK_IMAGE`). So it needs `docker` on `PATH`, and with `--binaries` it needs
+  `dev-airlock-stands` in that directory beside the other seven; it refuses before it starts
+  anything when either is missing. Without the option none of this is set or started, and the
+  stack needs neither, as before.
+time: 2026-11-16T03:15:40Z
+custom:
+    Issue: pr4135

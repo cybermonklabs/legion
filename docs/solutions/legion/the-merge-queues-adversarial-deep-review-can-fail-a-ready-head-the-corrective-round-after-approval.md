@@ -12,7 +12,7 @@ tags:
   - implementer
   - merger
 date: 2026-09-18
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/. An issue's steps now run in any order the plan validator allows, and a task may leave out any step but the implementer's, so a fixed order of steps here holds only for the default steps.
 module: skills/legion-worker (READY and post-approval mechanics)
 related_issues:
   - "LEGION-105"
@@ -120,8 +120,8 @@ failure is not a flake, and `run rerun --failed` is for a flake. What this round
    has never seen, and it names the PR. Faster than reading the failing test, and it works when
    the failing test is one you wrote and cannot see anything wrong with.
 2. **Reproduce on a scratch merge, never a rebase.** `jj new <head> main@origin` gives a working
-   copy that is exactly what CI ran, with the branch and its bookmark untouched (Sami's rule:
-   rebase only when GitHub says CONFLICTING, and it said MERGEABLE). Run the failing file there;
+   copy that is exactly what CI ran, with the branch and its bookmark untouched (there is no rebase
+   without a merge conflict, and GitHub said MERGEABLE). Run the failing file there;
    apply the candidate fix there; watch it go green. Then `jj new <head>` and make the real commit
    on the branch. The scratch merge stays behind as an empty, described change — `jj abandon` is
    off limits in a shared workspace — so describe it as scratch when you create it.

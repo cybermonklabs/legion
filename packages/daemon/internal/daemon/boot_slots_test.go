@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -64,7 +65,7 @@ func readBootAdmission(t *testing.T, pool *store.Pool) bootAdmission {
 	t.Helper()
 	ctx := context.Background()
 	var got bootAdmission
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		records := record.NewStore()
 		var err error
 		if got.slots, err = records.Slots(ctx, tx); err != nil {
@@ -73,7 +74,9 @@ func readBootAdmission(t *testing.T, pool *store.Pool) bootAdmission {
 		if got.owed, err = records.OwedStarts(ctx, tx, bootProject); err != nil {
 			return err
 		}
-		state, err := projection.Project(ctx, tx, records, bootProject, nil, nil, nil, nil, nil, time.Now().UTC())
+		state, err := projection.Project(ctx, projection.Inputs{
+			Tx: tx, Store: records, Project: bootProject, Now: time.Now().UTC(),
+		})
 		if err != nil {
 			return err
 		}
@@ -109,6 +112,7 @@ func deliverableStarts(t *testing.T, pool *store.Pool, issue string) int {
 // rule, which is exactly what the boot resumes. The resume's task therefore waits, and what the
 // test watches is a durable row rather than a decision the daemon could make again for free.
 func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -122,7 +126,7 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 		t.Fatal(err)
 	}
 	root, child := bootProject+"-1", bootProject+"-2"
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := records.PutIssue(ctx, tx, bootIssue(root, root, "in_progress", phase.Admitted)); err != nil {
 			return err
 		}
@@ -186,22 +190,33 @@ func TestASecondBootOnTheSameStoreLeavesEverySlotStartAndPlaceAsItWas(t *testing
 }
 
 // issueSlotsMigration is the migration that gives an issue its own slot, the first schema change
-// of this release (dispatch://INFRA-980). It is the one migration preReleaseStore withholds, and
-// so the one every test of the first boot watches Store.Migrate apply.
+// of this release (dispatch://INFRA-980). preReleaseStore withholds it, so every test of the first
+// boot watches Store.Migrate apply it.
 const issueSlotsMigration = 20261103183833
 
+// dispatchValueSequencesMigration is the one later migration that names what issueSlotsMigration
+// creates: it gives dispatch_issues.parent, which issueSlotsMigration adds, a sequence of its own
+// and an index. preReleaseStore withholds it beside issueSlotsMigration, since it fails on a
+// database that lacks that column.
+const dispatchValueSequencesMigration = 20261120055717
+
 // preReleaseStore is a database of this test's own carrying every embedded migration except
-// issueSlotsMigration, each applied as Store.Migrate applies it — the migration's SQL, the
-// widening of schema_version for a timestamped version, and the version row.
+// issueSlotsMigration and dispatchValueSequencesMigration, each applied as Store.Migrate applies
+// it — the migration's SQL, the widening of schema_version for a timestamped version, and the
+// version row.
 //
-// It withholds that one migration rather than cutting the series at its version because the two
+// It withholds issueSlotsMigration rather than cutting the series at its version because the two
 // halves of a pre-release store are wanted at once: the schema must take this release's own
 // writers, so a test seeds its records through record.Store.PutIssue and every column that
-// writer names is there, while what Store.Migrate is left to find is exactly the issue slots,
+// writer names is there, while what Store.Migrate is left to find is the issue slots,
 // design_gates.ever_opened and the lifecycle backfill that migration brings. Store.Migrate
 // applies each migration the database has not recorded a row for, per version rather than by
-// max(version) (store.migrate and store.apply), so the gap one withheld version leaves is a
-// migration it still runs, and no later migration names anything that one creates.
+// max(version) (store.migrate and store.apply), so the gap a withheld version leaves is a
+// migration it still runs. One later migration names what issueSlotsMigration creates,
+// dispatchValueSequencesMigration, so it is withheld too, and Store.Migrate applies the two in
+// version order, the column before the migration that names it. No test of the first boot writes
+// the copy of Dispatch's issues before it migrates, so that second migration finds no row of the
+// copy and marks no project for a refill.
 //
 // It is built rather than checked in because the first boot on the release is reachable no other
 // way: nothing on intake.DaemonBooted says which boot is the first, so the grant that keeps every
@@ -210,24 +225,30 @@ const issueSlotsMigration = 20261103183833
 // it from the schema that precedes it.
 func preReleaseStore(t *testing.T) *store.Store {
 	t.Helper()
-	ctx := context.Background()
-	st, err := store.Open(ctx, testdb.Database(t, "legion_first_boot"))
+	st, _ := storeWithholding(t, "legion_first_boot", issueSlotsMigration, dispatchValueSequencesMigration)
+	return st
+}
+
+// storeWithholding is a database of the test's own, named after database, carrying every embedded
+// migration but versions, each applied as Store.Migrate applies it (applyMigrationsByHand), so a
+// later Store.Migrate, the test's own or a booting daemon's, applies the versions it withholds. It
+// answers the store, for the test's seeds and reads, and its URL, for a daemon's configuration.
+func storeWithholding(t *testing.T, database string, versions ...int) (*store.Store, string) {
+	t.Helper()
+	dsn := testdb.Database(t, database)
+	st, err := store.Open(context.Background(), dsn)
 	if err != nil {
-		t.Fatalf("open the pre-release store: %v", err)
+		t.Fatalf("open the store of %s: %v", database, err)
 	}
 	t.Cleanup(st.Close)
 	all, err := migrations.All()
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
-	withheld := make([]migrations.Migration, 0, len(all))
-	for _, migration := range all {
-		if migration.Version != issueSlotsMigration {
-			withheld = append(withheld, migration)
-		}
-	}
-	applyMigrationsByHand(t, st, withheld)
-	return st
+	applyMigrationsByHand(t, st, slices.DeleteFunc(all, func(migration migrations.Migration) bool {
+		return slices.Contains(versions, migration.Version)
+	}))
+	return st, dsn
 }
 
 // applyMigrationsByHand applies each migration of set to st, in the order set holds them, as
@@ -241,7 +262,7 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 	ctx := context.Background()
 	widened := false
 	for _, migration := range set {
-		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+		if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
 			}
@@ -269,11 +290,13 @@ func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migra
 // waits in accepting while its children work, and the two in merging, are each granted a row,
 // because that is the rule the migration was written for — a merger merges the pull request
 // itself, so its phase is work — and the boot's own first pass takes those three rows back: an
-// issue holds a row until its work is past its review, except while it waits on another issue
-// (blockers.waitsOf), and accepting, retro and merging are past it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so the
-// root that never ran takes nothing while the count stands at or above the cap, and takes a
-// row at the first pass where the count is under it.
+// issue holds a row while it stands in a phase that keeps one, except while it waits on another
+// issue (blockers.waitsOf), and accepting, retro and merging keep none (record.KeepsSlot). The
+// cap then does the draining: the surplus is above it, so the root that never ran takes nothing
+// while the count stands at or above the cap, and takes a row at the first pass where the count
+// is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	st := preReleaseStore(t)
 	pool := st.Pool()
@@ -286,7 +309,7 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	building, testing := bootProject+"-3", bootProject+"-4"
 	heldReady, merging, lingerChild := bootProject+"-5", bootProject+"-6", bootProject+"-8"
 	lingers := time.Now().UTC().Add(time.Hour)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		// A root whose architect is writing its spec, a running tree whose own root waits in
 		// accepting while its children work, and a tree that lingers after its close. Each
 		// root holds the one slot its tree held before the release, and no child holds any.
@@ -356,8 +379,8 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 
 	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
 	// the loop admits while the holders are under the cap, never at it. The two in merging are
-	// finished first, and neither frees a row: their work stands past its review, so the first
-	// pass above took the rows the migration granted them back.
+	// finished first, and neither frees a row: merging keeps none, so the first pass above took
+	// the rows the migration granted them back.
 	finish(t, pool, records, heldReady)
 	finish(t, pool, records, merging)
 	finish(t, pool, records, building)
@@ -406,14 +429,14 @@ func slotHolders(t *testing.T, pool *store.Pool) []string {
 func finish(t *testing.T, pool *store.Pool, records record.Store, key string) {
 	t.Helper()
 	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		issue, err := records.Issue(ctx, tx, key)
 		if err != nil {
 			return err
 		}
 		// Its work is over, which on this release is the phase the merge leaves: merging is the
-		// merger's own phase, which holds no slot, since it is past the issue's review
-		// (record.PhaseKeepsSlot), and the merge's close is what ends the issue.
+		// merger's own phase, which holds no slot (record.PhaseKeepsSlot), and the merge's close
+		// is what ends the issue.
 		issue.Phase, issue.Status, issue.DispatchStatus = phase.Done, "done", "done"
 		return records.PutIssue(ctx, tx, *issue)
 	}); err != nil {

@@ -160,6 +160,7 @@ func readJobsComplete(t *testing.T, ctx context.Context, pool *store.Pool, runID
 // burst goes quiet. The production job is stored finished, another job in that same listing is
 // still running, so the run's jobs stay incomplete, and the change log holds a run_job change.
 func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -177,7 +178,7 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	fake.mu.Unlock()
 	clock := newFakeJobClock()
 	natsClient := intakeTestClient(t)
-	jobs := newJobIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	go func() { defer close(done); jobs.Run(runCtx) }()
@@ -223,6 +224,7 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 // keeps the configuration observed with the event through the delayed listing and stores that
 // listed job's configured step.
 func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	const step = "Run ./.github/actions/apply"
@@ -240,7 +242,7 @@ func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
 	}
 	fake.mu.Unlock()
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	clock.Advance(jobQuiet)
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)
@@ -262,11 +264,12 @@ func TestAJobIntakeRecordsTheConfiguredProductionApplyStep(t *testing.T) {
 // TestAJobOfAnUntrackedRunCostsNoGitHubCall: a job of a run Dispatch does not store schedules
 // nothing and asks GitHub for nothing, not even a token.
 func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	fake := newJobsFake(t)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 999))
 	clock.Advance(jobMaxWait)
 	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
@@ -277,12 +280,13 @@ func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
 // TestAJobOfAnotherRepositoryIsIgnored: a job of a repository other than the deploy repository
 // schedules nothing, even when a run of that number is stored.
 func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/other", 500))
 	clock.Advance(jobMaxWait)
 	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
@@ -293,12 +297,13 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 // TestABurstOfJobsOfOneRunReadsItsJobsOnce: thirty job events of one run within a second are one
 // read.
 func TestABurstOfJobsOfOneRunReadsItsJobsOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	for range 30 {
 		jobs.receive(ctx, jobPayload("acme/widgets", 500))
 		clock.Advance(time.Second / 30)
@@ -312,12 +317,13 @@ func TestABurstOfJobsOfOneRunReadsItsJobsOnce(t *testing.T) {
 // TestABurstThatKeepsComingStillReadsWithinTenSeconds: an event every second for fifteen seconds
 // never goes quiet, yet the run is read at ten seconds, and again once the rest of the burst ends.
 func TestABurstThatKeepsComingStillReadsWithinTenSeconds(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	for second := range 15 {
 		jobs.receive(ctx, jobPayload("acme/widgets", 500))
 		clock.Advance(time.Second)
@@ -338,6 +344,7 @@ func TestABurstThatKeepsComingStillReadsWithinTenSeconds(t *testing.T) {
 // stale listing is the first job-row write, so it must leave the run available for the completion
 // listing rather than permanently mark it complete.
 func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedRunningDeployRun(t, ctx, pool)
 	fake := newJobsFake(t)
@@ -358,7 +365,7 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 	}
 	fake.mu.Unlock()
 
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), newFakeJobClock(), nil)
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), newFakeJobClock(), nil)
 	jobs.read(ctx, runKey{repo: "acme/widgets", runID: 500}, Production{})
 	if err := <-completed; err != nil {
 		t.Fatalf("store the run completion: %v", err)
@@ -394,6 +401,7 @@ func TestAStaleJobsReadStaysForTheBackfill(t *testing.T) {
 // writes every job finished -- answers with the production job still running, and lands after:
 // the stored jobs stay finished and the run's jobs stay complete.
 func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -408,7 +416,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	}
 	fake.mu.Unlock()
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	read := make(chan struct{})
 	go func() { defer close(read); clock.Advance(jobQuiet) }()
@@ -450,7 +458,8 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 // TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd: GitHub answering 500 to the jobs read is
 // a WARN and changes no row; the run stays on the backfill's list, and its end reads its jobs.
 func TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd(t *testing.T) {
-	logs := captureLogs(t)
+	t.Parallel()
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -464,7 +473,7 @@ func TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd(t *testing.T) {
 	}
 	fake.mu.Unlock()
 	clock := newFakeJobClock()
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
 	clock.Advance(jobQuiet)
 
@@ -532,6 +541,7 @@ func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
 // opened one listing per run at once, which past GitHub's 100 concurrent requests rate-limits the
 // App.
 func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	const runs = 3 * reconcilePartialConcurrency
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
@@ -561,7 +571,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	t.Cleanup(releaseOnce)
 
 	clock := &concurrentJobClock{}
-	jobs := newJobIntake(nil, pool, nil, github, clock, nil)
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, github, clock, nil)
 	for id := int64(600); id < 600+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
@@ -598,7 +608,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 // store its run's jobs, and their jobs would not be stored. Each read finishes inside its own
 // deadline instead, and every run's jobs are stored.
 func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	const (
 		waves       = 16
@@ -609,9 +619,7 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 		// runs wait for a slot, so with the deadline started before the wait their reads expire.
 		deadline = 4 * time.Second
 	)
-	timeout := intakeMessageTimeout
-	intakeMessageTimeout = deadline
-	t.Cleanup(func() { intakeMessageTimeout = timeout })
+	tuningFor(t).messageTimeout = deadline
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	for id := int64(700); id < 700+runs; id++ {
 		if err := UpsertRun(ctx, pool, changeTestRun(id, DeliveryRunKindDeploy, started.Add(-time.Minute), started)); err != nil {
@@ -631,7 +639,7 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	})
 
 	clock := &concurrentJobClock{}
-	jobs := newJobIntake(nil, pool, nil, fake.newTestClient(), clock, nil)
+	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, nil)
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
@@ -709,7 +717,7 @@ func (c *holdingJobClock) At(at time.Time, f func()) jobTimer {
 // holder rather than this stopped delivery because the stop drains the subscription before it
 // answers anything (intakeDelivery.stop).
 func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(t *testing.T) {
-	logs := captureLogs(t)
+	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedRunningDeployRun(t, ctx, pool)
@@ -720,7 +728,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	fake := newJobsFake(t)
 	clock := newHoldingJobClock()
 	natsClient := intakeTestClient(t)
-	jobs := newJobIntake(natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	// j.ctx is Run's context: this row sets the field Run sets and ends it where Run's caller
 	// would, so the moment below is the one Run leaves open rather than one the row invented.
 	runCtx, endRun := context.WithCancel(ctx)
@@ -729,7 +737,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 	// The durable as a take-over leaves it, created here because Run is not what binds it. It
 	// starts at new messages (jobConsumerConfig), so a durable an earlier row left on the
 	// package's shared stream is recreated and handed this row's events alone.
-	wanted := jobConsumerConfig()
+	wanted := jobConsumerConfig(tuningFor(t))
 	if err := natsClient.JS().DeleteConsumer(bus.Stream, wanted.Durable); err != nil && !errors.Is(err, natsgo.ErrConsumerNotFound) {
 		t.Fatalf("delete the job durable: %v", err)
 	}

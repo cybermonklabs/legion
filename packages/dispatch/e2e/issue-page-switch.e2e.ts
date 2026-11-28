@@ -1,3 +1,4 @@
+import { EMPTY_STATE_LINES } from "../web/src/features/issue-page/page-words";
 import { createIssue, createProject } from "./api";
 import { withIssuePage } from "./issue-page-option";
 import { openRail } from "./rail";
@@ -98,33 +99,63 @@ function newPageHeading(page: Page): Locator {
   return page.locator("[data-issue-page]").getByRole("heading", { level: 1 });
 }
 
-/** The new page as the parts so far draw it: the key and the title as the page's one `h1`, no
- *  tab, the view row that part D fills, and nothing else. */
+/** The new page as the parts so far draw it: the title as the page's one `h1`, no tab, the
+ *  header, which draws the key and the title, the view row, Dashboard at the issue's own address,
+ *  the Contents pane and the Spec view, and nothing else but what the foot draws - the box to
+ *  write in and the read mark - which `e2e/issue-page-l.e2e.ts` reads. */
 async function expectNewPageAlone(page: Page, issue: Seeded): Promise<void> {
   const newPage = page.locator("[data-issue-page]");
   await expect(newPageHeading(page)).toHaveText(issue.title);
+  await expect(newPage.locator("h1"), "the new page draws an h1 beside its title").toHaveCount(1);
   // Reads the whole page: a chooser that drew both pages fails here (R4: in place of today's page).
   await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveCount(0);
   await expect(newPage.getByRole("tab")).toHaveCount(0);
-  // The part that fills a slot changes these two: part D fills the view row
-  // (`[data-filter-row]`), and each other slot drawn so far adds no text or control.
+  // A slot that is filled adds its selector here: so far the header (`[data-issue-header]`), the
+  // view row (`[data-filter-row]`), Dashboard (`[data-dashboard]`,
+  // dispatch://INFRA-5702/spec#b-r-new-page), the Contents pane
+  // (`[data-testid="issue-contents"]`) and the Spec view (`[data-spec-body]`), whose own rows read
+  // them; the issue's own address draws Dashboard, which for an issue that holds nothing says that
+  // nothing waits on the reader, and each other slot drawn so far adds no text or control. The box
+  // at the foot (`[data-testid="issue-composer"]`) and the read mark at the outline's end
+  // (`[data-outline-end]`) are left out of both counts, as a filled slot is.
+  const footSlot = '[data-testid="issue-composer"], [data-outline-end]';
+  const filled = `[data-issue-header], [data-filter-row], [data-dashboard], [data-testid="issue-contents"], [data-spec-body], ${footSlot}`;
+  const header = newPage.locator("[data-issue-header]");
   const row = newPage.locator("[data-filter-row]");
+  const dashboard = newPage.locator("[data-dashboard]");
+  await expect(header).toHaveCount(1);
   await expect(row).toHaveCount(1);
+  const atIssue = new URL(page.url()).pathname === `/issues/${issue.key}`;
+  await expect(dashboard).toHaveCount(atIssue ? 1 : 0);
+  if (atIssue) {
+    await expect(dashboard.getByText(EMPTY_STATE_LINES.dashboard, { exact: true })).toBeVisible();
+  }
   await expect
     .poll(
       () =>
-        newPage.evaluate((root) => {
-          const rowText = root.querySelector<HTMLElement>("[data-filter-row]")?.innerText ?? "";
-          return (root as HTMLElement).innerText.replace(rowText, " ").replace(/\s+/g, " ").trim();
-        }),
-      { message: "the new page draws text outside its header and its view row" }
+        newPage.evaluate((root, parts) => {
+          let text = (root as HTMLElement).innerText;
+          for (const part of root.querySelectorAll<HTMLElement>(parts)) {
+            text = text.replace(part.innerText, " ");
+          }
+          return text.replace(/\s+/g, " ").trim();
+        }, filled),
+      {
+        message:
+          "the new page draws text outside its header, its view row, Dashboard, the Contents pane, the Spec view and its foot",
+      }
     )
-    .toBe(`${issue.key} ${issue.title}`);
+    .toBe("");
   const controls = "button, a, input, select, textarea";
   expect(
-    await newPage.locator(controls).count(),
-    "the new page draws a control outside its view row"
-  ).toBe(await row.locator(controls).count());
+    await newPage
+      .locator(controls)
+      .evaluateAll(
+        (found, parts) => found.filter((control) => control.closest(parts) === null).length,
+        filled
+      ),
+    "the new page draws a control outside its header, its view row, Dashboard, the Contents pane, the Spec view and its foot"
+  ).toBe(0);
 }
 
 /** Every request to `/api/` or `/ws/` the page sends, with its body, and every frame it sends on

@@ -1,0 +1,29 @@
+---
+type: requirement
+id: sessions-keep-their-messages
+kind: behavior
+text:
+  - Envoy keeps each message of a session until the session reads it.
+---
+type: requirement
+id: a-session-reads-its-messages-in-order
+kind: behavior
+parent: sessions-keep-their-messages
+text:
+  - A session reads its messages in the order that Envoy received them.
+---
+type: check
+id: messages-come-in-the-order-of-their-writes
+serves: a-session-reads-its-messages-in-order
+subject: code
+procedure: program
+test:
+  runner: go
+  selector: github.com/sjawhar/envoy/cmd/listener TestMessagesComeInTheOrderOfTheirWrites
+  job: go-checks
+claim: Two messages that one sender writes reach the session in the order of the writes.
+procedure_text:
+  - The program writes two messages from one sender and reads the session.
+  - It must find them in the order of the writes.
+failing_example:
+  - A listener that delivers the newest message first.

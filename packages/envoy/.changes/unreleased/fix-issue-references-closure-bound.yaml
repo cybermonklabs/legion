@@ -1,0 +1,7 @@
+kind: Fixed
+body: |-
+  `GET /api/v1/issues/{key}/references` runs its reference closure walk in a read transaction of its
+  own under a 2 s `statement_timeout`, and a walk past that bound reads nothing and answers `503
+  REFERENCES_TIMEOUT`, which `dispatch read --issue` prints as references unavailable. Before, every
+  issue read ran the walk to its end, and on 2026-11-20 the walks held Dispatch's database at full
+  CPU.

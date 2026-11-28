@@ -4,7 +4,7 @@
  *
  *  Every row here reads what the browser does with one fixed answer - the listing, the focus,
  *  the address a row navigates to, the panels a chord toggles - so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  What stayed in `keyboard-palette.e2e.ts`, and why, is written there.
  */
 import { expect } from "@playwright/test";
@@ -162,7 +162,8 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   // `g p` opens the one bar, where a project is a row the reader types their way to, and
   // Enter opens the row it highlights - main's own assertions. The count is the Projects
   // group's rather than main's dialog-wide one, for the reason this row's entry in
-  // `e2e/stub/moved-row-notes.ts` gives, which `e2e/row-map.md` publishes.
+  // `e2e/stub/moved-row-notes.ts` gives, which the row map publishes
+  // (`bun e2e/tools/row-map.ts` generates it, and git does not keep it).
   await input.fill("operations");
   const projects = dialog.getByRole("group", { name: "Projects" });
   await expect(projects).toBeVisible();

@@ -2,12 +2,15 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { actorActText, type SessionAnswer } from "@legion/contracts";
 import { urlForText } from "@legion/contracts/log-text";
+import { deletedMark, editedMark } from "./actor-text";
 import { dispatchWordsText, QUESTION_HEAD, textHead } from "./ask-answer";
+import { leftOutWords, type ReadTime } from "./dispatch-commands/as-of";
 import type { DispatchConfigResolution } from "./dispatch-config";
-import { DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
+import { AnswerCut, DispatchClient, DispatchNoRouteError, isNoRoute } from "./dispatch-http";
 import { ownerTitle } from "./dispatch-owner";
 import { sessionDirectory, writeAtomically } from "./dispatch-session-directory";
 import { messageFor } from "./errors";
+import { jsonLineRecord } from "./json-line-record";
 import { sessionAnswerRelationPhrase } from "./session-answer-relations";
 
 /**
@@ -68,11 +71,12 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * One item as both the per-request list and `dispatch answers` print it, in this order: the time
  * the person wrote it, the person (with the agent that wrote it for them, through
  * `actorActText`) and what it is to the session (with `replaces an earlier answer` on an answer
- * that replaced one, and `edited <time>` on an edited comment); its `dispatch://` reference and
- * its issue or document, or that it is a direct message; the ask's question, cut to 200
- * characters, on an answer, on a decline and on a reply in an ask's thread; on an answer,
- * `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:` with the
- * sentences Dispatch wrote for the asking agent; then the person's words in full.
+ * that replaced one, `edited <time>` on an edited comment or message, and the mark every read
+ * prints for a post its author withdrew (`deletedMark`), whose words the server sends empty); its
+ * `dispatch://` reference and its issue or document, or that it is a direct message; the ask's
+ * question, cut to 200 characters, on an answer, on a decline and on a reply in an ask's thread;
+ * on an answer, `Selected:` with the options chosen or `none`; on a decline, `Dispatch's words:`
+ * with the sentences Dispatch wrote for the asking agent; then the person's words in full.
  *
  * The person's own words and Dispatch's stand on lines of their own, the label naming whose
  * each is, so nobody reads Dispatch's instruction as something the person wrote. The words print
@@ -80,10 +84,17 @@ export function isNoAnswersRoute(error: unknown): boolean {
  * newer Dispatch adds keeps them.
  */
 export function renderSessionAnswerItem(item: SessionAnswer): string {
+  return renderSessionAnswerItemAt(item, undefined);
+}
+
+function renderSessionAnswerItemAt(item: SessionAnswer, asOf: string | undefined): string {
   const phrase = sessionAnswerRelationPhrase(item.relation);
   const relation = `${phrase}${item.replaced === true ? " (replaces an earlier answer)" : ""}`;
   const head = [item.at, actorActText(`user ${item.author.id}`, item.author.act), relation];
-  if (item.edited_at !== undefined) head.push(`edited ${item.edited_at}`);
+  if (item.edited_at !== undefined) head.push(editedMark(item.edited_at));
+  // No read of a deleted post gives any part of its body: the server sends its text empty, so no
+  // words line prints, and the head line ends with the one mark every read prints.
+  if (item.deleted_at !== undefined) head.push(deletedMark(item.deleted_at, item.deleted_by));
   const owner = item.owner === null ? undefined : ownerTitle(item.owner);
   const where =
     item.ref === null
@@ -95,8 +106,12 @@ export function renderSessionAnswerItem(item: SessionAnswer): string {
   if (item.ask !== undefined) {
     // The question is the ask's, whoever asked it - the session, another session or a person -
     // and not what the person wrote in this item, which prints whole below; it is cut to the
-    // length every surface quotes a question at (QUESTION_HEAD).
-    lines.push(`Question: ${textHead(item.ask.question, QUESTION_HEAD)}`);
+    // length every surface quotes a question at (QUESTION_HEAD). An answer at a cut leaves out a
+    // question the records at the cut cannot give, and it prints as left out at the cut, or by
+    // Dispatch where the cut is not known (`leftOutWords`).
+    const question: string | undefined = item.ask.question;
+    const text = question === undefined ? leftOutWords(asOf) : textHead(question, QUESTION_HEAD);
+    lines.push(`Question: ${text}`);
   }
   if (item.kind === "answer") {
     const selected = item.selected ?? [];
@@ -126,19 +141,28 @@ function windowOf(
   };
 }
 
+/** The instant (epoch ms) a list counts its 72 hours back from: the cut its answer named
+ *  (`SessionAnswersCache.as_of`), or `now()` for a list of the present. A cut that does not parse
+ *  counts as none, so no read throws on it. */
+function windowEnd(asOf: string | undefined, now: () => number): number {
+  const cut = asOf === undefined ? Number.NaN : Date.parse(asOf);
+  return Number.isNaN(cut) ? now() : cut;
+}
+
 /**
  * What the people wrote in each of `items`, and what each is to the session, one string per item:
  * its kind, id, author and times, the options chosen, the words and its relation.
  * `readSessionAnswers` gives it for every item Dispatch sent inside the read's 72-hour window,
  * the ones its list shows and the ones the character cap left out, so a host comparing two reads
- * (`sessionAnswersChanged`) tells a new item, an answer or comment a person changed, or an item
- * that became or stopped being the session's own, from a list that only lost items to the window
- * or changed what the session or Dispatch says around them (an issue's title, an ask's question,
- * a cached list's header). An item the cap leaves out counts too: a newest item longer than the
- * cap, or a comment an edit made too long to fit, is shown to nobody, and a host that compared
- * only the items shown would go on showing the person's old words as current. Dispatch cuts the
- * list itself (`max_chars`) after the first item that takes its count past the cap, so it sends
- * such an item; the items after its cut, which no list shows, reach the host only as `total`.
+ * (`sessionAnswersChanged`) tells a new item, an answer, comment or message a person changed, or
+ * an item that became or stopped being the session's own, from a list that only lost items to the
+ * window or changed what the session or Dispatch says around them (an issue's title, an ask's
+ * question, a cached list's header). An item the cap leaves out counts too: a newest item longer
+ * than the cap, or a comment an edit made too long to fit, is shown to nobody, and a host that
+ * compared only the items shown would go on showing the person's old words as current. Dispatch
+ * cuts the list itself (`max_chars`) after the first item that takes its count past the cap, so it
+ * sends such an item; the items after its cut, which no list shows, reach the host only as
+ * `total`.
  *
  * The author is the rendered act (`actorActText`), not the person's id alone, so the same words
  * from the person themselves and from an agent acting for them are two different items: a host
@@ -156,6 +180,7 @@ export function sessionAnswersWords(items: readonly SessionAnswer[]): string[] {
       actorActText(item.author.id, item.author.act),
       item.at,
       item.edited_at ?? null,
+      item.deleted_at ?? null,
       item.selected ?? null,
       item.text,
       item.relation,
@@ -178,9 +203,9 @@ function wordTime(word: string): number {
 
 /**
  * Whether a read whose `words` are `next` shows something that a list with the `words` `shown`
- * did not: an item new to it, an answer or comment a person changed, or an item whose relation to
- * the session changed (a string `shown` lacks); or an item `shown` held that is gone from the read
- * while its time is still inside the read's window, at or after `since`
+ * did not: an item new to it, an answer, comment or message a person changed, or an item whose
+ * relation to the session changed (a string `shown` lacks); or an item `shown` held that is gone
+ * from the read while its time is still inside the read's window, at or after `since`
  * (`SessionAnswersRead.since`), which a person retracted (an answer set back to none) or Dispatch
  * removed. An item gone because its time left the window is no change: the window moved, and
  * nothing a person wrote did. A string whose time cannot be read, or a read with no `since`,
@@ -227,6 +252,11 @@ export interface RenderSessionAnswersOptions {
   /** Set when `dispatch answers` cannot read the Dispatch the list came from, since it has no
    *  answers route: the left-out line then counts the items left out and names no command. */
   readonly withoutCommand?: boolean | undefined;
+  /** The cut the list was read at, where its answer named one in `Dispatch-As-Of`: Dispatch
+   *  answers a token that carries a cut at that cut, whatever the read sends. An item whose ask's
+   *  question the answer left out prints `Question: left out at <cut>`, or `Question: left out by
+   *  Dispatch` where this is unset. Nothing else of the list changes. */
+  readonly asOf?: string | undefined;
 }
 
 /**
@@ -261,7 +291,7 @@ export function renderSessionAnswers(
   const blocks: string[] = [];
   let length = header.length;
   for (const item of inWindow) {
-    const block = renderSessionAnswerItem(item);
+    const block = renderSessionAnswerItemAt(item, options.asOf);
     const after = count - blocks.length - 1;
     const needed =
       length + 2 + block.length + (after === 0 ? 0 : 2 + leftOutLine(after, namesCommand).length);
@@ -278,17 +308,19 @@ export function renderSessionAnswers(
   return text;
 }
 
-/** What `dispatch answers` prints: every item of the 72 hours before `now`, newest first, in the
- *  per-request list's item format and with no cap, or a line saying there is none. */
-export function renderSessionAnswersList(
-  items: readonly SessionAnswer[],
-  options: { readonly now: number | Date }
-): string {
-  const shown = withinWindow(items, Number(options.now));
-  if (shown.length === 0) return "No person wrote to this session in the last 72 hours.";
+/** What `dispatch answers` prints: every item of the 72 hours before `time`, newest first, in the
+ *  per-request list's item format and with no cap, or a line saying there is none. A list read at
+ *  a cut counts the 72 hours back from the instant its answer named (`at`), and says so in the
+ *  words the read names the cut in (`asOf`). */
+export function renderSessionAnswersList(items: readonly SessionAnswer[], time: ReadTime): string {
+  const asOf = "asOf" in time ? time.asOf : undefined;
+  const now = "asOf" in time ? time.at : time.now;
+  const window = asOf === undefined ? "in the last 72 hours" : `in the 72 hours before ${asOf}`;
+  const shown = withinWindow(items, now);
+  if (shown.length === 0) return `No person wrote to this session ${window}.`;
   return [
-    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session in the last 72 hours, newest first, word for word:`,
-    ...shown.map(renderSessionAnswerItem),
+    `${shown.length} ${shown.length === 1 ? "item" : "items"} people wrote to this session ${window}, newest first, word for word:`,
+    ...shown.map((item) => renderSessionAnswerItemAt(item, asOf)),
   ].join("\n\n");
 }
 
@@ -304,6 +336,26 @@ export function sessionAnswersFailureLine(reason: string): string {
   return `${FAILURE_MARKER}${reason.replace(/\s+/g, " ").trim()}); run \`dispatch answers\`.]`;
 }
 
+/** Only an explicit cut answer can omit the list and count. Missing, unnamed members in a 200
+ *  do not make it an answer. */
+export function sessionAnswersWereLeftOut(
+  response: unknown,
+  cut: { leftOut(pointer: string): boolean }
+): boolean {
+  return (
+    cut.leftOut("/items") &&
+    cut.leftOut("/total") &&
+    typeof response === "object" &&
+    response !== null &&
+    "session_id" in response &&
+    typeof response.session_id === "string" &&
+    "since" in response &&
+    typeof response.since === "string" &&
+    !("items" in response) &&
+    !("total" in response)
+  );
+}
+
 /** The last list read for a session from one Dispatch, as memory and `answers.json` keep it. */
 export interface SessionAnswersCache {
   /** The Dispatch URL the list was read from: only a read of that URL carries it. */
@@ -314,11 +366,15 @@ export interface SessionAnswersCache {
   readonly total: number;
   /** `SessionAnswersResponse.items` of that read, newest first. */
   readonly items: readonly SessionAnswer[];
+  /** The cut that read's answer named in `Dispatch-As-Of`, an answer under a token that carries
+   *  a cut; absent for an answer of the present, and in a file an older build wrote. */
+  readonly as_of?: string;
 }
 
 type ReadOutcome =
   | { readonly cache: SessionAnswersCache }
   | { readonly failure: string }
+  | { readonly omittedAt: string }
   /** Dispatch answered that it has no answers route (`isNoAnswersRoute`). */
   | { readonly noRoute: true };
 
@@ -334,6 +390,11 @@ interface SessionEntry {
   /** Whether a read already gave the session the notice that the URL has no answers route, since
    *  the last read of it that answered with a list. */
   noRouteReported: boolean;
+  /** Whether a read of that URL was answered with the list left out at a cut
+   *  (`sessionAnswersWereLeftOut`) since the last read of it that answered with a list: the next
+   *  read asks at a cut, as it does where the list kept one. Memory only: `answers.json` keeps
+   *  lists. */
+  omittedAtCut: boolean;
 }
 
 interface SessionAnswersState {
@@ -348,8 +409,8 @@ interface SessionAnswersState {
  *  `envoy-config.ts`'s kept command outcomes do, because Oh My Pi loads each extension instance
  *  (a subagent's included) as a fresh module, and the parent and every subagent share one read
  *  and one cache per session and Dispatch URL. Its shape (`SessionAnswersState`) is its contract
- *  across bundles: a change to it takes a new key (`.v4`). */
-const STATE_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers.v3");
+ *  across bundles: a change to it takes a new key. */
+const STATE_KEY: unique symbol = Symbol.for("legion.pi-envoy.session-answers.v4");
 const processGlobal = globalThis as typeof globalThis & {
   [STATE_KEY]?: SessionAnswersState;
 };
@@ -387,6 +448,7 @@ function readCacheFile(directory: string, url: string): SessionAnswersCache | un
         read_at: value.read_at,
         total: value.total,
         items: value.items as SessionAnswer[],
+        ...("as_of" in value && typeof value.as_of === "string" ? { as_of: value.as_of } : {}),
       };
     }
   } catch {
@@ -413,23 +475,25 @@ export interface ReadSessionAnswersOptions {
   readonly fetchImpl?: typeof fetch | undefined;
   /** The request's own abort: it stops this call's wait, never the shared read. */
   readonly signal?: AbortSignal | undefined;
-  /** The clock (epoch ms): the window, the read time and the 404 back-off read it. */
+  /** The clock (epoch ms): the read time, the 404 back-off and the window of a list of the
+   *  present read it; a list read at a cut counts its window back from the cut instead. */
   readonly now?: (() => number) | undefined;
   /** How long this call waits on the read (`SESSION_ANSWERS_DEADLINE_MS` by default). */
   readonly deadlineMs?: number | undefined;
 }
 
 export interface SessionAnswersRead {
-  /** The message to carry: the list, the list as last read, or the failure line; undefined when
-   *  there is nothing to show, Dispatch has no answers route, or Dispatch is not configured. */
+  /** The message to carry: the list, the list as last read, a notice that Dispatch left it out at
+   *  a cut, or the failure line. Undefined when there is nothing to show. */
   readonly text: string | undefined;
   /** `fresh`: this request's read answered. `cache`: it did not, and the last list read stands
    *  in. `failure`: it did not and no list read has an item inside the 72 hours, so `text` is the
    *  failure line. `unavailable`: Dispatch answered that it has no answers route
    *  (`isNoAnswersRoute`, or that answer's 5-minute back-off) and no list read has an item inside
    *  the 72 hours, so the request carries nothing: the failure line would send the agent to
-   *  `dispatch answers`, which that Dispatch refuses too. `off`: nothing configures Dispatch. */
-  readonly source: "fresh" | "cache" | "failure" | "unavailable" | "off";
+   *  `dispatch answers`, which that Dispatch refuses too. `omitted`: Dispatch named the list
+   *  and count absent at a cut. `off`: nothing configures Dispatch. */
+  readonly source: "fresh" | "cache" | "failure" | "unavailable" | "omitted" | "off";
   /** When the list shown was read (`fresh` and `cache`). */
   readonly readAt?: string;
   /** `sessionAnswersWords` of every item Dispatch sent inside the 72-hour window the list was
@@ -438,9 +502,9 @@ export interface SessionAnswersRead {
    *  gives `[]` and no `text`, so a host still learns that the items of a list it shows left the
    *  read (`sessionAnswersChanged`). */
   readonly words?: readonly string[];
-  /** The start of that window (ISO 8601 UTC), 72 hours before the render (`fresh` and `cache`):
-   *  an item `words` no longer holds whose time is at or after it left the read inside the window
-   *  (`sessionAnswersChanged`). */
+  /** The start of that window (ISO 8601 UTC), 72 hours before the render, or before the cut for
+   *  a list read at one (`fresh` and `cache`): an item `words` no longer holds whose time is at or
+   *  after it left the read inside the window (`sessionAnswersChanged`). */
   readonly since?: string;
   /** Why the read gave no list (`cache`, `failure`, `unavailable`), or the notice that turns
    *  Dispatch off. */
@@ -450,6 +514,16 @@ export interface SessionAnswersRead {
    *  answered with a list. It names the URL. */
   readonly notice?: string;
 }
+
+/** Tests only: the file each wait below appends `{ armedMs, endedBy }` to, one JSON line each, so
+ *  a test across the process boundary reads the deadline a request's read was given and what
+ *  ended it rather than timing the request. Unset, as every deployment runs, nothing is written. */
+export const ANSWERS_WAIT_RECORD_FILE = "ENVOY_ANSWERS_WAIT_RECORD_FILE";
+
+const recordWait = jsonLineRecord<{
+  readonly armedMs: number;
+  readonly endedBy: "deadline" | "aborted" | "answered";
+}>(process.env, ANSWERS_WAIT_RECORD_FILE);
 
 /** `promise`'s value, or which came first of `ms` passing and `signal` aborting. */
 async function settleWithin<T>(
@@ -466,7 +540,12 @@ async function settleWithin<T>(
     signal?.addEventListener("abort", onAbort, { once: true });
   });
   try {
-    return await Promise.race([promise, stop]);
+    const outcome = await Promise.race([promise, stop]);
+    recordWait?.({
+      armedMs: ms,
+      endedBy: outcome === "deadline" ? "deadline" : outcome === "aborted" ? "aborted" : "answered",
+    });
+    return outcome;
   } finally {
     clearTimeout(timer);
     if (onAbort !== undefined) signal?.removeEventListener("abort", onAbort);
@@ -484,19 +563,35 @@ async function settleWithin<T>(
  * session's state directory (`sessionDirectory(env, session)`) with the URL it was read from,
  * loaded when memory has none for that URL; a list read from another Dispatch is never carried.
  * A cached list is rendered with its read time and the reason this read failed, and filtered by
- * the 72 hours again. Each read asks Dispatch for the 72 hours by this host's clock (`since`), the
- * clock every render filters by, so an item Dispatch would drop by its own clock is still sent
- * while the render's window holds it, and is not taken for one a person retracted
- * (`sessionAnswersChanged`). When no cached list renders (none was read, it was empty, or every
- * item is now past 72 hours), a failed read carries the failure line naming why. Dispatch off with
- * an error names no URL: only a list read from `dispatchUrl` stands in, and with none given the
- * failure line does. A Dispatch that answers it has no answers route (`isNoAnswersRoute`) is not
- * asked again for 5 minutes, process-wide; that answer, and a request inside those 5 minutes,
- * carry the list read before from that URL, its left-out line naming no command, or else nothing:
- * the failure line would send the agent to `dispatch answers`, which that Dispatch refuses too.
- * The first such read for a session and URL, until a read of it answers with a list again, gives
- * the host a `notice` to report. Every other failure, a gateway's 404 or a 200 that is no
- * answers list included, is a failed read as above.
+ * the 72 hours again. A read of the present asks Dispatch for the 72 hours by this host's clock
+ * (`since`), the clock every render of its list filters by, so an item Dispatch would drop by its
+ * own clock is still sent while the render's window holds it, and is not taken for one a person
+ * retracted (`sessionAnswersChanged`). When no cached list renders (none was read, it was empty,
+ * or every item is now past 72 hours), a failed read carries the failure line naming why.
+ * Dispatch off with an error names no URL: only a list read from `dispatchUrl` stands in, and with
+ * none given the failure line does. A Dispatch that answers it has no answers route
+ * (`isNoAnswersRoute`) is not asked again for 5 minutes, process-wide; that answer, and a request
+ * inside those 5 minutes, carry the list read before from that URL, its left-out line naming no
+ * command, or else nothing: the failure line would send the agent to `dispatch answers`, which
+ * that Dispatch refuses too. The first such read for a session and URL, until a read of it answers
+ * with a list again, gives the host a `notice` to report. Every other failure, a gateway's 404 or
+ * a 200 that is no answers list included, is a failed read as above.
+ *
+ * An answer under a token that carries a cut names the cut (`AnswerCut`), which the list keeps in
+ * memory and in `answers.json` (`as_of`), so the fresh list and each list carried from it print an
+ * ask's question the answer left out as left out at that cut; a list from a file with no cut
+ * prints it as left out by Dispatch. Dispatch answers such a token at its cut whatever the read
+ * sends, so a read under it counts the 72 hours back from the cut, not from this host's clock:
+ * every render of its list, its `words` and its `since`. Where the list read before kept a cut,
+ * or the read before was answered with the list left out at one, the read sends no `since`, and
+ * Dispatch answers the 72 hours before the cut it reads at, the token's, whatever cut the list
+ * kept. When the answer's having a cut differs from how the read asked (the list kept none, as on
+ * a token's first read, or the session's token now reads the present), the read asks once more,
+ * at once, as that answer was answered: with no `since` at a cut, by this host's clock at none.
+ * That second answer is the read's own: it is the same read in flight, under the same 10 s, and
+ * when it fails the read fails.
+ * An explicit omission at the cut carries no cached list, and writes no cache: only memory keeps
+ * that the read was answered at a cut.
  */
 export async function readSessionAnswers(
   options: ReadSessionAnswersOptions
@@ -519,7 +614,7 @@ export async function readSessionAnswers(
     reason: string,
     noRoute = false
   ): SessionAnswersRead => {
-    const at = now();
+    const at = windowEnd(cache?.as_of, now);
     const text =
       cache === undefined
         ? undefined
@@ -528,6 +623,7 @@ export async function readSessionAnswers(
             total: cache.total,
             cached: { readAt: cache.read_at, reason },
             withoutCommand: noRoute,
+            asOf: cache.as_of,
           });
     if (cache === undefined || text === undefined) {
       if (noRoute) return { text: undefined, source: "unavailable", reason };
@@ -551,6 +647,7 @@ export async function readSessionAnswers(
     inFlight: undefined,
     overdue: false,
     noRouteReported: false,
+    omittedAtCut: false,
   };
   entries.set(url, current);
   if (current.cache === undefined && directory !== undefined) {
@@ -579,13 +676,42 @@ export async function readSessionAnswers(
       retryNoRoute: false,
       deadlineMs: READ_TIMEOUT_MS,
     });
-    const started = client
-      .sessionAnswers(session, {
-        since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString(),
-        maxChars: SESSION_ANSWERS_MAX_CHARS,
+    // A replayed agent reads under a token that carries a cut, and Dispatch answers it at that
+    // cut whatever the read sends, leaving out each question the records at the cut cannot give:
+    // each request learns the cut its answer names, and the list keeps it, so such a question
+    // prints as left out at it and the list's 72 hours count back from it. A read at a cut sends
+    // no `since`: Dispatch counts the 72 hours back from the cut it answers at, which is the
+    // token's, whatever cut the list kept (api/session_answers.go, parseSessionAnswersSince). A
+    // read of the present sends the 72 hours by this host's clock.
+    const ask = async (atCut: boolean) => {
+      const cut = new AnswerCut();
+      const response = await client.sessionAnswers(
+        session,
+        {
+          ...(atCut ? {} : { since: new Date(now() - SESSION_ANSWERS_WINDOW_MS).toISOString() }),
+          maxChars: SESSION_ANSWERS_MAX_CHARS,
+        },
+        cut
+      );
+      return { response, cut, atCut };
+    };
+    // The read asks as the read before was answered: at a cut where its list kept one or its
+    // answer left the list out at one. An answer whose having a cut differs (a token's first read,
+    // or a session whose token now reads the present) answered the wrong window, so the read asks
+    // once more, at once, as that answer was answered.
+    const started = ask(current.omittedAtCut || current.cache?.as_of !== undefined)
+      .then((answer) => {
+        const atCut = answer.cut.cut !== undefined;
+        return answer.atCut === atCut ? answer : ask(atCut);
       })
       .then(
-        (response): ReadOutcome => {
+        ({ response, cut }): ReadOutcome => {
+          const asOf = cut.cut;
+          if (asOf !== undefined && sessionAnswersWereLeftOut(response, cut)) {
+            current.noRouteReported = false;
+            current.omittedAtCut = true;
+            return { omittedAt: asOf };
+          }
           // A 200 whose body is no answers list (a proxy's page, another service on the URL) is a
           // failed read, never a cache: rendering it would throw on the request path.
           if (!Array.isArray(response?.items) || typeof response.total !== "number") {
@@ -596,9 +722,11 @@ export async function readSessionAnswers(
             read_at: new Date(now()).toISOString(),
             total: response.total,
             items: response.items,
+            ...(asOf === undefined ? {} : { as_of: asOf }),
           };
           current.cache = cache;
           current.noRouteReported = false;
+          current.omittedAtCut = false;
           if (directory !== undefined) {
             try {
               mkdirSync(directory, { recursive: true, mode: 0o700 });
@@ -637,9 +765,19 @@ export async function readSessionAnswers(
   }
   if ("noRoute" in outcome) return noRoute();
   if ("failure" in outcome) return carry(current.cache, outcome.failure);
-  const at = now();
+  if ("omittedAt" in outcome) {
+    return {
+      text: `${SESSION_ANSWERS_MARKER}\n\nThe list was ${leftOutWords(outcome.omittedAt)}. Do not use an earlier list as the answer at this cut.`,
+      source: "omitted",
+    };
+  }
+  const at = windowEnd(outcome.cache.as_of, now);
   return {
-    text: renderSessionAnswers(outcome.cache.items, { now: at, total: outcome.cache.total }),
+    text: renderSessionAnswers(outcome.cache.items, {
+      now: at,
+      total: outcome.cache.total,
+      asOf: outcome.cache.as_of,
+    }),
     source: "fresh",
     readAt: outcome.cache.read_at,
     ...windowOf(outcome.cache.items, at),

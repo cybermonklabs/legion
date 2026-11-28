@@ -19,13 +19,13 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
 
-// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store. The daemon's
-// function (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its
-// expiry, so most ticks render the hosts.yml the Secret already holds and write nothing; a minute
-// keeps the time a role's gh runs on a token the daemon has already replaced short against an
-// installation token's hour, at one Secret read per live role. A runtime reads it once, as it starts
-// (start); a test that must see a tick inside its run shortens it before starting one.
-var gitHubRefreshInterval = time.Minute
+// gitHubRefreshInterval is how often refreshGitHubCredentials walks the pod store unless the
+// runtime's Options set another (Options.GitHubRefreshInterval). The daemon's function
+// (Options.GitHubCredential) holds each App's lease and re-mints it as the lease nears its expiry,
+// so most ticks render the hosts.yml the Secret already holds and write nothing; a minute keeps the
+// time a role's gh runs on a token the daemon has already replaced short against an installation
+// token's hour, at one Secret read per live role.
+const gitHubRefreshInterval = time.Minute
 
 // refreshGitHubCredentialsEvery runs refreshGitHubCredentials, then refreshCacheTokens, then
 // readCacheHealth, every interval until ctx ends: the informers' lifetime (start), so the walk never
@@ -67,16 +67,15 @@ func (r *Runtime) refreshGitHubCredentialsEvery(ctx context.Context, interval ti
 // directory the render no longer holds, which the pod's projection may still name, stay as they
 // are, so no key a running pod projects is ever deleted. Every live issue pod's provisioning
 // Secret is brought to the implement App's current lease for the pod's own repository too
-// (refreshProvisioningToken), whatever its
-// workspace-fetch has already done: the kubelet runs a pod's init containers afresh whenever it
-// rebuilds the pod's sandbox, at any point in the pod's life (a relaunch that replaces the pod
-// provisions it anew instead), and the fetch re-reads the token's file before every transfer, so
-// a pod left on its boot token, aged past the hour GitHub gives an installation token, could not
-// fetch its repository again. The lease is minted once per repository a tick, however many of
-// that repository's pods the walk holds, and a repository whose mint fails is logged once and
-// left to the next tick, where its pods are tried again. The gh bundles are built once per App
-// role and repository of the tick in the same way (appauth.Bundles), so a tick over an issue pod
-// reads its two Apps' installations and not its six roles'.
+// (refreshProvisioningToken), whatever workspace-init has already done: the kubelet runs a pod's
+// init containers afresh whenever it rebuilds the pod's sandbox, at any point in the pod's life (a
+// relaunch that replaces the pod provisions it anew instead), and workspace-init re-reads the
+// token's file before every transfer, so a pod left on its boot token, aged past the hour GitHub
+// gives an installation token, could not fetch its repository again. The lease is minted once per
+// repository a tick, however many of that repository's pods the walk holds, and a repository whose
+// mint fails is logged once and left to the next tick, where its pods are tried again. The gh
+// bundles are built once per App role and repository of the tick in the same way (appauth.Bundles),
+// so a tick over an issue pod reads its two Apps' installations and not its six roles'.
 func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 	// mints memoizes this tick's provisioning leases by lower-cased repository — nothing here
 	// knows of a configured repository rename, which the daemon's adapter maps, so Acme/legion
@@ -136,15 +135,14 @@ func (r *Runtime) refreshGitHubCredentials(ctx context.Context) {
 }
 
 // refreshProvisioningToken writes token — the implement App's current lease for repo, the
-// repository the fetch of pod names (fetchRepository), which the walk minted once for that
+// repository workspace-init of pod names (fetchRepository), which the walk minted once for that
 // repository this tick — into the provisioning Secret of pod, owned by the Sandbox with uid.
-// The fetch reads the token's file anew before every transfer from GitHub (workspace.Fetch),
-// and the kubelet rewrites the projected file within its sync period, so a fetch that starts
-// long after the pod did, one the kubelet runs again after it rebuilds the pod's sandbox
-// included, never presents an expired token. Only the token is written; the cache's token
-// beside it stays. A Secret another Sandbox owns, or one that already holds the lease, is left;
-// a write that fails is logged and tried at the next tick, and a write that conflicts is
-// retried once on a fresh read.
+// Workspace-init reads the token's file anew before every transfer from GitHub (workspace.Fetch),
+// and the kubelet rewrites the projected file within its sync period, so a provision that starts
+// long after the pod did, one the kubelet runs again after it rebuilds the pod's sandbox included,
+// never presents an expired token. Only the token is written; the cache's token beside it stays. A
+// Secret another Sandbox owns, or one that already holds the lease, is left; a write that fails is
+// logged and tried at the next tick, and a write that conflicts is retried once on a fresh read.
 func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod, uid types.UID, repo ghrepo.Repository, token string) {
 	name := secretName(pod.Name)
 	failed := func(err error) {
@@ -178,15 +176,15 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 
 // refreshGitHubCredential is one role's refresh (refreshGitHubCredentials): the role's Secret in
 // the pod, owned by the Sandbox with uid, rendered for repo, the pod's own repository its caller
-// read off its workspace fetch once for every role of the pod.
+// read off its workspace-init once for every role of the pod.
 //
 // A workflow role's credential is rendered for that repository, and not for the Secret's
 // recorded default, which names an owner and so could never name a repository: the repository
 // is what the bundle's default is routed by (ghconfig.RouteDir). A pod the previous daemon
-// created carries no repository in its Secret and needs none, since its fetch argument names it,
-// so its refresh keeps working and no live issue is stopped. An owner directory the pod lacks is
-// what opens an update round (movedGhDirs), and this refresh writes the tokens of the directories
-// the pod does project (servedLayout), whatever else a bundle built now would hold.
+// created carries no repository in its Secret and needs none, since its workspace-init's --repo
+// names it, so its refresh keeps working and no live issue is stopped. An owner directory the pod
+// lacks is what opens an update round (movedGhDirs), and this refresh writes the tokens of the
+// directories the pod does project (servedLayout), whatever else a bundle built now would hold.
 //
 // The controller's is fetched by owner instead (Options.ControllerCredential), the one its
 // Secret records: it works no repository, so a bundle asked for by repository would take its
@@ -202,17 +200,18 @@ func (r *Runtime) refreshProvisioningToken(ctx context.Context, pod *corev1.Pod,
 // the role would go on reading a directory nothing refreshes. The render's own default is not
 // compared with it. A workflow role's default is the directory its repository routes to by the
 // pairs that resolve now (appauth's bundleDirs), and a pair starts or stops resolving when the
-// project's mapping gains or loses one of its two names, so a mapping edit moves the default of
-// every bundle built after it: an operator who removes the old name from the mapping after a
-// transfer moves it from the `from` owner's directory to the `to` owner's. The directories a
-// bundle holds do not move with it and the pod projects the pairs file, so nothing opens an
-// update round (movedGhDirs), and a refresh that refused the moved default would stop for the
-// rest of the pod's life, every token in it expiring within the hour.
+// daemon starts or stops serving one of its two names (GitHub's answer of whether both role Apps
+// are installed on it), so a change of that answer moves the default of every bundle built after
+// it: once GitHub no longer answers that both Apps are installed on the old name, the default
+// moves from the `from` owner's directory to the `to` owner's. The directories a bundle holds do
+// not move with it and the pod projects the pairs file, so nothing opens an update round
+// (movedGhDirs), and a refresh that refused the moved default would stop for the rest of the pod's
+// life, every token in it expiring within the hour.
 //
 // What the pod keeps by this is routing by repository: `legion gh` and `legion git-credential`
 // route each request by the repository it names, or by the one the working directory's git
 // remotes name, over the pairs this refresh writes beside the leases. What it does not gain is
-// the new default. A pod launched before the mapping edit keeps the directory its launch
+// the new default. A pod launched before that change keeps the directory its launch
 // recorded as its GH_CONFIG_DIR for as long as it lives, a later launch into the same pod
 // included, since that launch takes the default from this Secret (launcherBound), and only the
 // pod a launch replaces it with is fixed at the directory the repository routes to now. So a
@@ -297,10 +296,11 @@ func (r *Runtime) refreshGitHubCredential(ctx context.Context, pod *corev1.Pod, 
 			changed = append(changed, dir)
 		}
 	}
-	// The pairs turn over with the deployment's configuration and the project's mapping rather
-	// than with a lease, so they are compared on their own: a pod the launch keeps projects the
-	// file it was created with, and the kubelet rewrites its content in place when the Secret
-	// changes, which is how a pair configured since the pod started reaches the wrappers in it.
+	// The pairs turn over with the deployment's configuration and GitHub's answers for their
+	// names rather than with a lease, so they are compared on their own: a pod the launch keeps
+	// projects the file it was created with, and the kubelet rewrites its content in place when
+	// the Secret changes, which is how a pair configured since the pod started reaches the
+	// wrappers in it.
 	pairs := ghconfig.RenderPairs(bundle.Pairs)
 	stalePairs := string(secret.Data[GitHubPairsKey]) != pairs
 	if len(changed) == 0 && !stalePairs {

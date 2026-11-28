@@ -1,8 +1,14 @@
 import { notifyManager, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import type { WriteMethod } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey, WriteDiscardedError } from "../writes/keyed-write";
+import {
+  retriesUnderItsKey,
+  SendStoppedError,
+  stoppedWriteNote,
+  WriteDiscardedError,
+} from "../writes/keyed-write";
 import { waitingToSend } from "../writes/PendingWritesIndicator";
 import { ofKind, useWrites, type Write, type Writes } from "../writes/write-store";
 import {
@@ -19,45 +25,62 @@ import {
 } from "./issue-field-writes";
 
 export interface IssueFieldWrite<Value> {
-  /** The server's reason after a refused save, until the next pick here; a refusal reported with
-   *  no Retry also ends once a newer write of the field lands or the field is picked again in
-   *  another picker. */
+  /** The server's reason after a refused save, or what a save the reader stopped may have done
+   *  and what pressing the picker does now (`stopped`), until the next pick here; a refusal
+   *  reported with no Retry also ends once a newer write of the field lands or the field is
+   *  picked again in another picker. */
   error: string | undefined;
   /** True after a save failed, until the next pick here; a refusal reported with no Retry also
    *  ends once a newer write of the field lands or the field is picked again in another picker. */
   failed: boolean;
   /** True while a pick made here is in the store, not yet landed, refused or taken out. */
   pending: boolean;
-  /** Makes the refused pick again, under its own key where Dispatch never decided it
-   *  (`retriesUnderItsKey`). Undefined while nothing is refused, and for a refused pick with a
-   *  newer live write of its field, which the screen shows and Dispatch stores last. */
+  /** Makes the refused pick again - its issue and its value, from the pick itself - under its own
+   *  key where Dispatch never decided it (`retriesUnderItsKey`). Undefined while nothing is
+   *  refused, and for a refused pick with a newer live write of its field, which the screen shows
+   *  and Dispatch stores last. */
   retry: (() => void) | undefined;
   /** The field as its picker draws it. From a pick here it is that pick, until TanStack Query has
    *  told the observers of the issue's caches of it or the pick is refused, taken out or
    *  discarded; else it is `host`, the value the picker's host reads from those caches. A pick
    *  made while a board move of its field still waits its turn on its board is never drawn: the
-   *  move is newer than it (`fieldWritesOf`), and `host` draws the move's lane. */
+   *  move is newer than it (`fieldWritesOf`), and `host` draws the move's lane. Nor is a pick of
+   *  another issue than the one the picker is drawn for: a pick whose host draws the picker for
+   *  another issue before it is told, and a Retry of a pick made before the host did (`retry`). */
   shown: Value;
+  /** What a save the reader stopped may have done and what pressing the picker does now, while
+   *  `error` reports it; undefined after any other end. */
+  stopped: string | undefined;
   /** Picks `value`: one write of the page's store on the issue's line, which takes out every
    *  other pick of the field still waiting there unsent, so the newest is the one saved. */
   submit: (value: Value) => void;
 }
 
-/** A refused pick as the picker reports it: the server's reason, the value to pick again, the
- *  write it was, and whether Retry may pick it - not while a newer live write of its field is
- *  left, whose landing then ends the report. */
+/** A refused pick as the picker reports it: what ended it, the method of its request, the value
+ *  to pick again, the write it was - whose record is the pick, its issue and its value - and
+ *  whether Retry may pick it - not while a newer live write of its field is left, whose landing
+ *  then ends the report. */
 interface Refused<Value> {
-  readonly message: string;
+  readonly method: WriteMethod;
+  readonly refusal: Error;
   readonly retryable: boolean;
   readonly value: Value;
   readonly write: Write<IssueFieldPick>;
 }
 
-/** A pick made here, as its picker draws it. Each is its own object, so the end of one pick ends
- *  its own hold and never that of a newer pick here. */
+/** A pick made here, as its picker draws it, with the issue it is of. Each is its own object, so
+ *  the end of one pick ends its own hold and never that of a newer pick here. */
 interface Held<Value> {
+  readonly issueKey: string;
   readonly value: Value;
 }
+
+/** The field's name in the sentence a pick the reader stopped says (`stoppedWriteNote`). */
+const FIELD_WORDS: Readonly<Record<IssueField, string>> = {
+  assignee: "assignee",
+  priority: "priority",
+  repo: "repository",
+};
 
 /** Every pick in `writes` of `field` of `issueKey`. */
 function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">) {
@@ -65,6 +88,20 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
     const pick = ofKind(row, issueFieldWrite);
     return pick !== undefined && sameField(pick.detail, of) ? [pick] : [];
   });
+}
+
+/** What the picker says of a pick the reader stopped: Dispatch has not confirmed the field of the
+ *  pick's own issue, and what pressing the picker does now. With Retry offered, that makes the
+ *  very pick again (`retryNote`, by the request's method); with a newer live write of the field
+ *  left, no Retry is offered, and the newer write the screen shows goes after it. */
+function stoppedPickNote(refused: Refused<unknown>, stopped: SendStoppedError): string {
+  const { field, issueKey } = refused.write.detail;
+  const what = `the ${FIELD_WORDS[field]} of ${issueKey}`;
+  return refused.retryable
+    ? stoppedWriteNote(what, "saved", { method: refused.method, stopped })
+    : stoppedWriteNote(what, "saved", {
+        anew: "The newer change shown goes to Dispatch after it, so that one is stored last.",
+      });
 }
 
 /**
@@ -91,8 +128,15 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
  * once a newer write of the field lands or the reader picks the field again, in this picker or
  * any other, and offers Retry once every newer write of the field has ended without landing -
  * refused or discarded - since the refused pick then has no newer live write of its field. A pick
- * of the value the reader stopped is that press made again under its key, so Dispatch answers it
- * with what it did.
+ * the reader stopped is reported in the words of a write that may have landed (`stoppedPickNote`),
+ * never the stop's own, which are a composer's. A pick of the value the reader stopped, on the
+ * issue it was of, is that press made again under its key, so Dispatch answers it with what it
+ * did.
+ *
+ * Every byte a pick sends rides in it: its issue, its field and its value (`IssueFieldPick`),
+ * which its request, its line and its label are made from, and Retry makes the refused pick
+ * itself again, so a picker the host has drawn for another issue since still retries the issue
+ * the refused pick was of, and says so.
  *
  * The picker draws `shown`. A pick reaches the issue's caches in a microtask of its press
  * (`join`), and the picker's host hears of it only when TanStack Query tells the caches'
@@ -104,6 +148,9 @@ function picksOf(writes: Writes, of: Pick<IssueFieldPick, "field" | "issueKey">)
  * and the picker draws what the write put back. A newer pick here holds the picker in its place,
  * from its press. A pick made while a board move of its field still waits its turn on its board
  * holds nothing: the move is newer than it, and the caches and the picker keep showing its lane.
+ * A hold is drawn only while the picker is drawn for the issue its pick is of, since the host
+ * passes the field of the issue it draws: a host that draws the picker for another issue before
+ * the flush, and a Retry of a pick made before the host drew it for another issue, draw `host`.
  */
 export function useIssueFieldWrite<F extends IssueField>(
   issueKey: string,
@@ -126,13 +173,17 @@ export function useIssueFieldWrite<F extends IssueField>(
     setRefused(next);
     noting.current?.();
   };
-  /** The last pick here the reader stopped, which a pick of the same value makes again. */
-  const stopped = useRef<{ readonly key: string; readonly value: Value } | undefined>(undefined);
+  /** The last pick here the reader stopped, which a pick of the same value of the same issue
+   *  makes again. */
+  const stopped = useRef<{ readonly key: string; readonly pick: IssueFieldPick } | undefined>(
+    undefined
+  );
   /** Joins `pick` to its line under `key`, takes out the picks of its field it replaces, and
    *  reports what becomes of it, and of `hold`, which draws it. */
   const join = (pick: IssueFieldPick, key: string, hold: Held<Value>): void => {
     /** Ends `hold`, unless a newer pick here holds the picker. */
     const release = () => setHeld((current) => (current === hold ? undefined : current));
+    const request = pickRequest(pick);
     const press = writes.run({
       detail: pick,
       inline: true,
@@ -140,8 +191,8 @@ export function useIssueFieldWrite<F extends IssueField>(
       kind: issueFieldWrite,
       label: pickLabel(pick),
       presentation: "indicator",
-      request: pickRequest(pick),
-      target: `issue:${issueKey}`,
+      request,
+      target: `issue:${pick.issueKey}`,
     });
     // `run` wrote the pick to the caches, and TanStack Query has queued the flush that tells the
     // host; the release queued now runs in the flush after it.
@@ -164,11 +215,12 @@ export function useIssueFieldWrite<F extends IssueField>(
         // list: no refusal of Dispatch's.
         if (error instanceof WriteDiscardedError) return;
         const refusal = error instanceof Error ? error : new Error(String(error));
-        if (retriesUnderItsKey(refusal)) stopped.current = { key, value: hold.value };
+        if (retriesUnderItsKey(refusal)) stopped.current = { key, pick };
         // Where a newer live write of the field is left in the line, the screen shows it, and the
         // refusal is reported with no Retry to join behind it.
         report({
-          message: refusal.message,
+          method: request.method,
+          refusal,
           retryable: !newerWriteOf(client, joined),
           value: hold.value,
           write: joined,
@@ -176,14 +228,15 @@ export function useIssueFieldWrite<F extends IssueField>(
       }
     );
   };
-  const submit = (value: Value): void => {
+  /** Makes `pick`, under the key of the pick the reader stopped where it is that pick again. */
+  const make = (pick: IssueFieldPick, value: Value): void => {
     const again = stopped.current;
     stopped.current = undefined;
-    const key = again !== undefined && Object.is(again.value, value) ? again.key : newSendKey();
-    // `value` is the value of `field`, which the type checker cannot pair across the union of
-    // fields: the one pick the two make together.
-    const pick = { field, issueKey, value } as IssueFieldPick;
-    const hold: Held<Value> = { value };
+    const key =
+      again !== undefined && sameField(again.pick, pick) && Object.is(again.pick.value, pick.value)
+        ? again.key
+        : newSendKey();
+    const hold: Held<Value> = { issueKey: pick.issueKey, value };
     // A board move of the field still waiting its turn is newer than this pick (`waitingMoveOf`):
     // the picker draws `host`, which draws the move's lane, as the caches do.
     setHeld(waitingMoveOf(client, pick) ? undefined : hold);
@@ -194,6 +247,11 @@ export function useIssueFieldWrite<F extends IssueField>(
     // surface that keeps its control while its write is live (the Inbox's Assign to me, whose row
     // the pick moves out of the Unassigned filter) has said so by then.
     queueMicrotask(() => join(pick, key, hold));
+  };
+  const submit = (value: Value): void => {
+    // `value` is the value of `field`, which the type checker cannot pair across the union of
+    // fields: the one pick the two make together.
+    make({ field, issueKey, value } as IssueFieldPick, value);
   };
   // A refusal reported with no Retry stands for the newer writes of its field the screen shows,
   // until one of them lands or the person picks the field again, here or in any other picker of
@@ -262,12 +320,18 @@ export function useIssueFieldWrite<F extends IssueField>(
       stopHearing();
     };
   }, [client, field, issueKey, writes]);
+  const stoppedText =
+    refused !== undefined && refused.refusal instanceof SendStoppedError
+      ? stoppedPickNote(refused, refused.refusal)
+      : undefined;
   return {
-    error: refused?.message,
+    error: stoppedText ?? refused?.refusal.message,
     failed: refused !== undefined,
     pending: out > 0,
-    retry: refused?.retryable === true ? () => submit(refused.value) : undefined,
-    shown: held === undefined ? host : held.value,
+    retry:
+      refused?.retryable === true ? () => make(refused.write.detail, refused.value) : undefined,
+    shown: held !== undefined && held.issueKey === issueKey ? held.value : host,
+    stopped: stoppedText,
     submit,
   };
 }

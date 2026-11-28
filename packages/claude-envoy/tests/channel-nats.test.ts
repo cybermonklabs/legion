@@ -1,9 +1,11 @@
 // dialChannelNats: the channel server's NATS connection, opened with the session's credential and,
 // where that is the broker token, kept renewed for the connection's life and stopped on request.
 import { afterEach, expect, jest, spyOn, test } from "bun:test"
-import { writeFile } from "node:fs/promises"
+import { mkdir, writeFile } from "node:fs/promises"
+import { connect, createServer, type Socket } from "node:net"
 import { join } from "node:path"
 import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
+import { NATS_DIAL_TOKEN_DROPPED } from "@legion/envoy-client/nats-connection"
 import {
   type BrokerNatsCredential,
   brokerNatsCredential,
@@ -18,7 +20,8 @@ import {
   NatsError,
   nkeys,
 } from "nats"
-import { dialChannelNats } from "../src/envoy-channel-server"
+import { dialChannelNats } from "../src/channel-connection"
+import { channelConnectionName } from "../src/installed-build"
 
 /** Each row's home, removed after it, failed or not. */
 const makeDirectory = temporaryDirectories("channel-nats")
@@ -228,24 +231,84 @@ test("a pod session registered past the trade deadline still comes up, admitted"
   opened.stop()
 }, 90_000)
 
-test("a channel server's start waits through a broker that refuses connections, and comes up when it answers", async () => {
+/** A broker's address the row holds from its start to its end: a listener on a port the kernel
+ *  chose, which drops every connection at once (a reset, before any answer) until `answer` names
+ *  the broker to pass connections to, and from then on hands each one to that broker. The broker
+ *  that is down and the broker that answers are at one address without that port ever being let
+ *  go: a freed port is any process's to take, and a broker started on it later could find it taken
+ *  and fail to start, or the row's trade reach whatever took it. */
+async function heldBrokerAddress(): Promise<{ url: string; answer(port: number): void }> {
+  let broker: number | undefined
+  const sockets = new Set<Socket>()
+  const held = (socket: Socket): Socket => {
+    sockets.add(socket)
+    socket.on("close", () => sockets.delete(socket))
+    return socket
+  }
+  const front = createServer((client) => {
+    held(client).on("error", () => {})
+    if (broker === undefined) {
+      client.resetAndDestroy()
+      return
+    }
+    const upstream = held(connect(broker, "127.0.0.1"))
+    upstream.on("error", () => client.destroy())
+    client.on("error", () => upstream.destroy())
+    client.pipe(upstream)
+    upstream.pipe(client)
+  })
+  const listening = Promise.withResolvers<void>()
+  front.once("error", listening.reject)
+  front.listen(0, "127.0.0.1", listening.resolve)
+  await listening.promise
+  servers.push({
+    stop: () => {
+      for (const socket of sockets) socket.destroy()
+      front.close()
+    },
+  })
+  const address = front.address()
+  if (address === null || typeof address === "string") throw new Error("the front has no TCP port")
+  return {
+    url: `http://127.0.0.1:${address.port}`,
+    answer: (port) => {
+      broker = port
+    },
+  }
+}
+
+test("a channel server's start waits through a broker that drops every connection, and comes up when it answers", async () => {
   // The channel server's start is the one caller that waits for ready (`ready(life)`): Claude
   // Code does not restart a channel server that ended, so a start that failed fast on a broker
   // that is down would leave the session with no delivery for its life. Every other caller fails
-  // fast. The broker's port is closed at the first trade, and a broker listens there once the
-  // retry loop has failed once: once the token client says so, at the wait after that trade.
+  // fast. The broker's address drops every connection at the first trade, and passes connections
+  // to a broker that answers once the retry loop has failed once: once the token client says so,
+  // at the wait after that trade.
   const SESSION = "ses_channel_broker_down"
-  const probe = Bun.serve({ port: 0, hostname: "127.0.0.1", fetch: () => new Response() })
-  const port = probe.port as number
-  probe.stop(true)
+  const address = await heldBrokerAddress()
   const minted: string[] = []
+  const broker = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(broker)
   const home = makeDirectory()
   const tokenFile = join(home, "token")
   await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
   const credential = brokerNatsCredential(
     {
       HOME: home,
-      AGENT_SECRETS_URL: `http://127.0.0.1:${port}`,
+      AGENT_SECRETS_URL: address.url,
       AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
       AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
     },
@@ -257,23 +320,7 @@ test("a channel server's start waits through a broker that refuses connections, 
   const warn = spyOn(console, "warn").mockImplementation((line: unknown) => {
     if (!String(line).includes("trading again")) return
     refused += 1
-    if (refused > 1) return
-    servers.push(
-      Bun.serve({
-        port,
-        hostname: "127.0.0.1",
-        fetch: () => {
-          const token = fixtureSecret("channel")
-          minted.push(token)
-          return Response.json({
-            access_token: token,
-            issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
-            token_type: "DPoP",
-            expires_in: 900,
-          })
-        },
-      }),
-    )
+    if (refused === 1) address.answer(broker.port as number)
   })
   try {
     const fake = fakeDial()
@@ -300,6 +347,68 @@ test("a channel server's start waits through a broker that refuses connections, 
     warn.mockRestore()
   }
 }, 90_000)
+
+test("a first dial whose broker token the hub refuses twice drops it, presents the next one traded, and says so", async () => {
+  // The dials share the keeper's count of the token's refusals (`connectNats`' `hooks.credential`),
+  // so the dial drops a token the hub refused twice, as the keeper does on an open connection. The
+  // waits between the dials are recorded, not slept: each waits only for a live token.
+  const minted: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    hostname: "127.0.0.1",
+    fetch: () => {
+      const token = fixtureSecret("channel")
+      minted.push(token)
+      return Response.json({
+        access_token: token,
+        issued_token_type: "urn:ietf:params:oauth:token-type:access_token",
+        token_type: "DPoP",
+        expires_in: 900,
+      })
+    },
+  })
+  servers.push(server)
+  const home = makeDirectory()
+  const tokenFile = join(home, "token")
+  await writeFile(tokenFile, `${fixtureSecret("machine")}\n`)
+  const credential = brokerNatsCredential(
+    {
+      HOME: home,
+      AGENT_SECRETS_URL: `http://127.0.0.1:${server.port}`,
+      AGENT_SECRETS_MACHINE_IDENTITY: "kubernetes",
+      AGENT_SECRETS_MACHINE_TOKEN_FILE: tokenFile,
+    },
+    "ses_channel_refused_twice",
+  )
+  const fake = fakeDial()
+  let refusals = 0
+  const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
+    if (refusals < 2) {
+      refusals += 1
+      throw new NatsError("'Authorization Violation'", ErrorCode.AuthorizationViolation)
+    }
+    return fake.dial(options)
+  }
+  const warnings: string[] = []
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "broker", broker: credential },
+    },
+    "claude-envoy-channel-ses_channel_refused_twice",
+    (text) => warnings.push(text),
+    dial,
+    undefined,
+    undefined,
+    { delay: () => credential.ready(), random: () => 0 },
+  )
+  opened.stop()
+  // The start's token, and the one traded at the drop, which the third dial presented.
+  expect(minted).toHaveLength(2)
+  expect(fake.presented).toEqual(minted.slice(1))
+  expect(warnings.filter((text) => text.includes(NATS_DIAL_TOKEN_DROPPED))).toHaveLength(1)
+}, 15_000)
 
 test("dialChannelNats runs no keeper and no follow for a connection with no broker token", async () => {
   // The clock is the row's: moved an hour on, every timer the start left behind has fired.
@@ -348,6 +457,8 @@ test("a failed dial names its servers by their setting, never by any part of the
     "claude-envoy-channel-ses_redact",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -378,6 +489,8 @@ test("a credential pasted as a bare server address is never named", async () => 
     "claude-envoy-channel-ses_seed",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -405,6 +518,8 @@ test("a token holding an unencoded / is named by none of its segments", async ()
     "claude-envoy-channel-ses_slash",
     () => {},
     refused,
+    undefined,
+    DIAL_ONCE,
   ).then(
     () => "dialled",
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
@@ -475,4 +590,128 @@ test("a stop ends the wait for the token and for the dial, and closes a connecti
     (error: unknown) => (error instanceof Error ? error.message : String(error)),
   )
   expect(await trading).toBe(STOPPING)
+})
+
+/** One dial, for a row that reads the line a dial that fails for good throws. */
+const DIAL_ONCE = { firstDelayMs: 0, maxDelayMs: 0, budgetMs: 0 }
+/** The channel server's own waits, scaled down, still for its life. */
+const QUICK_FOR_LIFE = { firstDelayMs: 5, maxDelayMs: 5, budgetMs: Number.POSITIVE_INFINITY }
+
+test("dialChannelNats dials again: a dial refused twice then answered comes up, naming each redial", async () => {
+  const fake = fakeDial()
+  const timeouts: (number | undefined)[] = []
+  let dials = 0
+  const dial = async (options: ConnectionOptions): Promise<NatsConnection> => {
+    timeouts.push(options.timeout)
+    dials += 1
+    if (dials <= 2) throw new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout)
+    return fake.dial(options)
+  }
+  const warnings: string[] = []
+  const opened = await dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_redial",
+    (text) => warnings.push(text),
+    dial,
+    undefined,
+    QUICK_FOR_LIFE,
+  )
+  opened.stop()
+  expect(dials).toBe(3)
+  expect(timeouts).toEqual([10_000, 10_000, 10_000])
+  expect(warnings).toEqual([
+    "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: Authentication Timeout; dialing again in 5 ms",
+    "could not connect to NATS at the server ENVOY_NATS_URL names presenting no credential: Authentication Timeout; dialing again in 5 ms",
+  ])
+})
+
+test("dialChannelNats dials again until it stops: a stop during a wait ends the start, and no dial follows", async () => {
+  const STOPPING = "the channel server stopped before its NATS subscriptions reached the server"
+  const stopping = new AbortController()
+  let dials = 0
+  const dial = async (): Promise<NatsConnection> => {
+    dials += 1
+    throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
+  }
+  const failure = dialChannelNats(
+    {
+      natsUrls: ["nats://nats.test:4222"],
+      natsServersSetting: "ENVOY_NATS_URL",
+      natsCredential: { kind: "none" },
+    },
+    "claude-envoy-channel-ses_stop",
+    // The first redial's notice is the moment the dial is waiting: stop it there.
+    () => stopping.abort(),
+    dial,
+    stopping.signal,
+    { firstDelayMs: 200, maxDelayMs: 200, budgetMs: Number.POSITIVE_INFINITY },
+  ).then(
+    () => "dialled",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  )
+  expect(await failure).toBe(STOPPING)
+  // The wait the stop cut short has run out by now, and it started nothing.
+  const after = Promise.withResolvers<void>()
+  setTimeout(after.resolve, 400)
+  await after.promise
+  expect(dials).toBe(1)
+})
+
+// legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census of
+// connections lists: the build-commit stamp the worker image writes beside the bundle, else the
+// release Claude Code or Codex installed, else none.
+test("the connection name the server sees ends with the channel's build", async () => {
+  const commit = "0123456789abcdef0123456789abcdef01234567"
+  const image = join(makeDirectory(), "dist")
+  await mkdir(image, { recursive: true })
+  await writeFile(join(image, "build-commit"), `${commit}\n`)
+  const rows = [
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        join(image, "envoy-channel.js"),
+        "@sjawhar/claude-envoy",
+      ),
+      want: `claude-envoy-channel-ses_build legion@${commit}`,
+    },
+    {
+      name: channelConnectionName(
+        "codex-envoy-channel-ses_build",
+        "/home/me/.codex/plugins/cache/legion-plugins/codex-envoy/6.0.0/dist/envoy-channel.js",
+        "@sjawhar/codex-envoy",
+      ),
+      want: "codex-envoy-channel-ses_build @sjawhar/codex-envoy@6.0.0",
+    },
+    {
+      name: channelConnectionName(
+        "claude-envoy-channel-ses_build",
+        "/work/legion/packages/claude-envoy/dist/envoy-channel.js",
+        "@sjawhar/claude-envoy",
+      ),
+      want: "claude-envoy-channel-ses_build",
+    },
+  ]
+  for (const row of rows) {
+    const seen: string[] = []
+    await dialChannelNats(
+      {
+        natsUrls: ["nats://nats.test:4222"],
+        natsServersSetting: "ENVOY_NATS_URL",
+        natsCredential: { kind: "none" },
+      },
+      row.name,
+      () => {},
+      async (options: ConnectionOptions): Promise<NatsConnection> => {
+        seen.push(options.name ?? "")
+        throw NatsError.errorForCode(ErrorCode.ConnectionRefused)
+      },
+      undefined,
+      DIAL_ONCE,
+    ).catch(() => undefined)
+    expect(seen).toEqual([row.want])
+  }
 })

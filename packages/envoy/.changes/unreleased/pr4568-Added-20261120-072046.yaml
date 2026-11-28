@@ -1,0 +1,5 @@
+kind: Added
+body: 'Dispatch keeps each past version of the searchable text of issues, comments, issue messages and asks in a new table, `search_text_versions`. One serving process at a time fills it from the event log, from a cursor it keeps, and pauses while an answers read takes more than 800 ms. `store.TextVersionsAt` gives the versions at a past time up to the time the fill has reached. Each Dispatch process now opens up to 115 Postgres connections, two more for the fill.'
+time: 2026-11-20T07:20:46.034721788Z
+custom:
+    Issue: pr4568

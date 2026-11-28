@@ -40,6 +40,8 @@ A closing paragraph.
 // long as its connection sits idle in the pool, which is what took the retention of an upload
 // from about 1 KB to between 6 and 12 KB a write (TestUploadsToARoomInUseKeepMemoryWithinTheBound).
 func TestAnUploadsReadBackTreeGoesWhenItsRequestEnds(t *testing.T) {
+	// Not parallel: it forces collections of the whole process (runtime.GC) and holds the upload's
+	// read-back tree to going in them.
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "# First\n\nSecond.\n")
@@ -51,7 +53,7 @@ func TestAnUploadsReadBackTreeGoesWhenItsRequestEnds(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	joined, ledger := service.Join(ctx, tx)
-	if _, err := service.ReplaceText(joined, artifactID, uploadedReadBackText, model.Actor{Kind: "user", ID: "alice"}); err != nil {
+	if _, err := service.ReplaceText(joined, artifactID, uploadedReadBackText, model.Actor{Kind: "user", ID: "alice"}, liveDocumentToken(t, service, artifactID)); err != nil {
 		t.Fatalf("upload the document: %v", err)
 	}
 	read, kept := ledger.readBacks[artifactID]

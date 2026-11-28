@@ -57,6 +57,28 @@ export async function settle(): Promise<void> {
   for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
 }
 
+/**
+ * Lets the real event loop turn, inside `act`, until `done` answers true, and moves no clock.
+ * Bun's fake clock holds `setTimeout` and not the real `setImmediate` (and `Date.now` reads the
+ * fake clock), so what reaches a page on real turns - a `BroadcastChannel` message in happy-dom,
+ * a `fake-indexeddb` keep - arrives here while every product timer stays where the row left it.
+ * A row waits here rather than in `waitFor`, which moves a held clock 50 ms each time it polls,
+ * when it must show something came without a timer: how many polls a step takes depends on how
+ * loaded the machine is, so a clock `waitFor` moved says how often it polled and not what the
+ * product waited for. What comes on real turns comes within a few; `turns` that bring nothing
+ * end the wait (a thousand unless a row stepping the clock gives fewer per step), and the row
+ * fails on what it expects next.
+ */
+export async function onRealTurns(done: () => boolean, turns = 1_000): Promise<void> {
+  for (let turn = 0; turn < turns && !done(); turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      return promise;
+    });
+  }
+}
+
 /** Runs `body` on the fake clock, so a wait inside it - a backoff, a send's deadline, a key's
  *  whole life - waits no real time, and brings the real clock back through `realClock` however
  *  `body` ends. Wrap the whole body when every wait in the row needs the clock, and wrap one

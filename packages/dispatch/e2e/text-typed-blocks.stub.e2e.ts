@@ -3,7 +3,7 @@
  *  rows, the source list folded away, the urgency accent and the line saying the question is
  *  text. Every assertion reads what the read-only engine draws from one fixed comment body, so
  *  the row runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The rest of `text-typed-blocks.e2e.ts`
+ *  (packages/dispatch/README.md, "The stubbed layer"). The rest of `text-typed-blocks.e2e.ts`
  *  stayed where it is: those rows assert inside the live document editor.
  *
  *  A decision block is no shape the API takes in a body - the server refuses such a body with

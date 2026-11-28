@@ -19,6 +19,7 @@ import (
 // The resume of a cancelled idle release is the other start of this shape (releaseResume), which
 // carries no task at all and so delivers nothing to move either number.
 func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *testing.T) {
+	t.Parallel()
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
 	r.admitPass()
@@ -37,7 +38,7 @@ func TestTheArchitectEntryNumbersStandThroughAWakeStartTheArchitectConfirms(t *t
 			held.GivenEntry, held.ServedEntry)
 	}
 
-	wake := workflow.WakeTask(pods.WakeBackstop, "nothing else asked for it")
+	wake := workflow.WakeTask(pods.WakeBackstop, "nothing else asked for it", workflow.StoppedByRelease)
 	// The wake's start row, which runStarts runs as the supervise lane does.
 	enqueueOutbox(t, r.pool, r.records, mustOutboxRow(t, r.key, record.SuperviseRequest{Op: "start", Tree: mainPathRoot,
 		Role: claim.RoleArchitect, Generation: r.issue().Generation, Task: wake}, time.Now().UTC()))

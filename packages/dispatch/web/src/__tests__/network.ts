@@ -22,6 +22,7 @@
  * node build, which intercepts neither `fetch` nor `XMLHttpRequest` here.
  */
 
+import type { WhoamiUser } from "@legion/contracts";
 import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
@@ -54,6 +55,19 @@ const shellHandlers: RequestHandler[] = [
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
   ),
+  // Settings reads the scopes Dispatch says the signed-in person's own credential holds, and offers
+  // the Set P0 box only where they name p0 (`features/settings/AgentTokensSection.tsx`), so every
+  // test that renders Settings makes this read without being about scopes. The answer is the
+  // server's own for a person at a browser, who holds every scope of a person's own credential,
+  // p0 among them. A test about another answer - a build before p0, a read still out, a failed
+  // read - answers this route itself.
+  http.get("/api/v1/whoami", () =>
+    Response.json({
+      kind: "user",
+      login: "alice",
+      scopes: ["person", "approve", "p0"],
+    } satisfies WhoamiUser)
+  ),
   http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
   // shown, or in the compact navigation drawer while it is open - with no `enabled` guard
@@ -76,6 +90,19 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The base an upload names: before it posts a markdown file, the Upload control reads the
+  // token of the document the owner already holds under that name
+  // (`features/artifacts/ArtifactUpload.tsx`'s `captureUploadBase`), so every page that can
+  // take a dropped or pasted `.md` reads this route. The owner holds no such document in a unit
+  // test's world, which is Dispatch's own `404` and what `captureUploadBase` takes as no base,
+  // so the upload it sends is the one those pages asserted before this read existed. A test
+  // about the base spies `api.ownerArtifactText` and never reaches this handler.
+  http.get("/api/v1/issues/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
+  http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
+    Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the
   // rail or the shell around it makes this read without being about priorities. The answer is
@@ -117,7 +144,8 @@ const network = defineNetwork({
   },
 });
 
-network.enable();
+// `enable()` may answer a promise (msw's `MaybePromise`): the preload's tests start once it settles.
+await network.enable();
 
 /** The routes this test answers, for the rest of it: the preload forgets them after each test. */
 export function answerRequests(...handlers: RequestHandler[]): void {

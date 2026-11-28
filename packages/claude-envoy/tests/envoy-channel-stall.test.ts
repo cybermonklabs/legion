@@ -12,6 +12,7 @@ import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
@@ -77,6 +78,7 @@ async function startChannelServer(
       // No heartbeat registration runs in the test's window: the reconnect's registration, on a
       // new epoch, is the only one that restarts the relay.
       ENVOY_HEARTBEAT_MS: "240000",
+      ...NO_TRANSPILER_CACHE,
     },
     stdin: "pipe",
     stdout: "pipe",
@@ -150,8 +152,8 @@ async function startChannelServer(
 // One rollout state is left: every listener gives the session a consumer and relays it. A
 // listener that can give none refuses the registration, which `envoy-client`'s own stack tests
 // cover; there is no core path to fall back to here.
-// Reserved out here, at the file's module scope: the file's own `afterAll` removes it once the
-// `describe` has stopped the stack writing into it.
+// Reserved out here, at the file's module scope. Once the `describe` has stopped the stack, the
+// file's `afterAll` hands the directory to a removal it does not wait for (`useEnvoyStackDirectory`).
 const stackDirectory = useEnvoyStackDirectory()
 
 describe.skipIf(!envoyStackEnabled)(

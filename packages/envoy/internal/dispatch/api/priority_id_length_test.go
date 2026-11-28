@@ -18,7 +18,7 @@ func TestAPriorityIDIsMeasuredInCharacters(t *testing.T) {
 		{name: "150 accented letters", id: strings.Repeat("é", 150), want: "is no priority id: an id is lowercase letters and digits"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			if got := priorityIDRefusal(row.id, false); !strings.Contains(got, row.want) {
+			if got := priorityIDRefusal(row.id); !strings.Contains(got, row.want) {
 				t.Fatalf("priorityIDRefusal of %d characters (%d bytes) = %q, want it to say %q",
 					len([]rune(row.id)), len(row.id), got, row.want)
 			}

@@ -1,0 +1,62 @@
+-- 20261123224717_members_owed.up.sql — the mark that a re-admitted tree's members have still to
+-- come back (dispatch://INFRA-5471).
+--
+-- issues.members_owed is true on a root whose re-admission has started a generation and whose tree
+-- has not yet run in it. Admission's readmit sets it, and two writes clear it, each in the
+-- transaction that brings back the members the re-admission left mid-phase and those reopened at
+-- done, as the promotion always has (admit's returnOwedMembers): the root's promotion from the
+-- waiting line, and the first admission pass that finds its tree running before any promotion
+-- while the root is still handed to Legion and its design gate has opened. So the members come back
+-- once in the generation. While the mark stands and the tree's lifecycle is not open under the
+-- workflow (its cleanup reserved, as after a linger that ended), the gate's opening leaves the root
+-- queued, so the promotion that opens the tree's next epoch brings the members back (record's ran).
+--
+-- Every row takes the default, false, but the roots whose re-admitted generation no promotion has
+-- opened: a root of its own tree standing in todo at admitted on a generation past the first,
+-- holding no slot, released for no wait and with no linger. A root the release before promoted
+-- stands in progress, or holds the slot its promotion granted, or carries the mark of the wait it
+-- gave that slot back for, so it stays false, and the first pass of this release brings nothing of
+-- a promoted generation back again. The mark reads no design gate: the steps a tree is gated on
+-- are the deployment's configuration, which SQL cannot read, so no statement here can tell a root
+-- whose gate has opened at every step from one still waiting on a step it has not registered. So a
+-- root whose gate opened before its promotion on the release before is marked as well. Its tree
+-- runs and its members stood suspended with nothing owed; the first pass of this release brings
+-- them back once, as that release's promotion would have. A member whose phase worker the operator
+-- resumed meanwhile and that still runs is started no second time (workflow.StartFor), though each
+-- other role of it that ran is started again with no task. A marked root whose gate opened while
+-- its tree's lifecycle was not open queues again until the promotion that opens its tree.
+--
+-- The release before this one names each column of the table it writes (record's PutIssue) and
+-- reads none of this one, so every row it inserts takes the default. Daemons of several projects
+-- that share the database may upgrade one after another: a daemon still on the release before
+-- promotes a root this statement marked without clearing the mark, and it re-admits a root without
+-- setting one. The first is caught by this release's pass, which clears the mark such a promotion
+-- left and starts nothing for it, however far that root's tree has moved on since (admit's
+-- promotedByEarlierRelease). The second leaves that generation as the release before left it,
+-- its members brought back at its promotion only.
+--
+-- There is no down file. This directory keeps none — migrations here are forward-only and no
+-- .down.sql file exists — so the way back is the one transaction that closes this header, its last
+-- paragraph (migrations.WayBack), run with every daemon of the database stopped and before the
+-- release before starts, through psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1. issues holds the rows
+-- of every project that shares the database, and a daemon of this release reads the column in
+-- every read of a record (record's issueColumns), so one still running for another project after
+-- the drop would fail every fact it applies.
+--
+-- The drop and the delete of this migration's row go together. The release before this one needs
+-- neither to run, since it never names the column: the delete is what makes the version the store
+-- reports, its highest recorded row (store.SchemaVersionTx), that release's own again. Both are
+-- owed to the roll-forward. With the column dropped and the row deleted, store.apply finds no row
+-- of this version and runs this file again, which adds the column again and marks the roots that
+-- still wait as the paragraph above says; an add of a column that stands would fail.
+--
+-- begin;
+-- alter table issues drop column if exists members_owed;
+-- delete from schema_version where version = 20261123224717;
+-- commit;
+alter table issues add column members_owed boolean not null default false;
+
+update issues set members_owed = true
+ where key = tree and generation > 1 and status = 'todo' and phase = 'admitted' and linger_until is null
+   and released_for_wait_at is null
+   and not exists (select 1 from slots where slots.issue = issues.key);

@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -24,8 +25,10 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -68,19 +71,30 @@ func (s *server) listArtifacts(w http.ResponseWriter, r *http.Request) {
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	reads := artifactReads(artifacts, reader)
 	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
 	WriteJSON(w, http.StatusOK, reads)
 }
 
 type artifactUploadInput struct {
-	name        string
-	content     []byte
-	contentType string
-	summary     string
-	supplied    *model.Actor
+	name    string
+	content []byte
+	// precondition is the token of the version an upload believes it is replacing, nil when the
+	// upload names none. A replacement of a document that already exists names it, and one that
+	// names none is taken unchecked and counted (storeArtifact); a replacement of a
+	// file or an image names its standing version's token, and one that names none is taken
+	// unchecked. A first upload never names one.
+	precondition *model.EditPrecondition
+	contentType  string
+	summary      string
+	supplied     *model.Actor
 	// blank reports a JSON body that carries no content, or whose content is blank: such a
 	// body makes a new document holding nothing, and storeArtifact refuses it where the name
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
-	// upload always carries its bytes, so it never sets this.
+	// upload always carries its bytes, so it never sets this. A precondition that is not well
+	// formed is answered as malformed first (uploadArtifactFor, ValidateUploadPrecondition);
+	// past that, the refusal of a blank write over a document that exists comes ahead of every
+	// check of the token against the document, so a blank write is never told to name a token
+	// for a write the server would refuse whatever token it named.
 	blank bool
 }
 
@@ -108,22 +122,26 @@ func (target artifactTarget) refPrefix() string {
 type jsonArtifactUpload struct {
 	Name string `json:"name" required:"true"`
 	// Content is what a JSON upload stores, which is always a markdown document. A body with
-	// no content, or whose content is blank, makes a new document holding nothing, which a
-	// person then writes in Dispatch. It is refused only where the name, or the slug that name
-	// gives, is a document the owner already holds (400 ARTIFACT_INPUT, storeArtifact), or
-	// where that slug is one of the documents Dispatch makes itself (400 ARTIFACT_ROLE_NAME).
-	// A multipart upload sends its bytes as the `file` part instead and carries no content at
-	// all, which is a body of its own (openAPIMultipartSchema).
+	// no content, or whose content is blank (strings.TrimSpace empties it), is held to the rules
+	// of a create that stores nothing: it is refused where the name, or the slug that name gives,
+	// is a document the owner already holds (400 ARTIFACT_INPUT, storeArtifact), or where that
+	// slug is one of the documents Dispatch makes itself (400 ARTIFACT_ROLE_NAME). A multipart
+	// upload sends its bytes as the `file` part instead and carries no content at all, which is a
+	// body of its own (openAPIMultipartSchema).
 	//
-	// Content of whitespace alone is carried to the store as it was typed, and the store makes
-	// it empty: the write parses the markdown into the document and stores what that document
-	// renders back (Docs.SeedText, storeArtifact), and whitespace alone is no block, so the
-	// version holds an empty markdown of size 0. Such a document is as removable as one made
-	// with no content at all, measured on 2026-11-11 through the route itself.
-	Content *string         `json:"content"`
-	Primary json.RawMessage `json:"primary"`
-	Summary string          `json:"summary"`
-	Actor   *model.Actor    `json:"actor"`
+	// Blank content is carried to the store as it was typed, and seeded as any content is: the
+	// write parses the markdown into the document and stores what that document renders back
+	// (Docs.SeedText, storeArtifact). Spaces, tabs, carriage returns and line feeds alone are no
+	// block, so such a version holds an empty markdown of size 0, and the document is as removable
+	// as one made with no content at all, measured on 2026-11-11 through the route itself. The
+	// other characters strings.TrimSpace empties are text to the parser, so the store keeps them -
+	// an upload of "\u00a0\n" stores "\u00a0\n", measured on 2026-11-21 - and the seed refuses such
+	// content as it refuses any text, past the elements one write may make among it.
+	Content      *string                 `json:"content"`
+	Primary      json.RawMessage         `json:"primary"`
+	Summary      string                  `json:"summary"`
+	Actor        *model.Actor            `json:"actor"`
+	Precondition *model.EditPrecondition `json:"precondition"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +219,59 @@ type artifactUploadResponse struct {
 	Version  model.Version  `json:"version"`
 }
 
+// errMarkdownDocumentTooLarge is the refusal of text longer than maxDocumentMarkdownBytes that an
+// upload would store as a markdown document (documentTextRefusal).
+var errMarkdownDocumentTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED", "%s",
+	contracts.MarkdownDocumentTooLarge)
+
+// documentTextRefusal is the refusal an upload makes, before its write, of the text it would store
+// as a markdown document, for the text alone, or nil: content, a JSON upload's `content` or, with
+// file, a multipart upload's file part. It makes the upload's checks in the upload's own order and
+// answers them in the upload's status, code and words, which writeHandlerError serves:
+//
+//   - text longer than maxDocumentMarkdownBytes;
+//   - a file's bytes holding U+0000 or a byte that is not UTF-8, since a markdown document is
+//     stored as text. Any other file is stored as bytes and never reaches here.
+//
+// Inline content holding U+0000 never reaches here: the JSON upload's decode refuses it first
+// (unstorableJSON), and the inline round trip, whose decode does not, refuses it in the same words
+// before it comes here (postMarkdownRoundTrip).
+//
+// The upload (uploadArtifactFor) and the two round trips (markdownRoundTrip) make these checks
+// through it, and `dispatch artifact` and its dry run take a round trip's refusal of them as
+// the call's for every upload, a replacement included. So a check of the text alone that every
+// upload of a markdown document makes before its write is made here, and the round trips make it
+// too.
+//
+// The upload's other refusals of the text alone are its write's. A new document's seed parses the
+// text, holds its asks to their content rule, renders it, weighs that rendering against the bytes
+// and the elements one document holds and holds its checks CI proves to the rules their
+// attributes keep (docs' SeedText); a replacement makes some of these against the document it
+// replaces (docs' ReplaceText). The upload makes them once, in that write (storeArtifact); the
+// round trips make the seed's through the same steps (docs.SeedRendering) for a request that asks
+// for a new document's refusals, and otherwise those every replacement makes
+// (docs.ReplacementRendering).
+func documentTextRefusal[T string | []byte](content T, file bool) error {
+	if len(content) > maxDocumentMarkdownBytes {
+		return errMarkdownDocumentTooLarge
+	}
+	if file {
+		if refusal := unstorableDocumentText("file", content); refusal != nil {
+			return refusal
+		}
+	}
+	return nil
+}
+
+// unstorableDocumentText is unstorableText of content, a document's text as a string or as bytes,
+// read without a copy where bytes are storable, as nearly every text is.
+func unstorableDocumentText[T string | []byte](field string, content T) *apiError {
+	if raw, isBytes := any(content).([]byte); isBytes && text.StorableBytes(raw) {
+		return nil
+	}
+	return unstorableText(field, string(content))
+}
+
 func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, target artifactTarget) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxArtifactBlobSize+(1<<20))
 	requestType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -245,26 +316,44 @@ func (s *server) uploadArtifactFor(w http.ResponseWriter, r *http.Request, targe
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, agentOwnsFilesOnly)
 		return
 	}
-	if kind == "doc" && len(input.content) > maxDocumentMarkdownBytes {
-		writeError(w, "CAP_EXCEEDED", http.StatusRequestEntityTooLarge, "a markdown document is at most 1 MiB; a larger file is stored as a binary artifact under another content type")
-		return
+	if kind == "doc" {
+		if refusal := documentTextRefusal(input.content, requestType == "multipart/form-data"); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
 	}
-	// A markdown document is stored as text. Its inline content was read as a JSON string, which
-	// holds no byte that is not UTF-8 and was read for U+0000, so only a multipart file reaches here
-	// holding either. Any other file is stored as bytes, beside its part's Content-Type as text; the
-	// document path stores no part header.
-	if kind == "doc" && !text.StorableBytes(input.content) {
-		s.writeHandlerError(w, unstorableText("file", string(input.content)))
-		return
-	}
+	// Any other file is stored as bytes, beside its part's Content-Type as text; the document
+	// path stores no part header.
 	if kind != "doc" {
 		if refusal := unstorableText("file Content-Type", input.contentType); refusal != nil {
 			s.writeHandlerError(w, refusal)
 			return
 		}
 	}
+	// The token an upload names is held to what an upload can mean before anything is written:
+	// the token of the version it replaces alone, in the shape every edit's precondition takes.
+	// A document's is its live tree's, which the document write checks; a file's or an image's is
+	// its standing version's (model.FileVersionToken), which storeArtifact checks. A token nothing
+	// would read is refused rather than taken and dropped, because the caller believes its write
+	// was conditional. A replacement that names none is taken unchecked, as it was before #3000,
+	// and a document's is counted (storeArtifact).
+	if input.precondition != nil {
+		if refusal := docs.ValidateUploadPrecondition(*input.precondition); refusal != nil {
+			s.writeHandlerError(w, refusal)
+			return
+		}
+	}
 	input.contentType = storedType
-	s.storeArtifact(w, r, input, actor, kind, target)
+	// Whether the credential is a person's, for the check of who writes an issue's spec or
+	// Verification document (refuseSpecWriter), read before storeArtifact opens its transaction.
+	// Every upload to an issue reads it, a file's too: a file named verification.md takes the slug
+	// that reads as the issue's Verification document (documentPlays). An upload to a project or to
+	// a session reads nothing for it.
+	writer := specWriter{actor: actor}
+	if target.IssueKey != nil {
+		writer = s.specWriterOf(r, actor)
+	}
+	s.storeArtifact(w, r, input, writer, kind, target)
 }
 
 // jsonArtifactUpload reads an inline upload's JSON body. As decodeJSON does, it ignores a member
@@ -304,13 +393,49 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		content = []byte(*body.Content)
 	}
 	return artifactUploadInput{
-		name:        strings.TrimSpace(body.Name),
-		content:     content,
-		contentType: "text/markdown; charset=utf-8",
-		summary:     strings.TrimSpace(body.Summary),
-		supplied:    body.Actor,
-		blank:       blank,
+		name:         strings.TrimSpace(body.Name),
+		content:      content,
+		precondition: body.Precondition,
+		contentType:  "text/markdown; charset=utf-8",
+		summary:      strings.TrimSpace(body.Summary),
+		supplied:     body.Actor,
+		blank:        blank,
 	}, true
+}
+
+// multipartJSONField reads one JSON object a multipart upload sends as a form field - its
+// `actor`, its `precondition` - as the JSON body's decoder reads the same object: a member no
+// field of the type names is ignored and logged at debug with the route, as `decodeJSON` and
+// `jsonArtifactUpload` do it, so one build of a fleet takes an upload another build's member
+// rides in (#2461). What a misspelled key cannot do is pass as the key it misspells: a
+// precondition left naming nothing is refused `400 INVALID_PRECONDITION` by its own shape check
+// (`docs.ValidateUploadPrecondition`), and an actor naming no kind is refused when the caller is
+// a bearer that proves no session (`bearerSessionActor`), the one caller the actor names.
+// A field holding more than one JSON value is refused, and a field the form does not carry, or
+// carries empty, is no field at all and answers nil. Every refusal is written here, naming the
+// field, so a caller reading false returns. A field is logged only once it passed those checks,
+// as the JSON body is.
+func multipartJSONField[T any](s *server, w http.ResponseWriter, r *http.Request, field string) (*T, bool) {
+	raw := r.FormValue(field)
+	if raw == "" {
+		return nil, true
+	}
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	var read T
+	if err := decoder.Decode(&read); err != nil {
+		writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart "+field)
+		return nil, false
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		writeError(w, "INVALID_JSON", http.StatusBadRequest, "multipart "+field+" must contain one JSON value")
+		return nil, false
+	}
+	if refusal := unstorableJSON(field, []byte(raw)); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return nil, false
+	}
+	logUndeclaredMembers(r, &read, []byte(raw))
+	return &read, true
 }
 
 func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request) (artifactUploadInput, bool) {
@@ -348,21 +473,18 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, refusal)
 		return artifactUploadInput{}, false
 	}
-	var supplied *model.Actor
-	if raw := r.FormValue("actor"); raw != "" {
-		var actor model.Actor
-		if err := json.Unmarshal([]byte(raw), &actor); err != nil {
-			writeError(w, "INVALID_JSON", http.StatusBadRequest, "invalid multipart actor")
-			return artifactUploadInput{}, false
-		}
-		if refusal := unstorableJSON("actor", []byte(raw)); refusal != nil {
-			s.writeHandlerError(w, refusal)
-			return artifactUploadInput{}, false
-		}
-		supplied = &actor
+	supplied, read := multipartJSONField[model.Actor](s, w, r, "actor")
+	if !read {
+		return artifactUploadInput{}, false
 	}
 	if _, exists := r.MultipartForm.Value["primary"]; exists {
 		writeError(w, "ARTIFACT_INPUT", http.StatusBadRequest, "primary is fixed at issue creation")
+		return artifactUploadInput{}, false
+	}
+	// A multipart upload names the token of the version it replaces in the form field
+	// `precondition`, holding the same JSON object the JSON body's `precondition` holds.
+	precondition, read := multipartJSONField[model.EditPrecondition](s, w, r, "precondition")
+	if !read {
 		return artifactUploadInput{}, false
 	}
 	name := strings.TrimSpace(r.FormValue("name"))
@@ -392,12 +514,132 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 		contentType = "application/octet-stream"
 	}
 	return artifactUploadInput{
-		name:        name,
-		content:     content,
-		contentType: contentType,
-		summary:     strings.TrimSpace(r.FormValue("summary")),
-		supplied:    supplied,
+		name:         name,
+		content:      content,
+		precondition: precondition,
+		contentType:  contentType,
+		summary:      strings.TrimSpace(r.FormValue("summary")),
+		supplied:     supplied,
 	}, true
+}
+
+// uploadAdvice tells the reader of an upload refused for a token the artifact has moved past,
+// `what` naming its kind (document, file or picture), where the token of the version it is
+// replacing is printed. It names no flag of a command: a caller that named a token may have sent
+// it straight to this route, from a client whose `dispatch artifact` has no flag for one
+// (INFRA-4980), so it names the field the token goes in.
+func uploadAdvice(what string) string {
+	return "read the " + what + " with `dispatch doc-read`, which prints " +
+		"`Document token: sha256:…`, and upload again naming that token as the upload's " +
+		"precondition, `{\"document\":\"sha256:…\"}`"
+}
+
+// writeUploadDocumentError answers an upload whose document write was refused, which is where
+// this route's words meet the document service's: the service reports which tree a token missed
+// and knows neither the version rows nor a command its reader runs, so the number of the version
+// the client is behind and the sentence saying where a current token is printed are added here.
+// That number is read here, in the upload's read phase, once the write is refused and while tx
+// still holds the lock the write read the document's tree under, so it is the version standing
+// at the tree the token missed; the refusal is a read and writes nothing. It is read only for a
+// token the document moved past, the one refusal that names it, so a write refused for any other
+// reason is reported as it was and nothing more is asked of tx.
+//
+// A repair - a document whose live tree is outside the Proof schema - has no token for the
+// upload to name, and is refused by writeUploadNoTokenError below, as a first upload naming a
+// token is (storeArtifact).
+func (s *server) writeUploadDocumentError(ctx context.Context, w http.ResponseWriter, tx pgx.Tx, err error, name, artifactID string) {
+	var stale *docs.ErrPreconditionFailed
+	if errors.As(err, &stale) {
+		version, readErr := settledVersionNumber(ctx, tx, artifactID)
+		if readErr != nil {
+			s.writeHandlerError(w, readErr)
+			return
+		}
+		WriteJSON(w, http.StatusConflict, uploadPreconditionBody(stale, version))
+		return
+	}
+	if errors.Is(err, docs.ErrPreconditionUnavailable) {
+		s.writeUploadNoTokenError(w, name)
+		return
+	}
+	s.writeHandlerError(w, err)
+}
+
+// uploadPreconditionBody is the 409 PRECONDITION_FAILED body of a document's upload naming the
+// token of a version that no longer stands: the refusal's own body (editPreconditionBody), the
+// number of the version that stands, and the sentence saying where its token is printed. A file's
+// is fileUploadPreconditionBody.
+func uploadPreconditionBody(stale *docs.ErrPreconditionFailed, version int) editPreconditionError {
+	body := editPreconditionBody(stale)
+	body.Current.Version = &version
+	body.Error += "; " + uploadAdvice("document")
+	return body
+}
+
+// fileUploadPreconditionBody is the 409 PRECONDITION_FAILED body of a file's or a picture's upload
+// naming a token that is not its standing version's: the shape a document's refusal answers
+// (preconditionBody), holding the standing token in current.document and the one mismatch scoped
+// to it, with the standing version's number, in words that name the artifact's kind rather than
+// a document.
+func fileUploadPreconditionBody(kind, name, named string, standing model.Version) editPreconditionError {
+	what := "file"
+	if kind == "image" {
+		what = "picture"
+	}
+	token := *standing.Token
+	body := preconditionBody(token, []model.EditPreconditionMismatch{{Scope: "document", Expected: named, Current: &token}},
+		fmt.Sprintf("%s upload precondition failed: %q stands at version %d, whose token is not the one this upload names; %s",
+			what, name, standing.Number, uploadAdvice(what)))
+	body.Current.Version = &standing.Number
+	return body
+}
+
+// refuseFileBase answers an upload of a file or an image of the given kind that names base, the
+// token of the version it believes it replaces, when base is not standing's token, standing being
+// the artifact's newest version, and reports whether it answered. A base naming any other token
+// is refused 409 PRECONDITION_FAILED with the standing version's token and number, as a
+// document's is; a version stored with no hash has no token for a base to name, and is refused as
+// a first upload naming a token is (writeUploadNoTokenError). An upload naming no base is never
+// refused here, a first upload among them: one naming a token is refused before it reaches here,
+// by storeArtifact and, before its object, by refuseUploadBeforeItsObject, so a first upload
+// arrives naming none and passes. It runs twice, the same check each time:
+// before the upload's object is written, from the pool (putUploadedFile, its version read by
+// newestFileVersion), so an upload refused there leaves no object, and in storeArtifact's
+// transaction under the owner's lock, which decides, its version the one that transaction loaded
+// with the artifact. An upload the first passed and the second refuses, because another upload
+// replaced the version between them, leaves an object no row names, as putUploadedFile's other
+// refusals can.
+func (s *server) refuseFileBase(w http.ResponseWriter, kind, name string, base *model.EditPrecondition, standing model.Version) bool {
+	if base == nil {
+		return false
+	}
+	if standing.Token == nil {
+		s.writeUploadNoTokenError(w, name)
+		return true
+	}
+	if base.Document == *standing.Token {
+		return false
+	}
+	WriteJSON(w, http.StatusConflict, fileUploadPreconditionBody(kind, name, base.Document, standing))
+	return true
+}
+
+// uploadNoTokenRefusal refuses an upload that names a token where the artifact has none for it
+// to name, with no live token beside it: a first upload under a name the owner holds nothing
+// under names a version that is not there (storeArtifact, the one statement of that rule), a
+// repair's live tree renders no markdown and has no token at all, and a file's version stored
+// with no hash has none. No reader can be sent to `dispatch doc-read` for a current token,
+// because nothing can print one, so each is told to send the upload again naming none, which is
+// taken: it creates the artifact the owner holds nothing under, replaces the repaired document
+// whole, or replaces the file unchecked.
+func uploadNoTokenRefusal(name string) error {
+	return errorf(http.StatusConflict, "PRECONDITION_FAILED",
+		"%q has no token for an upload to name: send it again naming no token", name)
+}
+
+// writeUploadNoTokenError answers uploadNoTokenRefusal.
+func (s *server) writeUploadNoTokenError(w http.ResponseWriter, name string) {
+	s.writeHandlerError(w, uploadNoTokenRefusal(name))
 }
 
 // queueNewArtifact queues the insert of the artifact an upload creates and returns the row as the
@@ -409,6 +651,23 @@ func (s *server) multipartArtifactUpload(w http.ResponseWriter, r *http.Request)
 // (documentRole), read once by the caller, which refuses a blank create that takes one: the row
 // the insert leaves carries it, so the reads this transaction makes of the artifact it just
 // created see it as every later reader will.
+//
+// The create's one time is read here, in the read phase, under the owner lock the caller holds: its
+// row's created_at and its node's statements are both dated with it (graphstore.StatementTime),
+// past every statement about the address, so a read as of a time reads them in the order the
+// store appends them. Which row the node's live statement names is read from its cause, this
+// upload's artifact.created (graphcensus's ownLiveStatement), not from this time.
+//
+// The node is written in the project of the issue or the project that owns the document, or
+// between the parties of the conversation that does. A ref_key past the store's address bound is
+// no node of it (graphstore.AddressFits), as every writer of the store leaves such an address out,
+// and the write is then the zero Uncaused. No row stands at the address, since the slug is free
+// under the owner lock this transaction holds, so a node there that is not gone stands behind no
+// row: a document a build before this one removed, stating nothing, live or at a state a later
+// release marked it with (graphstore.Node's Restates). The write states it gone and then live,
+// both under this upload's event, so the new document's node carries no statement of the removed
+// one's as its own; it states the two itself, so the node write states no state of its own
+// beside them.
 func (s *server) queueNewArtifact(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -418,20 +677,48 @@ func (s *server) queueNewArtifact(
 	slug, name, kind string,
 	role *string,
 	actor model.Actor,
-) (model.Artifact, error) {
+) (model.Artifact, graphstore.Uncaused, error) {
 	actorJSON, err := encodeJSON(actor)
 	if err != nil {
-		return model.Artifact{}, err
+		return model.Artifact{}, graphstore.Uncaused{}, err
 	}
 	artifact := model.Artifact{
 		IssueKey: target.IssueKey, Project: deref(project), SessionID: session,
 		RefKey: target.refPrefix() + "/" + slug, Slug: slug, Name: name, Kind: kind, Role: deref(role),
 	}
 	if err := json.Unmarshal(actorJSON, &artifact.CreatedBy); err != nil {
-		return model.Artifact{}, fmt.Errorf("decode artifact author: %w", err)
+		return model.Artifact{}, graphstore.Uncaused{}, fmt.Errorf("decode artifact author: %w", err)
 	}
-	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, now()`).Scan(&artifact.ID, &artifact.CreatedAt); err != nil {
-		return model.Artifact{}, err
+	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text`).Scan(&artifact.ID); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	if artifact.CreatedAt, err = graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, artifact.RefKey); err != nil {
+		return model.Artifact{}, graphstore.Uncaused{}, err
+	}
+	var documentNode graphstore.Uncaused
+	if graphstore.AddressFits(artifact.RefKey) {
+		node := graphstore.ArtifactNode(artifact.RefKey, deref(project), deref(session), actor, artifact.CreatedAt)
+		held, found, err := graphstore.ReadNode(ctx, tx, graphstore.KindArtifact, artifact.RefKey)
+		if err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
+		var stated []graphstore.Tuple
+		if found && held.State != graphstore.StateGone {
+			for _, state := range []string{graphstore.StateGone, graphstore.StateLive} {
+				stated = append(stated, graphstore.Tuple{
+					FromKind: graphstore.KindArtifact, FromID: artifact.RefKey,
+					Kind: graphstore.AttributeState, ToKind: graphstore.KindValue, ToID: state,
+					At: artifact.CreatedAt, Who: actor, Asserted: true,
+				})
+			}
+		}
+		documentNode = graphstore.PlanUncaused([]graphstore.Node{node}, stated)
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, documentNode)
+			return nil
+		}); err != nil {
+			return model.Artifact{}, graphstore.Uncaused{}, err
+		}
 	}
 	// The document work that follows runs before the insert below, so the address that insert
 	// gives the row - its key, the issue holding it, none for a project's or a session's
@@ -442,8 +729,9 @@ func (s *server) queueNewArtifact(
 	// address names no pending parent (refs.DocumentAddress).
 	ledger.RegisterPendingArtifact(artifact.ID, refs.DocumentAddress{
 		RefKey: artifact.RefKey, IssueKey: deref(target.IssueKey), Ref: artifactReference(artifact),
+		Project: deref(project), Session: deref(session),
 	})
-	return artifact, queueExec(ledger, `
+	return artifact, documentNode, queueExec(ledger, `
 		insert into artifacts (id, issue_key, project_key, session_id, slug, name, kind, is_primary, role, created_by, created_at)
 		values ($1, $2, $3, $4, $5, $6, $7, false, $8, $9, $10)
 	`, artifact.ID, target.IssueKey, project, session, slug, name, kind, role, actorJSON, artifact.CreatedAt)
@@ -473,9 +761,10 @@ func (s *server) queueFileVersion(
 		return model.Version{}, err
 	}
 	size := len(input.content)
+	token := model.FileVersionToken(sha)
 	version := model.Version{
 		Number: number, Named: summary != nil, Summary: summary, CreatedAt: createdAt,
-		Size: &size, MIME: &input.contentType, SHA256: &sha,
+		Size: &size, MIME: &input.contentType, SHA256: &sha, Token: &token,
 	}
 	if err := json.Unmarshal(authors, &version.Authors); err != nil {
 		return model.Version{}, err
@@ -496,6 +785,28 @@ func (s *server) queueFileVersion(
 	`, artifactID, number, content, input.contentType, size, sha, authors, version.Named, summary, createdAt)
 }
 
+// newestFileVersion is the newest version of the file or image artifactID of the given kind, with
+// its token (model.StateFileTokens), for the check putUploadedFile makes from the pool, where the
+// lookup that found the artifact read no versions. An artifact holding no version answers a
+// version with no token. The check that decides runs in storeArtifact's transaction on the
+// versions that transaction loaded with the artifact under the owner's lock, and reads nothing
+// more.
+func newestFileVersion(ctx context.Context, q queryer, kind, artifactID string) (model.Version, error) {
+	version, err := scanVersion(q.QueryRow(ctx, `
+		select `+versionColumns+`
+		from artifact_versions v where v.artifact_id = $1 order by v.number desc limit 1
+	`, artifactID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return model.Version{}, nil
+	}
+	if err != nil {
+		return model.Version{}, fmt.Errorf("read the newest version of a file: %w", err)
+	}
+	versions := []model.Version{version}
+	model.StateFileTokens(kind, versions)
+	return versions[0], nil
+}
+
 // recordDocumentTaskProgress records the task count of the document a write just stored.
 // readBack is the rendering that write stored, read back by its own parse (docs'
 // Ledger.ReadBackOf): the count reads that tree rather than parsing the same markdown again, and
@@ -511,15 +822,17 @@ func (s *server) storeArtifact(
 	w http.ResponseWriter,
 	r *http.Request,
 	input artifactUploadInput,
-	actor model.Actor,
+	writer specWriter,
 	kind string,
 	target artifactTarget,
 ) {
+	actor := writer.actor
 	checksum := sha256.Sum256(input.content)
 	sha := hex.EncodeToString(checksum[:])
 	// A file's object is written before the transaction opens, once the refusals the transaction
-	// would make have been made (putUploadedFile, artifact_files.go).
-	if !s.putUploadedFile(w, r, kind, sha, input, target) {
+	// would make, the check of who writes the issue's Verification document among them, have been
+	// made (putUploadedFile, artifact_files.go).
+	if !s.putUploadedFile(w, r, writer, kind, sha, input, target) {
 		return
 	}
 	tx, err := s.begin(r.Context())
@@ -566,6 +879,12 @@ func (s *server) storeArtifact(
 	}
 	var artifact model.Artifact
 	var created bool
+	// The node of a document this upload creates: written before its row, in the project of the
+	// issue or the project that owns it, or between the parties of the conversation that does,
+	// and stated under the event the upload appends, or at the sentinel where its owner records
+	// none (artifactTarget.ownsEvents). A ref_key past the store's address bound is no node
+	// of it (graphstore.AddressFits), as every writer of the store leaves such an address out.
+	var documentNode graphstore.Uncaused
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
 		created = true
@@ -590,7 +909,7 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, createRoleNameRefusal(input.name, slug, *role))
 			return
 		}
-		artifact, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
+		artifact, documentNode, err = s.queueNewArtifact(r.Context(), tx, ledger, target, project, session, slug, input.name, kind, role, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -625,6 +944,19 @@ func (s *server) storeArtifact(
 			artifact.Role = *role
 		}
 	}
+	// The check of who writes an issue's spec or Verification document, on the row as this upload
+	// leaves it - a new one with the role its slug gave it, an older one with its role repaired -
+	// before the first document call, so an upload that would change nothing is refused too. It
+	// judges a file as well as a document: a file row whose slug is verification-md, which takes no
+	// role, is the issue's Verification document by that slug (specWriterDocumentName). Where a
+	// file store holds files, the same check answered a file first, before its object was written
+	// (refuseUploadBeforeItsObject); this one decides, under the owner's lock.
+	if target.IssueKey != nil {
+		if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	// A project artifact's owner is the artifact itself, and until here this transaction has not
 	// taken its lock: the issue branch above locks its issue, but this one only read its project.
 	// For a document the document service takes that lock itself, before the room, when the write
@@ -651,14 +983,38 @@ func (s *server) storeArtifact(
 	// the same markdown again (recordDocumentTaskProgress, documentBlocksFor).
 	var documentReadBack *pmdoc.Node
 	var documentChanges model.ReferenceChanges
+	// indexedBlocks is what the block index stated in the node and tuple store, which waits for
+	// the event this upload queues below: that event is the cause every node and tuple of the
+	// pass carries, and no tuple may be updated once appended.
+	var indexedBlocks graphstore.Uncaused
+	// A first upload under a name the owner holds nothing under replaces nothing, so a token names
+	// a version that is not there: the caller read something this owner does not hold, or another
+	// writer has taken the name since. The caller believed its write was conditional, so it is
+	// refused rather than taken, as a token is where the artifact has none (uploadNoTokenRefusal).
+	// This is the one statement of that rule, a document's and a file's alike; a file's upload is
+	// held to it before its object is written too (refuseUploadBeforeItsObject).
+	if created && input.precondition != nil {
+		s.writeUploadNoTokenError(w, input.name)
+		return
+	}
 	if kind == "doc" {
 		if created {
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
 		} else {
-			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor)
+			// An upload over a document that already exists replaces every word of it, so it
+			// names the token of the version it is replacing, which the write checks on the tree
+			// it reads under its own lock. One that names none is taken unchecked, as it was
+			// before #3000, and counted once it commits (noteUnguardedReplacement): the refusal
+			// of a missing token comes back once every deployed client sends one (INFRA-4980).
+			// A repair - a live tree outside the Proof schema, which has no token for anyone to
+			// name - names none by design.
+			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor, input.precondition)
 		}
 		if err != nil {
-			s.writeHandlerError(w, err)
+			// The document service knows the tree a token missed and nothing of this route's
+			// own; the refusal the client reads is worded where the two meet. Nothing is
+			// written: every write of this upload was queued, and Commit never runs.
+			s.writeUploadDocumentError(r.Context(), w, tx, err, input.name, artifact.ID)
 			return
 		}
 		version, err = ledger.QueueVersion(r.Context(), artifact.ID, documentMarkdown, []model.Actor{actor}, documentSummary)
@@ -677,12 +1033,25 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
-		documentChanges, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
+		documentChanges, indexedBlocks, err = s.deps.Docs.IndexDocumentReferences(documentCtx, artifact.ID, version.Number, documentMarkdown)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	} else {
+		// An upload over a file or an image that already exists names the token of the version
+		// it is replacing, as a document's does, checked here under the owner's lock against the
+		// newest of the versions this transaction loaded with the artifact under that lock (none,
+		// for a row with no version, has no token); one that names none is taken unchecked and
+		// counted once it commits, as a document's is. A first upload reaches here naming none,
+		// since one naming a token was refused above, so refuseFileBase passes it.
+		var standing model.Version
+		if count := len(artifact.Versions); count > 0 {
+			standing = artifact.Versions[count-1]
+		}
+		if s.refuseFileBase(w, kind, input.name, input.precondition, standing) {
+			return
+		}
 		version, err = s.queueFileVersion(r.Context(), tx, ledger, artifact.ID, input, sha, documentSummary, actor)
 		if err != nil {
 			s.writeHandlerError(w, err)
@@ -730,6 +1099,10 @@ func (s *server) storeArtifact(
 		payload = artifactCreatedEventPayload(artifact, documentChanges)
 	}
 	var published []*model.Event
+	// The cause the block index's facts carry: the event this upload queues, named as the id
+	// sequence left it right after its insert, or the sentinel where its owner records none of
+	// its own (an agent's workspace document).
+	blockCause := graphstore.NoEvent
 	if target.ownsEvents() {
 		stampKind := ""
 		if kind == "doc" {
@@ -740,7 +1113,22 @@ func (s *server) storeArtifact(
 			s.writeHandlerError(w, err)
 			return
 		}
+		blockCause = graphstore.LatestEvent
 		published = append(published, event)
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, indexedBlocks, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, documentNode, blockCause)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
 	}
 	// The approval this upload's own version superseded, read in its read phase as the edit route
 	// reads it: an upload to an existing document always writes a version, so a replacement of an
@@ -776,6 +1164,13 @@ func (s *server) storeArtifact(
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if !created && input.precondition == nil {
+		if kind == "doc" {
+			s.noteUnguardedReplacement(artifact)
+		} else {
+			s.noteUnguardedFileReplacement(artifact)
+		}
 	}
 	if kind == "doc" {
 		// The seeded or replaced text was written inside this transaction, which suppresses
@@ -827,6 +1222,7 @@ func (s *server) getArtifact(w http.ResponseWriter, r *http.Request) {
 	read := artifactRead{Artifact: artifact}
 	read.shape(reader)
 	reader.resolve()
+	approvalAtTheCut(r.Context(), artifact.Approval, "")
 	WriteJSON(w, http.StatusOK, read)
 }
 
@@ -891,9 +1287,14 @@ func (s *server) getArtifactText(w http.ResponseWriter, r *http.Request) {
 // beside them for a request that asked for them with ?blocks=true. The three come from one
 // rendering of one tree (docs.TextWithTokenAndBlocks), so a write by another session cannot leave
 // a listing's byte ranges indexing markdown they were not computed over; nil blocks for a request
-// that asked for none, which pays for none of that rendering.
+// that asked for none, which pays for none of that rendering. At a cut they come from the
+// document's newest version then, and the live document is not read (artifactTextAtTheCut).
 func (s *server) artifactTextBody(r *http.Request, artifactID string) (string, string, *[]model.ArtifactBlock, error) {
-	if r.URL.Query().Get("blocks") != "true" {
+	withBlocks := r.URL.Query().Get("blocks") == "true"
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		return s.artifactTextAtTheCut(r.Context(), artifactID, withBlocks)
+	}
+	if !withBlocks {
 		markdown, token, err := s.deps.Docs.TextWithToken(r.Context(), artifactID)
 		return markdown, token, nil, err
 	}
@@ -923,6 +1324,17 @@ func (s *server) getArtifactBlocks(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	// At a cut the blocks are those of the document's newest version then, and the live document
+	// is not read (artifactBlocksAtTheCut).
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		blocks, err := s.artifactBlocksAtTheCut(r.Context(), artifact.ID)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		WriteJSON(w, http.StatusOK, blocks)
 		return
 	}
 	blocks, err := s.deps.Docs.Blocks(r.Context(), artifact.ID)
@@ -1028,13 +1440,59 @@ func (s *server) blockReferences(ctx context.Context, artifactID string) (map[st
 }
 
 // artifactVersionText is the body the document arm of GET …/artifacts/…/versions/{number}
-// answers without `download=true`, on all three artifact patterns.
+// answers without `download=true`, on all three artifact patterns. Blocks is absent unless the
+// request asked for it with ?blocks=true: then it lists the version's typed blocks
+// (docs.VersionBlocks), and Markdown, with the version's sha256 and size, is the rendering their
+// byte ranges index.
 type artifactVersionText struct {
 	Markdown string `json:"markdown"`
 	// MarkdownTree is the ProseMirror tree Markdown is shown as, present only for a caller that
 	// sent `Dispatch-Trees: 1`.
 	MarkdownTree model.DisplayTree `json:"markdown_tree,omitempty"`
 	model.Version
+	Blocks *[]model.ArtifactBlock `json:"blocks,omitempty"`
+}
+
+// maxIntegerColumn is the largest number a Postgres integer column holds. A number the caller
+// names that such a column keys or stores is no row and no value at all past it:
+// artifact_versions.number and every column that names one of a document's versions
+// (user_document_reads.version among them), message_deliveries.attempt and
+// comment_deliveries.attempt, events.seq, the position an issue's or a document's event list
+// pages by, going_events.sequence, check_results' failed, skipped and excluded counts, and
+// user_issue_state.last_read_seq. pgx refuses to encode a larger number against such a column,
+// which a route would answer 500 as its own fault.
+const maxIntegerColumn = math.MaxInt32
+
+// fitsIntegerColumn reports whether a number the caller named is no greater than
+// maxIntegerColumn. Each handler that takes such a number for an integer column holds it to this
+// bound before any query is made with it, each with its own lower bound and its own refusal: the
+// two of this file that read a version number from a path or a query (parseVersionNumber), the
+// read mark's body (putDocumentRead), the delivery accept's attempt in its path (acceptDelivery,
+// which answers it as the attempt it is not, 404 MESSAGE_NOT_FOUND), the attempt a reply names
+// in its body (replyComment and replyMessage, each answering it as the delivery it is not, 404),
+// an event list's after and before (parseEventPosition), a result's three counts
+// (checkResultInput.refusal, 400 RESULT_INPUT), the issue read position's last_read_seq
+// (putUserState, 400 INVALID_STATE), and a going stream's Last-Event-ID header
+// (goingResumeFrom, which reads it as no point to resume from). The plan review's body needs no
+// check of its own, since it refuses every version above the plan's latest, which is within the
+// bound (createArtifactPlanReview). A reference's `@v<n>` pin is held to the same bound by its own
+// checks in refs (BlockTextAt, blockPrefixCandidates), which answer a version past it as one the
+// document does not have.
+func fitsIntegerColumn[N int | int64](number N) bool {
+	return number <= maxIntegerColumn
+}
+
+// parseVersionNumber reads a version number the caller named in a path or a query: a positive
+// integer that fits the column (fitsIntegerColumn), and false for anything else, which is the
+// caller's input refused, 400 INVALID_VERSION, with no query made with it. Both routes that read
+// a version number from a path or a query read it here: GET …/versions/{number} and the change
+// set (getArtifactChanges), each answering the refusal in its own words.
+func parseVersionNumber(text string) (int, bool) {
+	number, err := strconv.Atoi(text)
+	if err != nil || number < 1 || !fitsIntegerColumn(number) {
+		return 0, false
+	}
+	return number, true
 }
 
 // getArtifactVersion answers one version of an artifact on all four version routes: a document's
@@ -1044,14 +1502,16 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	number, err := strconv.Atoi(r.PathValue("number"))
-	if err != nil || number < 1 {
-		writeError(w, "INVALID_VERSION", http.StatusBadRequest, "version number must be positive")
+	number, valid := parseVersionNumber(r.PathValue("number"))
+	if !valid {
+		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("version number must be from 1 to %d", maxIntegerColumn))
 		return
 	}
 	// Exactly `true` asks for the download, as `blocks=true` asks for the blocks of the /text
-	// routes; any other value, `1` included, answers as without the parameter.
+	// routes; any other value, `1` included, answers as without the parameter. `blocks` reads the
+	// same way here.
 	download := r.URL.Query().Get("download") == "true"
+	withBlocks := r.URL.Query().Get("blocks") == "true"
 	artifact, err := s.loadArtifactForRequest(r.Context(), s.deps.Store.Pool, r)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1083,6 +1543,24 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			_, _ = io.WriteString(w, markdown)
 			return
 		}
+		var blocks *[]model.ArtifactBlock
+		if withBlocks {
+			// The version's own blocks, never the live tree's, and none of what describeBlocks adds
+			// from the live document's rows: a comment count or an embedding state is the live
+			// document's, not this version's. A block's range indexes the rendering it was read
+			// from, so the answer carries that text, its digest and its size.
+			rendered, listed, err := docs.VersionBlocks(markdown)
+			if err != nil {
+				s.writeHandlerError(w, err)
+				return
+			}
+			if listed == nil {
+				listed = []model.ArtifactBlock{}
+			}
+			markdown, blocks = rendered, &listed
+			size := len(markdown)
+			version.Size = &size
+		}
 		hash := sha256.Sum256([]byte(markdown))
 		sha := hex.EncodeToString(hash[:])
 		version.SHA256 = &sha
@@ -1096,7 +1574,7 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 		// more often than it is written, which is what makes the first read's store worth its
 		// one statement.
 		reader := s.readVersionDisplayTrees(r.Context(), wantsDisplayTrees(r))
-		answer := artifactVersionText{Markdown: markdown, Version: version}
+		answer := artifactVersionText{Markdown: markdown, Version: version, Blocks: blocks}
 		reader.text(&answer.MarkdownTree, markdown)
 		reader.resolve()
 		WriteJSON(w, http.StatusOK, answer)
@@ -1114,6 +1592,34 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 	s.serveFileVersion(w, r, artifact.ID, filename, number, download, content, contentType, sha, size)
 }
 
+// versionsMarkdown is the stored markdown of each of numbers that the document has, by number, in
+// one read; a number the document has no version of has no entry. The change set reads named
+// versions' own text here (twoVersionsMarkdown); the decisions of each named version read it with
+// its renderer version (storedDecisionsQuery).
+func (s *server) versionsMarkdown(ctx context.Context, artifactID string, numbers []int) (map[int]string, error) {
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select number, coalesce(markdown, '') from artifact_versions
+		where artifact_id = $1::uuid and number = any($2::int[])
+	`, artifactID, numbers)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	markdown := make(map[int]string, len(numbers))
+	for rows.Next() {
+		var number int
+		var text string
+		if err := rows.Scan(&number, &text); err != nil {
+			return nil, err
+		}
+		markdown[number] = text
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return markdown, nil
+}
+
 // deref is the string a nullable column holds, or "".
 func deref(value *string) string {
 	if value == nil {
@@ -1125,7 +1631,9 @@ func deref(value *string) string {
 // commitArtifactVersionEvent queues the artifact.version event of a version the transaction wrote
 // and the stamp of the document's new mention edges with it (refs.QueueStamp), after the append so
 // stamping never touches sequence allocation. The event is filled in once Commit has run the write
-// phase (queueStampedEvent).
+// phase (queueStampedEvent). Right after it, it queues what that version's block index stated in
+// the node and tuple store (written.Blocks), which waited for this event: the pass ran before the
+// event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ledger *docs.Ledger,
 	eventOwner owner,
@@ -1134,11 +1642,21 @@ func (s *server) commitArtifactVersionEvent(
 	written docs.VersionResult,
 	diff *string,
 ) (*model.Event, error) {
-	return s.queueStampedEvent(ledger, eventOwner.event(
+	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
 		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
 	), "artifact", artifactID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, written.Blocks, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return event, nil
 }
 
 // createVersionInput is the body of POST /api/v1/artifacts/{id}/versions and its issue and
@@ -1170,6 +1688,8 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Read before the transaction opens (specWriterOf), for the check below.
+	writer := s.specWriterOf(r, actor)
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1188,6 +1708,12 @@ func (s *server) createNamedVersion(w http.ResponseWriter, r *http.Request) {
 	}
 	if artifact.Kind != "doc" {
 		writeError(w, "NOT_DOCUMENT", http.StatusBadRequest, "artifact is not a document")
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before the document call, so a named version that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
@@ -1225,6 +1751,80 @@ type editArtifactInput struct {
 	Actor        *model.Actor            `json:"actor"`
 }
 
+// jsonMember decodes any JSON value into whether it is null, so a map of them says which members
+// a JSON object names, and which of those are null, and reading one copies none of its value.
+type jsonMember struct{ null bool }
+
+func (m *jsonMember) UnmarshalJSON(data []byte) error {
+	m.null = string(data) == "null"
+	return nil
+}
+
+// replaceTakes reports whether member is one a replace takes: op, find, with and occurrence. Every
+// other member is another operation's or none's, so a replace carrying one sends what replace
+// never reads.
+func replaceTakes(member string) bool {
+	switch member {
+	case "op", "find", "with", "occurrence":
+		return true
+	}
+	return false
+}
+
+// replaceFieldsRefusal is the refusal of the first replace of ops whose JSON in body, the request's
+// bytes, names no with or carries a member a replace does not take (replaceTakes), whatever that
+// member holds: 400 REPLACE_FIELDS naming the operation and each such member; and nil where every
+// replace names with and replace's members alone. Read as an empty with, a replace naming none
+// deleted its match, and one carrying another member was applied as if it held none. Only the
+// body says either: a decoded op's With is "" both for no with and for with "", which deletes the
+// match on purpose, a JSON null with is none, and a member model.EditOp does not declare decodes
+// to nothing. So a batch holding a replace reads body a second time, for each op's member names
+// alone (jsonMember). The decoder stops after body's one value, as the first read did
+// (readJSONBody, which accepts a value followed by a closing bracket or brace), so a body the
+// route accepted reads here too.
+func replaceFieldsRefusal(ops []model.EditOp, body []byte) error {
+	if !slices.ContainsFunc(ops, func(op model.EditOp) bool { return op.Op == "replace" }) {
+		return nil
+	}
+	var named struct {
+		Ops []map[string]jsonMember `json:"ops"`
+	}
+	if err := json.NewDecoder(bytes.NewReader(body)).Decode(&named); err != nil {
+		return fmt.Errorf("read the edit's members: %w", err)
+	}
+	if len(named.Ops) != len(ops) {
+		return fmt.Errorf("read the edit's members: the second read found %d operations, the first %d", len(named.Ops), len(ops))
+	}
+	for index, op := range ops {
+		if op.Op != "replace" {
+			continue
+		}
+		with, withNamed := named.Ops[index]["with"]
+		omitted := !withNamed || with.null
+		var foreign []string
+		for member := range named.Ops[index] {
+			if !replaceTakes(member) {
+				foreign = append(foreign, member)
+			}
+		}
+		if !omitted && len(foreign) == 0 {
+			continue
+		}
+		var problems []string
+		if omitted {
+			problems = append(problems, "names no with, which would delete the text find matches")
+		}
+		if len(foreign) > 0 {
+			slices.Sort(foreign)
+			problems = append(problems, fmt.Sprintf("carries %s, which replace does not take", strings.Join(foreign, " and ")))
+		}
+		return errorf(http.StatusBadRequest, "REPLACE_FIELDS",
+			`operation %d: replace %s; a replace takes find, with and occurrence alone: write the new text in with, or with "" to delete the match on purpose`,
+			index, strings.Join(problems, ", and "))
+	}
+	return nil
+}
+
 // editArtifactResponse is the body POST /api/v1/artifacts/{id}/edits and its issue and project
 // artifact patterns answer.
 type editArtifactResponse struct {
@@ -1251,7 +1851,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input editArtifactInput
-	if err := decodeJSON(r, &input); err != nil {
+	body, err := decodeJSONBody(r, &input)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := replaceFieldsRefusal(input.Ops, body); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1281,6 +1886,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 		release = sync.OnceFunc(acquired)
 		defer release()
 	}
+	// Read before the transaction opens (specWriterOf), for the check below, and only for a document
+	// the check holds: the check passes every other document without reading the writer.
+	writer := specWriter{actor: actor}
+	if _, held := specWriterDocumentName(artifact); held {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -1290,6 +1901,12 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	eventOwner := ownerForArtifact(artifact)
 	status, err := s.requireOpenOwnerStatus(r.Context(), tx, eventOwner)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The check of who writes an issue's spec or Verification document, under the owner's lock and
+	// before ApplyOps, so an edit that would change nothing is refused too.
+	if err := refuseSpecWriterOfDocument(r.Context(), tx, writer, artifact); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -1451,7 +2068,15 @@ const issueArtifactsStatement = `
 	`
 
 func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) ([]model.Artifact, error) {
-	rows, err := q.Query(ctx, issueArtifactsStatement, issueKey)
+	return listedArtifacts(ctx, q, issueArtifactsStatement, issueKey)
+}
+
+// listedArtifacts is the artifacts query names, as every list of them is read: the rows scanned
+// (collectArtifacts), then each given the versions and the rest of the detail a read carries
+// (loadArtifactDetails). An issue's list, a project's and an agent conversation's differ in the
+// statement alone, so each is that statement and this call.
+func listedArtifacts(ctx context.Context, q queryer, query string, args ...any) ([]model.Artifact, error) {
+	rows, err := q.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1463,6 +2088,25 @@ func (s *server) loadArtifacts(ctx context.Context, q queryer, issueKey string) 
 		return nil, err
 	}
 	return artifacts, nil
+}
+
+// writeArtifactList answers a list route with the artifacts query names (listedArtifacts), each
+// as a read shape carrying the display trees the caller asked for. A list route is therefore its
+// own authorization, its own statement and this call: a project's list and an agent
+// conversation's differ in nothing else, and a route added later says what it reads and who may
+// read it rather than repeating how a list is read. At a cut each artifact's approval leaves out
+// what the records at the cut do not give of it (approvalsAtTheCut); at no cut that names nothing.
+func (s *server) writeArtifactList(w http.ResponseWriter, r *http.Request, query string, args ...any) {
+	artifacts, err := listedArtifacts(r.Context(), s.deps.Store.Pool, query, args...)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	reads := artifactReads(artifacts, reader)
+	reader.resolve()
+	approvalsAtTheCut(r.Context(), artifacts)
+	WriteJSON(w, http.StatusOK, reads)
 }
 
 // collectArtifacts reads the rows issueArtifactsStatement returns. An issue with no artifact
@@ -1506,15 +2150,16 @@ func artifactIDs(artifacts []*model.Artifact) []string {
 // (readIssueDetails), and a read of its own sends them as a batch of its own (loadArtifactDetails).
 // The apply fills the versions first, since an approval's state reads them (applyApprovals), and
 // leaves an artifact with no version a non-nil empty list (applyVersions). No artifact queues
-// nothing and its apply fills nothing.
-func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing and its apply fills nothing. ctx is the read's: a read at a cut reads the open approval
+// requests as they stood then (queueApprovals).
+func queueArtifactDetails(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	versions := map[string][]model.Version{}
 	if ids := artifactIDs(artifacts); len(ids) > 0 {
 		b.Queue(artifactVersionsStatement, ids).Query(func(rows pgx.Rows) error {
 			return scanVersionsByArtifact(rows, versions)
 		})
 	}
-	approvals := queueApprovals(b, artifacts)
+	approvals := queueApprovals(ctx, b, artifacts)
 	return func() {
 		applyVersions(artifacts, versions)
 		approvals()
@@ -1528,7 +2173,7 @@ func queueArtifactDetails(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // nothing else reads the database in between.
 func loadArtifactDetails(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueArtifactDetails(batch, artifacts)
+	apply := queueArtifactDetails(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -1842,7 +2487,7 @@ func (s *server) loadArtifactRow(ctx context.Context, q queryer, row pgx.Row) (m
 }
 
 // scanArtifactOrNotFound reads the artifact's own row, answering the 404 every artifact read
-// answers for a row that is not there, the one idRoutes names for these routes. It is the step
+// answers for a row that is not there, the one these routes' ID names. It is the step
 // both reads of an artifact share: the one that goes on to carry the versions and the approval
 // (loadArtifactRow) and the one that takes the row alone (loadArtifactRowByID).
 func scanArtifactOrNotFound(row pgx.Row) (model.Artifact, error) {
@@ -1921,6 +2566,7 @@ func (s *server) findArtifactByNameOrSlug(ctx context.Context, q queryer, target
 		return model.Artifact{}, err
 	}
 	artifact.Versions = versions
+	model.StateFileTokens(artifact.Kind, artifact.Versions)
 	return artifact, nil
 }
 
@@ -1944,7 +2590,8 @@ const artifactVersionsStatement = `
 		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
 	`
 
-// scanVersion reads versionColumns from row; extra receives the columns after them.
+// scanVersion reads versionColumns from row; extra receives the columns after them. It states no
+// token: the caller, which knows the artifact's kind, does (model.StateFileTokens).
 func scanVersion(row pgx.Row, extra ...any) (model.Version, error) {
 	var version model.Version
 	var authors []byte
@@ -1977,14 +2624,16 @@ func scanVersionsByArtifact(rows pgx.Rows, versions map[string][]model.Version) 
 	return rows.Err()
 }
 
-// applyVersions fills each artifact's versions from what the statement returned; an artifact with
-// none keeps a non-nil empty list, which the response carries as [].
+// applyVersions fills each artifact's versions from what the statement returned, with a file's
+// or an image's tokens (model.StateFileTokens); an artifact with none keeps a non-nil empty list,
+// which the response carries as [].
 func applyVersions(artifacts []*model.Artifact, byArtifact map[string][]model.Version) {
 	for _, artifact := range artifacts {
 		versions := byArtifact[artifact.ID]
 		if versions == nil {
 			versions = []model.Version{}
 		}
+		model.StateFileTokens(artifact.Kind, versions)
 		artifact.Versions = versions
 	}
 }
@@ -2241,7 +2890,7 @@ func lockProjectArtifacts(ctx context.Context, tx pgx.Tx, project string) error 
 // is the preamble the title correction and the removal share (renameArtifact, removeArtifact),
 // and each of them holds only its own refusals after it.
 //
-// Both writes are mounted on /api/v1/artifacts/{id} alone (routes_table.go), so the id the
+// Both writes are mounted on /api/v1/artifacts/{id} alone (their route files), so the id the
 // request names is what each read takes, and each takes the row alone (loadArtifactRowByID): the
 // versions and the approval an artifact read carries cost a second round trip, and neither
 // handler reads them.

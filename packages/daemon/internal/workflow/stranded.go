@@ -34,15 +34,21 @@ const StrandedReleaseWake = 10 * time.Minute
 const ArchitectGateWake = 90 * time.Minute
 
 // ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
-// the role the wake was for, when the wake reached the daemon, and whether a stuck pass has
-// already said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumesTx,
-// which selects the resumes whose woken role has taken no first turn) and hands them in, so this
-// rule stays what every other rule here is: a judgement over values.
+// the role the wake was for, when its stuck clock started, and whether a stuck pass has already
+// said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumesTx,
+// which selects the resumes whose woken role has taken no first turn and passes over a paused
+// project's) and hands them in, so this rule stays what every other rule here is: a judgement
+// over values.
+//
+// ClockAt is the resume's stuck clock (pod_resumes.clock_at): the latest of the wake's own moment,
+// the moment the wake pacing let the launch out, and the moment a project's resume ended the pause
+// that held it (decision 14 of dispatch://INFRA-3759). A wake that waited its turn in the pacing,
+// or waited out a pause, is no wake the replacement pod failed to come back from.
 type ReleasedWake struct {
-	Issue string
-	Role  string
-	At    time.Time
-	Stuck bool
+	Issue   string
+	Role    string
+	ClockAt time.Time
+	Stuck   bool
 }
 
 // releasedRole keys a released claim's recorded wakes by the pod and the role they were for,
@@ -50,13 +56,13 @@ type ReleasedWake struct {
 type releasedRole struct{ issue, role string }
 
 // strandedReleaseWakes is each released claim whose wake ran out of StrandedReleaseWake: the
-// wakes taken more than that ago, and the ones already marked stuck, which is the same fact
-// recorded. A claim with no wake is not here, and neither is one whose wake is younger than the
-// bound: the pod it is coming back as is still being built.
+// wakes whose stuck clock started more than that ago, and the ones already marked stuck, which is
+// the same fact recorded. A claim with no wake is not here, and neither is one whose clock is
+// younger than the bound: the pod it is coming back as is still being built.
 func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]bool {
 	woken := make(map[releasedRole]bool, len(wakes))
 	for _, wake := range wakes {
-		if !wake.Stuck && now.Sub(wake.At) <= StrandedReleaseWake {
+		if !wake.Stuck && now.Sub(wake.ClockAt) <= StrandedReleaseWake {
 			continue
 		}
 		woken[releasedRole{issue: wake.Issue, role: wake.Role}] = true
@@ -72,12 +78,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 //   - A worker of its issue's phase: the role phase.RoleFor gives the phase its worker works
 //     (record.Issue.WorkingPhase), which a held issue keeps from the phase it left. Only a start
 //     of that phase brings back a failed or a retired worker, so either is stranded once no such
-//     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when an
-//     operator suspended it, or when its suspension was recorded before migration 0038 (unknown)
-//     and no start is queued for it: the boot resumes neither, and a start queued for an unknown
-//     one resumes it. The daemon resumes one it or its own exit suspended by rule (supervise's
-//     ByRule), at boot (DaemonBooted) and at the phase's next start, so the report leaves those
-//     sources out.
+//     start is queued (StartFor, the rule promotion reads). A suspended one is stranded when the
+//     operator or the controller suspended it, or when its suspension was recorded
+//     before migration 0038 (unknown) and no start is queued for it: the boot resumes neither,
+//     and a start queued for an unknown one resumes it. The daemon resumes one it or its own exit
+//     suspended by rule (supervise's ByRule), at boot (DaemonBooted) and at the phase's next
+//     start, so the report leaves those sources out.
 //   - Its tree's architect: only its tree's admission starts it, whoever suspended it. A notice to a
 //     suspended one is held until it holds its role again, which nothing in the daemon brings
 //     about, and a notice to a failed or a retired one finishes undelivered (the notice executor).
@@ -92,10 +98,10 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // (internal/supervise/table.go), so the kept session relaunches with fresh budgets, or a new one
 // once supervise's Machine.forgetSession has dropped it. What nothing does by itself is queue that
 // start: no rule the daemon runs starts a retired claim this report names, the boot's repair reads
-// only a suspension, and the operator's retry, which reaches a retired claim as well as a failed
-// one, is a person's move, not a rule's (supervise.RequestOperatorRetry). So the rule this report
-// states is unchanged in meaning — a claim no queued start will reach — and what was wrong was the
-// states it read.
+// only a suspension, and a caller's retry — the operator's or the controller's — which reaches an
+// agent a stop retired as well as one that failed, is a person's or an agent's move, not a
+// rule's (supervise.RequestAskedRetry). So the rule this report states is unchanged in meaning — a
+// claim no queued start will reach — and what was wrong was the states it read.
 //
 // Two shapes of retired worker reach the report through record.Issue.WorkingPhase. One is a
 // retired claim of the issue's own phase: the worker that left the phase it still owns. The
@@ -106,11 +112,12 @@ func strandedReleaseWakes(wakes []ReleasedWake, now time.Time) map[releasedRole]
 // role switch: a running tree whose architect a close retired has nothing but its own tree's
 // admission to start it, so it is stranded while no admission start is queued.
 //
-// A suspension that holds for the operator is stranded whatever starts are queued for it: each one
-// waits, on its row's backoff, until the operator resumes the claim (the outbox's start answers
-// supervise.ErrHeldByOperator), so a queued start wakes nothing. The claim is held by the hold
-// itself, whatever task it kept: the stop timeout takes a confirmed task back for the resume, and
-// an unconfirmed phase task stays through the suspension (supervise's settle).
+// A claim under a suspension that holds — the operator's or the controller's
+// (supervise.SuspendSource.Holds) — is stranded whatever starts are queued for it: each one waits,
+// on its row's backoff, until a resume lifts that suspension (the outbox's start answers its
+// holder's wait, supervise.Claim.RuleHoldError), so a queued start wakes nothing. The claim is
+// held by the hold itself, whatever task it kept: the stop timeout takes a confirmed task back for
+// the resume, and an unconfirmed phase task stays through the suspension (supervise's settle).
 //
 // The move that brings each one back is api.StrandedClaim.Move's.
 //
@@ -201,10 +208,11 @@ func Stranded(ctx context.Context, tx pgx.Tx, s record.Store, project string, st
 		// to the architect above it (Engine.claimFailed), and the daemon starts it again at its
 		// child's next phase start (Engine.reviveArchitect). A stranded claim goes to the
 		// controller, whose remedy is an operator's retry, which a claim the daemon starts again
-		// does not need. One an operator stopped or suspended is that operator's own move, which
-		// its retry or resume undoes. One the child's leave suspended or retired comes back at the
-		// child's next first phase start. One that its own exit retired is reported nowhere, as
-		// Stranded's comment says.
+		// does not need. A claim whose agent the operator or the controller stopped or suspended
+		// is that caller's own move: a retry undoes the stop, and the suspension waits for its
+		// holder's resume or one that outranks it (supervise.Claim.HeldAgainst). One the
+		// child's leave suspended or retired comes back at the child's next first phase start. One
+		// that its own exit retired is reported nowhere, as Stranded's comment says.
 		var current phase.Phase
 		switch {
 		case claim.IsTreeArchitect(c.Role, issue.Key, issue.Tree):

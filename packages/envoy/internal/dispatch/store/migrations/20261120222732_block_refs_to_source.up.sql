@@ -1,0 +1,35 @@
+-- 20261120222732_block_refs_to_source.up.sql
+-- block_refs_to_source keys block_refs by a link's target and the document whose block holds it:
+-- (to_kind, to_id, ((artifact_id)::text)). It takes the place of block_refs_to (0121), which keys
+-- (to_kind, to_id) alone, and 20261120222733 drops that index after this one. refs.Edges' in read
+-- of a node asks, for each document that mentions the node in its text, whether one of that
+-- document's blocks links the node too (heldByABlock, refs/graph.go), and probes block_refs by
+-- to_kind, to_id and `artifact_id::text = <the mention's from_id>`. Through block_refs_to that
+-- probe read every block link into the node and kept its document's by a filter: on an issue that
+-- 1,000 documents mention in their text and in two of their blocks each, it removed 999,000 rows.
+-- Keyed by all three, it reads one row for each document that mentions the node. The key is the
+-- one comment_block_refs_to, message_block_refs_to and ask_block_refs_to already have, whose third
+-- column is the item's id as text. Its widest key, a target id at text.MaxTargetBytes with the
+-- document's uuid as text, is about 2,130 bytes, under the 2,704 a B-tree key may be.
+--
+-- Every read of block_refs by to_kind and to_id, among them the graph_edges view's block_refs arm,
+-- refs.BacklinkCounts' block_refs arm and heldByABlock's probe, reads through this index's first
+-- two columns, which are block_refs_to's whole key. So the release before this one reads through
+-- it every read it read through block_refs_to, while it still serves and after the drop.
+--
+-- The build is plain, in the runner's one transaction, and not concurrent. It takes SHARE on
+-- block_refs, which waits only for writers and holds them off, for one scan of the table. Production
+-- runs one replica of the app under Recreate, and the boot migrates before it listens, so nothing
+-- writes block_refs while the one pod boots and the build's time is time Dispatch is down either
+-- way; where two builds serve at once, the earlier build's writes of block_refs wait for that one
+-- scan. A concurrent build scans the table twice, and first waits for every transaction with an
+-- older snapshot, up to pgmigrate.LockTimeout (5 s) on each of pgmigrate.LockTimeoutAttempts (3),
+-- behind a statement the stopped pod can leave running for longer: refs.Edges' read of graph_edges
+-- took 22.3 s per call in production on 2026-11-20.
+--
+-- The census admits the plain build only while block_refs, with its indexes and TOAST, is under
+-- pgmigrate.CensusTableLimit (1 GiB), and refuses it above that, in the census taken before the
+-- deployment moves. Above the limit the build is to take the concurrent form instead:
+-- `-- pgmigrate:non-transactional` and `create index concurrently if not exists`, alone in its
+-- file, as 20261114081435 is.
+create index block_refs_to_source on block_refs (to_kind, to_id, ((artifact_id)::text));

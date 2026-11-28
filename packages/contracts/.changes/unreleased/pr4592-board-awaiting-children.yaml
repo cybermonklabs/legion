@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `LegionBoardColumn`'s `id` takes a twelfth value, `awaiting_children`, the column of a parent
+  waiting on its open Dispatch children, between `merging` and `awaiting_person`; the route
+  description of `GET /api/v1/projects/{key}/legion/board` names it.
+custom:
+    Issue: pr4592

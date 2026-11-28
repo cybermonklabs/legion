@@ -23,7 +23,7 @@ import (
 // The stop's other unbounded waits — a launch or a suspension in flight, which inflight_test's
 // stallingRuntime holds — are no use here: under a Stage 3 configuration a worker's launch first
 // provisions the issue's workspace, so it never reaches the runtime on a machine that cannot clone
-// the mapped repository.
+// the issue's repository.
 type sweepStall struct {
 	*fake.Runtime
 	sweeping chan struct{}
@@ -81,6 +81,7 @@ const natsConnectionClosePoll = 50 * time.Millisecond
 // left open would be charged to whichever test runs next — a test that had no part in it
 // (INFRA-1964).
 func TestRunClosesTheWorkflowsNATSConnectionWhenItsStopBudgetRunsOut(t *testing.T) {
+	t.Parallel()
 	cfg := workflowConfig(t, workflowNATS(t))
 	rt := newSweepStall(t)
 	o := fakeRuntime(rt, &built{})

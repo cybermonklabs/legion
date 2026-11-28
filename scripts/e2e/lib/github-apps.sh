@@ -12,10 +12,12 @@
 # own inputs:
 #   LEGION_E2E_<ROLE>_APP_ID           the App's numeric id (ROLE is IMPLEMENT or REVIEW), which
 #                                      defaults to the id below
-#   LEGION_E2E_IMPLEMENT_APP_SECRET    the name of the secrets broker's github-app secret for the
-#                                      implement App, which `agent-secrets` turns into a release of
-#                                      that App's installation tokens, never its key; it is an
-#                                      agent-tier secret and defaults to the name below
+#   LEGION_E2E_IMPLEMENT_APP_SECRET    the name of the secrets broker's profile of the implement
+#                                      App's github-app secret, which `agent-secrets` turns into a
+#                                      release of that App's installation tokens, never its key; the
+#                                      broker's profiles file declares it and its read profile, the
+#                                      same name with _READ after it (docs/deployment.md), each at
+#                                      agent tier, and it defaults to the name below
 #   LEGION_E2E_REVIEW_APP_KEY_COMMAND  shell text that prints the review App's PEM private key on
 #                                      stdout. The run runs it once, on the driver, in the
 #                                      operator's own environment (write_github_apps --key-dir,
@@ -137,8 +139,11 @@ default_review_app_id=5341243
 # app_key_squeezed VALUE prints VALUE with every whitespace character, one surrounding quote of
 # either kind and a leading UTF-8 byte-order mark taken out: the text the key guard below judges,
 # so that an indented paste, a quoted one and one a text editor marked are read as the value they
-# carry. It prints its argument and reads nothing else.
+# carry. It prints its argument and reads nothing else. Its argument may be a key itself, so it
+# turns the shell's xtrace off for itself (`local -`).
 app_key_squeezed() {
+  local -
+  set +x
   local value=${1//[[:space:]]/}
   value=${value#$'\xEF\xBB\xBF'}
   value=${value#[\"\']}
@@ -170,16 +175,21 @@ app_key_squeezed() {
 # that App no longer has.
 # When this call reads both roles, one App id for both is refused, since the daemon refuses two
 # roles on one App at boot. It records the roles it read for write_github_apps, and sets
-# app_key_unsets: `-u NAME` for the implement App's broker secret name, when that role is read (the
-# review App has no broker secret), for the implement default's, for LEGION_REVIEW_APP, the name of
-# the broker secret that released the review App's tokens before its key replaced them, for
-# GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's private_key_command read that key
-# out of, for LEGION_E2E_REVIEW_APP_KEY_COMMAND, which this lib alone reads and whose value may be
-# a key itself, and for every exported variable whose name holds PRIVATE_KEY, so a process the run
-# starts inherits no App credential, the proof human's included.
+# app_key_unsets: `-u NAME` for the implement App's profile name and its read profile's, when that
+# role is read (the review App has no broker secret), for the implement default's two, for
+# LEGION_REVIEW_APP, the name of the broker secret that released the review App's tokens before
+# its key replaced them, for GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older recipe's
+# private_key_command read that key out of, for LEGION_E2E_REVIEW_APP_KEY_COMMAND, which this lib
+# alone reads and whose value may be a key itself, and for every exported variable whose name
+# holds PRIVATE_KEY, so a process the run starts inherits no App credential, the proof human's
+# included.
 github_apps_read=()
 app_key_unsets=()
 require_app_inputs() {
+  # The key command may be a key itself, so a run under `bash -x` traces none of this function
+  # (`local -`), as lib/process-tree.sh's env_of turns the trace off for every reader of a secret.
+  local -
+  set +x
   # The checks below use bracket ranges, which bash's =~ reads in the caller's locale: under a
   # UTF-8 locale [0-9] and [A-Za-z] admit fullwidth digits and accented letters. C keeps them ASCII.
   local LC_ALL=C
@@ -246,7 +256,7 @@ require_app_inputs() {
       # The implement App is the one role whose credential is a broker secret's name, and the role
       # says so: the review App's credential is its key, whatever this deployment's shell exports.
       secret=${LEGION_E2E_IMPLEMENT_APP_SECRET-$default_implement_app_secret}
-      [[ "$secret" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && ${#secret} -le 64 ]] || fail "LEGION_E2E_IMPLEMENT_APP_SECRET must be the name of a secrets broker github-app secret (letters, digits and underscores, at most 64), not a credential; its value is not printed"
+      [[ "$secret" =~ ^[A-Za-z_][A-Za-z0-9_]*$ && ${#secret} -le 64 ]] || fail "LEGION_E2E_IMPLEMENT_APP_SECRET must be the name of the secrets broker's profile of the implement App's github-app secret (letters, digits and underscores, at most 64), not a credential; its value is not printed"
       implement_app_secret=$secret
     fi
     roles_read+=("$role")
@@ -257,22 +267,22 @@ require_app_inputs() {
   fi
   github_apps_read=("${roles_read[@]}")
   app_key_unsets=()
-  # The implement App's broker secret name is the only name in the list below that depends on the
+  # The implement App's profile names are the only names in the list below that depend on the
   # role that was read, since its releases are the only credential of a run that comes from the
-  # broker: the names after it are stripped whatever roles this call read, and no variable of the
-  # caller's shell is read for any of them.
+  # broker: the names after them are stripped whatever roles this call read, and no variable of
+  # the caller's shell is read for any of them.
   if [[ " ${roles_read[*]} " == *" implement "* ]]; then
-    app_key_unsets+=(-u "$implement_app_secret")
+    app_key_unsets+=(-u "$implement_app_secret" -u "${implement_app_secret}_READ")
   fi
-  # The implement default; LEGION_REVIEW_APP, the broker secret that released the review App's
-  # tokens before its key replaced them; GH_REVIEW_APP_PRIVATE_KEY_B64, the variable an older
-  # recipe's private_key_command read that key out of; and the review role's own key command. A
-  # stale export of any of the first three must not reach a process the run starts, and neither
-  # must the fourth: the refusals above turn back the common pastes of a key, but a value that
-  # holds one and still runs — a one-line `printf` of a PEM — is taken, so that input may be a key
-  # itself, and this lib is the only thing that reads it.
-  for name in "$default_implement_app_secret" LEGION_REVIEW_APP GH_REVIEW_APP_PRIVATE_KEY_B64 \
-    LEGION_E2E_REVIEW_APP_KEY_COMMAND; do
+  # The implement default's two profiles; LEGION_REVIEW_APP, the broker secret that released the
+  # review App's tokens before its key replaced them; GH_REVIEW_APP_PRIVATE_KEY_B64, the variable
+  # an older recipe's private_key_command read that key out of; and the review role's own key
+  # command. A stale export of any of the first four must not reach a process the run starts, and
+  # neither must the fifth: the refusals above turn back the common pastes of a key, but a value
+  # that holds one and still runs — a one-line `printf` of a PEM — is taken, so that input may be
+  # a key itself, and this lib is the only thing that reads it.
+  for name in "$default_implement_app_secret" "${default_implement_app_secret}_READ" LEGION_REVIEW_APP \
+    GH_REVIEW_APP_PRIVATE_KEY_B64 LEGION_E2E_REVIEW_APP_KEY_COMMAND; do
     app_key_unsets+=(-u "$name")
   done
   while IFS= read -r name; do
@@ -280,22 +290,25 @@ require_app_inputs() {
   done < <(compgen -e)
 }
 
-# app_token_command NAME prints the token command that prints the release the secrets broker's
-# github-app secret NAME gives: `agent-secrets` puts the release in one `sh` child's environment
-# as NAME, which prints it to stdout, the daemon's pipe. It names --ttl 12h, as the deployment
-# example does (docs/deployment.md): a deployment may hold a role's github-app secret at human
-# tier, a human-tier request naming no lifetime gets 15 minutes, and the daemon renews a lease
-# about 40 minutes after it mints one, so without the flag every renewal of such a run would wait
-# for a person again. With it the approver reads the twelve hours on the card and decides them
-# once. The two `${…}` expansions are the command's own, expanded by the sh the daemon runs it
-# with: LEGION_GITHUB_OWNER, when set, narrows the release to that owner's installation
-# (--github-owner), and LEGION_GITHUB_READ_ONLY, when set, to contents, metadata, pull requests
-# and Actions read (--github-read-only). A release reaches every repository the installation
-# holds: the daemon asks for no narrowing by repository (INFRA-2543). It depends on nothing but
-# NAME.
+# app_token_command NAME prints the token command that prints the release of the secrets broker's
+# profile NAME, or of its read profile NAME_READ, each a profile of the implement App's github-app
+# secret whose value is installations (docs/deployment.md declares both): `agent-secrets` puts the
+# release in one child's environment under the profile's name, and printenv prints it to stdout,
+# the daemon's pipe. It names --ttl 12h, as the deployment example does for its human-tier App: a
+# deployment may hold a role's github-app secret at human tier, a human-tier request naming no
+# lifetime gets 15 minutes, and the daemon renews a lease about 40 minutes after it mints one, so
+# without the flag every renewal of such a run would wait for a person again. With it the approver
+# reads the twelve hours on the card and decides them for one profile and target: the broker
+# reuses a grant only for the same profile and target, so such a run needs one decision per profile
+# and owner, up to 2N+1 every twelve hours for N owners (docs/deployment.md). The `${…}`
+# expansions are the command's own, expanded by the sh the daemon runs it with:
+# LEGION_GITHUB_READ_ONLY, when set, picks the read profile, and LEGION_GITHUB_OWNER, when set,
+# narrows the profile to that owner's
+# installation (--target). A release reaches every repository the installation holds: the daemon
+# asks for no narrowing by repository. It depends on nothing but NAME.
 app_token_command() {
   # shellcheck disable=SC2016 # the expansions are the token command's own, run by its sh
-  printf 'agent-secrets %s --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c '\''printf %%s "$%s"'\''\n' "$1" "$1"
+  printf 'P=%s${LEGION_GITHUB_READ_ONLY:+_READ}; agent-secrets "$P" --ttl 12h --reason=legion-live-proof-github-app-token ${LEGION_GITHUB_OWNER:+--target "$LEGION_GITHUB_OWNER"} -- printenv "$P"\n' "$1"
 }
 
 # app_token_dir_ok DIR fails unless DIR is a path of letters, digits and `_ . / -` alone, since the
@@ -486,7 +499,8 @@ app_token_stderr_bound() {
 # or the awk refused one and reads a line at a time anyway — and otherwise when the stage holding
 # it fills its own buffer or the command exits. It returns COMMAND's non-zero status (124 when it
 # timed out), 126 when it printed more than the limit, 123 when it wrote more than the limit to
-# stderr, or 125 when it succeeded and printed nothing; either way it
+# stderr, or 125 when it succeeded and printed nothing but white space, such as the newline
+# printenv prints for an empty variable; either way it
 # leaves no temporary file and FILE as it was. What COMMAND prints passes from its stdout to the
 # file and enters no shell variable and no argv.
 #
@@ -501,6 +515,10 @@ app_token_stderr_bound() {
 # reason the cut before it is.
 app_token_release_limit=1048576
 app_token_mint_command() {
+  # COMMAND is the review App's key command in key mode, which may be a key itself, so a run under
+  # `bash -x` traces none of this function (`local -`).
+  local -
+  set +x
   local file=$1 command=$2 mode=${3-} tmp overflow status=0 relay=app_token_redact
   [ "$mode" != key ] || relay=app_token_redact_key
   tmp=$(umask 077 && mktemp "$(dirname -- "$file")/.mint.XXXXXXXX") || return 1
@@ -527,7 +545,7 @@ app_token_mint_command() {
     rm -f -- "$tmp"
     return "$status"
   fi
-  if [ ! -s "$tmp" ]; then
+  if ! LC_ALL=C grep -q '[^[:space:]]' -- "$tmp"; then
     rm -f -- "$tmp"
     return 125
   fi
@@ -537,8 +555,8 @@ app_token_mint_command() {
   fi
 }
 # app_token_mint_file FILE OWNER READ_ONLY SECRET writes one release of the secrets broker's
-# github-app secret SECRET, for the installation of OWNER (empty for every installation) and the
-# read-only flag READ_ONLY, through app_token_mint_command, whose status it returns.
+# profile SECRET, or of its read profile when READ_ONLY is set, for the installation of OWNER
+# (empty for every installation), through app_token_mint_command, whose status it returns.
 app_token_mint_file() {
   local file=$1 owner=$2 ro=$3 secret=$4
   # The two variables are the token command's own inputs, as the daemon sets them for it: a
@@ -558,6 +576,10 @@ app_token_mint_file() {
 # and id, the file and what went wrong, and never a byte the command printed; the command's own
 # stderr has already reached the run's stderr, through app_token_redact_key.
 app_token_mint_key() {
+  # It hands the key command, which may be a key itself, to app_token_mint_command, so a run under
+  # `bash -x` traces none of this function (`local -`).
+  local -
+  set +x
   local dir=$1 file=$1/review/key.pem status=0
   app_token_mint_failed=
   app_token_dir_made review "$dir/review" || return 1

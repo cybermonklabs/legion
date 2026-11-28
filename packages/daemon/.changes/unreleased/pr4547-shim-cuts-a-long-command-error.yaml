@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    A failed `adopt-working-copy` or `workspace-work` whose jj error is longer than one frame no
+    longer takes the role's worker stream down. The shim answers each of them on one line, and an
+    error over that line's limit made the shim close the connection and send the same line again at
+    each reconnect. The shim now keeps the first and the last 2 KiB of such an error, with a line
+    that says how many bytes it cut, so the answer still names the command, its exit and, where
+    jj met one, the note about a stale git lock.
+time: 2026-11-20T07:45:00Z
+custom:
+    Issue: pr4547

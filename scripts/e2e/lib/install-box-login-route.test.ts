@@ -153,6 +153,15 @@ describe("the box-login model route installer", () => {
     expect(existsSync(join(r.agent, "models.yml"))).toBe(false);
   });
 
+  test("config.yml shuts Oh My Pi's first-run setup wizard, which would hold an interactive session", () => {
+    const r = install();
+    expect(r.code).toBe(0);
+    const config = Bun.YAML.parse(readFileSync(join(r.agent, "config.yml"), "utf8")) as {
+      startup?: unknown;
+    };
+    expect(config.startup).toEqual({ setupWizard: false });
+  });
+
   test("refuses a box whose operator has no agent.db, and writes nothing", () => {
     const r = install({ operatorDb: false });
     expect(r.code).toBe(1);
@@ -200,20 +209,17 @@ describe("the box-login model route installer", () => {
     expect(existsSync(r.agent)).toBe(false);
   });
 
-  test.each([
-    "../../escape",
-    "x/../../../escape",
-    "nested/name",
-    ".hidden",
-    "a..b",
-  ])("refuses the profile name %p, which is not one plain path segment, and writes nothing", (profile) => {
-    const r = install({ profile });
-    expect(r.code).toBe(2);
-    expect(r.stderr).toContain(`--profile '${profile}' is not one plain name`);
-    expect(existsSync(join(r.home, "escape"))).toBe(false);
-    expect(existsSync(join(r.run, "escape"))).toBe(false);
-    expect(existsSync(join(r.home, ".omp", "profiles"))).toBe(false);
-  });
+  test.each(["../../escape", "x/../../../escape", "nested/name", ".hidden", "a..b"])(
+    "refuses the profile name %p, which is not one plain path segment, and writes nothing",
+    (profile) => {
+      const r = install({ profile });
+      expect(r.code).toBe(2);
+      expect(r.stderr).toContain(`--profile '${profile}' is not one plain name`);
+      expect(existsSync(join(r.home, "escape"))).toBe(false);
+      expect(existsSync(join(r.run, "escape"))).toBe(false);
+      expect(existsSync(join(r.home, ".omp", "profiles"))).toBe(false);
+    }
+  );
 
   test("refuses a profiles directory that is a symlink out of the run's home, and writes nothing there", () => {
     const r = install({
@@ -229,18 +235,16 @@ describe("the box-login model route installer", () => {
     expect(readdirSync(join(r.run, "elsewhere"))).toEqual([]);
   });
 
-  test.each([
-    "--profile",
-    "--home",
-    "--dest",
-    "--operator-home",
-  ])("refuses %s with no value as an argument error (exit 2), not an unbound variable", (flag) => {
-    const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
-      env: { PATH: process.env.PATH ?? "", HOME: callerHome },
-    });
-    expect(result.exitCode).toBe(2);
-    expect(result.stderr.toString()).toContain(`${flag} needs a value`);
-  });
+  test.each(["--profile", "--home", "--dest", "--operator-home"])(
+    "refuses %s with no value as an argument error (exit 2), not an unbound variable",
+    (flag) => {
+      const result = Bun.spawnSync(["bash", join(lib, "install-box-login-route.sh"), flag], {
+        env: { PATH: process.env.PATH ?? "", HOME: callerHome },
+      });
+      expect(result.exitCode).toBe(2);
+      expect(result.stderr.toString()).toContain(`${flag} needs a value`);
+    }
+  );
 });
 
 // A shell with lib/box-login.sh sourced, the lock moved to FILE when one is given.
@@ -389,41 +393,5 @@ describe("a box-login run's teardown", () => {
     expect(() => lstatSync(link)).toThrow();
     expect(existsSync(join(r.agent, "config.yml"))).toBe(true);
     expect(readFileSync(r.db, "utf8")).toBe(dbBytes);
-  });
-
-  test("gives each process SIGTERM and the grace to exit, then SIGKILLs only the survivors", async () => {
-    const graceful = join(dir, "graceful-exited");
-    const stubborn = join(dir, "stubborn-killed");
-    // One exits on SIGTERM after a short write (a refresh finishing), one ignores SIGTERM. Each says
-    // "ready" once its trap is set, and the stop starts only then.
-    const a = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap 'sleep 0.3; touch ${JSON.stringify(graceful)}; exit 0' TERM; echo ready; while :; do sleep 0.1; done`,
-      ],
-      { stdout: "pipe" }
-    );
-    const b = Bun.spawn(
-      [
-        "bash",
-        "-c",
-        `trap '' TERM; echo ready; while :; do sleep 0.1; done; touch ${JSON.stringify(stubborn)}`,
-      ],
-      { stdout: "pipe" }
-    );
-    await a.stdout.getReader().read();
-    await b.stdout.getReader().read();
-    const stop = Bun.spawnSync([
-      "bash",
-      "-c",
-      helpers(undefined, `box_login_stop_grace=1; stop_box_login_processes ${a.pid} ${b.pid}`),
-    ]);
-    expect(stop.exitCode).toBe(0);
-    expect(await a.exited).toBe(0);
-    expect(existsSync(graceful)).toBe(true);
-    await b.exited;
-    expect(b.signalCode).toBe("SIGKILL");
-    expect(existsSync(stubborn)).toBe(false);
   });
 });

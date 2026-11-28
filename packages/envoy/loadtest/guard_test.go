@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -12,7 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // isolatePG keeps a test's -pg values from the environment: pgconn.ParseConfig, which the guard
@@ -381,7 +383,9 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 	}
 	// A -pg naming a file that blocks its reader -- a FIFO nobody writes, as its sslrootcert -- is
 	// judged as text, so the parse never waits on that file with a secret in the argv: neither a
-	// -pg with a password nor a removed flag beside a -pg with none.
+	// -pg with a password nor a removed flag beside a -pg with none. Each answer is waited for with
+	// no span of its own (testwait.Receive): a parse that waits on the FIFO fails by name before
+	// the test binary's deadline, and a slow one passes.
 	fifo := filepath.Join(t.TempDir(), "blocked-ca.fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
@@ -393,15 +397,11 @@ func TestACommandLineSecretIsRefusedBeforeAnyOtherInput(t *testing.T) {
 	} {
 		done := make(chan error, 1)
 		go func() { done <- runSeedFinish(args) }()
-		select {
-		case err := <-done:
-			var removed *removedFlagError
-			var password *pgPasswordError
-			if !errors.As(err, &removed) && !errors.As(err, &password) {
-				t.Errorf("loadgen seed-finish %q: error %v, want the secret refused", args, err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Errorf("loadgen seed-finish %q: still running after 10 s, waiting on %s with the secret in its argv", args, fifo)
+		err := testwait.Receive(t, fmt.Sprintf("loadgen seed-finish %q, with %s for its sslrootcert and the secret in its argv,", args, fifo), done)
+		var removed *removedFlagError
+		var password *pgPasswordError
+		if !errors.As(err, &removed) && !errors.As(err, &password) {
+			t.Errorf("loadgen seed-finish %q: error %v, want the secret refused", args, err)
 		}
 	}
 }

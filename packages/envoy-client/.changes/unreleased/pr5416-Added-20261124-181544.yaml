@@ -1,0 +1,5 @@
+kind: Added
+body: '`dispatch results` names the results that decide an after-merge check.'
+time: 2026-11-24T18:15:44Z
+custom:
+    Issue: pr5416

@@ -1,5 +1,6 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { api, type CreateArtifactReviewInput, isCapExceeded } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
@@ -14,7 +15,6 @@ import {
   dangerText,
   focusBorder,
   focusVisibleRing,
-  inputClasses,
   pageFailedText,
   pageHairBorder,
   pageHeaderControl,
@@ -35,22 +35,25 @@ import {
   textPrimaryOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /**
  * Each colour the chip, its two actions and its two dialogs draw inside `NoTooltips`, the new
  * issue page's, by the role `main`'s colour has: a dialog is the page's paper inside its hairline
  * rule over the icon rail's dark, the one page colour dark in both schemes; its heading and a
- * review are the ink, the reviewer's reason and a label the muted grey, Close and a pending read
- * the quiet grey, a refusal the failed red; Approve and the dialog's Request changes are filled
- * with the ink, as the header's one filled control is, and the other actions are the header's
- * control. The reason box keeps `main`'s focus rule, the application's one focus indicator.
+ * review are the ink, the reviewer's reason and a label the muted grey, Close, a pending read and
+ * the line under the reason box the quiet grey, a refusal the failed red; Approve and the
+ * dialog's Request changes are filled with the ink, as the header's one filled control is, and
+ * the other actions are the header's control. The reason box keeps `main`'s focus rule, the
+ * application's one focus indicator.
  *
  * They stand in this table, not beside `main`'s classes, because `theme/text-on-background.test.ts`
  * pairs each text class with the nearest enclosing ground of the same file across both branches
@@ -66,6 +69,7 @@ const ON_PAGE = {
   failure: pageFailedText,
   filled: `${pageInkFill} refused:cursor-not-allowed refused:bg-page-hair refused:text-page-muted`,
   heading: pageInkText,
+  hint: pageQuietText,
   label: pageMutedText,
   pending: pageQuietText,
   reason: pageMutedText,
@@ -119,9 +123,12 @@ function approvalScope(approval: ArtifactApproval): string {
 
 function ReviewsDialog({
   artifactId,
+  issueKey,
   onClose,
 }: {
   artifactId: string;
+  /** The issue the document is on, which each review's reason is a text of. */
+  issueKey: string | null;
   onClose: () => void;
 }): ReactNode {
   const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
@@ -189,7 +196,8 @@ function ReviewsDialog({
                     >
                       <MarkdownBody
                         markdown={review.reason}
-                        source={textSourceOf("artifact", artifactId)}
+                        source={textSourceOf("artifact", artifactId, issueKey)}
+                        surface="approval-review-reason"
                         tree={review.reason_tree}
                       />
                     </div>
@@ -206,18 +214,26 @@ function ReviewsDialog({
 
 function RequestChangesDialog({
   error,
+  issueKey,
   onClose,
   onSubmit,
+  project,
   saving,
 }: {
   /** What the server answered the last request with, or null while none was refused. */
   error: Error | null;
+  /** The issue the document under review belongs to, where it has one: the picker offers that
+   *  issue's people. */
+  issueKey?: string;
   onClose: () => void;
   onSubmit: (reason: string) => void;
+  /** The document's project, whose components the picker offers. */
+  project: string;
   saving: boolean;
 }): ReactNode {
   const [reason, setReason] = useState("");
-  const reasonId = useId();
+  // The dialog moves the focus into the box it opens over, which the field hands back as its
+  // own element (`MentionFieldHandle`).
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const dialog = useDialog<HTMLDivElement>({ initialFocusRef: textareaRef, onClose, open: true });
   const page = usePageWords();
@@ -243,39 +259,50 @@ function RequestChangesDialog({
           >
             Request changes
           </h2>
-          <label
-            className={`block text-sm font-medium ${page === null ? textSecondaryOnSurface : ON_PAGE.label}`}
-            htmlFor={reasonId}
-          >
-            Reason
-            {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
-                submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
-                the body in a browser, and Tab would then leave the dialog. Outside both are
-                `disabled` while the write is out, as on `main`. */}
-            <textarea
-              className={`mt-1 block w-full rounded-lg border px-2 py-1.5 text-sm font-normal outline-none ${page === null ? inputClasses(false) : ON_PAGE.reasonBox}`}
-              disabled={page === null && saving}
-              id={reasonId}
-              onChange={(event) => setReason(event.target.value)}
-              onKeyDown={(event) =>
-                submitOnModifiedEnter(event, {
-                  onFormlessSubmit: () => {
-                    if (trimmed !== "" && !saving) {
-                      onSubmit(trimmed);
-                    }
-                  },
-                })
-              }
-              readOnly={page !== null && saving}
-              ref={textareaRef}
-              value={reason}
-            />
-          </label>
+          {/* Inside `NoTooltips`, while the write is out, the text box is read-only and the
+              submit `aria-disabled`, a press of it doing nothing: `disabled` drops the focus to
+              the body in a browser, and Tab would then leave the dialog. Outside both are
+              `disabled` while the write is out, as on `main`. */}
+          <MentionField
+            className="text-sm"
+            body={reason}
+            disabled={page === null && saving}
+            fieldClassName={page === null ? undefined : ON_PAGE.reasonBox}
+            fieldRef={(handle) => {
+              textareaRef.current = handle?.textarea() ?? null;
+            }}
+            hintClassName={page === null ? undefined : `text-xs ${ON_PAGE.hint}`}
+            issueKey={issueKey}
+            label="Reason"
+            labelClassName={
+              page === null ? undefined : `block text-sm font-medium ${ON_PAGE.label}`
+            }
+            onChange={(change) => setReason(change.body)}
+            onKeyDown={(event) =>
+              submitOnModifiedEnter(event, {
+                onFormlessSubmit: () => {
+                  if (trimmed !== "" && !saving) {
+                    onSubmit(trimmed);
+                  }
+                },
+              })
+            }
+            project={project}
+            readOnly={page !== null && saving}
+            writing={dispatchWritingBox("approval-reason", "approval-reason")}
+          />
           {error === null ? null : (
             <p className={`text-sm ${page === null ? dangerText : ON_PAGE.failure}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
-                  the block and the bound; any other failure is worth another try. */}
-              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
+                  the block and the bound; a review the reader stopped may have been made, and
+                  Request changes is a press of its own; any other failure is worth another try. */}
+              {isCapExceeded(error)
+                ? error.message
+                : error instanceof SendStoppedError
+                  ? stoppedWriteNote("your review", "made", {
+                      anew: "Request changes sends a new review.",
+                    })
+                  : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -361,10 +388,19 @@ export interface ApprovalChipProps {
   onReviewed?(): void;
 }
 
+/** A review the chip makes: the document it is of, and what it says of that document. */
+interface DocumentReview {
+  readonly artifact: Artifact;
+  readonly input: CreateArtifactReviewInput;
+}
+
 /**
  * The document approval indicator: a small badge summarizing `artifact.approval`, clickable to
  * open a popover of every human review (`ArtifactReview`). On the document header only, it also
  * carries the Approve / Request changes actions that write a new review.
+ *
+ * It holds the review it made and the change-request dialog, with the reason typed into it, so a
+ * host that draws it for one document after another keys it by the document (`ArtifactHeader`).
  */
 export function ApprovalChip({
   actionsDocument,
@@ -385,36 +421,42 @@ export function ApprovalChip({
   const page = usePageWords();
 
   const review = useKeyedWrite({
-    label: (input: CreateArtifactReviewInput) =>
-      `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
+    // The press carries the document it reviews: the indicator names it, the route takes its id,
+    // and the reads made again are its own, from the press rather than from the render the write
+    // runs under.
+    label: ({ artifact: reviewed, input }: DocumentReview) =>
+      `${input.state === "approved" ? "Approval" : "Change request"} on ${reviewed.name}`,
     onSettled: () => submitGuard.release(),
-    write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
-    onSuccess: () => {
+    method: "POST",
+    write: ({ artifact: reviewed, input }, bounds) =>
+      api.createArtifactReview(reviewed.id, input, bounds),
+    onSuccess: (_result, { artifact: reviewed }) => {
       // Outside `NoTooltips` the dialog closes as the write lands and the reads the write makes
       // stale go on after it, as on `main`. Inside, `onSuccess` returns those reads, which
       // TanStack Query awaits before the write stops pending: Approve, Request changes and the
       // dialog's submit stay refused, and keep the focus, until the new approval is read, and
       // only then does a dialog the reader has not closed (`onClose`) close and give the focus
-      // back to the button that opened it.
+      // back to the button that opened it. The reads are the reviewed document's, from the
+      // press.
       if (page === null) setRequestChangesOpen(false);
       onReviewed?.();
       const rereads = [
-        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", artifact.id] }),
-        queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact-reviews", reviewed.id] }),
+        queryClient.invalidateQueries({ queryKey: ["artifact", reviewed.id] }),
         queryClient.invalidateQueries({ queryKey: inboxQuery().queryKey }),
-        ...(artifact.issue_key === null
+        ...(reviewed.issue_key === null
           ? [
               queryClient.invalidateQueries({
-                queryKey: ["project", artifact.project, "artifacts"],
+                queryKey: ["project", reviewed.project, "artifacts"],
               }),
               queryClient.invalidateQueries({
-                queryKey: ["artifact-ref", `${artifact.project}/${artifact.slug}`],
+                queryKey: ["artifact-ref", `${reviewed.project}/${reviewed.slug}`],
               }),
             ]
           : [
-              queryClient.invalidateQueries({ queryKey: ["issue", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["artifacts", artifact.issue_key] }),
-              queryClient.invalidateQueries({ queryKey: ["asks", artifact.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["issue", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["artifacts", reviewed.issue_key] }),
+              queryClient.invalidateQueries({ queryKey: ["asks", reviewed.issue_key] }),
             ]),
       ];
       if (page === null) return;
@@ -515,7 +557,7 @@ export function ApprovalChip({
                 }
                 submitGuard.guard(() => {
                   if (page !== null) setSentReview("approved");
-                  review.mutate({ state: "approved" });
+                  review.mutate({ artifact, input: { state: "approved" } });
                 });
               }}
               ref={approveButton}
@@ -552,11 +594,16 @@ export function ApprovalChip({
         </ActionsGroup>
       ) : null}
       {reviewsOpen ? (
-        <ReviewsDialog artifactId={artifact.id} onClose={() => setReviewsOpen(false)} />
+        <ReviewsDialog
+          artifactId={artifact.id}
+          issueKey={artifact.issue_key}
+          onClose={() => setReviewsOpen(false)}
+        />
       ) : null}
       {requestChangesOpen ? (
         <RequestChangesDialog
           error={review.isError ? review.error : null}
+          issueKey={artifact.issue_key ?? undefined}
           onClose={() => {
             // Escape and the backdrop close the dialog at any time, and so does its Close inside
             // `NoTooltips`, which stands in Cancel's place while the write is out; outside, Cancel
@@ -574,9 +621,10 @@ export function ApprovalChip({
           onSubmit={(reason) =>
             submitGuard.guard(() => {
               if (page !== null) setSentReview("changes_requested");
-              review.mutate({ reason, state: "changes_requested" });
+              review.mutate({ artifact, input: { reason, state: "changes_requested" } });
             })
           }
+          project={artifact.project}
           saving={review.isPending}
         />
       ) : null}

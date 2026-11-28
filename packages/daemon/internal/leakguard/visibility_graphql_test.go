@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // included is a GraphQL response as `gh api --include` prints it: the status line, the headers,
@@ -391,13 +392,16 @@ func TestVisibilityReadsASecondaryRateLimitWithLsRemote(t *testing.T) {
 
 // A wait for a near reset that the caller's bound would cut short is not made: the guard reads the
 // visibility through GraphQL at once, as it does for a caller whose bound is shorter than the wait
-// and the reads after it.
+// and the reads after it. The caller's bound is a second short of the wait and lsRemoteBound, the
+// least room the guard would need to wait (waitFits), and never past what is left of the test
+// binary's deadline (testwait.Remaining): the claim holds for any bound under that sum, and the
+// stand-in gh has the rest of it, minutes, to start on a loaded machine.
 func TestVisibilityWaitsForNoResetPastTheCallersBound(t *testing.T) {
 	clock := &visibilityTestClock{now: time.Date(2026, 11, 14, 5, 0, 0, 0, time.UTC)}
 	reset := clock.Now().Add(time.Minute)
 	bin, graphql := t.TempDir(), filepath.Join(t.TempDir(), "graphql")
 	writeProgram(t, bin, "gh", graphQLAnswers(graphql, "PRIVATE"))
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), min(reset.Sub(clock.Now())+lsRemoteBound-time.Second, testwait.Remaining(t)))
 	t.Cleanup(cancel)
 	var reads int
 	visibility, err := New(Options{
@@ -590,7 +594,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Check:        leakguardtest.Write(t, t.TempDir(), passes),
 				Clock:        clock,
 				OnVisibility: func(source VisibilitySource) { sources = append(sources, source) },
-				Env:          append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
+				Env:          withRules(t, append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir())),
 			})
 			// A ref the push deletes, named for a host the rules refuse: its name is the push's one
 			// record, so a scan refuses the push and no scan passes it, and no git reads a commit.
@@ -598,7 +602,7 @@ func TestVisibilityWithoutRESTDecidesThePush(t *testing.T) {
 				Dir:     t.TempDir(),
 				Remote:  "origin",
 				URL:     theURL,
-				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + theHost, RemoteSHA: noSHA}},
+				Updates: []Update{{LocalRef: "refs/heads/work", LocalSHA: noSHA, RemoteRef: "refs/heads/legion/" + leakguardtest.RulesHost, RemoteSHA: noSHA}},
 			})
 			tc.check(t, err, sources)
 			if got := countLines(t, reads); got != 1 {
@@ -642,7 +646,7 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 	reset := clock.Now().Add(30 * time.Minute)
 	bin, records := t.TempDir(), t.TempDir()
 	started, record := filepath.Join(records, "started"), filepath.Join(records, "git")
-	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nsleep 30\n")
+	writeProgram(t, bin, "gh", ": > "+shQuote(started)+"\nexec sleep 86400\n")
 	writeProgram(t, bin, "git", recordsItsCall(record)+answersTheRefs)
 	deadline, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	t.Cleanup(cancel)
@@ -651,15 +655,15 @@ func TestVisibilityRefusesAGraphQLReadTheCallersBoundStops(t *testing.T) {
 		<-deadline.Done()
 		close(ctx.done)
 	})
-	began := time.Now()
-	_, err := New(Options{
+	guard := New(Options{
 		Clock: clock,
 		Env:   append(fixtureenv.Isolated(t.TempDir()), pathWith(bin), "XDG_STATE_HOME="+t.TempDir()),
 		Visibility: func(context.Context, string) (Visibility, error) {
 			return "", &rateLimitError{reset: reset}
 		},
-	}).Visibility(ctx, theRepo)
-	answeredWithin10s(t, began)
+	})
+	var err error
+	answered(t, "the visibility read whose gh never answers", func() { _, err = guard.Visibility(ctx, theRepo) })
 	if err == nil {
 		t.Fatal("the visibility read passed while gh never answered")
 	}

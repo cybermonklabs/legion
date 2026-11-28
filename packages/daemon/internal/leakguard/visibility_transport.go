@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/programbound"
 )
 
 // The reads the guard makes when gh's REST read of a visibility fails on its connection to GitHub
@@ -22,9 +24,9 @@ import (
 // OpenSSL's through libcurl, finished their handshakes with the same hosts in under a second. The
 // guard refused every push as a setup error for that whole time.
 
-// transportError is a visibility read that failed on its connection to GitHub before GitHub
-// answered anything: program is the program that made the read (gh or curl), and said is what it
-// printed about the failure, with the repository's name masked.
+// transportError is a read that failed on its connection to GitHub before GitHub answered
+// anything: a visibility read, or cmd/legion's fork read (CurlResponse.Unreached). program is the
+// program that made the read (gh or curl), and said is what it printed about the failure.
 type transportError struct {
 	program string
 	said    string
@@ -90,7 +92,7 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 	}
 	for _, failure := range ghTransportFailures {
 		if strings.HasSuffix(cause, failure) {
-			return &transportError{program: "gh", said: strings.ReplaceAll(line, slug, maskPath(slug))}
+			return &transportError{program: "gh", said: line}
 		}
 	}
 	return nil
@@ -101,8 +103,15 @@ func ghTransportFailure(status int, printed, slug string) *transportError {
 // the real gh took 0.72 to 0.88 s on 2026-11-18. A gh whose TLS handshake cannot finish takes far
 // longer to fail: about 42 s in the busy one-CPU pod, which is longer than the whole bound some
 // callers give a read (`legion gh` gives the shared check's own read 15 s). Stopping gh sooner leaves
-// the rest of the caller's bound to curl. It is a variable so that a test can shorten it.
+// the rest of the caller's bound to curl. It is a variable so that a test can shorten it, and so
+// that cmd/legion's tests, whose `legion gh` runs this read on a stand-in gh, can give it their own
+// deadline (programbound): a stand-in slower than 8 s, as a loaded machine can make one, is stopped
+// here and the read goes on to curl.
 var ghReadBound = 8 * time.Second
+
+func init() {
+	programbound.Register(&ghReadBound, &curlBound)
+}
 
 // curlReserve is how much of a caller's bound the guard keeps for the curl read when it bounds gh's
 // REST read (ghReadContext): 5 s. In the pod where gh could not finish a handshake, curl answered
@@ -114,7 +123,7 @@ var curlReserve = 5 * time.Second
 // curlReserve or less, gh runs under ctx alone, as it did before this bound: what time there is is
 // the caller's, and a stop is the caller's.
 func ghReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	bound := ghReadBound
+	bound := programbound.Of(&ghReadBound)
 	if deadline, ok := ctx.Deadline(); ok {
 		left := time.Until(deadline) - curlReserve
 		if left <= 0 {
@@ -135,13 +144,13 @@ func stoppedByItsOwnBound(ctx context.Context, err error) (*stoppedError, bool) 
 	return stopped, errors.As(err, &stopped) && ctx.Err() == nil
 }
 
-// ghStoppedByItsBound is the transport failure of a gh REST read of slug that the guard's own bound
+// ghStoppedByItsBound is the transport failure of a gh REST read that the guard's own bound
 // (ghReadContext) stopped: err is run's error, printed what gh printed before the stop, and ctx the
 // caller's context. It is one only where the stop was the guard's own bound (stoppedByItsOwnBound)
 // and where gh printed no status line, so GitHub sent no response. Anything else is nil: a stop by
 // the caller's deadline or by its cancel stays the error it is, since no bound is left for another
 // read, and so does a gh that heard GitHub's status line and then hung.
-func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *transportError {
+func ghStoppedByItsBound(ctx context.Context, err error, printed string) *transportError {
 	stopped, own := stoppedByItsOwnBound(ctx, err)
 	if !own {
 		return nil
@@ -153,11 +162,12 @@ func ghStoppedByItsBound(ctx context.Context, err error, printed, slug string) *
 	if line := strings.TrimSpace(printed); line != "" {
 		message += ": " + line
 	}
-	return &transportError{program: "gh", said: strings.ReplaceAll(message, slug, maskPath(slug))}
+	return &transportError{program: "gh", said: message}
 }
 
-// errNoCurlRead is a curl read that the guard could not make: no curl at curlProgram, or no token
-// for it (Guard.curlVisibility).
+// errNoCurlRead is a read through curl that the guard could not make: no curl at the guard's curl,
+// or a token that holds a line break (Guard.CurlGet), or no token for the visibility read
+// (Guard.curlVisibility).
 var errNoCurlRead = errors.New("the read through curl could not be made")
 
 // errNoTimeForCurl is a curl read that the guard did not make because less than curlLeast of the
@@ -175,9 +185,10 @@ var errNoTimeForCurl = errors.New("too little of the caller's bound is left for 
 // cannot be made (errNoCurlRead), or where curl fails on its connection too (a *transportError),
 // the visibility is read with git's ls-remote and no credential (Guard.lsRemote), which answers
 // public and nothing else. Every other outcome refuses the call, naming gh's failure and what each
-// read said. A read that the caller's bound stops refuses the call too, because no bound is left
-// for another read, and so does too little time left for curl (errNoTimeForCurl), which leaves
-// none for ls-remote either.
+// read said, GitHub's 404 to curl among them, which the refusal wraps as the *notFoundError it is.
+// A read that the caller's bound stops refuses the call too, because no bound is left for another
+// read, and so does too little time left for curl (errNoTimeForCurl), which leaves none for
+// ls-remote either.
 func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *transportError) (Visibility, VisibilitySource, error) {
 	visibility, err := g.curlVisibility(ctx, slug)
 	var limited *rateLimitError
@@ -206,8 +217,10 @@ func (g *Guard) readWithoutGh(ctx context.Context, slug string, unreached *trans
 // curlBound is the longest the curl read runs, its token read included (Guard.curlVisibility). In
 // the pod where every gh call failed its TLS handshake, curl answered GitHub's REST API in under a
 // second. A curl read that takes longer than this leaves the rest of the caller's bound to
-// ls-remote.
-const curlBound = 20 * time.Second
+// ls-remote. It is a variable so that cmd/legion's tests, whose `legion gh` runs this read on a
+// stand-in curl, can give it their own deadline (programbound): a stand-in slower than 20 s is
+// stopped here, and the read goes on to ls-remote.
+var curlBound = 20 * time.Second
 
 // curlMargin is how much sooner than its read's deadline curl's --max-time ends, so that curl
 // stops itself and says why before the deadline kills it.
@@ -224,42 +237,31 @@ func curlTime(deadline time.Time) (time.Duration, bool) {
 	return left, left >= curlLeast
 }
 
-// curlProgram is the curl the curl read runs: the system's own, at a fixed path, and never the
-// first curl on the caller's PATH, which is the caller's to put there and would be handed the
-// token on its standard input.
+// curlProgram is the curl the guard's reads through curl run where Options.Curl names none: the
+// system's own, at a fixed path, and never the first curl on the caller's PATH, which is the
+// caller's to put there and would be handed the token on its standard input.
 const curlProgram = "/usr/bin/curl"
 
 // curlVisibility is gh's REST read of slug made through curl, whose TLS is OpenSSL's: the same
-// request (GET /repos/<slug> at gitHubAPI) with the same token (Guard.ghToken), read by
-// curlAnswer. The token goes to curl on its standard input, as the `Authorization` header that
-// `--header @-` reads, and never in its argv, which any process of the machine can read. curl is
-// curlProgram, and it keeps of the caller's environment only the names curlInherits keeps: its
-// proxy, which then sees only a TLS tunnel, and no trust store, so the CAs curl trusts are the
-// system's own and no proxy the caller names can read the token. Its options are these:
-//
-//   - `-q`, first as curl requires, so curl reads no .curlrc, and `--no-netrc`, so it reads no
-//     netrc: the token is the one credential the request carries;
-//   - `--include` prints the status line and the headers, which rateLimitFrom reads as it reads
-//     gh's, and `--suppress-connect-headers` leaves out a proxy's answer to CONNECT, which would
-//     otherwise come first;
-//   - `--proto =https` allows no other protocol, and no redirect is followed;
-//   - `--max-time` is the time left before the read's bound, curlBound or the caller's own
-//     deadline where that is sooner, less curlMargin (curlTime).
+// request (GET /repos/<slug> at gitHubAPI, which Guard.CurlGet makes) with the same token
+// (Guard.ghToken), read by curlAnswer. Its bound is curlBound, or the caller's own deadline where
+// that is sooner, and the token read runs inside it, so curl's --max-time is what the token read
+// left of it.
 //
 // Less than curlLeast left, before the token read or after it, is errNoTimeForCurl, and no curl
-// runs; the first check also spares the token read. No curl at curlProgram, and no token, are
+// runs; the first check also spares the token read, and so does the check that the guard's curl
+// is there, which CurlGet makes again before it runs curl. No curl there, and no token, are
 // errNoCurlRead. A curl that its own bound stops is a *transportError. A curl or a token read that
 // the caller's bound stops is the *stoppedError run answers.
 func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, error) {
-	bounded, cancel := context.WithTimeout(ctx, curlBound)
+	bounded, cancel := context.WithTimeout(ctx, programbound.Of(&curlBound))
 	defer cancel()
 	deadline, _ := bounded.Deadline()
 	if _, ok := curlTime(deadline); !ok {
 		return "", errNoTimeForCurl
 	}
-	curl := g.curl
-	if info, err := os.Stat(curl); err != nil || !info.Mode().IsRegular() {
-		return "", fmt.Errorf("%w: there is no curl at %s", errNoCurlRead, curl)
+	if err := g.curlMissing(); err != nil {
+		return "", err
 	}
 	token, err := g.ghToken(bounded, slug)
 	switch {
@@ -268,55 +270,218 @@ func (g *Guard) curlVisibility(ctx context.Context, slug string) (Visibility, er
 	case err != nil:
 		return "", fmt.Errorf("%w: %w", errNoCurlRead, err)
 	}
+	response, err := g.CurlGet(bounded, "repos/"+slug, token, TokenOf(g.base()))
+	if err != nil {
+		if stopped, own := stoppedByItsOwnBound(ctx, err); own {
+			return "", &transportError{program: "curl", said: stopped.Error()}
+		}
+		return "", err
+	}
+	return curlAnswer(response.Exit, response.Stdout, response.Stderr, slug)
+}
+
+// curlMissing is errNoCurlRead, naming the path, where the guard's curl is no regular file, and
+// nil where it is one.
+func (g *Guard) curlMissing() error {
+	if info, err := os.Stat(g.curl); err != nil || !info.Mode().IsRegular() {
+		return fmt.Errorf("%w: there is no curl at %s", errNoCurlRead, g.curl)
+	}
+	return nil
+}
+
+// CurlGet is one GET of path at gitHubAPI, made through the guard's curl with token, whose source
+// is whose token it is. path is a path of GitHub's REST API without its leading slash, such as
+// `repos/<owner>/<name>`; the host is gitHubAPI, which no caller can change. It is the one read
+// through curl there is: the guard's visibility read after gh failed on its connection
+// (Guard.curlVisibility), and cmd/legion's credential helper's read of a fork, both make it here,
+// so both send the token the same way.
+//
+// The token goes to curl on its standard input, as the `Authorization` header that `--header @-`
+// reads, and never in its argv, which any process of the machine can read. curl keeps of the
+// caller's environment only what TokenChildKeeps keeps for source, which holds neither GH_TOKEN
+// nor GITHUB_TOKEN, no trust store, so the CAs curl trusts are the system's own, no SSLKEYLOGFILE,
+// a file OpenSSL writes the connection's TLS keys to, and no name a later curl learns to read. A
+// proxy the caller names then sees only the TLS tunnel curl opens through it, with one exception:
+// for the caller's own token inside an `agent-secrets` command, curl keeps the secrets broker's
+// airlock proxy, which reads inside that TLS session to swap the caller's placeholder for the real
+// token, where the machine's store trusts it. The predicate is made from the one base environment
+// Guard.command reads for this child, since whether curl keeps ALL_PROXY depends on what
+// HTTPS_PROXY names. curl runs in a process group of its own (Guard.run), which the end of ctx
+// stops whole, with anything curl started. Its options are these:
+//
+//   - `-q`, first as curl requires, so curl reads no .curlrc, and `--no-netrc`, so it reads no
+//     netrc: the token is the one credential the request carries;
+//   - `--include` prints the status line and the headers, which CurlResponse reads apart from the
+//     body, and `--suppress-connect-headers` leaves out a proxy's answer to CONNECT, which would
+//     otherwise come first;
+//   - `--globoff` takes the URL as written: path is the caller's, and curl would otherwise read a
+//     `[...]` or `{...}` in it as a range or a set and send one request, each carrying the token,
+//     for every URL it expands to;
+//   - `--proto =https` allows no other protocol, and no redirect is followed;
+//   - `--max-time` is the time left before ctx's deadline, less curlMargin (curlTime).
+//
+// ctx's deadline is the read's bound, and a ctx with none is refused, since curl's --max-time
+// needs one. Less than curlLeast left is errNoTimeForCurl. No curl at the guard's curl is
+// errNoCurlRead, and so is a token that holds a line break, a carriage return included: curl reads
+// the header on its standard input a line at a time, so the token would add a header of its own to
+// the request. In each of these cases no curl runs. A curl that the end of ctx stopped is the
+// *stoppedError run answers, and one that a signal ended is that end with what curl printed
+// beneath it (procgroup.Said). A curl that exited is a CurlResponse and no error, whatever its
+// exit status and whatever GitHub answered: the caller reads which (CurlResponse).
+func (g *Guard) CurlGet(ctx context.Context, path, token string, source TokenSource) (CurlResponse, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return CurlResponse{}, errors.New("the read through curl has no deadline, which curl's --max-time needs")
+	}
 	maxTime, ok := curlTime(deadline)
 	if !ok {
-		return "", errNoTimeForCurl
+		return CurlResponse{}, errNoTimeForCurl
+	}
+	if err := g.curlMissing(); err != nil {
+		return CurlResponse{}, err
+	}
+	if strings.ContainsAny(token, "\r\n") {
+		return CurlResponse{}, fmt.Errorf("%w: the token holds a line break, which would add a header of its own to the request", errNoCurlRead)
 	}
 	var stderr bytes.Buffer
-	status, printed, err := g.run(bounded, child{
-		argv: []string{curl, "-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
-			"--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
+	status, printed, err := g.run(ctx, child{
+		argv: []string{g.curl, "-q", "--no-netrc", "--silent", "--show-error", "--include", "--suppress-connect-headers",
+			"--globoff", "--proto", "=https", "--max-time", strconv.FormatFloat(maxTime.Seconds(), 'f', 1, 64),
 			"--header", "@-", "--header", "Accept: application/vnd.github+json", "--header", "X-GitHub-Api-Version: 2022-11-28",
-			gitHubAPI + "/repos/" + slug},
-		inherit: curlInherits,
+			gitHubAPI + "/" + path},
+		inherit: func(base []string) func(name, value string) bool { return TokenChildKeeps(base, source) },
 		stdin:   strings.NewReader("Authorization: Bearer " + token + "\n"),
 		stderr:  &stderr,
 	})
 	if err != nil {
-		if _, own := stoppedByItsOwnBound(ctx, err); own {
-			return "", &transportError{program: "curl", said: err.Error()}
-		}
-		return "", procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
+		return CurlResponse{}, procgroup.Said(err, visibilityBody(printed)+"\n"+stderr.String())
 	}
-	return curlAnswer(status, printed, stderr.String(), slug)
+	return CurlResponse{Exit: status, Stdout: printed, Stderr: stderr.String()}, nil
 }
 
-// curlInherits is which names of the caller's environment the curl read keeps: those a program
-// carrying a GitHub token keeps (TokenChildKeeps), which hold neither GH_TOKEN nor GITHUB_TOKEN,
-// since the token goes to curl on its standard input alone. The proxy variables are kept, so a
-// host that reaches GitHub through a proxy reaches it the same way here, and the proxy sees only
-// the TLS tunnel curl opens through it. Every other name is left out: the trust stores
-// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), by which a proxy would be trusted to read inside
-// that tunnel, SSLKEYLOGFILE, a file OpenSSL writes the connection's TLS keys to, and any name a
-// later curl learns to read.
-func curlInherits(name string) bool { return TokenChildKeeps(name) }
+// CurlResponse is a GET through curl that curl ended itself (Guard.CurlGet). Exit is curl's exit
+// status, which is 0 for any answer GitHub gave, whatever its HTTP status, since curl runs without
+// --fail. Stdout is the status line, the headers and the body, as --include prints them, and
+// Stderr is what curl said of a failure. Its methods read GitHub's answer out of Stdout with the
+// guard's own parse of that output, the one curlAnswer reads the visibility read's answer with.
+type CurlResponse struct {
+	Exit   int
+	Stdout string
+	Stderr string
+}
 
-// TokenChildKeeps is whether a program that carries a GitHub token keeps the name of its caller's
-// environment: gh, which `legion gh` runs with an installation's token, and the guard's curl read.
-// It keeps what any program needs to run (PATH, HOME, TMPDIR), the terminal (TERM), the locale and
-// time zone (LANG and the LC_ names, TZ), and the proxy variables in both cases (HTTPS_PROXY,
-// HTTP_PROXY, ALL_PROXY, NO_PROXY), which the daemon hands a pane or a pod as its route out
-// (runtime/tmux's paneEnvAllowList, the guard's own ls-remote): gh and curl reach GitHub through
-// such a proxy by a CONNECT tunnel, and with no trust store of the caller's, the proxy reads
-// nothing inside it. Nothing else is kept: an allowlist, so that no trust store (SSL_CERT_FILE,
-// SSL_CERT_DIR, CURL_CA_BUNDLE), no TLS key log (SSLKEYLOGFILE), no program the tool would hand
-// text to (EDITOR, VISUAL, BROWSER, PAGER) and no name a later release learns to read reaches it
-// from the caller. A proxy and a trust store the caller names together would hand the token to
-// whatever the proxy is, so a deployment whose proxy inspects TLS with its own CA installs that
-// CA in the system's trust store, which gh and curl read by default. A caller that needs more of
-// its environment names it beside this, with what reads it.
-func TokenChildKeeps(name string) bool {
-	return tokenChildNames[name]
+// Status is the HTTP status of GitHub's answer, 0 where curl printed no status line, and the
+// answer's headers, each name lowercased (responseHeaders).
+func (r CurlResponse) Status() (int, map[string]string) { return responseHeaders(r.Stdout) }
+
+// Body is the body of GitHub's answer: what follows its headers (visibilityBody).
+func (r CurlResponse) Body() string { return visibilityBody(r.Stdout) }
+
+// RateLimit is the rate limit GitHub refused the read for, read as rateLimitFrom reads gh's
+// answer, and nil where the answer reports none. Its text names the reset of a spent core limit
+// in UTC, or the wait that the secondary limit's Retry-After asks for.
+func (r CurlResponse) RateLimit() error {
+	if limited := rateLimitFrom(r.Stdout); limited != nil {
+		return limited
+	}
+	return nil
+}
+
+// Unreached is the *transportError of a curl that got no answer from GitHub (curlUnreached), and
+// nil for any other: a curl that printed a status line heard GitHub, whatever its exit. Its text
+// quotes curl as it printed, as the visibility read's does (curlAnswer).
+func (r CurlResponse) Unreached() error {
+	if httpStatus, _ := r.Status(); !curlUnreached(r.Exit, httpStatus) {
+		return nil
+	}
+	return &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", r.Exit, said(r.Body(), r.Stderr))}
+}
+
+// TokenSource is whose GitHub token a program carries: one `legion gh` runs gh with, or the
+// guard's curl read. It decides whether the program keeps the secrets broker's airlock proxy
+// (TokenChildKeeps).
+type TokenSource int
+
+const (
+	// DirectoryToken is the token of a gh directory, which gh sends from GH_CONFIG_DIR and `gh
+	// auth git-credential` answers: in a pod, Legion's own installation token from the bundle.
+	// No airlock rule swaps it.
+	DirectoryToken TokenSource = iota
+	// CallersToken is the caller's own GH_TOKEN or GITHUB_TOKEN, which gh sends in place of any
+	// directory's token. Under `agent-secrets GH_TOKEN -- command` it is the airlock's placeholder.
+	CallersToken
+)
+
+// TokenOf is whose token a program run with environ sends to GitHub: the caller's where environ
+// sets GH_TOKEN or GITHUB_TOKEN to a value, as gh reads them (each where exec would read it, the
+// last entry of its name), and the gh directory's otherwise. It is the one place that decides
+// whose token it is: Guard.ghToken reads the caller's variables only where it answers CallersToken,
+// and curlVisibility hands CurlGet its answer for the same environment.
+func TokenOf(environ []string) TokenSource {
+	if value(environ, "GH_TOKEN") != "" || value(environ, "GITHUB_TOKEN") != "" {
+		return CallersToken
+	}
+	return DirectoryToken
+}
+
+// TokenChildKeeps is which entries of environ, each a variable's name and its value, a program
+// that carries the GitHub token of source keeps. Those programs are gh, which `legion gh` runs,
+// and the guard's curl read. It keeps what any program needs to run (PATH, HOME, TMPDIR), the
+// terminal (TERM), the locale and time zone (LANG and the LC_ names, TZ), and the proxy variables
+// in both cases (HTTPS_PROXY, HTTP_PROXY, ALL_PROXY, NO_PROXY), which the daemon hands a pane or a
+// pod as its route out (runtime/tmux's paneEnvAllowList, the guard's own ls-remote): gh and curl
+// reach GitHub through such a proxy by a CONNECT tunnel, and with no trust store of the caller's,
+// the proxy reads nothing inside it. Nothing else is kept: an allowlist, so that no trust store
+// (SSL_CERT_FILE, SSL_CERT_DIR, CURL_CA_BUNDLE), no TLS key log (SSLKEYLOGFILE), no program the
+// tool would hand text to (EDITOR, VISUAL, BROWSER, PAGER) and no name a later release learns to
+// read reaches it from the caller. A proxy and a trust store the caller names together would hand
+// the token to whatever the proxy is, and could answer the guard's visibility read for GitHub, so
+// a deployment whose proxy inspects TLS with its own CA installs that CA in the system's trust
+// store, which gh and curl read by default. A caller that needs more of its environment names it
+// beside this, with what reads it.
+//
+// `agent-secrets NAME -- command` puts the secrets broker's airlock proxy in HTTPS_PROXY and
+// https_proxy, replacing what the caller had there, and the proxy reads TLS to every host NAME's
+// grant binds, GitHub's among them for a GitHub secret, to put the real value in place of NAME's
+// placeholder. Its URL's user is cipheraddr.AirlockProxyUser (cipheraddr.NamesAirlockProxy), a
+// convention of agent-secrets' and no proof of whose proxy it is: a caller can write a URL with
+// that user too, and then loses that proxy here. What is kept depends on source:
+//
+//   - For a gh directory's token, where HTTPS_PROXY or https_proxy names the airlock, no variable
+//     that names the airlock is kept, and neither is ALL_PROXY or all_proxy. Where the machine's
+//     store does not hold the airlock's roots, and agent-secrets writes a trust bundle the
+//     program is not given, the program cannot verify the airlock, so every call through it
+//     failed, the guard's visibility read of a push's target among them; where the store does
+//     hold them, the airlock would read that token. Without the airlock curl would fall back to
+//     ALL_PROXY, checked against the NO_PROXY agent-secrets rewrote to send GitHub to the
+//     airlock, which is a route the caller's own NO_PROXY may have kept GitHub off. So the
+//     program connects to GitHub directly, or through an https proxy variable that names another
+//     proxy. Where the deployment's only route out was a proxy, in HTTPS_PROXY, which
+//     agent-secrets replaced, or in ALL_PROXY, which this leaves out, the call fails on its
+//     connection.
+//   - For the caller's own token everything above is kept, the airlock's proxy included. The
+//     token is the caller's, and under `agent-secrets GH_TOKEN` it is the airlock's placeholder,
+//     which only the airlock swaps for the real token; a placeholder sent past it is a token
+//     GitHub refuses. Such a read works where the machine's store holds the airlock's roots,
+//     where agent-secrets writes no trust bundle, and fails verifying the airlock where it does
+//     not, as it did before a directory's token left the airlock out.
+//
+// The predicate takes the name and the value apart, so a predicate of the earlier shape, which
+// took a name or a whole entry, does not compile in its place.
+func TokenChildKeeps(environ []string, source TokenSource) func(name, value string) bool {
+	airlocked := source == DirectoryToken &&
+		(cipheraddr.NamesAirlockProxy(value(environ, "HTTPS_PROXY")) || cipheraddr.NamesAirlockProxy(value(environ, "https_proxy")))
+	return func(name, val string) bool {
+		switch {
+		case !tokenChildNames[name]:
+			return false
+		case !airlocked:
+			return true
+		case name == "ALL_PROXY" || name == "all_proxy":
+			return false
+		}
+		return !cipheraddr.NamesAirlockProxy(val)
+	}
 }
 
 // tokenChildNames are the names TokenChildKeeps keeps, each by its whole name, as
@@ -336,52 +501,66 @@ var tokenChildNames = map[string]bool{
 // and 55 and 56, a connection that failed while curl sent or received.
 var curlTransportExits = []int{5, 6, 7, 28, 35, 52, 55, 56}
 
+// curlUnreached is whether a curl that exited exit, after it printed the HTTP status httpStatus,
+// 0 for no status line, got no answer from GitHub: it exited with one of curlTransportExits and
+// printed no status line. A curl that printed one heard GitHub, whatever its exit.
+func curlUnreached(exit, httpStatus int) bool {
+	return httpStatus == 0 && slices.Contains(curlTransportExits, exit)
+}
+
 // curlAnswer is what the curl read of slug answered. status is curl's exit status, stdout what it
 // printed on standard output (the status line, the headers and the body, as --include prints
 // them), and stderr its standard error, which only a failure quotes. An exit status of
 // curlTransportExits with no status line printed is a *transportError; a curl that printed one
 // heard GitHub, so its failure is refused, not read with ls-remote. A rate limit, read as
-// rateLimitFrom reads gh's answer, is a *rateLimitError. A 200 whose body's visibility is public,
-// private or internal, read as gh's is, is the answer. Anything else is an error.
+// rateLimitFrom reads gh's answer, is a *rateLimitError. GitHub's 404 is a *notFoundError. A 200
+// whose body's visibility is public, private or internal, read as gh's is, is the answer. Anything
+// else is an error.
 func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
-	masked := maskPath(slug)
 	body := visibilityBody(stdout)
 	httpStatus, _ := responseHeaders(stdout)
 	if status != 0 {
-		if httpStatus == 0 && slices.Contains(curlTransportExits, status) {
-			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr, slug))}
+		if curlUnreached(status, httpStatus) {
+			return "", &transportError{program: "curl", said: fmt.Sprintf("exit %d: %s", status, said(body, stderr))}
 		}
-		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", masked, status, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s exited %d: %s", shownText(slug), status, said(body, stderr))
 	}
 	if limited := rateLimitFrom(stdout); limited != nil {
 		return "", limited
 	}
+	if httpStatus == http.StatusNotFound {
+		return "", &notFoundError{slug: slug}
+	}
 	if httpStatus != http.StatusOK {
-		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", masked, httpStatus, said(body, stderr, slug))
+		return "", fmt.Errorf("curl's read of repos/%s answered the status %d: %s", shownText(slug), httpStatus, said(body, stderr))
 	}
 	var answer struct {
 		Visibility string `json:"visibility"`
 	}
 	if err := json.Unmarshal([]byte(body), &answer); err != nil {
-		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", masked, err)
+		return "", fmt.Errorf("curl's read of repos/%s answered a body that is not JSON: %v", shownText(slug), err)
 	}
 	switch visibility := Visibility(strings.ToLower(strings.TrimSpace(answer.Visibility))); visibility {
 	case Public, Private, Internal:
 		return visibility, nil
 	default:
-		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", masked)
+		return "", fmt.Errorf("curl's read of repos/%s answered no visibility GitHub reports", shownText(slug))
 	}
 }
 
 // ghToken is the token that gh sends with its reads of slug, which the curl read sends in gh's
-// place. It is the caller's GH_TOKEN, else its GITHUB_TOKEN: gh sends either one first, in that
-// order, and `legion gh` runs the guard's reads under it (cmd/legion's ghVisibilityRead). Else it
-// is the password that `gh auth git-credential get` answers for the repository's URL.
+// place. Where the caller's own token is the one gh sends (TokenOf), it is the caller's GH_TOKEN,
+// else its GITHUB_TOKEN: gh sends either one first, in that order, and `legion gh` runs the
+// guard's reads under it (cmd/legion's ghVisibilityRead). Else it is the password that `gh auth
+// git-credential get` answers for the repository's URL.
 //
 // In a pod, that gh is `legion gh`. It answers this request before anything else (cmd/legion's
 // runGh) with runGitCredential: it reads the hosts.yml of the bundle's directory for the repository
-// (ghConfigDirFor), which is the directory it runs the guard's REST read with. It runs no gh and
-// makes no request, so it answers while gh's TLS cannot. A real gh answers from its own
+// (ghroute.DirFor), which is the directory it runs the guard's REST read with. For a repository of
+// an owner the bundle holds a directory for, it runs no gh and makes no request, so it answers
+// while gh's TLS cannot. The guard's REST read of any other owner's repository is one `legion gh`
+// refuses before gh runs, so that repository never reaches this read (Guard.readUnservedOwner).
+// A real gh answers from its own
 // configuration, which is what it authenticates the REST read with. A request through `legion gh`
 // writes an `auth git-credential` line to its call log, as every credential request through it
 // does.
@@ -392,15 +571,16 @@ func curlAnswer(status int, stdout, stderr, slug string) (Visibility, error) {
 // the token would put a header of its own on the request.
 func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 	base := g.base()
-	for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
-		token := value(base, name)
-		switch {
-		case token == "":
-			continue
-		case strings.ContainsAny(token, "\r\n"):
-			return "", fmt.Errorf("%s holds a line break", name)
+	if TokenOf(base) == CallersToken {
+		for _, name := range []string{"GH_TOKEN", "GITHUB_TOKEN"} {
+			switch token := value(base, name); {
+			case token == "":
+			case strings.ContainsAny(token, "\r\n"):
+				return "", fmt.Errorf("%s holds a line break", name)
+			default:
+				return token, nil
+			}
 		}
-		return token, nil
 	}
 	var stderr bytes.Buffer
 	status, printed, err := g.run(ctx, child{
@@ -412,7 +592,7 @@ func (g *Guard) ghToken(ctx context.Context, slug string) (string, error) {
 		return "", procgroup.Said(err, stderr.String())
 	}
 	if status != 0 {
-		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String(), slug))
+		return "", fmt.Errorf("gh auth git-credential get exited %d: %s", status, said("", stderr.String()))
 	}
 	// git's credential protocol takes the last value of a key, as git itself reads gh's answer.
 	token := ""

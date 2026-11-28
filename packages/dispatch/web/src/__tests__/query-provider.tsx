@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderOptions, type RenderResult, render } from "@testing-library/react";
+import { type RenderOptions, type RenderResult, render, renderHook } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 
 /**
@@ -22,4 +22,14 @@ export function renderWithQueries(
     </QueryClientProvider>
   );
   return render(ui, { ...options, wrapper: Wrapper });
+}
+
+/** `useWrite` rendered over one app's queue, with alice signed in. */
+export function renderOnQueue<T>(useWrite: () => T) {
+  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return { client, hook: renderHook(useWrite, { wrapper }) };
 }

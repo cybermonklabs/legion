@@ -22,11 +22,10 @@
 # draining the driver's output. busybox tee keeps writing every output and reports errors only at
 # EOF, so it picks the transcript up again once its disk has room.
 #
-# The tee is one of the run's processes: its argv names FILE, and its working directory is the
-# caller's at the call. lib/rig.sh's run_processes matches $work in either, and a cleanup that
-# SIGKILLs what it names would kill the tee before its own last writes. So FILE and the caller's
-# working directory stay outside $work, or the caller opens FILE on a descriptor and passes
-# /dev/fd/N, as stage 2 and stage3-4b13b-acceptance.sh do.
+# The tee must outlive the run's sweeps, which end every process that carries the run's mark
+# (marked_processes, lib/process-tree.sh). The caller marks its run (export LEGION_E2E_RUN) after
+# this call, so the tee, which takes the caller's environment as it stands now, carries no mark,
+# whatever FILE and the caller's working directory are.
 transcript_to() {
   : >>"$1" || return
   exec > >(trap '' HUP INT TERM PIPE && exec tee -a "$1" /dev/null) 2>&1

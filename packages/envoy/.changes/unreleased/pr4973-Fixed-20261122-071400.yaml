@@ -1,0 +1,42 @@
+kind: Fixed
+body: |-
+  A message the deployed stream cannot store is refused with a retryable error, and never sent
+  over core NATS and answered as delivered. While the deployed `ENVOY_NOTIFICATIONS` stream, as the
+  client last read its subjects, does not capture a topic this build stores (a hub move's quiesce
+  narrows it, or an operator edits it), every publish sends nothing and fails with
+  `bus.ErrSubjectNotDeployed`. A sender now gets a `503` with `Retry-After: 1` from
+  `POST /v1/messages/send` and `POST /v1/messages/publish`, whose `error` starts
+  `envoy: the message was not sent, and may be sent again later: ` (not `the message bus did not
+  answer`, since the bus was never asked) and whose request line records the outcome
+  `subject_not_deployed`, in place of a `200` for a message nothing stored or a `400` that said no
+  stream captures the topic. The refused message costs the
+  sender limit nothing, and a send to a stopped session is refused before its wake is reported, so
+  a sender sending it again wakes no pod. The webhooks answer `503` and log the failed publish;
+  GitHub does not deliver a failed webhook again on its own, and Dispatch's sweep delivers its own
+  App's deliveries again.
+  Dispatch settles a queued message failed, and the build announcer tries again at its next pass. A
+  session's consumer filter now keeps every topic of its row whatever the deployed stream captures,
+  so a message stored on the topic once the stream captures it again is delivered. For the same
+  reason a publish's `recipients` and `recipients_connected` no longer leave out a session whose
+  topic the deployed stream does not store, which replaces the recipient-count entry's clause that
+  they do. The filter leaves out a
+  topic that does not begin with the literal `notifications.`, and every wildcard topic that fed a
+  merge of the filter that would reach another session's messages. Such a topic no longer leaves
+  silently: the registration's answer names it as not registered and why on every registration, the
+  listener logs a WARN line naming the session and the topic, at most once per session and topic an
+  hour, and the session's interest row no longer holds it. No publish counts the session as a
+  recipient for it, also through a row an earlier build stored, before the session's next
+  registration takes the topic out; a message on it is skipped for that session with the same WARN
+  line, logged at most once per session and topic every ten minutes. A consumer whose filter drops
+  such a topic
+  while the stream holds messages on it that the consumer has not delivered passes them over, and
+  the same WARN line names that, with how many messages were waiting on each dropped topic, read
+  just before the change; a restart writes it once it deleted the consumer, also when creating it
+  again fails, and when the delete's answer was lost it reads the consumer back first, writing the
+  line when the consumer is gone, or with `delete_confirmed` false when it cannot tell. A filter
+  that replaces a topic with one that contains it passes nothing over and logs nothing. A consumer
+  created where none stands, after the listener or the server removed the one before it, is not
+  counted, since nothing records that consumer's filter.
+time: 2026-11-22T07:14:00Z
+custom:
+    Issue: pr4973

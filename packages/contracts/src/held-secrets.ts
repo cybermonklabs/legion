@@ -1,7 +1,7 @@
 // The backstop under every rule of `log-text.ts`: the secrets this process holds, and the scrub the
 // clients pass their printed surfaces through (each client's changelog names which: envoy-client's
 // error and reason texts, pi-envoy's logger, notices and tool answers, claude-envoy's process
-// streams, broker-client's refusal text). The rules name nothing a peer or a setting wrote; the
+// streams, cipher-client's refusal text). The rules name nothing a peer or a setting wrote; the
 // scrub catches what a rule let through anyway, such as a server at the wrong URL that echoes the
 // bearer it was sent inside a refusal the client prints as guidance. A line that holds no held
 // secret comes back as the same string, byte for byte.

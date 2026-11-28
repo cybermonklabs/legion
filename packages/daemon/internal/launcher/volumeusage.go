@@ -1,12 +1,28 @@
 package launcher
 
-// volumeUsage is one reading of the pod's volume.
+import (
+	"fmt"
+
+	"github.com/sjawhar/legion/daemon/internal/volumestat"
+)
+
+// readVolumeUsage is one statfs of path, the pod's volume (VolumeRoot), as the used and available
+// bytes df takes its percentage from: volumestat.Read, the module's one statfs reader, which the
+// repository cache reads its own volume with too, and which refuses by name on every platform but
+// Linux (volumestat_other.go). Its error is volumestat's, under this package's prefix.
 //
-// The reading itself is one statfs, which is Linux's call and has no portable form, so it sits in
-// a file of its own with a non-Linux twin beside it (volumeusage_linux.go, volumeusage_other.go),
-// as role-init's namespaces do (roleinit_linux.go, roleinit_other.go); this file holds what both
-// platforms share, as roleinit.go does, so the fraction below has one body and a reading taken on
-// either platform is read the same way.
+// The trimmer reads the volume through its readUsage field, which newTrimmer sets to this
+// function: every test of a sweep gives its own trimmer a reading of its own there and counts the
+// calls, so a test that fakes the reading changes nothing another test's trimmer reads.
+func readVolumeUsage(path string) (volumeUsage, error) {
+	reading, err := volumestat.Read(path)
+	if err != nil {
+		return volumeUsage{}, fmt.Errorf("launcher: %w", err)
+	}
+	return volumeUsage{UsedBytes: reading.UsedBytes, AvailableBytes: reading.AvailableBytes}, nil
+}
+
+// volumeUsage is one reading of the pod's volume: what the trimmer takes of a volumestat.Reading.
 type volumeUsage struct{ UsedBytes, AvailableBytes uint64 }
 
 // Percent is the fraction df prints: used over used plus available, as a float. Available is what

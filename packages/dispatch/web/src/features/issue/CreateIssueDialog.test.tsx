@@ -1,4 +1,4 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the dialog form's own submit, which user-event has no form for
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -8,11 +8,20 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { CreateIssueDialog } from "./CreateIssueDialog";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const projects = [
   {
@@ -21,6 +30,7 @@ const projects = [
     name: "Core",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   },
   {
     created_at: "2026-09-10T00:00:00Z",
@@ -28,6 +38,7 @@ const projects = [
     name: "Operations",
     open_asks: 0,
     gated_steps: [],
+    proven_sessions: false,
   },
 ];
 
@@ -83,6 +94,7 @@ function renderDialog(
     </MemoryRouter>
   );
   return {
+    queryClient,
     user,
     unmount: () => {
       view.unmount();
@@ -91,6 +103,13 @@ function renderDialog(
       relatedItems.mockRestore();
     },
   };
+}
+
+/** Waits until the project read has answered and the dialog has picked its first project: the
+ *  select is drawn at once and empty, and Create does nothing while no project is picked. */
+async function projectPicked(): Promise<void> {
+  const select = await screen.findByRole<HTMLSelectElement>("combobox", { name: "Project" });
+  await waitFor(() => expect(select.value).toBe(projects[0]?.key));
 }
 
 test("preselects the route's project, submits title and spec, and opens the created issue", async () => {
@@ -142,7 +161,7 @@ test("a refused create keeps the dialog and draft, shows the server message, and
     return issue(input, "CORE-3");
   });
   try {
-    await screen.findByRole("combobox", { name: "Project" });
+    await projectPicked();
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Flaky create");
     // The form's own submit: user-event has no form for it.
@@ -183,7 +202,7 @@ test("a create answered KEY_COMMITTED drops the draft, says the issue was made, 
     }
   );
   try {
-    await screen.findByRole("combobox", { name: "Project" });
+    await projectPicked();
     const title = screen.getByRole<HTMLInputElement>("textbox", { name: "Title" });
     await view.user.click(title);
     await view.user.paste("Made once");
@@ -222,7 +241,7 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     return issue(input, "CORE-2");
   });
   try {
-    await screen.findByRole("combobox", { name: "Project" });
+    await projectPicked();
     await view.user.click(screen.getByRole("textbox", { name: "Title" }));
     await view.user.paste("Astrolabe calibration");
     await view.user.click(screen.getByRole("button", { name: "Create" }));
@@ -237,6 +256,33 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     );
     expect(calls.map((call) => call.force)).toEqual([undefined, true]);
   } finally {
+    view.unmount();
+  }
+});
+
+// A create the reader stopped may have made the issue: the dialog says so, and that its Retry
+// asks again under the create's key (`retryLast`), rather than a failure it cannot know of.
+test("a create the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  jest.useFakeTimers();
+  const view = renderDialog(userOnFakeClock(), () =>
+    Promise.reject(new NetworkError("/api/v1/issues", new TypeError("Failed to fetch")))
+  );
+  try {
+    await projectPicked();
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Flaky create");
+    // The form's own submit: user-event has no form for it.
+    fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
+    await stopTheLateWrite(view.queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the new issue", "made", {
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
     view.unmount();
   }
 });

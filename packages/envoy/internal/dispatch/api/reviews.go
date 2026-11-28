@@ -14,8 +14,10 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -82,26 +84,47 @@ const latestReviewsStatement = `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
+// openApprovalAsksHead is the select list, the from and the head of the lateral join that both
+// statements of the open approval requests share, so the two scan alike
+// (scanOpenApprovalRequests). Each statement goes on with the documents it joins.
+const openApprovalAsksHead = `
+		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
+		from asks a` + lastReplyJoin + `
+		cross join lateral jsonb_array_elements(`
+
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
 // and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
-		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
-		from asks a` + lastReplyJoin + `
-		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
+const openApprovalAsksStatement = openApprovalAsksHead + `a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
 
+// openApprovalAsksAtCutStatement is openApprovalAsksStatement for a read at a cut, where the asks
+// shadow gives the approval of each request as its newest event at the cut wrote it. A request
+// whose newest event at the cut is older than the documents of approval requests (event 186,599)
+// holds no documents there: migration 20261102110100 filled them in the row with no event. Such a
+// request named one document, its approval.artifact_id, and the statement finds the request by
+// that document, with null documents (scanOpenApprovalRequests). The shadow is a relation of its
+// own, which the index asks_open_approval_documents does not serve, so the statement does not test
+// the path of the documents.
+const openApprovalAsksAtCutStatement = openApprovalAsksHead + `coalesce(a.approval -> 'documents',
+			jsonb_build_array(jsonb_build_object('artifact_id', a.approval -> 'artifact_id')))) document
+		where a.kind = 'approval' and a.state = 'open'
+		  and document ->> 'artifact_id' = any($1::text[])
+	`
+
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and
-// the documents the request names when it names more than this one.
+// the documents the request names when it names more than this one. documentsUnknown is set for a
+// request that a read at a cut finds with no documents (openApprovalAsksAtCutStatement).
 type openApprovalRequest struct {
-	id        string
-	author    model.Actor
-	waitingOn string
-	documents []model.AskApprovalDocument
+	id               string
+	author           model.Actor
+	waitingOn        string
+	documents        []model.AskApprovalDocument
+	documentsUnknown bool
 }
 
 // approvalTargets is the documents of artifacts, whose approval the two statements read, and the
@@ -140,7 +163,8 @@ func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactRev
 // scanOpenApprovalRequests reads the rows openApprovalAsksStatement returns into requests, keyed
 // by document id, reaching an error the way scanLatestReviews does: the statement's own failure
 // is the last rows.Err(), unwrapped, and the leading check names the read for an error pgx
-// recorded before this callback ran.
+// recorded before this callback ran. Null documents are a request that a read at a cut finds with
+// none (openApprovalAsksAtCutStatement).
 func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalRequest) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load open approval asks: %w", err)
@@ -155,11 +179,13 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 		if err := json.Unmarshal(author, &actor); err != nil {
 			return fmt.Errorf("decode approval ask author: %w", err)
 		}
+		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn, documentsUnknown: documents == nil}
 		var named []model.AskApprovalDocument
-		if err := json.Unmarshal(documents, &named); err != nil {
-			return fmt.Errorf("decode approval ask documents: %w", err)
+		if documents != nil {
+			if err := json.Unmarshal(documents, &named); err != nil {
+				return fmt.Errorf("decode approval ask documents: %w", err)
+			}
 		}
-		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn}
 		// One document is the document being read, which the chip already names; two or more are
 		// what it must spell out.
 		if len(named) > 1 {
@@ -215,6 +241,7 @@ func applyApprovals(
 			approval.AskID = &id
 			approval.WaitingOn = request.waitingOn
 			approval.Documents = request.documents
+			approval.DocumentsUnknown = request.documentsUnknown
 		}
 		artifact.Approval = approval
 	}
@@ -224,8 +251,9 @@ func applyApprovals(
 // artifacts, and returns the apply that fills each document's Approval once the batch is closed.
 // The apply reads each document's Versions (applyApprovals), so a caller that queues those too
 // applies them first (queueArtifactDetails). No document queues nothing and its apply fills
-// nothing.
-func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing. A read at the cut ctx carries finds the open requests then, with each request whose
+// documents no record at the cut gives (openApprovalAsksAtCutStatement).
+func queueApprovals(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	ids, byID := approvalTargets(artifacts)
 	if len(ids) == 0 {
 		return func() {}
@@ -235,7 +263,11 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
+	openRequests := openApprovalAsksStatement
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		openRequests = openApprovalAsksAtCutStatement
+	}
+	b.Queue(openRequests, ids).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -247,7 +279,7 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // queues nothing and reads nothing.
 func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueApprovals(batch, artifacts)
+	apply := queueApprovals(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -583,7 +615,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	// The coverage is read before the transaction opens, and a read that fails leaves the
 	// request recorded all the same (approvalCoverage).
-	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, r.PathValue("id"))
+	coverage, coverageUnread, err := s.approvalCoverage(r.Context(), pool, actor, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -853,16 +885,23 @@ func (s *server) openApprovalAsk(
 	if err != nil {
 		return nil, nil, err
 	}
+	// The request's node goes in before its row, in the project of the document it is asked on,
+	// which the issue that owns the request is in too (an issue's document carries its issue's
+	// project); its write is queued before the row's insert, and what it states waits for the
+	// ask.opened event below. The document is read already, so its project costs no round trip
+	// of its own.
+	project, parties := graphstore.SessionScope(artifact.Project, deref(artifact.SessionID))
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(ask.ID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
+		return nil, nil, err
+	}
 	if err := queueExec(ledger, `
 		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, approval, created_at)
 		values ($1, $2, $3, $4, $5, $6, false, 'high', null, 'approval', $7, $8)
 	`, ask.ID, owner.IssueKey, owner.ArtifactID, author, ask.Question, options, encodedApproval, ask.CreatedAt); err != nil {
-		return nil, nil, err
-	}
-	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		asks.QueueFollowAuthor(b, ask.ID, actor)
-		return nil
-	}); err != nil {
 		return nil, nil, err
 	}
 	// The request's own references and its parts - its question and its two review options -
@@ -879,6 +918,18 @@ func (s *server) openApprovalAsk(
 		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
 	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
 	if err != nil {
+		return nil, nil, err
+	}
+	// The request's node learns the ask.opened that records it, and the requester follows the
+	// request it opened, both right after that event, so a session requester's node is caused by
+	// that event in the follow's own statement and the request pays no second statement to move
+	// it there. Nothing before the event reads the follower row: its payload's logins are the
+	// thread's (events.ThreadLogins), and the outbox reads the followers after the commit.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		_, err := asks.QueueFollowAuthor(b, ask.ID, actor, ask.CreatedAt, graphstore.LatestEvent)
+		return err
+	}); err != nil {
 		return nil, nil, err
 	}
 	return &ask, event, nil
@@ -942,26 +993,48 @@ func (s *server) renewApprovalAsk(
 		}
 		appended = append(appended, handedBack)
 	}
-	// The requester follows the request. A renewal that appended no event above - an unchanged
-	// request that already waits on the human - and adds the requester as a follower records
-	// that as ask.follower_added, in this transaction, as the follower route does: a follower is a
-	// destination of the issue's later ask events, and an earlier event of the issue that now
-	// reaches it must hold a later comment's mention to it until the outbox has read the change,
-	// which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow is new
-	// is read here, in the read phase: the follower route takes the owner lock this route holds, so
-	// no other follow of this ask commits between this read and this transaction's commit.
+	// The requester follows the request again. A renewal that appended no event above - an
+	// unchanged request that already waits on the human - and adds the requester as a follower
+	// records that as ask.follower_added, in this transaction, as the follower route does: a
+	// follower is a destination of the issue's later ask events, and an earlier event of the issue
+	// that now reaches it must hold a later comment's mention to it until the outbox has read the
+	// change, which a new event of the issue does (model.MentionCopyHolderSQL). Whether the follow
+	// is new is read here, in the read phase: the follower route takes the owner lock this route
+	// holds, so no other follow of this ask commits between this read and this transaction's
+	// commit. The events are dated by the transaction's now(), their column's default.
+	//
+	// A renewal that appended events queues the follow right after them, so a session
+	// requester's node is caused by the last of them. One that appends ask.follower_added queues
+	// the follow before it, given no cause, and appends what the follow holds under it once it is
+	// appended, as the follower route does; a retry that appends neither, the requester following
+	// already, leaves the node it makes, if the store holds none yet, at the sentinel. A follow
+	// given no cause states no base attribute of its own and holds the node's two for the step
+	// after it, which appends them at the cause it is handed, the sentinel included
+	// (asks.Followed).
 	follows := true
 	if len(appended) == 0 && actor.Kind == "session" && actor.ID != "" {
 		if follows, err = asks.Follows(ctx, tx, open.ID, actor.ID); err != nil {
 			return nil, err
 		}
 	}
+	followCause, at := graphstore.NoEvent, open.CreatedAt
+	if len(appended) > 0 || !follows {
+		if at, err = ledger.Now(ctx); err != nil {
+			return nil, err
+		}
+	}
+	if len(appended) > 0 {
+		followCause = graphstore.LatestEvent
+	}
+	var held graphstore.Uncaused
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		asks.QueueFollowAuthor(b, open.ID, actor)
-		return nil
+		var err error
+		held, err = asks.QueueFollowAuthor(b, open.ID, actor, at, followCause)
+		return err
 	}); err != nil {
 		return nil, err
 	}
+	heldCause := followCause
 	if !follows {
 		followed, err := s.queueEvent(ledger, ownerOf(open.IssueKey, open.ArtifactID).event(
 			"ask.follower_added", actor, model.AskFollowerEventPayload{AskID: open.ID, SessionID: actor.ID, By: actor},
@@ -970,6 +1043,13 @@ func (s *server) renewApprovalAsk(
 			return nil, err
 		}
 		appended = append(appended, followed)
+		heldCause = graphstore.LatestEvent
+	}
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, held, heldCause)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 	if err := s.attachOpenedEventIDs(ctx, tx, []*model.Ask{open}); err != nil {
 		return nil, err

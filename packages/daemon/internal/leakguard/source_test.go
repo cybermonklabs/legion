@@ -7,26 +7,35 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/redact"
+	"github.com/sjawhar/legion/daemon/internal/testport"
 )
 
 // sourceToken is the read-only token the tests' Source mints, and the bearer the fake GitHub
 // requires of every read.
 const sourceToken = "ghs_leak_check_read"
 
+// checkRepository is the repository these tests' Source reads the check from, a stand-in for the
+// one a deployment names (Setting.Repository): every cause sentence names it.
+var checkRepository = ghrepo.MustParse("example-org/deployment")
+
 // tarballRoute is the path GitHub serves the check's repository's tarball under, a tag after it.
-const tarballRoute = "/repos/" + CheckSlug + "/tarball/"
+var tarballRoute = "/repos/" + checkRepository.String() + "/tarball/"
 
 // checkGitHub is a fake GitHub serving the tarball route of the check's repository, with a count
 // of the reads made at each tag. answer serves a read at tag; any other route fails the test.
@@ -72,9 +81,9 @@ func (f *checkGitHub) total() int {
 	return total
 }
 
-// sourceOver is a Source reading url, whose every mint is counted in mints.
+// sourceOver is a Source reading checkRepository at url, whose every mint is counted in mints.
 func sourceOver(url string, mints *atomic.Int32) *Source {
-	return &Source{API: url, Token: func(context.Context) (string, error) {
+	return &Source{Repository: checkRepository, API: url, Token: func(context.Context) (string, error) {
 		mints.Add(1)
 		return sourceToken, nil
 	}}
@@ -172,6 +181,19 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	if got.Tag != theTag || got.Frames[0].SHA256 != hex.EncodeToString(sum[:]) {
 		t.Fatalf("served frames declaring %s at %s, want %s at the body's SHA-256 %x", got.Frames[0].SHA256, got.Tag, theTag, sum)
 	}
+	manifest, err := Manifest(func(name string) ([]byte, error) {
+		member, found := files[name]
+		if !found {
+			return nil, fs.ErrNotExist
+		}
+		return []byte(member.Body), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ManifestSHA256 != manifest {
+		t.Fatalf("served manifest = %s, want %s from the files in its body", got.ManifestSHA256, manifest)
+	}
 	members := membersOf(t, got.Body)
 	names := slices.Sorted(maps.Keys(members))
 	if want := slices.Sorted(maps.Keys(files)); !slices.Equal(names, want) {
@@ -186,7 +208,8 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 }
 
 // A tag not of the published shape is refused before anything is minted or asked of GitHub: it
-// would otherwise become a path of a GitHub API endpoint.
+// would otherwise become a path of a GitHub API endpoint. The refusal is no TransientRead: no
+// read at that tag is ever made, however often it is asked for.
 func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	fake := serveCheck(t, func(w http.ResponseWriter, r *http.Request, _ string) { githubtest.Unexpected(t, w, r) })
 	var mints atomic.Int32
@@ -194,8 +217,8 @@ func TestABadTagIsRefusedBeforeAnyMintOrRequest(t *testing.T) {
 	for _, tag := range []string{"", "v15", "leak-check-v0", "leak-check-v015", "leak-check-v15/../../../user", "leak-check-v15\n", "LEAK-CHECK-V15"} {
 		_, err := source.Get(bound(t), tag)
 		want := RefusalPrefix + fmt.Sprintf("the pod asked for the tag %q, which is not of the published shape leak-check-v<n>", tag)
-		if err == nil || err.Error() != want {
-			t.Errorf("the tag %q = %v, want %q", tag, err, want)
+		if err == nil || err.Error() != want || TransientRead(err) {
+			t.Errorf("the tag %q = %v, want %q, no TransientRead", tag, err, want)
 		}
 	}
 	if minted := mints.Load(); minted != 0 || fake.total() != 0 {
@@ -231,7 +254,7 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -244,6 +267,31 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 				t.Fatalf("the ask after a refused read made the reads %d and the mints %d, want it read again: 2 and 2", reads, minted)
 			}
 		})
+	}
+}
+
+// A refusal of GitHub's longer than refusalBodyBytes whose bound falls inside a URL's user name,
+// before its "@", is refused with a cause that holds no part of that user name: the read knows its
+// bound cut the body and drops the run it stopped inside before the URL rule reads it. A cut made
+// first leaves the user name's start where the rule reads it as the URL's host.
+func TestARefusalCutInsideAURLsUserNameIsRefusedWithNoPartOfIt(t *testing.T) {
+	cutAt := "https://" + plantedToken[:8]
+	answer := strings.Repeat(" ", refusalBodyBytes-len(cutAt)) + "https://" + plantedToken + "@codeload.example/legacy.tar.gz"
+	if !strings.HasSuffix(answer[:refusalBodyBytes], cutAt) {
+		t.Fatalf("the answer's first %d bytes end %q, not inside the user name", refusalBodyBytes, answer[refusalBodyBytes-len(cutAt):refusalBodyBytes])
+	}
+	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(answer))
+	})
+	var mints atomic.Int32
+	_, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
+	want := fmt.Sprintf("%sGitHub answered the read of %s at %s with HTTP %d", RefusalPrefix, checkRepository, theTag, http.StatusForbidden)
+	if err == nil || !strings.HasPrefix(err.Error(), want) {
+		t.Fatalf("the refused read = %v, want a cause beginning %q", err, want)
+	}
+	if part := partOf(err.Error(), plantedToken); part != "" {
+		t.Fatalf("the cause %q holds %q of the URL's user name", err, part)
 	}
 }
 
@@ -274,7 +322,7 @@ func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
 			source := sourceOver(fake.url, &mints)
 			source.Forget = func() { forgets.Add(1) }
 			_, err := source.Get(bound(t), theTag)
-			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			want := fmt.Sprintf("%sGitHub answered the read of example-org/deployment at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
 			if err == nil || err.Error() != want {
 				t.Fatalf("the refused read = %v, want %q", err, want)
 			}
@@ -327,7 +375,7 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 			var mints atomic.Int32
 			source := sourceOver(fake.url, &mints)
 			_, err := source.Get(bound(t), theTag)
-			want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " " + tc.want
+			want := RefusalPrefix + "the tarball of example-org/deployment at " + theTag + " " + tc.want
 			if err == nil || err.Error() != want {
 				t.Fatalf("the tarball = %v, want %q", err, want)
 			}
@@ -343,20 +391,21 @@ func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
 	}
 }
 
-// A mint that fails is refused with the sentence the token function wrote, asks GitHub nothing,
-// and is not kept.
+// A mint that fails is refused with the sentence the token function wrote, wrapping the token
+// function's own error, asks GitHub nothing, and is not kept.
 func TestAFailedMintIsRefusedWithItsSentenceAndNotKept(t *testing.T) {
 	fake := serveCheck(t, answerCheck(t))
 	var mints atomic.Int32
-	const sentence = "the daemon could not mint its read-only token for theorem-labs/agent-infra: the App has no installation on theorem-labs"
-	source := &Source{API: fake.url, Token: func(context.Context) (string, error) {
+	const sentence = "the daemon could not mint its read-only token for example-org/deployment: the App has no installation on example-org"
+	mintFailure := errors.New(sentence)
+	source := &Source{Repository: checkRepository, API: fake.url, Token: func(context.Context) (string, error) {
 		if mints.Add(1) == 1 {
-			return "", errors.New(sentence)
+			return "", mintFailure
 		}
 		return sourceToken, nil
 	}}
-	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence {
-		t.Fatalf("a failed mint = %v, want %q", err, RefusalPrefix+sentence)
+	if _, err := source.Get(bound(t), theTag); err == nil || err.Error() != RefusalPrefix+sentence || !errors.Is(err, mintFailure) || TransientRead(err) {
+		t.Fatalf("a failed mint = %v, want %q wrapping the mint's own error", err, RefusalPrefix+sentence)
 	}
 	if fake.total() != 0 {
 		t.Fatalf("a failed mint made %d reads, want none", fake.total())
@@ -376,9 +425,122 @@ func TestAReadThatDoesNotAnswerEndsAtItsBound(t *testing.T) {
 	source := sourceOver(fake.url, &mints)
 	source.ReadBound = 50 * time.Millisecond
 	_, err := source.Get(bound(t), theTag)
-	want := RefusalPrefix + "the daemon's read of theorem-labs/agent-infra at " + theTag + " did not finish within 50ms"
+	want := RefusalPrefix + "the daemon's read of example-org/deployment at " + theTag + " did not finish within 50ms"
 	if err == nil || err.Error() != want {
 		t.Fatalf("a read that does not answer = %v, want %q", err, want)
+	}
+}
+
+// failingTransport fails every request with err before it reaches anything, as a connection
+// GitHub never answers does.
+type failingTransport struct{ err error }
+
+func (f failingTransport) RoundTrip(*http.Request) (*http.Response, error) { return nil, f.err }
+
+// A refusal of Get is a TransientRead exactly where GitHub's trouble caused it, so the same read
+// may pass when it is made again: the transport failing, the body included, the read's bound
+// passing, an HTTP 5xx answer, GitHub's rate limit (a 429, or a 403 carrying it), and a 401 to a
+// Source that forgets the token, whose next read mints a fresh one. GitHub's answer about the read
+// (a 404 for a tag the repository does not hold, a 401 to a Source that cannot forget its token, a
+// 403 that is no rate limit), a tarball that arrives whole and does not pack, a failed mint and a
+// tag not of the published shape are not, and neither is a caller that stopped waiting, whose own
+// context's end it wraps.
+func TestOnlyGitHubsTroubleIsATransientRead(t *testing.T) {
+	answered := func(status int) func(t *testing.T) (*Source, context.Context) {
+		return func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.WriteHeader(status)
+				_, _ = fmt.Fprintf(w, `{"message":"%s"}`+"\n", http.StatusText(status))
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}
+	}
+	for _, tc := range []struct {
+		name      string
+		source    func(t *testing.T) (*Source, context.Context)
+		tag       string
+		transient bool
+	}{
+		{"HTTP 500", answered(http.StatusInternalServerError), theTag, true},
+		{"HTTP 502", answered(http.StatusBadGateway), theTag, true},
+		{"HTTP 503", answered(http.StatusServiceUnavailable), theTag, true},
+		{"HTTP 429", answered(http.StatusTooManyRequests), theTag, true},
+		{"the transport fails", func(t *testing.T) (*Source, context.Context) {
+			var mints atomic.Int32
+			source := sourceOver("https://api.invalid", &mints)
+			source.Client = &http.Client{Transport: failingTransport{err: errors.New("connection reset by peer")}}
+			return source, bound(t)
+		}, theTag, true},
+		{"the read's bound passes", func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(_ http.ResponseWriter, r *http.Request, _ string) { <-r.Context().Done() })
+			var mints atomic.Int32
+			source := sourceOver(fake.url, &mints)
+			source.ReadBound = 50 * time.Millisecond
+			return source, bound(t)
+		}, theTag, true},
+		{"HTTP 404, a tag the repository does not hold", answered(http.StatusNotFound), theTag, false},
+		{"HTTP 401 to a Source that forgets the token", func(t *testing.T) (*Source, context.Context) {
+			source, ctx := answered(http.StatusUnauthorized)(t)
+			source.Forget = func() {}
+			return source, ctx
+		}, theTag, true},
+		{"HTTP 401 to a Source that cannot forget its token", answered(http.StatusUnauthorized), theTag, false},
+		{"HTTP 403 that is no rate limit", answered(http.StatusForbidden), theTag, false},
+		{"HTTP 403 carrying GitHub's rate limit", func(t *testing.T) (*Source, context.Context) {
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.Header().Set("X-RateLimit-Remaining", "0")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = fmt.Fprintln(w, `{"message":"API rate limit exceeded"}`)
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, true},
+		{"a tarball whose body stops arriving", func(t *testing.T) (*Source, context.Context) {
+			whole := wholeCheck(t, marked(theTag))
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) {
+				w.Header().Set("Content-Length", strconv.Itoa(len(whole)))
+				_, _ = w.Write(whole[:len(whole)/2])
+			})
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, true},
+		{"a tarball with no leak-check directory", func(t *testing.T) (*Source, context.Context) {
+			raw := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+				leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},
+			})
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
+			var mints atomic.Int32
+			return sourceOver(fake.url, &mints), bound(t)
+		}, theTag, false},
+		{"a failed mint", func(t *testing.T) (*Source, context.Context) {
+			return &Source{Repository: checkRepository, API: "https://api.invalid", Token: func(context.Context) (string, error) {
+				return "", errors.New("the daemon could not mint its read-only token for " + checkRepository.String())
+			}}, bound(t)
+		}, theTag, false},
+		{"a tag not of the published shape", answered(http.StatusBadGateway), "leak-check-v015", false},
+		{"a caller that stopped waiting", func(t *testing.T) (*Source, context.Context) {
+			release := make(chan struct{})
+			t.Cleanup(func() { close(release) })
+			source := &Source{Repository: checkRepository, API: "https://api.invalid", Token: func(context.Context) (string, error) {
+				<-release
+				return "", errors.New("the mint the caller stopped waiting on")
+			}}
+			ctx, cancel := context.WithCancel(bound(t))
+			cancel()
+			return source, ctx
+		}, theTag, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			source, ctx := tc.source(t)
+			_, err := source.Get(ctx, tc.tag)
+			if err == nil || !strings.HasPrefix(err.Error(), RefusalPrefix) {
+				t.Fatalf("the read = %v, want a refusal in its cause sentence", err)
+			}
+			if got := TransientRead(err); got != tc.transient {
+				t.Fatalf("the refusal %q is a TransientRead %v, want %v", err, got, tc.transient)
+			}
+		})
 	}
 }
 
@@ -417,7 +579,7 @@ func TestACallerThatGivesUpDoesNotEndTheReadOthersWaitOn(t *testing.T) {
 	}()
 	giveUp()
 	err := <-first
-	want := RefusalPrefix + "the start stopped waiting for the daemon's read of theorem-labs/agent-infra at " + theTag + ": context canceled"
+	want := RefusalPrefix + "the start stopped waiting for the daemon's read of example-org/deployment at " + theTag + ": context canceled"
 	if err == nil || err.Error() != want {
 		t.Fatalf("the caller that gave up = %v, want %q", err, want)
 	}
@@ -480,5 +642,67 @@ func TestTheReadFollowsGitHubsRedirectAndHandsTheDownloadHostNoToken(t *testing.
 	}
 	if auth, _ := downloadAuth.Load().(string); auth != "" {
 		t.Fatalf("the download host was handed Authorization %q, want none", auth)
+	}
+}
+
+// GitHub answers a tarball read with a redirect to its download host, whose URL carries a token
+// of its own in its query, and a redirect can name a userinfo too. A read whose redirect leads to
+// a port nothing listens on fails, and Go's client writes the URL it last asked into that error:
+// its query whole, and its user name (it masks only a password). The read is refused with a cause
+// that names the failure and the URL's path, its host too where it carries no userinfo (the mark
+// of a URL with credentials stands for an authority that does), and holds no part of the
+// credential. The port is one the test holds bound and never listening (testport.Refused), so no
+// other program on the machine can take it and answer the redirect, as one can take a port a test
+// lets go of.
+func TestAReadRedirectedWithAURLCredentialIsRefusedWithACauseThatHoldsNoneOfIt(t *testing.T) {
+	dead := testport.Refused(t)
+	const download = "/example-org/deployment/legacy.tar.gz/refs/tags/" + theTag
+	for _, tc := range []struct {
+		name, redirect string
+		// transport is what Go's client writes of the credential into the read's own error, and
+		// authority what the cause names in the URL's authority's place.
+		transport, authority string
+	}{
+		{"a token in the redirect's query", "http://" + dead + download + "?token=" + plantedToken, "?token=" + plantedToken, dead},
+		{"a token as the redirect's user name", "http://" + plantedToken + "@" + dead + download, plantedToken + "@", redact.URLWithCredentials},
+		{"a token as the redirect's password", "http://" + plantedUserinfo + "@" + dead + download, "user:***@", redact.URLWithCredentials},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := githubtest.Server(t, githubtest.Spec{Token: sourceToken, Handle: func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != tarballRoute+theTag {
+					githubtest.Unexpected(t, w, r)
+					return
+				}
+				http.Redirect(w, r, tc.redirect, http.StatusFound)
+			}})
+			// The control: the same read made with the client the Source uses fails with an error
+			// that holds the credential.
+			request, err := http.NewRequestWithContext(bound(t), http.MethodGet, api+tarballRoute+theTag, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Header.Set("Authorization", "Bearer "+sourceToken)
+			response, transportErr := http.DefaultClient.Do(request)
+			if transportErr == nil {
+				response.Body.Close()
+				t.Fatalf("the read through the redirect to %s was answered %d, want it refused at the dial", dead, response.StatusCode)
+			}
+			if !strings.Contains(transportErr.Error(), tc.transport) {
+				t.Fatalf("the transport's error %q does not hold %q: the control reads nothing", transportErr, tc.transport)
+			}
+
+			var mints atomic.Int32
+			_, err = sourceOver(api, &mints).Get(bound(t), theTag)
+			if err == nil {
+				t.Fatalf("the read through the redirect to %s was served, want it refused", dead)
+			}
+			cause := err.Error()
+			if want := RefusalPrefix + "the daemon could not read " + checkRepository.String() + " at " + theTag + `: Get "http://` + tc.authority + download + `": `; !strings.HasPrefix(cause, want) {
+				t.Errorf("the cause is %q, want it to begin %q: the URL's host and path, and nothing of its credential", cause, want)
+			}
+			if part := partOf(cause, plantedToken); part != "" {
+				t.Errorf("the cause %q holds %q of the planted token", cause, part)
+			}
+		})
 	}
 }
