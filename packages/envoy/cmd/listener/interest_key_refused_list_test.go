@@ -1,8 +1,8 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -11,13 +11,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -55,28 +60,34 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("connect the bus: %v", err)
 	}
 	t.Cleanup(client.Close)
+	ctx := testwait.Context(t)
 	logs := &lockedBuffer{}
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1),
+	registry, err := store.Open(ctx, client.Conn, store.WithReplicas(1),
 		store.WithLogger(slog.New(slog.NewJSONHandler(logs, nil))))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
+	t.Cleanup(registry.StopWatch)
+	// All four registrations are fresh at the same instant on the registry's clock.
+	fresh := clocktest.New(time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC))
+	sessions, err := session.OpenSessionRegistry(ctx, client.Conn, session.WithSessionReplicas(1), session.WithSessionClock(fresh.Now))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	if err := sessions.Put(ordinary, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/ordinary", Title: ordinary}); err != nil {
+	if err := sessions.PutWithin(ctx, ordinary, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/ordinary", Title: ordinary}); err != nil {
 		t.Fatalf("register %s: %v", ordinary, err)
 	}
-	if _, err := registry.Upsert(store.Interest{SessionID: ordinary, MachineID: "test-machine", Dir: "/test/ordinary"},
+	if _, err := registry.UpsertWithin(ctx, store.Interest{SessionID: ordinary, MachineID: "test-machine", Dir: "/test/ordinary"},
 		[]string{contracts.LegacyAgentSubject(ordinary), topic}); err != nil {
 		t.Fatalf("write %s's interest record: %v", ordinary, err)
 	}
-	if _, err := registry.SetRole(ordinary, "test-machine", "reviewer", false); err != nil {
+	if _, err := registry.SetRoleWithPrevious(ctx, store.RoleClaimRequest{SessionID: ordinary, MachineID: "test-machine", Role: "reviewer"}); err != nil {
 		t.Fatalf("claim reviewer for %s: %v", ordinary, err)
 	}
-	waitForRegistry(t, registry)
+	if err := registry.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("wait for the interest and role claim caches: %v", err)
+	}
 
 	// The keys this listener refuses to write go in as an earlier listener or another writer put
 	// them: the legacy ids through nats.go's own KV put, and `ses:bad`, which nats.go refuses as a
@@ -86,7 +97,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		t.Fatalf("open the session bucket: %v", err)
 	}
 	stored := func(id string) []byte {
-		value, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, MachineID: "earlier", Dir: "/test/refused", Title: "refused", UpdatedAt: time.Now().UnixMilli()})
+		value, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, MachineID: "earlier", Dir: "/test/refused", Title: "refused", UpdatedAt: fresh.Now().UnixMilli()})
 		if err != nil {
 			t.Fatalf("encode %d-byte session %.16s's entry: %v", len(id), id, err)
 		}
@@ -97,29 +108,26 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 			t.Fatalf("store the %d-byte session as an earlier listener did: %v", len(id), err)
 		}
 	}
-	if _, err := client.JS().Publish("$KV."+bus.SessionBucket+"."+invalidKey, stored(invalidKey)); err != nil {
+	if _, err := client.JS().Publish("$KV."+bus.SessionBucket+"."+invalidKey, stored(invalidKey), nats.Context(ctx)); err != nil {
 		t.Fatalf("store session %s by a direct bucket write: %v", invalidKey, err)
 	}
 	listed := []string{ordinary, readableLegacy, unreadableLegacy, invalidKey}
-	deadline := time.Now().Add(listenerWaitBound(t))
 	for _, id := range listed {
-		for {
-			if _, err := sessions.Get(id); err == nil {
-				break
-			} else if time.Now().After(deadline) {
-				t.Fatalf("the session cache never held the %d-byte session %.16s: %v", len(id), id, err)
-			}
-			time.Sleep(20 * time.Millisecond)
-		}
+		testwait.Until(t, fmt.Sprintf("the session cache to hold the %d-byte session %.16s", len(id), id), func() (error, bool) {
+			_, err := sessions.Get(id)
+			return err, err == nil
+		})
 	}
 	// The listing answers the refilling 503 until the session copy has completed a read of its
 	// bucket, whatever the copy already holds.
-	waitForSessions(t, sessions)
+	if err := sessions.WaitForCacheReady(ctx); err != nil {
+		t.Fatalf("wait for the session cache: %v", err)
+	}
 
 	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
 	get := func(handler http.HandlerFunc, path string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		handler.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil))
 		return recorder
 	}
 
@@ -192,10 +200,10 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 	registerV1Routes(mux, state, "test-machine", logging.New("test"))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	dispatch := envoy.New(server.URL)
+	dispatch := envoy.New(server.URL, envoy.WithCallDeadline(clock.DeadlineAt(testwait.GiveUpAt(t))))
 	for _, id := range []string{unreadableLegacy, invalidKey} {
 		t.Run("dispatch/"+id[:min(len(id), 8)], func(t *testing.T) {
-			found, err := dispatch.Session(context.Background(), id)
+			found, err := dispatch.Session(testwait.Context(t), id)
 			if err != nil {
 				t.Fatalf("Dispatch's envoy client asked for the live %d-byte session %.16s: %v; want it found", len(id), id, err)
 			}
@@ -213,7 +221,7 @@ func TestTheSessionListKeepsASessionWhoseIDTheInterestBucketRefuses(t *testing.T
 		{invalidKey, http.StatusBadRequest},
 	} {
 		t.Run("interests/"+refused.id[:min(len(refused.id), 8)], func(t *testing.T) {
-			recorder := get(adminInterestsHandler(registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+refused.id)
+			recorder := get(adminInterestsHandler(clock.Real(), registry, sessions, nil, nil, logging.New("test")), "/v1/interests/"+refused.id)
 			if recorder.Code != refused.want {
 				t.Fatalf("GET /v1/interests/<the %d-byte id %.16s>: status %d, body %.300s; want %d", len(refused.id), refused.id, recorder.Code, recorder.Body.String(), refused.want)
 			}

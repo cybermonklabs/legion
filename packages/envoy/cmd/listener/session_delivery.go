@@ -470,7 +470,7 @@ func (m *sessionDelivery) confirmRegistered(ctx context.Context, d *listenerDeps
 // (registrationCallBudget): sessionConsumerCallTimeout unless a test set one.
 func (m *sessionDelivery) registrationCallBudgetOr() time.Duration {
 	if m.registrationCallBudget == 0 {
-		return sessionConsumerCallTimeout
+		return sendRequestBound(sessionConsumerCallTimeout)
 	}
 	return m.registrationCallBudget
 }

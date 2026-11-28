@@ -59,7 +59,7 @@ const (
 // Each rule judges the write as its batch carries it, every caller's observation applied.
 func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 	key := Key(identity.Owner, identity.Repo, identity.Number, identity.SHA)
-	deadline := time.Now().Add(recordBudget)
+	deadline := s.clock.Now().Add(recordBudget)
 	var retryErr error
 	checks := 0
 	spent := func(attempts int, err error) error {
@@ -76,10 +76,12 @@ func (s *Store) write(ctx context.Context, identity State, b *batch) error {
 	}
 	for attempt := 0; ; attempt++ {
 		if retryErr != nil {
-			if time.Now().After(deadline) {
+			if s.clock.Now().After(deadline) {
 				return spent(attempt, retryErr)
 			}
-			time.Sleep(casBackoff(attempt - 1))
+			// The backoff ignores ctx as it always has; the next kvCall gives up at once on a
+			// ctx that ended during it, which write fails on (errKVUnanswered).
+			_ = s.clock.Sleep(context.Background(), casBackoff(attempt-1))
 		}
 		kv := s.kv()
 		entry, err := kvCall(ctx, s.logger, s.nextRewatch(), func() (nats.KeyValueEntry, error) { return kv.Get(key) })

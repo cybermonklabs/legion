@@ -2,22 +2,27 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // listenerRelay lets this test hold one NATS request from the listener, then drop the live link so
@@ -28,6 +33,7 @@ type listenerRelay struct {
 	listener net.Listener
 	target   string
 	relayed  string
+	ctx      context.Context
 	// severed is read by relay before it dials the server, so a connection accepted after cut is
 	// closed rather than relayed; it is atomic because relay runs on its own goroutine per
 	// connection.
@@ -68,6 +74,7 @@ func startListenerRelay(t *testing.T, uri string) *listenerRelay {
 		listener:  listener,
 		target:    server.Host,
 		relayed:   relayed.String(),
+		ctx:       testwait.Context(t),
 		swallowed: make(chan struct{}, 1),
 	}
 	t.Cleanup(relay.close)
@@ -86,20 +93,23 @@ func (r *listenerRelay) serve() {
 }
 
 func (r *listenerRelay) relay(client net.Conn) {
+	r.mu.Lock()
 	if r.severed.Load() {
+		r.mu.Unlock()
 		_ = client.Close()
 		return
 	}
 	link := &listenerRelayLink{client: client}
-	r.mu.Lock()
 	r.links = append(r.links, link)
 	r.mu.Unlock()
-	server, err := net.Dial("tcp", r.target)
+	server, err := (&net.Dialer{}).DialContext(r.ctx, "tcp", r.target)
 	if err != nil {
 		_ = client.Close()
 		return
 	}
+	r.mu.Lock()
 	link.server = server
+	r.mu.Unlock()
 	go func() {
 		_, _ = io.Copy(client, server)
 		_ = client.Close()
@@ -188,7 +198,7 @@ func (r *listenerRelay) cut() {
 
 func (r *listenerRelay) close() {
 	_ = r.listener.Close()
-	r.drop()
+	r.cut()
 }
 
 // During a deploy, a reconnect can interrupt the replacement's durable bind. The reconnect must
@@ -203,8 +213,25 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	)
 	uri := testnats.URL(t)
 	relay := startListenerRelay(t, uri)
-	_, durable := durableHeldElsewhere(t, uri, "listener-"+machineID)
-	listener := startListenerProcess(t, cmdtest.Build(t, "envoy-listener"), relay.relayed, machineID)
+	old, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("connect the old task: %v", err)
+	}
+	t.Cleanup(old.Close)
+	consumer := "listener-" + machineID
+	durable, err := startListenerSubscription(old, consumer, func(*natsgo.Msg) {})
+	if err != nil {
+		t.Fatalf("bind the durable as the old task: %v", err)
+	}
+	ctx := testwait.Context(t)
+	testwait.Until(t, "the old task's durable to become push-bound", func() (string, bool) {
+		info, err := old.JS().ConsumerInfo(bus.Stream, consumer, natsgo.Context(ctx))
+		if err != nil {
+			return err.Error(), false
+		}
+		return "consumer is not push-bound", info.PushBound
+	})
+	listener := startListenerProcess(t, jetStreamWaitListenerBinary(t), relay.relayed, machineID)
 	listener.WaitForOutput(t, "subscribe failed, retrying")
 
 	holder, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -212,30 +239,40 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 		t.Fatalf("connect holder: %v", err)
 	}
 	t.Cleanup(holder.Close)
-	postListener(t, listener.port, "/v1/interests/subscribe", consumerRegistration(holderID, "epoch-1"))
-	postListener(t, listener.port, "/v1/roles/set", `{"session_id":"`+holderID+`","role":"`+role+`"}`)
-	frames := receiveAsSession(t, holder, holderID)
+	for _, route := range []struct{ path, body string }{
+		{"/v1/interests/subscribe", consumerRegistration(holderID, "epoch-1")},
+		{"/v1/roles/set", `{"session_id":"` + holderID + `","role":"` + role + `"}`},
+	} {
+		if status, answer := callListenerWithinTest(t, ctx, listener.port, http.MethodPost, route.path, route.body); status != http.StatusOK {
+			t.Fatalf("%s: status %d: %s", route.path, status, answer)
+		}
+	}
+	frames := make(chan *natsgo.Msg, 256)
+	subscription, err := holder.Conn.ChanSubscribe(contracts.LegacyAgentSubject(holderID), frames)
+	if err != nil {
+		t.Fatalf("subscribe as %s: %v", holderID, err)
+	}
+	t.Cleanup(func() { _ = subscription.Unsubscribe() })
+	flushCtx, release := clock.WithShownDeadline(ctx)
+	defer release()
+	if err := holder.Conn.FlushWithContext(flushCtx); err != nil {
+		t.Fatalf("flush the subscription as %s: %v", holderID, err)
+	}
 
 	relay.arm("$JS.API.CONSUMER.INFO.", 2)
-	select {
-	case <-relay.swallowed:
-	case <-time.After(listenerWaitBound(t)):
-		t.Fatal("the listener's durable bind never reached the controlled relay")
-	}
+	testwait.Receive(t, "the listener's durable bind to reach the controlled relay", relay.swallowed)
 	relay.drop()
 	// The role lane holds a connection of its own (bus.ConnectRoleLane), which reconnects, and sends
 	// its subscription again, beside the main client's.
-	waitFor(t, "the listener and its role lane to reconnect", func() bool {
+	listener.WaitForOutput(t, "envoy nats reconnected name=envoy ", "envoy nats reconnected name=envoy-role-lane ")
+	const leftToBind = "envoy nats resubscribe left to the bind in flight"
+	output := testwait.Until(t, "the restore to report the bind in flight", func() (string, bool) {
 		output := listener.Output.String()
-		return strings.Contains(output, "envoy nats reconnected name=envoy ") && strings.Contains(output, "envoy nats reconnected name=envoy-role-lane ")
+		return output, strings.Contains(output, leftToBind) ||
+			strings.Contains(output, "envoy nats resubscribe failed") ||
+			strings.Contains(output, "envoy nats resubscribing name=envoy ")
 	})
-	waitFor(t, "the restore to report the bind in flight", func() bool {
-		output := listener.Output.String()
-		return strings.Contains(output, "envoy nats resubscribe left to the bind in flight") ||
-			strings.Contains(output, "envoy nats resubscribe failed")
-	})
-	output := listener.Output.String()
-	if !strings.Contains(output, "envoy nats resubscribe left to the bind in flight") {
+	if !strings.Contains(output, " INFO "+leftToBind+" name=envoy ") {
 		t.Fatalf("the restore did not report the bind in flight at INFO:\n%s", output)
 	}
 	if line := firstErrorLine(output); line != "" {
@@ -267,17 +304,17 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 			t.Fatalf("publish role message %d: %v", index, err)
 		}
 	}
-	if err := publisher.Flush(); err != nil {
+	if err := publisher.FlushWithContext(flushCtx); err != nil {
 		t.Fatalf("flush role messages: %v", err)
 	}
 	for received := range messages {
-		select {
-		case frame := <-frames:
-			if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
-				t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
-			}
-		case <-time.After(listenerWaitBound(t)):
-			t.Fatalf("the listener forwarded %d of %d routed role messages during the reconnect:\n%s", received, messages, listener.Output.String())
+		msg := testwait.Receive(t, fmt.Sprintf("the listener to forward role message %d of %d during the reconnect", received+1, messages), frames)
+		var frame contracts.Envelope
+		if err := json.Unmarshal(msg.Data, &frame); err != nil {
+			t.Fatalf("decode role message %d: %v", received, err)
+		}
+		if !strings.HasPrefix(frame.DedupeKey, roleForwardDedupePrefix) {
+			t.Fatalf("role message %d forwarded with dedupe key %q, want %s prefix", received, frame.DedupeKey, roleForwardDedupePrefix)
 		}
 	}
 
@@ -295,6 +332,21 @@ func TestListenerReconnectWithBindInFlightShutsDownAfterForwardingRoles(t *testi
 	if !durable.IsValid() {
 		t.Fatal("the old task's durable subscription was lost when the replacement stopped")
 	}
+}
+
+// callListenerWithinTest sends a request with the shared wait's context so a listener that
+// stops answering cannot hold the test past the point where its other waits give up.
+func callListenerWithinTest(t *testing.T, ctx context.Context, port int, method, path, body string) (int, string) {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, method, "http://127.0.0.1:"+strconv.Itoa(port)+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, path, err)
+	}
+	request.Header.Set("Authorization", "Bearer "+listenerTestToken)
+	if body != "" {
+		request.Header.Set("Content-Type", "application/json")
+	}
+	return do(t, request)
 }
 
 func firstErrorLine(output string) string {

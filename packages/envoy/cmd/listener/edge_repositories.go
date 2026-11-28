@@ -144,7 +144,7 @@ func (e *edgeRepositories) read(ctx context.Context, project string) ([]string, 
 	if err != nil {
 		return nil, fmt.Errorf("%w: read the listener's own account: %w", errRepositoriesUnknown, err)
 	}
-	ctx, cancel := context.WithTimeout(ctx, edgeRepositoryReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, sendRequestBound(edgeRepositoryReadTimeout))
 	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, e.brokerURL+edgeRepositoriesPath+"?project="+url.QueryEscape(project), nil)
 	if err != nil {

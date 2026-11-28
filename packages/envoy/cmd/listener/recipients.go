@@ -80,7 +80,7 @@ func recipientCounts(ctx context.Context, d *listenerDeps, topic, sender string)
 	// A lane is a literal, so the lane the message is published on is the one lane whose holder
 	// can decide whether a topic matching it is kept; any other lane matches nothing here.
 	if _, lane := bus.ControllerNoticeRole(topic); lane {
-		readCtx, cancel := context.WithTimeout(ctx, recipientLaneReadTimeout)
+		readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(recipientLaneReadTimeout))
 		holders, err := d.registry.ReadLaneHolders(readCtx, []string{topic})
 		cancel()
 		if err != nil {

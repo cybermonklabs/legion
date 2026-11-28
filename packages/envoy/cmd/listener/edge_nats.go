@@ -46,11 +46,12 @@ import (
 // at fewer copies than ENVOY_NATS_REPLICAS, ends the open naming the create or raise the server
 // refused; no keeper raises a bucket after.
 func connectListenerBus(cfg config.Service, edge *edgeGrant, start *natsStart) (*bus.Client, error) {
+	options := listenerJetStreamWait(start.options())
 	if edge == nil {
-		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), start.options()...)...)
+		return bus.ConnectOwningStream(cfg.NATSURLs, append(listenerStreamOptions(cfg), options...)...)
 	}
 	readStream := bus.WithStartCheck(func(client *bus.Client) error { return edgeStreamPresent(client, edgeStreamRead) })
-	return bus.Connect(cfg.NATSURLs, append(append(edge.connectOptions(), bus.WithSilentCutDetection(), readStream), start.options()...)...)
+	return bus.Connect(cfg.NATSURLs, append(append(edge.connectOptions(), bus.WithSilentCutDetection(), readStream), options...)...)
 }
 
 // edgeStreamRead bounds an edge listener's read of the stream at its start.

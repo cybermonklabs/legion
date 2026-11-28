@@ -208,6 +208,19 @@ const (
 	durableBindLogEvery = 30 * time.Second
 )
 
+// durableBindIntervalBuild is a test build's startup bind interval, as time.ParseDuration reads
+// it, which a test that runs the listener's binary sets with -ldflags
+// "-X main.durableBindIntervalBuild=100ms" (promptListenerBinary), so a bind refused at the start
+// is tried again within that interval rather than 2 s. It is empty in every other build. The
+// self-health rebind keeps its own pair (durableRebindInterval, durableRebindDeadline).
+var durableBindIntervalBuild string
+
+// listenerDurableBindInterval is durableBindIntervalBuild when a build set it, and
+// durableBindInterval otherwise; a build that set it to no positive duration stops at the start.
+func listenerDurableBindInterval() time.Duration {
+	return listenerBuildDuration("durableBindIntervalBuild", durableBindIntervalBuild, durableBindInterval)
+}
+
 // durableBind is how many attempts a bind took and how long it waited.
 type durableBind struct {
 	attempts int

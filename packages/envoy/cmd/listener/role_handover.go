@@ -39,6 +39,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
@@ -429,7 +430,7 @@ func sessionLiveNow(ctx context.Context, cfg listenerDeliveryHandlerConfig, sess
 	if cfg.sessions == nil {
 		return false, errors.New("this listener holds no session registry")
 	}
-	_, _, err := liveSessionEntry(ctx, cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
+	_, _, err := liveSessionEntry(ctx, clock.Real(), cfg.sessions, sessionID, roleHolderReadTimeout, sessionIsLive, cfg.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 		return false, nil

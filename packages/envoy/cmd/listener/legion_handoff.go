@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
@@ -66,6 +67,9 @@ type legionHandoff struct {
 	sessions *session.SessionRegistry
 	agents   *legionAgentRegistry
 	logger   *logging.Logger
+	// giveUpClock bounds a hand-off from agent delivery. Nil uses the real clock,
+	// including when no hand-off is configured.
+	giveUpClock clock.Timeouts
 }
 
 // legionHandedOff is a hand-off handOffToLegion published: the body, the subject it was published
@@ -156,7 +160,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	// bucket leader's, as every read that takes something from a session on a miss is
 	// (liveSessionEntry): a copy that has not applied a registration made a moment ago would hand a
 	// live session's message to its daemon.
-	_, _, err = liveSessionEntry(ctx, h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
+	_, _, err = liveSessionEntry(ctx, clock.Real(), h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 	case err != nil:
@@ -174,7 +178,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 		Envelope:      target.envelope,
 	}}
 	if target.stampSender {
-		handoff.Envelope.Sender = senderStamp(ctx, h.registry, h.sessions, handoff.Envelope.SourceSession)
+		handoff.Envelope.Sender = senderStamp(ctx, clock.Real(), h.registry, h.sessions, handoff.Envelope.SourceSession)
 	}
 	data, err := json.Marshal(handoff.LegionHandoff)
 	if err != nil {
@@ -448,7 +452,7 @@ const legionHandedOffDeliveryStatus = "handed_off"
 // stream refuses it as still in process under an earlier attempt (publishPastInProcess), and a
 // refusal that outlives the window is a hand-off that failed, answered as any other is.
 func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), cfg.handoffWindow())
+	ctx, cancel := clock.WithShownTimeout(cfg.handoff.giveUpClockOrReal(), context.Background(), cfg.handoffWindow())
 	defer cancel()
 	handed, err := cfg.handoff.handOffToLegion(ctx, legionHandoffTarget{envelope: item, session: sessionID})
 	switch {
@@ -478,6 +482,13 @@ func offerAgentDeliveryToLegion(cfg listenerDeliveryHandlerConfig, message deliv
 		return false
 	}
 	return true
+}
+
+func (h *legionHandoff) giveUpClockOrReal() clock.Timeouts {
+	if h == nil || h.giveUpClock == nil {
+		return clock.Real()
+	}
+	return h.giveUpClock
 }
 
 // handoffWindow is the bound of one hand-off the agent-subject delivery's decision makes

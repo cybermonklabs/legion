@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"net"
 	"net/http"
@@ -11,13 +10,14 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 	"unsafe"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -50,9 +50,7 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 	watcher.Set(reflect.ValueOf(replacement))
 	t.Cleanup(replacement.Stop)
 	replacement.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	if err := replacement.WaitComplete(ctx); err != nil {
+	if err := replacement.WaitComplete(testwait.Context(t)); err != nil {
 		t.Fatalf("the watcher reading through the broken handle never completed a read of the bucket: %v", err)
 	}
 }
@@ -75,11 +73,16 @@ func breakInterestReads(t *testing.T, registry *store.Registry) {
 func TestAnInterestReadFailingWithARawSocketErrorIsTheBusNotAnswering(t *testing.T) {
 	t.Parallel()
 	const missed = "ses_interest_read_broken_pipe"
-	registry, sessions := setupSessionsTest(t, nil, []string{missed})
+	client := setupPublishTestClient(t)
+	registry, sessions := openRouteTestRegistries(t, client, store.WithReplicas(1))
+	ctx := testwait.Context(t)
+	if err := sessions.PutWithin(ctx, missed, session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true, Dir: "/test/" + missed}); err != nil {
+		t.Fatalf("register %s before breaking the interest reads: %v", missed, err)
+	}
 	state := &listenerDeps{registry: registry, sessions: sessions}
 	get := func(handler http.HandlerFunc, path string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
-		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		handler.ServeHTTP(recorder, httptest.NewRequestWithContext(ctx, http.MethodGet, path, nil))
 		return recorder
 	}
 	list := sessionsHandler(registry, sessions, nil)

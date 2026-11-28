@@ -54,6 +54,7 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 		{"control: a record under the max payload", "ses_whole_left_out", 10, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			wide := wideTopics(300, tc.tokenBytes, "legion-controller")
 			wide = wide[:len(wide)-1] // no role lane: the session holds no role
 			topics := append(slices.Clone(wide), covering, fourth)
@@ -76,10 +77,11 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			request := httptest.NewRequestWithContext(testwait.Context(t), http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(encoded))
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
 				recorder := httptest.NewRecorder()
-				rig.mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/v1/interests/subscribe", bytes.NewReader(encoded)))
+				rig.mux.ServeHTTP(recorder, request)
 				answered <- recorder
 			}()
 			recorder := testwait.Receive(t, "the registration of "+tc.sessionID+" to answer with the routes' clock unmoved", answered)
@@ -94,7 +96,7 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 				t.Errorf("the answer's warnings %q name no %s as not registered", answer.Warnings, fourth)
 			}
 
-			row, _, err := rig.harness.registry.RefreshAt(t.Context(), tc.sessionID)
+			row, _, err := rig.harness.registry.RefreshAt(testwait.Context(t), tc.sessionID)
 			if err != nil {
 				t.Fatalf("read %s's interest row from the bucket: %v", tc.sessionID, err)
 			}
@@ -102,10 +104,8 @@ func TestAChunkedRecordKeepsNoTopicTheFilterLeavesOut(t *testing.T) {
 				t.Fatalf("UNKNOWN: the stored row takes %d bytes against the max payload of %d: the case wants past it %v", rowBytes, maxPayload, tc.pastMax)
 			}
 			var record []string
-			// The known-session store follows its bucket through a watch, so the record arrives
-			// when the watch delivers it, in milliseconds on an idle machine: the package's bound
-			// leaves that far more than ten times its need.
-			waitFor(t, "the known-session store to hold "+tc.sessionID+"'s record", func() bool {
+			// The known-session cache follows the bucket through a watch.
+			testwait.Eventually(t, "the known-session store to hold "+tc.sessionID+"'s record", func() bool {
 				known, ok := rig.known.Get(tc.sessionID)
 				record = known.Topics
 				return ok && slices.Contains(known.Topics, wide[1])

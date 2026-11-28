@@ -7,17 +7,21 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -38,6 +42,45 @@ func postJSON(path, body string) *http.Request {
 	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	return request
+}
+
+func routeAnswer(t *testing.T, handler http.HandlerFunc, req *http.Request) <-chan *httptest.ResponseRecorder {
+	t.Helper()
+	req = req.WithContext(testwait.Context(t))
+	answered := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, req)
+		answered <- recorder
+	}()
+	return answered
+}
+
+// finishUnansweredPublish expires the sender stamp and waits for the bus client
+// to arm its acknowledgement bound. The route's earlier deadline must end that call.
+func finishUnansweredPublish(t *testing.T, fake *clocktest.Fake, started time.Time) {
+	t.Helper()
+	budgetEnd := started.Add(sendRequestBudget)
+	stampEnd := started.Add(senderStampReadTimeout)
+	fake.AwaitArmedAt(t, "the sender stamp read window", stampEnd)
+	if !stampEnd.Before(budgetEnd) {
+		t.Fatalf("the stamp ends at %s, want it to leave time to publish before %s", stampEnd, budgetEnd)
+	}
+	fake.Set(stampEnd)
+	armed := fake.AwaitArmed(t, "the route budget and publish acknowledgement bound", 2)
+	if len(armed) != 2 || !armed[0].Equal(budgetEnd) || !armed[1].After(budgetEnd) {
+		t.Fatalf("armed deadlines = %v, want route budget %s followed by the publish acknowledgement bound", armed, budgetEnd)
+	}
+	fake.Set(budgetEnd)
+}
+
+func budgetRouteDeps(t *testing.T, client *bus.Client, fake *clocktest.Fake, live ...string) *listenerDeps {
+	t.Helper()
+	rig := openStampRig(t, client)
+	for _, id := range live {
+		rig.register(t, id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id})
+	}
+	return &listenerDeps{client: client, registry: rig.registry, sessions: rig.sessions, clock: fake}
 }
 
 // serveRecorded serves one request through a handler built over a logger of its own and returns
@@ -96,8 +139,7 @@ func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) 
 // it: the cache follows the bucket through a watcher and so trails it, and a sender told its
 // destination is gone routes around the pane. This drives the send route with a session another
 // listener registered a moment ago, through a listener whose cache was warm before that write and
-// has followed nothing since (trailingListeners), which is the same miss a cache still refilling
-// after a reconnect has.
+// has followed nothing since. This is the same miss a cache still refilling after a reconnect has.
 //
 // The negative control is the Get below: if the cache held the target the 200 would prove nothing
 // about reading through to the bucket, since every warm-cache send already answers 200. The
@@ -106,7 +148,10 @@ func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) 
 func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	t.Parallel()
 	const target = "ses_cold_cache_target"
-	registrar, cold := trailingListeners(t)
+	client := setupPublishTestClient(t)
+	fake := clocktest.New(time.Unix(0, 0))
+	registrar, cold := budgetRouteDeps(t, client, fake), budgetRouteDeps(t, client, fake)
+	cold.sessions.EndWatch(testwait.Context(t))
 	if err := registrar.sessions.Put(target, session.SessionEntry{
 		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "cold target",
 	}); err != nil {
@@ -117,7 +162,9 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("subscribe to %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
 	t.Cleanup(func() { _ = received.Unsubscribe() })
-	if err := cold.client.Conn.Flush(); err != nil {
+	ctx, cancel := clock.WithShownDeadline(testwait.Context(t))
+	defer cancel()
+	if err := cold.client.Conn.FlushWithContext(ctx); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 
@@ -127,13 +174,13 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("the sending listener's cache answers %v for %s, want %v", err, target, nats.ErrKeyNotFound)
 	}
 
-	recorder := httptest.NewRecorder()
-	sendHandler(cold, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", sendBody(map[string]any{
-		"target_session": target,
-		"source":         "agent",
-		"source_session": "ses_cold_cache_sender",
-		"message":        "the bucket holds you even when my cache does not",
-	})))
+	recorder := testwait.Receive(t, "the send through the cold session cache to answer",
+		routeAnswer(t, sendHandler(cold, logging.New("test")), postJSON("/v1/messages/send", sendBody(map[string]any{
+			"target_session": target,
+			"source":         "agent",
+			"source_session": "ses_cold_cache_sender",
+			"message":        "the bucket holds you even when my cache does not",
+		}))))
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("send to a session only the bucket holds: status %d, body %s", recorder.Code, recorder.Body.String())
 	}
@@ -142,7 +189,7 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
 
-	message, err := received.NextMsg(5 * time.Second)
+	message, err := received.NextMsgWithContext(ctx)
 	if err != nil {
 		t.Fatalf("nothing reached %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
@@ -166,66 +213,43 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 // identical request before the cut, which answers 200 — without it a rig that refused every send
 // (a bad body, an unregistered target) would pass this test with a 503 of a different kind.
 func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
-	// Not parallel: it requires the 503 within 4 s of a send whose publish waits out the 3.5 s
-	// sendRequestBudget for a reconnect that never comes.
+	t.Parallel()
 	const target = "ses_cut_bus_target"
 	// The relay the reconnect test uses (reconnect_shutdown_test.go): cut below closes every live
 	// link and refuses every connection after it, as the hub's virtual machine being recreated
 	// (2026-10-23) did to the listener's bus connection.
 	relay := startListenerRelay(t, testnats.URL(t))
-	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
+	fake := clocktest.New(time.Unix(0, 0))
+	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(fake))
 	if err != nil {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the interest registry: %v", err)
-	}
-	// The sends below stamp their sender from the role claim view (senderStamp), so the listener's
-	// own startup gate is taken here, with the bus still reachable and before the cut.
-	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	if err := sessions.Put(target, session.SessionEntry{
-		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "cut target",
-	}); err != nil {
-		t.Fatalf("register %s: %v", target, err)
-	}
-	if _, err := sessions.Get(target); err != nil {
-		t.Fatalf("the listener's cache does not hold %s (%v): the 503 below could come from the session read", target, err)
-	}
-	state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-	send := func() (*httptest.ResponseRecorder, time.Duration) {
-		recorder := httptest.NewRecorder()
-		started := time.Now()
-		sendHandler(state, logging.New("test")).ServeHTTP(recorder, postJSON("/v1/messages/send", sendBody(map[string]any{
+	state := budgetRouteDeps(t, client, fake, target)
+	handler := sendHandler(state, logging.New("test"))
+	request := func() *http.Request {
+		return postJSON("/v1/messages/send", sendBody(map[string]any{
 			"target_session": target,
 			"source":         "agent",
 			"source_session": "ses_cut_bus_sender",
 			"message":        "is the bus there?",
-		})))
-		return recorder, time.Since(started)
+		}))
 	}
 
-	if reachable, _ := send(); reachable.Code != http.StatusOK {
+	if reachable := testwait.Receive(t, "the control send to answer", routeAnswer(t, handler, request())); reachable.Code != http.StatusOK {
 		t.Fatalf("the same send with the bus reachable: status %d, body %s; want 200", reachable.Code, reachable.Body.String())
 	}
 
 	relay.cut()
-	// nats.go notices the closed link from its own read loop, so the send below is issued on a
-	// connection already known to be down rather than on one that is about to be: the measured
-	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
-		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	recorder, elapsed := send()
+	testwait.Until(t, "the NATS client to notice the severed link", func() (string, bool) {
+		status := client.Conn.Status()
+		return status.String(), status == nats.RECONNECTING
+	})
+	started := fake.Now()
+	answered := routeAnswer(t, handler, request())
+	fake.AwaitArmedAt(t, "the send request budget", started.Add(sendRequestBudget))
+	finishUnansweredPublish(t, fake, started)
+	recorder := testwait.Receive(t, "the send to refuse the cut bus at the request budget", answered)
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send with the bus unreachable: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
@@ -239,15 +263,8 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1: the sender is being asked to try the same route again", got)
 	}
-	if elapsed >= 4*time.Second {
-		t.Fatalf("the 503 took %s, past the 4s that leaves the caller's 5s attempt time to read it", elapsed)
-	}
-	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
 }
 
-// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
-// waits for: each answer inside 4 s, from a route whose budget is 3.5 s.
-//
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
 // answering without resetting its sockets - is unreachable too, and a send and a publish answer it
 // with the same named 503 inside the caller's attempt. nats.go cannot tell such a link is dead
@@ -263,12 +280,10 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 // in the warm session cache, so its read is not what is under test. The negative control is the
 // identical request before the freeze, answered 200 on the same rig.
 func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
-	// Not parallel: it requires the 503 within 4 s of a send and a publish that spend the 3.5 s
-	// sendRequestBudget on a frozen bus.
+	t.Parallel()
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
-		within = 4 * time.Second
 	)
 	for _, route := range []struct {
 		name    string
@@ -290,50 +305,37 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
+			t.Parallel()
 			relay := startListenerRelay(t, testnats.URL(t))
-			client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
+			fake := clocktest.New(time.Unix(0, 0))
+			client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1), bus.WithPublishAcknowledgementClock(fake))
 			if err != nil {
 				t.Fatalf("connect the listener's bus through the relay: %v", err)
 			}
 			t.Cleanup(client.Close)
-			registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
-			if err != nil {
-				t.Fatalf("open the interest registry: %v", err)
-			}
-			// The requests below stamp their sender from the role claim view (senderStamp), so the
-			// listener's own startup gate is taken here, before the freeze.
-			waitForRegistry(t, registry)
-			sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-			if err != nil {
-				t.Fatalf("open the session registry: %v", err)
-			}
-			if err := sessions.Put(target, session.SessionEntry{
-				SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "frozen target",
-			}); err != nil {
+			state := budgetRouteDeps(t, client, fake)
+			entry := session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + target, Title: "frozen target"}
+			if err := state.sessions.Put(target, entry); err != nil {
 				t.Fatalf("register %s: %v", target, err)
 			}
-			if _, err := sessions.Get(target); err != nil {
+			if _, err := state.sessions.Get(target); err != nil {
 				t.Fatalf("the listener's cache does not hold %s (%v): the target's read could be what fails", target, err)
 			}
-			state := &listenerDeps{client: client, registry: registry, sessions: sessions}
-			serve := func() (*httptest.ResponseRecorder, time.Duration) {
-				recorder := httptest.NewRecorder()
-				started := time.Now()
-				route.handler(state).ServeHTTP(recorder, postJSON(route.path, sendBody(route.body)))
-				return recorder, time.Since(started)
-			}
-			if reachable, _ := serve(); reachable.Code != http.StatusOK {
+			handler := route.handler(state)
+			request := func() *http.Request { return postJSON(route.path, sendBody(route.body)) }
+			if reachable := testwait.Receive(t, "the control "+route.name+" to answer", routeAnswer(t, handler, request())); reachable.Code != http.StatusOK {
 				t.Fatalf("the same %s with the bus answering: status %d, body %s; want 200", route.name, reachable.Code, reachable.Body.String())
 			}
 
 			// The next protocol line the client writes arms the swallow; every byte after it is
 			// discarded and the connection stays open.
 			relay.arm("\r\n", 1)
-			recorder, elapsed := serve()
-			if elapsed >= within {
-				t.Fatalf("the %s answered after %s (status %d, body %s), want inside %s - a bus that stopped answering must be refused inside the caller's 5 s attempt, not left to its timeout",
-					route.name, elapsed, recorder.Code, recorder.Body.String(), within)
-			}
+			started := fake.Now()
+			answered := routeAnswer(t, handler, request())
+			fake.AwaitArmedAt(t, "the "+route.name+" request budget", started.Add(sendRequestBudget))
+			testwait.Receive(t, "the relay to swallow the "+route.name+"'s bus traffic", relay.swallowed)
+			finishUnansweredPublish(t, fake, started)
+			recorder := testwait.Receive(t, "the "+route.name+" to refuse the silent bus at the request budget", answered)
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route.name, recorder.Code, recorder.Body.String())
 			}
@@ -359,85 +361,99 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 // itself rather than through a route, because a route spends whatever its reads leave of
 // sendRequestBudget on the publish and so answers at about the same moment whatever the stamp did.
 //
-// Every row a stamp here may find is written before the relay freezes, since nothing reaches the
-// bucket afterwards: both named senders' interest records, so that no stamp below is timed by its
-// interest read, and the session registration of the one whose title the cache can answer. That
-// sender reads the bus not at all; the sender whose session row the cache does not hold spends
-// the one window on the read-through; and the sender the cache holds nothing for spends that same
-// one window on both of its reads together.
+// Each subtest has its own relay and caches. The cached sender needs no bus read.
+// With no cached title the stamp waits for a session read. With neither record
+// cached, the unanswered interest and session reads still share the same window.
 func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
-	// Not parallel: it requires each stamp on a frozen bus within 1.5 s, half a second past its 1 s
-	// read window (senderStampReadTimeout), and the cached sender's within 500 ms.
+	t.Parallel()
 	const (
-		cached    = "ses_frozen_stamp_sender_the_cache_holds"
-		noSession = "ses_frozen_stamp_sender_with_no_session_row"
-		nothing   = "ses_frozen_stamp_sender_the_cache_holds_nothing_for"
-		title     = "the cached sender's title"
+		sender = "ses_frozen_stamp_sender"
+		title  = "the cached sender's title"
 	)
-	relay := startListenerRelay(t, testnats.URL(t))
-	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect the listener's bus through the relay: %v", err)
-	}
-	t.Cleanup(client.Close)
-	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("open the interest registry: %v", err)
-	}
-	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
-	// gate is taken here, before the freeze.
-	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
-	if err != nil {
-		t.Fatalf("open the session registry: %v", err)
-	}
-	waitForSessions(t, sessions)
-	for _, sender := range []string{cached, noSession} {
-		if _, err := registry.Upsert(store.Interest{
-			SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
-		}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
-			t.Fatalf("write %s's interest record: %v", sender, err)
-		}
-		if _, held := registry.Cached(sender); !held {
-			t.Fatalf("the interest cache does not hold %s: its stamp would be timed by the interest read", sender)
-		}
-	}
-	if err := sessions.Put(cached, session.SessionEntry{
-		SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + cached, Title: title,
-	}); err != nil {
-		t.Fatalf("register %s: %v", cached, err)
-	}
-	if _, err := sessions.Get(cached); err != nil {
-		t.Fatalf("the listener's session cache does not hold %s (%v): its stamp would read the bucket too", cached, err)
-	}
-
-	// The next protocol line the client writes arms the swallow; every byte after it is discarded
-	// and the connection stays open.
-	relay.arm("\r\n", 1)
-	for _, want := range []struct {
-		sender string
-		title  string
-		within time.Duration
-		reads  string
+	for _, row := range []struct {
+		name              string
+		interest, session bool
 	}{
-		{sender: cached, within: 500 * time.Millisecond, title: title, reads: "every row it stamps is in a cache, so it reads the frozen bus not at all"},
-		{sender: noSession, within: 1500 * time.Millisecond, reads: "its title is one read through to the frozen bucket: one window, not two"},
-		{sender: nothing, within: 1500 * time.Millisecond, reads: "its interest record and its title share the one window the stamp spends"},
+		{name: "both cached", interest: true, session: true},
+		{name: "title missing", interest: true},
+		{name: "neither cached"},
 	} {
-		started := time.Now()
-		stamp := senderStamp(context.Background(), registry, sessions, want.sender)
-		elapsed := time.Since(started)
-		if stamp == nil || stamp.SessionID != want.sender {
-			t.Fatalf("stamp of %s = %+v, want the sender itself", want.sender, stamp)
-		}
-		if stamp.Title != want.title {
-			t.Fatalf("stamp of %s carries the title %q, want %q", want.sender, stamp.Title, want.title)
-		}
-		if elapsed >= want.within {
-			t.Fatalf("the stamp of %s took %s, want inside %s: %s", want.sender, elapsed, want.within, want.reads)
-		}
-		t.Logf("stamp of %s in %s (%s)", want.sender, elapsed, want.reads)
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			relay := startListenerRelay(t, testnats.URL(t))
+			client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
+			if err != nil {
+				t.Fatalf("connect the listener's bus through the relay: %v", err)
+			}
+			t.Cleanup(client.Close)
+			rig := openStampRig(t, client)
+			if row.interest {
+				if _, err := rig.registry.Upsert(store.Interest{
+					SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
+				}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
+					t.Fatalf("write the sender's interest record: %v", err)
+				}
+			}
+			if _, held := rig.registry.Cached(sender); held != row.interest {
+				t.Fatalf("interest cached = %t, want %t", held, row.interest)
+			}
+			wantTitle := ""
+			if row.session {
+				rig.register(t, sender, session.SessionEntry{
+					SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + sender, Title: title,
+				})
+				wantTitle = title
+			}
+
+			relay.arm(sender, 1)
+			if row.session {
+				// Freeze the relay before the cache-hit stamp starts. No stamp traffic is needed
+				// to freeze it, and no fake deadline advances while this stamp runs.
+				if err := client.Conn.Publish("test.freeze."+sender, nil); err != nil {
+					t.Fatalf("send freeze marker: %v", err)
+				}
+				testwait.Receive(t, "the relay to swallow the freeze marker", relay.swallowed)
+			}
+			fake := &stampWindowCounter{Fake: clocktest.New(time.Unix(0, 0))}
+			deadline := fake.Now().Add(senderStampReadTimeout)
+			answered := rig.startStamp(t, fake, sender)
+			if !row.session {
+				expireStampRead(t, fake.Fake, deadline, relay.swallowed)
+			}
+			var stamp *contracts.EnvelopeSender
+			testwait.Until(t, "the sender stamp to return without another read window", func() (string, bool) {
+				if fake.windows.Load() > 1 {
+					return "the stamp armed another read window", true
+				}
+				select {
+				case stamp = <-answered:
+					return "the stamp returned", true
+				default:
+					return "the stamp has not returned", false
+				}
+			})
+			if got := fake.windows.Load(); got > 1 || (!row.session && got != 1) {
+				t.Fatalf("the stamp armed %d read windows, want one for a read-through and at most one for a cache hit", got)
+			}
+			if stamp == nil || stamp.SessionID != sender {
+				t.Fatalf("stamp of %s = %+v, want the sender itself", sender, stamp)
+			}
+			if stamp.Title != wantTitle {
+				t.Fatalf("stamp of %s carries the title %q, want %q", sender, stamp.Title, wantTitle)
+			}
+		})
 	}
+}
+
+// Count every arm, including one stopped before it could appear in Fake.Armed.
+type stampWindowCounter struct {
+	*clocktest.Fake
+	windows atomic.Int32
+}
+
+func (c *stampWindowCounter) WithTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	c.windows.Add(1)
+	return c.Fake.WithTimeout(ctx, d)
 }
 
 // A bus that is reachable and does not accept the publish is the same 503, carrying the server's
@@ -459,8 +475,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 	t.Parallel()
 	const target = "ses_refused_publish_target"
 	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, nil, []string{target})
-	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	state := withPublishRoute(t, budgetRouteDeps(t, client, clocktest.New(time.Unix(0, 0)), target))
 	// The stream goes after every store is open: opening one reconciles the stream back.
 	if err := client.JS().DeleteStream(bus.Stream); err != nil {
 		t.Fatalf("delete the notification stream: %v", err)
@@ -473,7 +488,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 			"source":         "agent",
 			"source_session": "ses_refused_publish_sender",
 			"message":        "the stream is gone",
-		})))
+		})).WithContext(testwait.Context(t)))
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send the bus refuses: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
@@ -509,7 +524,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 			"source":         "agent",
 			"source_session": "ses_refused_publish_sender",
 			"message":        strings.Repeat("a", 2<<20),
-		})))
+		})).WithContext(testwait.Context(t)))
 	if oversized.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("an oversized send: status %d, body %s; want 413", oversized.Code, oversized.Body.String())
 	}
@@ -530,7 +545,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 			"source":         "agent",
 			"source_session": "ses_refused_publish_sender",
 			"message":        "a subject NATS will not take",
-		})))
+		})).WithContext(testwait.Context(t)))
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("a publish to notifications..x: status %d, body %s; want 400", invalid.Code, invalid.Body.String())
 	}
@@ -559,19 +574,19 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 	const target = "ses_recorded_target"
 	const sender = "ses_recorded_sender"
 	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, nil, []string{target, sender})
-	state := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
+	state := withPublishRoute(t, budgetRouteDeps(t, client, clocktest.New(time.Unix(0, 0)), target, sender))
+	registry := state.registry
 	send := func(body string) (*httptest.ResponseRecorder, map[string]any) {
 		t.Helper()
 		return serveRecorded(t,
 			func(logger *logging.Logger) http.HandlerFunc { return sendHandler(state, logger) },
-			postJSON("/v1/messages/send", body))
+			postJSON("/v1/messages/send", body).WithContext(testwait.Context(t)))
 	}
 	publish := func(body string) (*httptest.ResponseRecorder, map[string]any) {
 		t.Helper()
 		return serveRecorded(t,
 			func(logger *logging.Logger) http.HandlerFunc { return publishHandler(state, logger) },
-			postJSON("/v1/messages/publish", body))
+			postJSON("/v1/messages/publish", body).WithContext(testwait.Context(t)))
 	}
 
 	accepted, acceptedRecord := send(sendBody(map[string]any{
@@ -778,26 +793,24 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 // it in one thing only — the bucket no longer answers — so a rig that refused every send could
 // not produce the pair.
 func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *testing.T) {
-	// Not parallel: it requires the 503 within the 3.5 s sendRequestBudget of a session read that
-	// its 1 s sendSessionReadTimeout ends.
+	t.Parallel()
 	const target = "ses_unanswered_store_read"
 	const sender = "ses_unanswered_store_sender"
-	_, observer := trailingListeners(t)
-	send := func() (*httptest.ResponseRecorder, map[string]any, time.Duration) {
-		t.Helper()
-		started := time.Now()
-		recorder, record := serveRecorded(t, func(logger *logging.Logger) http.HandlerFunc {
-			return sendHandler(observer, logger)
-		}, postJSON("/v1/messages/send", sendBody(map[string]any{
+	fake := clocktest.New(time.Unix(0, 0))
+	observer := budgetRouteDeps(t, setupPublishTestClient(t), fake)
+	log := &cmdtest.LockedBuffer{}
+	handler := sendHandler(observer, logging.NewWithWriter("test", log))
+	request := func() *http.Request {
+		return postJSON("/v1/messages/send", sendBody(map[string]any{
 			"target_session": target,
 			"source":         "agent",
 			"source_session": sender,
 			"message":        "is the pane there?",
-		})))
-		return recorder, record, time.Since(started)
+		}))
 	}
 
-	answered, answeredRecord, _ := send()
+	answered := testwait.Receive(t, "the control send to answer", routeAnswer(t, handler, request()))
+	answeredRecord := soleRecord(t, log.String())
 	if answered.Code != http.StatusNotFound {
 		t.Fatalf("a send whose bucket read answered that the key is gone: status %d, body %s; want 404", answered.Code, answered.Body.String())
 	}
@@ -818,8 +831,24 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 		"source_session": sender,
 	})
 
-	stallSessionReads(t, observer.sessions)
-	unanswered, unansweredRecord, elapsed := send()
+	observer.sessions.EndWatch(testwait.Context(t))
+	readStarted := stallObservedSessionRead(t, observer.sessions)
+	started := fake.Now()
+	budgetEnd := started.Add(sendRequestBudget)
+	readEnd := started.Add(sendSessionReadTimeout)
+	if !readEnd.Before(budgetEnd) {
+		t.Fatalf("the session read ends at %s, want it to end before the request budget at %s", readEnd, budgetEnd)
+	}
+	logged := len(log.String())
+	pending := routeAnswer(t, handler, request())
+	fake.AwaitArmedAt(t, "the send request budget", budgetEnd)
+	fake.AwaitArmedAt(t, "the target session read deadline", readEnd)
+	if key := testwait.Receive(t, "the target's bucket read to stall", readStarted); key != target {
+		t.Fatalf("the bucket read %q, want the target %q", key, target)
+	}
+	fake.Set(readEnd)
+	unanswered := testwait.Receive(t, "the send to refuse the stalled read before advancing the request budget", pending)
+	unansweredRecord := soleRecord(t, log.String()[logged:])
 	if unanswered.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a send whose bucket read never answered: status %d, body %s; want 503, since nothing was learned about %s", unanswered.Code, unanswered.Body.String(), target)
 	}
@@ -836,11 +865,8 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	if got := unanswered.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1: the sender is being asked to try the same route again", got)
 	}
-	// The read's own bound (sendSessionReadTimeout) is what ends this request, and it is a
-	// fraction of the whole send budget: a handler that waited the bucket out would spend the
-	// caller's attempt on a read that was never going to answer.
-	if elapsed >= sendRequestBudget {
-		t.Fatalf("the 503 took %s, past the whole send budget %s, for a read bounded at %s", elapsed, sendRequestBudget, sendSessionReadTimeout)
+	if !strings.Contains(refusal.Error, context.DeadlineExceeded.Error()) {
+		t.Fatalf("the refusal reads %q, want the target read's deadline error", refusal.Error)
 	}
 	assertRecordFields(t, unansweredRecord, map[string]any{
 		"msg":            "listener send",

@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
-	"errors"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -16,7 +18,8 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/roles"
-	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refusedPublish is an envelope of the shape the publish route builds for a role-lane publish,
@@ -101,48 +104,80 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 
 	publishRefusalException(client, logger, nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
 
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for time.Now().Before(deadline) {
-		if strings.Contains(logs.String(), exceptionPublishFailedLine) {
-			return
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	t.Fatalf("a refusal exception that could not be published logged %q, want %q", logs.String(), exceptionPublishFailedLine)
+	testwait.Until(t, "the failed refusal exception to be logged", func() (string, bool) {
+		lines := logs.String()
+		return lines, strings.Contains(lines, exceptionPublishFailedLine)
+	})
 }
 
-// The exception goes out behind the 404, never in front of it: publishRefusalException hands the
-// publish to a goroutine of its own and returns, so the handler returns and net/http sends the
-// answer it was holding. Here the bus is reconnecting, the state that made an in-line publish
-// delay the 404 past the route's budget and the Envoy client's per-attempt deadline: an in-line
-// publish waits there for a connection until the bus's 5 s publish bound runs out, and this call
-// must return long before that.
+// The refusal call returns before a reconnect can finish. The bubble runs the bus client's
+// retry and publish timers without reading the wall clock or opening a real socket.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
-	// Not parallel: it requires publishRefusalException to return within 500 ms against a
-	// reconnecting bus.
-	server, uri := testnats.Start(t)
-	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
-	if err != nil {
-		t.Fatalf("connect the listener's bus: %v", err)
-	}
-	t.Cleanup(client.Close)
-	server.Stop(t)
-	deadline := time.Now().Add(listenerWaitBound(t))
-	for client.Connected() || !client.Conn.IsReconnecting() {
-		if time.Now().After(deadline) {
-			t.Fatal("the client is not reconnecting the time this package gives a wait after its server stopped")
+	t.Parallel()
+	testwait.Bubble(t, func(t testing.TB) {
+		logs := &cmdtest.LockedBuffer{}
+		conn, err := natsgo.Connect(natsgo.DefaultURL,
+			natsgo.InProcessServer(unavailableRefusalBus{}),
+			natsgo.RetryOnFailedConnect(true))
+		if err != nil {
+			t.Fatalf("connect the listener's bus: %v", err)
 		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if client.Connected() || !client.Conn.IsReconnecting() {
-		t.Fatal("the client must be reconnecting, not connected or closed")
-	}
+		defer conn.Close()
+		if !conn.IsReconnecting() {
+			t.Fatalf("the client must be reconnecting, got %s", conn.Status())
+		}
 
-	started := time.Now()
-	publishRefusalException(client, logging.NewWithWriter("test", &cmdtest.LockedBuffer{}), nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("publishRefusalException took %s against a reconnecting bus, want it back within 500ms: the 404 waits for it",
-			elapsed)
+		client := &bus.Client{Conn: conn}
+		returned := make(chan struct{})
+		go func() {
+			publishRefusalException(client, logging.NewWithWriter("test", logs), nil, refusedPublish(""), roles.Resolution{State: roles.Unclaimed})
+			close(returned)
+		}()
+		synctest.Wait()
+		select {
+		case <-returned:
+		default:
+			t.Error("publishRefusalException is still waiting for the bus while reconnect is held: the 404 waits for it")
+		}
+		testwait.Until(t, "the detached exception to log the failed reconnect", func() (string, bool) {
+			lines := logs.String()
+			return lines, strings.Contains(lines, exceptionPublishFailedLine) && strings.Contains(lines, "reconnecting")
+		})
+	})
+}
+
+// unavailableRefusalBus starts no sockets. Every dial fails, so the NATS client stays reconnecting.
+type unavailableRefusalBus struct{}
+
+func (unavailableRefusalBus) InProcessConn() (net.Conn, error) {
+	return nil, natsgo.ErrNoServers
+}
+
+func subscribeRefusalFrames(t *testing.T, conn *natsgo.Conn, subject string) (*natsgo.Subscription, <-chan *natsgo.Msg) {
+	t.Helper()
+	frames := make(chan *natsgo.Msg, 8)
+	probe, err := conn.ChanSubscribe(subject, frames)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", subject, err)
+	}
+	t.Cleanup(func() { _ = probe.Unsubscribe() })
+	// SUB and this publish travel down the same connection, in that order.
+	if err := conn.Publish(subject, nil); err != nil {
+		t.Fatalf("publish the subscription marker on %s: %v", subject, err)
+	}
+	testwait.Receive(t, "the subscription marker on "+subject, frames)
+	return probe, frames
+}
+
+// requireNoRouteException keeps the existing observation span. A flush or a later request can
+// overtake a detached publisher that has not run yet. The route exposes no completion state for
+// that goroutine, and the live NATS transport cannot run under synctest.
+func requireNoRouteException(t *testing.T, conn *natsgo.Conn, probe *natsgo.Subscription, frames <-chan *natsgo.Msg, what string) {
+	t.Helper()
+	testwait.Quiet(t, what, frames, 250*time.Millisecond,
+		"the route starts an untracked publisher a later action could overtake, and the NATS client uses a timer pool shared across synctest bubbles")
+	if !conn.IsConnected() || !probe.IsValid() {
+		t.Fatalf("the connection or subscription to %s closed while checking for %s", probe.Subject, what)
 	}
 }
 
@@ -151,24 +186,26 @@ func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
 func TestARefusalExceptionIsRaisedOnlyForASharedNoHolderReason(t *testing.T) {
 	t.Parallel()
 	client := setupPublishTestClient(t)
-	item := refusedPublish("{}")
-	item.Topic = contracts.RoleTopicPrefix + "unknown-refusal"
-	probe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + item.Topic)
-	if err != nil {
-		t.Fatalf("subscribe to the exception lane: %v", err)
-	}
-	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscription: %v", err)
-	}
+	client.Close()
+	testwait.Bubble(t, func(t testing.TB) {
+		logs := &cmdtest.LockedBuffer{}
+		logger := logging.NewWithWriter("test", logs)
+		item := refusedPublish("{}")
+		item.Topic = contracts.RoleTopicPrefix + "unknown-refusal"
 
-	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.State("not_live")})
-
-	if message, err := probe.NextMsg(250 * time.Millisecond); err == nil {
-		t.Fatalf("an unlisted refusal state raised an exception: %s", message.Data)
-	} else if !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("wait for an exception: %v", err)
-	}
+		// The closed client does no network I/O. Any detached publish attempt fails and logs
+		// before the bubble settles. A shared reason exercises the same path as a control.
+		publishRefusalException(client, logger, nil, item, roles.Resolution{State: roles.State("not_live")})
+		synctest.Wait()
+		if lines := logs.String(); lines != "" {
+			t.Fatalf("an unlisted refusal state attempted to publish an exception: %s", lines)
+		}
+		publishRefusalException(client, logger, nil, item, roles.Resolution{State: roles.Unclaimed})
+		synctest.Wait()
+		if lines := logs.String(); !strings.Contains(lines, exceptionPublishFailedLine) {
+			t.Fatalf("the shared refusal reason did not attempt a publish: %q", lines)
+		}
+	})
 }
 
 // The bound applies where the refusal publishes, not only in the helper: a refused publish past
@@ -179,21 +216,11 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 	client := setupPublishTestClient(t)
 	item := refusedPublish(strings.Repeat("p", refusalExceptionBound+1))
 	item.Topic = contracts.RoleTopicPrefix + "oversized-refusal"
-	probe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + item.Topic)
-	if err != nil {
-		t.Fatalf("subscribe to the exception lane: %v", err)
-	}
-	t.Cleanup(func() { _ = probe.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscription: %v", err)
-	}
+	_, frames := subscribeRefusalFrames(t, client.Conn, bus.ExceptionTopicPrefix+item.Topic)
 
 	publishRefusalException(client, logging.NewWithWriter("test", io.Discard), nil, item, roles.Resolution{State: roles.Unclaimed})
 
-	message, err := probe.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("read the refusal exception: %v", err)
-	}
+	message := testwait.Receive(t, "the oversized refusal's exception", frames)
 	var exception contracts.Envelope
 	if err := json.Unmarshal(message.Data, &exception); err != nil {
 		t.Fatalf("decode the refusal exception: %v", err)
@@ -215,32 +242,25 @@ func TestARefusalExceptionLeavesAnOversizedPayloadOutOnTheBus(t *testing.T) {
 // nothing, because nothing was refused.
 func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	t.Parallel()
-	d, client := keptRoleDeps(t)
+	client := setupPublishTestClient(t)
+	registry, sessions := openRouteTestRegistries(t, client, store.WithReplicas(1))
+	d := withPublishRoute(t, &listenerDeps{client: client, registry: registry, sessions: sessions})
 	const refused, kept = "refusal-exception-opted-out", "refusal-exception-kept"
-
-	refusedProbe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + refused)
-	if err != nil {
-		t.Fatalf("subscribe to the refused role's exception lane: %v", err)
-	}
-	t.Cleanup(func() { _ = refusedProbe.Unsubscribe() })
-	keptProbe, err := client.Conn.SubscribeSync(bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix + kept)
-	if err != nil {
-		t.Fatalf("subscribe to the kept role's exception lane: %v", err)
-	}
-	t.Cleanup(func() { _ = keptProbe.Unsubscribe() })
-	if err := client.Conn.Flush(); err != nil {
-		t.Fatalf("flush the exception subscriptions: %v", err)
+	prefix := bus.ExceptionTopicPrefix + contracts.RoleTopicPrefix
+	refusedProbe, refusedFrames := subscribeRefusalFrames(t, client.Conn, prefix+refused)
+	keptProbe, keptFrames := subscribeRefusalFrames(t, client.Conn, prefix+kept)
+	handler := publishHandler(d, logging.NewWithWriter("test", io.Discard))
+	publish := func(body string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, postJSON("/v1/messages/publish", body).WithContext(testwait.Context(t)))
+		return recorder
 	}
 
-	recorder, _ := publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+refused+`","source":"agent","message":"the sender queues this itself","keep":false}`)
+	recorder := publish(`{"topic":"` + contracts.RoleTopicPrefix + refused + `","source":"agent","message":"the sender queues this itself","keep":false}`)
 	if recorder.Code != http.StatusNotFound {
 		t.Fatalf("publish with keep: false to an unheld role: status %d, body %s; want 404", recorder.Code, recorder.Body.String())
 	}
-	message, err := refusedProbe.NextMsg(5 * time.Second)
-	if err != nil {
-		t.Fatalf("the refusal raised no exception: %v", err)
-	}
+	message := testwait.Receive(t, "the route's refusal exception", refusedFrames)
 	var exception contracts.Envelope
 	if err := json.Unmarshal(message.Data, &exception); err != nil {
 		t.Fatalf("decode the exception envelope: %v", err)
@@ -250,20 +270,11 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 		payload.RecipientSession != "" {
 		t.Fatalf("the exception payload = %+v, want the refused topic, reason unclaimed and no recipient", payload)
 	}
-	if second, err := refusedProbe.NextMsg(250 * time.Millisecond); err == nil {
-		t.Fatalf("one refusal raised a second exception: %s", second.Data)
-	} else if !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("wait for a second exception: %v", err)
-	}
+	requireNoRouteException(t, client.Conn, refusedProbe, refusedFrames, "a second exception from one refusal")
 
-	recorder, _ = publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
+	recorder = publish(`{"topic":"` + contracts.RoleTopicPrefix + kept + `","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202, the message kept", recorder.Code, recorder.Body.String())
 	}
-	if message, err := keptProbe.NextMsg(250 * time.Millisecond); err == nil {
-		t.Fatalf("a kept message raised an exception: %s", message.Data)
-	} else if !errors.Is(err, natsgo.ErrTimeout) {
-		t.Fatalf("wait for the kept role's exception: %v", err)
-	}
+	requireNoRouteException(t, client.Conn, keptProbe, keptFrames, "an exception from a kept message")
 }

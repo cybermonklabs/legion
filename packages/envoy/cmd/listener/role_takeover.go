@@ -384,7 +384,7 @@ func publishTakeover(ctx context.Context, cfg listenerDeliveryHandlerConfig, rol
 			return fmt.Errorf("record role %s's takeover from %s: %w", role, previous, err)
 		}
 	}
-	writeCtx, cancel := context.WithTimeout(ctx, takeoverRecordWindow)
+	writeCtx, cancel := context.WithTimeout(ctx, sendRequestBound(takeoverRecordWindow))
 	defer cancel()
 	record := bus.TakeoverRecord{Role: role, Previous: previous, ClaimedAt: cfg.now().UnixMilli()}
 	if err := cfg.client.WriteTakeoverRecord(writeCtx, bus.TakeoverSubject(role, previous, id.New()), record); err != nil {

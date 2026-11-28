@@ -19,7 +19,7 @@ import (
 // sends a delivery of body signed with secret, or unsigned when secret is empty.
 type route struct {
 	name    string
-	handler func(secret string, publisher Publisher, bodies *BodyBudget) http.Handler
+	handler func(secret string, publisher Publisher, bodies *BodyBudget, opts ...HandlerOption) http.Handler
 	request func(secret string, body io.Reader, size int) *http.Request
 	// event is a body the route publishes once its signature checks.
 	event []byte
@@ -29,8 +29,8 @@ type route struct {
 var routes = []route{
 	{
 		name: "slack",
-		handler: func(secret string, publisher Publisher, bodies *BodyBudget) http.Handler {
-			return SlackHandler(secret, publisher, bodies)
+		handler: func(secret string, publisher Publisher, bodies *BodyBudget, opts ...HandlerOption) http.Handler {
+			return SlackHandler(secret, publisher, bodies, opts...)
 		},
 		request: func(secret string, body io.Reader, size int) *http.Request {
 			data, signed := readSigned(body, secret != "")
@@ -49,7 +49,7 @@ var routes = []route{
 	},
 	{
 		name: "github",
-		handler: func(secret string, publisher Publisher, bodies *BodyBudget) http.Handler {
+		handler: func(secret string, publisher Publisher, bodies *BodyBudget, _ ...HandlerOption) http.Handler {
 			return GitHubHandler(secret, "@legion", "", "", publisher, &mockRecorder{}, bodies)
 		},
 		request: func(secret string, body io.Reader, size int) *http.Request {
@@ -69,8 +69,8 @@ var routes = []route{
 	},
 	{
 		name: "ghostwispr",
-		handler: func(secret string, publisher Publisher, bodies *BodyBudget) http.Handler {
-			return GhostWisprHandler(secret, publisher, bodies)
+		handler: func(secret string, publisher Publisher, bodies *BodyBudget, opts ...HandlerOption) http.Handler {
+			return GhostWisprHandler(secret, publisher, bodies, opts...)
 		},
 		request: func(secret string, body io.Reader, size int) *http.Request {
 			data, signed := readSigned(body, secret != "")
@@ -229,14 +229,6 @@ func TestSlackAndGhostWisprBodiesDrawFromTheBudgetGitHubBodiesDo(t *testing.T) {
 	t.Logf("push served in %s", took.Round(time.Millisecond))
 }
 
-// shortRoomWaits shortens every route's room wait to wait for the rest of the test.
-func shortRoomWaits(t *testing.T, wait time.Duration) {
-	t.Helper()
-	slack, github, ghost := slackRoomWait, githubRoomWait, ghostWisprRoomWait
-	slackRoomWait, githubRoomWait, ghostWisprRoomWait = wait, wait, wait
-	t.Cleanup(func() { slackRoomWait, githubRoomWait, ghostWisprRoomWait = slack, github, ghost })
-}
-
 // A delivery whose body does not fit the budget waits its route's room wait for room, and is then
 // answered 503 with Retry-After, having published nothing, and the budget counts the refusal by
 // route. Here an unsigned GitHub sender has sent twice a 64 KiB budget and stalled, holding the
@@ -250,7 +242,11 @@ func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 		secret = "s"
 		budget = 64 << 10
 	)
-	shortRoomWaits(t, 50*time.Millisecond)
+	const roomWait = 50 * time.Millisecond
+	oldGitHubWait := githubRoomWait
+	githubRoomWait = roomWait
+	t.Cleanup(func() { githubRoomWait = oldGitHubWait })
+	opts := []HandlerOption{WithSlackRoomWait(roomWait), WithGhostWisprRoomWait(roomWait)}
 	refusedCount := metrics.New()
 	bodies := NewBodyBudget(budget, refusedCount.NewCounter("refused", "test"))
 	pub := &mockPublisher{}
@@ -267,7 +263,7 @@ func TestADeliveryThatFindsNoRoomIsAnswered503AfterItsRoomWait(t *testing.T) {
 			defer cancel()
 			req := r.request(secret, bytes.NewReader(r.event), len(r.event)).WithContext(ctx)
 			rr := httptest.NewRecorder()
-			r.handler(secret, pub, bodies).ServeHTTP(rr, req)
+			r.handler(secret, pub, bodies, opts...).ServeHTTP(rr, req)
 			t.Logf("answered %d %q, Retry-After %q", rr.Code, strings.TrimSpace(rr.Body.String()), rr.Header().Get("Retry-After"))
 			if rr.Code != http.StatusServiceUnavailable || rr.Header().Get("Retry-After") != bodyRetryAfter {
 				t.Fatalf("status %d, Retry-After %q; want 503 with Retry-After %s", rr.Code, rr.Header().Get("Retry-After"), bodyRetryAfter)

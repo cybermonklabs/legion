@@ -267,7 +267,7 @@ func TestANewKeyIDDuringASlowReadIsAnswered503(t *testing.T) {
 func sendThroughTheServer(t *testing.T, auth listenerAPIAuth, bearer string) (status int, retryAfter string, elapsed time.Duration, err error) {
 	t.Helper()
 	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
-	server := newHTTPServer(apiAuth(auth, next))
+	server := newHTTPServer(apiAuth(auth, next), 10*time.Second)
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dedupe"
 	"github.com/sjawhar/envoy/internal/id"
@@ -918,7 +919,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// nats.ErrKeyNotFound is the bucket's own word that no record exists, and the answer for a
 	// record past the gone horizon (notGone). Any other error is a read that did not answer: it
 	// says nothing about the session, so it is neither a record nor the lack of one.
-	_, _, readErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
+	_, _, readErr := liveSessionEntry(context.Background(), clock.Real(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	// A read that did not answer is logged here at WARN, at each delivery that made it, with the
 	// bound it was given and its error: the message's own line of it (unreadAgentDelivery) is
 	// logged once however many deliveries the failing read spans, and a message another

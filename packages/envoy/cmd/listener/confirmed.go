@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
@@ -223,7 +224,7 @@ type roleSend struct {
 // did not answer fails closed to naming no holder rather than refusing a delivery that still happens.
 // A nil scope names result as it is, at no read's cost.
 func (s *roleSend) shownHolder(result roles.Resolution) roles.Resolution {
-	readCtx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	readCtx, cancel := context.WithTimeout(s.ctx, sendRequestBound(roleHolderReadTimeout))
 	defer cancel()
 	shown, err := s.scope.holderConfirmed(readCtx, s.d.sessions, result)
 	if err != nil {
@@ -260,7 +261,7 @@ func (s *roleSend) settle(outcome sendOutcome) {
 		slog.String("reason", string(outcome)),
 		slog.String("dedupe_key", s.item.DedupeKey),
 		slog.Int("attempts", s.attempts),
-		slog.String("elapsed", time.Since(s.arrived).String()))
+		slog.String("elapsed", s.d.clk().Now().Sub(s.arrived).String()))
 }
 
 // delivered answers 200 with the envelope, the holder it was stored for and the state that
@@ -298,7 +299,7 @@ func (s *roleSend) deliveredHeld(ctx context.Context, recipient string, seq uint
 			err = mayBeOwnUnread{err}
 		}
 		if recipient != s.holder {
-			readCtx, cancel := context.WithTimeout(ctx, roleHolderReadTimeout)
+			readCtx, cancel := context.WithTimeout(ctx, sendRequestBound(roleHolderReadTimeout))
 			named, namedErr := s.scope.namesHolderConfirmed(readCtx, s.d.sessions, recipient)
 			cancel()
 			if namedErr != nil || !named {
@@ -523,7 +524,7 @@ func (s *roleSend) missConfirmed() bool {
 	if s.keepTellsNobody() {
 		return true
 	}
-	ctx, cancel := context.WithTimeout(s.ctx, roleHolderReadTimeout)
+	ctx, cancel := context.WithTimeout(s.ctx, sendRequestBound(roleHolderReadTimeout))
 	defer cancel()
 	confirmed, err := resolveRoleHolderFromLeaders(ctx, s.d, s.role)
 	if err != nil {
@@ -670,7 +671,7 @@ func (s *roleSend) timedOut() {
 // retry is judged as a first send.
 func (s *roleSend) answeredLateForward(ctx context.Context, resolvedAt time.Time, forwarded contracts.Envelope, seq uint64) bool {
 	stored := s.d.delivery.now()
-	if !roles.ForwardStoredTooLate(resolvedAt, stored, sendRequestBudget) {
+	if !roles.ForwardStoredTooLate(resolvedAt, stored, listenerSendRequestBudget) {
 		return false
 	}
 	late := fmt.Errorf("role %s: event %s was stored for its holder %s %s after that holder was resolved: %w",
@@ -833,11 +834,13 @@ func sendToRole(ctx context.Context, w http.ResponseWriter, scope *edgeScope, re
 	// sender's title, roles and directory exactly as the forward of a live delivery does: the
 	// envelope is kept as it is here (keepRoleMessage), and the holder that is handed it later
 	// reads the same stamp this send's own 202 names.
-	send.item.Sender = senderStamp(ctx, d.registry, d.sessions, item.SourceSession)
-	firstCtx, cancelFirst := context.WithDeadline(ctx, arrived.Add(sendRequestBudget))
+	send.item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
+	budget, cancelBudget := d.clk().WithDeadline(ctx, arrived.Add(listenerSendRequestBudget))
+	firstCtx, cancelFirst := clock.WithShownDeadline(budget)
 	resolvedAt := d.delivery.now()
 	first, err := send.resolve(firstCtx)
 	cancelFirst()
+	cancelBudget()
 	if err != nil {
 		send.unresolved(err)
 		return

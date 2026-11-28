@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -123,7 +124,7 @@ type listenerDeps struct {
 	repositories *edgeRepositories
 	// registrationBudget is the budget of POST /v1/interests/subscribe (subscribeHandler): its
 	// store work and every consumer call it makes, the repair after its entry included, timed from
-	// the request's arrival. Zero is sendRequestBudget, which every listener main builds runs with.
+	// the request's arrival. Zero uses the listener's route budget (sendRequestBudget in production).
 	// It is a seam for a test whose own work runs inside that budget, as a session's consumer lock
 	// it holds while it writes, or a hook a pass calls: such a test gives the registration what is
 	// left of the test binary's deadline here, so the budget does not count the test's work, which
@@ -131,11 +132,11 @@ type listenerDeps struct {
 	registrationBudget time.Duration
 }
 
-// registrationBudgetOr is the registration's budget (registrationBudget): sendRequestBudget unless
+// registrationBudgetOr is the registration's budget: the listener's route budget unless
 // a test set one.
 func (d *listenerDeps) registrationBudgetOr() time.Duration {
 	if d.registrationBudget == 0 {
-		return sendRequestBudget
+		return listenerSendRequestBudget
 	}
 	return d.registrationBudget
 }
@@ -201,7 +202,7 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
 // waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
+	_, _, err := liveSessionEntry(context.Background(), clock.Real(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -920,7 +921,7 @@ const webhookBodyRefusedMetric = "envoy_webhook_body_refused_total"
 // Every route publishes through the rename publisher, which costs the Slack and the Ghost Wispr
 // routes nothing: a pair names a GitHub repository, and a subject that is not
 // `notifications.github.<owner>.<name>.…` names none, so those two publish exactly as they did.
-func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webhookRoute {
+func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter, opts ...webhook.HandlerOption) []webhookRoute {
 	bodies := webhook.NewBodyBudget(cfg.BodyBudget, refused)
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
@@ -930,28 +931,31 @@ func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webho
 	}
 	if slack := cfg.Slack; slack != nil {
 		routes = append(routes, webhookRoute{"/webhook/slack", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.SlackHandler(slack.Secret, publisher, bodies)
+			return webhook.SlackHandler(slack.Secret, publisher, bodies, opts...)
 		}})
 	}
 	if ghostWispr := cfg.GhostWispr; ghostWispr != nil {
 		routes = append(routes, webhookRoute{"/webhook/ghostwispr", func(publisher webhook.Publisher, _ *cistore.Store) http.Handler {
-			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies)
+			return webhook.GhostWisprHandler(ghostWispr.Secret, publisher, bodies, opts...)
 		}})
 	}
 	return routes
 }
 
-// newHTTPServer is the listener's HTTP server over handler. Every route reads its header and body
-// within ReadTimeout, 10 s from the request's start, and writes its answer within WriteTimeout,
-// 10 s from the end of the header. The GitHub webhook route alone moves its own connection's
-// deadlines (webhook.GitHubHandler), since a large delivery's body can take longer than that to
-// arrive; every other route keeps these.
-func newHTTPServer(handler http.Handler) *http.Server {
+// newHTTPServer is the listener's HTTP server over handler. Every route reads its header within
+// ReadHeaderTimeout, 10 s, and its body within readTimeout from the request's start (main passes
+// 10 s; slowbody_test.go passes a short one, as INFRA-3149 allowed:
+// dispatch://INFRA-3149/comment/5397eb29-525e-4bac-be18-c5dd7fdcfafa), and writes its answer
+// within WriteTimeout, 10 s from the end of the header. The GitHub webhook route alone moves its
+// own connection's deadlines (webhook.GitHubHandler), since a large delivery's body can take
+// longer than that to arrive; every other route keeps these.
+func newHTTPServer(handler http.Handler, readTimeout time.Duration) *http.Server {
 	return &http.Server{
-		Handler:      handler,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 
@@ -1001,6 +1005,63 @@ func listenerStreamOptions(cfg config.Service) []bus.ConnectOption {
 		bus.WithKeptBuckets(bus.ListenerBuckets()...),
 		bus.WithSilentCutDetection(),
 	}
+}
+
+// promptReconnectBuild and jetStreamWaitBuild are a test build's switches for the listener's
+// own NATS clients, which a test that runs the listener's binary sets with -ldflags (-X
+// main.promptReconnectBuild=1, -X main.jetStreamWaitBuild=650ms; test_build_test.go builds those
+// binaries), as relaySocketCheckBuild is set. They are empty in every other build, whose clients
+// keep the bus's own waits. promptReconnectBuild=1 gives every client the listener dials
+// bus.WithPromptReconnect (listenerDialOptions), so a test that restarts its NATS server finds the
+// listener back within milliseconds rather than on nats.go's next 1 s ReconnectWait;
+// jetStreamWaitBuild is the main client's JetStream MaxWait (bus.WithJetStreamWait), so a request
+// a test holds unanswered ends within it rather than 10 s.
+var (
+	promptReconnectBuild string
+	jetStreamWaitBuild   string
+)
+
+// listenerDialOptions is options with bus.WithPromptReconnect added where promptReconnectBuild is
+// 1. A build that set it to anything else is a broken build, and stops.
+func listenerDialOptions(options ...bus.ConnectOption) []bus.ConnectOption {
+	switch promptReconnectBuild {
+	case "":
+		return options
+	case "1":
+		return append(options, bus.WithPromptReconnect())
+	default:
+		panic("main.promptReconnectBuild is " + strconv.Quote(promptReconnectBuild) + ", want 1")
+	}
+}
+
+// reportsPublishBusCalls is whether this binary logs each topic publish's bus call as it starts
+// and, where it fails, with its error: only a test build that reconnects promptly
+// (promptReconnectBuild=1, the binaries test_build_test.go builds) does, so a reconnect row can
+// cancel its caller while the call waits for the bus and read whether the call ended by that
+// cancel or by the route's own deadline (TestAWriteThroughANATSReconnectWaitsOrFailsByName). No
+// other build writes these lines.
+func reportsPublishBusCalls() bool { return promptReconnectBuild == "1" }
+
+// listenerJetStreamWait is the main client's options with bus.WithJetStreamWait added where
+// jetStreamWaitBuild is set; a build that set it to no positive duration stops.
+func listenerJetStreamWait(options []bus.ConnectOption) []bus.ConnectOption {
+	if wait := listenerBuildDuration("jetStreamWaitBuild", jetStreamWaitBuild, 0); wait > 0 {
+		return append(options, bus.WithJetStreamWait(wait))
+	}
+	return options
+}
+
+// listenerBuildDuration is value, a build variable named name, as time.ParseDuration reads it, or
+// fallback when the build left it empty. A value that is no positive duration stops the binary.
+func listenerBuildDuration(name, value string, fallback time.Duration) time.Duration {
+	if value == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d <= 0 {
+		panic("main." + name + " is " + strconv.Quote(value) + ", which is no positive duration")
+	}
+	return d
 }
 
 // registerListGauges registers the two gauges that count a list /v1 answers: envoy_active_sessions
@@ -1104,6 +1165,13 @@ func main() { runListener(listenerCredentialWait) }
 // (TestTheListenerStartEndsAtTheCredentialBound). Every end of the run ends the process, as main's
 // did.
 func runListener(credentialWait time.Duration) {
+	// A test build's switches (promptReconnectBuild, durableBindIntervalBuild, jetStreamWaitBuild)
+	// are read before anything starts, so a build that set one wrongly stops at once;
+	// sendRequestBudgetBuild is read as the package starts (listenerSendRequestBudget).
+	dialOptions := listenerDialOptions()
+	bindInterval := listenerDurableBindInterval()
+	_ = listenerJetStreamWait(nil)
+
 	// Phase 1: Load config (synchronous, fast). With ENVOY_LISTEN_FD, Load inspects the inherited
 	// socket and takes its address as cfg's, so the API auth fence below judges the address that
 	// serves; Phase 2 adopts it.
@@ -1296,6 +1364,8 @@ func runListener(credentialWait time.Duration) {
 	// listener's start on NATS (Phase 5): /healthz answers 503 naming the last refusal of the
 	// credential while the start waits it out, and /livez answers 204 throughout.
 	start := newNATSStart(credentialWait)
+	// The main client, role lane and session consumers all take these options through start.
+	start.extra = dialOptions
 	registerProbeRoutes(mux, &deps, start, func() map[string]any { return issuerHealthFields(apiAuthConfig) })
 
 	// GaugeFunc for consumer pending — queries NATS at scrape time
@@ -1326,7 +1396,7 @@ func runListener(credentialWait time.Duration) {
 	mux.HandleFunc("/readyz", readyzHandler(v1Gate, &v1Deps))
 
 	// Phase 4: Start HTTP server on the listener Phase 2 holds.
-	server := newHTTPServer(mux)
+	server := newHTTPServer(mux, 10*time.Second)
 	fatal := make(chan error, 1)
 	go func() {
 		if err := server.Serve(ln); err != http.ErrServerClosed {
@@ -1789,7 +1859,8 @@ func runListener(credentialWait time.Duration) {
 	// connection's last error (confirmPublished reads it); every other listener serves none.
 	var sockets *relaySockets
 	if edge != nil {
-		socketsClient, err := bus.Connect(cfg.NATSURLs, append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())...)
+		options := append(edge.connectOptions(), bus.WithName("envoy-relay-sockets"), bus.WithSilentCutDetection())
+		socketsClient, err := bus.Connect(cfg.NATSURLs, listenerDialOptions(options...)...)
 		if err != nil {
 			logger.Error("relay socket connection failed: an edge listener serves its sessions' sockets on it", slog.String("error", err.Error()))
 			relays.stop(context.Background())
@@ -1874,7 +1945,7 @@ func runListener(credentialWait time.Duration) {
 	// A durable refused here is not retried either. The bind is the only refusal when the check
 	// after the connect could not read the durable (logged at WARN above), and it also catches a
 	// durable made refusable since that check.
-	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, durableBindInterval, durableBindDeadline)
+	bind, err := bindListenerDurable(stopping, client, consumer, jetStreamDeliveryHandler(deliveryConfig), logger, bindInterval, durableBindDeadline)
 	// A start the bind ends shuts down in order: /v1 and the role lane already serve, and no
 	// background loop has started yet. shutdownListener exits, so nothing below runs on an error.
 	if err != nil {
