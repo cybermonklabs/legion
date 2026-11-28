@@ -214,6 +214,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_image_trigger_paths_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-image-trigger-paths.test.sh .github/scripts/check-image-trigger-paths.test.sh
 
+      - name: Test the image build input check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_image_build_inputs_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-image-build-inputs.test.sh .github/scripts/check-image-build-inputs.test.sh
+
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_ci_images_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-ci-images.test.sh .github/scripts/check-ci-images.test.sh
