@@ -7649,6 +7649,13 @@ console.log(JSON.stringify(args));
       outage = { refusing: count, over: over.resolve };
       return over.promise;
     };
+    // The refusal a registration gets while the outage lasts, counted against it; none after.
+    const refusedByOutage = (): Response | undefined => {
+      if (outage === undefined || outage.refusing <= 0) return undefined;
+      outage.refusing -= 1;
+      if (outage.refusing === 0) outage.over();
+      return new Response(JSON.stringify({ error: "listener unavailable" }), { status: 503 });
+    };
     // A listener read of `session`'s interest rows held until `release`, then answered `topics`.
     let interestGate:
       | { session: string; topics: readonly string[]; reached: () => void; release: Promise<void> }
@@ -7657,7 +7664,8 @@ console.log(JSON.stringify(args));
     const rows = new Map<string, readonly string[]>();
     // A listener read of `role`'s holder, held until `release`.
     let roleReadGate: { role: string; reached: () => void; release: Promise<void> } | undefined;
-    // A registration of `session`, held until `release`.
+    // A registration of `session`, held until `release`, and refused then if an outage began
+    // meanwhile (`refuseRegistrations`).
     let registrationHold:
       | { session: string; reached: () => void; release: Promise<void> }
       | undefined;
@@ -7846,11 +7854,8 @@ console.log(JSON.stringify(args));
       if (url.pathname === "/v1/interests/subscribe") {
         registrations.push(body?.session_id);
         if (typeof body?.client_instance_id === "string") ownInstance = body.client_instance_id;
-        if (outage !== undefined && outage.refusing > 0) {
-          outage.refusing -= 1;
-          if (outage.refusing === 0) outage.over();
-          return new Response(JSON.stringify({ error: "listener unavailable" }), { status: 503 });
-        }
+        const refused = refusedByOutage();
+        if (refused !== undefined) return refused;
         // The listener's registry entry for the session is written now, which moves its
         // `last_seen` whoever registers it.
         lastSeen.set(body?.session_id, (lastSeen.get(body?.session_id) ?? 1) + 1);
@@ -7864,6 +7869,8 @@ console.log(JSON.stringify(args));
           registrationHold = undefined;
           reached();
           await release;
+          const refusedOnRelease = refusedByOutage();
+          if (refusedOnRelease !== undefined) return refusedOnRelease;
         }
       }
       return responseWithRegistration(input, init, {});
@@ -11499,9 +11506,9 @@ console.log(JSON.stringify(args));
     expect(claims).toEqual(["legion-controller", "release-captain", "reviewer"]);
   });
 
-  test("a plugin's role-bound subscription whose registration fails does not keep the role in place", async () => {
+  test("a plugin's first role-bound subscription of a topic whose registration fails unfollows the topic and does not keep the role in place", async () => {
     const notice = "notifications.legion.ACME.controller";
-    const { context, roleTool, refuseRegistrations } = await gatedRoleFixture(
+    const { fixture, context, roleTool, refuseRegistrations } = await gatedRoleFixture(
       "role-bound-subscribe-fails",
       "ses_role_fail"
     );
@@ -11511,9 +11518,73 @@ console.log(JSON.stringify(args));
     await expect(
       subscribeLegionNotice("ses_role_fail", notice, context, "legion-controller")
     ).rejects.toThrow("listener unavailable");
+    expect(await followedTopics(fixture.tools, context)).not.toContain(notice);
     const moved = await roleTool.execute("", { role: "reviewer" });
     expect(moved.isError).toBeFalsy();
     expect(moved.details).toEqual({ role: "reviewer", released: "legion-controller" });
+  });
+
+  // The Legion controller subscribes its topics again at every claim, for a session that may
+  // follow them already. A renewal whose registration fails opened nothing and takes nothing back:
+  // the topic the session followed before it stays followed, and its role mark stays with it.
+  test("a plugin's renewed role-bound subscription of a topic the session follows already, whose registration fails, leaves the topic followed and its role mark in place", async () => {
+    const notice = "notifications.legion.ACME.controller";
+    const { fixture, context, roleTool, refuseRegistrations } = await gatedRoleFixture(
+      "role-bound-renewal-fails",
+      "ses_role_renew"
+    );
+    await subscribeLegionNotice("ses_role_renew", notice, context, "legion-controller");
+    const refused = refuseRegistrations(2);
+    await expect(
+      subscribeLegionNotice("ses_role_renew", notice, context, "legion-controller")
+    ).rejects.toThrow("listener unavailable");
+    await refused;
+
+    expect(await followedTopics(fixture.tools, context)).toContain(notice);
+    const moved = await roleTool.execute("", { role: "reviewer" });
+    expect(moved.isError).toBe(true);
+    expect(moved.content[0]?.text ?? "").toContain(notice);
+  });
+
+  // Subscriptions of one topic run one after the other, so what a failed one takes back is never
+  // what a later one has opened since: the later one follows the topic once the earlier has
+  // ended, and the topic stays followed once it lands.
+  test("a plugin's second role-bound subscription of a topic waits for the first, and when the first's registration fails and the second's lands, the topic stays followed", async () => {
+    const notice = "notifications.legion.ACME.controller";
+    const { fixture, context, roleTool, registrations, holdRegistration, refuseRegistrations } =
+      await gatedRoleFixture("role-bound-subscriptions-in-turn", "ses_role_turn");
+    const held = holdRegistration("ses_role_turn");
+    const first = subscribeLegionNotice("ses_role_turn", notice, context, "legion-controller").then(
+      () => undefined,
+      (error: unknown) => error
+    );
+    await held.reached;
+    const registered = registrations.length;
+    let secondEnded = false;
+    const second = subscribeLegionNotice(
+      "ses_role_turn",
+      notice,
+      context,
+      "legion-controller"
+    ).finally(() => {
+      secondEnded = true;
+    });
+    for (let step = 0; step < 20; step += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(registrations.length).toBe(registered);
+    expect(secondEnded).toBe(false);
+
+    const refused = refuseRegistrations(2);
+    held.release();
+    expect(String(await first)).toContain("listener unavailable");
+    await refused;
+    await second;
+
+    expect(await followedTopics(fixture.tools, context)).toContain(notice);
+    const moved = await roleTool.execute("", { role: "reviewer" });
+    expect(moved.isError).toBe(true);
+    expect(moved.content[0]?.text ?? "").toContain(notice);
   });
 
   test("injects a post-takeover forwarded role event into B only", async () => {

@@ -599,9 +599,9 @@ const NEXT_LAUNCH = "the changed list takes effect at the controller's next laun
 // A later claim in the same process and the same session (a typed `/legion-claim-controller`, a
 // re-claim that registers the same session) whose registration names another list subscribes the
 // list the first registration named, once the claim is done, as the first claim did. No topic of
-// the new list is asked for and none is closed: the stand-in bridge instance has no unsubscribe.
-// The log says the changed list takes effect at the next launch, and the session is told nothing.
-test("watched workflows: a later claim of the same session whose registration names another list subscribes the first list again, asks for no topic of the new list, unsubscribes nothing, and logs one line naming the next launch", async () => {
+// the new list is asked for. The log says the changed list takes effect at the next launch, and
+// the session is told nothing.
+test("watched workflows: a later claim of the same session whose registration names another list subscribes the first list again, asks for no topic of the new list, and logs one line naming the next launch", async () => {
   const lists = [
     [NIGHTLY, RELEASE],
     [RELEASE, DEPLOY],
@@ -639,10 +639,10 @@ test("watched workflows: a later claim of the same session whose registration na
   }
 });
 
-// A `/new`, `/resume`, `/fork` or `/branch` leaves the role behind, and every subscription bound to
-// it closed with it: the session change's re-claim registers the new session and subscribes the
-// list the process's first registration named for that session, whatever its own registration
-// names.
+// A `/new` or `/resume` leaves the role behind; a `/fork` or `/branch` carries the role and its
+// topics, which the re-claim subscribes again. Either way the session change's re-claim registers
+// the new session and subscribes the list the process's first registration named for that
+// session, whatever its own registration names.
 test("watched workflows: a later claim that registers another session subscribes the first list for that session, whatever list its registration names", async () => {
   const lists = [
     [NIGHTLY, RELEASE],
@@ -884,6 +884,89 @@ test("watched workflows: a watched topic Envoy takes after its 503s is told once
     expectTheClaimAsBefore(run);
   } finally {
     jest.useRealTimers();
+    run.stopSink();
+  }
+});
+
+// What the session was told of a watched topic stands for the process, not for the claim that
+// told it. A 503 told it the topic waits and that the controller says so once Envoy takes it, so
+// a later claim whose subscription of that topic lands at its first try tells it the topic landed.
+// The first claim's wait ends with its claim: it asks and says nothing more.
+test("watched workflows: a topic told it waits after a 503 is told once that it landed when a typed claim's subscription of it lands at its first try", async () => {
+  jest.useFakeTimers();
+  let withholding = true;
+  const run = watchingController({
+    subscribe: (topic) =>
+      topic === NIGHTLY_SCHEDULE && withholding ? Promise.reject(withheld()) : Promise.resolve(),
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(() => run.lines.length > 0, "the 503's log line", ROW_TURNS);
+    withholding = false;
+    await run.controller.claim(run.context);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 1,
+      "the typed claim's next watched topic asked for",
+      ROW_TURNS
+    );
+    jest.advanceTimersByTime(120_000);
+    for (let spare = 0; spare < 50; spare++) await settled();
+
+    expect(asked(run, NIGHTLY_SCHEDULE)).toBe(2);
+    expect(asked(run, NIGHTLY_DISPATCH)).toBe(1);
+    expect(run.lines).toHaveLength(1);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(2);
+    expect(told[0]).toContain(WITHHELD);
+    expect(told[1]).not.toContain(WITHHELD);
+    for (const named of ["acme/widgets/nightly.yaml", NIGHTLY_SCHEDULE]) {
+      expect(told[1]).toContain(named);
+    }
+    expect(told[1]).not.toContain(NIGHTLY_DISPATCH);
+    expect(run.told.map(({ options }) => options)).toEqual([NO_TURN, NO_TURN]);
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
+    run.stopSink();
+  }
+});
+
+// The landed notice answers the wait the session was told of, topic by topic: a later claim
+// whose subscriptions all land tells it of the topic that waited, and of no topic that never got
+// a 503, though it subscribes that one first.
+test("watched workflows: a later claim tells no landed notice of a topic that never got a 503", async () => {
+  jest.useFakeTimers();
+  let withholding = true;
+  const run = watchingController({
+    subscribe: (topic) =>
+      topic === NIGHTLY_DISPATCH && withholding ? Promise.reject(withheld()) : Promise.resolve(),
+  });
+  try {
+    await run.controller.handleSessionStart(run.context);
+    await turnsUntil(() => run.lines.length > 0, "the 503's log line", ROW_TURNS);
+    withholding = false;
+    await run.controller.claim(run.context);
+    await turnsUntil(
+      () => asked(run, NIGHTLY_DISPATCH) === 2,
+      "the typed claim's subscription of the topic that waited",
+      ROW_TURNS
+    );
+    for (let spare = 0; spare < 20; spare++) await settled();
+
+    expect(asked(run, NIGHTLY_SCHEDULE)).toBe(2);
+    const told = toldWatched(run);
+    expect(told).toHaveLength(2);
+    expect(told[0]).toContain(WITHHELD);
+    expect(told[1]).not.toContain(WITHHELD);
+    for (const notice of told) {
+      expect(notice).toContain(NIGHTLY_DISPATCH);
+      expect(notice).not.toContain(NIGHTLY_SCHEDULE);
+    }
+    expect(run.exits).toEqual([]);
+  } finally {
+    jest.useRealTimers();
+    run.controller.stop();
     run.stopSink();
   }
 });

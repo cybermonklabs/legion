@@ -11,7 +11,8 @@ body: |-
   topic. A topic Envoy answers 503 (an edge listener that cannot read the project's repositories
   answers `repositories_unknown`) is subscribed again after a wait of 1 s that doubles to 30 s,
   with one log line per wait; the session is told once that the topic waits, naming the entry,
-  the topic and Envoy's answer, and once more when Envoy takes it. A topic Envoy refuses for
+  the topic and Envoy's answer, and once more when Envoy takes it, also when a later claim's
+  subscription of that topic is the one that lands. A topic Envoy refuses for
   another reason is logged, told to the session and given up, and the other topics go on. The
   session is told as Envoy tells it its own notices, with no turn of its own, and a notice the
   session refuses is logged and fails nothing. A controller process keeps the list of its first

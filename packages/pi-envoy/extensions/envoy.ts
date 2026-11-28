@@ -3668,15 +3668,20 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
 
   // Follows `topic` unless it served a role that has ended since `snapshot` was taken: a
   // role-bound subject is not followed again, and one whose role ends meanwhile is dropped
-  // before any registration can carry it. Answers whether the topic is still wanted.
-  const followUnlessRoleEnds = (topic: string, snapshot: RoleSnapshot): boolean => {
+  // before any registration can carry it. Answers undefined when the topic is no longer wanted,
+  // else the subjects this call newly followed: a subscription whose registration then fails
+  // takes back those alone, and leaves followed what the session followed before it.
+  const followUnlessRoleEnds = (
+    topic: string,
+    snapshot: RoleSnapshot
+  ): readonly string[] | undefined => {
     const roleEnded = () =>
       snapshot.roleBound && registrationState.roleEndCount() !== snapshot.endsBefore;
-    if (roleEnded()) return false;
-    follow(topic);
-    if (!roleEnded()) return true;
+    if (roleEnded()) return undefined;
+    const added = followNew(topic);
+    if (!roleEnded()) return added;
     unfollow(topic);
-    return false;
+    return undefined;
   };
 
   /**
@@ -4975,7 +4980,7 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
   };
 
-  const subscribeNotice: LegionNoticeSubscription = async (
+  const subscribeNoticeNow: LegionNoticeSubscription = async (
     targetSessionID,
     topic,
     callerContext,
@@ -5031,8 +5036,12 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     }
     // Taken once the subjects are marked: nothing awaits between the two.
     const snapshot = registrationState.roleSnapshot(topic);
+    // The subjects this call newly followed, which a failure takes back.
+    let followedHere: readonly string[] = [];
     try {
-      if (!followUnlessRoleEnds(topic, snapshot)) return;
+      const added = followUnlessRoleEnds(topic, snapshot);
+      if (added === undefined) return;
+      followedHere = added;
       // A subscription that lasts beyond any role is the session's own, even on a subject the
       // deployment's role topics already follow: claimed here, the role's end leaves it.
       if (whileHolding === undefined) {
@@ -5042,15 +5051,48 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
       // subscription is open only once it lands.
       await registerSession();
     } catch (error) {
-      // Nothing opened, so nothing may keep the session's role in place on its behalf. A role that
-      // ended meanwhile already dropped these marks, and a newer subscription may hold them now.
+      // Nothing opened, so nothing this call followed or marked may keep the session's role in
+      // place on its behalf: it takes back the subjects it newly followed and the ones it marked,
+      // and nothing else. A renewal of a subscription the session already holds, as every claim
+      // of the Legion controller makes, followed and marked nothing, so its failure leaves the
+      // working subscription followed and bound to its role. A role that ended meanwhile already
+      // dropped these marks, and a newer subscription may hold them now.
       if (registrationState.roleEndCount() === snapshot.endsBefore) {
-        unfollow(topic);
+        for (const subject of followedHere) followed.delete(subject);
         registrationState.unmarkRoleBoundSubjects(marked);
       }
       refuseWhileStopping();
       throw error;
     }
+  };
+
+  // The last subscription asked for each topic (`subscribeNotice`), settled either way, until
+  // it has ended.
+  const noticeSubscriptionTurns = new Map<string, Promise<void>>();
+
+  // Subscriptions of one topic run one after the other: each starts once the one before it has
+  // ended, landed or failed. So what a failed one takes back (`subscribeNoticeNow`) is never a
+  // subject a later one followed, and a later one follows the topic again after an earlier one's
+  // failure dropped it. Subscriptions of different topics do not wait for each other, and one
+  // asked while none of its topic runs starts at once.
+  const subscribeNotice: LegionNoticeSubscription = (
+    targetSessionID,
+    topic,
+    callerContext,
+    whileHolding
+  ) => {
+    const subscribe = () => subscribeNoticeNow(targetSessionID, topic, callerContext, whileHolding);
+    const before = noticeSubscriptionTurns.get(topic);
+    const subscribing = before === undefined ? subscribe() : before.then(subscribe);
+    const ended = subscribing.then(
+      () => undefined,
+      () => undefined
+    );
+    noticeSubscriptionTurns.set(topic, ended);
+    void ended.then(() => {
+      if (noticeSubscriptionTurns.get(topic) === ended) noticeSubscriptionTurns.delete(topic);
+    });
+    return subscribing;
   };
 
   const claimInstance: LegionRoleClaimInstance = {

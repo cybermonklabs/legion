@@ -33,6 +33,10 @@ interface WatchedClaim {
   /** Hears that Envoy refused a watched subscription because the session's stop has begun
    * (`claimRefusedForStop`): that stop is the claim's too. */
   readonly stopHeard: () => void;
+  /** The watched topics the session was told wait after a 503 and not yet told landed. The
+   * process keeps one set for every claim, so the claim that sees such a topic land tells it
+   * landed, whichever claim told it waits (`subscribeWatchedTopic`). */
+  readonly toldWaiting: Set<string>;
 }
 
 /** The watched workflows `registration` names (`watchedWorkflows`), one topic per event of each
@@ -111,21 +115,22 @@ function tellWatched(pi: PiApi, content: string): void {
  * Subscribes `topic` for as long as the claim's session holds the claim's role, and answers
  * whether the next watched topic is to be subscribed. Envoy's 503 (an edge listener that cannot
  * read the project's repositories answers `repositories_unknown`) is waited out as a role claim's
- * is (`claimRoleAgainOnBusy`: 1 s, doubling to 30 s, a log line per wait), and the session is told
- * once that the topic waits, naming Envoy's answer, and once that it landed. A refusal because
- * the session's stop has begun (`claimRefusedForStop`) is that stop (`stopHeard`), and says
- * nothing; one because the session holds the role no more (`refusedForRoleNotHeld`) ends the
- * watched subscriptions with one log line. Any other failure is logged and told, and gives this
- * topic up alone. Once `signal` aborts - the stop, or a later registration - nothing more is
- * asked or said.
+ * is (`claimRoleAgainOnBusy`: 1 s, doubling to 30 s, a log line per wait). The session is told
+ * once that the topic waits, naming Envoy's answer, and once that it landed. Both notices are the
+ * process's, not the claim's (`toldWaiting`): a later claim says nothing of a wait the session
+ * was told of already, and its subscription that lands tells the landed notice an earlier
+ * claim's wait promised. A refusal because the session's stop has begun (`claimRefusedForStop`)
+ * is that stop (`stopHeard`), and says nothing; one because the session holds the role no more
+ * (`refusedForRoleNotHeld`) ends the watched subscriptions with one log line. Any other failure
+ * is logged and told, and gives this topic up alone. Once `signal` aborts - the stop, or a later
+ * registration - nothing more is asked or said.
  */
 async function subscribeWatchedTopic(
-  { pi, sessionID, claimToken, envoyContext, stopHeard }: WatchedClaim,
+  { pi, sessionID, claimToken, envoyContext, stopHeard, toldWaiting }: WatchedClaim,
   { entry, event, topic }: WatchedTopic,
   signal: AbortSignal
 ): Promise<boolean> {
   const watched = `watched workflow ${entry}'s ${event} runs (topic ${topic})`;
-  let waited = false;
   try {
     await claimRoleAgainOnBusy(
       () => subscribeLegionNotice(sessionID, topic, envoyContext, claimToken),
@@ -133,8 +138,8 @@ async function subscribeWatchedTopic(
       {
         log: (line, error) => {
           logger.warn(`[legion] ${line}`);
-          if (waited) return;
-          waited = true;
+          if (toldWaiting.has(topic)) return;
+          toldWaiting.add(topic);
           tellWatched(
             pi,
             `legion: Envoy answered the subscription of ${watched} 503, so this session does not hear those runs yet; the controller subscribes it again after a growing wait, and says so once Envoy takes it. Envoy's answer: ${messageFor(error)}`
@@ -165,7 +170,7 @@ async function subscribeWatchedTopic(
     return true;
   }
   if (signal.aborted) return false;
-  if (waited) {
+  if (toldWaiting.delete(topic)) {
     tellWatched(
       pi,
       `legion: Envoy answered the subscription of ${watched} without a 503 at last; this session hears those runs now, unless Envoy's own "Envoy topics refused" notice names that topic.`
