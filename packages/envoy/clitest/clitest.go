@@ -22,9 +22,10 @@
 //   - is, on a Unix system, a process group of its own, which ends when every process of the
 //     group has exited, the processes the binary leaves behind included. Elsewhere it ends when
 //     the binary's own process exits, and a process it leaves behind is not waited for;
-//   - writes its standard output and standard error to files, which are read once the run has
-//     ended, so a process of its group that holds them past the binary's exit delays the read
-//     and fails nothing;
+//   - writes its standard output and standard error to files in a third directory of the test's
+//     own, which are read once the run has ended, so a process of its group that holds them past
+//     the binary's exit delays the read and fails nothing. Elsewhere than on a Unix system, what a
+//     process the binary leaves behind writes after the binary's exit is not read;
 //   - is killed and reported when it has not ended within a minute, with every process of its
 //     group;
 //   - counts its output as standard output and standard error together, except where a check
@@ -190,6 +191,20 @@ func Conformance(t *testing.T, bin string, c Case) {
 	if err := c.validate(); err != nil {
 		t.Fatalf("clitest: %v", err)
 	}
+	h := newHarness(t, bin, c)
+	t.Run("help", h.help)
+	t.Run("flag-after-positional", h.flagAfterPositional)
+	t.Run("unknown-flag", h.unknownFlag)
+	t.Run("usage-error", h.builtinUsageErrors)
+	t.Run("typo", h.typo)
+	t.Run("completion", h.completion)
+	t.Run("complete", h.complete)
+}
+
+// newHarness is the harness of the Conformance call t makes on bin and c. Each directory a run
+// gets, and the one its output files go to, is t's own, so t's end removes what a run left there.
+func newHarness(t *testing.T, bin string, c Case) *harness {
+	t.Helper()
 	// Each run starts in HOME, and os/exec reads a relative path against the run's directory.
 	path, err := exec.LookPath(bin)
 	if err == nil {
@@ -199,22 +214,16 @@ func Conformance(t *testing.T, bin string, c Case) {
 		t.Fatalf("clitest: %v", err)
 	}
 	home := t.TempDir()
-	h := &harness{
+	return &harness{
 		bin:      path,
 		name:     filepath.Base(bin),
 		dir:      home,
 		env:      append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + t.TempDir()}, c.Env...),
+		outputs:  t.TempDir(),
 		server:   c.Server,
 		commands: c.Commands,
 		hidden:   c.Hidden,
 	}
-	t.Run("help", h.help)
-	t.Run("flag-after-positional", h.flagAfterPositional)
-	t.Run("unknown-flag", h.unknownFlag)
-	t.Run("usage-error", h.builtinUsageErrors)
-	t.Run("typo", h.typo)
-	t.Run("completion", h.completion)
-	t.Run("complete", h.complete)
 }
 
 // validate refuses a Case Conformance cannot check whole.
@@ -265,13 +274,14 @@ func (c Case) validate() error {
 	return nil
 }
 
-// harness is one Conformance call's binary, the environment and directory it runs in, and the
-// Case's commands.
+// harness is one Conformance call's binary, the environment and directory it runs in, the
+// directory its output files go to, and the Case's commands.
 type harness struct {
 	bin      string
 	name     string
 	dir      string
 	env      []string
+	outputs  string
 	server   *Recorder
 	commands [][]string
 	hidden   [][]string
@@ -382,7 +392,7 @@ func (h *harness) readScript(t *testing.T, shell string, r result) {
 	if err := os.WriteFile(script, []byte(r.stdout), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	out := newStreamFile()
+	out := h.newStreamFile()
 	defer out.drop()
 	if out.err != nil {
 		t.Fatalf("no file for the output of %s %s could be made: %v", shell, flag, out.err)
@@ -510,7 +520,7 @@ func (r result) crashed() bool { return crashLine.MatchString(r.stdout + "\n" + 
 
 func (h *harness) run(args ...string) result {
 	r := result{argv: h.display(args)}
-	stdout, stderr := newStreamFile(), newStreamFile()
+	stdout, stderr := h.newStreamFile(), h.newStreamFile()
 	defer stdout.drop()
 	defer stderr.drop()
 	if err := errors.Join(stdout.err, stderr.err); err != nil {
@@ -564,16 +574,17 @@ func (h *harness) command(ctx context.Context, path string, args ...string) *exe
 	return cmd
 }
 
-// streamFile is a file of its own, in the test process's temporary directory, that a run writes
-// one of its streams to (command), or err, why there is none.
+// streamFile is a file of its own, in the directory of the test's own that the harness keeps for
+// output (harness.outputs), that a run writes one of its streams to (command), or err, why there
+// is none. The test's end removes that directory, so a file a run never dropped goes with it.
 type streamFile struct {
 	file *os.File
 	err  error
 }
 
 // newStreamFile is a new, empty streamFile.
-func newStreamFile() streamFile {
-	file, err := os.CreateTemp("", "clitest-output-")
+func (h *harness) newStreamFile() streamFile {
+	file, err := os.CreateTemp(h.outputs, "clitest-output-")
 	return streamFile{file: file, err: err}
 }
 

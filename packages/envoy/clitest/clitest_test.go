@@ -479,6 +479,30 @@ func TestConformanceFailsWhileAProcessItStartedHoldsTheOutputPastTheBound(t *tes
 	)
 }
 
+// The files a run writes its output to are in a directory of the test's own, so the test's end
+// removes one that a run never dropped, as a run stopped part way leaves it, and nothing is left
+// in the test process's temporary directory.
+func TestTheEndOfATestRemovesAnOutputFileARunNeverDropped(t *testing.T) {
+	t.Parallel()
+	var left string
+	t.Run("a run that never drops its output file", func(t *testing.T) {
+		out := newHarness(t, testBinary(t), Case{}).newStreamFile()
+		if out.err != nil {
+			t.Fatalf("make a run's output file: %v", out.err)
+		}
+		left = out.file.Name()
+		// Closed, so a system that removes no open file can remove it, and not removed: removing
+		// it is drop's work, which such a run never reaches.
+		if err := out.file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(left)
+		t.Fatalf("the output file %s of a run that never dropped it, once its test ended: %v, want it gone with the test's own directories", left, err)
+	}
+}
+
 // Each run gets the environment, the directory and the input the package documentation gives it,
 // and nothing of the test process's environment: the fake refuses a run that differs, and the
 // test process that runs Conformance here holds childEnv in its environment and a line on its
