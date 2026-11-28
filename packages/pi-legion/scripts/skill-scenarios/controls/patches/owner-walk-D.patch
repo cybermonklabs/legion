@@ -1,5 +1,5 @@
 diff --git a/packages/daemon/internal/prompts/go/architect-common.md b/packages/daemon/internal/prompts/go/architect-common.md
-index d8549fa3e3e..815a575fe91 100644
+index 248a9140b7f..952c8827eb0 100644
 --- a/packages/daemon/internal/prompts/go/architect-common.md
 +++ b/packages/daemon/internal/prompts/go/architect-common.md
 @@ -1,6 +1,8 @@
@@ -8,6 +8,6 @@ index d8549fa3e3e..815a575fe91 100644
  
 +Before you write a plan, read how the earlier plans of this project went: `dispatch plans --project <PROJECT>` prints the newest finished issues of the project that have a plan or a rating, each with its plan, each rating a retro gave that plan with its reason, its time and its count of failed steps; then say in the task's text what they showed that this plan follows or changes.
 +
- For each step, decide whether a fresh agent works it or the agent of an earlier step, and write that choice and its reason in the task's text. This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow, so it cannot carry that choice out yet; write it all the same, because it records what the work needed.
+ For every step of every task, your own `acceptance:owner` step included, write in the task's text which agent works it, and why. That agent is a fresh agent, or the agent of an earlier step that you name, of this issue or of an earlier issue. The reason is what that agent knows, or must not know, for that step. Choose the agent that the work needs, not the agent that this release can start. This release gives each role one agent for each issue, the session that role keeps until the issue leaves the workflow, so it cannot carry that choice out yet; write it all the same, because it records what the work needed. Where this release cannot start the agent you chose, or that agent's session has ended, still write that choice, and then what Legion does in its place: this issue's one agent of the step's role works the step.
  
  Give each issue its plan before its work starts, but an issue whose experiment's group runs the default steps, which takes none: `read_record` shows a recorded issue's group, an assignment whose `plan` is `default`. For the root, call register_plan before register_gate: the gate's opening starts the root's first step. For a child, call register_plan before release_children releases it: Legion keeps the plan and starts the child's first step from it, unless the child, which a project's experiment draws when the daemon records it, falls into such a group, whose first step passes the plan over. An issue whose work started before you gave it a plan runs the task default, the project's default steps. To give it a plan, call stop_task on the task default, then register_plan with a version whose one task replaces it: Legion starts that task at its first step.
