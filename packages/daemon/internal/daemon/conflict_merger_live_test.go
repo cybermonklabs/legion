@@ -96,8 +96,9 @@ const (
 )
 
 // conflictMergerLive is one run of the proof: the booted daemon, its log and the baseline of each
-// role topic (conflictLive), the three roles the driver acts as over the worker stream, and the
-// watch of the issue's phase over the whole run.
+// role topic (conflictLive), the four roles the driver acts as over the worker stream - the
+// architect, the implementer, the merger and, from step 3, the reviewer that step's review wakes -
+// and the watch of the issue's phase over the whole run.
 type conflictMergerLive struct {
 	conflictLive
 	arch, imp, merger *liveClaimant
@@ -184,14 +185,7 @@ func (r *conflictMergerLive) seed() {
 	}); err != nil {
 		t.Fatalf("record the architect's unfinished launch: %v", err)
 	}
-	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-		Token: r.token(claim.RoleReviewer), Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleReviewer,
-		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-		Session: "ses_reviewer", SessionFile: t.TempDir() + "/ses_reviewer.jsonl",
-		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
-	}); err != nil {
-		t.Fatalf("record the reviewer's released claim: %v", err)
-	}
+	r.admitReleased(r.token(claim.RoleReviewer), r.key, claim.RoleReviewer, "ses_reviewer")
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleReviewer} {
 		writePrompt(t, r.cfg, r.token(role))
 	}
@@ -205,15 +199,15 @@ func (r *conflictMergerLive) seed() {
 // conflicting one: the daemon queues its second read a minute on. The second read confirms the
 // conflict, and the daemon records it (record.PullRequest.ConflictingHead) and asks nobody
 // (classify.ConflictNeedsMerge answers none in accepting), logging a confirmed conflict that needs
-// no merge yet. No role topic of the issue takes a message, the architect's included, so it gets
-// no checks-red notice; the architect's connection is sent nothing at all; the record holds no
-// merge forward; and the issue stays in accepting.
+// no merge yet. No role topic of the issue takes a message or refuses one, the architect's
+// included, so it gets no checks-red notice; the architect's connection is sent nothing at all; the
+// record holds no merge forward; and the issue stays in accepting.
 func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 	t := r.t
 	r.arch = r.claimant(claim.RoleArchitect, "ses_architect")
 	r.note("the architect is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
 	r.published(r.key)
-	r.heard = r.heardOn(r.key)
+	r.heard, r.refused = r.heardOn(r.key), r.refusalsOn(r.key)
 	r.github.conflicts(true)
 	r.publishBasePush()
 	r.note("drove a push onto %s, after which GitHub answers %s CONFLICTING", conflictBase, mergerAcceptedHead)
@@ -239,7 +233,10 @@ func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, r.heard) {
 		t.Fatalf("the role topics of %s took %v messages after the confirmed conflict, want %v as before it: a conflict in accepting asks nobody", r.key, heard, r.heard)
 	}
-	r.note("read back: no role topic of %s took a message, the architect's included: no checks-red notice", r.key)
+	if refused := r.refusalsOn(r.key); !maps.Equal(refused, r.refused) {
+		t.Fatalf("the role topics of %s refused %v publishes after the confirmed conflict, want %v as before it: a conflict in accepting sends nobody anything", r.key, refused, r.refused)
+	}
+	r.note("read back: no role topic of %s took a message or refused one, the architect's included: no checks-red notice", r.key)
 	pr := r.pullRequest()
 	if pr.ConflictingHead != mergerAcceptedHead || pr.MergeForward != nil {
 		t.Fatalf("the record of #%d holds conflicting head %q and merge forward %+v, want the conflict of %s recorded and no merge forward",
@@ -265,8 +262,8 @@ func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 // that registration (the daemon's deliverHeld), not for the holder the stand-in already names, and
 // is then published to the merger's own role topic, once, which says the merge and its conflict
 // are the merger's to resolve. The implementer's topic takes nothing, and the architect is told
-// once, in a checks-red notice naming merging and the merger. The merger takes its merging task.
-// Nothing repeats.
+// once, in a checks-red notice naming merging and the merger; no role topic refuses a publish. The
+// merger takes its merging task. Nothing repeats.
 func (r *conflictMergerLive) mergingAsksTheMerger() {
 	t := r.t
 	r.arch.startTurn("")
@@ -295,7 +292,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	if heard := r.heardOn(r.key); heard[claim.RoleImplementer] != r.heard[claim.RoleImplementer] {
 		t.Fatalf("the implementer's role topic took %d messages by retro, want none", heard[claim.RoleImplementer]-r.heard[claim.RoleImplementer])
 	}
-	r.note("read back: in retro the daemon asked no merge forward, the record holds none, the architect took no notice and the implementer's role topic took nothing")
+	if refused := r.refusalsOn(r.key); refused[claim.RoleImplementer] != r.refused[claim.RoleImplementer] {
+		t.Fatalf("the listener refused %d publishes on the implementer's role topic by retro, want none", refused[claim.RoleImplementer]-r.refused[claim.RoleImplementer])
+	}
+	r.note("read back: in retro the daemon asked no merge forward, the record holds none, the architect took no notice and the implementer's role topic took nothing and refused nothing")
 
 	// A publish of the ask before the merger's first launch registers would be stored for this
 	// session and credited to no launch, and the ready of launch 1 would ask the merger again.
@@ -371,7 +371,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, want) {
 		t.Fatalf("the role topics of %s took %v messages by merging, want %v: the merger's ask once, the architect's notices, and nothing to the implementer", r.key, heard, want)
 	}
-	r.note("read back over %s: nothing more reached any role topic of %s; the merger's took the ask once and the implementer's took nothing", liveSettle, r.key)
+	if refused := r.refusalsOn(r.key); !maps.Equal(refused, r.refused) {
+		t.Fatalf("the role topics of %s refused %v publishes by merging, want %v as at the baseline: the daemon sent nothing to a role nobody holds", r.key, refused, r.refused)
+	}
+	r.note("read back over %s: nothing more reached any role topic of %s, and none refused a publish; the merger's took the ask once and the implementer's took nothing", liveSettle, r.key)
 	r.noMergeForwardTo(claim.RoleImplementer)
 }
 
@@ -433,11 +436,12 @@ func (r *conflictMergerLive) mergerMergeLands() {
 // Step 4. CI settles a required check red on the merger's head. In merging the CI result is the
 // merger's and the architect's (workflow's tellChecks): each is told on its own role topic, and the
 // implementer, whose claim is live and would take a message published to it, is told nothing, and
-// the daemon logs no role message to it. The issue stays in merging.
+// the daemon logs no role message to it; no role topic refuses a publish. The issue stays in
+// merging.
 func (r *conflictMergerLive) redCheckReachesTheMerger() {
 	t := r.t
 	r.published(r.key)
-	r.heard = r.heardOn(r.key)
+	r.heard, r.refused = r.heardOn(r.key), r.refusalsOn(r.key)
 	implementer := r.d.claim(r.imp.token)
 	if implementer.State != string(supervise.StateIdle) {
 		t.Fatalf("the implementer's claim is %s before the settlement, want idle: a released claim would end a message to it unpublished, and the read would see nothing either way", implementer.State)
@@ -462,13 +466,16 @@ func (r *conflictMergerLive) redCheckReachesTheMerger() {
 	if heard := r.heardOn(r.key); !maps.Equal(heard, want) {
 		t.Fatalf("the role topics of %s took %v messages after the settlement, want %v: the merger and the architect once each, the implementer nothing", r.key, heard, want)
 	}
+	if refused := r.refusalsOn(r.key); !maps.Equal(refused, r.refused) {
+		t.Fatalf("the role topics of %s refused %v publishes after the settlement, want %v as before it: the daemon sent nothing to a role nobody holds", r.key, refused, r.refused)
+	}
 	implementerToken := string(r.imp.token)
 	if lines := r.logged.matching(func(kept loggedRecord) bool {
 		return strings.HasPrefix(kept.Message, "outbox role message") && kept.Attrs["role"] == implementerToken
 	}); len(lines) != 0 {
 		t.Fatalf("the daemon logged %q for the implementer's role, want no role message to it in merging", lines[0].Message)
 	}
-	r.note("read back over %s: the implementer's role topic took nothing and the daemon logged no role message to it; nothing else reached any role topic", liveSettle)
+	r.note("read back over %s: the implementer's role topic took nothing and the daemon logged no role message to it; nothing else reached any role topic, and none refused a publish", liveSettle)
 	if got := r.issue(r.key); got.Phase != phase.Merging {
 		t.Fatalf("%s is in %s after the red settlement, want merging: a CI result moves no issue", r.key, got.Phase)
 	}

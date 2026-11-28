@@ -215,16 +215,10 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 func TestAnAskToARoleWithNoClaimYetWaitsForItsLaunch(t *testing.T) {
 	t.Parallel()
 	publisher := &holderPublisher{}
-	asked := &record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
-		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
-	runner, sup, pool, _ := mergeForwardRunner(t, publisher, asked)
+	asked := implementersAsk()
+	runner, sup, pool, _ := mergeForwardRunner(t, publisher, &asked)
 	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
-	publisher.holdBy(func() string {
-		if machine, ok := sup.Machine(token); ok {
-			return machine.View().Claim.Session
-		}
-		return ""
-	})
+	publisher.holdBy(func() string { return runner.supervisedClaim(token).Session })
 	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
 	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
 	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))

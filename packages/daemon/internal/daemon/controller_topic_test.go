@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sjawhar/envoy/roleholder"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -227,8 +228,11 @@ func TestARunOutHoldReachesTheArchitectAloneAndAControllerCopysRetriesNeverResen
 // refuseUnheld, which refuseUnheldRoles sets, is the real listener's answer to a publish that asks
 // it to keep nothing (keep: false, as notify.Publisher.Publish sends) on the role topic of a role
 // no live session holds: 404 unclaimed (writeRoleHolderError), which the outbox reads as
-// notify.ErrNoHolder and waits on. It is off by default, and such a publish is then taken as one
-// delivered to nobody: the rigs that leave it off do not mark the holder of every session they
+// notify.ErrNoHolder. A held message waits on it (the daemon's deliverHeld); a role message
+// (roleMessage) and a notice to an architect whose claim ended (noticeAnswered) end undelivered.
+// Each such publish is recorded among the refused (refusedOn), so a test sees what the daemon
+// tried to send to a role nobody holds. It is off by default, and such a publish is then taken as
+// one delivered to nobody: the rigs that leave it off do not mark the holder of every session they
 // register, so the refusal would hold back messages they wait for.
 type noticeListener struct {
 	mu      sync.Mutex
@@ -275,11 +279,10 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if role, ok := strings.CutPrefix(r.URL.Path, "/v1/roles/"); ok && r.Method == http.MethodGet {
 		holder, held := l.holders[role]
 		if !held {
-			w.WriteHeader(http.StatusNotFound)
-			_ = json.NewEncoder(w).Encode(map[string]string{"error": "role " + role + " is unclaimed", "reason": "unclaimed"})
+			writeUnclaimed(w, "role "+role+" is unclaimed")
 			return
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"role": role, "holder": holder, "holder_state": "live",
+		_ = json.NewEncoder(w).Encode(map[string]any{"role": role, "holder": holder, "holder_state": notify.StateLive,
 			"last_seen": time.Now().UnixMilli(), "capabilities": []string{}})
 		return
 	}
@@ -307,16 +310,24 @@ func (l *noticeListener) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	role, onRole := strings.CutPrefix(published.Topic, notify.RoleTopicPrefix)
 	holder, held := l.holders[role]
 	if onRole && !held && l.refuseUnheld && request.Keep != nil && !*request.Keep {
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "no holder for role " + role, "reason": "unclaimed"})
+		l.refused = append(l.refused, published)
+		writeUnclaimed(w, "no holder for role "+role)
 		return
 	}
 	l.accepted = append(l.accepted, published)
 	if onRole && held {
-		_ = json.NewEncoder(w).Encode(map[string]string{"holder": holder, "holder_state": "live"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"holder": holder, "holder_state": notify.StateLive})
 		return
 	}
 	_ = json.NewEncoder(w).Encode(map[string]string{})
+}
+
+// writeUnclaimed is the listener's 404 for a role no live session holds, as its role lookup and
+// its publish route both answer it (writeRoleHolderError): message names the role, and the reason
+// is roleholder.Unclaimed, which notify reads as notify.ErrNoHolder.
+func writeUnclaimed(w http.ResponseWriter, message string) {
+	w.WriteHeader(http.StatusNotFound)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message, "reason": roleholder.Unclaimed})
 }
 
 // refuseFirstOf makes the listener refuse the next n publishes to topic that carry message.
