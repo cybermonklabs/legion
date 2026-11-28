@@ -1282,7 +1282,8 @@ func changeStarted(r *doneByChecksRig, issue string, sent int) {
 
 // endedOnTheOwnersWithdrawal is the owning architect's withdrawal of the controller's request with
 // its evidence: the change opened no pull request, so it ends, and the issue waits in verifying at
-// generation 2.
+// generation 2. The request's start launches the architect again in a lingering tree's resume, so
+// its pane comes up in that launch (attach) before it asks for a grant.
 func endedOnTheOwnersWithdrawal(r *doneByChecksRig, issue string) {
 	t := r.t
 	t.Helper()
@@ -1291,6 +1292,9 @@ func endedOnTheOwnersWithdrawal(r *doneByChecksRig, issue string) {
 		t.Fatalf("%s holds no open request to withdraw", issue)
 	}
 	architect := r.worker(claim.RoleArchitect)
+	if lastLaunch(t, r.rt, architect.token).BootToken != architect.bootToken {
+		r.attach(architect)
+	}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/defects/withdraw", api.DefectWithdrawRequest{GrantID: architect.grant(), Issue: issue,
 		Defect: strconv.FormatInt(request.ID, 10), Reason: "The widgets report their merge on main: the check after the merge passes there."}, false)
 	var withdrawn api.DefectWithdrawResponse
