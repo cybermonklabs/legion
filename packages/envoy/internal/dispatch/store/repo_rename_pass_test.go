@@ -628,11 +628,11 @@ func TestTheRenamePassKeepsTheRowsOfOwnerKeysThatRenameApart(t *testing.T) {
 const evalLineHoldKey = int64(0x524E414D0001)
 
 // holdTheEvalLine puts a trigger of the test's database alone before each statement that runs op
-// on table. The trigger lifts the lock timeout of the statement's transaction for the rest of it
-// (repoRenameLockTimeout), so a test that holds a lock the pass's line of the eval tables waits for
-// is no race against its 5 s. Given hold, it then makes the statement wait, before it reads a row,
-// for an advisory lock the answered transaction holds, which the test commits to let the line on.
-// Given no hold it answers nil.
+// on table, a table the line of the eval tables or another line of the pass writes. The trigger
+// lifts the lock timeout of the statement's transaction for the rest of it (repoRenameLockTimeout),
+// so a test that holds a lock the line waits for is no race against its 5 s. Given hold, it then
+// makes the statement wait, before it reads a row, for an advisory lock the answered transaction
+// holds, which the test commits to let the line on. Given no hold it answers nil.
 func holdTheEvalLine(t *testing.T, store *Store, op, table string, hold bool) pgx.Tx {
 	t.Helper()
 	ctx := context.Background()
@@ -1166,7 +1166,7 @@ const renamedSourceSaveSeed = `
 `
 
 // A settings save (delivery.PutProjectSettings) takes its project's lock and each repository's
-// (delivery.LockProject, LockDeployRepositories), then the change log's lock (6900, 0) in the
+// (LockDeliveryProject, LockDeployRepositories), then the change log's lock (6900, 0) in the
 // trigger of its write of project_delivery_settings where a logged column moves, and holds them
 // while it replaces the project's project_deploy_sources rows; a line of the pass that writes those
 // tables takes the change log's lock in the triggers of the statements that lock its rows. So the
@@ -1261,7 +1261,7 @@ func TestTheRenamePassLocksTheDeliverySettingsTablesBeforeTheirRows(t *testing.T
 			// takes the change log's lock for the moved population; then replaceSources' writes and
 			// the progress its repositories lose, after the pass has reached its wait.
 			replacement := row.replacement(t, save)
-			if _, err := save.Exec(ctx, LockDeliveryProject, row.project); err != nil {
+			if err := LockDeliveryProject(ctx, save, row.project); err != nil {
 				t.Fatalf("the settings save's lock of %s: %v", row.project, err)
 			}
 			if err := LockDeployRepositories(ctx, save, row.repos); err != nil {
@@ -1363,7 +1363,7 @@ const renamedDefaultSaveSeed = `
 		('OTHR', 0, 'github_workflow', 'cybermonklabs/legion', 'deploy.yml', '{release}', 'pr.yml');
 `
 
-// A settings save takes its project's lock (delivery.LockProject) and reads the project's default
+// A settings save takes its project's lock (LockDeliveryProject) and reads the project's default
 // repository under it (delivery.StoredSettings), and only then takes the lock of each repository
 // it reads, that default among them (LockDeployRepositories), and checks that no other delivery-on
 // project's source reads one (delivery.RepositoryOwner). So the line of projects.default_repo takes
@@ -1390,7 +1390,7 @@ func TestTheRenamePassLocksTheProjectsWhoseDefaultItMoves(t *testing.T) {
 	t.Cleanup(func() { _ = save.Rollback(context.Background()) })
 	// The save's statements up to its read of the stored settings: the project's lock, then the
 	// project's default repository.
-	if _, err := save.Exec(ctx, LockDeliveryProject, "TOOLS"); err != nil {
+	if err := LockDeliveryProject(ctx, save, "TOOLS"); err != nil {
 		t.Fatalf("the settings save's lock of TOOLS: %v", err)
 	}
 	var defaultRepo string

@@ -816,9 +816,9 @@ func SourceOf(rule delivery.DeliverySettings, repo *string) delivery.SourceInput
 }
 
 // SaveSettings saves input as its project's delivery settings, as actor, in a transaction of its
-// own, as the settings route saves them: under the project's lock (delivery.LockProject), over the
-// settings that lock holds (delivery.StoredSettings), through delivery.PutProjectSettings, whose
-// refusal names every project, as the server's own viewer sees them (model.ServerViewer). It
+// own, as the settings route saves them: under the project's lock (store.LockDeliveryProject),
+// over the settings that lock holds (delivery.StoredSettings), through delivery.PutProjectSettings,
+// whose refusal names every project, as the server's own viewer sees them (model.ServerViewer). It
 // answers what it stored.
 func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectSettingsInput, actor model.Actor) (delivery.ProjectSettings, error) {
 	tx, err := pool.Begin(ctx)
@@ -826,7 +826,7 @@ func SaveSettings(ctx context.Context, pool *store.Pool, input delivery.ProjectS
 		return delivery.ProjectSettings{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if err := delivery.LockProject(ctx, tx, input.Project); err != nil {
+	if err := store.LockDeliveryProject(ctx, tx, input.Project); err != nil {
 		return delivery.ProjectSettings{}, err
 	}
 	stored, err := delivery.StoredSettings(ctx, tx, input.Project)

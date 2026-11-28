@@ -823,13 +823,13 @@ func TestAnEventsSourceIsSavedAndReadBackThroughTheRoute(t *testing.T) {
 }
 
 // projectLockWait matches the statement at which a save waits for its project's delivery lock
-// (delivery.LockProject), as waitForLockWait reads it.
+// (store.LockDeliveryProject), as waitForLockWait reads it.
 const projectLockWait = `%pg_advisory_xact_lock(6902, hashtext(%`
 
 // heldSaveLocks counts the locks of a settings save that a session of the current database other
 // than $1 holds: a project's delivery lock (6902) and a repository's (6903), each of two keys
-// (objsubid 2: delivery.LockProject, store.LockDeployRepositories), and the lock of each eval the
-// database holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
+// (objsubid 2: store.LockDeliveryProject, store.LockDeployRepositories), and the lock of each eval
+// the database holds, of one key whose high half is classid (objsubid 1: evals' lockEvals).
 const heldSaveLocks = `
 	select count(*) from pg_locks
 	where locktype = 'advisory' and granted and pid <> $1
@@ -882,8 +882,8 @@ func (w *settingsLockWatch) askedSince(from int) []string {
 	return slices.Clone(w.asked[from:])
 }
 
-// hold begins a transaction that takes project's delivery lock (delivery.LockProject), as a save of
-// the project holds it, and leaves its backend out of the watch.
+// hold begins a transaction that takes project's delivery lock (store.LockDeliveryProject), as a
+// save of the project holds it, and leaves its backend out of the watch.
 func (w *settingsLockWatch) hold(t *testing.T, project string) pgx.Tx {
 	t.Helper()
 	holder, err := w.database.Pool.Begin(t.Context())
@@ -896,7 +896,7 @@ func (w *settingsLockWatch) hold(t *testing.T, project string) pgx.Tx {
 		t.Fatalf("read the holder's backend: %v", err)
 	}
 	w.holder.Store(pid)
-	if err := delivery.LockProject(t.Context(), holder, project); err != nil {
+	if err := store.LockDeliveryProject(t.Context(), holder, project); err != nil {
 		t.Fatalf("hold %s's lock: %v", project, err)
 	}
 	return holder
@@ -921,8 +921,8 @@ func workflowSourceInput(repo string) delivery.SourceInput {
 	}
 }
 
-// putBeside saves input in holder, which holds input's project's lock (delivery.LockProject), as
-// the settings route's write does: over the settings holder holds (delivery.StoredSettings), as
+// putBeside saves input in holder, which holds input's project's lock (store.LockDeliveryProject),
+// as the settings route's write does: over the settings holder holds (delivery.StoredSettings), as
 // bob.
 func putBeside(t *testing.T, holder pgx.Tx, input delivery.ProjectSettingsInput) {
 	t.Helper()
@@ -937,11 +937,11 @@ func putBeside(t *testing.T, holder pgx.Tx, input delivery.ProjectSettingsInput)
 
 // A save keeps the value a field it leaves out holds when the save is written, not when the save
 // read it: a PUT naming population_authors alone, sent while another save of the project holds the
-// project's lock (delivery.LockProject) with its write made but not committed, waits for that lock
-// and then keeps every field the other save wrote, its source's row and id included, beside its own
-// population. The other save's source reads a repository the PUT had not proved, so the PUT proves
-// it once the lock is free, before its own transaction, and asks GitHub nothing while a session
-// but the test's holder holds a save's lock (settingsLockWatch).
+// project's lock (store.LockDeliveryProject) with its write made but not committed, waits for that
+// lock and then keeps every field the other save wrote, its source's row and id included, beside
+// its own population. The other save's source reads a repository the PUT had not proved, so the
+// PUT proves it once the lock is free, before its own transaction, and asks GitHub nothing while a
+// session but the test's holder holds a save's lock (settingsLockWatch).
 func TestAPartialPutThatWaitedForAnotherSaveKeepsWhatThatSaveWrote(t *testing.T) {
 	t.Parallel()
 	watch := &settingsLockWatch{t: t}
@@ -991,13 +991,13 @@ func TestAPartialPutThatWaitedForAnotherSaveKeepsWhatThatSaveWrote(t *testing.T)
 
 // An enable that waits for another write of its project proves what that write left it reading: a
 // PUT turning delivery on, whose source reads the project's default repository, is sent while the
-// test holds the project's lock (delivery.LockProject) in a transaction that has made the other
-// write but not committed it: a save with delivery off naming another repository, or a move of
-// the default repository, which the default-repository route makes under that lock. Once the lock
-// is free the PUT finds its source reading a repository it never proved and proves it with no lock
-// held (settingsLockWatch): where the GitHub App can read it, the PUT saves, its target with it;
-// where it cannot, it refuses 409 DELIVERY_SETTINGS_ACCESS naming the source and writes nothing,
-// the settings left as the other write left them and the target with no new version.
+// test holds the project's lock (store.LockDeliveryProject) in a transaction that has made the
+// other write but not committed it: a save with delivery off naming another repository, or a move
+// of the default repository, which the default-repository route makes under that lock. Once the
+// lock is free the PUT finds its source reading a repository it never proved and proves it with no
+// lock held (settingsLockWatch): where the GitHub App can read it, the PUT saves, its target with
+// it; where it cannot, it refuses 409 DELIVERY_SETTINGS_ACCESS naming the source and writes
+// nothing, the settings left as the other write left them and the target with no new version.
 func TestAnEnableThatWaitedForAWriteOfItsRepositoryProvesTheRepositoryThatWriteLeft(t *testing.T) {
 	t.Parallel()
 	fake := readableRepos()

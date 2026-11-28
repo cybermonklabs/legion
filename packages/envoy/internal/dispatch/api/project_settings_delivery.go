@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // One project's delivery settings (dispatch://INFRA-978, R1 to R4): the switch, the deploy
@@ -356,9 +357,9 @@ func (save *settingsSave) resolve(ctx context.Context) ([]evals.Registration, er
 
 // write is an attempt's transaction: the settings and the target changes resolve worked out, in
 // one write (evals.Store.RegisterWith, which takes the changed evals' locks first), under the
-// project's lock (delivery.LockProject, then PutProjectSettings' repository locks), so each field
-// the body leaves out is read where no other save of the project can commit before this one: the
-// one read of the stored settings in the transaction (delivery.StoredSettings), which
+// project's lock (store.LockDeliveryProject, then PutProjectSettings' repository locks), so each
+// field the body leaves out is read where no other save of the project can commit before this one:
+// the one read of the stored settings in the transaction (delivery.StoredSettings), which
 // PutProjectSettings writes over. It asks GitHub nothing. It rolls back and answers
 // errStaleResolution, for resolveThenLock to resolve again, where delivery is on and a source
 // reads a repository no attempt proved (another save's source, or the default repository a source
@@ -366,7 +367,7 @@ func (save *settingsSave) resolve(ctx context.Context) ([]evals.Registration, er
 // since resolve read it (targetsMoved).
 func (save *settingsSave) write(ctx context.Context, changes []evals.Registration) ([]evals.Registered, error) {
 	return save.server.registry().RegisterWith(ctx, save.project, func(ctx context.Context, tx pgx.Tx) error {
-		if err := delivery.LockProject(ctx, tx, save.project); err != nil {
+		if err := store.LockDeliveryProject(ctx, tx, save.project); err != nil {
 			return err
 		}
 		stored, err := delivery.StoredSettings(ctx, tx, save.project)

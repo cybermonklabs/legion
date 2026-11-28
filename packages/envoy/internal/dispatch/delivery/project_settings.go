@@ -279,15 +279,6 @@ func sortedSet(values []string) []string {
 	return slices.Compact(slices.Sorted(slices.Values(values)))
 }
 
-// lowerSortedSet is repos in lower case, sorted, each once.
-func lowerSortedSet(repos []string) []string {
-	lower := make([]string, len(repos))
-	for i, repo := range repos {
-		lower[i] = strings.ToLower(repo)
-	}
-	return sortedSet(lower)
-}
-
 func deref(value *string) string {
 	if value == nil {
 		return ""
@@ -454,8 +445,8 @@ func DefaultRepo(ctx context.Context, q Querier, project string) (*string, error
 // StoredSettings is what a save of project's delivery settings writes over, read in q: its stored
 // settings and sources (GetProjectSettings), or, where it has saved none, its default repository
 // (DefaultRepo) with delivery off and no source; ErrProjectNotFound where no project has the key.
-// A save reads it once under the project's lock (LockProject) and hands it to PutProjectSettings,
-// which reads neither again.
+// A save reads it once under the project's lock (store.LockDeliveryProject) and hands it to
+// PutProjectSettings, which reads neither again.
 func StoredSettings(ctx context.Context, q Querier, project string) (ProjectSettings, error) {
 	settings, err := GetProjectSettings(ctx, q, project)
 	if !errors.Is(err, ErrNoSettings) {
@@ -477,17 +468,6 @@ const (
 	CodeDeliverySettingsInput       = "DELIVERY_SETTINGS_INPUT"
 	CodeDeliverySettingsAccess      = "DELIVERY_SETTINGS_ACCESS"
 )
-
-// LockProject takes the transaction-scoped lock of one project's delivery settings
-// (store.LockDeliveryProject), so two saves of one project run one after the other: the second
-// reads the sources the first wrote. A path that takes it takes it before any repository's lock
-// (store.LockDeployRepositories), so no two paths wait on each other.
-func LockProject(ctx context.Context, tx pgx.Tx, project string) error {
-	if _, err := tx.Exec(ctx, store.LockDeliveryProject, project); err != nil {
-		return fmt.Errorf("lock the delivery settings of %s: %w", project, err)
-	}
-	return nil
-}
 
 // RepositoryOwner is the delivery-on project other than project whose github_workflow source reads
 // repo, read in tx, and false where none does. The caller holds repo's lock
@@ -617,19 +597,19 @@ func checkSources(ctx context.Context, tx pgx.Tx, stored ProjectSettings, on boo
 }
 
 // PutProjectSettings saves input as its project's delivery settings in tx over stored, what the
-// project held as StoredSettings read it in tx under the project's lock (LockProject), which the
-// caller holds: a save reads the stored settings and the default repository once, and this reads
-// neither again. It answers a refusal or an error alone; a caller that shows the stored settings
-// reads them (GetProjectSettings). With delivery on, a github_workflow source that names no
-// repository needs the project's default repository (R2, DELIVERY_NO_DEFAULT_REPOSITORY), and no
-// repository may be a source of another delivery-on project (D1, DELIVERY_REPOSITORY_SHARED);
-// whatever the switch says, two github_workflow sources may not read one repository
-// (DELIVERY_SETTINGS_INPUT), and two that name none read one, the project's default repository,
-// whether the project has one or not. The checks (checkSources) run under each repository's lock,
-// before any write. The save replaces the project's sources: a source whose repository and rule
-// are both unchanged keeps its row, its id and its bookkeeping; every other source is written
-// afresh, and its repository's reconcile progress is cleared, so the next reconcile imports it
-// from the start, as the singleton's save did.
+// project held as StoredSettings read it in tx under the project's lock
+// (store.LockDeliveryProject), which the caller holds: a save reads the stored settings and the
+// default repository once, and this reads neither again. It answers a refusal or an error alone; a
+// caller that shows the stored settings reads them (GetProjectSettings). With delivery on, a
+// github_workflow source that names no repository needs the project's default repository (R2,
+// DELIVERY_NO_DEFAULT_REPOSITORY), and no repository may be a source of another delivery-on
+// project (D1, DELIVERY_REPOSITORY_SHARED); whatever the switch says, two github_workflow sources
+// may not read one repository (DELIVERY_SETTINGS_INPUT), and two that name none read one, the
+// project's default repository, whether the project has one or not. The checks (checkSources) run
+// under each repository's lock, before any write. The save replaces the project's sources: a source
+// whose repository and rule are both unchanged keeps its row, its id and its bookkeeping; every
+// other source is written afresh, and its repository's reconcile progress is cleared, so the next
+// reconcile imports it from the start, as the singleton's save did.
 func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInput, stored ProjectSettings, actor model.Actor, viewer *model.Viewer) error {
 	input.Sources = slices.Clone(input.Sources)
 	for i, source := range input.Sources {
@@ -676,18 +656,19 @@ func PutProjectSettings(ctx context.Context, tx pgx.Tx, input ProjectSettingsInp
 // row, and answers the refusal (*SettingsError) where the move would break one. It applies to a
 // delivery-on project holding a github_workflow source that names no repository, which reads the
 // default; every other project moves its default freely, a project whose every source names its
-// own repository among them. It takes the project's delivery lock first (LockProject), so it reads
-// the sources a save of the project wrote. It refuses a clear, DELIVERY_NEEDS_REPOSITORY, since the
-// source would read no repository, and holds the project's sources under next to the save's rules
-// (checkSources, under the lock of every repository they read under the old default and the new,
-// taken after the project's lock as the save takes them), where another source of the project that
-// names next is refused DELIVERY_REPOSITORY_SHARED. A move it lets through clears the reconcile
-// progress of the old and the new repository (ClearRepositoryProgress), as a save that changes a
-// source's repository does, so the next reconcile imports the new one's runs from the start; no
-// other delivery-on project's source reads either. An unknown project, a project with no settings,
-// and a write of the value the row holds are none of its business, and it answers nil.
+// own repository among them. It takes the project's delivery lock first
+// (store.LockDeliveryProject), so it reads the sources a save of the project wrote. It refuses a
+// clear, DELIVERY_NEEDS_REPOSITORY, since the source would read no repository, and holds the
+// project's sources under next to the save's rules (checkSources, under the lock of every
+// repository they read under the old default and the new, taken after the project's lock as the
+// save takes them), where another source of the project that names next is refused
+// DELIVERY_REPOSITORY_SHARED. A move it lets through clears the reconcile progress of the old and
+// the new repository (ClearRepositoryProgress), as a save that changes a source's repository does,
+// so the next reconcile imports the new one's runs from the start; no other delivery-on project's
+// source reads either. An unknown project, a project with no settings, and a write of the value the
+// row holds are none of its business, and it answers nil.
 func MoveDefaultRepository(ctx context.Context, tx pgx.Tx, project string, next *string, viewer *model.Viewer) error {
-	if err := LockProject(ctx, tx, project); err != nil {
+	if err := store.LockDeliveryProject(ctx, tx, project); err != nil {
 		return err
 	}
 	settings, err := GetProjectSettings(ctx, tx, project)
@@ -837,7 +818,7 @@ func repoStep(step, repo string) string {
 // (repoStep), so the next reconcile imports the repository's runs from the start of the backfill
 // window.
 func ClearRepositoryProgress(ctx context.Context, tx pgx.Tx, repos []string) error {
-	for _, repo := range lowerSortedSet(repos) {
+	for _, repo := range store.LowerSortedSet(repos) {
 		if _, err := tx.Exec(ctx, `
 			delete from delivery_reconcile_progress
 			where (starts_with(step, 'runs/') or starts_with(step, 'backfill/')) and right(step, length($1) + 1) = '/' || $1

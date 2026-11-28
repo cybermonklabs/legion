@@ -40,7 +40,7 @@ func save(t *testing.T, ctx context.Context, pool *store.Pool, input ProjectSett
 }
 
 // putSettings saves input as actor in a transaction of its own, as the settings route's write
-// does: under the project's lock (LockProject), over the settings that lock holds
+// does: under the project's lock (store.LockDeliveryProject), over the settings that lock holds
 // (StoredSettings), with a refusal that names every project (model.ServerViewer). It answers the
 // settings it stored, read in that transaction.
 func putSettings(ctx context.Context, pool *store.Pool, input ProjectSettingsInput, actor model.Actor) (ProjectSettings, error) {
@@ -49,7 +49,7 @@ func putSettings(ctx context.Context, pool *store.Pool, input ProjectSettingsInp
 		return ProjectSettings{}, err
 	}
 	defer func() { _ = tx.Rollback(context.Background()) }()
-	if err := LockProject(ctx, tx, input.Project); err != nil {
+	if err := store.LockDeliveryProject(ctx, tx, input.Project); err != nil {
 		return ProjectSettings{}, err
 	}
 	stored, err := StoredSettings(ctx, tx, input.Project)
