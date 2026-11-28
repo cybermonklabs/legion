@@ -271,18 +271,21 @@ var headDocumentsStatement = `
 // headRowsWhole is every row of the issue $1, one range of issue_head_nodes' primary key.
 const headRowsWhole = `select * from issue_head_nodes whole where whole.issue_key = $1`
 
-// headRowsSkeleton is the rows of the issue $1's skeleton (HeadSkeleton), each a range of
-// issue_head_nodes' primary key, which sorts byte by byte: every row of a kind other than a
-// block, a comment and a comment's block; the blocks whose address $3 and $4 bound, a pair for each
-// document of the skeleton and one for the addresses below the issue's own, and the blocks whose
-// address is $6 or above; and the comments $5 names, with their blocks. Each pair of bounds, and
-// each comment of the page, is a range of its own read through the key (a lateral subquery Postgres
-// keeps, `offset 0`): as a join, Postgres reckons each pair to keep a ninth of the issue's blocks,
-// and over an issue of 46,000 blocks it read every row of the table rather than the 1,460 the
-// pairs bound. The blocks at $6 or above are bounded by a subquery of $6, which Postgres reads as
-// a value it does not know when it plans: given $6 itself it reckoned, off the addresses of the
-// 9,252 comment blocks of an issue of the most comments, which all sort above it, that the range
-// kept 11,875 of its 6 blocks, and read the whole table (45 ms of a 51 ms statement).
+// headRowsSkeleton is the rows of the issue $1's skeleton (HeadSkeleton): every row of a kind other
+// than a block, a comment and a comment's block, each kind a range of issue_head_nodes' primary
+// key, which sorts byte by byte; the blocks whose address $3 and $4 bound, a pair for each document
+// of the skeleton, each a range of the key; every block of the issue that is no block of its own
+// documents (headForeignSQL), through issue_head_nodes_foreign; and the comments $5 names, with
+// their blocks. Each pair of bounds, and each comment of the page, is a range of its own read
+// through the key (a lateral subquery Postgres keeps, `offset 0`): as a join, Postgres reckons each
+// pair to keep a ninth of the issue's blocks, and over an issue of 46,000 blocks it read every row
+// of the table rather than the 1,460 the pairs bound. The blocks that are no blocks of the issue's
+// own documents were two ranges of the key, the addresses below `<key>/` and those from `<key>0` on,
+// that one bounded by a subquery Postgres reads as a value it does not know when it plans: given
+// the value itself it reckoned, off the addresses of the 9,252 comment blocks of an issue of the
+// most comments, which all sort above it, that the range kept 11,875 of its 6 blocks, and read the
+// whole table (45 ms of a 51 ms statement); as the subquery, it reckoned a third of the issue's
+// blocks, and read the whole table where the issue held most of its rows.
 var headRowsSkeleton = `
 		select * from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind < '` + BlockNodeKind + `'
 		union all
@@ -296,7 +299,7 @@ var headRowsSkeleton = `
 			  and blocks.node_address >= bounds.low and blocks.node_address < bounds.high
 			offset 0) blocks
 		union all
-		select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= (select $6::text)
+		select * from issue_head_nodes blocks where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and ` + headForeignSQL + `
 		union all
 		select comments.* from issue_head_nodes comments
 		where comments.issue_key = $1 and comments.node_kind = '` + string(ItemComment) + `' and comments.node_address = any($5::text[])
@@ -318,18 +321,15 @@ type HeadSkeleton struct {
 	Comments  []string
 }
 
-// bounds is the low and the high end of each range of addresses of the blocks the skeleton reads
-// below the high end of its last range, above, which begins at the lowest address past the
-// issue's own: the addresses below `<key>/`, and `<ref_key>#` up to `<ref_key>$` for each of
-// Documents; every high end is its range's prefix with its last byte one higher, past which no
-// address that begins with the prefix sorts.
-func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above string) {
-	low, high = make([]string, 0, len(skeleton.Documents)+1), make([]string, 0, len(skeleton.Documents)+1)
-	low, high = append(low, ""), append(high, issueKey+"/")
+// bounds is the low and the high end of the range of addresses of the blocks of each of
+// Documents: `<ref_key>#` up to `<ref_key>$`, the range's prefix with its last byte one higher,
+// past which no address that begins with the prefix sorts.
+func (skeleton HeadSkeleton) bounds() (low, high []string) {
+	low, high = make([]string, 0, len(skeleton.Documents)), make([]string, 0, len(skeleton.Documents))
 	for _, document := range skeleton.Documents {
 		low, high = append(low, document+"#"), append(high, document+"$")
 	}
-	return low, high, issueKey + "0"
+	return low, high
 }
 
 // HeadView is the part of an issue's rows a view of its tree reads (R8), so that what a view reads
@@ -360,6 +360,17 @@ func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above 
 // for any node the rows do not hold. The conversion of an issue into its room leaves each block of
 // its documents so at its old address (docs' retireDocuments): beside the nodes in the room of the
 // typed blocks of a spec of 1,393 requirements, a spec view read those 1,398 old ones too.
+//
+// It finds the blocks of the issue's own documents it reads through indexes that each hold one kind
+// of them (headRowsView), and of the others it reads and tests only the few those indexes hold too:
+// a block whose supertag is longer than one of Types and begins with it, one whose document_blocks
+// type is not its supertag, and one whose text holds a typed block other than its own. Read and
+// tested one by one, the blocks of the issue's other documents were what a view's read of its rows
+// cost: 40 ms of the spec view's 41 ms on an issue whose 65 other documents hold 45,008 paragraphs.
+//
+// Types are names of typed blocks, as a directive writes one (ASCII letters, digits, `_` and `-`):
+// HeadViewRows refuses any other, since a type bounds a range of supertags and is a part of a
+// pattern. A view of no types reads no typed block.
 type HeadView struct {
 	Types    []string
 	Comments []string
@@ -367,25 +378,77 @@ type HeadView struct {
 }
 
 // headRowsView is the rows of the issue $1 a view reads (HeadView), each read once by its key in a
-// lateral subquery Postgres keeps (`offset 0`): own_blocks is, of the issue's own blocks, those it
-// reads of their own (selected) and those that stand under the issue's node and are not gone
-// (child), in one range of the key that every block of the issue's own documents is read through
-// once, each with its whole row; moves is each block of Nodes and each block the moved_to tuples of
-// one carry it to, at most graphstore.MovedToHops steps, as TreeMovedTo follows them at the head
-// cut, which every tuple the read's snapshot holds is within; wanted is the keys of the rows it
-// reads of its own, the parent of each selected block of own_blocks, the first of its children in
-// the order of the issue's children (treeChildOrder) and the blocks of moves with the same block id
-// in the room of each, the addresses past the issue's own bounded by a subquery of $4 as
-// headRowsSkeleton bounds them; climbed is those and the parent of each, up through the blocks,
-// comments and comments' blocks, a comment's block climbing to its comment too, which its address
-// names (`comment/<uuid>#<id>`) and which the walk takes it under (docs' readConversation) where its
-// row names no parent; and read is those and the blocks of each comment among them, each a range of
-// the key. It answers the selected blocks of own_blocks off the rows own_blocks read, and every
-// other row of read by its key: a selected block's row read again by its key to climb to its
-// parent, and again to be answered, was two probes of the key for each of the 1,398 typed blocks
-// of a spec view of 1,393 requirements. $3 is the lowest address of the issue's own blocks
-// (`<key>/`), $5 and $6 the supertags and the pattern of the opening of the typed blocks of
-// HeadView's Types, $7 the comments and $8 and $9 the kinds and the addresses of the nodes it names.
+// lateral subquery Postgres keeps (`offset 0`). $3 and $4 bound the addresses of the issue's own
+// blocks, the blocks of its documents (`<key>/` up to `<key>0`), $5 and $6 are the view's types and
+// the pattern of their opening (typedOpening), $7 the comments and $8 and $9 the kinds and the
+// addresses of the nodes it names.
+//
+// own_blocks is the issue's blocks a view reads of their own (selected): a block whose supertag or
+// document_blocks type is one of $5, or whose text opens a typed block of one somewhere, and on an
+// issue under another each block of the fragment of its tree that is its own (fragment), none of
+// them a gone block that no document_blocks row stands for. It reads them through the indexes of
+// issue_head_nodes that hold the issue's blocks of each kind (migration
+// 20261128054905_issue_tree_head_view_indexes), each arm a range or an equality of one of them,
+// tests each block an arm reads with selected, and keeps a block two arms read once:
+//
+//   - for each type, the blocks whose supertag begins with it, one range of
+//     issue_head_nodes_supertag, which sorts byte by byte, up to the type with its last byte one
+//     higher (a type is a name of ASCII bytes, HeadView): the blocks of the type, and of a longer
+//     name that begins with it, whose text the pattern finds the type in where it opens the longer
+//     name, as `:::check` begins `:::checklist`;
+//   - for each type, the blocks whose document_blocks type is it and is not their supertag
+//     (issue_head_nodes_block_type): a block whose type is its supertag is in the first arm where
+//     its type is one of $5;
+//   - the blocks whose text holds `:::` but as no more than the opening of a typed block of their
+//     own supertag at its start and fences before white space or the end (headOpenedSQL,
+//     issue_head_nodes_opened): the pattern finds a type in the text of a block it leaves out only
+//     at its start, where the type begins the block's supertag, so the first arm reads that block;
+//   - the blocks of the fragment (issue_head_nodes_fragment).
+//
+// So the arms read every block selected passes, and besides those only a block whose supertag
+// begins with a type and is longer, whose type is not its supertag, or whose text holds a typed
+// block other than its own, each read through an index that holds it with the blocks it serves
+// and none of the issue's other blocks. In one range of the key, tested one by one, those other
+// blocks were the statement's time: the spec view of an issue whose 65 other documents hold 45,008
+// paragraphs spent 40.23 ms of its 41.24 ms of database time a reading in this statement, and the
+// spec, Verification and decisions views of an issue of the largest plan each tested the plan's
+// 2,786 blocks (19.27 ms of the spec view's 21.68).
+//
+// No arm bounds a block's address to the issue's own documents (`<key>/` up to `<key>0`): the
+// blocks past them are read whole (wanted), so one of them an arm reads too is answered once, off
+// own_blocks. Bounded by that range too, an arm was read through the range rather than its own
+// index, block by block, where the store held no statistics of the table: Postgres reckons a range
+// whose end it does not know when it plans to keep a two-hundredth of the rows. And each type is an
+// equality of its own in the first two arms, which Postgres reckons by the share of one type: of
+// `block_type = any($5)`, a list it does not know when it plans, it reckoned nearly every block to
+// pass, and read the 9,282 blocks of an issue in one range of the key or in one scan of the table.
+//
+// first_child is the first of the issue's own blocks that stand under the issue's node and are not
+// gone, in the order of the issue's children (treeChildOrder): of a block, its rank byte by byte
+// and then its address, and after every ranked block those with no rank, by when each was made, a
+// block made at no time first, and then by address. issue_head_nodes_children holds the blocks
+// under each issue's node in that order of the ranked ones, so the first is one entry of it; the
+// ones with no rank are read and sorted. The first child tells the issue's memo (HeadView), and no
+// other block under the issue's node is read: the spec view of an issue of the largest plan read
+// the plan's top-level blocks to find it.
+//
+// moves is each block of Nodes and each block the moved_to tuples of one carry it to, at most
+// graphstore.MovedToHops steps, as TreeMovedTo follows them at the head cut, which every tuple the
+// read's snapshot holds is within; wanted is the keys of the rows it reads of its own - every row of
+// a kind other than a block, a comment and a comment's block, and every block of the issue that is
+// no block of its own documents (headForeignSQL, issue_head_nodes_foreign) - the parent of each
+// block of own_blocks, first_child, and the blocks of moves with the same block id in the room of
+// each; climbed is those and the parent of each, up through the blocks, comments and comments'
+// blocks, a comment's block climbing to its comment too, which its address names
+// (`comment/<uuid>#<id>`) and which the walk takes it under (docs' readConversation) where its row
+// names no parent; and read is those and the blocks of each comment among them, each a range of
+// the key. It answers the blocks of own_blocks off the rows own_blocks read, and every other row of
+// read by its key: a selected block's row read again by its key to climb to its parent, and again
+// to be answered, was two probes of the key for each of the 1,398 typed blocks of a spec view of
+// 1,393 requirements. The blocks that are no blocks of the issue's own documents were two ranges of
+// the key, below `<key>/` and from `<key>0` on, of which Postgres reckoned a third of the issue's
+// blocks to lie in each where it did not know the bound when it planned; over a table that held one
+// issue's 9,282 blocks it read each range in a scan of the whole table, 9,315 rows for none.
 //
 // The same block id in the room of a block of moves is block_room_address's answer, read in one
 // join of each document moves names to its room rather than through the function, once a block:
@@ -394,24 +457,63 @@ type HeadView struct {
 // block's document has a room (artifacts' ref_key is unique, and document_rooms' key is the
 // document) and none where it has not, which the function answers null and the read left out.
 var headRowsView = func() string {
+	gone := `blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `'`
 	selected := `(blocks.supertag = any($5::text[]) or blocks.block_type = any($5::text[]) or ` + typedTextSQL("blocks.text", "$6") + `
-		       or blocks.document_id = (
-		           select tree.artifact_id from issue_trees tree
-		           join issues own on own.key = tree.issue_key
-		           join issues above on above.key = own.parent_key
-		           where tree.issue_key = $1))
-		       and (blocks.document_id is not null
-		            or blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `')`
-	child := `blocks.parent_kind = '` + graphstore.KindIssue + `' and blocks.parent_address = $1
-		       and blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `'`
+			       or blocks.document_id = (select fragment.id from fragment))
+			  and (blocks.document_id is not null or ` + gone + `)`
+	arm := `select blocks.node_kind, blocks.node_address, blocks.parent_kind, blocks.parent_address, blocks
+			from issue_head_nodes blocks
+			where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `'`
+	child := `blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $3 and blocks.node_address < (select $4::text)
+			   and blocks.parent_kind = '` + graphstore.KindIssue + `' and blocks.parent_address = $1 and ` + gone
 	return `
-	with recursive own_blocks (kind, address, rank, made_at, selected, child, parent_kind, parent_address, whole) as (
-		select blocks.node_kind, blocks.node_address, blocks.rank, blocks.made_at, coalesce(` + selected + `, false), coalesce(` + child + `, false),
-		       blocks.parent_kind, blocks.parent_address, blocks
-		from issue_head_nodes blocks
-		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $3 and blocks.node_address < (select $4::text)
-		  and (` + selected + `
-		       or ` + child + `)
+	with recursive fragment (id) as (
+		select tree.artifact_id from issue_trees tree
+		join issues own on own.key = tree.issue_key
+		join issues above on above.key = own.parent_key
+		where tree.issue_key = $1
+	), own_blocks (kind, address, parent_kind, parent_address, whole) as (
+		select distinct on (arms.address) arms.kind, arms.address, arms.parent_kind, arms.parent_address, arms.whole
+		from (
+			select typed.* from unnest($5::text[]) named (view_type)
+			cross join lateral (
+			` + arm + `
+			  and blocks.supertag is not null
+			  and blocks.supertag collate "C" >= named.view_type
+			  and blocks.supertag collate "C" < left(named.view_type, -1) || chr(ascii(right(named.view_type, 1)) + 1)
+			  and ` + selected + `
+			offset 0) typed
+			union all
+			select typed.* from unnest($5::text[]) named (view_type)
+			cross join lateral (
+			` + arm + `
+			  and blocks.block_type = named.view_type and blocks.block_type is not null and blocks.block_type is distinct from blocks.supertag
+			  and ` + selected + `
+			offset 0) typed
+			union all
+			` + arm + `
+			  and ` + headOpenedSQL + `
+			  and ` + selected + `
+			union all
+			` + arm + `
+			  and blocks.document_id = (select fragment.id from fragment) and blocks.document_id is not null
+			  and ` + selected + `
+		) arms (kind, address, parent_kind, parent_address, whole)
+		order by arms.address
+	), first_child (kind, address) as (
+		select firsts.kind, firsts.address from (
+			(select 1, blocks.node_kind, blocks.node_address from issue_head_nodes blocks
+			 where ` + child + ` and blocks.rank is not null
+			 order by blocks.rank collate "C", blocks.node_address
+			 limit 1)
+			union all
+			(select 2, blocks.node_kind, blocks.node_address from issue_head_nodes blocks
+			 where ` + child + ` and blocks.rank is null
+			 order by blocks.made_at nulls first, blocks.node_address
+			 limit 1)
+		) firsts (class, kind, address)
+		order by firsts.class
+		limit 1
 	), moves (address, hop) as (
 		select distinct named.address, 0 from unnest($8::text[], $9::text[]) named (kind, address) where named.kind = '` + BlockNodeKind + `'
 		union all
@@ -428,17 +530,12 @@ var headRowsView = func() string {
 		select kinds.node_kind, kinds.node_address from issue_head_nodes kinds where kinds.issue_key = $1 and kinds.node_kind > '` + ItemComment.BlockKind() + `'
 		union all
 		select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
-		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address < $3
-		union all
-		select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
-		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= (select $4::text)
+		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and ` + headForeignSQL + `
 		union all
 		select own_blocks.parent_kind, own_blocks.parent_address from own_blocks
-		where own_blocks.selected and own_blocks.parent_kind in ('` + BlockNodeKind + `', '` + string(ItemComment) + `', '` + ItemComment.BlockKind() + `')
+		where own_blocks.parent_kind in ('` + BlockNodeKind + `', '` + string(ItemComment) + `', '` + ItemComment.BlockKind() + `')
 		union all
-		(select own_blocks.kind, own_blocks.address from own_blocks where own_blocks.child
-		 order by ` + treeChildOrder("own_blocks.rank", "own_blocks.made_at", "own_blocks.kind", "own_blocks.address") + `
-		 limit 1)
+		select first_child.kind, first_child.address from first_child
 		union all
 		select '` + BlockNodeKind + `', moves.address from moves where moves.hop > 0
 		union all
@@ -479,7 +576,7 @@ var headRowsView = func() string {
 			offset 0) blocks
 		where climbed.kind = '` + string(ItemComment) + `'
 	)
-	select (own_blocks.whole).* from own_blocks where own_blocks.selected
+	select (own_blocks.whole).* from own_blocks
 	union all
 	select viewed.* from read
 	cross join lateral (
@@ -487,13 +584,45 @@ var headRowsView = func() string {
 		where viewed.issue_key = $1 and viewed.node_kind = read.kind and viewed.node_address = read.address
 		offset 0) viewed
 	where not exists (
-		select from own_blocks held where held.selected and held.kind = read.kind and held.address = read.address)`
+		select from own_blocks held where held.kind = read.kind and held.address = read.address)`
 }()
 
+// headOpenedSQL is the test of a head row of a block whose text holds `:::` other than as the
+// opening of a typed block of its own supertag at its start, `:::<supertag>{`, and as fences before
+// white space or the end: issue_head_nodes_opened's predicate as the migration writes it, so that
+// Postgres finds the index serves the arm of headRowsView that states it. A typed block whose text
+// holds no other fence opens no typed block but its own.
+const headOpenedSQL = `position(':::' in coalesce(blocks.text, '')) > 0
+			  and (blocks.supertag is null or not starts_with(blocks.text, ':::' || blocks.supertag || '{') or substr(blocks.text, 2) ~ ':::\S')`
+
+// headForeignSQL is the test of a head row of a block whose address does not begin with its
+// issue's key and `/`, so it is no block of one of the issue's own documents: a finding of a lens
+// and a block of another issue's document placed under a node of the issue. Those are the
+// addresses below `<key>/` and from `<key>0` on, byte by byte. It is issue_head_nodes_foreign's
+// predicate as the migration writes it, so that Postgres finds the index serves the arm of
+// headRowsView and of headRowsSkeleton that states it.
+const headForeignSQL = `not starts_with(blocks.node_address, (blocks.issue_key || '/') collate "C")`
+
 // typedOpening is the pattern of a text that opens a typed block of one of types somewhere
-// (HeadView): `:::` and the type's name.
+// (HeadView): `:::` and the type's name, which a longer name that begins with it holds too.
 func typedOpening(types []string) string {
 	return `:::(?:` + strings.Join(types, `|`) + `)`
+}
+
+// typedName says whether name is the name of a typed block as a directive writes one (pmdoc's
+// ParseTypedDirectiveOpen): ASCII letters, digits, `_` and `-`, at least one.
+func typedName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for index := range len(name) {
+		switch char := name[index]; {
+		case char >= 'a' && char <= 'z', char >= 'A' && char <= 'Z', char >= '0' && char <= '9', char == '_', char == '-':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // typedTextSQL is the test that the SQL text column opens a typed block somewhere whose name the
@@ -523,27 +652,37 @@ type HeadTree struct {
 func HeadRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, skeleton *HeadSkeleton) (*HeadTree, bool, error) {
 	statement, args := headRowsStatement(headRowsWhole), []any{issueKey, VisibilityArg(who)}
 	if skeleton != nil {
-		low, high, above := skeleton.bounds(issueKey)
+		low, high := skeleton.bounds()
 		comments := skeleton.Comments
 		if comments == nil {
 			comments = []string{}
 		}
-		statement, args = headRowsStatement(headRowsSkeleton), append(args, low, high, comments, above)
+		statement, args = headRowsStatement(headRowsSkeleton), append(args, low, high, comments)
 	}
 	return readHeadRows(ctx, q, issueKey, statement, args)
 }
 
 // HeadViewRows is the rows of the issue issueKey's tree the head projection holds that view
 // selects (HeadView), read for who, and whether the issue is marked whole, as HeadRows answers
-// them.
+// them. A type of view that is no typed block's name (typedName) is refused, and a view of no
+// types sends no pattern, which no text matches.
 func HeadViewRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, view HeadView) (*HeadTree, bool, error) {
+	var opening any
+	if len(view.Types) > 0 {
+		for _, name := range view.Types {
+			if !typedName(name) {
+				return nil, false, fmt.Errorf("read the head rows of %s for a view: its type %q is no typed block's name", issueKey, name)
+			}
+		}
+		opening = typedOpening(view.Types)
+	}
 	comments := view.Comments
 	if comments == nil {
 		comments = []string{}
 	}
 	kinds, addresses := targetColumns(view.Nodes)
 	return readHeadRows(ctx, q, issueKey, headRowsStatement(headRowsView), []any{issueKey, VisibilityArg(who), issueKey + "/", issueKey + "0",
-		view.Types, typedOpening(view.Types), comments, kinds, addresses})
+		view.Types, opening, comments, kinds, addresses})
 }
 
 // readHeadRows reads the head rows statement, a headRowsStatement, answers with args, and builds
