@@ -270,15 +270,31 @@ func deliveryApplies(rules *delivery.SourceRules, runs []delivery.DeliveryRun, j
 	return applies
 }
 
-// deliveryContainingRun is the deploy that ships pr first (delivery.ContainingRun) among applies, the
-// deploys of every source repository (deliveryApplies), and the repository that tracks it: pr's own
-// where a source reads it, and "" where none does, whose pull request no deploy ships
-// (delivery.ComputeDeployedStatus answers it not tracked).
-func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPullRequest, applies map[string][]delivery.Apply) (*delivery.Apply, string) {
+// deliveryShipping is each source repository's deploys among runs (deliveryApplies), by the
+// repository's delivery.RuleKey, indexed so a pull request's first shipping deploy is a binary
+// search (delivery.ShippingIndex) where delivery.ContainingRun reads every deploy. Each derive of
+// a timeline or a narrowing asks it of every pull request it holds, so a read of many pull
+// requests and many deploys, as the narrowed eval read of 84 days with a compare range is
+// (evalNarrowing.keep), grew with the one times the other (dispatch://INFRA-2918, T33).
+func deliveryShipping(rules *delivery.SourceRules, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob) map[string]delivery.ShippingIndex {
+	applies := deliveryApplies(rules, runs, jobsByRun)
+	shipping := make(map[string]delivery.ShippingIndex, len(applies))
+	for key, repoApplies := range applies {
+		shipping[key] = delivery.NewShippingIndex(repoApplies)
+	}
+	return shipping
+}
+
+// deliveryContainingRun is the deploy that ships pr first (delivery.ContainingRun) among the
+// deploys of every source repository (deliveryShipping), and the repository that tracks it: pr's
+// own where a source reads it, and "" where none does, whose pull request no deploy ships
+// (delivery.ComputeDeployedStatus answers it not tracked). A repository with no deploy has the
+// empty index, which ships nothing.
+func deliveryContainingRun(rules *delivery.SourceRules, pr delivery.DeliveryPullRequest, shipping map[string]delivery.ShippingIndex) (*delivery.Apply, string) {
 	if _, tracked := rules.For(pr.Repo); !tracked {
 		return nil, ""
 	}
-	return delivery.ContainingRun(pr, pr.Repo, applies[delivery.RuleKey(pr.Repo)]), pr.Repo
+	return shipping[delivery.RuleKey(pr.Repo)].Containing(pr, pr.Repo), pr.Repo
 }
 
 // deliveryEvals reads the evals of slugs whose targets the deployment-wide delivery answers judge
@@ -695,12 +711,12 @@ func deliveryIssueProjects(issues map[string]deliveryIssue) []string {
 }
 
 // derive computes, from the population alone, each pull request's deploy from its own source
-// repository's deploys (deliveryApplies, deliveryContainingRun), its issue's facts, its Parent agent
-// and its facet values, the waiting rows, and the labels and selection the timeline reads beside
-// them. The issue titles and components are those of the issues the population's pull requests
-// name, so a narrowed population derives what a fresh read of its window would.
+// repository's deploys (deliveryShipping, deliveryContainingRun), its issue's facts, its Parent
+// agent and its facet values, the waiting rows, and the labels and selection the timeline reads
+// beside them. The issue titles and components are those of the issues the population's pull
+// requests name, so a narrowed population derives what a fresh read of its window would.
 func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived {
-	applies := deliveryApplies(rules, p.applyRuns, p.jobsByRun)
+	shipping := deliveryShipping(rules, p.applyRuns, p.jobsByRun)
 	parentAgents := delivery.NewParentAgents(p.groups, p.titles)
 	sessionTitles := map[string]string{}
 	sessionPRCounts := map[string]int{}
@@ -764,7 +780,7 @@ func (p deliveryPopulation) derive(rules *delivery.SourceRules) deliveryDerived 
 	rows := make([]deliveryRow, 0, len(p.prs))
 	shipped := map[int64][]delivery.DeliveryShippedPRView{}
 	for _, pr := range p.prs {
-		apply, tracked := deliveryContainingRun(rules, pr, applies)
+		apply, tracked := deliveryContainingRun(rules, pr, shipping)
 		var deployRun *int64
 		var deployedAt *time.Time
 		if apply != nil {
@@ -838,9 +854,9 @@ func (p deliveryPopulation) narrowedTo(rules *delivery.SourceRules, from time.Ti
 			narrowed.waiting = append(narrowed.waiting, waiting)
 		}
 	}
-	applies := deliveryApplies(rules, p.applyRuns, p.jobsByRun)
+	shipping := deliveryShipping(rules, p.applyRuns, p.jobsByRun)
 	for _, pr := range left {
-		apply, tracked := deliveryContainingRun(rules, pr, applies)
+		apply, tracked := deliveryContainingRun(rules, pr, shipping)
 		if tracked == "" {
 			continue
 		}

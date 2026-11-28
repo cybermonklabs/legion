@@ -233,6 +233,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 	shipping := len(kept) > 0 && (families[atReadPullRequests] || needDeploys)
 	applies := map[string]delivery.ApplyRows{}
 	posted := map[string]postedRecord{}
+	ships := map[string]*readShipping{}
 	var sources []NarrowSource
 	for _, repo := range all {
 		if IsEventsRepo(repo.name) {
@@ -251,6 +252,7 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 			return nil, fmt.Errorf("read the deploy runs of %s from %s on: %w", repo.name, days[0].Format(time.DateOnly), err)
 		}
 		applies[repo.name] = applied
+		ships[repo.name] = newReadShipping(applied, repo.rule)
 		sources = append(sources, NarrowSource{Settings: repo.rule, ApplyRuns: applied.Runs, ApplyJobs: applied.Jobs})
 	}
 	if read.Narrow != nil {
@@ -281,8 +283,13 @@ func ComputeAtRead(ctx context.Context, q delivery.Querier, read AtRead) ([]Wind
 				continue
 			}
 			if held, found := applies[repo.name]; found {
-				if one.applies, err = held.Since(day); err != nil {
-					return nil, err
+				// The day's pull requests ship by the read's deploys (readShipping); the day's own
+				// apply runs are read only for its deploys' shipped sets.
+				one.shipping = ships[repo.name]
+				if needDeploys {
+					if one.applies, err = held.Since(day); err != nil {
+						return nil, err
+					}
 				}
 			}
 			if needDeploys {

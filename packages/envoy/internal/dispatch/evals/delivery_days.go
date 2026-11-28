@@ -349,15 +349,43 @@ func (d deliveryRead) zeros(project string) []DayRow {
 // apply runs and its CI runs, with refused the window of the earlier rows of its deploys the bound
 // of a window's read refused (delivery.DaysDeploys.Refused), nil where none did; or, of an events
 // repository (IsEventsRepo), its project's posted deploys (posted), which a day's rows read whole
-// (postedDayAs).
+// (postedDayAs). A read-time computation's day (ComputeAtRead) carries its repository's deploys
+// over the whole read (shipping), which ship the day's pull requests in place of its own apply
+// runs, and holds those only where it reads the day's deploys, whose shipped sets read them.
 type repoReads struct {
 	settings delivery.DeliverySettings
 	since    time.Time
 	deploys  delivery.Deploys
 	applies  delivery.ApplyRows
+	shipping *readShipping
 	ci       delivery.CIRows
 	refused  *delivery.RefusedWindow
 	posted   postedRecord
+}
+
+// readShipping is one repository's deploys among the apply runs a read-time computation read from
+// its first day on (ComputeAtRead), judged once under the repository's rule
+// (delivery.ProductionApplies) and indexed (delivery.ShippingIndex), with those runs by id: what a
+// day's rows read of its apply runs to ship its pull requests (dayAs). A pull request merged on a
+// day ships by a deploy GitHub created after its merge, so on or after that day, and each run's
+// verdict is its own, so the index over every run from the first day answers a day's pull request
+// as that day's own apply runs (delivery.ApplyRows.Since) do. Judging those again on each day, over
+// every run created from that day on, made the narrowed eval read of 84 days with a compare range
+// grow with its days times its runs (dispatch://INFRA-2918, T33).
+type readShipping struct {
+	index delivery.ShippingIndex
+	runs  map[int64]delivery.DeliveryRun
+}
+
+// newReadShipping is applied's deploys under settings, its repository's rule, indexed, and its runs
+// by id (readShipping).
+func newReadShipping(applied delivery.ApplyRows, settings delivery.DeliverySettings) *readShipping {
+	runs := make(map[int64]delivery.DeliveryRun, len(applied.Runs))
+	for _, run := range applied.Runs {
+		runs[run.RunID] = run
+	}
+	applies := delivery.ProductionApplies(applied.Runs, applied.Jobs, settings.Production()).Applies
+	return &readShipping{index: delivery.NewShippingIndex(applies), runs: runs}
 }
 
 // readDeliveryDays reads the delivery and CI rows of each of days (UTC midnights, in order and
@@ -551,10 +579,11 @@ func daysOf(days []time.Time) string {
 // dayAs is the day's rows as read with one.settings.DeployRepo as the deploy repository, under its
 // rule: prs, the pull requests merged that day, each shipped by its first shipping apply among that
 // repository's apply runs (delivery.ContainingRun, under which a pull request of that repository
-// alone ships); that repository's deploys, each with the pull requests it ships
-// (delivery.Deploys.ShippedBy) and counted for the projects and owner keys attribution.deploy
-// names, the repository's source key where it ships none; and its CI runs, the push runs by the
-// cards of the rule; each attributed to its projects.
+// alone ships), the day's own or a read-time computation's over its whole read (one.shipping);
+// that repository's deploys, each with the pull requests it ships (delivery.Deploys.ShippedBy) and
+// counted for the projects and owner keys attribution.deploy names, the repository's source key
+// where it ships none; and its CI runs, the push runs by the cards of the rule; each attributed to
+// its projects.
 func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, one repoReads) DeliveryDay {
 	settings := one.settings
 	read := DeliveryDay{Day: day, deployRepo: settings.DeployRepo, since: one.since, cards: measures.DeployCards(settings)}
@@ -562,15 +591,14 @@ func (a attribution) dayAs(day time.Time, prs []delivery.DeliveryPullRequest, on
 	for _, apply := range one.deploys.Applies {
 		reached[apply.RunID] = true
 	}
-	applies := delivery.ProductionApplies(one.applies.Runs, one.applies.Jobs, settings.Production()).Applies
-	applyRuns := make(map[int64]delivery.DeliveryRun, len(one.applies.Runs))
-	for _, run := range one.applies.Runs {
-		applyRuns[run.RunID] = run
+	shipping := one.shipping
+	if shipping == nil {
+		shipping = newReadShipping(one.applies, settings)
 	}
 	for _, pr := range prs {
 		// A partial row, whose opening is not known yet, as readDeliveryDays leaves it out.
 		if pr.CreatedAt != nil {
-			read.prs = append(read.prs, a.pullRequest(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies), applyRuns))
+			read.prs = append(read.prs, a.pullRequest(pr, shipping.index.Containing(pr, settings.DeployRepo), shipping.runs))
 		}
 	}
 	if len(one.deploys.Started.Runs) > 0 {
