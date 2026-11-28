@@ -230,15 +230,95 @@ func Accepted(issue Issue) bool {
 // person's approval as its live event read it before either opens a step; and a step carried onto
 // a child keeps a basis or a rest only on an ancestor it passes (admit's carriedGate).
 func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, *Issue, error) {
+	shown, _, err := CopyAcceptance(ctx, store, tx, ancestor)
+	if err != nil || shown != "" {
+		return shownAccepted(ancestor, shown), nil, err
+	}
+	return recordAcceptance(ctx, store, tx, ancestor, true)
+}
+
+// CopyAcceptance is what the daemon's copy of Dispatch's issues (DispatchIssueRow) holds of
+// ancestor: the accepted status it shows (AcceptedStatus), "" for none, and whether it holds a
+// reading of ancestor at all. Each value of the copy is its newest reading's, so a late or
+// replayed event of ancestor finds the newer status here.
+func CopyAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string) (string, bool, error) {
 	mirrored, err := store.DispatchIssuesOf(ctx, tx, []string{ancestor})
 	if err != nil {
-		return "", nil, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
+		return "", false, fmt.Errorf("read the Dispatch mirror of ancestor %s: %w", ancestor, err)
 	}
 	for _, row := range mirrored {
-		if row.Key == ancestor && AcceptedStatus(row.Status) {
-			return fmt.Sprintf("Dispatch shows %s %s", ancestor, row.Status), nil, nil
+		if row.Key == ancestor {
+			if AcceptedStatus(row.Status) {
+				return row.Status, true, nil
+			}
+			return "", true, nil
 		}
 	}
+	return "", false, nil
+}
+
+// SeedAcceptance is BasisAcceptance's answer as the pending-basis seed's verdict reads it: where
+// the copy holds a reading of ancestor, the copy's status decides, and the record's Dispatch
+// status, which can be older than the copy's (admission writes it only past the record's own
+// sequence fence), is not read; the daemon's own acceptance in the record (its close, or its move
+// into retro or merging) still counts. Where the copy holds none, it is BasisAcceptance's answer.
+// A status in reasserted, one the daemon has queued a re-assert of its own over (workflow's
+// sessionStatusWrite, ReassertStatusWrite), accepts nothing: the daemon refused that move.
+func SeedAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string, reasserted map[string]bool) (string, error) {
+	shown, held, err := CopyAcceptance(ctx, store, tx, ancestor)
+	if err != nil {
+		return "", err
+	}
+	if shown != "" && !reasserted[shown] {
+		return shownAccepted(ancestor, shown), nil
+	}
+	recorded, err := store.Issue(ctx, tx, ancestor)
+	if err != nil {
+		return "", fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
+	}
+	if !held && recorded != nil && AcceptedStatus(recorded.DispatchStatus) && !reasserted[recorded.DispatchStatus] {
+		return shownAccepted(ancestor, recorded.DispatchStatus), nil
+	}
+	why, _, err := recordAcceptance(ctx, store, tx, ancestor, false)
+	return why, err
+}
+
+// ReassertedStatuses is every status Dispatch may show for key that the daemon has queued a
+// re-assert of its own over and not yet written back (ReassertStatusWrite, still in the outbox),
+// keyed by that status. project is key's Dispatch project.
+func ReassertedStatuses(ctx context.Context, store Store, tx pgx.Tx, project, key string) (map[string]bool, error) {
+	rows, err := store.PendingStatusWrites(ctx, tx, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the pending status writes of %s: %w", project, err)
+	}
+	over := map[string]bool{}
+	for _, row := range rows {
+		if row.Issue != key {
+			continue
+		}
+		payload, err := DecodeOutboxPayload(row)
+		if err != nil {
+			return nil, err
+		}
+		if write, ok := payload.(StatusWrite); ok && write.Kind == ReassertStatusRow && write.ObservedStatus != "" {
+			over[write.ObservedStatus] = true
+		}
+	}
+	return over, nil
+}
+
+// shownAccepted is the sentence of ancestor's acceptance by status as Dispatch shows it, "" for
+// none.
+func shownAccepted(ancestor, status string) string {
+	if status == "" {
+		return ""
+	}
+	return fmt.Sprintf("Dispatch shows %s %s", ancestor, status)
+}
+
+// recordAcceptance is the record's half of BasisAcceptance: its Dispatch status where
+// dispatchStatus says to read it, then the daemon's own close or move.
+func recordAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor string, dispatchStatus bool) (string, *Issue, error) {
 	recorded, err := store.Issue(ctx, tx, ancestor)
 	if err != nil {
 		return "", nil, fmt.Errorf("read the record of ancestor %s: %w", ancestor, err)
@@ -246,8 +326,8 @@ func BasisAcceptance(ctx context.Context, store Store, tx pgx.Tx, ancestor strin
 	switch {
 	case recorded == nil:
 		return "", nil, nil
-	case AcceptedStatus(recorded.DispatchStatus):
-		return fmt.Sprintf("Dispatch shows %s %s", ancestor, recorded.DispatchStatus), recorded, nil
+	case dispatchStatus && AcceptedStatus(recorded.DispatchStatus):
+		return shownAccepted(ancestor, recorded.DispatchStatus), recorded, nil
 	case recorded.Status == DoneStatus:
 		return fmt.Sprintf("The daemon records %s %s", ancestor, recorded.Status), recorded, nil
 	case Accepted(*recorded):

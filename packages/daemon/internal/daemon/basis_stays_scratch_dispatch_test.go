@@ -1307,27 +1307,7 @@ func TestPendingBasisWaitsOnTheAncestorRequest(t *testing.T) {
 			return fmt.Sprintf("%s no longer carries the legion label.", run.parent.Key)
 		}},
 		{"P in Dispatch's retro after the daemon refused its sign-off", []string{"Recycling bin sensor", "Citywide waste reduction"}, func(run pendingRun) string {
-			r.moveRecord(run.parent.Key, phase.Accepting)
-			// The sign-off names P's architect, P's generation and the run of the step P stands
-			// in, as the route reads them (api's signOff).
-			var entry record.StepEntry
-			if err := store.Transact(t.Context(), r.pool, func(ctx context.Context, tx pgx.Tx) error {
-				var err error
-				entry, err = record.NewStore().OpenStep(ctx, tx, run.parent.Key)
-				return err
-			}); err != nil {
-				t.Fatalf("read the run of the step %s stands in: %v", run.parent.Key, err)
-			}
-			refused := r.applyAsTheDaemon("api", "sign-off-"+run.parent.Key, intake.SignOff{Issue: run.parent.Key,
-				By: r.architectToken(run.parent.Key), Generation: r.record(run.parent.Key).Generation, Entry: entry})
-			if refused.Refusal == nil || refused.Refusal.Code != "SIGNOFF_RESTING_ROOT_IN_WORKFLOW" || !strings.Contains(refused.Refusal.Message, run.root.Key) {
-				t.Fatalf("the sign-off of %s while %s waits on its request = %+v, want SIGNOFF_RESTING_ROOT_IN_WORKFLOW naming %s", run.parent.Key, run.root.Key, refused.Refusal, run.root.Key)
-			}
-			if standing := r.record(run.parent.Key).Phase; standing != phase.Accepting {
-				t.Fatalf("%s stands at %s after its refused sign-off, want accepting: the daemon does not record it in retro", run.parent.Key, standing)
-			}
-			r.pendingRegistered(run.basisRun, run.ask, true, phase.Admitted)
-			t.Logf("the sign-off of %s was refused while %s waits on its request: %s", run.parent.Key, run.root.Key, refused.Refusal.Message)
+			r.refuseSignOff(run)
 			r.setStatus(run.parent.Key, "retro")
 			return fmt.Sprintf("Dispatch shows %s retro, so %s is accepted.", run.parent.Key, run.parent.Key)
 		}},
