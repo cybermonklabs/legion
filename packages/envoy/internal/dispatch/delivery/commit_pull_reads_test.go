@@ -10,6 +10,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // One claim per pair per CommitPullReadStaleAfter, and the decision and the record are one step:
@@ -415,7 +416,8 @@ func TestASettleAndAReleaseWriteOnAContextTheirCallerCannotCancel(t *testing.T) 
 // backend of the database waiting on a lock, and A's rows are A's to delete. A sweep that locked
 // the rows it reads without skipping them would wait on A's transaction for as long as A lasted,
 // and every granted claim behind it with it. The claim runs on its own goroutine; the test reads
-// pg_stat_activity until the claim answers or a backend waits on a lock, so no time decides it.
+// which backends wait on a lock (lockwaittest.Waiting) until the claim answers or one waits, so no
+// time decides it.
 func TestTwoSweepsAtOnceOverOnePassedRowWaitOnNoRow(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	now := time.Now()
@@ -454,7 +456,7 @@ func TestTwoSweepsAtOnceOverOnePassedRowWaitOnNoRow(t *testing.T) {
 		var count int
 		if err := pool.QueryRow(ctx, `
 			select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock'
+			where datname = current_database() and `+lockwaittest.Waiting+`
 		`).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
