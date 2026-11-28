@@ -903,7 +903,8 @@ export function createLegionTool(deps: {
         "withdraw_defect (issue, defect, reason) is the owning architect's: it takes back a defect of an issue you own, by the id " +
         "report_defect answered, saying why. The daemon refuses it from any other caller (DEFECT_WITHDRAW_NOT_OWNER), for a defect it " +
         "does not hold (DEFECT_NOT_FOUND), for a check's own defect (DEFECT_IS_A_CHECK), for one a merged change carries " +
-        "(DEFECT_IN_MERGED_CHANGE), with no reason (DEFECT_REASON_REQUIRED) and with a reason close-wait.md cannot carry: one too " +
+        "(DEFECT_IN_MERGED_CHANGE), for a request for new work that a person made, which that person's done ends " +
+        "(DEFECT_REQUEST_OF_A_PERSON), with no reason (DEFECT_REASON_REQUIRED) and with a reason close-wait.md cannot carry: one too " +
         "long (DEFECT_REASON_TOO_LONG) or one that holds a decision block (DEFECT_REASON_DECISION_BLOCK); it refuses both calls for a key " +
         "that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND). " +
         PHASE_OP_SENTENCES.readBuild +
