@@ -1,4 +1,5 @@
 import { createAsk, createComment, createIssue, createProject, getAsk } from "./api";
+import { openIssueDetails } from "./issue-details";
 import { expect, type Locator, type Page, test } from "./test";
 
 // A part of an ask - its question, each of its options and its answer - is a block of the
@@ -124,6 +125,7 @@ test("the backlink an ask's option writes names the ask as its source, not an ar
 
   await page.goto(`/issues/${target.key}`);
   const header = page.getByTestId("issue-header");
+  await openIssueDetails(page);
   await header.getByRole("button", { name: /^Referenced by/ }).click();
   const references = header.getByRole("region", { name: "Referenced by" });
 

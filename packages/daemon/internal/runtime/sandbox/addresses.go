@@ -15,10 +15,12 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
@@ -31,10 +33,10 @@ import (
 // a re-roled claim's record never overwrites the record of that role's own claim. A later daemon
 // reads the records from its informer cache (evaluate).
 //
-// A record names each address without its credentials — its scheme, host and port, `xxxxx@` when it
-// carries userinfo, never its path, query or fragment — and holds the sha256 of its whole value,
-// which is what is compared. The raw values travel only in the start command, so a URL's
-// credentials never land in a cluster object.
+// A record names each address without its credentials — its scheme, host and port, or its scheme
+// and `[a URL with credentials]` when it carries userinfo, never its path, query or fragment — and
+// holds the sha256 of its whole value, which is what is compared. The raw values travel only in the
+// start command, so a URL's credentials never land in a cluster object.
 
 // addressesAnnotation is the Sandbox annotation that records the addresses the running generation
 // of slot role (the agent's name, slotOf) was started with.
@@ -1012,11 +1014,14 @@ func sessionStoreName(kind ompsessions.StoreKind, dsnSecret string, proxy []stri
 // namedURL is the log boundary for one endpoint value: an existing pod or record can hold a value a
 // previous daemon accepted, or a direct Options caller supplied, even when this daemon's current
 // loader no longer accepts it. It names "(unset)" for none; otherwise it constructs the name from
-// exactly the scheme, host and port it accepts to show, adding xxxxx@ when the URL carries userinfo.
-// Path, query and fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx
-// whole, so unexpected input cannot make the name a credential reader. api.endpointOf is the same
-// mask as the state renders it, which keeps the path: there the value is a setting its reader acts
-// on, where this one is only a name.
+// exactly the scheme, host and port it accepts to show, or, when the URL carries userinfo or an
+// "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/", "?" or "#" written as the
+// user, its head read as the host), the scheme and redact.URLWithCredentials, nothing after the last
+// "@" (a password holding an unencoded "@" leaves its tail there, read as a host). Path, query and
+// fragment never enter it. An endpoint that cannot yield a scheme and host is xxxxx whole, so
+// unexpected input cannot make the name a credential reader. api.endpointOf is the same mask as the
+// state renders it, which keeps the path: there the value is a setting its reader acts on, where
+// this one is only a name.
 func namedURL(address string) string {
 	if address == "" {
 		return "(unset)"
@@ -1025,16 +1030,17 @@ func namedURL(address string) string {
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "xxxxx"
 	}
-	name := u.Scheme + "://"
-	if u.User != nil {
-		name += "xxxxx@"
+	if u.User != nil || natsurl.UserinfoPastHost(u) {
+		return u.Scheme + "://" + redact.URLWithCredentials
 	}
-	return name + u.Host
+	return u.Scheme + "://" + u.Host
 }
 
 // namedNATSURLs names ENVOY_NATS_URL from the distinct values r.natsURLs holds, the entries
 // readNatsURLs accepted, before mainEnvironment comma-joined them: each is one endpoint, so namedURL
-// parses it whole. The joined value is never split, since raw commas are valid in userinfo.
+// parses it whole. readNatsURLs refuses an entry holding a comma, since the NATS client reads one as
+// the end of a server URL, so the joined value splits back into these entries; it is named from
+// them all the same, never by splitting it.
 func namedNATSURLs(urls []string) string {
 	if len(urls) == 0 {
 		return "(unset)"

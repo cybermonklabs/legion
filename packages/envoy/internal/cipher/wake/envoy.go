@@ -21,6 +21,7 @@ import (
 	"net/http"
 
 	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/redact"
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
@@ -69,7 +70,7 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, e.URL+"/v1/messages/send", bytes.NewReader(body))
 	if err != nil {
-		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", err)
+		slog.Warn("wake envoy: build request", "session", sessionID, "request", requestID, "error", redact.Error(err, e.URL))
 		return
 	}
 	bearer, err := e.Account.Read()
@@ -81,7 +82,7 @@ func (e Envoy) Notify(ctx context.Context, sessionID, requestID, state string) {
 	req.Header.Set("Authorization", "Bearer "+bearer)
 	resp, err := e.HTTP.Do(req)
 	if err != nil {
-		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", err)
+		slog.Warn("wake envoy: send", "session", sessionID, "request", requestID, "error", redact.Error(err, e.URL))
 		return
 	}
 	defer resp.Body.Close()

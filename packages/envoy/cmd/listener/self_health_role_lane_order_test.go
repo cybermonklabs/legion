@@ -26,6 +26,7 @@ import (
 // the durable's. The lane is still sent again: checked after the durable, which returns early, it
 // would not be.
 func TestTheSelfHealthProbeReportsALostDurableBeforeARefusedRoleLaneAndStillSendsTheLane(t *testing.T) {
+	// Not parallel: it swaps the default logger (logtest.SetDefault in newRoleLaneHealthRig).
 	rig := newRoleLaneHealthRig(t, "role-lane-health-order")
 	rig.stop()
 	rig.revoke(t)

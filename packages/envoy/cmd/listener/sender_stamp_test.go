@@ -35,6 +35,8 @@ import (
 // discards every byte the client writes once armed and keeps the connection open, so it is the
 // last row.
 func TestSenderStampNamesTheCurrentRegistration(t *testing.T) {
+	// Not parallel: it requires the stamp on a frozen bus within 1.5 s, half a second past its
+	// 1 s read window (senderStampReadTimeout plus margin).
 	const (
 		moved     = "ses_stamp_registered_through_a_then_b"
 		disagrees = "ses_stamp_whose_record_and_entry_disagree"

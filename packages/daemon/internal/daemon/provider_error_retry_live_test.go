@@ -6,7 +6,7 @@
 // owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin) over the live-proof fixture (live_proof_test.go),
+// own whole-daemon harness (startDaemonLogging) over the live-proof fixture (live_proof_test.go),
 // so the proof exercises the real configuration, the real store and its migrations, the real HTTP
 // API, the real claim supervision and its worker stream, and the real workflow. Each worker is a
 // real `omp --mode rpc` under the real `legion worker-shim`, started by localruntime_live_test.go
@@ -157,6 +157,7 @@ type providerErrorLive struct {
 // the sixth turn, a content filter's refusal that carries no status, an error that cannot clear,
 // and the operator's commands over the claims the first and the fourth leave.
 func TestAProviderErrorKeepsTheTaskAndTheOperatorRetriesWhatItLeavesLive(t *testing.T) {
+	// Not parallel: it gives the process back the operator's own environment, as t.Setenv does (fixtureenv.Live).
 	fixtureenv.Live(t)
 	r := newProviderErrorLive(t)
 	r.step("step1-a-529-keeps-the-task-and-walks-the-30-60-120-ladder", r.ladderWalks)
@@ -220,7 +221,7 @@ func newProviderErrorLive(t *testing.T) *providerErrorLive {
 
 	r.seed()
 	r.daemon = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, r.overrides(), slog.New(r.daemon), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, r.overrides(), slog.New(r.daemon))
 	r.registerController()
 	return r
 }

@@ -325,45 +325,51 @@ func saturatingSum(parts ...time.Duration) time.Duration {
 // readStallBackstops is `worker_stall_backstop_hours`: a mapping of a role (RoleConfigRoles, the
 // controller among them, or a role of `roles`) to the number of hours the daemon's backstop waits
 // after that role's last recorded step, a decimal among them as every other hours key is
-// (readHours). 0 is the backstop off for that role and is the one reason this key reads its own
-// numbers rather than calling readHours, which refuses 0 because every key it serves arms a timer
-// that a zero would fire at once. A role named twice, no role's name (isRoleConfigName), a value
-// that is no number and a negative value are each refused naming the entry.
-func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Duration, error) {
+// (readHours), and the line of each role it names (roleNameLines). 0 is the backstop off for that
+// role and is the one reason this key reads its own numbers rather than calling readHours, which
+// refuses 0 because every key it serves arms a timer that a zero would fire at once. A role named
+// twice, no role's name (isRoleConfigName), a value that is no number and a negative value are
+// each refused naming the entry, a name of no role name's shape (roleNameShape) by its line alone.
+func readStallBackstops(value *yaml.Node, key string) (map[claim.Role]time.Duration, roleNameLines, error) {
 	if value.Tag == "!!null" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if value.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s must be a mapping of a role to the hours the daemon's backstop waits, e.g. {implementer: 6, tester: 0}", key)
+		return nil, nil, fmt.Errorf("%s must be a mapping of a role to the hours the daemon's backstop waits, e.g. {implementer: 6, tester: 0}", key)
 	}
 	bounds := map[claim.Role]time.Duration{}
+	lines := map[claim.Role]int{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, hoursNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
 		if !isRoleConfigName(role) {
-			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
+			if !roleNameShape(roleNode.Value) {
+				return nil, nil, fmt.Errorf("%s: it must be a Legion role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(RoleConfigRoles))
+			}
+			return nil, nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := bounds[role]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, role)
+			return nil, nil, fmt.Errorf("%s names %s twice", key, shownRole(roleNode.Value, roleNode.Line))
 		}
-		field := key + "." + string(role)
+		field := roleField(key, roleNode.Value, roleNode.Line)
 		var hours float64
 		if hoursNode.Kind != yaml.ScalarNode || (hoursNode.Tag != "!!int" && hoursNode.Tag != "!!float") || hoursNode.Decode(&hours) != nil {
-			return nil, fmt.Errorf("%s must be a number of hours, or 0 to switch the backstop off for that role", field)
+			return nil, nil, fmt.Errorf("%s must be a number of hours, or 0 to switch the backstop off for that role", field)
 		}
 		if hours < 0 {
-			return nil, fmt.Errorf("%s must be 0 (the backstop off for that role) or a positive number of hours", field)
+			return nil, nil, fmt.Errorf("%s must be 0 (the backstop off for that role) or a positive number of hours", field)
 		}
 		if hours > maxTimerSeconds/3600 {
-			return nil, fmt.Errorf("%s must be at most %d", field, maxTimerSeconds/3600)
+			return nil, nil, fmt.Errorf("%s must be at most %d", field, maxTimerSeconds/3600)
 		}
 		bound := time.Duration(math.Round(hours * float64(time.Hour)))
 		if hours > 0 && bound <= 0 {
-			return nil, fmt.Errorf("%s must be 0 (the backstop off for that role) or a positive number of hours", field)
+			return nil, nil, fmt.Errorf("%s must be 0 (the backstop off for that role) or a positive number of hours", field)
 		}
 		bounds[role] = bound
+		lines[role] = roleNode.Line
 	}
-	return bounds, nil
+	return bounds, roleNameLines{key: lines}, nil
 }
 
 // checkStallBackstops refuses a backstop bound below the whole ladder the role's own plugin runs

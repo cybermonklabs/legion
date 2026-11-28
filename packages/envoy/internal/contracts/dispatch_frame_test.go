@@ -17,6 +17,7 @@ import (
 // change of the zod shapes that `bun run gen:go` was not run for fails the fixture's check there,
 // and a change of either reader that splits them fails here.
 func TestDispatchPayloadIsEventAgreesWithTheHostsReading(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile("../../../contracts/fixtures/dispatch-frame-verdicts.json")
 	if err != nil {
 		t.Fatalf("read the verdicts fixture: %v", err)
@@ -46,6 +47,7 @@ func TestDispatchPayloadIsEventAgreesWithTheHostsReading(t *testing.T) {
 // TestDispatchPayloadIsEventRefusesAPrototypeKey holds the one place the Go reader is stricter
 // than the host's: a "__proto__" key at any depth, which zod's passthrough copies onto a prototype.
 func TestDispatchPayloadIsEventRefusesAPrototypeKey(t *testing.T) {
+	t.Parallel()
 	event := `{"issue_key":"CORE-1","type":"comment.created","actor":{"kind":"user","id":"alice"},"payload":{"id":"c-1"}}`
 	if !DispatchPayloadIsEvent([]byte(event)) {
 		t.Fatalf("control: DispatchPayloadIsEvent(%s) = false, want true", event)

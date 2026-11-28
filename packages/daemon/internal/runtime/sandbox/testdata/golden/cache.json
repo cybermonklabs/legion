@@ -1,0 +1,192 @@
+{
+  "apiVersion": "agents.x-k8s.io/v1beta1",
+  "kind": "Sandbox",
+  "metadata": {
+    "annotations": {
+      "legion.dev/cache-repo": "acme/widgets"
+    },
+    "labels": {
+      "legion.dev/cache": "true",
+      "legion.dev/project": "legion"
+    },
+    "name": "legion-legion-cache-acme-widgets-d782c874",
+    "namespace": "legion"
+  },
+  "spec": {
+    "operatingMode": "Suspended",
+    "podTemplate": {
+      "metadata": {
+        "annotations": {
+          "cluster-autoscaler.kubernetes.io/safe-to-evict": "true",
+          "karpenter.sh/do-not-disrupt": "true",
+          "legion.dev/cache-repo": "acme/widgets"
+        },
+        "labels": {
+          "legion.dev/cache": "true",
+          "legion.dev/project": "legion"
+        }
+      },
+      "spec": {
+        "automountServiceAccountToken": false,
+        "containers": [
+          {
+            "command": [
+              "/opt/legion/bin/legion",
+              "workspace-init",
+              "cache",
+              "--repo",
+              "acme/widgets",
+              "--root",
+              "/legion/cache",
+              "--listen",
+              ":8418",
+              "--refresh",
+              "10m0s"
+            ],
+            "env": [
+              {
+                "name": "PATH",
+                "value": "/opt/legion/bin:/opt/omp/bin:/opt/codegraph/bin:/usr/local/bin:/usr/bin:/bin"
+              },
+              {
+                "name": "TMPDIR",
+                "value": "/tmp"
+              },
+              {
+                "name": "LEGION_PROVISION_TOKEN_FILE",
+                "value": "/var/run/legion/provision/LEGION_PROVISION_TOKEN"
+              },
+              {
+                "name": "LEGION_REPOSITORY_CACHE_TOKEN_FILE",
+                "value": "/var/run/legion/provision/LEGION_REPOSITORY_CACHE_TOKEN"
+              }
+            ],
+            "image": "ghcr.io/cybermonklabs/legion-worker@sha256:1d10089a0000000000000000000000000000000000000000000000000000beef",
+            "name": "cache",
+            "ports": [
+              {
+                "containerPort": 8418,
+                "name": "cache",
+                "protocol": "TCP"
+              }
+            ],
+            "readinessProbe": {
+              "failureThreshold": 3,
+              "httpGet": {
+                "path": "/readyz",
+                "port": 8418
+              },
+              "periodSeconds": 10,
+              "timeoutSeconds": 5
+            },
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "ephemeral-storage": "10Gi",
+                "memory": "4Gi"
+              },
+              "requests": {
+                "cpu": "1",
+                "ephemeral-storage": "1Gi",
+                "memory": "4Gi"
+              }
+            },
+            "securityContext": {
+              "allowPrivilegeEscalation": false,
+              "capabilities": {
+                "drop": [
+                  "ALL"
+                ]
+              },
+              "seccompProfile": {
+                "type": "RuntimeDefault"
+              }
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/legion/cache",
+                "name": "cache"
+              },
+              {
+                "mountPath": "/var/run/legion/provision",
+                "name": "provision",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/tmp",
+                "name": "tmp"
+              }
+            ],
+            "workingDir": "/legion/cache"
+          }
+        ],
+        "enableServiceLinks": false,
+        "priorityClassName": "legion",
+        "restartPolicy": "Always",
+        "runtimeClassName": "gvisor",
+        "securityContext": {
+          "fsGroup": 1000,
+          "fsGroupChangePolicy": "OnRootMismatch",
+          "runAsGroup": 1000,
+          "runAsNonRoot": true,
+          "runAsUser": 1000
+        },
+        "serviceAccountName": "legion-worker",
+        "volumes": [
+          {
+            "name": "cache",
+            "persistentVolumeClaim": {
+              "claimName": "cache-legion-legion-cache-acme-widgets-d782c874"
+            }
+          },
+          {
+            "name": "provision",
+            "secret": {
+              "defaultMode": 288,
+              "items": [
+                {
+                  "key": "LEGION_PROVISION_TOKEN",
+                  "path": "LEGION_PROVISION_TOKEN"
+                },
+                {
+                  "key": "LEGION_REPOSITORY_CACHE_TOKEN",
+                  "path": "LEGION_REPOSITORY_CACHE_TOKEN"
+                }
+              ],
+              "secretName": "legion-legion-cache-acme-widgets-d782c874-token"
+            }
+          },
+          {
+            "emptyDir": {
+              "medium": "Memory"
+            },
+            "name": "tmp"
+          }
+        ]
+      }
+    },
+    "service": true,
+    "volumeClaimTemplates": [
+      {
+        "metadata": {
+          "labels": {
+            "legion.dev/cache": "true",
+            "legion.dev/project": "legion"
+          },
+          "name": "cache"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "20Gi"
+            }
+          },
+          "storageClassName": "gp2"
+        }
+      }
+    ]
+  }
+}

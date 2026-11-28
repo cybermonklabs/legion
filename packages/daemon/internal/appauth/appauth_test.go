@@ -1117,10 +1117,10 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 }
 
 // GitHub's trouble is transient and its answers are not: a request GitHub never answered or whose
-// body stopped mid-read, a 5xx, or a rate limit (a 429, or a 403 that says it is one) may pass when
-// it is made again, and a boot waits it out; any other status, a body that is not the JSON asked
-// for, or an owner the App is not installed on is refused at once. The boot's retry reads nothing
-// else.
+// body stopped mid-read, an outage (a 5xx, a 408 or a 429), or a rate limit (a 403 that says it is
+// one) may pass when it is made again, and a boot waits it out; any other status, a body that is
+// not the JSON asked for, or an owner the App is not installed on is refused at once. The boot's
+// retry reads nothing else.
 func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	_, privatePEM := testAppKey(t)
 	status := func(code int, header ...string) http.HandlerFunc {
@@ -1145,6 +1145,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	}{
 		{name: "discovery 502", discovery: status(http.StatusBadGateway), transient: true},
 		{name: "discovery 429", discovery: status(http.StatusTooManyRequests), transient: true},
+		{name: "discovery 408", discovery: status(http.StatusRequestTimeout), transient: true},
 		{name: "discovery 403 out of rate limit", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "0"), transient: true},
 		{name: "discovery 403 with retry-after", discovery: status(http.StatusForbidden, "Retry-After", "60"), transient: true},
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
@@ -1167,6 +1168,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			fmt.Fprint(w, `[{"id":77,"account":{"login":"someone-else"}}]`)
 		}},
 		{name: "exchange 500", discovery: installed, exchange: status(http.StatusInternalServerError), transient: true},
+		{name: "exchange 408", discovery: installed, exchange: status(http.StatusRequestTimeout), transient: true},
 		{name: "exchange 422", discovery: installed, exchange: status(http.StatusUnprocessableEntity)},
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
 	} {

@@ -576,17 +576,31 @@ func sourceMoved(name string) error {
 // be, where it is the source's tag and not the profile's own proxy string that puts the profile
 // behind its kind, since the kind it is behind is in the fingerprint; so can the judge tag of a
 // profile behind the proxy, whose judge seconds are in it, where the source carries one now or the
-// model judge decided the grant (decidedBy), so it carried one then. A stored secret served by its
-// own name behind the proxy has its own proxy tag in its fingerprint, and no judge seconds. The
-// proxy-narrowed tag, which a fingerprint behind the proxy holds too, is never named: a change of
-// it refuses the name (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed)
-// rather than serve it with another fingerprint.
+// model judge decided the grant (decidedBy), so it carried one then; and so can the scopes tag of a
+// google-service-account source whose profile has no google block of its own, whose scopes it
+// mints at and holds in its fingerprint. A stored secret served by its own name behind the proxy
+// has its own proxy tag in its fingerprint, and no judge seconds; a google-service-account one has
+// its own scopes tag in it, behind the proxy or not. The proxy-narrowed tag, which a fingerprint
+// behind the proxy holds too, is never named: a change of it refuses the name
+// (policy.ReasonProxyNarrowedProfiles, policy.ReasonProfileAllowNotNarrowed) rather than serve it
+// with another fingerprint.
 func profileChanged(set *policy.Set, name, decidedBy string) error {
 	served := set.Secrets[name]
 	const changed = "%w: %s's profile changed since this grant was decided"
+	scoped := served.Type() == policy.TypeGoogleServiceAccount
 	if served.Profile == nil {
+		var own []string
 		if served.Proxy != "" {
-			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, policy.TagProxy)
+			own = append(own, policy.TagProxy)
+		}
+		if scoped {
+			own = append(own, policy.TagScopes)
+		}
+		switch {
+		case served.Proxy != "":
+			return fmt.Errorf(changed+": its entry in the profiles file, or its own %s tag", ErrGrantNotLive, name, strings.Join(own, " or "))
+		case scoped:
+			return fmt.Errorf(changed+": its own %s tag", ErrGrantNotLive, name, policy.TagScopes)
 		}
 		return fmt.Errorf(changed, ErrGrantNotLive, name)
 	}
@@ -596,6 +610,9 @@ func profileChanged(set *policy.Set, name, decidedBy string) error {
 	}
 	if _, judged := record.JudgeLogin(decidedBy); served.Proxy != "" && (served.Judge != 0 || judged) {
 		tags = append(tags, policy.TagJudge)
+	}
+	if scoped && served.Profile.Google == nil {
+		tags = append(tags, policy.TagScopes)
 	}
 	if len(tags) == 0 {
 		return fmt.Errorf(changed, ErrGrantNotLive, name)

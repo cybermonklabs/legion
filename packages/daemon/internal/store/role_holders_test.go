@@ -91,13 +91,15 @@ func openHolderTree(t *testing.T, s *Store) {
 
 // The publication of an issue's role sessions is queued in the transaction of the claim write
 // that changes the session holding a role: the row the write replaces named one holder and the
-// row it writes names another. A claim's session holds its role in the states
-// supervise.HoldsCapability answers true for, so the agent's registration, a new session while
-// the role is held, and each end — retirement, failure, suspension and a move back to launching —
-// queue it, through every write that stores a claim: PutClaim, PutClaimAndDelivery,
-// RetireDelivery and AdmitClaim. A write that changes no holder queues nothing: a ready, a turn's
-// start and end, and a second write of an ended claim. A pending row of the issue is made due
-// again rather than queued beside, so the outbox never holds two.
+// row it writes names another. A claim's session holds its role in the states and suspension
+// sources supervise.HoldsRole answers true for, so the agent's registration, a new session while
+// the role is held, and each end — retirement, failure and a suspension by any source but the
+// idle release's — queue it, through every write that stores a claim: PutClaim,
+// PutClaimAndDelivery, RetireDelivery and AdmitClaim. A write that changes no holder queues
+// nothing: a ready, a turn's start and end, a second write of an ended claim, an admission that
+// launches the claim again over the session it kept and that session's registration, and the idle
+// release's suspension. A pending row of the issue is made due again rather than queued beside,
+// so the outbox never holds two.
 func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -125,11 +127,11 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	step("a turn's start", put(holderClaim(supervise.StateWorking, "ses-1")), none)
 	step("a turn's end", put(holderClaim(supervise.StateIdle, "ses-1")), none)
 	step("a new session while the role is held", put(holderClaim(supervise.StateIdle, "ses-2")), queued)
-	step("an admission over a row the store still holds live", func() error {
+	step("an admission that launches the claim again over the session it kept", func() error {
 		_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "ses-2"))
 		return err
-	}, queued)
-	step("the registration of the admitted claim", put(holderClaim(supervise.StateRegistered, "ses-2")), queued)
+	}, none)
+	step("the registration of the admitted claim", put(holderClaim(supervise.StateRegistered, "ses-2")), none)
 
 	task := supervise.Delivery{ID: "delivery-1", Task: "test it", QueuedAt: at(1), DeliveredAt: at(2), ConfirmedAt: at(3), Generation: 1}
 	step("a confirmed task", func() error {
@@ -144,7 +146,10 @@ func TestAClaimWriteThatChangesTheRoleHolderQueuesThePublicationWithIt(t *testin
 	}, queued)
 	step("a second write of the retired claim", put(holderClaim(supervise.StateRetired, "ses-3")), none)
 	step("a registration over the retirement", put(holderClaim(supervise.StateRegistered, "ses-4")), queued)
-	step("a suspension", put(holderClaim(supervise.StateSuspended, "ses-4")), queued)
+	released := holderClaim(supervise.StateSuspended, "ses-4")
+	released.SuspendedBy = supervise.SuspendedByReleased
+	step("the idle release's suspension", put(released), none)
+	step("a suspension that is not the idle release's", put(holderClaim(supervise.StateSuspended, "ses-4")), queued)
 
 	// Two changes before the lane sends either leave one row.
 	if err := s.PutClaim(ctx, holderClaim(supervise.StateRegistered, "ses-5")); err != nil {
@@ -446,7 +451,7 @@ func TestAClaimWriteAndThePublicationItQueuesCommitTogether(t *testing.T) {
 		}},
 		{"RetireDelivery", func() error { return s.RetireDelivery(ctx, holderClaim(supervise.StateRetired, "ses-1"), task.ID) }},
 		{"AdmitClaim", func() error {
-			_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, "ses-1"))
+			_, err := s.AdmitClaim(ctx, holderClaim(supervise.StateLaunching, ""))
 			return err
 		}},
 	} {

@@ -2,38 +2,20 @@ package bus
 
 import (
 	"errors"
+	"fmt"
+	"net"
 	"net/url"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// nats.go authenticates with a server URL's userinfo, a user name alone as a token and
-// user:password as a password, so neither part may reach a log line or a logged error.
-// url.URL.Redacted is not enough: it keeps the user name, which is the whole of a token.
-func TestNATSURLWithoutUserinfo(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		raw, want string
-	}{
-		{"nats://user:secret@nats.example.test:4222", "nats://nats.example.test:4222"},
-		{"nats://token@127.0.0.1:4223", "nats://127.0.0.1:4223"},
-		{"u:secret@127.0.0.1:4224", "nats://127.0.0.1:4224"},
-		{" nats://127.0.0.1:4222 ", "nats://127.0.0.1:4222"},
-		{"127.0.0.1:4222", "127.0.0.1:4222"},
-		{"nats://user:secret@host:4222/%zz", "host:4222/%zz"},
-		{"nats://user:secret@host:4222/a@b", "b"},
-	} {
-		if got := natsURLWithoutUserinfo(tc.raw); got != tc.want {
-			t.Errorf("natsURLWithoutUserinfo(%q) = %q, want %q", tc.raw, got, tc.want)
-		}
-	}
-}
-
-// The failed-reconnect WARN names the servers the client was configured with, and the refusal of
-// a remote server names that server; both are logged, so neither carries a URL's userinfo.
+// The failed-reconnect WARN names how many servers the client was configured with and the
+// failure's class, and the refusal of a remote server names that server by its position; both are
+// logged, so neither carries a URL's userinfo or host.
 func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	t.Parallel()
 	logs := captureLogs()
@@ -42,9 +24,9 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 		"nats://tok-marker-2@127.0.0.1:4223",
 		"u-marker-5:pw-marker-3@127.0.0.1:4224",
 	}
-	secrets := []string{"user-marker-0", "pw-marker-1", "tok-marker-2", "u-marker-5", "pw-marker-3"}
+	secrets := []string{"user-marker-0", "pw-marker-1", "tok-marker-2", "u-marker-5", "pw-marker-3", "127.0.0.1"}
 
-	options(logs.logger, "log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, errors.New("dial refused"))
+	options(logs.logger, "log-url-test", urls, nil, nil, nil, nil, nil).ReconnectErrCB(nil, &net.OpError{Op: "dial", Net: "tcp", Err: syscall.ECONNREFUSED})
 
 	// Only records that name the client count, so the WARN must carry its client's name.
 	var mine []map[string]any
@@ -60,11 +42,8 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	if record["level"] != "WARN" || record["msg"] != "envoy nats reconnect attempt failed" {
 		t.Fatalf("record = %v, want the failed reconnect WARN", record)
 	}
-	servers, _ := record["servers"].(string)
-	for _, host := range []string{"127.0.0.1:4222", "127.0.0.1:4223", "127.0.0.1:4224"} {
-		if !strings.Contains(servers, host) {
-			t.Errorf("servers %q does not name %s", servers, host)
-		}
+	if record["servers"] != float64(3) || record["error"] != "connection refused" {
+		t.Errorf("servers = %v and error = %v, want 3 and connection refused", record["servers"], record["error"])
 	}
 	for _, secret := range secrets {
 		if strings.Contains(logs.String(), secret) {
@@ -73,22 +52,23 @@ func TestLoggedNATSURLsCarryNoUserinfo(t *testing.T) {
 	}
 
 	unset := func(string) (string, bool) { return "", false }
-	err := refuseRemoteNATS([]string{"nats://user-marker-6:pw-marker-4@nats.example.test:4222"}, unset)
+	err := refuseRemoteNATS([]string{"nats://127.0.0.1:4222", " ", "nats://user-marker-6:" + "pw-marker-4@nats.example.test:4222"}, unset)
 	if !errors.Is(err, ErrRemoteNATS) {
 		t.Fatalf("refuseRemoteNATS = %v, want a %v", err, ErrRemoteNATS)
 	}
-	if !strings.Contains(err.Error(), "nats.example.test") {
-		t.Errorf("refusal %q does not name nats.example.test", err)
+	if !strings.Contains(err.Error(), "NATS server URL 3 of 3 names another machine") {
+		t.Errorf("refusal %q does not name the server by its position", err)
 	}
-	for _, secret := range []string{"user-marker-6", "pw-marker-4"} {
+	for _, secret := range []string{"user-marker-6", "pw-marker-4", "nats.example.test"} {
 		if strings.Contains(err.Error(), secret) {
 			t.Errorf("refusal %q holds %q", err, secret)
 		}
 	}
 }
 
-// The reconnected INFO names the server the connection reached, which nats.go renders with the
-// URL's userinfo (ConnectedUrl); testnats.URL is a user:password URL, so the line must drop it.
+// The reconnected INFO names the server the connection reached by its position, never by the URL
+// nats.go renders with its userinfo (ConnectedUrl); testnats.URL is a user:password URL, so the
+// line must hold neither part, nor the host.
 func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 	t.Parallel()
 	uri := testnats.URL(t)
@@ -106,25 +86,23 @@ func TestTheReconnectedLineCarriesNoUserinfo(t *testing.T) {
 	t.Cleanup(nc.Close)
 	logs := captureLogs()
 
-	options(logs.logger, "reconnected-url-test", nil, nil, nil, nil, nil, nil).ReconnectedCB(nc)
+	options(logs.logger, "reconnected-url-test", []string{"nats://127.0.0.1:1", uri}, nil, nil, nil, nil, nil).ReconnectedCB(nc)
 
 	var logged string
-	for _, record := range logs.records(t) {
-		if record["name"] == "reconnected-url-test" && record["msg"] == "envoy nats reconnected" {
-			logged, _ = record["url"].(string)
+	var record map[string]any
+	for _, candidate := range logs.records(t) {
+		if candidate["name"] == "reconnected-url-test" && candidate["msg"] == "envoy nats reconnected" {
+			record = candidate
+			logged, _ = candidate["server"].(string)
 		}
 	}
-	if logged == "" {
-		t.Fatalf("no reconnected record with a url: %s", logs)
+	if logged != "2 of 2" {
+		t.Fatalf("the reconnected record names the server %q, want 2 of 2: %s", logged, logs)
 	}
-	parsed, err := url.Parse(logged)
-	if err != nil {
-		t.Fatalf("parse the logged url %q: %v", logged, err)
-	}
-	if parsed.User != nil {
-		t.Errorf("the logged url %q carries userinfo", logged)
-	}
-	if parsed.Host != configured.Host {
-		t.Errorf("the logged url %q names host %q, want %q", logged, parsed.Host, configured.Host)
+	password, _ := configured.User.Password()
+	for _, part := range []string{configured.User.Username() + ":" + password, configured.Host} {
+		if line := fmt.Sprint(record); strings.Contains(line, part) {
+			t.Errorf("the reconnected line holds %q: %s", part, logs)
+		}
 	}
 }

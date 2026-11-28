@@ -37,6 +37,9 @@ import (
 // counts the session as no recipient through them; and that registration names all three and takes
 // them out of the row, though its body names none of them.
 func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
+	// Not parallel: it swaps the clock and memory of registrationLeftOutLogs, the one left-out
+	// limiter every registration handler in the process shares (leftOutLogLimiter.isolate), and
+	// asserts on the WARN lines that limiter gates.
 	const (
 		outside  = "*.team.foo"
 		pairFoo  = "notifications.envoy.exceptions.foo.*"
@@ -252,6 +255,9 @@ func TestATopicTheFilterLeavesOutIsNamedLoggedAndKeptOutOfTheRow(t *testing.T) {
 // fifth kind with the merged filter; the row holds neither; and a real publish on a subject the pair
 // matches, which the deployed stream stores, counts the session as no recipient.
 func TestAFifthKindPairANewerBuildsSubjectsCaptureIsLeftOutOfTheRegistration(t *testing.T) {
+	// Not parallel: it swaps the clock and memory of registrationLeftOutLogs, the one left-out
+	// limiter every registration handler in the process shares (leftOutLogLimiter.isolate), and
+	// asserts on the WARN lines that limiter gates.
 	const (
 		newer    = "notifications.envoy.exceptions.*.*"
 		pairFoo  = "notifications.envoy.exceptions.foo.*"

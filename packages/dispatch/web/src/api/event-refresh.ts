@@ -1122,6 +1122,16 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "subscription.remove_requested") {
     return [];
   }
+  // The outbox's report that an event's copy for a role reached no session. On a project itself
+  // it moves no read, since no page reads a project's own log; on a project document it takes the
+  // document's path below, and on an issue it is a line in the issue's log.
+  if (
+    event.type === "role.undelivered" &&
+    event.issue_key === null &&
+    (event.artifact_id === null || event.artifact_id === undefined)
+  ) {
+    return [];
+  }
   if (event.issue_key === null && isMessageEvent(event)) {
     const queryKey = agentConversationKey(payloadString(event, "target"));
     if (queryKey === undefined) {
@@ -1210,6 +1220,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     // `artifact.version` refreshed what it changed: a line in the issue's log and nothing more.
     return targets;
   }
+  if (event.type === "role.undelivered") {
+    // The outbox's report that an event's copy for a role reached no session: a line in the
+    // issue's log and nothing more.
+    return targets;
+  }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
     targets.push(
       { queryKey: ["artifacts", key] },
@@ -1288,9 +1303,9 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
-  // A pull request that moves to another issue changes what this issue's results are compared
-  // with, and the event is on each of the two issues, so each refetches its own results read.
-  if (event.type === "issue.pull_request_attribution_changed") {
+  // Attribution changes arrive at both issues. Deploy events name each affected result owner.
+  // Each receiver refetches only its own verification results.
+  if (event.type === "issue.pull_request_attribution_changed" || event.type === "deploy.recorded") {
     targets.push({ exact: true, queryKey: ["issue", key, "results"] });
     return targets;
   }

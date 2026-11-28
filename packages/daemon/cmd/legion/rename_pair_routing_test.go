@@ -114,11 +114,11 @@ func TestAGhCommandRunsWithTheOneDirectoryEveryRepositoryItNamesRoutesTo(t *test
 		{argv: []string{"search", "issues", "--repo", "cybermonklabs/legion", "--repo", "sjawhar/legion"}, dir: "cybermonklabs"},
 		{argv: []string{"search", "issues", "--owner", "cybermonklabs", "--repo", "sjawhar/legion"}, dir: "cybermonklabs"},
 		{argv: []string{"search", "issues", "--repo", "sjawhar/legion", "--repo", "sjawhar/ygo"},
-			refuse: []string{"more than one owner", "cybermonklabs (--repo sjawhar/legion)", "sjawhar (--repo sjawhar/ygo)", "sends no token"}},
+			refuse: []string{"more than one owner", "cybermonklabs (a -R value naming sjawhar/legion)", "sjawhar (a -R value naming sjawhar/ygo)", "sends no token"}},
 		{argv: []string{"search", "issues", "repo:sjawhar/ygo", "repo:sjawhar/legion"},
-			refuse: []string{"cybermonklabs (the qualifier repo:sjawhar/legion)", "sjawhar (the qualifier repo:sjawhar/ygo)"}},
+			refuse: []string{"cybermonklabs (a repo: qualifier naming sjawhar/legion)", "sjawhar (a repo: qualifier naming sjawhar/ygo)"}},
 		{argv: []string{"search", "issues", "--owner", "sjawhar", "--repo", "sjawhar/legion"},
-			refuse: []string{"cybermonklabs (--repo sjawhar/legion)", "sjawhar (--owner sjawhar)"}},
+			refuse: []string{"cybermonklabs (a -R value naming sjawhar/legion)", "sjawhar (a --owner value naming sjawhar)"}},
 		{argv: []string{"search", "issues", "--repo", "sjawhar/ygo", "--repo", "other/thing"}, refuse: []string{`the role's GitHub App is not installed on "other"`}},
 	} {
 		target, err := ghTargetOfKept(t, tc.argv, nil, savedGhHelp, noGitRepository, routed)

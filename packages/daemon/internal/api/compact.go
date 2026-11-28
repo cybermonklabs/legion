@@ -65,8 +65,8 @@ const (
 	// stored working that the read of its process at the request finds nothing behind, which
 	// runs no agent either however the record reads (refuseState, refuseWorkingClaim). The
 	// project's own controller in that second window is named the operator's suspend and
-	// resume instead, since its keeper does nothing for a controller stored working
-	// (refuseDeadController).
+	// resume instead, since its keeper ends a controller turn only past
+	// controller_turn_bound_minutes (refuseDeadController).
 	claimNotRunning = "CLAIM_NOT_RUNNING"
 	// claimNotOnOmp: the role runs on Claude Code, which has no Oh My Pi session at all.
 	claimNotOnOmp = "CLAIM_NOT_ON_OMP"
@@ -231,11 +231,11 @@ func (s *server) compactClaim(w http.ResponseWriter, r *http.Request) {
 // session: it is that keeper for a controller suspended, failed or retired, the operator's retry
 // of the claim for one held for a cyber-policy refusal (startsAgainOf), and the operator's own
 // suspend and resume for one whose claim is stored working over a dead process, which the keeper
-// does nothing for (startsAgainName, refuseState, refuseHeldSuspension, refuseDeadController). For
-// the same reason an agent the operator's suspension holds is named the operator's resume as what
-// starts it under the controller's compaction (by, whose resume that suspension refuses:
-// supervise.Claim.HeldAgainst), rather than the fresh session the agent door would refuse the
-// controller (holdSentences).
+// ends only past its turn bound (startsAgainName, refuseState, refuseHeldSuspension,
+// refuseDeadController). For the same reason an agent the operator's suspension holds is named the
+// operator's resume as what starts it under the controller's compaction (by, whose resume that
+// suspension refuses: supervise.Claim.HeldAgainst), rather than the fresh session the agent door
+// would refuse the controller (holdSentences).
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, and the
 // ladder's wait goes with it, so the owed task goes now rather than at the end of a wait
@@ -392,8 +392,8 @@ func boundReason(text string) string {
 // no session to compact, so it answers as it answers every claim that runs none: the code of a
 // claim not running, naming what starts the claim again, which for every workflow role is the
 // fresh session (claimNotRunning, startsAgainName). The project's own controller is named the
-// operator's suspend and resume there rather than its keeper, which does nothing for a
-// controller stored working (refuseDeadController). A caller told to ask again would wait for
+// operator's suspend and resume there rather than its keeper, which ends a controller stored
+// working only past its turn bound (refuseDeadController). A caller told to ask again would wait for
 // a claim nothing is bringing back. It always reports false, so a caller returns it as its own
 // answer.
 func (s *server) refuseState(w http.ResponseWriter, r *http.Request, m *supervise.Machine, token claim.Token,
@@ -459,9 +459,10 @@ func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token 
 
 // refuseDeadController is the compaction's refusal of the project's own controller stored
 // working over a process the read at the request found gone (refuseState). The keeper that
-// startsAgainName names for a stopped controller does nothing for this one: it leaves a
-// controller it reads as ready, working or idle alone (the daemon's controllerKeeper.keep), and
-// the fresh session refuses the controller in every state (freshSession's NOT_THE_CONTROLLER).
+// startsAgainName names for a stopped controller ends a controller stored working only once its
+// turn has been open longer than `controller_turn_bound_minutes` (the daemon's controllerKeeper,
+// dispatch://INFRA-2045 R2), and the fresh session refuses the controller in every state
+// (freshSession's NOT_THE_CONTROLLER).
 // What starts it is the operator, in two commands. `legion claims suspend` takes the claim out
 // of working: the machine lands a suspension where it arrives on a claim whose process a read
 // has found gone, and this refusal's own read has just found it so (supervise's holdSuspension,
@@ -471,7 +472,7 @@ func (s *server) refuseNotRunning(w http.ResponseWriter, r *http.Request, token 
 // suspension will meet when it comes, which is the machine's to decide then (askAgainLater).
 func (s *server) refuseDeadController(w http.ResponseWriter, r *http.Request, token claim.Token) {
 	s.writeFailure(w, r, http.StatusConflict, claimNotRunning, fmt.Sprintf(
-		"%s is %s, so it runs no Oh My Pi session to compact. The daemon's controller keeper does nothing for a controller stored working and does not resume one an operator suspended, so the operator starts it again: `legion claims suspend --claim %s`, then `legion claims resume --claim %s`",
+		"%s is %s, so it runs no Oh My Pi session to compact. The daemon's controller keeper ends a controller stored working only once its turn has been open longer than controller_turn_bound_minutes, and does not resume one an operator suspended, so the operator starts it again now: `legion claims suspend --claim %s`, then `legion claims resume --claim %s`",
 		token, overADeadProcess, token, token))
 }
 

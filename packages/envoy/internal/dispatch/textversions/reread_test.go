@@ -84,20 +84,20 @@ func TestTheReReadLeavesTheRowsAFillOfThisBuildAloneWrites(t *testing.T) {
 	if body := createdBody(t, database, message.event); body == long {
 		t.Fatal("the message's created row the fill of rules version 1 wrote holds its whole first body, so the check of the redo cannot fail")
 	}
-	fill(this, "a fill of this build after rules version 1's", rulesVersion)
+	fill(this, "a fill of this build after rules version 1's", RulesVersion)
 
 	correctPost(t, database, broker, kindMessage, edited.id, "Friday is fine.", false)
 	correctPost(t, database, broker, kindMessage, edited.id, "", true)
 	third := writePost(t, database, broker, kindMessage, "The third message's plan.\n\n"+long)
 	correctPost(t, database, broker, kindMessage, third.id, "The third plan moved to the spec.", false)
 	fill(older, "a second fill of rules version 1", 1)
-	fill(this, "a second fill of this build", rulesVersion)
+	fill(this, "a second fill of this build", RulesVersion)
 	got := keywordRows(t, database)
 
 	if _, err := database.Pool.Exec(ctx, `delete from search_text_versions; delete from search_text_versions_fill`); err != nil {
 		t.Fatalf("empty the keyword table: %v", err)
 	}
-	fill(testFiller(database, events.NewHorizon(database.Pool), io.Discard), "a fill of this build alone", rulesVersion)
+	fill(testFiller(database, events.NewHorizon(database.Pool), io.Discard), "a fill of this build alone", RulesVersion)
 	want := keywordRows(t, database)
 	if len(want) == 0 {
 		t.Fatal("the fill of this build alone wrote no row")

@@ -312,6 +312,9 @@ func readExperiments(value *yaml.Node, key string) ([]Experiment, error) {
 		keyNode, blockNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
 		if keyNode.Kind != yaml.ScalarNode || !experimentNamePattern.MatchString(name) {
+			if !keyShape(name) {
+				return nil, fmt.Errorf("%s: an experiment's name must match %s, since it is recorded with every draw it makes", unknownKeyAt(keyNode, key), experimentNamePattern)
+			}
 			return nil, fmt.Errorf("%s key %q must match %s: an experiment's name is recorded with every draw it makes", key, name, experimentNamePattern)
 		}
 		if slices.ContainsFunc(experiments, func(e Experiment) bool { return e.Name == name }) {

@@ -99,6 +99,8 @@ func commentingIssue(t *testing.T, handler http.Handler, project, body string) s
 // test alone and made unshown (unshownText), and the write that stored its tree read it through
 // pmdoc.DisplayTreeToStore, which fills no cache.
 func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	handler, database := newTestHandlerWithStore(t)
 	commentBody := unshownText("The **restart** read's own body: stored once, read back as bytes.")
 	key := commentingIssue(t, handler, "RSTRT", commentBody)
@@ -119,6 +121,8 @@ func TestACommentListAfterARestartMakesNoDisplayTree(t *testing.T) {
 // dropped after the write to stand for a text written before there was a table, which is what
 // every text on the server is until the backfill reaches it.
 func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	commentBody := unshownText("A body *no* row holds a tree of yet, read the long way.")
 	key := commentingIssue(t, handler, "UNSTR", commentBody)
@@ -155,6 +159,8 @@ func TestAReadOfAnUnstoredTextBuildsItsTreeAndStoresIt(t *testing.T) {
 // hold is not the reading this build makes, so the read builds its own and stores it beside the
 // row it would not take (texttrees.Read keys by pmdoc.DisplayTreeVersionNow).
 func TestAReadOfATreeStoredAtAnotherVersionBuildsItsOwn(t *testing.T) {
+	// Not parallel: it moves the process's display parser version (pmdoc.SetDisplayTreeVersionForTest)
+	// and counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees built.
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	commentBody := unshownText("A body whose stored tree another **parser** version read.")
 	key := commentingIssue(t, handler, "OLDVR", commentBody)
@@ -289,6 +295,8 @@ func TestAReadInsideAReadOnlyTransactionStoresNoTree(t *testing.T) {
 // first read leaves its body's tree in this process's display cache, which stands in front of
 // the table for every later read of that text.
 func TestABroadcastReadTakesItsStoredTreeAndStoresAMiss(t *testing.T) {
+	// Not parallel: it counts pmdoc.DisplayTreeBuilds, the whole process's count of display trees
+	// built, across its reads, and a parallel test's read moves that count too.
 	storedBody := unshownText("The **deploy** is held: send status, please.")
 	unstoredBody := unshownText("The *rollback* is rehearsed: carry on, all of you.")
 	listener, _ := newBroadcastListener(t, broadcastSessions)

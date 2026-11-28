@@ -67,8 +67,9 @@ func legionName(name string) bool {
 
 // readRoles is `roles`: a mapping of a role's name to its block, read in the file's order. A name
 // outside the grammar, longer than Dispatch's step record takes, a name of Legion's own or named
-// twice is refused naming it; the block's type is judged in resolveRoles, once `role_types` is
-// read too, wherever the file names it.
+// twice is refused naming it, as written where it has a role name's shape (roleNameShape) and by
+// its line otherwise; the block's type is judged in resolveRoles, once `role_types` is read too,
+// wherever the file names it.
 func readRoles(value *yaml.Node, key string) ([]Role, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
@@ -86,13 +87,19 @@ func readRoles(value *yaml.Node, key string) ([]Role, error) {
 		field := key + "." + name
 		switch {
 		case nameNode.Kind != yaml.ScalarNode || !roleWord.MatchString(name):
+			if nameNode.Kind != yaml.ScalarNode || !roleNameShape(name) {
+				return nil, fmt.Errorf("%s: a role's name must match %s", unknownKeyAt(nameNode, key), strings.Trim(roleWord.String(), "^$"))
+			}
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, name, strings.Trim(roleWord.String(), "^$"))
 		case len(name) > maxRoleWord:
+			if !roleNameShape(name) {
+				return nil, fmt.Errorf("%s: a role's name has at most %d characters: Dispatch's step record takes no longer one", unknownKeyAt(nameNode, key), maxRoleWord)
+			}
 			return nil, fmt.Errorf("%s is %d characters, and a role's name has at most %d: Dispatch's step record takes no longer one", field, len(name), maxRoleWord)
 		case legionName(name):
 			return nil, fmt.Errorf("%s names a role of Legion's own: a deployment defines roles of its own names", field)
 		case slices.ContainsFunc(roles, func(r Role) bool { return string(r.Name) == name }):
-			return nil, fmt.Errorf("%s names %s twice", key, name)
+			return nil, fmt.Errorf("%s names %s twice", key, shownRole(name, nameNode.Line))
 		}
 		role, err := readRole(block, field)
 		if err != nil {
@@ -144,24 +151,33 @@ func readRole(value *yaml.Node, field string) (Role, error) {
 }
 
 // readRoleTypes is `role_types`: the types of a step the deployment adds to Legion's five, each a
-// word of the role grammar Dispatch's step record takes, none of the five and none named twice.
+// word of the role grammar Dispatch's step record takes, none of the five and none named twice. A
+// type refused for its name is named as written where it has a role name's shape (roleNameShape),
+// and otherwise by the line of its entry (entryAt).
 func readRoleTypes(value *yaml.Node, key string) ([]plan.Type, error) {
 	words, err := readStrings(value, key)
 	if err != nil || len(words) == 0 {
 		return nil, err
 	}
 	types := make([]plan.Type, 0, len(words))
-	for _, word := range words {
+	for index, word := range words {
+		// readStrings took every entry of the sequence, in order, so value.Content[index] is the
+		// node word was read from.
+		line, shaped := value.Content[index].Line, roleNameShape(word)
 		roleType := plan.Type(word)
 		switch {
+		case !roleWord.MatchString(word) && !shaped:
+			return nil, fmt.Errorf("%s: a type must match %s", entryAt(line, key), strings.Trim(roleWord.String(), "^$"))
 		case !roleWord.MatchString(word):
 			return nil, fmt.Errorf("%s names %q, which is outside %s", key, word, strings.Trim(roleWord.String(), "^$"))
+		case len(word) > maxRoleWord && !shaped:
+			return nil, fmt.Errorf("%s: a type has at most %d characters: Dispatch's step record takes no longer one", entryAt(line, key), maxRoleWord)
 		case len(word) > maxRoleWord:
 			return nil, fmt.Errorf("%s names %s, which is %d characters, and a type has at most %d: Dispatch's step record takes no longer one", key, word, len(word), maxRoleWord)
 		case slices.Contains(builtinTypes, roleType):
 			return nil, fmt.Errorf("%s names %s, which is one of Legion's five types", key, word)
 		case slices.Contains(types, roleType):
-			return nil, fmt.Errorf("%s names %s twice", key, word)
+			return nil, fmt.Errorf("%s names %s twice", key, shownRole(word, line))
 		}
 		types = append(types, roleType)
 	}
@@ -226,25 +242,31 @@ func (c Config) withRoles(legion []claim.Role) []claim.Role {
 // each key's reader takes a name of the role grammar beside Legion's own, since `roles` may be
 // read after it, and this check, run once every key it judges is set, refuses a name that is
 // neither one of Legion's roles for that key nor a role of `roles`, with the reader's text whose
-// list names both. Its keys: `worker_backends`, `role_config_files`,
-// `worker_stall_backstop_hours` and each hook's `roles`. Then it judges each project's
-// `default_steps`, which readDefaultSteps only parses, in the order of the projects' keys
+// list names both: the name as written where it has a role name's shape (roleNameShape), and
+// otherwise by the line lines holds for it, as the reader refuses it. Its keys: `worker_backends`,
+// `role_config_files`, `worker_stall_backstop_hours` and each hook's `roles`. Then it judges each
+// project's `default_steps`, which readDefaultSteps only parses, in the order of the projects' keys
 // (checkDefaultSteps).
-func checkDeploymentRoleKeys(cfg Config) error {
+func checkDeploymentRoleKeys(cfg Config, lines roleNameLines) error {
 	issueRoles := cfg.issueRoles()
-	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", issueRoles); err != nil {
+	if err := namedRoles(cfg.WorkerBackends, "worker_backends", "an issue role", issueRoles, lines); err != nil {
 		return err
 	}
-	if err := namedRoles(cfg.RoleConfigFiles, "role_config_files", "a Legion role", cfg.roleConfigRoles()); err != nil {
+	if err := namedRoles(cfg.RoleConfigFiles, "role_config_files", "a Legion role", cfg.roleConfigRoles(), lines); err != nil {
 		return err
 	}
-	if err := namedRoles(cfg.WorkerStallBackstops, stallBackstopKey, "a Legion role", cfg.roleConfigRoles()); err != nil {
+	if err := namedRoles(cfg.WorkerStallBackstops, stallBackstopKey, "a Legion role", cfg.roleConfigRoles(), lines); err != nil {
 		return err
 	}
 	for index, hook := range cfg.Hooks {
+		setting := hookRolesKey(index)
 		for _, role := range hook.Roles {
-			if !slices.Contains(issueRoles, role) {
-				return fmt.Errorf("%s[%d].roles names %q, which is not a Legion role (%s)", hooksKey, index, role, runtime.JoinRoles(issueRoles))
+			switch {
+			case slices.Contains(issueRoles, role):
+			case !roleNameShape(string(role)):
+				return fmt.Errorf("%s: it must be a Legion role (%s)", entryAt(lines[setting][role], setting), runtime.JoinRoles(issueRoles))
+			default:
+				return fmt.Errorf("%s names %q, which is not a Legion role (%s)", setting, role, runtime.JoinRoles(issueRoles))
 			}
 		}
 	}
@@ -278,14 +300,65 @@ func checkDefaultSteps(cfg Config) error {
 }
 
 // namedRoles refuses the first role in name order that key names and roles does not hold, as the
-// key's reader words a name that is not what (`an issue role`, `a Legion role`) and listing roles.
-func namedRoles[V any](named map[claim.Role]V, key, what string, roles []claim.Role) error {
+// key's reader words a name that is not what (`an issue role`, `a Legion role`) and listing roles:
+// a name of no role name's shape (roleNameShape) by the line lines holds for it under key, never
+// as written.
+func namedRoles[V any](named map[claim.Role]V, key, what string, roles []claim.Role, lines roleNameLines) error {
 	for _, role := range slices.Sorted(maps.Keys(named)) {
-		if !slices.Contains(roles, role) {
+		switch {
+		case slices.Contains(roles, role):
+		case !roleNameShape(string(role)):
+			return fmt.Errorf("%s: it must be %s (%s)", unknownKeyAtLine(lines[key][role], key), what, runtime.JoinRoles(roles))
+		default:
 			return fmt.Errorf("%s names %q, which is not %s (%s)", key, role, what, runtime.JoinRoles(roles))
 		}
 	}
 	return nil
+}
+
+// roleNameLines is the line the file wrote each name of its role-keyed settings at: by the setting
+// as a refusal names it (`worker_backends`, `role_config_files`, `worker_stall_backstop_hours`,
+// `hooks[<index>].roles`, hookRolesKey), then by the name, the line of its first entry there. Each
+// setting's reader fills its part as it walks the setting's nodes (readsRoleNames), and the check
+// across keys, which judges the settled values and holds no node, names a name with no role name's
+// shape by it (checkDeploymentRoleKeys).
+type roleNameLines map[string]map[claim.Role]int
+
+// join is lines with every setting of more in it, made where lines is nil and more holds one.
+func (lines roleNameLines) join(more roleNameLines) roleNameLines {
+	if len(more) == 0 {
+		return lines
+	}
+	if lines == nil {
+		lines = roleNameLines{}
+	}
+	maps.Copy(lines, more)
+	return lines
+}
+
+// hookRolesKey is the `roles` of the hook at index, as a refusal names it: `hooks[<index>].roles`.
+func hookRolesKey(index int) string {
+	return fmt.Sprintf("%s[%d].roles", hooksKey, index)
+}
+
+// shownRole is name, a name of a role-keyed setting the file wrote at line, as a refusal prints it
+// in its sentence: as written where it has a role name's shape (roleNameShape), and otherwise
+// `the name at line <line>`, never its text.
+func shownRole(name string, line int) string {
+	if roleNameShape(name) {
+		return name
+	}
+	return fmt.Sprintf("the name at line %d", line)
+}
+
+// roleField is the field a refusal of the value of name, a name of the setting key the file wrote
+// at line, names: `key.name` where name has a role name's shape (roleNameShape), and otherwise
+// `key.<the name at line <line>>`, never its text.
+func roleField(key, name string, line int) string {
+	if roleNameShape(name) {
+		return key + "." + name
+	}
+	return fmt.Sprintf("%s.<the name at line %d>", key, line)
 }
 
 // typeList is types as a refusal lists them: comma-separated, in order.

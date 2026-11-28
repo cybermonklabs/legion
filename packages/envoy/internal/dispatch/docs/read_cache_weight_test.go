@@ -21,6 +21,9 @@ import (
 // grows, so it overcounts by at most a quarter (maxWeightToHeap); a part counted for each sharer,
 // such as a row's cells counted for each cell, passes that.
 func TestADocumentReadWeighsAboutTheHeapItHolds(t *testing.T) {
+	// Not parallel: it reads the whole process's heap (runtime.ReadMemStats HeapAlloc around
+	// runtime.GC, in heldByDocumentRead) as what one document read holds, which the heap of the
+	// tests beside it would add to.
 	const minWeightToHeap, maxWeightToHeap = 0.97, 1.25
 	for _, shape := range []struct{ name, markdown string }{
 		{"a table whose header cells are long", longHeaderTable()},

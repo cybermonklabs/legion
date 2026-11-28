@@ -135,13 +135,16 @@ describe("envoyToolSpecs", () => {
       );
       expect(description).not.toContain("live only");
     }
-    // The ways a role publish ends in an error: the holder's refusal (403), and the window the
-    // listener spends waiting for the stream (504). On a listener of this release whose keep
-    // succeeded, no live holder is not one of them: the listener keeps the message for the role's
-    // next live holder. A keep that failed answers 404, and so does a listener of an earlier
-    // release for a holder that is not live (holder_lapsed).
+    // The ways a role publish ends in an error: the holder's refusal (403), the window the
+    // listener spends waiting for the stream (504), and no live holder for a publish that names
+    // no source session (404), which the listener keeps for nobody because no dead letter could
+    // reach its sender: a subagent whose parent session cannot be resolved publishes from none.
+    // On a listener of this release whose keep succeeded, no live holder is otherwise not one of
+    // them: the listener keeps the message for the role's next live holder. A keep that failed
+    // answers 404, and so does a listener of an earlier release for a holder that is not live
+    // (holder_lapsed).
     expect(publish?.description).toContain(
-      "the holder refuses the message, or the forward is not stored within four seconds"
+      "the holder refuses the message, the forward is not stored within four seconds, or no live session holds the role and the publish names no session of yours as its source"
     );
     expect(publish?.description).toContain(
       "A notifications. topic no stream subject captures is refused by name: nothing would store it."

@@ -39,6 +39,7 @@ import (
 // fails too gives it with delete_confirmed false. An update counts from the consumer's next
 // sequence, past the messages it delivered before the update and awaits acks for.
 func TestANarrowingFilterNamesTheMessagesItPassesOver(t *testing.T) {
+	t.Parallel()
 	const (
 		newer    = "notifications.envoy.exceptions.*.*"
 		pairFoo  = "notifications.envoy.exceptions.foo.*"

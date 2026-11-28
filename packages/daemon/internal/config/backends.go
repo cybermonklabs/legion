@@ -38,41 +38,48 @@ func (c Config) Backends() []runtime.Backend {
 }
 
 // readWorkerBackends is `worker_backends`: a mapping of an issue role to the backend it runs on
-// (runtime.Backends). A role named twice, a name that is no role a claim can be on
-// (claim.IsRole), a backend there is no entry for, and a backend that does not run the role are
-// each refused naming the entry; a name that is neither one of Legion's roles nor a role of
-// `roles` is checkDeploymentRoleKeys', once both keys are read.
-func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Backend, error) {
+// (runtime.Backends), and the line of each role it names (roleNameLines). A role named twice, a
+// name that is no role a claim can be on (claim.IsRole), a backend there is no entry for, and a
+// backend that does not run the role are each refused naming the entry, a name of no role name's
+// shape (roleNameShape) by its line alone; a name that is neither one of Legion's roles nor a role
+// of `roles` is checkDeploymentRoleKeys', once both keys are read.
+func readWorkerBackends(value *yaml.Node, key string) (map[claim.Role]runtime.Backend, roleNameLines, error) {
 	if value.Tag == "!!null" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	names := strings.Join(runtime.BackendNames(), ", ")
 	if value.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s must be a mapping of an issue role to its backend (%s), e.g. {implementer: claude}", key, names)
+		return nil, nil, fmt.Errorf("%s must be a mapping of an issue role to its backend (%s), e.g. {implementer: claude}", key, names)
 	}
 	backends := map[claim.Role]runtime.Backend{}
+	lines := map[claim.Role]int{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, backendNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
 		if !claim.IsRole(role) {
-			return nil, fmt.Errorf("%s names %q, which is not an issue role (%s)", key, roleNode.Value, runtime.JoinRoles(claim.Roles))
+			if !roleNameShape(roleNode.Value) {
+				return nil, nil, fmt.Errorf("%s: it must be an issue role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(claim.Roles))
+			}
+			return nil, nil, fmt.Errorf("%s names %q, which is not an issue role (%s)", key, roleNode.Value, runtime.JoinRoles(claim.Roles))
 		}
 		if _, seen := backends[role]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, role)
+			return nil, nil, fmt.Errorf("%s names %s twice", key, shownRole(roleNode.Value, roleNode.Line))
 		}
+		field := roleField(key, roleNode.Value, roleNode.Line)
 		var name string
 		if backendNode.Kind != yaml.ScalarNode || backendNode.Decode(&name) != nil {
-			return nil, fmt.Errorf("%s.%s must be one of %s", key, role, names)
+			return nil, nil, fmt.Errorf("%s must be one of %s", field, names)
 		}
 		backend := runtime.Backend(name)
 		info, ok := runtime.Backends[backend]
 		switch {
 		case !ok:
-			return nil, fmt.Errorf("%s.%s must be one of %s (got %q)", key, role, names, name)
+			return nil, nil, fmt.Errorf("%s must be one of %s (got %q)", field, names, name)
 		case !info.Runs(role):
-			return nil, fmt.Errorf("%s.%s is %s (%s), which runs only %s: %s", key, role, backend, info.Name, info.RunsWhat(), info.Why)
+			return nil, nil, fmt.Errorf("%s is %s (%s), which runs only %s: %s", field, backend, info.Name, info.RunsWhat(), info.Why)
 		}
 		backends[role] = backend
+		lines[role] = roleNode.Line
 	}
-	return backends, nil
+	return backends, roleNameLines{key: lines}, nil
 }

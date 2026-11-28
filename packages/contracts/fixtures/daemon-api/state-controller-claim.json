@@ -8,6 +8,7 @@
   },
   "admission": {
     "cap": 2,
+    "p0Holders": 0,
     "active": [
       "LEGION-208"
     ],
@@ -251,6 +252,8 @@
     "pod_update_rounds_per_minute": null,
     "review_round_cap": 3,
     "controller": "operator",
+    "controller_turn_bound_minutes": 90,
+    "controller_session_max_age_hours": 72,
     "capabilities": {
       "decided": {}
     },

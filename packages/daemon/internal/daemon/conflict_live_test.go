@@ -76,7 +76,7 @@ func (r *conflictLive) bootLogged() {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(r.t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(r.t, r.cfg, o, slog.New(r.logged))
 }
 
 // silent holds that the daemon sends this role's connection nothing at all for within: the RPC

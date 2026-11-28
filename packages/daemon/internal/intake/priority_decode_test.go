@@ -11,7 +11,8 @@ import (
 // Every Dispatch issue event carries the issue's own priority, 0 to 3 for P0 to P3 or null for
 // none, and the decoder carries it onto the fact. An event with no priority field reads as none.
 // A value Dispatch never writes — out of range, or no integer at all — reads as none and is
-// reported, never poison: the event may move the issue's status, which the workflow acts on.
+// reported under its own field's name, `priority`, never poison: the event may move the issue's
+// status, which the workflow acts on.
 func TestADispatchIssueEventCarriesItsOwnPriority(t *testing.T) {
 	t.Parallel()
 	const subject = "notifications.dispatch.issue.CAPTURE-3.issue.updated"
@@ -45,6 +46,9 @@ func TestADispatchIssueEventCarriesItsOwnPriority(t *testing.T) {
 			}
 			if issue.Priority != tc.want || (len(decoded.Unread) != 0) != tc.unread {
 				t.Fatalf("priority = %v, unread %q; want %v, reported %t", issue.Priority, decoded.Unread, tc.want, tc.unread)
+			}
+			if tc.unread && (len(decoded.Unread) != 1 || !strings.HasPrefix(decoded.Unread[0], "priority ")) {
+				t.Fatalf("unread %q, want the one note naming the field `priority`", decoded.Unread)
 			}
 		})
 	}

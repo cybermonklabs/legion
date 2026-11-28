@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 const (
@@ -138,33 +139,40 @@ func TestEachAddressARoleIsHandedIsComparedAlone(t *testing.T) {
 }
 
 // A name is all an observation's detail and the address record ever carry of an address: its
-// scheme, host and port, `xxxxx@` when it carries userinfo, `(unset)` for none, and `xxxxx` whole
-// when it yields no scheme and host. Userinfo, path, query and fragment never enter it, a raw comma
-// in the userinfo and an at sign in the path included, and a NATS list is named entry by entry.
+// scheme, host and port, its scheme and `[a URL with credentials]` when it carries userinfo or an
+// "@" past its host (where a credential holding a "/", "?" or "#" written as the user lands, its
+// head read as the host), `(unset)` for none, and `xxxxx` whole when it yields no scheme and host.
+// Userinfo, path, query and fragment never enter it, a raw comma in the userinfo and a password
+// holding an "@" (with a host after it or none) included, and a NATS list is named entry by entry.
 func TestANamedAddressShowsOnlyItsSchemeHostAndPort(t *testing.T) {
 	t.Parallel()
+	const withCredentials = "://" + redact.URLWithCredentials
 	for address, want := range map[string]string{
 		"":                      "(unset)",
 		"nats://192.0.2.9:4222": "nats://192.0.2.9:4222",
-		"nats://legion:nats-password@192.0.2.9:4222":                 "nats://xxxxx@192.0.2.9:4222",
-		"nats://nats-token@192.0.2.10:4222":                          "nats://xxxxx@192.0.2.10:4222",
-		"nats://user,more:password,more@192.0.2.11:4222":             "nats://xxxxx@192.0.2.11:4222",
-		"nats://192.0.2.9:4222?token=nats-old-token":                 "nats://192.0.2.9:4222",
-		"nats://192.0.2.9:4222/tenant%2Fnats-old-credential":         "nats://192.0.2.9:4222",
-		"nats://192.0.2.9:4222/route@blue":                           "nats://192.0.2.9:4222",
-		"http://192.0.2.9:9020?access_token=envoy-old-token":         "http://192.0.2.9:9020",
-		"http://192.0.2.9:9020#access_token=envoy-old-token":         "http://192.0.2.9:9020",
-		"http://192.0.2.9:9020/tenant/old":                           "http://192.0.2.9:9020",
-		"http://user,more:password,more@192.0.2.9:9020":              "http://xxxxx@192.0.2.9:9020",
-		"https://legion:dispatch-password@dispatch.internal.example": "https://xxxxx@dispatch.internal.example",
+		"nats://legion:nats-password" + "@192.0.2.9:4222":                 "nats" + withCredentials,
+		"nats://nats-token@192.0.2.10:4222":                               "nats" + withCredentials,
+		"nats://user,more:password,more" + "@192.0.2.11:4222":             "nats" + withCredentials,
+		"http://user:p" + "@ssword@192.0.2.9:9020":                        "http" + withCredentials,
+		"http://user:p" + "@ssword":                                       "http" + withCredentials,
+		"nats://192.0.2.9:4222?token=nats-old-token":                      "nats://192.0.2.9:4222",
+		"nats://192.0.2.9:4222/tenant%2Fnats-old-credential":              "nats://192.0.2.9:4222",
+		"nats://192.0.2.9:4222/route@blue":                                "nats" + withCredentials,
+		"nats://madeUpHead0123?madeUpTail0123@192.0.2.9:4222":             "nats" + withCredentials,
+		"nats://madeUpHead0123#madeUpTail0123@192.0.2.9:4222":             "nats" + withCredentials,
+		"http://192.0.2.9:9020?access_token=envoy-old-token":              "http://192.0.2.9:9020",
+		"http://192.0.2.9:9020#access_token=envoy-old-token":              "http://192.0.2.9:9020",
+		"http://192.0.2.9:9020/tenant/old":                                "http://192.0.2.9:9020",
+		"http://user,more:password,more" + "@192.0.2.9:9020":              "http" + withCredentials,
+		"https://legion:dispatch-password" + "@dispatch.internal.example": "https" + withCredentials,
 		"192.0.2.9:4222": "xxxxx",
 	} {
 		if got := namedURL(address); got != want {
 			t.Errorf("namedURL(%q) = %q, want %q", address, got, want)
 		}
 	}
-	list := []string{"nats://user,more:password@192.0.2.9:4222", "nats://192.0.2.10:4222?token=nats-query"}
-	if got, want := namedNATSURLs(list), "nats://xxxxx@192.0.2.9:4222,nats://192.0.2.10:4222"; got != want {
+	list := []string{"nats://user,more:password" + "@192.0.2.9:4222", "nats://192.0.2.10:4222?token=nats-query"}
+	if got, want := namedNATSURLs(list), "nats"+withCredentials+",nats://192.0.2.10:4222"; got != want {
 		t.Errorf("namedNATSURLs(%q) = %q, want %q", list, got, want)
 	}
 	if got := namedNATSURLs(nil); got != "(unset)" {
@@ -260,8 +268,8 @@ func TestTheAddressRecordHoldsNoCredential(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		`"generation":7`, "http://xxxxx@192.0.2.5:13370", "nats://xxxxx@192.0.2.9:4222,nats://192.0.2.10:4222",
-		"http://xxxxx@192.0.2.6:9020", addressDigest(r.envoyURL),
+		`"generation":7`, "http://" + redact.URLWithCredentials, "nats://" + redact.URLWithCredentials + ",nats://192.0.2.10:4222",
+		addressDigest(r.envoyURL),
 	} {
 		if !strings.Contains(record, want) {
 			t.Errorf("the record %s lacks %q", record, want)

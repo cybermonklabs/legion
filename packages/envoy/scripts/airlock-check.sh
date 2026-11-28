@@ -1041,13 +1041,17 @@ check_k4() {
 
 	# A stand-in on a .svc name of its own, which the stack does not have. It is this run's
 	# own: one Python HTTP server on loopback, reached by the .svc name with curl --resolve,
-	# because a Legion pod's /etc/hosts cannot be written.
-	local svc_port
-	svc_port="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
+	# because a Legion pod's /etc/hosts cannot be written. It binds port 0 and names the port the
+	# kernel gave it ("Serving HTTP on 127.0.0.1 port <port>"), unbuffered, so no port of its is
+	# one this check picked and another process could have taken first.
+	local svc_port svc_pid
 	mkdir -p "$WORK_DIR/svc"
 	echo "the .svc stand-in answered" >"$WORK_DIR/svc/index.html"
-	(cd "$WORK_DIR/svc" && exec python3 -m http.server "$svc_port" --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
-	HELPER_PIDS+=($!)
+	(cd "$WORK_DIR/svc" && exec python3 -u -m http.server 0 --bind 127.0.0.1 >"$WORK_DIR/svc.log" 2>&1) &
+	svc_pid=$!
+	HELPER_PIDS+=("$svc_pid")
+	await "the .svc stand-in" 30 "$WORK_DIR/svc.log" '^Serving HTTP on 127\.0\.0\.1 port [1-9][0-9]* ' "$svc_pid"
+	svc_port="$(sed -n 's/^Serving HTTP on 127\.0\.0\.1 port \([1-9][0-9]*\) .*/\1/p' "$WORK_DIR/svc.log" | head -n 1)"
 
 	local s_before t_before
 	s_before="$(records_count s)"
@@ -1621,7 +1625,7 @@ check_k6() {
 # Workspace logins, which k7's inputs name - and the hosts are the real ones, so this check needs
 # a profiles file the stack's does not hold. That is one broker process of this check's own, on
 # the stack's own database, store, certificate authority and stand-ins, with its profiles file,
-# its own two ports and its own public URL changed - the same device k4's control uses for one
+# its own ports, its proxy's URL and its own public URL changed - the same device k4's control uses for one
 # setting, with the public URL changed too because this broker must serve the release as well as
 # the proxy, and a session's proof is verified against the public URL it was signed for. Its
 # whole environment is the first stack broker's own, read out of /proc/<pid>/environ, so nothing
@@ -1652,26 +1656,43 @@ k7_dotfiles() {
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
 # whose environment comes from the running one, with the profiles file, the three listening
-# addresses and the public URL replaced; the metrics port is one the system picks, since nothing
-# here scrapes it and the stack's own brokers hold theirs.
+# addresses, the public URL and the proxy's URL replaced. Each of its ports is one the system picks
+# as the broker binds it, so no port of its is one this check picked and another process could
+# have taken first. Its public URL is port 0 too, which the broker reads as "the address I bind"
+# (dev-broker.sh's convention), so the API's URL is the address its "broker listening" line names.
+# A release names the proxy's URL (BROKER_AIRLOCK_PROXY_URL), which the broker must hold at boot
+# while its proxy's port is known only once it has bound, so the proxy is named by a front bound
+# before the broker, pointed at the port the broker logs, as dev-airlock.sh's and dev-broker.sh's
+# fronts are.
 k7_broker() {
-	local d="$WORK_DIR/k7" api proxy
-	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	proxy="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
-	K7_API_URL="http://127.0.0.1:$api"
-	K7_PROXY_URL="http://127.0.0.1:$proxy"
+	local d="$WORK_DIR/k7" front_pid started proxy_addr
+	: >"$d/proxy-front.log"
+	: >"$d/proxy-backends"
+	"$STANDS_BIN" front --listen 127.0.0.1:0 --backends-file "$d/proxy-backends" \
+		>"$d/proxy-front.json" 2>"$d/proxy-front.log" &
+	front_pid=$!
+	HELPER_PIDS+=("$front_pid")
+	await "k7's proxy front" 30 "$d/proxy-front.log" 'front listening addr=' "$front_pid"
+	K7_PROXY_URL="$(jq -r .url "$d/proxy-front.json")"
 	broker_env \
 		BROKER_PROFILES_FILE="$d/profiles.json" \
-		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
-		BROKER_PUBLIC_URL="$K7_API_URL" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
+		BROKER_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
 		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
 	( with_broker_env "$BROKER_BIN" ) >"$d/broker.log" 2>&1 &
-	local started=$!
+	started=$!
 	EXTRA_BROKER_PIDS+=("$started")
 	await "k7's broker" 120 "$d/broker.log" '"message":"airlock proxy listening"' "$started"
+	K7_API_URL="http://$(logged_addr 'broker listening' "$d/broker.log")"
+	proxy_addr="$(logged_addr 'airlock proxy listening' "$d/broker.log")"
+	if [ "$K7_API_URL" = "http://" ] || [ -z "$proxy_addr" ]; then
+		echo "airlock-check: k7's broker logged no API or proxy address; see $d/broker.log" >&2
+		exit 1
+	fi
+	printf '%s\n' "$proxy_addr" >"$d/proxy-backends"
 }
 
 
@@ -1779,7 +1800,7 @@ check_k7() {
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_add_fixtures
 	k7_broker
-	observe "this check's own broker is the stack's first broker's environment with its profiles file, its two ports and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL, names $(jq -c '[.profiles[].name]' "$WORK_DIR/k7/profiles.json")"
+	observe "this check's own broker is the stack's first broker's environment with its profiles file, its ports, its proxy's URL and its public URL changed: api $K7_API_URL, proxy $K7_PROXY_URL (a front over the broker's own proxy port), names $(jq -c '[.profiles[].name]' "$WORK_DIR/k7/profiles.json")"
 
 	K7_CONSUMER_WORK_DIR="$WORK_DIR/k7" \
 		k7_consumer_write_pulumi

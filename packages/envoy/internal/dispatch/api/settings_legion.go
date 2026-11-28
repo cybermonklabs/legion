@@ -7,8 +7,8 @@
 // (internal/dispatch/legion). The path names the project, but writing one belongs to the
 // deployment rather than to that project — it points Dispatch at a host, which a credential that
 // names one project has no business doing — so the PUT and the DELETE are classed
-// scopeDeployment beside the project's default-repository row, not scopeProject (routes_table.go,
-// writeClasses).
+// scopeDeployment beside the project's default-repository row, not scopeProject (each route's
+// WriteClass).
 //
 // Like putDeliverySettings, these write no event. The write belongs to
 // the deployment, so there is no project whose event it would be, and events/broker.go's

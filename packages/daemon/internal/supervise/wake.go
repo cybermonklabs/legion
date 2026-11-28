@@ -943,10 +943,12 @@ func dropsWaitingWake(ev Event) bool {
 
 // operatorDelivery is a task a person gave a claim through the daemon's API: that route sends it
 // with no id of an outbox row (api.operator's deliver, RequestDeliver.ID), where every task the
-// workflow queues names the row it came from. The pacing makes no such task wait (dropsWaitingWake).
+// workflow queues names the row it came from. The daemon's own task of no row, the controller
+// keeper's start message, says it is no operator's (RequestDeliver.ResumesNothing). The pacing
+// makes no operator's task wait (dropsWaitingWake).
 func operatorDelivery(ev Event) bool {
 	deliver, ok := ev.(RequestDeliver)
-	return ok && deliver.ID == ""
+	return ok && deliver.ID == "" && !deliver.ResumesNothing
 }
 
 // exemptWake is whether the launch a request raises is one the wake pacing lets through: the
@@ -962,6 +964,11 @@ func operatorDelivery(ev Event) bool {
 // Every other path into a launch is paced, so every other event is too: an operator's delivery
 // carries no launch of its own, and revive reads the exemption from the delivery itself
 // (deliverResuming).
+//
+// The same flag keeps the project controller's session older than its age at the launch it raises
+// (replaceAgedSession, dispatch://INFRA-2045 R3): the gate lets every launch of the controller
+// through by identity, so for the controller this is the flag's one effect, and a daemon request
+// marked exempt here would turn R3 off for that request.
 func exemptWake(ev Event) bool {
 	switch ev := ev.(type) {
 	case RequestSpawn:

@@ -56,7 +56,8 @@ func TestTheOutboxPublishesNothingToTheRoleOfAClaimThatDoesNotHoldItsSession(t *
 // lane for the role's next live holder, which is the unheld session's process while it lives. So
 // the gate holds a kept publish as it holds every other (outbox.publishKept, the merge of
 // cybermonklabs/legion#4088 into #4220): to a claim that records a session it does not hold, a hook
-// prompt publishes nothing, kept or not, and finishes undelivered. To a claim holding its own
+// prompt publishes nothing, kept or not, and its row waits for a session to hold the role as it
+// waits on the listener's own no-holder answer (publishKeptToRole). To a claim holding its own
 // session, it is published with keep as before (R9). One hook prompt to each claim stands in for
 // the kept rows, since a hook prompt and a phase-ended message are the two kinds publishKeptToRole
 // publishes, and one stands in for both.
@@ -80,8 +81,15 @@ func TestTheOutboxKeepsNothingForTheRoleOfAClaimThatDoesNotHoldItsSession(t *tes
 		named := hook
 		named.Claim = mustClaimToken(t, issue, claim.RoleTester)
 		row := mustOutboxRow(t, issue, named, time.Now())
-		row.ID = int64(80 + i)
-		if err := runner.execute(ctx, row); err != nil {
+		row.ID, row.CreatedAt = int64(80+i), time.Now()
+		err := runner.execute(ctx, row)
+		if issue == "LEGION-942" {
+			if !errors.Is(err, wait.ErrWaiting) || !errors.Is(err, notify.ErrNoHolder) {
+				t.Fatalf("execute %s's hook prompt row = %v, want a wait on the gate's no-holder answer", issue, err)
+			}
+			continue
+		}
+		if err != nil {
 			t.Fatalf("execute %s's hook prompt row: %v", issue, err)
 		}
 	}

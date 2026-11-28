@@ -63,78 +63,83 @@ func DefaultHooks() []Hook {
 	}}
 }
 
-// readHooks is `hooks`: a list of mappings, each one hook of the deployment. It answers a pointer
-// so that the settle can tell a file that names no key, which runs DefaultHooks(), from one that
-// writes `hooks: []`, which runs none. A null key (`hooks:` and nothing under it) is the key
-// unset, as every other key of this loader reads a null, so the default stands.
-func readHooks(value *yaml.Node, key string) (*[]Hook, error) {
+// readHooks is `hooks`: a list of mappings, each one hook of the deployment, and the line of each
+// role every hook's roles names (roleNameLines, by hookRolesKey). It answers a pointer so that the
+// settle can tell a file that names no key, which runs DefaultHooks(), from one that writes
+// `hooks: []`, which runs none. A null key (`hooks:` and nothing under it) is the key unset, as
+// every other key of this loader reads a null, so the default stands.
+func readHooks(value *yaml.Node, key string) (*[]Hook, roleNameLines, error) {
 	if value.Tag == "!!null" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if value.Kind != yaml.SequenceNode {
-		return nil, fmt.Errorf("%s must be an array", key)
+		return nil, nil, fmt.Errorf("%s must be an array", key)
 	}
 	hooks := make([]Hook, 0, len(value.Content))
+	lines := roleNameLines{}
 	for index, entry := range value.Content {
 		field := fmt.Sprintf("%s[%d]", key, index)
-		hook, err := readHook(entry, field)
+		hook, roleLines, err := readHook(entry, field)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for earlier, named := range hooks {
 			if named.Name == hook.Name {
-				return nil, fmt.Errorf("%s.name is %q, which %s[%d] already carries: a hook is named once, and its name is what every prompt it publishes carries",
+				return nil, nil, fmt.Errorf("%s.name is %q, which %s[%d] already carries: a hook is named once, and its name is what every prompt it publishes carries",
 					field, hook.Name, key, earlier)
 			}
 		}
 		hooks = append(hooks, hook)
+		lines[hookRolesKey(index)] = roleLines
 	}
-	return &hooks, nil
+	return &hooks, lines, nil
 }
 
-// readHook is one entry of the list, refused naming its position and the member at fault. The
-// words are the hook's own (`prompt`) or the file they are read from (`prompt_file`), never both
-// and never neither: a hook with no words would fire and say nothing.
-func readHook(entry *yaml.Node, field string) (Hook, error) {
+// readHook is one entry of the list, refused naming its position and the member at fault, and the
+// line of each role its roles names. The words are the hook's own (`prompt`) or the file they are
+// read from (`prompt_file`), never both and never neither: a hook with no words would fire and say
+// nothing.
+func readHook(entry *yaml.Node, field string) (Hook, map[claim.Role]int, error) {
 	if entry.Kind != yaml.MappingNode {
-		return Hook{}, fmt.Errorf("%s must be a mapping", field)
+		return Hook{}, nil, fmt.Errorf("%s must be a mapping", field)
 	}
 	fields, err := describedMembers(entry, field, hooksKey+"[]")
 	if err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	var hook Hook
 	if hook.Name, err = requiredString(fields["name"], field+".name", ": the hook's own name, which every prompt it publishes carries"); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	if hook.On, err = requiredString(fields["on"], field+".on", ": the event the hook stands on"); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	if !slices.Contains(HookEvents, hook.On) {
-		return Hook{}, fmt.Errorf("%s.on is %q, which is no event the daemon has (%s)", field, hook.On, strings.Join(HookEvents, ", "))
+		return Hook{}, nil, fmt.Errorf("%s.on is %q, which is no event the daemon has (%s)", field, hook.On, strings.Join(HookEvents, ", "))
 	}
 	if hook.Every, err = readHookEvery(fields["every"], field); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
-	if hook.Roles, err = readHookRoles(fields["roles"], field); err != nil {
-		return Hook{}, err
+	var lines map[claim.Role]int
+	if hook.Roles, lines, err = readHookRoles(fields["roles"], field); err != nil {
+		return Hook{}, nil, err
 	}
 	if hook.Moves, err = readHookMoves(fields["moves"], field); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	if hook.Prompt, err = optionalString(fields["prompt"], field+".prompt"); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	if hook.PromptFile, err = optionalString(fields["prompt_file"], field+".prompt_file"); err != nil {
-		return Hook{}, err
+		return Hook{}, nil, err
 	}
 	switch {
 	case hook.Prompt != "" && hook.PromptFile != "":
-		return Hook{}, fmt.Errorf("%s names prompt and prompt_file: the hook's words are written in the key, or read from a file, never both", field)
+		return Hook{}, nil, fmt.Errorf("%s names prompt and prompt_file: the hook's words are written in the key, or read from a file, never both", field)
 	case hook.Prompt == "" && hook.PromptFile == "":
-		return Hook{}, fmt.Errorf("%s names neither prompt nor prompt_file: a hook carries the words it puts in front of its roles", field)
+		return Hook{}, nil, fmt.Errorf("%s names neither prompt nor prompt_file: a hook carries the words it puts in front of its roles", field)
 	}
-	return hook, nil
+	return hook, lines, nil
 }
 
 // readHookEvery is a hook's `every`: how many moves back of what the hook selects fire it. It is
@@ -153,33 +158,44 @@ func readHookEvery(value *yaml.Node, field string) (int, error) {
 
 // readHookRoles is a hook's `roles`: the roles its words are put in front of, at least one, each
 // a role of an issue: a Legion role, or a name of the role grammar (claim.IsRole), which
-// checkDeploymentRoleKeys holds to a role of `roles` once every key is read. The architect is
+// checkDeploymentRoleKeys holds to a role of `roles` once every key is read, and the line of each
+// role's first entry. A name that is no role is refused as written where it has a role name's
+// shape (roleNameShape), and otherwise by the line of its entry (entryAt). The architect is
 // refused: the daemon's own wake to an architect is a notice it writes itself, and a hook writes
 // none.
-func readHookRoles(value *yaml.Node, field string) ([]claim.Role, error) {
+func readHookRoles(value *yaml.Node, field string) ([]claim.Role, map[claim.Role]int, error) {
 	key := field + ".roles"
 	if value == nil {
-		return nil, errors.New(key + " is required: the hook puts its words in front of the roles it names")
+		return nil, nil, errors.New(key + " is required: the hook puts its words in front of the roles it names")
 	}
 	named, err := readStrings(value, key)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if len(named) == 0 {
-		return nil, errors.New(key + " names no role: the hook puts its words in front of the roles it names")
+		return nil, nil, errors.New(key + " names no role: the hook puts its words in front of the roles it names")
 	}
 	roles := make([]claim.Role, 0, len(named))
-	for _, name := range named {
+	lines := make(map[claim.Role]int, len(named))
+	for index, name := range named {
+		// readStrings took every entry of the sequence, in order, so value.Content[index] is the
+		// node name was read from.
+		line := value.Content[index].Line
 		role := claim.Role(name)
-		if !claim.IsRole(role) {
-			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
+		switch {
+		case !claim.IsRole(role) && !roleNameShape(name):
+			return nil, nil, fmt.Errorf("%s: it must be a Legion role (%s)", entryAt(line, key), runtime.JoinRoles(claim.Roles))
+		case !claim.IsRole(role):
+			return nil, nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, name, runtime.JoinRoles(claim.Roles))
+		case role == claim.RoleArchitect:
+			return nil, nil, fmt.Errorf("%s names the architect, which no hook writes to: the daemon's own wake to an architect is a notice", key)
 		}
-		if role == claim.RoleArchitect {
-			return nil, fmt.Errorf("%s names the architect, which no hook writes to: the daemon's own wake to an architect is a notice", key)
+		if _, seen := lines[role]; !seen {
+			lines[role] = line
 		}
 		roles = append(roles, role)
 	}
-	return roles, nil
+	return roles, lines, nil
 }
 
 // readHookMoves is a hook's `moves`: the moves back it selects, each written "<from>-<to>" as the

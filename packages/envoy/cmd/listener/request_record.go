@@ -40,6 +40,12 @@ const (
 	// two say different things about the claim behind it.
 	outcomeRoleUnclaimed requestOutcome = "role_unclaimed"
 	outcomeRoleLapsed    requestOutcome = "role_lapsed"
+	// outcomeRoleNoSourceSession belongs to the publish route alone: a role send that names no
+	// source session, to a role with no live holder, answered 404 with nothing kept, because a kept
+	// copy that expired would reach no sender (roleSend.noHolder). It is neither of the two above,
+	// which a send with keep: false or a keep that failed gets, so a log filter counts these
+	// refusals apart; the body's reason still names the state the resolution found.
+	outcomeRoleNoSourceSession requestOutcome = "role_no_source_session"
 	// outcomeRoleClaimUnreadable is the publish route's role claim record that the bus answered
 	// and no read can decode (store.ErrMalformedRoleClaim): a 500, not outcomeBusUnavailable,
 	// since the bus did answer and retrying reads the same record.
@@ -208,6 +214,18 @@ func (rec *requestRecord) refuseRoleHolder(w http.ResponseWriter, role string, r
 	}
 	rec.holder = result.Holder
 	rec.write(http.StatusNotFound, outcome)
+}
+
+// refuseRoleNoSourceSession answers a role send that names no source session, to a role with no
+// live holder, with the 404 refuseRoleHolder writes (roleHolderRefusal), whose error also says that
+// nothing was kept and why (noSourceSessionNotKept), and records it under
+// outcomeRoleNoSourceSession, carrying a lapsed holder as refuseRoleHolder does.
+func (rec *requestRecord) refuseRoleNoSourceSession(w http.ResponseWriter, role string, result roles.Resolution) {
+	refusal := roleHolderRefusal(role, result)
+	refusal.Error += noSourceSessionNotKept
+	writeJSON(w, http.StatusNotFound, refusal)
+	rec.holder = result.Holder
+	rec.write(http.StatusNotFound, outcomeRoleNoSourceSession)
 }
 
 // refuseSenderRateLimited answers a message whose sender's count was empty (senderLimit.take)

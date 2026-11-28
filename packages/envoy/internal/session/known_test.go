@@ -1016,8 +1016,9 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 
 // knownSessionMemoryBound is what the records, their revision fence and the subject index of
 // 100,000 sessions may cost in memory. Each session here carries its agent subject, which no other
-// session shares, and one of ten team topics, which is the shape the store holds in production:
-// one unique pattern per session plus a handful of shared ones. The measurement on this machine
+// session shares, one of ten team topics, and the principal it registered as, one of ten, which is
+// the shape the store holds in production: one unique pattern per session plus a handful of shared
+// ones, and a few principals that many sessions share. The measurement on this machine
 // (linux/amd64, go1.27), over the watcher's copy (kvwatch.Copy), was 89,710,800 bytes, 85.6 MiB,
 // 897 bytes a record. The bound is 128 MiB: room for the allocator's own slack and for a Go
 // release that grows a map's header, while still failing a change that makes a record or an index
@@ -1043,6 +1044,7 @@ func TestKnownSessionsMemoryForAHundredThousandRecords(t *testing.T) {
 			Capabilities: []string{"aside"},
 			Topics:       []string{"notifications.agent." + sessionID, fmt.Sprintf("notifications.team.squad-%d", i%10)},
 			LastSeen:     now,
+			Principal:    fmt.Sprintf("person-%d@example.com", i%10),
 		})
 		if err != nil {
 			t.Fatalf("encode %s: %v", sessionID, err)

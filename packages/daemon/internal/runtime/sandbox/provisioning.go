@@ -9,30 +9,27 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
-// An issue pod provisions itself in two init containers, workspace-fetch and then workspace-init,
-// before the launcher its roles run in starts. The two readings of those containers' statuses live
-// here together: failedInit, which an observation reads a pod's death out of (verdict), and
-// provisioning, which a relaunch reads a pod still coming up by (awaitRoleLauncher). They are one
-// judgement seen from either side, so a pod cannot be dead to the one and starting to the other.
-// localInitFailure lives here too. It reads failedInit's failure again, for a kept volume
-// (keptVolume): whether the failure is the volume's own fault, which a new volume cures. And so
-// does beforeLaunchers, the widest of these readings: a pod whose launchers cannot have started,
-// which a stop reads as having nothing to stop (Suspend).
+// An issue pod provisions itself in workspace-init before the launcher its roles run in starts.
+// The readings of that container's status live here together: failedInit, which an observation
+// reads a pod's death out of (verdict), and provisioning, which a relaunch reads a pod still coming
+// up by (awaitRoleLauncher). They are one judgement seen from either side, so a pod cannot be dead
+// to the one and starting to the other. localInitFailure lives here too. It reads failedInit's
+// failure again, for a kept volume (keptVolume): whether the failure is the volume's own fault,
+// which a new volume cures. And so does beforeLaunchers, the widest of these readings: a pod whose
+// launchers cannot have started, which a stop reads as having nothing to stop (Suspend).
 // neverStarted lives here too, though it reads a pod's conditions rather than its init containers,
 // and judges every pod the runtime launches, the project controller's as well as an issue's: a pod
 // scheduled onto a node that never made it ready to start, which a relaunch replaces rather than
 // waits on once the pod is older than its start bound (startBound).
 
-// fetchRestartGrace is how many times the kubelet may restart a pod's workspace-fetch before a
-// non-zero end of it is the pod's death rather than one more start: three, so the fourth restart
-// is the failure. The kubelet restarts a failed init container by itself under the pod's
-// restartPolicy Always (manifest), and the fetch that comes back finds the feed its own pod's disk
-// already holds and brings only what is missing, while a replacement pod downloads the repository
-// again onto a fresh disk — what a fetch killed mid-download used to cost: the download thrown
-// away and the issue launched again into the same wait (INFRA-495). The grace is counted because a
-// fetch that cannot get through at all must still reach the claim's launch budget rather than
-// restart for ever.
-const fetchRestartGrace = 3
+// initRestartGrace is how many times the kubelet may restart workspace-init before a non-zero end
+// is the pod's death rather than one more start: three, so the fourth restart is the failure. The
+// kubelet restarts a failed init container by itself under the pod's restartPolicy Always
+// (manifest). A restart keeps a clone already renamed into place and fetches only its delta, where
+// a replacement pod starts on a fresh disk. The cost is that a refusal that always fails runs up to
+// four times under the kubelet's back-off before the pod counts as dead; that cost is worth the
+// retry of the transfers that now run in this container.
+const initRestartGrace = 3
 
 // initEnd is how an init container ended, when it ended non-zero: its own termination, or the one
 // it is coming back from, which a container the kubelet is restarting carries in
@@ -50,16 +47,22 @@ func initEnd(status corev1.ContainerStatus) *corev1.ContainerStateTerminated {
 }
 
 // startingAgain is whether a non-zero end of pod's init container status is the kubelet bringing
-// that container back, the pod still coming up, rather than the pod's death: a workspace-fetch
-// inside the grace, in a pod that is still Pending. No init container of a pod that has already
-// succeeded or failed is started again, whatever its own status says it did.
+// that container back, the pod still coming up, rather than the pod's death: workspace-init inside
+// the grace, in a pod that is still Pending. No init container of a pod that has already succeeded
+// or failed is started again, whatever its own status says it did. A container the kubelet lost
+// (the reason ContainerStatusUnknown, which the kubelet writes when the node or its container
+// runtime restarted) is a node loss and never inside the grace: the next launch replaces the pod
+// and keeps its volume.
 func startingAgain(pod *corev1.Pod, status corev1.ContainerStatus) bool {
-	return phaseOf(pod) == corev1.PodPending && status.Name == fetchContainer && status.RestartCount <= fetchRestartGrace
+	if ended := initEnd(status); ended != nil && ended.Reason == "ContainerStatusUnknown" {
+		return false
+	}
+	return phaseOf(pod) == corev1.PodPending && status.Name == initContainer && status.RestartCount <= initRestartGrace
 }
 
 // failedInit is the init container whose non-zero end is pod's death, and how it ended: no
 // launcher can start in such a pod. It includes a failed attempt the kubelet is restarting, since
-// nothing ends those on their own, except the workspace-fetch restarts the grace covers, which are
+// nothing ends those on their own, except the workspace-init restarts the grace covers, which are
 // the pod provisioning (startingAgain).
 func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 	if pod == nil {
@@ -76,10 +79,9 @@ func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 // localInitFailure is the init container whose end failedInit reads as pod's death, and how it
 // ended, when that end is a fault local to the issue's volume. It is the one rule by which a kept
 // volume (keptVolume) is reset: the launch reads it (volumeReset), and ReplacePod and the release
-// read it to mark the Sandbox (volumeFault). Both init containers write on the volume.
-// workspace-init writes the shared clone and the issue's workspace, and workspace-fetch writes the
-// feed. A fault on a kept volume fails one of them in each pod that mounts the volume, and only a
-// new volume cures it.
+// read it to mark the Sandbox (volumeFault). Workspace-init writes the shared clone and the issue's
+// workspace. A fault on a kept volume fails it in each pod that mounts the volume, and only a new
+// volume cures it.
 //
 // These ends are not such a fault, and for them it returns "" and nil:
 //
@@ -98,7 +100,7 @@ func failedInit(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 //     no longer knows it. The pod gets no deletionTimestamp and no DisruptionTarget. Such an end
 //     is a node loss, which keeps the volume, as an end in a pod that is being deleted does.
 //
-// A workspace-fetch in a Pending pod that its grace still restarts is no failure (failedInit).
+// A workspace-init in a Pending pod that its grace still restarts is no failure (failedInit).
 func localInitFailure(pod *corev1.Pod) (string, *corev1.ContainerStateTerminated) {
 	name, ended := failedInit(pod)
 	switch {
@@ -127,10 +129,10 @@ func endedByKubelet(pod *corev1.Pod) bool {
 }
 
 // provisioning is whether pod is still coming up through its init containers (an issue pod's
-// workspace-fetch and then workspace-init; the controller's pod has none): one of them running, or
-// a workspace-fetch between the restarts the grace covers, which is the same pod failedInit leaves
-// alive. It is the rule the liveness mapping reads such a pod alive by (evaluate), and the rule by
-// which a launch's wait for the pod's launcher keeps giving it longer (awaitRoleLauncher).
+// workspace-init; the controller's pod has none): it is running, or between the restarts the grace
+// covers, which is the same pod failedInit leaves alive. It is the rule the liveness mapping reads
+// such a pod alive by (evaluate), and the rule by which a launch's wait for the pod's launcher
+// keeps giving it longer (awaitRoleLauncher).
 func provisioning(pod *corev1.Pod) bool {
 	if pod == nil || phaseOf(pod) != corev1.PodPending {
 		return false
@@ -147,7 +149,7 @@ func provisioning(pod *corev1.Pod) bool {
 // and runs them all again before it starts that container again after the pod's sandbox is made
 // anew, so no launcher of such a pod has run since its init containers last began, and no role's
 // process runs in it. It is wider than failedInit and provisioning together: a pod still pulling
-// its images, and a workspace-fetch the grace restarts, are in it too, since neither has started a
+// its images, and a workspace-init the grace restarts, are in it too, since neither has started a
 // launcher either. A pod past Pending is never this, whatever its statuses list, and neither is the
 // controller's pod, which runs no init container.
 func beforeLaunchers(pod *corev1.Pod) bool {

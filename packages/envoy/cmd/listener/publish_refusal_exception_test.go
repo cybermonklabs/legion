@@ -118,6 +118,8 @@ func TestARefusalExceptionThatCannotBePublishedIsOnlyLogged(t *testing.T) {
 // publish waits there for a connection until the bus's 5 s publish bound runs out, and this call
 // must return long before that.
 func TestARefusalExceptionDoesNotWaitForTheBus(t *testing.T) {
+	// Not parallel: it requires publishRefusalException to return within 500 ms against a
+	// reconnecting bus.
 	server, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
@@ -255,7 +257,7 @@ func TestTheRouteRaisesOneExceptionWhereItRefusesARoleSend(t *testing.T) {
 	}
 
 	recorder, _ = publishThrough(d,
-		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","message":"this one waits for the next holder"}`)
+		`{"topic":"`+contracts.RoleTopicPrefix+kept+`","source":"agent","source_session":"ses_refusal_exception_sender","message":"this one waits for the next holder"}`)
 	if recorder.Code != http.StatusAccepted {
 		t.Fatalf("publish to an unheld role: status %d, body %s; want 202, the message kept", recorder.Code, recorder.Body.String())
 	}

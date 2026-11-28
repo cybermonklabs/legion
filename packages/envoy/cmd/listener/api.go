@@ -325,8 +325,8 @@ const grantGuardPrefix = "envoy: the role grant guard refused the claim because 
 // this listener connects with forbids the subject until an operator changes it. 403 says exactly
 // that - the request was understood and the server refuses to authorise it - where 400 would
 // blame the caller's bytes, which are fine, and where any 5xx would be retried:
-// packages/envoy-client/src/transport.ts retries every status at or past 500 and no status below
-// it. No Retry-After rides it for the same reason.
+// packages/envoy-client/src/transport.ts sends a request again on every 5xx and on a 408, and on
+// no other status. No Retry-After rides it for the same reason.
 //
 // A message the stream refused because it is full (bus.ErrStreamFull) is answered ahead of the
 // bus-unavailable 503 too, with a 503 and Retry-After of its own under streamFullPrefix: the bus
@@ -1145,7 +1145,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 			// route has always answered, and it leaves no registration standing either, so its
 			// consumer goes too.
 			if err := d.sessions.Delete(ctx, sessionID); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			recordStop()
@@ -1155,7 +1155,7 @@ func deleteSessionHandler(d *listenerDeps, logger *logging.Logger) http.HandlerF
 		}
 		outcome, err := d.sessions.DeleteIf(ctx, sessionID, conditions)
 		if err != nil {
-			writeStoreError(ctx, w, err, http.StatusInternalServerError)
+			writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 			return
 		}
 		switch outcome {
@@ -1240,7 +1240,9 @@ const publishDedupePrefix = "publish."
 // passes keep: false, which keeps nothing and answers 404 unclaimed or holder_lapsed. It is read by
 // this route's give-up alone (roleSend.noHolder) and rides no envelope, which travels on to the
 // holder and back in the answer. A role token no claim can name keeps nothing either, which the
-// keep itself refuses, for this route and the role lane alike (keepForNextHolder).
+// keep itself refuses, for this route and the role lane alike (keepForNextHolder), and neither does
+// a send that names no source session, whose copy's expiry no dead letter could report
+// (roleSend.keepTellsNobody): both are answered that 404.
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
@@ -1517,7 +1519,7 @@ func interestReadAnswered(err error) bool {
 // not the bus-unavailable 503: it is a 500 with no Retry-After, naming the session and the record,
 // as writeRoleClaimUnreadable answers an unreadable role claim.
 func writeInterestRecordUnreadable(w http.ResponseWriter, sessionID string, err error) {
-	writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf(
+	writeJSONError(w, listenerwire.FaultStatus, fmt.Sprintf(
 		"envoy: the interest record of session %s is unreadable: %s", sessionID, err,
 	))
 }
@@ -1622,7 +1624,7 @@ func sessionsHandler(registry *store.Registry, sessions *session.SessionRegistry
 			return
 		}
 		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			writeJSONError(w, listenerwire.FaultStatus, err.Error())
 			return
 		}
 		held, err := registry.RolesBySession()
@@ -1963,7 +1965,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 				return
 			}
 			if err != nil {
-				writeJSONError(w, http.StatusInternalServerError, err.Error())
+				writeJSONError(w, listenerwire.FaultStatus, err.Error())
 				return
 			}
 			rows := make([]listenerwire.InterestRow, 0, len(items))
@@ -2019,7 +2021,7 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 			// A deregistration answers no topic list, and this route's 204 carries no body
 			// to write one in, so the store's first answer is dropped here.
 			if _, err := registry.Remove(ctx, sessionID, nil, store.RoleReleaseAuthority{Force: true}); err != nil && !errors.Is(err, nats.ErrKeyNotFound) {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			if removed != nil {
@@ -2103,6 +2105,25 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // none of it. A try whose takeover record did not store writes no claim and answers 503
 // (errTakeoverUnrecorded).
 //
+// A claim that landed and names a session other than its own as previous_session_id, soft or
+// outright, writes that session's handover record first (claimHandover, publishHandover), whether
+// or not that session still held the role: the role claim reaper frees a dead holder's claim, so
+// the claim of the session that replaces it often reads no holder at all. The record's passes, the
+// claim's own handover's first, copy the named session's unread messages - its direct messages to
+// the claimant, its role messages of every role to that role's kept lane - while that session is
+// not live (runTakeoverPass). A record that did not store is answered 503 with Retry-After: 1 and
+// the code listenerwire.CodeHandoverUnrecorded (errHandoverUnrecorded): the claim stands, the
+// role's lane is handed over, and the client's next claim writes the record. The record is
+// written only when the claim's credential, the claimant's last registration and the named
+// session's last registration name one principal, none equal to none (handoverRefusal): any other
+// claim stands, writes no record, is answered 200 with a warning that no message of that session
+// is handed over, and is logged at INFO naming the role and both sessions. A rule the listener
+// could not read is answered the same 503 (errHandoverUnjudged), the claim standing. So a session
+// cannot read another principal's messages by naming its session, and an agent session that names
+// a person's session is refused by design. A previous_session_id no session consumer can be named
+// for (bus.SessionConsumerName) names no session whose messages could be handed over, and is
+// answered 400 before anything is written.
+//
 // A claim that landed over another session's claim of a Legion controller role narrows that
 // session before it is answered (narrowFormerHolder), as an unsubscribe does: its known-session
 // record is written from its stored row, which the claim took the role's topic off, and its
@@ -2159,19 +2180,22 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			// own role without ever taking one from a peer. Default false:
 			// last-claim-wins.
 			Soft bool `json:"soft"`
-			// The session id this claimant is continuing (a /fork, /branch, or
-			// /handoff mints a new id in the same process). Naming it is not
-			// enough to take the role from it: a soft claim naming a
-			// predecessor takes the role only when that predecessor has no live
-			// registry entry, when its live entry carries this claimant's own
-			// client instance id (the same conversation continuing inside its
-			// own Oh My Pi Envoy extension instance or Claude Code
-			// channel-server process), or when the claimant's entry or the
-			// predecessor's carries no client instance id at all, which is a
-			// client predating the field and whose takeover is logged. A
-			// predecessor still live in another client instance keeps the role,
-			// and the claim answers 409 naming it. Only honoured with soft;
-			// ignored otherwise.
+			// The session id this claimant is continuing or replacing (a /fork, /branch, or
+			// /handoff mints a new id in the same process; a Legion claim's fresh session
+			// replaces the session its claim abandoned). On a soft claim it is also the
+			// predecessor the role may be taken from, and naming it is not enough to take the
+			// role: a soft claim naming a predecessor takes the role only when that predecessor
+			// has no live registry entry, when its live entry carries this claimant's own client
+			// instance id (the same conversation continuing inside its own Oh My Pi Envoy
+			// extension instance or Claude Code channel-server process), or when the claimant's
+			// entry or the predecessor's carries no client instance id at all, which is a client
+			// predating the field and whose takeover is logged. A predecessor still live in
+			// another client instance keeps the role, and the claim answers 409 naming it. On a
+			// claim of either kind that lands, the session it names hands its unread messages
+			// to the claimant (publishHandover): its direct messages and the role messages of
+			// each of its roles, copied for as long as it is not live, when this claim's
+			// credential and both sessions' last registrations name one principal
+			// (handoverRefusal), and otherwise none of them, with a warning saying so.
 			PreviousSessionID string `json:"previous_session_id"`
 			// The revision GET /v1/roles/<role> reported as claim_revision when this
 			// claimant read the role. The claim lands only while the role bucket still
@@ -2239,6 +2263,20 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		}
 		if claimErr != nil {
 			writeJSONError(w, http.StatusBadRequest, claimErr.Error(), "role")
+			return
+		}
+		// replaced is the session a claim that lands hands its unread messages over from, on a soft
+		// claim and an outright one alike: the session the claimant names, unless that is its own.
+		// An id no session consumer can be named for has no subject of its own a pass could copy
+		// from, and some such ids are no key the known-session bucket reads at all, which the
+		// handover's rule would answer 503 on every try, so it is refused here, before anything is
+		// written.
+		replaced := strings.TrimSpace(body.PreviousSessionID)
+		if replaced == body.SessionID {
+			replaced = ""
+		}
+		if _, named := bus.SessionConsumerName(replaced); replaced != "" && !named {
+			writeJSONError(w, http.StatusBadRequest, `previous_session_id names no session a consumer can be named for: it holds a ".", "*", ">", "/", "\" or whitespace`, "previous_session_id")
 			return
 		}
 		var roleWarning string
@@ -2581,10 +2619,15 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				return
 			}
 			if err != nil {
-				writeStoreError(ctx, w, err, http.StatusInternalServerError)
+				writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 				return
 			}
 			landed = true
+			// A claim that names the session it replaces writes that session's handover record
+			// before the claim's own handover reads the role's records (claimHandover), so the
+			// first pass runs there: the warning is the claim's answer where nothing of that
+			// session is handed over, and the error the 503 of a claim that stands with no record.
+			handoverWarning, handoverErr := claimHandover(ctx, r, d, logger, body.Role, replaced, body.SessionID, tries.replaced == replaced)
 			startHandover(*d.delivery, body.Role, runTakenRoleDrain)
 			// A claim that took a controller role from another session narrows that session
 			// before it is answered, within this route's budget (narrowFormerHolder), so a notice
@@ -2592,9 +2635,22 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 			if tries.replaced != "" {
 				narrowFormerHolder(ctx, d, logger, body.Role, body.SessionID, tries.replaced)
 			}
+			if handoverErr != nil {
+				logger.Warn("listener role claim landed, but the handover of the session it replaces was not judged or its record did not store; the claim is answered 503 so its client claims again",
+					slog.String("role", body.Role),
+					slog.String("previous_session_id", replaced),
+					slog.String("session_id", body.SessionID),
+					slog.String("error", handoverErr.Error()))
+				w.Header().Set("Retry-After", "1")
+				writeJSON(w, http.StatusServiceUnavailable, listenerwire.APIError{Error: handoverErr.Error(), Code: listenerwire.CodeHandoverUnrecorded})
+				return
+			}
 			answer := roleSetResponse{Interest: item}
 			if roleWarning != "" {
 				answer.Warnings = []string{roleWarning}
+			}
+			if handoverWarning != "" {
+				answer.Warnings = append(answer.Warnings, handoverWarning)
 			}
 			writeJSON(w, http.StatusOK, answer)
 			return
@@ -3383,6 +3439,39 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 			topicRefusal.write(w)
 			return
 		}
+		// A registration as another principal than the session's known-session record names is
+		// admitted only once that record names no principal, before anything of the session
+		// changes: its entry, its consumer, its relay, a role claim released or renewed. The
+		// handover gate on every listener reads the record's principal as the one the session last
+		// registered as, so a registration admitted while the record still named the earlier
+		// principal would have another session's unread messages copied to it, and the successor
+		// read name it, for a principal it no longer acts for. The admission clears only the
+		// principal, by a compare-and-swap at the bucket's leader, and keeps the rest of the
+		// record, so a registration refused below leaves its session known as it was
+		// (session.KnownSessions.AdmitRegistration). A record that could not be read or cleared
+		// refuses the registration 503 with Retry-After: 1 with nothing admitted, and the client
+		// registers again. The revision the admission read or wrote is the one the registration's
+		// own record write is fenced on, below.
+		//
+		// A store whose bucket is not open (session.ErrKnownSessionsUnavailable) can read and
+		// write no record. It opens only once an attempt of the store's own succeeds
+		// (session.KnownSessions says how often it attempts), which on a listener whose NATS
+		// grant does not carry the bucket is not before the grant does, so a 503 here would refuse
+		// every registration and heartbeat for as long as that lasts. Such a registration is
+		// admitted with no principal recorded, and answered with a warning that says so
+		// (knownBucketNotOpenWarning), and this listener refuses every claim's handover while its
+		// bucket is not open (handoverRefusal), as the base did before any registration recorded a
+		// principal. The admission keeps that state, so its own write below writes nothing even
+		// where the bucket opened since (session.Admission).
+		principal := requestPrincipal(r)
+		admission, err := d.known.AdmitRegistration(ctx, body.SessionID, principal)
+		if err != nil && !errors.Is(err, session.ErrKnownSessionsUnavailable) {
+			logger.Warn("listener refused a registration whose principal it could not record first",
+				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			w.Header().Set("Retry-After", "1")
+			writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
 		// At the edge every claim the session holds of a role of none of the token's projects,
 		// which another listener granted it or a token that listed more did, is released before
 		// anything of the registration is stored, and the answer's warnings name it
@@ -3620,16 +3709,47 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// The session is known for the next 30 days, with the topics just stored, which are the
 		// filter of the consumer the registration gave it: a registration reaches here only once
 		// that consumer call landed, since every one that could not get its consumer was refused
-		// above with nothing recorded. A failed write is this WARN and nothing else: the
-		// registration is answered whatever it did (session.KnownSessions).
-		if err := d.known.RecordWithin(ctx, session.KnownSession{
+		// above with nothing recorded. The record names the principal of the credential this
+		// registration presented (requestPrincipal), none included, which a claim naming this
+		// session as the one it replaces is held to (handoverRefusal): the session binding above
+		// refused a broker token naming any other session, so a principal is recorded only from
+		// this session's own credential or from one that acts for every session. A record naming
+		// another principal had its principal cleared before the registration was admitted.
+		// The write is a compare-and-swap at exactly the revision that admission read or wrote: a
+		// record written since - by another registration of this session, through any listener,
+		// whose admission cleared this principal or whose write recorded its own, or by an interest
+		// change or a stop - is left as it is, so this registration can never put back a principal
+		// another registration's admission cleared. A failed write is a WARN and nothing else, and
+		// the registration is answered whatever it did (session.KnownSessions), with one exception
+		// (session.ErrPrincipalUnrecorded): that fenced write, which wrote nothing, and a failed
+		// write after which the bucket's leader does not confirm the record names this
+		// registration's principal, none recorded, or nothing, or does not answer. The handover
+		// gate would read another principal, or none, as the one this session last registered as,
+		// so it is answered 503 with Retry-After: 1, and the client registers again until the
+		// record names the principal it registers as; everything this registration wrote before it
+		// stands, and its next attempt, admitted afresh, writes the same again. A registration
+		// admitted while the bucket was not open writes nothing, whether or not the bucket opened
+		// since (session.ErrKnownSessionsUnavailable): it is answered with
+		// knownBucketNotOpenWarning and logged at most once a minute.
+		err = d.known.RecordRegistrationWithin(ctx, admission, session.KnownSession{
 			SessionID:    body.SessionID,
 			Title:        body.Title,
 			Capabilities: body.Capabilities,
 			Topics:       item.Topics,
-		}); err != nil {
+			Principal:    principal,
+		})
+		switch {
+		case errors.Is(err, session.ErrKnownSessionsUnavailable):
+			warnings = append(warnings, knownBucketNotOpenWarning)
+			warnKnownBucketNotOpen(logger, body.SessionID)
+		case err != nil:
 			logger.Warn("listener known-session record not written",
 				slog.String("session_id", body.SessionID), slog.String("error", err.Error()))
+			if errors.Is(err, session.ErrPrincipalUnrecorded) {
+				w.Header().Set("Retry-After", "1")
+				writeJSONError(w, http.StatusServiceUnavailable, err.Error())
+				return
+			}
 		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()
@@ -3698,7 +3818,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 		// /v1/interests/<session_id> is the one that does.
 		removed, err := d.registry.Remove(ctx, body.SessionID, body.Topics, store.RoleReleaseAuthority{ClientInstanceID: body.ClientInstanceID})
 		if err != nil {
-			writeStoreError(ctx, w, err, http.StatusInternalServerError)
+			writeStoreError(ctx, w, err, listenerwire.FaultStatus)
 			return
 		}
 		// The session now follows what is left of its topics: its known-session record says so,
@@ -3724,6 +3844,7 @@ func registerV1Routes(v1 *http.ServeMux, d *listenerDeps, machineID string, logg
 	v1.HandleFunc("/v1/roles/set", roleSetHandler(d, machineID, logger))
 	v1.HandleFunc("/v1/roles/", roleGetHandler(d, logger))
 	v1.HandleFunc("/v1/registry/", sessionEntryHandler(d))
+	v1.HandleFunc(sessionSuccessorsPattern, sessionSuccessorsHandler(d))
 	v1.HandleFunc("/v1/legion/agents", legionAgentsHandler(d))
 	v1.HandleFunc("/v1/legion/agents/sessions/", legionAgentSessionHandler(d))
 	v1.HandleFunc("/v1/legion/agents/roles/", legionAgentRoleHandler(d))

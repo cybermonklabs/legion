@@ -753,10 +753,10 @@ func TestAnUnownedPassCountsOnlyTheReleasesItsTransactionsAnswered(t *testing.T)
 // a launch: the stop transaction takes a held wake of the pause with its start row and logs that
 // row as released (TestAStopThatCommitsAfterItsPauseEndedOwesTheRoleALaunch). The transaction's
 // store is swapped to faulted, with the role-holder publication on and the daemon's own wake of it
-// (workflowRuntime.wakeRoleHolders), as a daemon with a workflow turns it on: the stop writes the
-// architect's claim out of a state that holds its role, so the claim's write queues its issue's
-// publication. The issue's lifecycle lane, which the start row's wake reaches, and its board lane,
-// which the publication's wake reaches, are recorded.
+// (workflowRuntime.wakeRoleHolders), as a daemon with a workflow turns it on. The stop suspends the
+// architect as released, which keeps its session and its role (supervise.HoldsRole), so the claim's
+// write changes no holder and queues no publication. The issue's lifecycle lane, which the start
+// row's wake reaches, and its board lane, which a publication's wake would reach, are recorded.
 type pauseStopRig struct {
 	*pauseRig
 	fault     *testdb.CommitFault
@@ -792,10 +792,11 @@ func (r *pauseStopRig) recorded() bool {
 }
 
 func (r *pauseStopRig) work() map[string]int {
-	return map[string]int{"released-row lines": len(r.releasedLines()), "lifecycle lane wakes": r.wakes(),
-		"role-holder publication wakes": r.published()}
+	return map[string]int{"released-row lines": len(r.releasedLines()), "lifecycle lane wakes": r.wakes()}
 }
 
+// wantWork holds the stop's work to want each, and the publication's wakes to none: the stop keeps
+// the architect's role, so no write of it, made once or again, wakes the role-holder publication.
 func (r *pauseStopRig) wantWork(t *testing.T, want int, when string) {
 	t.Helper()
 	counts := r.work()
@@ -804,18 +805,21 @@ func (r *pauseStopRig) wantWork(t *testing.T, want int, when string) {
 			t.Errorf("%s %s = %d, want %d", when, name, counts[name], want)
 		}
 	}
+	if woken := r.published(); woken != 0 {
+		t.Errorf("%s role-holder publication wakes = %d, want none: the pause's stop keeps the architect's role", when, woken)
+	}
 }
 
 const pauseStopMatch = "update project_pause_stops"
 
 // A stop transaction whose commit's reply is lost keeps what its commit owes: the store says it
-// committed, so the released row's line, the wake of its start row's lane and the wake of the
-// role-holder publication its claim's write queued come once each, as they do for a stop whose
-// reply came back, and the stop the machine makes again, which writes no second start row and
-// changes no holder, does none of them again. A stop whose commit never landed does none of them,
-// and the stop made again does. A stop whose outcome the store cannot say fails, so the machine
-// owes it; its line and wakes follow the store's answer, and the stop made again then adds
-// nothing.
+// committed, so the released row's line and the wake of its start row's lane come once each, as
+// they do for a stop whose reply came back, and the stop the machine makes again, which writes no
+// second start row, does neither again. A stop whose commit never landed does neither, and the
+// stop made again does. A stop whose outcome the store cannot say fails, so the machine owes it;
+// its line and wake follow the store's answer, and the stop made again then adds nothing. None of
+// them wakes the role-holder publication: the stop suspends the architect as released, which
+// keeps its role, so its claim's write changes no holder.
 func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 	t.Parallel()
 	replyLost := func(t *testing.T, r *pauseStopRig) {
@@ -889,8 +893,8 @@ func TestAPauseStopWhoseCommitReplyIsLostKeepsItsSuccessWork(t *testing.T) {
 		r.wantWork(t, 0, "before the store answers")
 		r.fault.Refuse(false)
 		testwait.WithinPolling(t, testwait.Bounded(t, 10*time.Second, time.Second), testwait.Poll,
-			"the stop's line and wakes once the store says it committed", func() bool {
-				return len(r.releasedLines()) == 1 && r.wakes() == 1 && r.published() >= 1
+			"the stop's line and wake once the store says it committed", func() bool {
+				return len(r.releasedLines()) == 1 && r.wakes() == 1
 			})
 		if err := r.stop(); err != nil {
 			t.Fatalf("the stop the machine makes again = %v, want nil", err)

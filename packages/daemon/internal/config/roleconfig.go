@@ -29,36 +29,41 @@ func isRoleConfigName(role claim.Role) bool {
 // readRoleConfigFiles is `role_config_files`: a mapping of a role (RoleConfigRoles, or a role of
 // `roles`) to the absolute paths of the Oh My Pi settings overlays that role alone names in
 // PI_CONFIG_FILES, after every role's own (runtime.tmux.pi_config_files, or PI_CONFIG_FILES in
-// runtime.kubernetes.pod.env). A role named twice or no role's name (isRoleConfigName), a list
-// that is empty or not a list of strings, and an entry that is relative, unclean, holds
-// PI_CONFIG_FILES' separator `:` or repeats another of the role's are each refused naming the
-// entry: a relative path would resolve against wherever the role's Oh My Pi starts, which is no
-// file of the operator's.
-func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string, error) {
+// runtime.kubernetes.pod.env), and the line of each role it names (roleNameLines). A role named
+// twice or no role's name (isRoleConfigName), a list that is empty or not a list of strings, and an
+// entry that is relative, unclean, holds PI_CONFIG_FILES' separator `:` or repeats another of the
+// role's are each refused naming the entry, a name of no role name's shape (roleNameShape) by its
+// line alone: a relative path would resolve against wherever the role's Oh My Pi starts, which is
+// no file of the operator's.
+func readRoleConfigFiles(value *yaml.Node, key string) (map[claim.Role][]string, roleNameLines, error) {
 	if value.Tag == "!!null" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if value.Kind != yaml.MappingNode {
-		return nil, fmt.Errorf("%s must be a mapping of a role to the absolute paths of its Oh My Pi overlays, e.g. {implementer: [/etc/legion-operator/fallback.yml]}", key)
+		return nil, nil, fmt.Errorf("%s must be a mapping of a role to the absolute paths of its Oh My Pi overlays, e.g. {implementer: [/etc/legion-operator/fallback.yml]}", key)
 	}
 	files := map[claim.Role][]string{}
+	lines := map[claim.Role]int{}
 	for i := 0; i+1 < len(value.Content); i += 2 {
 		roleNode, listNode := value.Content[i], value.Content[i+1]
 		role := claim.Role(roleNode.Value)
 		if !isRoleConfigName(role) {
-			return nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
+			if !roleNameShape(roleNode.Value) {
+				return nil, nil, fmt.Errorf("%s: it must be a Legion role (%s)", unknownKeyAt(roleNode, key), runtime.JoinRoles(RoleConfigRoles))
+			}
+			return nil, nil, fmt.Errorf("%s names %q, which is not a Legion role (%s)", key, roleNode.Value, runtime.JoinRoles(RoleConfigRoles))
 		}
 		if _, seen := files[role]; seen {
-			return nil, fmt.Errorf("%s names %s twice", key, role)
+			return nil, nil, fmt.Errorf("%s names %s twice", key, shownRole(roleNode.Value, roleNode.Line))
 		}
-		field := key + "." + string(role)
-		list, err := readOverlayFiles(listNode, field, "the role's Oh My Pi", "the role")
+		list, err := readOverlayFiles(listNode, roleField(key, roleNode.Value, roleNode.Line), "the role's Oh My Pi", "the role")
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		files[role] = list
+		lines[role] = roleNode.Line
 	}
-	return files, nil
+	return files, roleNameLines{key: lines}, nil
 }
 
 // readOverlayFiles is one key's list of Oh My Pi settings overlays, the shape `role_config_files`

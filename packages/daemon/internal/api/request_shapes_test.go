@@ -114,6 +114,8 @@ var routesWithNoPluginBody = map[string]string{
 	"POST /legion/v1/operator/project/resume":                sameBuild + " (`legion project resume`)",
 	"POST /legion/v1/operator/intake/replay":                 sameBuild + " (`legion intake replay`)",
 	"POST /legion/v1/operator/intake/discard":                sameBuild + " (`legion intake discard`)",
+	"POST /legion/v1/operator/project/p0-bound":              sameBuild + " (`legion project set-p0-bound`)",
+	"POST /legion/v1/operator/project/p0-bound/clear":        sameBuild + " (`legion project clear-p0-bound`)",
 }
 
 // routesReadingNoBody is every POST route the server registers that decodes no body at all, so

@@ -27,26 +27,36 @@
 #   client_reply_timeout   how long a client may take to answer one command
 #   listener_wait_timeout  how long a renewal may take to reach the listener
 #   run_id                 this run's id, which renew_claude's topic carries
-# and defines refuse, wait_for, pick_port and port_open, and the scenario_pids and scenario_fds
+# and defines refuse and wait_for, and the scenario_pids and scenario_fds
 # its teardown kills and closes, which every process and descriptor started here is added to.
 
 # ---- the clients ---------------------------------------------------------------------------------
 declare -A proxy_url proxy_log client_fd client_out client_pid
 next_command_id=0
 
-# start_proxy LABEL: this client's own HTTP path to the listener, recording every request.
+# proxy_port LABEL: the port the LABEL proxy reports it serves on, the number its log line
+# "listener-proxy LABEL ready on <port>" ends with. Non-zero, printing nothing, before that line.
+proxy_port() {
+  local line
+  line=$(grep -m1 -E "^listener-proxy $1 ready on [1-9][0-9]*\$" "${work}/logs/proxy-${1}.log" 2>/dev/null) || return 1
+  printf '%s\n' "${line##* }"
+}
+
+# start_proxy LABEL: this client's own HTTP path to the listener, recording every request. The
+# proxy binds a port the kernel chooses and reports it, so no port of its is one this script picked
+# and another process could have taken first.
 start_proxy() {
-  local label="$1" port
-  pick_port port
+  local label="$1"
   proxy_log["$label"]="${work}/proxies/${label}.jsonl"
   : >"${proxy_log[$label]}"
+  : >"${work}/logs/proxy-${label}.log"
   (exec env -i PATH="$PATH" HOME="${work}/bun-home" TMPDIR="${TMPDIR:-/tmp}" \
-    bun "${drivers}/listener-proxy.ts" --port "$port" --upstream "$envoy_url" \
+    bun "${drivers}/listener-proxy.ts" --upstream "$envoy_url" \
     --log "${proxy_log[$label]}" --label "$label") >>"${work}/logs/proxy-${label}.log" 2>&1 &
   scenario_pids+=($!)
-  proxy_url["$label"]="http://127.0.0.1:${port}"
-  wait_for 30 port_open "$port" ||
-    refuse "the ${label} proxy did not listen on 127.0.0.1:${port}: $(tail -n 5 "${work}/logs/proxy-${label}.log")"
+  wait_for 30 proxy_port "$label" ||
+    refuse "the ${label} proxy reported no port it serves on: $(tail -n 5 "${work}/logs/proxy-${label}.log")"
+  proxy_url["$label"]="http://127.0.0.1:$(proxy_port "$label")"
 }
 
 # client_fifo LABEL: the stdin this shell holds open for the client, so it never sees end of input.

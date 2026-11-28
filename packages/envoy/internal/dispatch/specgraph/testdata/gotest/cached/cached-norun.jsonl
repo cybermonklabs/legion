@@ -1,0 +1,5 @@
+{"Time":"2026-11-16T23:45:14.129144358Z","Action":"start","Package":"example.com/acme/gotest/cached"}
+{"Time":"2026-11-16T23:45:14.129332154Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"testing: warning: no tests to run\n"}
+{"Time":"2026-11-16T23:45:14.129352903Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-16T23:45:14.129355731Z","Action":"output","Package":"example.com/acme/gotest/cached","Output":"ok  \texample.com/acme/gotest/cached\t(cached) [no tests to run]\n"}
+{"Time":"2026-11-16T23:45:14.129359759Z","Action":"pass","Package":"example.com/acme/gotest/cached","Elapsed":0}

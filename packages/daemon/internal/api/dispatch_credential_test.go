@@ -98,9 +98,9 @@ func TestTheDispatchCredentialIsStrippedBelowItsContract(t *testing.T) {
 		t.Errorf("a caller stating %d is served no dispatchCredential: %s", dispatchCredentialContract, at)
 	}
 	// A caller at the contract is told of no strip of the key: the lines it is written are the rows'
-	// above it alone, as narrowingsExpected reads them from the table. It stands below
-	// gateBasisContract and each other entry's band, each of which writes its own line
-	// (narrowing_test.go reads them), so the line this test is for is the one that drops
+	// above it alone, as narrowingsExpected reads them from the table. It stands below each entry's
+	// band, gateBasisContract's (narrowing_test.go reads its line) and the P0 bound's among them, and
+	// each band writes its own line, so the line this test is for is the one that drops
 	// dispatchCredential, which no row may write for this caller.
 	for _, line := range narrowings {
 		if line.Dropped == "dispatchCredential" {

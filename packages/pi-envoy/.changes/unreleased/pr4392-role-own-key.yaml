@@ -4,7 +4,8 @@ custom:
 body: |-
   In a pod, an Oh My Pi session trades at the secrets broker with its role's own agent-secrets key:
   the `key.pem` in the directory `AGENT_SECRETS_KEY_DIR` names, which the role's pod-session
-  registration names. When that file cannot be read, the call fails naming its path. The bundled
+  registration names. When that file cannot be read, the call fails naming the directory by
+  `AGENT_SECRETS_KEY_DIR` and the read's error code, never its path. The bundled
   `dispatch` command gains `dispatch api --path <route>`, one request of a route under `/api/v1`
   that no other command sends, with the session's own credential: a GET, or with `--method` a
   `POST`, `PUT`, `PATCH` or `DELETE` and its JSON body. Where AskGate reviews the session's
