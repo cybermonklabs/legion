@@ -56,8 +56,9 @@ esac
 n=$(( $(cat "$dir/$kind.count" 2>/dev/null || echo 0) + 1 ))
 echo "$n" >"$dir/$kind.count"
 echo "$kind" >>"$dir/calls"
-# One argument a line: the probe's and the roots' paths are temporary ones, which can hold a space.
-printf '%s\n' "$@" >"$dir/$kind.argv.$n"
+# Each argument ends with a NUL byte: the probe's and the roots' paths are temporary ones, which can
+# hold a space, and an argument can hold a newline, which no path or flag holds.
+printf '%s\0' "$@" >"$dir/$kind.argv.$n"
 env >"$dir/$kind.env.$n"
 step=$(sed -n "${n}p" "$dir/$kind.plan")
 [ -n "$step" ] || step=$(tail -n 1 "$dir/$kind.plan")
@@ -141,11 +142,11 @@ func (f imageOmp) read(t *testing.T, name string) string {
 	return string(raw)
 }
 
-// args are the arguments one attempt of a probe ran Oh My Pi with, as the fake recorded them, one
-// a line, in name.
+// args are the arguments one attempt of a probe ran Oh My Pi with, as the fake recorded them, each
+// ended by a NUL byte, in name: an argument that holds a space or a newline is one argument here.
 func (f imageOmp) args(t *testing.T, name string) []string {
 	t.Helper()
-	return strings.Split(strings.TrimSuffix(f.read(t, name), "\n"), "\n")
+	return strings.Split(strings.TrimSuffix(f.read(t, name), "\x00"), "\x00")
 }
 
 // imageHome is a HOME laid out as the worker image lays it out: the Legion plugin's manifest
@@ -277,9 +278,11 @@ func TestProbeImageLoadsThePluginTheWayAPodDoes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeImage = %v, want every probe to pass", err)
 	}
-	argv := strings.Join(f.args(t, "load.argv.1"), " ")
-	if !strings.HasPrefix(argv, "models --extension "+envoyRoot+" --extension "+root+" --extension ") {
-		t.Errorf("the load probe ran `omp %s`, want it to run as a pod does: `models --extension %s --extension %s …`, the two roots first and discovery on", argv, envoyRoot, root)
+	// The arguments are compared as a list, as Oh My Pi receives them, so a flag and a root passed
+	// as one argument fail as they did when main's row read the raw line.
+	args, want := f.args(t, "load.argv.1"), []string{"models", "--extension", envoyRoot, "--extension", root, "--extension"}
+	if len(args) < len(want) || !slices.Equal(args[:len(want)], want) {
+		t.Errorf("the load probe ran `omp %q`, want it to run as a pod does: %q …, the two roots first and discovery on", args, want)
 	}
 	// The two plugin roots are also the extension roots the probe's own discovery of task agents
 	// and skills reads: exported as the roots, never as the probe's own path.
@@ -350,8 +353,15 @@ func TestTheImageProbeResolvesARelativePluginRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProbeImage with relative plugin roots = %v, want every probe to pass", err)
 	}
-	if argv := strings.Join(f.args(t, "load.argv.1"), " "); !strings.Contains(argv, "--extension "+envoyRootOf(home)+" --extension "+legionRootOf(home)+" ") {
-		t.Errorf("the load probe ran `omp %s`, want the plugin roots as the absolute %s and %s", argv, envoyRootOf(home), legionRootOf(home))
+	// The roots are found as a run of whole arguments with one more after it, as main's row found
+	// them in the raw line followed by a space.
+	args, want := f.args(t, "load.argv.1"), []string{"--extension", envoyRootOf(home), "--extension", legionRootOf(home)}
+	found := false
+	for i := 0; i+len(want) < len(args) && !found; i++ {
+		found = slices.Equal(args[i:i+len(want)], want)
+	}
+	if !found {
+		t.Errorf("the load probe ran `omp %q`, want the plugin roots as the absolute %s and %s, as the run %q followed by another argument", args, envoyRootOf(home), legionRootOf(home), want)
 	}
 }
 

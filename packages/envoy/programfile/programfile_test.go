@@ -88,6 +88,20 @@ func TestWriteGivesTheModeItNamesAndOpensWithTheFlag(t *testing.T) {
 	if out, err := exec.Command(path).Output(); err != nil || string(out) != "first\n" {
 		t.Errorf("the program printed %q, %v, want first", out, err)
 	}
+	// Under umask 0377, which takes every bit but the owner's read, the mode is still the one named,
+	// as main's private-copy row asked of writeCopyFile, whose writes are now programfile.Write's.
+	masked := filepath.Join(dir, "masked")
+	umask = syscall.Umask(0o377)
+	err = programfile.Write(masked, os.O_EXCL, 0o500, strings.NewReader("#!/bin/sh\n"))
+	syscall.Umask(umask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(masked); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o500 {
+		t.Errorf("the program's mode = %v under umask 0377, want -r-x------", info.Mode().Perm())
+	}
 
 	if err := programfile.Write(path, os.O_EXCL, 0o700, strings.NewReader("#!/bin/sh\necho second\n")); !errors.Is(err, fs.ErrExist) {
 		t.Errorf("Write with os.O_EXCL over a file = %v, want it refused as existing", err)

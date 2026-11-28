@@ -1173,7 +1173,10 @@ func TestTheLoadProbeStopsWithTheDaemon(t *testing.T) {
 // contract below it — the one the previous release pins — is refused like any other. The stop
 // lands once the gate's first probe hangs, a fact of the run, and the run must return before that
 // probe's attempt budget (slow_command_timeout_seconds) would have ended it: the probe hangs until
-// a signal ends it (held), so a gate that left it running would return only then.
+// a signal ends it (held), so a gate that left it running would return only then. A stop can also
+// land before the gate's first probe, as main's row's 300 ms stop did on a slow start: run checks
+// no context before the gate, so a context ended before the call reaches the gate ended, and the
+// gate must answer that stop as a stop, with Oh My Pi never run and nothing booted.
 func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process.
 	// The daemon holds the plugin to its own DaemonAPIVersion.
@@ -1181,11 +1184,13 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 	previous := strconv.Itoa(api.DaemonAPIVersion() - 1)
 	for _, testCase := range []struct {
 		name, legion, step, want string
+		before                   bool
 	}{
-		{"another contract", `{"daemonApiVersion":1}`, "yes", "speaks daemon API contract 1"},
-		{"the contract below this one", `{"daemonApiVersion":` + previous + `}`, "yes", "speaks daemon API contract " + previous},
-		{"not loaded", thisDaemons, "no", "is installed but not loaded by omp"},
-		{"stopped while the probe runs", thisDaemons, "hang", ""},
+		{"another contract", `{"daemonApiVersion":1}`, "yes", "speaks daemon API contract 1", false},
+		{"the contract below this one", `{"daemonApiVersion":` + previous + `}`, "yes", "speaks daemon API contract " + previous, false},
+		{"not loaded", thisDaemons, "no", "is installed but not loaded by omp", false},
+		{"stopped while the probe runs", thisDaemons, "hang", "", false},
+		{"stopped before the gate's first probe", thisDaemons, "hang", "", true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			cfg := testConfig(t)
@@ -1206,7 +1211,11 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 			defer cancel()
 			stopped := make(chan bool, 1)
 			bound := testwait.Bounded(t, answerBudget, cutRunMargin)
-			if testCase.want == "" {
+			switch {
+			case testCase.before:
+				cancel()
+				stopped <- true
+			case testCase.want == "":
 				go func() {
 					defer cancel()
 					stopped <- testwait.Holds(bound, testwait.Poll, func() bool {
@@ -1216,10 +1225,19 @@ func TestRunGatesThePluginUnderThePaneEnvironmentBeforeItBoots(t *testing.T) {
 				}()
 			}
 
+			var logged bytes.Buffer
 			started := time.Now()
-			err := run(ctx, cfg, quietLogger(), o)
+			err := run(ctx, cfg, slog.New(slog.NewTextHandler(&logged, nil)), o)
 			elapsed := time.Since(started)
 
+			if testCase.before {
+				if !strings.Contains(logged.String(), "legion daemon stopped before its plugin gate passed") {
+					t.Errorf("run, stopped before its gate's first probe, did not log that it stopped before its plugin gate passed (run = %v):\n%s", err, logged.String())
+				}
+				if n := f.attempts(t); n != 0 {
+					t.Errorf("Oh My Pi ran %d times for a gate whose context had ended before its first probe, want none", n)
+				}
+			}
 			if testCase.want == "" {
 				if !<-stopped {
 					t.Fatalf("the gate's probe did not hang within %s, so the stop landed on no probe (run = %v)", bound, err)
