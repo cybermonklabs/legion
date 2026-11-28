@@ -27,8 +27,7 @@ if [[ -z "$group" ]]; then
     printf 'Run one group as autodeploy_test.sh <group>, <group> one of these (--groups prints them):\n'
     printf '  %s\n' "${group_names[@]}"
     printf 'and every group, from packages/envoy, as:\n'
-    # shellcheck disable=SC2016 # printed for a shell to run, with $(...), $gs and "$g" unexpanded
-    printf '  %s\n' '(gs=$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in $gs; do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done)'
+    printf '  %s\n' "bash -c 'gs=\$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in \$gs; do bash deploy/scripts/autodeploy_test.sh \"\$g\" || exit 1; done'"
   } >&2
   exit 2
 fi
