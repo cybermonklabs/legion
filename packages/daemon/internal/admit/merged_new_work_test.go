@@ -525,9 +525,10 @@ func mnwPlacements() []mnwPlacement {
 // request, and keeps the placement, the gate's identity, the approved version, the branch and its
 // origin. Other members' work and the tree's run stand as they stood, and the owning architect is
 // told (next-change). The earlier open check closes not_run, and a closed one stands as it closed.
-// Six more rows: a root and a child in verifying take one change each, a request read twice starts
-// one, and so does an architect's rerun_child with its echo. A person moves a never-merged root and
-// a never-merged child through backlog, then todo, and each runs as today.
+// Seven more rows: a root and a child in verifying take one change each, a request read twice starts
+// one, and so does an architect's rerun_child with its echo. The boot listing that reads a closed
+// root's todo first starts its change through the listing's own door. A person moves a never-merged
+// root and a never-merged child through backlog, then todo, and each runs as today.
 func TestMergedNewWorkUsesOneContinuationFromEveryDoor(t *testing.T) {
 	for _, place := range mnwPlacements() {
 		for _, members := range []bool{false, true} {
@@ -604,6 +605,18 @@ func TestMergedNewWorkUsesOneContinuationFromEveryDoor(t *testing.T) {
 		move := mnwMove(mnwRoot, "", "todo", mnwSeq+1, "person")
 		apply(t, pool, admission, "mnw-twice-1", move, admission.engine)
 		apply(t, pool, admission, "mnw-twice-2", move, admission.engine)
+		mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwRoot, Title: mnwRoot, Status: "todo", Rank: "B", HandedOver: true,
+			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"})
+		mnwStarted(t, pool, mnwRoot, 2, mnwRoot, nil, record.RequesterPerson)
+	})
+
+	// The listing's own door (applyListed): the first read of the root's todo is the boot listing's,
+	// so no event's door has placed the root before it. The rows above read the listing only after
+	// an event started the change, when the root no longer stands where a door takes it.
+	t.Run("the boot listing alone shows a closed root's todo", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		mnwClosedRoot(t, pool, true, false)
 		mnwListed(t, pool, admission, dispatch.IssueSummary{Key: mnwRoot, Title: mnwRoot, Status: "todo", Rank: "B", HandedOver: true,
 			LastSeq: mnwSeq + 1, ResolvedRepo: "acme/widgets"})
 		mnwStarted(t, pool, mnwRoot, 2, mnwRoot, nil, record.RequesterPerson)
@@ -776,10 +789,10 @@ func TestAnIssueWithNoEvidenceWaitsUnread(t *testing.T) {
 // issue closed meanwhile. The operator's grant proves no person, since under `controller: operator`
 // the controller's agent holds the operator token too: a request through it is still a person's,
 // and its backlog confirms nothing. A rank or label edit at backlog confirms nothing. A confirmation
-// allows one rerun: the child closed again waits at its next request. A merge snapshot that comes
-// before the todo wins: it clears the confirmation and starts one next change. The class never
-// moves for a confirmation. A child the controller parked while it ran, and which never closed,
-// runs as today.
+// allows one rerun: the child closed again waits at its next request. A merge that comes before the
+// todo wins, a merge snapshot or a merged pull request row: it starts one next change, and the
+// confirmation is gone. The class never moves for a confirmation. A child the controller parked
+// while it ran, and which never closed, runs as today.
 func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 	for _, partial := range []bool{false, true} {
 		class := map[bool]record.MergeHistoryClass{false: record.MergeHistoryNone, true: record.MergeHistoryPartial}[partial]
@@ -834,6 +847,11 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 		mnwWaits(t, pool, mnwChild, 1, claim.RoleController)
 	})
 
+	// One rerun is held in two places, both kept: the request takes the confirmation
+	// (record.Store.ConsumeNeverMergedConfirmation), and every clear of a generation resets it
+	// (clearNeverMergedConfirmations). The take is the rule for a request; the reset also covers a
+	// clear that no request of the issue made, as a re-admission of its tree. With either gone the
+	// other still holds this case, so its control (flag-kept) takes out both.
 	t.Run("a confirmation allows one rerun", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
@@ -861,6 +879,29 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 		}
 	})
 
+	// A merge that is a merged pull request row: nothing writes a snapshot before the todo, so
+	// nothing takes the confirmation before the record's decision. The snapshot case above is held
+	// twice, since PutMergeSnapshot also takes the confirmation; this one is held only by the order of
+	// that decision (RouteRequest reads the evidence before the confirmation).
+	t.Run("a merged pull request row before the todo beats a confirmation", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		mnwClosedChild(t, pool, false)
+		mnwMoves(t, pool, admission, mnwMove(mnwChild, mnwRoot, "backlog", mnwSeq+1, "person"))
+		inTx(t, pool, func(tx pgx.Tx) {
+			if err := record.NewStore().PutPullRequest(context.Background(), tx, record.PullRequest{Issue: mnwChild, Repo: "acme/widgets",
+				Number: mnwMerged.Number, Branch: claim.IssueBranch(mnwChild), Base: mnwMerged.Base, HeadSHA: mnwMerged.Head,
+				MergeSHA: mnwMerged.SHA, State: record.PullRequestMerged, Failing: []string{}}); err != nil {
+				t.Fatalf("record the merged pull request of %s: %v", mnwChild, err)
+			}
+		})
+		if class := mnwClass(t, pool, mnwChild); class != record.MergeHistoryAnswered {
+			t.Fatalf("the class of %s with its merged pull request row = %s, want ANSWERED", mnwChild, class)
+		}
+		mnwMoves(t, pool, admission, mnwMove(mnwChild, mnwRoot, "todo", mnwSeq+2, "person"))
+		mnwStarted(t, pool, mnwChild, 2, mnwRoot, new(mnwRoot), record.RequesterPerson)
+	})
+
 	t.Run("a child parked while it ran, which never closed, runs as today", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 4)
@@ -872,20 +913,24 @@ func TestOnlyAPersonCanConfirmNeverMergedWork(t *testing.T) {
 }
 
 // Without positive evidence of its merge, no repository fact decides that a closed issue's work
-// never merged: an issue on the old name of a renamed repository, one whose record names another
-// repository than Dispatch resolves it to, and one whose names match with no rename configured
-// each wait for the merge read. So do a retained pull request that never merged (PARTIAL), and an
-// issue whose one cleared clock a rename gave to another issue (NONE). Each read that ends with no
-// answering candidate names the issue to the controller (merge-unread).
+// never merged: an issue on the old name of a renamed repository, whose record keeps the old name
+// beside GitHub's new one, one whose record names another repository than Dispatch resolves it to,
+// and one whose names match with no rename configured each wait for the merge read. So do a
+// retained pull request that never merged (PARTIAL), and an issue whose one cleared clock a rename
+// gave to another issue (NONE). Each read that ends with no answering candidate names the issue to
+// the controller (merge-unread).
 func TestAMergeDecisionRejectsPossibleRenameLoss(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		recorded string
+		// github is GitHub's spelling of the record's repository where it differs from recorded:
+		// a renamed repository's record keeps the old name, which its merge history is read under.
+		github   string
 		resolved string
 		seed     func(t *testing.T, pool *pgxpool.Pool)
 		class    record.MergeHistoryClass
 	}{
-		{name: "the old name of a renamed repository", recorded: "sjawhar/legion", resolved: "acme/widgets", class: record.MergeHistoryNone},
+		{name: "the old name of a renamed repository", recorded: "sjawhar/legion", github: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "a repository other than Dispatch resolves it to", recorded: "acme/tools", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "matching names with no rename configured", recorded: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryNone},
 		{name: "a retained pull request that never merged", recorded: "acme/widgets", resolved: "acme/widgets", class: record.MergeHistoryPartial,
@@ -911,6 +956,9 @@ func TestAMergeDecisionRejectsPossibleRenameLoss(t *testing.T) {
 			seedSlottedInPhase(t, pool, testProject, mnwRoot, "A", phase.Implementing, func(root *record.Issue) { root.LastDispatchSeq = mnwSeq })
 			child := mnwIssue(mnwChild, mnwRoot, new(mnwRoot), phase.Done, "done", 1)
 			child.Repo, child.GitHubRepo = tc.recorded, tc.recorded
+			if tc.github != "" {
+				child.GitHubRepo = tc.github
+			}
 			putIssue(t, pool, child)
 			mnwGate(t, pool, mnwChild)
 			if tc.seed != nil {
@@ -1183,7 +1231,8 @@ func mnwArchitectTask(t *testing.T, pool *pgxpool.Pool, key string) string {
 // A closed root's linger hands over its member that a person set back to todo at done, and a
 // person sets the root itself todo: the hand-over's event, its direct consumption and the root's
 // request, in each order, end in one placement of the member, one next change of it, and no
-// adoption back into the old tree.
+// adoption back into the old tree. A consumption that names another linger's generation moves
+// nothing.
 func TestHandoverAndReopenHaveOneWinner(t *testing.T) {
 	seed := func(t *testing.T, pool *pgxpool.Pool) {
 		t.Helper()
@@ -1239,6 +1288,26 @@ func TestHandoverAndReopenHaveOneWinner(t *testing.T) {
 		applyFact(t, pool, admission, "mnw-handover-consume", consume)
 		tick(t, pool, admission, "mnw-handover-pass")
 		once(t, pool, mnwRoot)
+	})
+
+	// A consumption of another linger's generation is held in two places, both kept: the hand-over
+	// row's own generation (consumeHandover) and the root's linger at that generation
+	// (record.Issue.LingersAt). The row's generation is the fact's own identity; the linger is what
+	// the consumption acts on, and it also refuses a row of the right generation once the root no
+	// longer lingers. With either gone the other still holds this case, so its control
+	// (handover-fence) takes out both.
+	t.Run("a consumption of another linger's generation moves nothing", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		seed(t, pool)
+		before := mnwState(t, pool, mnwChild)
+		applyFact(t, pool, admission, "mnw-handover-other-linger", intake.Handover{Issue: mnwChild, Tree: mnwRoot, Generation: 2})
+		if after := mnwState(t, pool, mnwChild); after != before {
+			t.Fatalf("%s after a consumption of linger 2 = %s, want it as it stood: %s", mnwChild, after, before)
+		}
+		if requests := mnwRequests(t, pool, mnwChild); len(requests) != 0 {
+			t.Fatalf("the requests of %s after a consumption of linger 2 = %+v, want none", mnwChild, requests)
+		}
 	})
 }
 
