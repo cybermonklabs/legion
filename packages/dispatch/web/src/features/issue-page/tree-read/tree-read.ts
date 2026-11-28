@@ -1084,8 +1084,9 @@ export function readNextTreePage(
 
 /**
  * The ids the page draws the rows of the nodes `page` brought by, `page` being a next page merged
- * into `held`: each node of it that `held` did not hold, since a node the page repeats - a parent
- * or a context node the answer held already - is no node it brought. Each is the id its rows are
+ * into `held`: each node of it whose id `held` draws no node by, since a node the page repeats - a
+ * parent or a context node the answer held already, or the block of an ask it held, whose row is
+ * drawn by that block - is no node it brought. Each is the id its rows are
  * drawn by, from the issue read and the asks read the page holds, which the tree is built from
  * (`tree-nodes.ts`' `nodeIdsIn`): a decision and a statement by its block in its document, an ask
  * by the block the asks read names it was indexed from. Where the page holds no issue read, each
@@ -1097,14 +1098,14 @@ function nodesBrought(
   held: TreeAnswer,
   page: TreeAnswer
 ): ReadonlySet<string> {
-  const had = new Set((held.nodes ?? []).map(({ id }) => id));
   const issue = queryClient.getQueryData(issueQuery(key).queryKey);
   const asks = queryClient.getQueryData(issueAskThreadsQuery(key).queryKey);
   const idOf =
     issue === undefined
       ? (node: TreeAnswerNode) => treeIdOfNode(node, key)
       : nodeIdsIn({ asks, issue });
-  return new Set((page.nodes ?? []).filter(({ id }) => !had.has(id)).map(idOf));
+  const had = new Set((held.nodes ?? []).map(idOf));
+  return new Set((page.nodes ?? []).filter((node) => !had.has(idOf(node))).map(idOf));
 }
 
 /** The next page of a read whose answer names one (`cursor`, R15): how many nodes the read holds

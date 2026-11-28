@@ -9,6 +9,7 @@ import { ApiError, api } from "../../../api/client";
 import {
   issueAskThreadsQuery,
   issueCoverageQuery,
+  issueQuery,
   issueResultsQuery,
   myRepliesOwnerQuery,
   referenceTargetsQuery,
@@ -1326,6 +1327,94 @@ test("a press whose merged page draws no row of its own ends its landing, so a r
   } finally {
     cleanup();
     frames.restore();
+  }
+});
+
+// R15: a press lands on the first row its page adds (`NextViewPage`). The Decisions view draws an
+// ask by the block the asks read says it was asked on, as the outline does, so an open question
+// the decisions view read's first page holds is drawn already when the next page brings that
+// block, and it stands above the review list. The block is no new row of that page, and the focus
+// does not go back up to the question: it lands on the row of the page's new decision, the first
+// row the page adds (part T's tester saw the outline's press give the focus to a question the load
+// drew, far above the page's first new row). The page holds the issue read, as `IssuePage` reads
+// it before it draws the stage, and the asks read, by which the press tells the ids its page's
+// rows are drawn by (`nodesBrought`). The page's frames are held for the whole case: the page
+// reads a next page for the decisions it marks only once it has drawn (`useReadUnloadedPages`,
+// decision 538), so the press is the one reader of the next page.
+test("a press whose page brings the block of an open question drawn already puts the focus on the page's new decision's row, not on the question's", async () => {
+  const asked: IssueAskRow = {
+    ...answeredAsk({
+      answer: null,
+      artifact_id: SPEC_DOCUMENT.id,
+      block_id: "q1",
+      id: "ask-q1",
+      issue_key: KEY,
+      question: "Which flag?",
+      state: "open",
+    }),
+    last_reply: null,
+  };
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([asked] as never);
+  const pages: string[] = [];
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query) => {
+    if (query?.view !== "decisions") return treeOf([S1, tied("first")]);
+    if (query.cursor === undefined) {
+      const askNode = treeNode(asked.id, "ask", KEY, {
+        made_at: asked.created_at,
+        text: asked.question,
+      });
+      return pagedAnswer(decisionsView([askNode, tied("first")]), "page-2");
+    }
+    pages.push(query.cursor);
+    // The ask's block, in the spec, and a decision newer than every one the first page holds.
+    const askBlock = treeNode("q1", "ask", KEY, {
+      ...inDocument(SPEC_DOCUMENT, 1),
+      text: asked.question,
+    });
+    return {
+      ...decisionsView([]),
+      cursor: null,
+      nodes: [askBlock, tiedAt("third", "2026-11-10T13:00:00Z")].map(
+        (node): TreeAnswerNode => ({ ...node, role: "query" })
+      ),
+    };
+  });
+  const question = blockNodeId(SPEC_DOCUMENT.slug, "q1");
+  const third = decisionNode("third").id;
+  const rowOf = (id: string) =>
+    document.querySelector(`[data-decisions-body] [data-node-row][data-node-id="${id}"]`);
+  const user = userEvent.setup();
+  const frames = framesByHand();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(issueQuery(KEY).queryKey, issueDetails());
+    const view = drawStage("", { client });
+    const control = () => view.container.querySelector<HTMLElement>("[data-tree-more] button");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    await waitFor(() =>
+      expect(
+        rowOf(question)?.closest("[data-decisions-part]")?.getAttribute("data-decisions-part"),
+        "the view drew the open question's row in no open-questions part"
+      ).toBe("open_questions")
+    );
+    await waitInAct(20);
+    const press = control();
+    if (press != null) await user.click(press);
+    await waitFor(() => expect(pages, "the press read no next page").toEqual(["page-2"]));
+    await waitFor(() =>
+      expect(rowOf(third), "the view drew no row of the next page's decision").not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(
+      focusedRow(),
+      "the press gave the focus to the open question the first page drew, not to its page's first new row"
+    ).toBe(third);
+  } finally {
+    cleanup();
+    frames.restore();
+    asks.mockRestore();
   }
 });
 
