@@ -66,9 +66,9 @@ import {
   type Browser,
   type BrowserContext,
   database,
+  exitStatus,
   type Frame,
   fail,
-  failed,
   flags,
   flatten,
   frameKey,
@@ -1358,4 +1358,4 @@ result(
 );
 await browser.close();
 await Promise.all([db.close(), poller.close(), writer.close()]);
-process.exit(failed() > 0 ? 1 : 0);
+process.exit(exitStatus());

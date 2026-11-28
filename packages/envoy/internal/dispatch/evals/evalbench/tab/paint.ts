@@ -129,9 +129,9 @@ import {
   type Counted,
   counted,
   database,
+  exitStatus,
   type Frame,
   fail,
-  failed,
   firstMark,
   flags,
   frameKey,
@@ -1010,4 +1010,4 @@ if (timelineState !== "closed")
 
 await browser.close();
 await db.close();
-process.exit(failed() > 0 ? 1 : 0);
+process.exit(exitStatus());

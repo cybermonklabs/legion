@@ -98,6 +98,16 @@ export function failed(): number {
   return failures;
 }
 
+/** The exit status of a drive that ran to its end and printed FAIL lines (`failed`), so run.sh
+ *  tells it from a drive that ended in an error (status 1, Bun's for an uncaught error), which
+ *  measured nothing it can name. */
+export const MISSED_EXIT = 3;
+
+/** The exit status of a drive that ran to its end: MISSED_EXIT where it printed a FAIL line, else 0. */
+export function exitStatus(): number {
+  return failures > 0 ? MISSED_EXIT : 0;
+}
+
 /** Waits ms. */
 export function sleep(ms: number): Promise<void> {
   const { promise, resolve } = Promise.withResolvers<void>();

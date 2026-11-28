@@ -363,6 +363,20 @@ if [ "$status" -ne 0 ]; then
   exit 1
 fi
 
+# tab_drive_status DRIVE ARGS STATUS: folds a tab drive's exit STATUS into the run's: 3 is a drive
+# that ran to its end and printed its FAIL lines (tab/lib.ts's MISSED_EXIT); any other status but 0
+# is a drive that ended in an error, which prints a FAIL line here naming what it did not measure.
+tab_drive_status() {
+  case "$3" in
+  0) ;;
+  3) status=1 ;;
+  *)
+    status=1
+    echo "FAIL run.sh: tab/$1 ${2:+$2 }ended in an error (exit $3), so it measured nothing it can name; its error is above"
+    ;;
+  esac
+}
+
 if [ "$command" = tab ]; then
   for paint_case in 84d-compare 28d 84d-author; do
     warmed=$work/paint-$paint_case.warmed restarted=$work/paint-$paint_case.restarted
@@ -383,7 +397,12 @@ if [ "$command" = tab ]; then
       start_server "$work/server-paint-$paint_case.log"
       touch "$restarted"
     fi
-    wait "$paint_pid" || status=1
+    # A drive exits 3 (tab/lib.ts's MISSED_EXIT) where it ran to its end and printed FAIL lines, and
+    # any other status but 0 where it ended in an error, which prints no FAIL line of its own: a case
+    # it did not measure fails by name, never only through the exit status.
+    drive=0
+    wait "$paint_pid" || drive=$?
+    tab_drive_status paint.ts "--case $paint_case" "$drive"
     stop_server
   done
   start_server "$work/server-recompute.log"
@@ -392,8 +411,10 @@ if [ "$command" = tab ]; then
     split_flags+=(--server-log "$work/server-recompute.log")
   fi
   # shellcheck disable=SC2086 # EVALBENCH_RECOMPUTE_ARGS is flags, split on purpose.
+  drive=0
   bun "$EVALBENCH_TAB/recompute.ts" --url "$url" --database "$database_url" --project INFRA --rate "$mode" \
-    --token-file "$token_file" "${split_flags[@]}" ${EVALBENCH_RECOMPUTE_ARGS:-} || status=1
+    --token-file "$token_file" "${split_flags[@]}" ${EVALBENCH_RECOMPUTE_ARGS:-} || drive=$?
+  tab_drive_status recompute.ts "" "$drive"
   stop_server
   echo "MARK $(date -u +%FT%TZ) run.sh tab $mode exits $status"
   exit "$status"
