@@ -386,3 +386,37 @@ test("a production check after the merge whose answer holds no pass_stands reads
 
   expect(rowReading(unanswered)).toEqual({ state: "unreadable", word: "Could not read" });
 });
+
+// A result the server marks `not_counted` stands for nothing: its check's current deploy does
+// not run its commit, or it was recorded before that deploy, and the server's `standingCommit`
+// gives it no standing, as it gives none to a result over moved words. So, like such a result,
+// it names no commit for the page (`namedCommit`): a newer fail at a commit the deploy does not
+// run leaves the commit the page names at the deploy's pass, where the check's row reads Passed
+// and its statement reads Met.
+test("a result the server does not count names no commit for the page", () => {
+  const uncountedFail = result({
+    check_block_id: LIVE,
+    commit_sha: OTHER_COMMIT,
+    commit_stands: { answer: "other_commit" },
+    created_at: "2026-11-14T02:00:00Z",
+    failed: 1,
+    id: "fail-elsewhere",
+    not_counted:
+      "it names a commit that the current deploy of the program this check reads does not run",
+    verdict: "fail",
+  });
+  const live = liveCheck({
+    pass_stands: {
+      answer: "yes",
+      commit: COMMIT,
+      deploy: deployAt(COMMIT),
+      results: [PASS_AT_BASIS.id],
+      roles: ["tester"],
+    },
+    results: [uncountedFail, PASS_AT_BASIS],
+  });
+
+  expect(checkStanding(live)).toEqual({ stands: PASS_AT_BASIS, state: "passed" });
+  expect(namedCommit([live])).toBe(COMMIT);
+  expect(statementState(atNamedCommit([live]))).toBe("met");
+});
