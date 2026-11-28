@@ -39,8 +39,8 @@ export interface PriorityRowActions {
   /** Writes `description` as the priority's description, over `from`, the server's text the
    *  description's editor last took in, which the write names as the text it goes over unless a
    *  write of the page's own goes before it (`describe`), made on `on` (`PriorityDescription`'s
-   *  `onSave`). Answers whether it landed, or `undefined` where it ended with no verdict
-   *  (`WriteAnswer`). */
+   *  `onSave`). Answers how it ended (`WriteAnswer`): landed, refused, or of unknown end, where it
+   *  ended with no verdict. */
   readonly onDescribe: (
     item: PriorityItem,
     description: string,

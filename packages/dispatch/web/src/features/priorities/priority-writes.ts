@@ -172,7 +172,7 @@ function refusedAsList(error: unknown): boolean {
  *  among `own`, the field's own texts the server may hold as its turn comes - its start, the
  *  texts of its chain, and its writes whose end is unknown (`unknownTexts`) - each once. Absent
  *  where there is none. */
-export function ownTexts(expected: string, own: readonly string[]): readonly string[] | undefined {
+function ownTexts(expected: string, own: readonly string[]): readonly string[] | undefined {
   const also = [...new Set(own)].filter((text) => text !== expected);
   return also.length === 0 ? undefined : also;
 }
@@ -180,7 +180,7 @@ export function ownTexts(expected: string, own: readonly string[]): readonly str
 /** The texts of priority `id`'s `attribute` the store `rows` holds writes of whose end is unknown:
  *  waiting their turn, out, or ended with no verdict of Dispatch's - stopped, their key spent,
  *  refused after an attempt that went unanswered, or interrupted by a reload - so they may land
- *  still. A held text never sent, and a write Dispatch refused, are none of them. In press order. */
+ *  still. A held text never sent, and a write Dispatch refused, are none of them. In store order. */
 function unknownTexts(rows: readonly Write[], { attribute, id }: KeptAt): readonly string[] {
   const texts: string[] = [];
   for (const row of rows) {
@@ -216,8 +216,8 @@ interface TextPress {
   readonly press: number;
 }
 
-/** The answer to a write of a field's text that is not sent: it does not land. */
-const NOT_LANDED = Promise.resolve(false);
+/** The answer to a write of a field's text that is not sent: refused, since it never lands. */
+const NOT_LANDED = Promise.resolve<WriteAnswer>("refused");
 
 /** A page mounted now that shows priorities (`usePriorityWrites`): the app's client it reads them
  *  through, and what it does with a write of a text a conflict refused - one of a priority it
@@ -442,10 +442,10 @@ const NO_PRIORITIES: readonly string[] = [];
  * naming the one text, as every write did before it. "Use my text" is written as any write is: a
  * write of the reader's own still out - the one the field's blur made as they pressed it - is
  * theirs to replace, and it goes after that. A write that would change nothing is not sent. Each
- * write is answered with whether it landed, once its chain has heard, or, where it ended with no
- * verdict, that it may land still (`WriteAnswer`), so the field takes a read that brings its text
- * as the reader's own write coming back (`arrival`); one Dispatch refused never comes back to the
- * field. Each records too what its edit was made on, as the field hands it, and when
+ * write is answered with how it ended, once its chain has heard (`WriteAnswer`): landed, refused,
+ * or of unknown end, where it ended with no verdict and may land still, so the field takes a read
+ * that brings its text as the reader's own write coming back (`arrival`); one refused never comes
+ * back to the field. Each records too what its edit was made on, as the field hands it, and when
  * (`PriorityTextWrite.made`), by which one that lands lets go a stopped write made before it
  * whose text it was made on (`priorityTextWrite.outdates`).
  *
@@ -736,10 +736,11 @@ export function usePriorityWrites(
    *  landed unseen, or lands late, takes nothing of the next one from her. Another person's text
    *  is none of those, so a write over it is still refused. A build of Dispatch from before the
    *  list refuses one (`refusedAsList`): the write goes once more naming the one text alone, as
-   *  every write did before, and that refusal is let go. Answers whether the write landed, once
-   *  its chain has heard (`text`'s `onSettled`, which TanStack runs before it settles the press),
-   *  or `undefined` where it ended with no verdict of Dispatch's, so it may land still and its text
-   *  is the reader's own when a read brings it (`WriteAnswer`): one not sent did not land. */
+   *  every write did before, and that refusal is let go. Answers how the write ended
+   *  (`WriteAnswer`), once its chain has heard (`text`'s `onSettled`, which TanStack runs before
+   *  it settles the press): landed; of unknown end where it ended with no verdict of Dispatch's,
+   *  so it may land still and its text is the reader's own when a read brings it; and else
+   *  refused, as one not sent is. */
   const writeText = useCallback(
     (
       id: string,
@@ -779,10 +780,10 @@ export function usePriorityWrites(
         own.presses.set(write, press);
         own.chains.set(key, pressedText(ahead, press, written, write.expected));
         return mutateAsync({ label, press, write }).then(
-          () => true,
+          () => "landed",
           (error: unknown) => {
-            if (endedWithoutVerdict(error)) return undefined;
-            if (write.also === undefined || !refusedAsList(error)) return false;
+            if (endedWithoutVerdict(error)) return "unknown";
+            if (write.also === undefined || !refusedAsList(error)) return "refused";
             const refused = writes.rows().find((row) => row.detail === write);
             if (refused !== undefined) writes.supersede(refused.id);
             return send(detail, aheadOf(own.chains.get(key), from, drawn.current.reads));
@@ -794,15 +795,16 @@ export function usePriorityWrites(
     [claimMarks, conflicts, holdText, mutateAsync, own, refresh, writes]
   );
   /** Writes `title` as priority `id`'s title, where its field last took `from` in from the server
-   *  and made the edit on `on` (`writeText`), and answers whether it landed. A title with nothing
-   *  in it is refused by the server, so none is sent. */
+   *  and made the edit on `on` (`writeText`), and answers how it ended (`WriteAnswer`). A title
+   *  with nothing in it is refused by the server, so none is sent. */
   const rename = useCallback(
     (id: string, title: string, from: string, on: string, label: string) =>
       title === "" ? NOT_LANDED : writeText(id, "title", title, from, on, label),
     [writeText]
   );
   /** Writes `description` as priority `id`'s description, where its editor last took `from` in
-   *  from the server and made the edit on `on` (`writeText`), and answers whether it landed. */
+   *  from the server and made the edit on `on` (`writeText`), and answers how it ended
+   *  (`WriteAnswer`). */
   const describe = useCallback(
     (id: string, description: string, from: string, on: string, label: string) =>
       writeText(id, "description", description, from, on, label),

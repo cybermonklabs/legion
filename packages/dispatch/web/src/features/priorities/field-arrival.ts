@@ -1,19 +1,23 @@
 /** The reader's own texts a field keeps beside itself while it shows another person's: none. */
 export const NOTHING_KEPT: readonly string[] = [];
 
-/** A text a field wrote that no read of the server's has shown it yet, and what the page said of
- *  its write (`answered`): `false` while it is out; `true` where it landed, so the text is the
- *  server's, and no write of the reader's still out; `"unknown"` where it ended with no verdict of
- *  Dispatch's - stopped, or refused after an attempt that went unanswered - so it may have landed,
- *  or may land still, and is no write still out either. */
+/** A text a field wrote that no read of the server's has shown it yet, and where its write stands
+ *  (`state`), as the page answered it (`answered`): `"out"` while the page has not answered it;
+ *  `"landed"` where it landed, so the text is the server's, and no write of the reader's still
+ *  out; `"unknown"` where it ended with no verdict of Dispatch's - stopped, or refused after an
+ *  attempt that went unanswered - so it may have landed, or may land still, and is no write still
+ *  out either. */
 export interface SentText {
   readonly text: string;
-  readonly landed: boolean | "unknown";
+  readonly state: "out" | "landed" | "unknown";
 }
 
-/** What the page answers of a write of a field's text (`onSave`): whether it landed, or
- *  `undefined` where it ended with no verdict of Dispatch's and may land still. */
-export type WriteAnswer = boolean | undefined;
+/** What the page answers of a write of a field's text (`onSave`): `"landed"`; `"refused"` where it
+ *  ended without landing and never will - Dispatch refused it, the reader discarded it, or it was
+ *  never sent; or `"unknown"` where it ended with no verdict of Dispatch's and may land still.
+ *  Each is a word of its own and none is `undefined`, so where the page must answer, a callback
+ *  that forgets to is a type error, never read as one of them. */
+export type WriteAnswer = "landed" | "refused" | "unknown";
 
 /** Where a field of a priority stands against the server's text. */
 export interface FieldStand {
@@ -22,8 +26,8 @@ export interface FieldStand {
   readonly base: string;
   /** The texts the field wrote that the server has not answered with yet, oldest first: the
    *  server's answer with one of them is the reader's own write coming back. A text whose write
-   *  Dispatch refused leaves it (`answered`): no answer brings it back. One whose write ended with
-   *  no verdict stays, since it may land still. */
+   *  the page answers refused leaves it (`answered`): no answer brings it back. One whose write
+   *  is of unknown end stays, since it may land still. */
   readonly sent: readonly SentText[];
   /** The reader's own texts kept beside the field while it shows another person's
    *  (`ChangedMeanwhile`), newest first, none twice. */
@@ -87,7 +91,7 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
   if (server === held) return { base: server, kept, made: server, sent: [], take: false };
   // Here the reader holds typing not yet written over `base`: it began on `made`, which stays.
   if (server === stand.base) return { ...stand, kept, take: false };
-  const holding = held !== stand.base || stand.sent.some((one) => one.landed === false);
+  const holding = held !== stand.base || stand.sent.some((one) => one.state === "out");
   return {
     base: server,
     kept: holding ? [held, ...without(kept, held)] : kept,
@@ -97,21 +101,20 @@ export function arrival(server: string, held: string, stand: FieldStand): Arriva
   };
 }
 
-/** `sent` once the page answered the write that pushed `entry` - that very entry, never another of
- *  the same text: landed, the text stays until a read shows it, and is no write still out; ended
- *  with no verdict (`undefined`), it stays the same way, since it may land still; refused, it
- *  goes, since no answer of the server's brings it back. An entry `sent` no longer holds - a read
- *  answered it, or another person's text ended it - changes nothing. */
+/** `sent` once the page answered `answer` of the write that pushed `entry` - that very entry, never
+ *  another of the same text: landed, the text stays until a read shows it, and is no write still
+ *  out; of unknown end, it stays the same way, since it may land still; refused, it goes, since
+ *  no answer of the server's brings it back. An entry `sent` no longer holds - a read answered
+ *  it, or another person's text ended it - changes nothing. */
 export function answered(
   sent: readonly SentText[],
   entry: SentText,
-  landed: WriteAnswer
+  answer: WriteAnswer
 ): readonly SentText[] {
   const at = sent.indexOf(entry);
   if (at === -1) return sent;
-  if (landed === false) return [...sent.slice(0, at), ...sent.slice(at + 1)];
-  const state = landed ?? "unknown";
-  return sent.map((one, place) => (place === at ? { ...one, landed: state } : one));
+  if (answer === "refused") return [...sent.slice(0, at), ...sent.slice(at + 1)];
+  return sent.map((one, place) => (place === at ? { ...one, state: answer } : one));
 }
 
 /** The text Use my text of `text`, one of the reader's kept texts `kept`, is made on, where the

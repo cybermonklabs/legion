@@ -6,7 +6,7 @@ const SETTLED: FieldStand = { base: "Old", kept: NOTHING_KEPT, made: "Old", sent
 
 /** Texts the field wrote, in order, whose writes the page has not answered. */
 function out(...texts: string[]): readonly SentText[] {
-  return texts.map((text) => ({ landed: false, text }));
+  return texts.map((text) => ({ state: "out", text }));
 }
 
 test("the text the field holds is no change: nothing is left to write, and nothing is taken in", () => {
@@ -62,7 +62,7 @@ test("the answer to an earlier write the reader typed back to leaves the later o
 // discarded it, or the shell's line holds it, with its Retry. Typing since is theirs to write.
 test("the answer to a write after the later one ended without landing leaves the reader's stopped text unwritten", () => {
   const [a, ab] = out("A", "AB") as [SentText, SentText];
-  const sent = answered(answered([a, ab], ab, false), a, true);
+  const sent = answered(answered([a, ab], ab, "refused"), a, "landed");
   expect(arrival("A", "AB", { base: "AB", kept: NOTHING_KEPT, made: "AB", sent })).toEqual({
     base: "AB",
     kept: [],
@@ -124,7 +124,7 @@ test("another person's text over a write still out is taken in, and the text wri
 // was the server's text until theirs came, as one a read had shown would have been.
 test("another person's text over a write that landed, unseen, is taken in, and nothing kept", () => {
   const one = out("One");
-  const sent = answered(one, one[0] as SentText, true);
+  const sent = answered(one, one[0] as SentText, "landed");
   expect(
     arrival("Written elsewhere", "One", { base: "One", kept: NOTHING_KEPT, made: "One", sent })
   ).toEqual({
@@ -156,37 +156,37 @@ test("a second change while a notice shows keeps both of the reader's texts, new
 });
 
 // The page answers each write of the field's text: one that landed stays until a read shows it,
-// and one that did not goes, since no answer of the server's brings it back. The answer is the
-// very write's: of a text written twice, the other write of it stays as it was.
+// and one refused goes, since no answer of the server's brings it back. The answer is the very
+// write's: of a text written twice, the other write of it stays as it was.
 test("the page's answer marks a write that landed, and takes out one that did not", () => {
   const [one, two] = out("One", "Two") as [SentText, SentText];
-  expect(answered([one, two], one, false)).toEqual([two]);
-  expect(answered([one, two], one, true)).toEqual([{ landed: true, text: "One" }, two]);
-  const again: SentText = { landed: false, text: "One" };
-  expect(answered([one, two, again], again, false)).toEqual([one, two]);
-  const landed = answered([one, two, again], one, true);
-  expect(landed).toEqual([{ landed: true, text: "One" }, two, again]);
-  expect(answered(landed, again, true)).toEqual([
-    { landed: true, text: "One" },
+  expect(answered([one, two], one, "refused")).toEqual([two]);
+  expect(answered([one, two], one, "landed")).toEqual([{ state: "landed", text: "One" }, two]);
+  const again: SentText = { state: "out", text: "One" };
+  expect(answered([one, two, again], again, "refused")).toEqual([one, two]);
+  const landed = answered([one, two, again], one, "landed");
+  expect(landed).toEqual([{ state: "landed", text: "One" }, two, again]);
+  expect(answered(landed, again, "landed")).toEqual([
+    { state: "landed", text: "One" },
     two,
-    { landed: true, text: "One" },
+    { state: "landed", text: "One" },
   ]);
   // A write no entry stands for any longer - a read answered it - changes nothing.
   const none = [two];
-  expect(answered(none, one, false)).toBe(none);
+  expect(answered(none, one, "refused")).toBe(none);
 });
 
 // A write that ended with no verdict of Dispatch's - stopped, or refused after an attempt that
-// went unanswered - may have landed, or may land still. The page answers it `undefined`: it stays
+// went unanswered - may have landed, or may land still. The page answers it `"unknown"`: it stays
 // in `sent`, as no write still out, so a read that brings its text later is the reader's own
 // write coming back - whatever reads showed meanwhile - and nothing is taken in or kept beside the
 // field. Her next write goes over the texts it may find, its own and hers, and lands.
 test("a write of unknown end stays the reader's own: its text arriving late comes back, and nothing is kept", () => {
   const [a] = out("Old A") as [SentText];
-  const stopped = answered([a], a, undefined);
-  expect(stopped).toEqual([{ landed: "unknown", text: "Old A" }]);
+  const stopped = answered([a], a, "unknown");
+  expect(stopped).toEqual([{ state: "unknown", text: "Old A" }]);
   // She types on and her next write, "Old AB", goes; "Old A" lands late, before it.
-  const ab: SentText = { landed: false, text: "Old AB" };
+  const ab: SentText = { state: "out", text: "Old AB" };
   const stand: FieldStand = {
     base: "Old AB",
     kept: NOTHING_KEPT,
@@ -202,7 +202,7 @@ test("a write of unknown end stays the reader's own: its text arriving late come
   });
   // Or "Old AB" lands first and Dispatch refuses "Old A", which names only "Old": the read shows
   // "Old AB", hers, and that answers both.
-  const landed = answered(stand.sent, ab, true);
+  const landed = answered(stand.sent, ab, "landed");
   expect(arrival("Old AB", "Old AB", { ...stand, sent: landed })).toEqual({
     base: "Old AB",
     kept: [],

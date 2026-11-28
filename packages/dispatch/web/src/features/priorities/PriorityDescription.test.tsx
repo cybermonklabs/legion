@@ -18,6 +18,7 @@ import {
   installFakeParseWorker,
   restoreParseWorker,
 } from "../refs/parse-worker-fixture";
+import type { WriteAnswer } from "./field-arrival";
 import { SAVE_AFTER_MS } from "./InPlaceField";
 import { PriorityDescription } from "./PriorityDescription";
 
@@ -70,7 +71,7 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
   const runtime = { ...editors.runtime, createEditor };
   // Every write is out until a test answers it: the default answer never comes.
   const onSave = mock(
-    (_next: string, _from: string): Promise<boolean> => new Promise<boolean>(() => {})
+    (_next: string, _from: string): Promise<WriteAnswer> => new Promise<WriteAnswer>(() => {})
   );
   const madeOn: string[] = [];
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -110,17 +111,18 @@ function described(description: string, canWrite = true, tree?: DisplayTree, exa
   });
   return {
     /** Holds each write's answer for the test to give, and answers how it gives one: to the
-     *  `at`th write to go, landed or not, in an act that lets the editor follow it. */
+     *  `at`th write to go, how it ended (`WriteAnswer`), in an act that lets the editor follow
+     *  it. */
     answering: () => {
-      const answers: ((landed: boolean) => void)[] = [];
+      const answers: ((answer: WriteAnswer) => void)[] = [];
       onSave.mockImplementation(() => {
-        const answer = Promise.withResolvers<boolean>();
+        const answer = Promise.withResolvers<WriteAnswer>();
         answers.push(answer.resolve);
         return answer.promise;
       });
-      return (at: number, landed: boolean) =>
+      return (at: number, answer: WriteAnswer) =>
         act(async () => {
-          answers[at]?.(landed);
+          answers[at]?.(answer);
           await settle();
         });
     },
@@ -314,7 +316,7 @@ test("the answer to an earlier write of the same text leaves Use my text's write
     "Speedruns run again. Mine.\n",
     "Speedruns run again. Mine. More.\n",
   ]);
-  await answer(0, false);
+  await answer(0, "refused");
   rerender("Speedruns run again. Mine.\n");
   expect(scope.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   expect(box.textContent).toBe("Speedruns run again. Mine. More.");
@@ -361,9 +363,9 @@ test("each write hands on the text the editor held as its edit began, in the for
     act(() => handle.view.dom.blur());
   };
   writeAndLeave(" More.");
-  await answer(0, false);
+  await answer(0, "refused");
   writeAndLeave(" Again.");
-  await answer(1, false);
+  await answer(1, "refused");
   rerender("Written elsewhere.");
   writeAndLeave(" Mine.");
   rerender("Bob.");
@@ -396,11 +398,11 @@ test("a read that answers an earlier write while the reader's typing waits leave
   handle.view.focus();
   writeAtEnd(handle, " A");
   act(() => handle.view.dom.blur());
-  await answer(0, true);
+  await answer(0, "landed");
   handle.view.focus();
   writeAtEnd(handle, " B");
   act(() => handle.view.dom.blur());
-  await answer(1, false);
+  await answer(1, "refused");
   handle.view.focus();
   writeAtEnd(handle, " C");
   rerender("Speedruns run again. A\n");
@@ -769,7 +771,7 @@ test("a writer's editor draws the reading of a text the server cannot read as ma
 // once, rather than holding the writer's markdown until some other text arrives.
 test("a writer's write that ends without landing, after the server said it cannot read the stored text as markdown, leaves the editor on that text's reading", async () => {
   const { editor, onSave, rerender } = described(PLAN, true, displayTree(PLAN), true);
-  const answer = Promise.withResolvers<boolean>();
+  const answer = Promise.withResolvers<WriteAnswer>();
   onSave.mockImplementation(() => answer.promise);
   const { box, handle } = await editor();
   handle.view.focus();
@@ -780,7 +782,7 @@ test("a writer's write that ends without landing, after the server said it canno
     rerender(PLAN, true, PLAN_AS_TEXT, false);
     expect(box.textContent).toContain("check. Done.");
     await act(async () => {
-      answer.resolve(false);
+      answer.resolve("refused");
       await answer.promise;
     });
     drawsReading(box, PLAN);
@@ -929,7 +931,7 @@ test("a refused description stays the reader's text in the editor, and the next 
   writeAtEnd(handle, " More.");
   act(() => handle.view.dom.blur());
   expect(onSave.mock.calls).toEqual([["Speedruns run again. More.\n", "Speedruns run again."]]);
-  await answer(0, false);
+  await answer(0, "refused");
   expect(box.textContent).toBe("Speedruns run again. More.");
   handle.view.focus();
   act(() => handle.view.dom.blur());

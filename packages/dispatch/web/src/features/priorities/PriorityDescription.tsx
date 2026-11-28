@@ -65,8 +65,8 @@ interface Held {
   from: string;
   /** The texts written that the server has not answered with yet, oldest first: its answer
    *  with one of them is the reader's own write coming back, not another person's text. The
-   *  page's answer marks one that landed or ended with no verdict, and takes out one Dispatch
-   *  refused (`answered`). */
+   *  page's answer marks one that landed or is of unknown end, and takes out one refused
+   *  (`answered`). */
   sent: readonly SentText[];
   /** The write waiting for the typing to rest. */
   timer: number | undefined;
@@ -118,7 +118,7 @@ function write(held: Held, send: Latest["send"], markdown: string, on = held.mad
   held.base = markdown;
   held.made = markdown;
   held.madeOn.set(markdown, on);
-  const entry = { landed: false, text: markdown };
+  const entry: SentText = { state: "out", text: markdown };
   held.sent = [...held.sent, entry];
   send(held, entry, on);
 }
@@ -186,7 +186,7 @@ function redraw(
  *  a move held back is made once the writer is settled. */
 function follow(held: Held, latest: Latest, fail: (failure: Failure) => void): void {
   if (held.fromTree === (latest.reading !== undefined)) return;
-  if (held.sent.some((one) => one.landed !== "unknown")) return;
+  if (held.sent.some((one) => one.state === "out" || one.state === "landed")) return;
   if (heldText(held) !== held.base) return;
   redraw(held, latest.description, latest.reading, fail);
 }
@@ -323,9 +323,10 @@ export function PriorityDescription({
   /** Writes `next`, the reader's text, over `from`, the server's text the editor last took in,
    *  which the write names as the text it goes over (`expected`) unless a write of the page's own
    *  goes before it, made on `on`: the text the editor held as the edit began, or, for Use my text
-   *  of a text whose own write is known, what that write was made on. Answers whether the write
-   *  landed, or `undefined` where it ended with no verdict and may land still (`WriteAnswer`):
-   *  until it lands, or comes back, the editor counts the write as its own (`sent`). */
+   *  of a text whose own write is known, what that write was made on. Answers how the write
+   *  ended (`WriteAnswer`): landed, refused, or of unknown end, where it ended with no verdict and
+   *  may land still. Until it is refused, or comes back, the editor counts the write as its own
+   *  (`sent`). */
   onSave: (next: string, from: string, on: string) => Promise<WriteAnswer>;
 }): ReactNode {
   const root = useRef<HTMLDivElement>(null);
@@ -356,14 +357,14 @@ export function PriorityDescription({
   // A text the editor could not take in, with the reason, until the server's text changes.
   const [failure, setFailure] = useState<Failure>();
   // Each write the editor makes goes through the page (`onSave`), which answers that very write
-  // (`answered`): one Dispatch refused never comes back, so the editor waits for no answer with
-  // it, and moves to the form the server's text is drawn in where that waited on it (`follow`),
-  // while it is still the editor drawn; one that ended with no verdict may come back still, as
-  // the reader's own.
+  // (`answered`): one refused never comes back, so the editor waits for no answer with it, and
+  // moves to the form the server's text is drawn in where that waited on it (`follow`), while it
+  // is still the editor drawn; one of unknown end may come back still, as the reader's own.
   const send = (current: Held, entry: SentText, on: string) => {
-    void onSave(entry.text, current.from, on).then((landed) => {
-      current.sent = answered(current.sent, entry, landed);
-      if (landed !== true && held.current === current) follow(current, latest.current, setFailure);
+    void onSave(entry.text, current.from, on).then((answer) => {
+      current.sent = answered(current.sent, entry, answer);
+      if (answer === "landed" || held.current !== current) return;
+      follow(current, latest.current, setFailure);
     });
   };
   const latest = useRef({ description, kept, reading, send, setKept, writes });
