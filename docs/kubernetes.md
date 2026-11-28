@@ -123,7 +123,7 @@ It carries:
   A served digest other than the setting is drift, so the kept pod starts safely under its own pin and its update round replaces it.
   If its launcher holds an install from before, the role is told none and that install runs unhashed, as every check did before the setting, until the pod is next replaced.
   The role's name for the digest is not the daemon's, so a configuration a role loads, `legion config check` among them, never reads one half of the daemon's setting without the other.
-  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghReadsProvenCheck`, `cmd/legion/gh_reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
+  A `legion gh` call that writes nothing is read by the check alone only where the check's `public_leak_check.py` hashes to the sha256 this release's read rule was proven against, which the release compiles in (`ghroute.ReadsProvenCheckSHA256`, `internal/ghroute/reads.go`); under any other check it gets the whole guard, and the digest a role is told plays no part in it.
   Each role's `legion worker-shim` only reads the install, and starts no agent when the install is absent, records another tag, its tag file is refused, or it has a manifest digest other than the one the role is told (`leakguard.Installed`, read by `spawnOnce`, `internal/shim/shim.go`): so a pin moved without the deployment's `manifest_sha256` starts no role.
   Under the digest, the guard of every write holds the check it finds to it as well: a check whose manifest digest is anything else, or that misses a file of it, refuses the call, a `legion gh` read included, with `LEAK CHECK SETUP ERROR: <the write>: the shared public leak check found is not the one the deployment names`, naming the digest told and the digest found (`Guard.sharedCheck`, `internal/leakguard/check.go`).
   Where the environment names no check, the shim names the install for everything it starts.
@@ -285,7 +285,9 @@ Such a file would name the versions of this image and no other, and a file proxy
 Without those files the file proxy answers a version query with a 404, and the query falls through to `proxy.golang.org`, while the `.info`, `.mod` and `.zip` of a pinned version still come from the cache.
 `go.env` is the place for it rather than the final stage's `ENV`, for the reason the cgo paragraph above gives in reverse:
 a variable the image's `ENV` sets is one `runtime.kubernetes.pod.env` may not set, while a `go.env` default leaves `GOPROXY` to an operator, a role, or one command, each of which outranks it through the process environment.
-The `go-modules` stage also deletes the cache's `sumdb` directory, the checksum-database tiles and lookups `go mod download` fetches for the `go.mod` sums `go.work.sum` lacks: they differ with the hour they are read, so with them each build's copy of the cache was new bytes and a new layer.
+The `go-modules` stage's `go mod download` needs only the checksums in `go.work.sum` and the two modules' `go.sum` files.
+The test job's `.github/scripts/check-go-work-sum.sh` checks that those files stay complete, so the download makes no checksum database request and creates no `sumdb` directory.
+On a branch the check has not run on, a missing checksum can make Go fetch tiles and lookups that vary by hour, so the stage still deletes `sumdb` to ship the same cache bytes for the same module files.
 A pod's go reads the cache only through the file proxy, which has never served the checksum database (a go asks for it at `<proxy>/sumdb/<name>/supported`); a go whose own `GOMODCACHE` is the image's fetches from `sum.golang.org` the checksums it lacks, as it does for any module the cache does not hold.
 
 The image's `python3` carries Debian's PyYAML, `python3-yaml`, because six of this repository's own gates read a workflow or `.github/ci-images.yaml` with `import yaml`:
@@ -1299,6 +1301,7 @@ The daemon reads that refusal as `runtime.ErrSessionFileMissing` (`startRefusal`
 the loss is posted on the issue and told to its architect and to the new agent, as [Cutting over an instance from tmux to pods](#cutting-over-an-instance-from-tmux-to-pods) says.
 A database it cannot reach is asked again with a backoff (half a second, doubling to four seconds) for up to 30 seconds
 — under `postgres` the URL file read afresh each time, since that file is a projection something else may replace — and only then refuses the start.
+Each lookup is one read-only transaction of the session client (`internal/ompsessions`), which opens it with one message that sets each setting the client depends on, and which closes a server connection it cannot repair and runs the transaction again on a new one ([Copying file sessions before turning it on](#copying-file-sessions-before-turning-it-on), step 3, says how).
 Neither `workspace-init` looks for a session file, and neither is told to expect one: there is no disk on which a session could be waiting.
 A launch that creates the issue's pod provisions its workspace from the issue's pushed branch and continues its own session from the table;
 a role launched into the pod already running provisions nothing and continues its session in the workspace the roles before it left.
@@ -1343,7 +1346,7 @@ the transcript, `<CLAUDE_CONFIG_DIR>/projects/<dir>/<id>.jsonl`, and the record,
 Every row has a `byte_len` and a `mtime_ms`, the file's mtime when it was saved, so the rows never stop an Oh My Pi process from loading its index.
 The launcher holds one connection to the session database for the generation, through the generation's proxy socket under `cloudsql-iam`.
 It saves a file that grew at most every 2 s, the transcript only up to its last newline.
-Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last.
+Each save is one transaction that appends the new bytes as a part, and only over what that launcher saved last; it opens, and is run again on a new connection, as the lookups' transactions are.
 When another writer has moved the row, the launcher stops saving that file and logs it.
 It never overwrites the row.
 A save the database refuses is logged and tried again at the next save, and the agent runs on.
@@ -1702,16 +1705,19 @@ Its Sandbox goes, and its volume and session go with it, so step 5 clears the se
    It prints one line per claim of the tree — `copied`, `copied before (identical …)`, `recorded no session`, `failed` (a file or retained session the volume does not hold) or `refused` (several files for one retained session id, or a table row with other content, which it leaves as it is) — then a `missing` line for every claim of the whole list, any tree's, whose recorded session the table does not hold, then a count of each.
    It exits 1 on any `failed` or `refused`, on a `missing` of the claims it was asked to copy (another tree's is reported only), and when `--tree` selects no claim of the list, which is a mistyped key.
 
-   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction whose first statement is `SET LOCAL search_path = pg_catalog, pg_temp`, which then sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, and names each table `public.<table>`; a read-only one also sets `row_security` off.
+   - Every statement it runs, like every statement of the launcher's session lookups and Claude Code saves, runs in a transaction that one simple-protocol message opens: `OpenRead` for a read, `OpenWrite` for a write (`packages/daemon/internal/ompsessions/open.go`).
+     That message names `ISOLATION LEVEL READ COMMITTED` and `READ ONLY` or `READ WRITE`, sets `application_name` to `legion-session-client` for the transaction, so that the server's log names each statement of the client, pins `search_path = pg_catalog, pg_temp`, sets `restrict_nonsystem_relation_kind` to `'view, foreign-table'`, sets `row_security` off in a read, and sets back each other setting that the list `LeftSettings` (`leftsettings.go`) marks, which another client can leave on a pooled server connection; each statement names each table `public.<table>`.
      So no function, operator or table that another login planted in `public`, or in a schema named for the login, resolves in those statements; a view another login made at a table's own name fails the statement rather than runs in it, and the import refuses a relation at either name that is no table; and a row-security policy on the tables fails a read rather than runs in it.
      The pin covers name lookup and those relations alone: a trigger, a rule, a default or a constraint that the tables' owner attaches still runs as whoever writes.
-     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter.
+     It is set in each transaction because a PgBouncer pool in transaction mode refuses `search_path` as a startup parameter and gives a server connection, with the session settings another client left on it, to the next client.
+     When the server refuses the opening, refuses a statement with SQLSTATE `25006` or `42501`, or ends the connection before the client sent `COMMIT`, the client closes the connection with no `ROLLBACK`, so that the pool closes that server connection too, opens a new connection and runs the whole transaction again, at most 3 times; it runs nothing again once it sent `COMMIT`.
+     A write under a read-only default of the login or the database (`default_transaction_read_only = on`) refuses and writes nothing.
 
 4. **Copy every tree again.**
    Each run must print only `copied before` or `recorded no session` for its tree's claims, and its `missing` lines may name only claims step 5 is to clear: one whose volume was gone before step 3 (the cleared controller's, or a claim of a tree closed earlier), or a `failed` you cannot fix.
    A `refused` here means a writer was still running: the session grew on its volume after step 3 copied it, and the import never overwrites a row it already holds, so it refuses the file it now finds.
    Going on would resume the agent from the older row and lose every turn after it.
-   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction pinned as the import's own are, `BEGIN; SET LOCAL search_path = pg_catalog, pg_temp; SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'; DELETE FROM public.omp_session_files_parts WHERE path = '<path>'; DELETE FROM public.omp_session_files WHERE path = '<path>'; COMMIT;`, and copy again.
+   Go back to step 1 instead: scale the earlier daemon back up, suspend whatever runs, save the list again, and scale it to 0 at once (step 2); then delete that row and its parts in one transaction opened as the import's own are, on one `psql` connection: `-c` with the text of `OpenWrite` (`packages/daemon/internal/ompsessions/open.go`) as it stands, then `-c "DELETE FROM public.omp_session_files_parts WHERE path = '<path>'"`, `-c "DELETE FROM public.omp_session_files WHERE path = '<path>'"` and `-c COMMIT`, and copy again.
    Nothing writes a row under SQL storage before the switch, so in this runbook a `refused` has no other cause.
 
 5. **Roll out the new daemon, then clear only sessions the import reported missing.**
@@ -2810,6 +2816,54 @@ Only the daemon's own writes queue one.
 After an operator changes an issue's phase, tree or wait, a slot or a claim by SQL, `PUT` the project's Legion setting with its same URL: the `PUT` calls for a whole read of the daemon, which [The Legion state intake](../packages/envoy/cmd/dispatch/README.md#the-legion-state-intake) says when Dispatch makes.
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
 Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
+
+#### Rolling back the release that releases a left session's claim
+
+This release releases the Dispatch claim of each session that the daemon leaves behind (dispatch://INFRA-3144).
+Each claim write that moves a claim off a session it recorded queues a `claim_release` row whose payload names that session, `{"session": "<session>"}` (store's `putClaim`).
+The row of a move out of the workflow and the row of the boot pass carry no session, as before (`{}`).
+Its migration `20261127193428_claim_left` adds `issues.claim_left`, null on every issue it finds: why the newest claim release that judged the issue's Dispatch holder left that holder's claim.
+`GET /legion/v1/state`, `GET /legion/v1/issues/{key}/record` and the `legion` tool's `read_record` serve it as `claimLeft` (daemon API contract entry 20261127202231, claim-left).
+
+The release before this one decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`).
+It refuses a `claim_release` row that carries `session` at every attempt, and that row retries for ever on its issue's claim lane.
+A daemon of this release reads `issues.claim_left` in every read of a record (record's `issueColumns`).
+`issues` and `outbox` hold the rows of every project that shares the database.
+So a rollback runs the way back while no daemon of the database runs:
+
+1. Stop every daemon of the database, for every project.
+   A daemon of this release that still runs fails every read of a record once the column is dropped.
+   It can also queue a new row that carries `session` after the delete.
+
+2. Run the way back in one `psql` session.
+   It is the last paragraph of the header of `20261127193428_claim_left.up.sql`:
+
+   ```sh
+   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+   begin;
+   delete from outbox where kind = 'claim_release' and payload ? 'session';
+   alter table issues drop column if exists claim_left;
+   delete from schema_version where version = 20261127193428;
+   commit;
+   SQL
+   ```
+
+3. Start the release before.
+
+The delete is owed to the release before.
+It deletes each `claim_release` row that carries `session`, and keeps each row that carries none, which the release before runs as it always did.
+The drop of the column and the delete of the version row go together.
+The release before needs neither, since it never names the column.
+The delete of the version row makes the version that the store reports, its highest recorded row, the version of the release before again.
+At the roll-forward, the store finds no row of this version and runs the migration again, which adds the column again, null on every issue.
+
+The rollback loses two things:
+
+- The Dispatch claims that the deleted rows were to release.
+  They stay in Dispatch, and the controller releases them by hand, as it did before this release.
+
+- The `claimLeft` entries.
+  The release before serves no `claimLeft`, and after the roll-forward no issue has an entry until a release leaves a claim again.
 
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
@@ -4181,6 +4235,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
 `20261126001514_pod_release_give_ups.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its table in place and the release before names it in no statement (the migration's header).
 #4194's release still adds one statement to such a rollback, which changes no schema version: it strips the `wakeDetail` key from each queued start, which the earlier release refuses, after #4194's daemon stops and before the earlier image starts ([Rolling back idle release](#rolling-back-idle-release)).
@@ -4309,6 +4364,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
@@ -6267,8 +6323,8 @@ When the wait ends, the kills that the watch named no process for have one `kill
   the launcher's stop, which sends SIGKILL to a role's `role-init` at the end of the stop grace, and the kernel then to every process of the role's namespace (`endGeneration`, `packages/daemon/internal/launcher/process.go`);
   the Claude bridge's stop, which sends SIGKILL to Claude Code its grace after its SIGTERM (`end`, `packages/daemon/internal/claudebridge/bridge.go`);
   and any `exec.CommandContext` of Legion's, whose default `Cancel` sends SIGKILL when its context ends (`Process.Kill`), and whose `WaitDelay` sends SIGKILL to a process that a `Cancel` of its own asked to stop with SIGTERM and that has not exited by then.
-  The default `Cancel` sends it to `legion gh`'s reads of `gh` and `git` at their timeout, in a role's tree (`readGhHelp` in `packages/daemon/cmd/legion/gh.go`, `gitLines` in `packages/daemon/cmd/legion/gh_selectors.go`);
-  to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
+  `procgroup` stops the group when the context of a `legion gh` help, configuration or remote read ends (`ReadHelp` and `gitLines` in `packages/daemon/internal/ghroute/`, and `ghRepoGitConfigRefusal` in `packages/daemon/cmd/legion/gh_gitconfig.go`).
+  The default `Cancel` sends SIGKILL to the shim's agent-secrets `keygen` at its timeout, and to that `keygen` and the secrets renewer at the end of the shim's loop, which every exit of the shim brings (`identity` and `startRenewer`, `packages/daemon/internal/shim/agentsecrets.go`);
   and to the launcher's test-database script at its bound (`runTestPG` and `CheckTestPostgres`, `packages/daemon/internal/launcher/testpg.go`).
   `WaitDelay` sends it to the CodeGraph warm-up's `codegraph` (`runCodegraph`, `packages/daemon/internal/workspace/codegraph.go`) once the shim has stopped the warm-up, which it does while its agent still runs: that process is a direct child of the shim, so a session process, and it is named with the `kernel-protected` cause with no departure to set it aside.
   The CodeGraph warm-up's memory cap sends it to the build's whole process group at its first read above the cap (`watchCodegraphMemory`, `packages/daemon/internal/workspace/codegraph.go`), which does not depend on the guard and so runs in a microVM pod too: the build's leader is a direct child of the shim, so its kill is named with the `kernel-protected` cause, as `WaitDelay`'s is.
@@ -11530,20 +11586,21 @@ An issued token carries these claims and no others:
 - `machine` — the machine a person signed in on acted through, the Google account its actor token named.
   Every other kind of subject token carries none.
 
-- `project_scope` — `named`, `person`, `none`, `public` or `results`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of `named`, `person` or `none`: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
+- `project_scope` — `named`, `person`, `none`, `public`, `results` or `consented`, which says what `projects` means, or, for a token whose trade asked for the scope `read`, the narrowed word of `named`, `person` or `none`: `read-named`, `read-person` or `read-none`, whose `projects` mean what the word without `read-` means.
   Only a read entry's token carries `none`, and that token writes nothing.
   A token carrying a narrowed word writes nothing either.
   Only a job's token carries `public`: it reaches every public project, which no list names, and the private projects `projects` lists.
   Only a result entry's token carries `results`, and that token writes only the results of its project's spec checks.
+  Only a token traded from a Dispatch sign-in, a device login its person approved for Dispatch with the scopes they ticked, carries `consented`: its `projects` mean what a `person` token's do, it holds the scopes its person approved and no others, and no trade narrows it to `read`.
 
-- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one; for a `results` token, the one project key its result entry names, whose results alone it may write.
-  A `person` token whose trade named none, a machine's token that names a service and no person, and a read entry's `none` token carry none.
+- `projects` — the token's list of projects: for a `named` token, the one project key its operator's entry names, or none for a `BROKER_EXCHANGE_ACCOUNTS` entry that names none (`<account>==<person>`, the shared public-session account's, and `<account>==`, an entry naming no person either); for a `person` or `consented` token, the keys its trade asked for in the `projects` form parameter, each one Dispatch said the token's person may see; for a job's token, its job entry's whole list, whatever its trade named: the one project of a `named` token, or the 0 to 16 private projects of a `public` one; for a `results` token, the one project key its result entry names, whose results alone it may write.
+  A `person` or `consented` token whose trade named none, a machine's token that names a service and no person, and a read entry's `none` token carry none.
 
 - `project` — for a `named` token naming one project, that project again, under the name a broker before the list stored it by.
   No reader of this release reads it and introspection never answers it: it is there so an older broker replica answering introspection beside this one answers `"project":"<key>"`, which this release's readers refuse, rather than a named token naming no project.
   Every other token carries none.
 
-- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, `results` for a result entry's token, which holds no other scope, and `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`.
+- `scope` — the OAuth scope the token holds, RFC 7662's `scope` member: `read` for a read entry's token and for a token whose trade asked for `read`, `read person` for such a token that carries `read-person` and names a person, `results` for a result entry's token, which holds no other scope, `legion-status` for the token of a `BROKER_EXCHANGE_ACCOUNTS` entry whose fixed session is `legion-daemon:<its own project>`, a Legion daemon's own entry, whose trade did not ask for `read`, and for a `consented` token the scopes its person approved, sorted: `person`, `p0`, both or neither.
   Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
   Every other token carries none, whatever session it carries.
 
@@ -11554,7 +11611,9 @@ An issued token carries these claims and no others:
 
 - `credential_id` — the launcher credential the exchange minted for a machine presenting its Google identity token, which that machine enrols its session under.
   That credential names the machine's fleet and no person, whatever the fleet's entry says, so the sessions it enrols read the secrets that service owns and no person's.
-  Every other kind of subject token carries none.
+  A token traded from a person's own Google identity token, a person's sign-in on a machine, carries the launcher credential that sign-in holds, keyed by the person, the machine's account and the box key (`exchange.PersonSubject`): an ordinary trade mints, moves or extends that credential and names it (`personCredential`), and a read trade names the one the sign-in already holds and mints, moves and extends none (`signInCredential`).
+  A token traded from a machine login's own access token carries that login's credential, which the subject token's session names, and for a `consented` token, a Dispatch sign-in's, introspection answers it as the member `sign_in`: a verifier builds the token's principal from it and the person, `consented:<person>:<sign-in>` (`oauthwire.ConsentedPrincipal`), and refuses a `consented` answer that names none.
+  Every other kind of subject token carries none, and introspection answers `sign_in` for no other token.
 
 The subject token's own kind decides those claims (`packages/envoy/internal/cipher/exchange/exchange.go`).
 A pod's token needs an entry for its service account, which gives the person and the project, or no project for an entry that names none (`<service account>==<person>`), and may fix the session, and Kubernetes must have bound that token to a pod (`Set.Pod`).
@@ -11679,7 +11738,7 @@ Dispatch still refuses such a token a write to a target that resolves to no proj
 A `person` token's list of projects limits no Dispatch write at this release, and neither do the private projects of a job's `public` token.
 Dispatch refuses every write of a token that names a service and no person `403 SIGN_IN_REQUIRED`, unless its project scope is `named` or `public`: a job's token writes under its session, for its service and under no person, and a machine's `person` token, which no person signed in for, writes nothing.
 It serves a read-only token, one that holds `read`, on the reads of its read class (each route's `Read`, in its file under `packages/envoy/internal/dispatch/api`), and answers it `403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`.
-It answers a read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but `GET /api/v1/whoami`, since it serves no read at a past time yet.
+It answers a read-only token that carries a cut as of that cut on each route that answers `as_of`, names the cut on `GET /api/v1/whoami`, and answers it `403 AS_OF_TOKEN_NOT_SERVED` on every other read and on `GET /ws/live`.
 The Envoy listener answers every read-only token `401`, because a verifier accepts one only where its service asks for it (`ciphertoken.Options.ServesReadOnly`), and the listener does not ask.
 It serves a result entry's token on the routes whose declaration states `ResultsScope` (`routeDecl.ResultsScope`, in each route's file under `packages/envoy/internal/dispatch/api`), today `POST /api/v1/projects/{key}/results` alone, and answers it `403 RESULTS_ONLY_TOKEN` on every other route and on `GET /ws/live`.
 The Envoy listener answers a result entry's token `401`, because its verifier does not ask for it (`ciphertoken.Options.ServesResults`).

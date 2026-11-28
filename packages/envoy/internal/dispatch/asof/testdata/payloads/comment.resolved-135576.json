@@ -1,0 +1,49 @@
+{
+  "id": 135576,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 76,
+  "type": "comment.resolved",
+  "actor": {
+    "kind": "user",
+    "id": "alice@example.com"
+  },
+  "notify": true,
+  "created_at": "2026-10-31T20:14:44.219027Z",
+  "payload": {
+    "id": "27823781-9c75-47fa-ad54-5fa947bf2932",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+      "mark_id": "lorem ipsum dolo",
+      "version": 2,
+      "block_id": "7e4581a5-c20b-4279-8e61-c72292941924",
+      "orphaned": false,
+      "artifact_id": "6bad9973-28a7-415c-ae94-42b61a64d9fe"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": true,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-31T20:14:26.216763Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": "2026-10-31T20:14:44.219027Z",
+    "resolved_by": {
+      "id": "alice@example.com",
+      "kind": "user"
+    },
+    "artifact_name": "lorem ipsum dolor sit ",
+    "suppress_route": false
+  }
+}

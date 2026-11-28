@@ -92,13 +92,15 @@
 # line reads `<job>: skipped (...)` among the jobs that ran, and the pass line says every job
 # changes selected succeeded, so a reader of a green ci-ok could take it for a job that passed.
 # So after the verdict, pass or fail, each such job gets a line of its own, `not run at this head:
-# <job> (selected by paths, held back on a pull request; the merge queue runs it before the change
-# lands, and lane:<output> runs it here only for a need the pull request names)`, naming the job's
-# own `changes` output, and the job summary lists those lines apart from the jobs that ran and
-# passed. No job runs in part: each runs all its steps wherever it runs, or its own output skips
-# it, so a success is the whole job's. A run that held nothing back writes no summary: only a
-# pull request can hold a job back, so ci-ok-report.sh's merge-group calls, inside other jobs,
-# never write one.
+# <job> (selected by paths, held back on a pull request; the merge queue runs the suites its own
+# generator selects against its own base, which may be fewer than this head's selection, and
+# lane:<output> runs it here only for a need the pull request names)`, naming the job's
+# own `changes` output, the job summary lists those lines apart from the jobs that ran and passed,
+# and one notice annotation carries them all, which GitHub shows on the pull request's checks, so
+# the pull request's page says what a green ci-ok did not run. No job runs in part: each runs all
+# its steps wherever it runs, or its own output skips it, so a success is the whole job's. A run
+# that held nothing back writes no summary and no notice: only a pull request can hold a job back,
+# so ci-ok-report.sh's merge-group calls, inside other jobs, never write one.
 #
 # Run from anywhere:
 #   NEEDS=... EVENT=... SELECTED_BY=... PULL_REQUEST_ONLY=... ALWAYS_RUN=... GH_TOKEN=... \
@@ -194,7 +196,7 @@ include "ci-ok";
       selection($job) as $s
       | ["info", "\($job): \($result) (\(if $s.selected then "selected" else "not selected" end): \($s.why))"],
         (select($s.gated and $result == "skipped")
-         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; the merge queue runs it before the change lands, and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
+         | ["not_run", "not run at this head: \($job) (selected by paths, held back on a pull request; \(queue_runs), and lane:\($map[$job]) runs it here only for a need the pull request names)"]),
         if $result == "absent" then
           ["error", "\($job) is absent from NEEDS, but SELECTED_BY maps it to needs.changes.outputs.\($map[$job]); the ci-ok job's toJSON(needs) and ci-ok-report.sh both give every SELECTED_BY job a result, so this is a defect of whichever of them built NEEDS"]
         elif $s.selected and $result != "success" then
@@ -244,6 +246,12 @@ if [ "${#not_run[@]}" -gt 0 ] && [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     echo
     echo "**Ran and passed at this head:** $passed_text"
   } >>"$GITHUB_STEP_SUMMARY"
+fi
+# The same jobs as one notice annotation (the header says why). One annotation for all of them:
+# Actions keeps at most ten notices a step. %0A is a workflow command's newline.
+if [ "${#not_run[@]}" -gt 0 ]; then
+  notice=$(printf '%s%%0A' "${not_run[@]}")
+  echo "::notice title=ci-ok did not run every job this head's paths selected::${notice%\%0A}"
 fi
 
 if [ "${#errors[@]}" -gt 0 ]; then

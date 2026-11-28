@@ -11,6 +11,6 @@ var _ = declareRoute(routeDecl{
 	Description: "This index: every route with its method, auth, and purpose.",
 	Handler:     (*server).getRouteIndex,
 	// The other reads.
-	Read:  readEntry{Writes: readWritesNothing},
+	Read:  readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape: routeShape{Status: http.StatusOK, Response: routeIndex{}},
 })

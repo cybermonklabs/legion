@@ -9,6 +9,8 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // updateReturnBound is how long TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead lets
@@ -30,6 +32,7 @@ const updateReturnBound = jetStreamWait / 2
 // two stopped for twice jetStreamWait, past any helper that waits that wait out, so such a helper
 // returns while the group still has no leader and fails the bound by name.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
+	t.Parallel()
 	const stream = "ELECTING"
 	cluster := StartCluster(t, 5)
 	cluster.CreateStream(t, natsgo.StreamConfig{Name: stream, Subjects: []string{"electing.>"}, Replicas: 3, Storage: natsgo.FileStorage})
@@ -100,9 +103,19 @@ type deadlineRecorder struct {
 
 func (d deadlineRecorder) Deadline() (time.Time, bool) { return d.deadline, true }
 
-// An update that never lands fails the test once the test's deadline, less updateMargin, has
-// passed, and not before, naming the stream and the setting no read held.
+// givingUpIn is a deadlineRecorder of t whose shared waits give up d from now: its deadline is d
+// past now and the margin the shared wait leaves before a deadline, read from testwait.GiveUpAt, so
+// this file keeps no copy of that margin.
+func givingUpIn(t testing.TB, d time.Duration) deadlineRecorder {
+	now := time.Now()
+	end, _ := testwait.GiveUpAt(deadlineRecorder{deadline: now})
+	return deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: now.Add(d + now.Sub(end))}
+}
+
+// An update that never lands fails the test once the shared wait gives up (the test's deadline
+// less testwait's margin), and not before, naming the stream and the setting no read held.
 func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetting(t *testing.T) {
+	t.Parallel()
 	const stream, waited = "NEVER", 2 * time.Second
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
@@ -117,7 +130,7 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 	config := info.Config
 	config.MaxAge = time.Hour
 	dropped := &droppedUpdates{JetStreamContext: js}
-	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + waited)}
+	recorder := givingUpIn(t, waited)
 	began := time.Now()
 	done := make(chan struct{})
 	go func() {
@@ -127,11 +140,11 @@ func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetti
 	select {
 	case <-done:
 	case <-time.After(time.Minute):
-		t.Fatalf("UpdateStream did not give up on an update that never lands within a minute of a deadline %s away", updateMargin+waited)
+		t.Fatalf("UpdateStream did not give up on an update that never lands within a minute of its give-up %s away", waited)
 	}
 	took := time.Since(began)
 	if took < waited {
-		t.Fatalf("UpdateStream gave up after %s, before the test's deadline less %s, %s away", took.Round(time.Millisecond), updateMargin, waited)
+		t.Fatalf("UpdateStream gave up after %s, before its give-up %s away", took.Round(time.Millisecond), waited)
 	}
 	for _, want := range []string{"stream " + stream, "max_age: sent 1h0m0s, the stream holds 0s"} {
 		if !strings.Contains(recorder.message, want) {
@@ -152,6 +165,7 @@ const refusalWait = 5 * time.Second
 // longer fails on a refusal gives up on its read-back at that deadline and the row fails by name,
 // not at go test's own timeout.
 func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -172,7 +186,7 @@ func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
 	missing.Name = "MISSING"
 	missing.Subjects = []string{"missing.>"}
 	began := time.Now()
-	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(updateMargin + refusalWait)}
+	recorder := givingUpIn(t, refusalWait)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -208,14 +222,14 @@ var (
 )
 
 // resentWait is how long TestAnUpdateAnsweredWithA503IsSentAgainAndLands gives UpdateStream before
-// its recorder's deadline less updateMargin: a helper that took the 503 as a refusal fails at once,
-// and one that never sent the update again gives up on its read-back here, so the row fails by
-// name either way.
+// its recorder's give-up: a helper that took the 503 as a refusal fails at once, and one that never
+// sent the update again gives up on its read-back here, so the row fails by name either way.
 const resentWait = 10 * time.Second
 
 // An update answered with a 503, which no member applied, is sent again, one read wait later, and
 // lands; every other refusal still fails at once (TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal).
 func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -230,7 +244,7 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 	config.MaxAge = time.Hour
 	answer := leaderlessAnswer
 	leaderless := &firstUpdateAnswered{JetStreamContext: js, first: &answer}
-	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + resentWait)}
+	recorder := givingUpIn(t, resentWait)
 	var got *natsgo.StreamInfo
 	done := make(chan struct{})
 	go func() {
@@ -249,6 +263,7 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 // An update answered with a 503 that is not the leaderless one, insufficient resources (10023), is
 // a refusal: it fails the test at once with the server's answer, and is not sent again.
 func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -264,7 +279,7 @@ func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
 	answer := insufficientResources
 	refused := &firstUpdateAnswered{JetStreamContext: js, first: &answer}
 	began := time.Now()
-	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: began.Add(updateMargin + refusalWait)}
+	recorder := givingUpIn(t, refusalWait)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -283,6 +298,7 @@ func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
 // jetStreamWait; a read it answers sets the next to three times that read's own time, never under
 // firstUpdateReadWait.
 func TestUpdateStreamsReadWaitDoublesAfterALostReadAndFollowsAnAnsweredOne(t *testing.T) {
+	t.Parallel()
 	limit := &updateReadLimit{limit: firstUpdateReadWait}
 	limit.lost()
 	if limit.limit != 2*firstUpdateReadWait {
@@ -323,8 +339,8 @@ func (a answerLost) UpdateStream(cfg *natsgo.StreamConfig, opts ...natsgo.JSOpt)
 }
 
 // slowLinkWait is how long TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate gives
-// UpdateStream before its recorder's deadline less updateMargin: a read-back whose wait never grows
-// past the link's round trip reads nothing for that long and fails the row by name.
+// UpdateStream before its recorder's give-up: a read-back whose wait never grows past the link's
+// round trip reads nothing for that long and fails the row by name.
 const slowLinkWait = 40 * time.Second
 
 // Every round trip through the link takes 1.2 s, longer than UpdateStream's first read wait, and the
@@ -332,6 +348,7 @@ const slowLinkWait = 40 * time.Second
 // (updateReadLimit) finds the update. A read-back that keeps firstUpdateReadWait cuts every read
 // before its answer and gives up at slowLinkWait.
 func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	direct := Connect(t, uri)
 	t.Cleanup(direct.Close)
@@ -355,7 +372,7 @@ func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T
 	}
 	config := info.Config
 	config.MaxAge = time.Hour
-	recorder := deadlineRecorder{fatalRecorder: &fatalRecorder{TB: t}, deadline: time.Now().Add(updateMargin + slowLinkWait)}
+	recorder := givingUpIn(t, slowLinkWait)
 	var got *natsgo.StreamInfo
 	began := time.Now()
 	done := make(chan struct{})
