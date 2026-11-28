@@ -27,8 +27,8 @@ if [[ -z "$group" ]]; then
     printf 'Run one group as autodeploy_test.sh <group>, <group> one of these (--groups prints them):\n'
     printf '  %s\n' "${group_names[@]}"
     printf 'and every group, from packages/envoy, as:\n'
-    # shellcheck disable=SC2016 # printed for a shell to run, with $(...) and "$g" unexpanded
-    printf '  %s\n' '(for g in $(bash deploy/scripts/autodeploy_test.sh --groups); do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done)'
+    # shellcheck disable=SC2016 # printed for a shell to run, with $(...), $gs and "$g" unexpanded
+    printf '  %s\n' '(gs=$(bash deploy/scripts/autodeploy_test.sh --groups) || exit 1; for g in $gs; do bash deploy/scripts/autodeploy_test.sh "$g" || exit 1; done)'
   } >&2
   exit 2
 fi
@@ -61,12 +61,13 @@ real_docker=$(command -v docker || true)
 # A read through the CLI took 0.066 s of wall time at the median, the plugin straight 0.035 s, and
 # with no daemon 0.029 s: Compose asks the daemon for /_ping and /info before each command, and with
 # nothing on DOCKER_HOST that ask fails at once, which Compose's config reads do not need. So the
-# test takes the plugin the docker CLI would run, the first docker-compose in the CLI's own search
-# order, which must answer the version `docker compose` answers, and docker_direct below is a
-# `docker` that runs it straight, with that DOCKER_HOST, for `compose ...`, and the docker CLI for
-# anything else: run_deployer hands it to the fake docker as the real binary, and compose_resolves
-# calls it. Production still calls Compose through the docker CLI. A run without the plugin fails
-# here, by name: it never skips.
+# test takes the first docker-compose in the docker CLI's default plugin directories (its config
+# directory's cli-plugins, then the four system directories); it must answer the version
+# `docker compose` answers, or the fixture fails by name. docker_direct below is a `docker` that
+# runs it straight, with that DOCKER_HOST, for `compose ...`, and the docker CLI for anything else:
+# run_deployer hands it to the fake docker as the real binary, and compose_resolves calls it.
+# Production still calls Compose through the docker CLI. A run without the plugin fails here, by
+# name: it never skips.
 plugin_dirs=("${DOCKER_CONFIG:-$HOME/.docker}/cli-plugins" /usr/local/lib/docker/cli-plugins
   /usr/local/libexec/docker/cli-plugins /usr/lib/docker/cli-plugins /usr/libexec/docker/cli-plugins)
 compose_plugin=
@@ -79,7 +80,7 @@ done
 [[ -n "$compose_plugin" ]] || { printf 'autodeploy_test: no executable docker-compose in %s; this test runs the config reads on the Compose plugin straight\n' "${plugin_dirs[*]}" >&2; exit 1; }
 compose_version=$("$real_docker" compose version --short) || true
 plugin_version=$("$compose_plugin" version --short) || true
-[[ "$plugin_version" == "$compose_version" ]] || { printf 'autodeploy_test: the Compose plugin %s answers version --short with "%s", and %s compose with "%s"; this test needs the plugin docker compose runs\n' "$compose_plugin" "$plugin_version" "$real_docker" "$compose_version" >&2; exit 1; }
+[[ -n "$plugin_version" && "$plugin_version" == "$compose_version" ]] || { printf 'autodeploy_test: the Compose plugin %s answers version --short with "%s", and %s compose with "%s"; this test needs the plugin docker compose runs\n' "$compose_plugin" "$plugin_version" "$real_docker" "$compose_version" >&2; exit 1; }
 docker_direct="$root/docker-direct"
 cat >"$docker_direct" <<EOF
 #!/usr/bin/env bash

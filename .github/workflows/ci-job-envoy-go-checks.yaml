@@ -139,28 +139,29 @@ jobs:
       # autodeploy_test.sh runs one group of its cases per run, each from a fresh fixture, named
       # `deploy/scripts/autodeploy_test.sh <group>`. The whole harness took 153 to 266 s of wall
       # time as one entry in runs 46133189498 and 46133189517, and each group's cases summed 14.7
-      # to 34.2 s in run 46133189517. dev-stack's two parts stand first, then the groups longest
-      # first by those sums, so the shorter ones fill the slots around them.
+      # to 34.2 s in run 46133189517. The steps stand longest first by their walls in run
+      # 46143522022 (job 140975187870), dev-stack's two parts (45.7 and 43.8 s) and then the groups
+      # (29.5 to 4.0 s), so the shorter ones fill the slots around them.
       - name: Isolation test for dev-stack.sh, part stops (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh stops' bash scripts/dev-stack.test.sh stops
         working-directory: packages/envoy
       - name: Isolation test for dev-stack.sh, part options (fakes go/psql/curl/python3/docker; no real Postgres or network)
         run: ../../.github/scripts/harness-pool.sh start 'scripts/dev-stack.test.sh options' bash scripts/dev-stack.test.sh options
         working-directory: packages/envoy
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
-        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-1' bash deploy/scripts/autodeploy_test.sh url-refused-1
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-1' bash deploy/scripts/autodeploy_test.sh env-spellings-1
         working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-2' bash deploy/scripts/autodeploy_test.sh url-refused-2
         working-directory: packages/envoy
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
-        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-2' bash deploy/scripts/autodeploy_test.sh env-spellings-2
-        working-directory: packages/envoy
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
-        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-1' bash deploy/scripts/autodeploy_test.sh env-spellings-1
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-refused-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-refused-1' bash deploy/scripts/autodeploy_test.sh url-refused-1
         working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-writer-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-writer-2' bash deploy/scripts/autodeploy_test.sh env-writer-2
+        working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-spellings-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-spellings-2' bash deploy/scripts/autodeploy_test.sh env-spellings-2
         working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-reads (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-reads' bash deploy/scripts/autodeploy_test.sh env-reads
@@ -171,14 +172,14 @@ jobs:
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group env-writer-1 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh env-writer-1' bash deploy/scripts/autodeploy_test.sh env-writer-1
         working-directory: packages/envoy
+      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group schema-key (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
+        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh schema-key' bash deploy/scripts/autodeploy_test.sh schema-key
+        working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group rollback-2 (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh rollback-2' bash deploy/scripts/autodeploy_test.sh rollback-2
         working-directory: packages/envoy
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group url-accepted (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh url-accepted' bash deploy/scripts/autodeploy_test.sh url-accepted
-        working-directory: packages/envoy
-      - name: Rollback and credential test for deploy/scripts/autodeploy.sh, group schema-key (fakes docker/jj/curl and a libpq client; the runner's Compose plugin resolves the compose file; no Postgres)
-        run: ../../.github/scripts/harness-pool.sh start 'deploy/scripts/autodeploy_test.sh schema-key' bash deploy/scripts/autodeploy_test.sh schema-key
         working-directory: packages/envoy
       - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
         run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
