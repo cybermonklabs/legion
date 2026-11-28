@@ -830,6 +830,7 @@ then check NATS. Filing alone precedes verify-mode publication and is not an abs
 These tests run beside the others. One deadline control keeps the real timer and stays serial.
 
 `cmd/dispatch` follows the same rule for the tests of its untagged files, which envoy-go leg 3 runs, and runs 8 at once: its `TestMain` sets `-test.parallel` to `dispatchTestParallelism` when the command names none.
+The one exception is `TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce`, which calls `t.Parallel` through `dispatchSlots.parallelHoldingItsProcesses` only after its old process exits.
 A test there that starts Dispatch processes holds one process slot for each (`dispatchSlots`, at most `testlimits.MaxProcessesAtOnce`), and a parallel test that runs several at once reserves them before its first start (`dispatchSlots.reserve`).
 
 A test stays serial when it, or a helper it calls, changes something the whole test process

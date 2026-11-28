@@ -32,6 +32,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -1357,8 +1358,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 	})
 
 	stoodBy := make(chan struct{})
-	var once sync.Once
-	second := start(storetest.SecondProcess(t, database), func() { once.Do(func() { close(stoodBy) }) })
+	second := start(storetest.SecondProcess(t, database), sync.OnceFunc(func() { close(stoodBy) }))
 	testwait.Receive(t, "the second outbox to try the publisher hold and find it held", stoodBy)
 	if probe(second) || !probe(first) {
 		t.Fatalf("outbox_publisher: first %t, second %t, want only the first, which holds the publisher hold", probe(first), probe(second))
@@ -1691,54 +1691,38 @@ const (
 	postgresInvalid   postgresFirstAction = "invalid first message"
 )
 
-// slowPostgresFirstMessage decides what to do with a complete first message. Startup parameters
-// are NUL-terminated key/value pairs in no fixed order, followed by an empty key.
+// slowPostgresFirstMessage uses pgproto3 to decode a complete first message and selects the
+// proxy's action.
 func slowPostgresFirstMessage(message []byte) postgresFirstAction {
 	if len(message) < 8 || len(message) > maxPostgresFirstMessage ||
 		binary.BigEndian.Uint32(message[:4]) != uint32(len(message)) {
 		return postgresInvalid
 	}
-	switch binary.BigEndian.Uint32(message[4:8]) {
-	case 80877102: // CancelRequest carries no startup parameters.
-		return postgresForward
-	case 80877103: // SSLRequest precedes startup and can hide its parameters.
-		return postgresRejectSSL
-	case 196608: // Protocol 3.0.
-		params := message[8:]
-		delay := false
-		for len(params) > 0 {
-			if params[0] == 0 {
-				if len(params) != 1 {
-					return postgresInvalid
-				}
-				if delay {
-					return postgresDelay
-				}
-				return postgresForward
-			}
-			key, rest, ok := bytes.Cut(params, []byte{0})
-			if !ok {
-				return postgresInvalid
-			}
-			value, rest, ok := bytes.Cut(rest, []byte{0})
-			if !ok {
-				return postgresInvalid
-			}
-			if string(key) == "application_name" {
-				delay = string(value) == "dispatch-health"
-			}
-			params = rest
-		}
+	startup, err := pgproto3.NewBackend(bytes.NewReader(message), nil).ReceiveStartupMessage()
+	if err != nil {
+		return postgresInvalid
 	}
-	return postgresInvalid
+	switch startup := startup.(type) {
+	case *pgproto3.StartupMessage:
+		if startup.Parameters["application_name"] == "dispatch-health" {
+			return postgresDelay
+		}
+		return postgresForward
+	case *pgproto3.SSLRequest:
+		return postgresRejectSSL
+	case *pgproto3.CancelRequest:
+		return postgresForward
+	default:
+		return postgresInvalid
+	}
 }
 
-// The slow proxy's reader answers each first message pgx v5.13.0 (go.mod) writes as the proxy
-// needs: a startup message naming the health pool is delayed, one naming any other pool is
-// forwarded, an SSLRequest is the failure the boot probe row names, and a CancelRequest is
-// forwarded undelayed. Each fixture was captured from the real driver through a recording proxy
-// (INFRA-6336's plan, "The fixtures of the slow proxy"); the shared pool's startup message is the
-// health one with dispatch-health written as dispatch and its length field rewritten to match.
+// The slow proxy delays a startup message naming the health pool and forwards startup messages
+// from other applications. It rejects SSLRequest and forwards CancelRequest without a delay.
+// The fixtures come from pgx v5.13.0 through a recording proxy (INFRA-6336's plan, "The fixtures of
+// the slow proxy"). The other application's message is the health message with dispatch-health
+// replaced by dispatch and its length field rewritten. Dispatch's shared pool sets no
+// application_name of its own.
 func TestTheSlowPostgresProxyReadsEachFirstMessagePgxWrites(t *testing.T) {
 	t.Parallel()
 	for _, tt := range []struct {
@@ -1746,7 +1730,7 @@ func TestTheSlowPostgresProxyReadsEachFirstMessagePgxWrites(t *testing.T) {
 		want       postgresFirstAction
 	}{
 		{"health startup", "00000050000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463682d6865616c74680075736572006c6567696f6e5f746573740000", postgresDelay},
-		{"shared startup", "00000049000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463680075736572006c6567696f6e5f746573740000", postgresForward},
+		{"another application's startup", "00000049000300006461746162617365006c6567696f6e5f74657374006170706c69636174696f6e5f6e616d650064697370617463680075736572006c6567696f6e5f746573740000", postgresForward},
 		{"SSLRequest", "0000000804d2162f", postgresRejectSSL},
 		{"CancelRequest", "0000001004d2162e000044ddd66b8be0", postgresForward},
 	} {

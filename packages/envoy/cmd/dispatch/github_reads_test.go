@@ -43,7 +43,7 @@ const gitHubReadsSigningKey = "github-reads-signing-key"
 // negative control reads: a build without the member answers 200, ok true and no github at all.
 func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 	t.Parallel()
-	// Reserve both slots before either process starts.
+	// Two Dispatch processes at once: the one with no App runs while the App's process starts.
 	dispatchSlots.reserve(t, 2)
 	database := storetest.Open(t)
 	_, natsURL := testnats.Start(t)

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/api"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -359,7 +360,7 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 	`); err != nil {
 		t.Fatalf("backdate the pending mention attempts' creation times: %v", err)
 	}
-	t0 := time.Now()
+	createdAgedAt := time.Now()
 	testwait.Until(t, "a completed delivery sweep due at or after the creation-time update", func() (fmt.Stringer, bool) {
 		select {
 		case <-next.Exited:
@@ -371,14 +372,13 @@ func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaim
 			if strings.Contains(line, `msg="dispatch: delivery sweep failed"`) {
 				t.Fatalf("delivery sweep failed before the qualifying pass: %s", line)
 			}
-			_, attrs, ran := strings.Cut(line, `msg="dispatch duty: leased pass ran" lease=suggestion-outcomes due=`)
-			if !ran {
+			if !holdsAll(line, `msg="dispatch duty: leased pass ran"`, "lease=suggestion-outcomes") {
 				continue
 			}
-			stamp, _, _ := strings.Cut(attrs, " ")
+			stamp, _ := horizontest.Field(line, "due")
 			due, err := time.Parse(time.RFC3339Nano, stamp)
-			// The clock comparison only selects the pass. The listener's sends decide the verdict.
-			if err == nil && !due.Before(t0) {
+			// createdAgedAt only selects the pass. The listener's sends decide the verdict.
+			if err == nil && !due.Before(createdAgedAt) {
 				return next.Output, true
 			}
 		}

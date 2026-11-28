@@ -854,9 +854,8 @@ func (d *schemaDrift) report(t *testing.T) {
 // later change adds no migration to it. The store is not the fully migrated one: over a store a
 // later type migration moved, the earlier ones run again would put back the version they set.
 //
-// This test takes the second-run check from TestEveryBlockTypeIsASupertagNodeAndValidationReadsIt.
-// A parallel subtest would still hold that serial test open while the backfill template is built.
-// A parallel top-level test lets the template be built in the parallel phase.
+// A serial top-level test holds the serial phase until each subtest ends. This check runs as a
+// parallel top-level test so the backfill template can be built in the parallel phase.
 func TestASecondRunOfTheTypeMigrationsLeavesTheSameNodes(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

@@ -2382,7 +2382,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{name: "60s"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
 		},
 		"DISPATCH_TEST_OIDC_DISCOVERY_RETRY": func(t *testing.T) {
-			// name is the table row that resolveBootConfig reads in these cases.
 			const name = "DISPATCH_TEST_OIDC_DISCOVERY_RETRY"
 			t.Run("unset", func(t *testing.T) {
 				if boot := resolveWith(t, nil); boot.OIDCDiscoveryRetry != 0 {

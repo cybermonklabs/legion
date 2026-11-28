@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
+	"github.com/sjawhar/envoy/internal/dispatch/horizontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -419,11 +420,10 @@ const coverageFillTestBackoff = 100 * time.Millisecond
 func requireFirstCoverageFillRetry(t *testing.T, process *dispatchProcess) {
 	t.Helper()
 	line := process.logLines(coverageFillFailedLine)[0]
-	_, retryIn, found := strings.Cut(line, " retryIn=")
+	retryIn, found := horizontest.Field(line, "retryIn")
 	if !found {
 		t.Fatalf("the first failed fill logged no retryIn: %s", line)
 	}
-	retryIn, _, _ = strings.Cut(retryIn, " ")
 	retry, err := time.ParseDuration(retryIn)
 	if err != nil {
 		t.Fatalf("read retryIn from the first failed fill: %v\n%s", err, line)
@@ -474,8 +474,7 @@ func TestAFillPastItsTimeoutIsAFailedFill(t *testing.T) {
 	requireHealthy(t, process)
 	requireCoverageRefused(t, coverageServer{dispatchProcess: process}, "SEARCH_COVERAGE_NOT_FILLED", "")
 
-	// The timeout is proven by its line and the refusal above, both before the hold ends, and
-	// nothing below reads how long the hold lasted.
+	// The timeout is proven by its line and the refusal above, both before the hold ends.
 	endHold(t, hold)
 	process.awaitLog(t, coverageFilledLine)
 	requireCoverageIsMains(t, coverageServer{dispatchProcess: process}, database)

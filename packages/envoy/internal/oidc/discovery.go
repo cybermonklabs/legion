@@ -66,11 +66,8 @@ func WithDiscoveryRetry(d time.Duration) DiscoveryOption {
 type discovery[T any] struct {
 	issuer string
 	read   func(ctx context.Context) (T, error)
-	// retryFirst is the first background retry wait. Zero keeps discoveryRetryFirst.
-	retryFirst time.Duration
-	// retrySpacing is the minimum time after a failed read before another can start.
-	// Zero keeps discoveryRetrySpacing.
-	retrySpacing time.Duration
+	// retry overrides both retry waits. Zero keeps discoveryRetryFirst and discoveryRetrySpacing.
+	retry time.Duration
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
 	now    func() time.Time
 	flight singleflight.Group
@@ -88,7 +85,7 @@ func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error
 	d := &discovery[T]{issuer: issuer, read: read, now: time.Now}
 	for _, opt := range opts {
 		if opt.retry > 0 {
-			d.retryFirst, d.retrySpacing = opt.retry, opt.retry
+			d.retry = opt.retry
 		}
 	}
 	return d
@@ -147,19 +144,19 @@ func (d *discovery[T]) settled() (value T, err error, settled bool) {
 	if d.discovered {
 		return d.value, nil, true
 	}
-	if d.failure != nil && d.now().Sub(d.failedAt) < cmp.Or(d.retrySpacing, discoveryRetrySpacing) {
+	if d.failure != nil && d.now().Sub(d.failedAt) < cmp.Or(d.retry, discoveryRetrySpacing) {
 		return value, d.failure, true
 	}
 	return value, nil, false
 }
 
 // run discovers the issuer from the process's start, so the first request that needs it does not
-// wait for the read. It attempts at once, then waits retryFirst (discoveryRetryFirst by default).
+// wait for the read. It attempts at once, then waits discoveryRetryFirst unless retry overrides it.
 // The wait doubles after each failure up to discoveryRetryMax. It logs a failure at ERROR at most
 // once per discoveryLogInterval, and the success once. It returns once the issuer is discovered
 // or ctx ends.
 func (d *discovery[T]) run(ctx context.Context) {
-	wait := cmp.Or(d.retryFirst, discoveryRetryFirst)
+	wait := cmp.Or(d.retry, discoveryRetryFirst)
 	for {
 		if _, err := d.discover(ctx); err == nil {
 			slog.Info("oidc: discovered the issuer", "issuer", redact.URL(d.issuer))

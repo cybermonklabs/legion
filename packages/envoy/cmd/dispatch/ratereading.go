@@ -30,11 +30,12 @@ const rateReadingCaller = "rate_reading"
 // installation's permissions as the list named them, the used count, the limit and the reset of
 // its REST core counter and its GraphQL counter, and this process's own calls on each since its
 // last reset by caller kind (client.OwnCalls). The first pass runs at once and each next one at
-// githubrate.Next of the resets of every listed installation that the reading knows and has not
-// yet tried in their last minute: a pass that ends inside a counter's last minute it read the
-// installation outside of is followed by one at once, and a reset the reading tried in its last
-// minute asks for nothing more, whatever its header drifts to. A pass that fails to read a counter
-// keeps the reset read before it. Each installation's line says before_reset when it was written in
+// the time githubrate.NextWithin selects using the beforeReset lead (githubrate.BeforeReset in a
+// deployment) and the known resets of listed installations not yet tried in their last minute.
+// If a pass ends in a counter's last minute but read the installation before that minute, the next
+// pass runs at once. A reset the reading tried in its last minute asks for nothing more, whatever
+// its header drifts to. A pass that fails to read a counter keeps the reset read before it.
+// Each installation's line says before_reset when it was written in
 // the last minute before one of that installation's known resets, whether the pass was regular or
 // scheduled before a reset, and whether the reading succeeded or failed: a failed reading there is
 // a before_reset line carrying its error. It runs until ctx ends.
@@ -126,19 +127,16 @@ func newRateReading(client *githubapp.Client, log *slog.Logger, process string, 
 	}
 }
 
-// run reads a pass at once and each next one when githubrate.NextWithin says it is due, until ctx ends.
+// run reads a pass at once, then uses githubrate.NextWithin with r.beforeReset to schedule each
+// next pass until ctx ends.
 func (r *rateReading) run(ctx context.Context) {
 	ctx = githubrate.WithCaller(ctx, rateReadingCaller)
 	for {
 		resets := r.pass(ctx)
 		now := r.clock.Now()
 		at, _ := githubrate.NextWithin(now, resets, r.beforeReset)
-		timer := r.clock.NewTimer(at.Sub(now))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
+		if r.clock.Sleep(ctx, at.Sub(now)) != nil {
 			return
-		case <-timer.C():
 		}
 	}
 }
@@ -153,7 +151,7 @@ type repositoryName struct {
 
 // pass reads every installation the App lists now and logs a line for each, and returns the
 // resets of the installations listed that are ahead and not yet tried in their last minute, for
-// githubrate.Next. It reads the installations with such a reset in its last minute first, so the
+// githubrate.NextWithin. It reads the installations with such a reset in its last minute first, so the
 // reading that must land before a reset is not kept behind the rest, and still reads every one. A
 // reading that fails logs its line with the error instead of the counters, so a pass logs as many
 // lines as the list held, and keeps the resets read before of every counter it did not read. A

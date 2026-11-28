@@ -371,13 +371,13 @@ func (p *dispatchProcess) waitForLog(t *testing.T, within time.Duration, parts .
 func (p *dispatchProcess) awaitLog(t *testing.T, parts ...string) {
 	t.Helper()
 	testwait.Until(t, fmt.Sprintf("Dispatch to log a line holding %q", parts), func() (*cmdtest.LockedBuffer, bool) {
-		if len(p.logLines(parts...)) != 0 {
+		if p.logged(parts...) {
 			return nil, true
 		}
 		select {
 		case <-p.Exited:
 			// Exited closes only once the output is whole, so this read is final.
-			if len(p.logLines(parts...)) != 0 {
+			if p.logged(parts...) {
 				return nil, true
 			}
 			t.Fatalf("Dispatch exited (%s) before logging a line holding %q:\n%s", p.Cmd.ProcessState, parts, p.Output.String())

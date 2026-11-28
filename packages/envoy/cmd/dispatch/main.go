@@ -218,8 +218,8 @@ type bootConfig struct {
 	// hooks, sets it, so a test sees a fill reach its timeout without waiting a deployment's out.
 	CoverageFillTimeout time.Duration
 	// CoverageFillBackoff replaces embedqueue's initial 10 s retry bound so a test can see a
-	// failed fill retried promptly. Zero keeps the default. Only DISPATCH_TEST_COVERAGE_FILL_BACKOFF
-	// under the test hooks sets it.
+	// failed fill retried promptly. Zero keeps the default. Only DISPATCH_TEST_COVERAGE_FILL_BACKOFF,
+	// under the test hooks, sets it.
 	CoverageFillBackoff time.Duration
 	// CoverageStatementTimeout bounds the search coverage route's statement in place of
 	// embedqueue's 10 s, zero for that; only DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT, under the
@@ -237,8 +237,8 @@ type bootConfig struct {
 	// searchFillTableLockTimeoutFloor.
 	SearchFillLockTimeout time.Duration
 	// SearchFillStandbyRetry replaces the keyword fill's interval between tries for its hold.
-	// Zero keeps the default of 10 s. Only DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY under the
-	// test hooks sets it, so an end-to-end test can watch for an unexpected fill over several retries.
+	// Zero keeps the default of 10 s. Only DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY, under the
+	// test hooks, sets it, so an end-to-end test can watch for an unexpected fill over several retries.
 	SearchFillStandbyRetry time.Duration
 	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
@@ -247,11 +247,12 @@ type bootConfig struct {
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
 	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
-	// Zero keeps githubrate.BeforeReset. Only the test hooks can set it.
+	// Zero keeps githubrate.BeforeReset; only DISPATCH_TEST_RATE_READING_BEFORE_RESET, under the
+	// test hooks, sets it.
 	RateReadingBeforeReset time.Duration
 	// OIDCDiscoveryRetry replaces the first background wait and the spacing between failed
 	// discovery attempts for both issuers. Zero keeps the production defaults. Only
-	// DISPATCH_TEST_OIDC_DISCOVERY_RETRY under the test hooks sets it.
+	// DISPATCH_TEST_OIDC_DISCOVERY_RETRY, under the test hooks, sets it.
 	OIDCDiscoveryRetry time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under

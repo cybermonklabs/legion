@@ -457,13 +457,15 @@ func TestNextReadsInTheLastMinuteBeforeAReset(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var at time.Time
 			var beforeReset bool
+			function := "Next"
 			if tc.lead == 0 {
 				at, beforeReset = Next(now, tc.resets)
 			} else {
+				function = "NextWithin"
 				at, beforeReset = NextWithin(now, tc.resets, tc.lead)
 			}
 			if !at.Equal(tc.at) || beforeReset != tc.beforeReset {
-				t.Fatalf("Next = %v, %v; want %v, %v", at, beforeReset, tc.at, tc.beforeReset)
+				t.Fatalf("%s = %v, %v; want %v, %v", function, at, beforeReset, tc.at, tc.beforeReset)
 			}
 		})
 	}

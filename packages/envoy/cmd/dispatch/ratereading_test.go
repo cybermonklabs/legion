@@ -1430,13 +1430,14 @@ func TestTheServersRateReadingCountsEachCallerUnderItsKind(t *testing.T) {
 		return "", info.AckFloor.Consumer > 0
 	})
 	process.WaitForOutput(t, `msg="dispatch delivery: read the jobs of a running deploy run; its end reads them again" repo=acme/deploy run_id=9001`)
-	// The two API calls have already returned. The three startup callers record their
-	// attempts after their passes finish, whether GitHub answered them successfully or not.
+	// The two API calls have already returned. The architecture import and the delivery
+	// reconcile tick at start and the CI reconcile one second later; each records its
+	// attempt after its pass ends, whether GitHub answered it or not.
 	attempts := store.NewGitHubReadAttempts(database.Pool)
-	testwait.Until(t, "the three startup callers to finish their GitHub reads", func() ([]githubreads.Recorded, bool) {
+	testwait.Until(t, "the architecture import, the delivery reconcile and the CI reconcile to finish their GitHub reads", func() ([]githubreads.Recorded, bool) {
 		rows, err := attempts.All(t.Context())
 		if err != nil {
-			t.Fatalf("read the startup callers' GitHub attempts: %v", err)
+			t.Fatalf("read the import and reconciles' GitHub attempts: %v", err)
 		}
 		for _, read := range []githubreads.Read{githubreads.ArchitectureImport, githubreads.DeliveryReconcile, githubreads.CIReconcile} {
 			if !slices.ContainsFunc(rows, func(row githubreads.Recorded) bool { return row.Read == read }) {
