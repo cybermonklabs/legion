@@ -39,7 +39,8 @@ const (
 const listenerStateOpenSends = 3
 
 // errListenerStateRefused marks a listener whose NATS user may not use the listener state
-// bucket: no retry opens it until the grant changes. It wraps the server's own violation.
+// bucket: nothing opens it again, and the pod stays without a lease until it restarts
+// (openDeliveryLease). It wraps the server's own violation.
 var errListenerStateRefused = errors.New("NATS refused KV bucket " + bus.ListenerStateBucket +
 	": the listener's NATS user lacks the grant for KV bucket " + bus.ListenerStateBucket +
 	" (" + listenerGrant + ")")
@@ -85,9 +86,9 @@ func openListenerState(ctx context.Context, conn *nats.Conn, replicas int, wait 
 
 // ensureAgedBucket is the create and the raise of one bucket's open (openListenerState): it
 // creates bucket at replicas with file storage, age as its MaxAge and one value per key when it
-// does not exist, and raises a found bucket that keeps its keys for a shorter age
-// to age (bus.RaiseMaxAge), under ctx and over js, the caller's. It returns the create's or the
-// raise's error as it came, which the caller wraps or reads for a refusal.
+// does not exist, and raises a found bucket that keeps its keys for a shorter age to age
+// (bus.RaiseMaxAge), under ctx and over js, the caller's. It returns the create's or the raise's
+// error as it came, which the caller wraps or reads for a refusal.
 func ensureAgedBucket(ctx context.Context, conn *nats.Conn, js nats.JetStreamContext, bucket string, replicas int, age time.Duration) (bus.KeyValue, error) {
 	kv, err := bus.EnsureKeyValue(ctx, conn, js, &nats.KeyValueConfig{
 		Bucket:   bucket,

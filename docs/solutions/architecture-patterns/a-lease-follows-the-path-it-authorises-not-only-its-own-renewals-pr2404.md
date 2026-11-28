@@ -38,8 +38,8 @@ related_issues:
 - The tester measured 602 s before a standby delivered when only the holder's receive
   connection was cut: the lease renewed on its own connection until self-health killed the pod.
   Commit 580089b5 added `leaseReceiveLost` (3 s) and `releaseReceiveLost` and gated `poll` on
-  the same signal (`packages/envoy/cmd/listener/lease.go`). Its row
-  `TestTwoPodsReceiveConnectionLostHandsOverWithin15s` failed first. Afterwards the standby took
+  the same signal (`packages/envoy/cmd/listener/lease.go`). Its two-pod row, which cuts the
+  holder's receive connection alone, failed first. Afterwards the standby took
   the lease 6.16 s after the cut and delivered 289 messages in order, the first at 12.1 s.
 - The 3 s bound sits above a measured reconnect that came back 1.008 s after detection
   (`TestTwoPodsReceiveConnectionBackInsideTheBoundKeepsTheLease`). It sits inside the 15 s

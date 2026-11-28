@@ -964,8 +964,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	if message.cancelled() {
 		// The receiver cut this message's handling short on a shutdown: no wait to start and no
 		// report to make, but a retry for whichever pod holds the lease next. The attempt taken
-		// above is given up, so the pod that takes the lease decides the message rather than
-		// skipping it as one already on its way.
+		// above is given up.
 		cfg.logger.DeliveryLog(slog.LevelWarn, "listener agent delivery cancelled at shutdown", sessionID, item.Topic, item.EventID, "retry")
 		cfg.attemptCache.Clear(item.DedupeKey, sessionID)
 		cfg.messagesNAKed.Inc()

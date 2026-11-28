@@ -137,9 +137,9 @@ const (
 
 // listenerLeaseUnavailable is what /healthz says about a listener whose NATS user may not use the
 // listener state bucket. It then delivers without a lease, as the machine's one deliverer,
-// receiving only while no other subscriber holds the durable. It says this of an edge listener
-// for as long as that listener runs: the edge's grant never holds the bucket (natsgrant.Edge), so
-// it opens no lease.
+// receiving only while no other subscriber holds the durable, and says this for as long as it
+// runs: a listener whose grant refuses the bucket opens no lease and tries none again until it
+// restarts, and an edge listener's grant never holds the bucket (natsgrant.Edge).
 const listenerLeaseUnavailable = "unavailable: missing NATS grant for KV bucket " + bus.ListenerStateBucket
 
 // receiveConfig carries the receive loop's timing, so a test of this package shortens it;
@@ -489,8 +489,8 @@ func (r *durableReceiver) run(ctx context.Context) {
 }
 
 // serveTerm serves one term of the lease, under a context that ends when the term does (the lease
-// is lost, or taken again as a new term) or ctx does: the term of a subscription it starts
-// (serve). It reports whether the durable was refused.
+// is lost, or taken again as a new term) or ctx does (serve). It reports whether the durable was
+// refused.
 func (r *durableReceiver) serveTerm(ctx context.Context, status leaseStatus) bool {
 	l := r.lease
 	termCtx, cancel := context.WithCancel(ctx)

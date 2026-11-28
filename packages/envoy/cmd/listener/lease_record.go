@@ -20,12 +20,14 @@ import (
 // messages or a push binding, so that a binding it finds is not a pre-lease build's and its term
 // must settle (leaseAcquisition). stale_binding is set by a holder that subscribed while the
 // durable was push-bound by a binding it did not wait out (an expired holder's lingering
-// connection), cleared by one that finds the durable not push-bound before it subscribes. Every
-// other write carries it on. unsettled is set from the acquiring write of a term that must settle
-// until that term's settle hold ends, and a release keeps it as it stands, so a holder stopped
-// mid-hold hands the duty on; a graceful stop that hands messages back sets it before its release
-// (Unsettle), so a release after one always carries it, and the release of a term whose validity
-// had run out sets it too (Release).
+// connection), and by the release of a holder whose receive connection is down, whose
+// subscription can still be bound at the server (lease.releaseReceiveLost); it is cleared by a
+// holder that finds the durable not push-bound before it subscribes. Every other write carries it
+// on. unsettled is set from the acquiring write of a term that must settle until that term's
+// settle hold ends, and a release keeps it as it stands, so a holder stopped mid-hold hands the
+// duty on; a graceful stop that hands messages back sets it before its release (Unsettle), so a
+// release after one always carries it, and the release of a term whose validity had run out sets
+// it too (Release), as does the release for a receive connection that is down.
 type leaseFields struct {
 	Holder         string    `json:"holder"`
 	Boot           string    `json:"boot"`

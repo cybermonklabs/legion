@@ -141,9 +141,9 @@ type lease struct {
 	now      func() time.Time
 	logger   *logging.Logger
 	changes  chan struct{}
-	// renewals asks the running loop to give the lease up now rather than at its next turn
+	// giveUps asks the running loop to give the lease up now rather than at its next turn
 	// (GiveUp).
-	renewals chan struct{}
+	giveUps chan struct{}
 
 	// The loop's own state, read and written only by step (and by Release once the loop ended):
 	// the revision a standby is timing and when it first saw it, whether the holder's lapse has
@@ -195,7 +195,7 @@ func newLease(kv bus.KeyValue, machineID, instance string, cfg leaseConfig, now 
 		now:      now,
 		logger:   logger,
 		changes:  make(chan struct{}, 1),
-		renewals: make(chan struct{}, 1),
+		giveUps:  make(chan struct{}, 1),
 	}
 }
 
@@ -227,7 +227,7 @@ func (l *lease) Start(ctx context.Context) {
 				timer.Stop()
 				return
 			case <-timer.C:
-			case <-l.renewals:
+			case <-l.giveUps:
 				timer.Stop()
 			}
 		}
@@ -328,7 +328,7 @@ func (l *lease) GiveUp(term uint64) {
 	l.mu.Unlock()
 	if set {
 		select {
-		case l.renewals <- struct{}{}:
+		case l.giveUps <- struct{}{}:
 		default:
 		}
 	}
@@ -386,14 +386,13 @@ func (l *lease) letGo() (uint64, error) {
 
 // releasedRecordLocked is the record a release of this term writes: the record as this process
 // last wrote or read it, marked released, keeping service_since and stale_binding as they stand
-// and writing unsettled as the term stands, or set when owesAckWait says this release owes its
-// successor a full ack wait whatever the term's own flags said. A term whose validity had run out
-// owes one (letGo): what it had in hand comes back only at the ack wait. So does a release for a
-// receive connection that is down (releaseReceiveLost), on a term that has not lapsed at all.
-// Callers must hold l.mu.
-func (l *lease) releasedRecordLocked(owesAckWait bool) leaseRecord {
+// and writing unsettled as the term stands, or set when forceUnsettled says the next holder must
+// settle whatever the term's own flags said. A term whose validity had run out forces it (letGo):
+// what it had in hand comes back only at the ack wait. So does a release for a receive connection
+// that is down (releaseReceiveLost), on a term that has not lapsed at all. Callers must hold l.mu.
+func (l *lease) releasedRecordLocked(forceUnsettled bool) leaseRecord {
 	record := l.record
-	record.StaleBinding, record.Unsettled = l.staleBinding, l.unsettled || owesAckWait
+	record.StaleBinding, record.Unsettled = l.staleBinding, l.unsettled || forceUnsettled
 	record.Released = true
 	return record
 }
@@ -499,16 +498,16 @@ func (l *lease) standDown(rev uint64) time.Duration {
 
 // releaseReceiveLost stops renewing and releases the record of a holder whose receive connection
 // has been down for cfg.receiveLost (receiveDown), down: this pod receives nothing of the
-// durable, so the machine's lease must go to a pod that can. The record goes unsettled, owing its
-// successor an ack wait and carrying stale_binding, as a lapse's release does and whatever this
-// term's own flags stood at: what the durable pushed to the lost connection comes back only at
-// its ack wait, and that connection's subscription can still be bound at the server. So the pod
-// that takes it settles for the full ack wait, subscribing at once beside that binding. The loop
-// does not take the record back for two standby polls, as a give-up does, and takes none at
-// all while the connection stays down (poll). A record another pod has already taken writes
-// nothing and is no error: the revision logged is then zero, and this pod stops holding it all
-// the same. The term is this pod's own hold, read by step in this goroutine a moment ago, so
-// there is no un-held case to answer here.
+// durable, so the machine's lease must go to a pod that can. The record goes unsettled and
+// carrying stale_binding, unsettled as a lapse's release goes, whatever this term's own flags
+// stood at: what the durable pushed to the lost connection comes back only at its ack wait, and
+// that connection's subscription can still be bound at the server. So the pod that takes it
+// settles, subscribing at once beside that binding, for a hold whose cap covers that ack wait
+// (settleCap). The loop does not take the record back for two standby polls, as a give-up does,
+// and takes none at all while the connection stays down (poll). A record another pod has already
+// taken writes nothing and is no error: the revision logged is then zero, and this pod stops
+// holding it all the same. The term is this pod's own hold, read by step in this goroutine a
+// moment ago, so there is no un-held case to answer here.
 //
 // A release the bucket does not take keeps the hold: nothing was handed over, so this pod goes on
 // as a holder whose bucket calls fail - its renewals lapse and a standby takes its record once it

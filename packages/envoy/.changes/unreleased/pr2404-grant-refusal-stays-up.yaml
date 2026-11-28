@@ -40,3 +40,6 @@ body: |-
     have lasted 30 s and at ERROR at each try after. A NATS that does not answer is tried again
     every 2 s with a WARN, the role lane's and the session consumers' connections included, where
     ten failed dials of either used to end the start.
+time: 2026-11-18T22:01:04.000000000Z
+custom:
+    Issue: pr2404

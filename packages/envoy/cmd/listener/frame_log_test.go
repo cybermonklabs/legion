@@ -68,12 +68,10 @@ func (l *mpFrameLog) notOnce(messages []mpMessage) []string {
 	return wrong
 }
 
-// The check the links-dropped row ends on for the frames below the ack floor (mpFrameLog.notOnce,
-// which requireOnce fails on) refuses a repeat of a frame the session answered, and whose
-// acknowledgement reached the server, while nothing below it was still held: the restart at the
-// ack floor starts above such a frame. Only the frame whose reply the drop lost may come again,
-// under its own event id
-// (TestTwoPodsARelayedFrameTheLinksDroppedUnderIsRepeatedAtMostOnceWithItsId).
+// notOnce, the check requireOnce fails on, refuses a frame the session took twice: here one it
+// answered a moment before its links dropped and again after. A row puts it on the frames below
+// the ack floor, where the restart at that floor starts above every frame the session answered
+// and whose acknowledgement reached the server, so a repeat of one is a fault.
 func TestTheExactlyOnceCheckRefusesARepeatOfAFrameAnsweredBeforeTheDrop(t *testing.T) {
 	t.Parallel()
 	dropped := time.Now()

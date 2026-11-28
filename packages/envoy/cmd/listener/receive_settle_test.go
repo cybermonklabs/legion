@@ -300,7 +300,7 @@ func TestASettleHoldsCapIsWhatThePreviousHolderCanStillHaveOutstanding(t *testin
 	}{
 		{"expired", "box-cap-expired", `{"holder":"pod-dead","boot":"0123456789abcdef"}`, leaseTakenExpired, consumerAckWait + settleMargin},
 		{"released with a stale binding", "box-cap-stale", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"stale_binding":true}`, leaseTakenReleased, consumerAckWait + settleMargin},
-		{"handed back", "box-cap-handed-back-unmarked", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true}`, leaseTakenReleased, consumerAckWait + settleMargin},
+		{"handed back", "box-cap-handed-back", `{"holder":"pod-gone","boot":"0123456789abcdef","released":true,"unsettled":true}`, leaseTakenReleased, consumerAckWait + settleMargin},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			uri := testnats.URL(t)
@@ -460,6 +460,112 @@ func TestAGracefulStopDuringASettleHoldHandsTheHoldOn(t *testing.T) {
 	}
 	if end := next.settleHoldEnd(t, time.Second); end["outcome"] != "settled" {
 		t.Fatalf("pod-c's settle hold ended %v, want settled", end)
+	}
+}
+
+// A graceful stop of a pod during an ack wait hold - a settle hold over an expired record whose
+// dead holder's binding went with its connection (a SIGKILL), so the hold waits for the message
+// that holder had to come back one ack wait after its delivery - releases the record unsettled,
+// and not stale_binding, since it found no binding beside its own. The next holder settles in its
+// turn, for the 7 s cap, and delivers that message before the newer one the stopped pod handed
+// back.
+// It must not run in parallel: its test lease lapses if one renewal is 300 ms late.
+func TestAGracefulStopDuringAnAckWaitHoldHandsTheHoldOn(t *testing.T) {
+	uri := testnats.URL(t)
+	const machineID = "box-stop-in-ack-wait-hold"
+	putLeaseRecord(t, uri, machineID, `{"holder":"pod-dead","boot":"0123456789abcdef"}`)
+	client, dead := bindAsAHolder(t, uri, machineID, func(*natsgo.Msg) {})
+	publishToTheDeadHolder(t, client, machineID, "older")
+	if err := dead.Unsubscribe(); err != nil {
+		t.Fatalf("unsubscribe the dead holder: %v", err)
+	}
+	waitFor(t, "the dead holder's binding to go", func() bool {
+		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
+		return err == nil && !info.PushBound
+	})
+
+	stopping := startReceiverRig(t, uri, machineID, "pod-b", func(_ context.Context, msg *natsgo.Msg) {
+		t.Errorf("pod-b delivered %q during its hold", msg.Data)
+	}, testReceiveTiming(), testLeaseTiming())
+	stopping.awaitState(t, receiveActive, 10*time.Second)
+	if status := stopping.lease.Status(); status.How != leaseTakenExpired || !status.Settle {
+		t.Fatalf("pod-b's lease = %+v, want taken over an expired record, settling", status)
+	}
+	publishDurable(t, client, "newer")
+	waitFor(t, "pod-b to hold the newer message", func() bool {
+		info, err := client.JS().ConsumerInfo(bus.Stream, bus.ListenerDurable(machineID))
+		return err == nil && info.NumAckPending == 2 && info.NumPending == 0
+	})
+	waitFor(t, "pod-b to take in the newer message the server sent it", func() bool { return stopping.unsettledCount() >= 1 })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	stopping.receiver.Stop(ctx)
+	if end := handBackEnd(t, stopping); end["handed_back"] != float64(1) {
+		t.Fatalf("pod-b's hand-back ended %v, want the newer message handed back", end)
+	}
+	stopping.awaitRecord(t, "released, unsettled, without a stale binding", func(record leaseRecord) bool {
+		return record.Holder == "pod-b" && record.Released && record.Unsettled && !record.StaleBinding
+	})
+
+	handle, received := recordingHandler()
+	next := startReceiverRig(t, uri, machineID, "pod-c", handle, testReceiveTiming(), testLeaseTiming())
+	if must := next.logRecord(t, settleHoldLine, 5*time.Second); must["cap"] != (consumerAckWait + settleMargin).String() {
+		t.Fatalf("pod-c's settle hold = %v, want the %s cap", must, consumerAckWait+settleMargin)
+	}
+	for _, want := range []string{"older", "newer"} {
+		if message := awaitReceived(t, received, consumerAckWait+5*time.Second, "pod-c's "+want); message.data != want {
+			t.Fatalf("pod-c delivered %q, want %q: the messages in the order they were published", message.data, want)
+		}
+	}
+	if end := next.settleHoldEnd(t, time.Second); end["outcome"] != "settled" {
+		t.Fatalf("pod-c's settle hold ended %v, want settled", end)
+	}
+}
+
+// A stopping pod that gets back, alone, a message it already handed back NAKs it with the
+// hand-back delay again rather than dropping it (receiveTerm.handBackLocked, up to handBackNaksMax
+// times for one message), so the pod that takes the lease next delivers it after that delay
+// instead of one ack wait later. The message here is the one in hand: its handler NAKs it once the
+// shutdown's grace runs out and cancels its handling, and the server delivers it again at once, to
+// the stopping pod alone, since no other pod has subscribed yet.
+// It must not run in parallel: the message, due 2.3 s after the stop, must come within 6 s of it.
+func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
+	uri := testnats.URL(t)
+	const machineID = "box-repeat"
+	inHand := make(chan struct{}, 1)
+	active := startReceiverRig(t, uri, machineID, "pod-a", func(ctx context.Context, msg *natsgo.Msg) {
+		inHand <- struct{}{}
+		<-ctx.Done()
+		_ = msg.Nak()
+	}, testReceiveTiming(), testLeaseTiming())
+	active.awaitState(t, receiveActive, 10*time.Second)
+	// pod-b runs its lease alone at first: it takes the released record and subscribes only once
+	// pod-a has stopped, so every redelivery during pod-a's stop reaches pod-a alone.
+	handle, received := recordingHandler()
+	next := newReceiverRig(t, uri, machineID, "pod-b", handle, testReceiveTiming(), testLeaseTiming())
+	next.lease.Start(context.Background())
+	waitFor(t, "pod-b to read pod-a's lease", func() bool {
+		return next.lease.Status().ActiveInstance == "pod-a"
+	})
+	publishDurable(t, active.client, "first")
+	select {
+	case <-inHand:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pod-a never took the message")
+	}
+
+	stopped := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	active.receiver.Stop(ctx)
+	if end := handBackEnd(t, active); end["handed_back"] != float64(1) || end["dropped_repeats"] != float64(0) {
+		t.Fatalf("pod-a's hand-back ended %v, want the message it got back handed back again rather than dropped", end)
+	}
+
+	next.receiver.Start()
+	message := awaitReceived(t, received, 15*time.Second, "pod-b's message")
+	if after := message.at.Sub(stopped); message.data != "first" || after >= consumerAckWait {
+		t.Fatalf("pod-b delivered %q %s after pod-a's stop, want the message handed back again, before an ack wait", message.data, after.Round(time.Millisecond))
 	}
 }
 

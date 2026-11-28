@@ -33,8 +33,7 @@ const receiverLockHeldFor = 2 * time.Second
 // subscribe that waits for that same lock. Before this row the signal read bus.Client.Connected,
 // which read nats.Conn.Status, and took the receiver's lock, so the lease loop stalled for as
 // long as each dial hung: its renewals lapsed instead of its release landing, and a standby took
-// the expired record seconds later
-// (TestTwoPodsReceiveConnectionLostToADroppingRouteReleasesTheLeaseWithin15s).
+// the expired record seconds later.
 // It must not run in parallel: each signal read and lease round must answer within 100 ms.
 func TestTheReceiveSignalAnswersWhileTheReceiveConnectionsLocksAreHeld(t *testing.T) {
 	uri := testnats.URL(t)

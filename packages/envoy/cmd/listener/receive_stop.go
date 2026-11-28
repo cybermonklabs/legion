@@ -16,9 +16,8 @@ import (
 // and one without a lease drains (endWithoutLease).
 //
 // The term stops electing this pod the relayer of its machine's session consumers before any of
-// that (sessionRelays.setOwned, set by durableReceiver.begin): every relay stops here, so the
-// pod that takes over is the only one pulling each session's consumer, and each consumer's
-// position in the stream is left for it.
+// that (sessionRelays.setOwned, set by durableReceiver.begin): every relay is told to stop here,
+// and each consumer's position in the stream is left for the pod that takes over.
 func (r *durableReceiver) end(ctx context.Context) {
 	r.mu.Lock()
 	t := r.term
@@ -85,7 +84,7 @@ func (r *durableReceiver) endLost(ctx context.Context, t *receiveTerm) {
 func (r *durableReceiver) endWithoutLease(t *receiveTerm) {
 	t.stopHandling()
 	r.settleInHand(t)
-	conn, _ := r.drain(t)
+	conn := r.drain(t)
 	t.close()
 	queued := t.takeQueued()
 	sortByStreamSequence(queued)
@@ -132,43 +131,39 @@ func (r *durableReceiver) handBack(t *receiveTerm) {
 
 // drain ends the term's subscription as nats.go drains one: the server is told to stop sending,
 // and what it sent before that still reaches intake. It waits handBackDrainWait at most, then
-// unsubscribes, and returns the subscription's connection (nil when there was none) and whether
-// the server confirmed the subscription closed inside that wait. A drain that ran out, or that
-// the client refused, can have left messages the server had sent unreceived.
-func (r *durableReceiver) drain(t *receiveTerm) (*nats.Conn, bool) {
+// unsubscribes, and returns the subscription's connection (nil when there was none).
+func (r *durableReceiver) drain(t *receiveTerm) *nats.Conn {
 	r.mu.Lock()
 	sub, conn := t.sub, t.conn
 	t.sub = nil
 	r.mu.Unlock()
 	if sub == nil {
-		return nil, false
+		return nil
 	}
 	closed := sub.StatusChanged(nats.SubscriptionClosed)
 	if sub.Drain() != nil {
 		_ = sub.Unsubscribe()
-		return conn, false
+		return conn
 	}
 	wait := time.NewTimer(handBackDrainWait)
 	defer wait.Stop()
 	select {
 	case <-closed:
-		return conn, true
 	case <-wait.C:
 		_ = sub.Unsubscribe()
-		return conn, false
 	}
+	return conn
 }
 
 // settleInHand gives the message in hand inflightGrace to settle, then cancels its handling, which
 // aborts a delivery in flight and NAKs the message, and waits inflightCancelWait more for the
-// handler to return. It reports whether the handler returned: one still running holds a message
-// this pod can no longer keep alive, which comes back at its ack wait.
-func (r *durableReceiver) settleInHand(t *receiveTerm) bool {
+// handler to return.
+func (r *durableReceiver) settleInHand(t *receiveTerm) {
 	grace := time.NewTimer(r.timing.inflightGrace)
 	defer grace.Stop()
 	select {
 	case <-t.handled:
-		return true
+		return
 	case <-grace.C:
 	}
 	r.logger.Info("cancelling the message in hand after the shutdown grace", slog.String("consumer", r.consumer), slog.String("grace", r.timing.inflightGrace.String()))
@@ -177,9 +172,7 @@ func (r *durableReceiver) settleInHand(t *receiveTerm) bool {
 	defer wait.Stop()
 	select {
 	case <-t.handled:
-		return true
 	case <-wait.C:
 		r.logger.Warn("the message in hand was still being handled after its cancel", slog.String("consumer", r.consumer))
-		return false
 	}
 }

@@ -2,25 +2,22 @@
 
 // Two listener processes for one machine id, which is what a machine runs once it has an active
 // pod and a standby (INFRA-557). This file is the suite's harness; its rows are in
-// multiprocess_takeover_test.go, multiprocess_state_test.go, multiprocess_handback_test.go and
-// multiprocess_relay_settle_test.go, under the same build tag. Every row of the suite starts real
-// cmd/listener binaries against one in-process NATS server, each behind a listenerRelay of its
-// own (reconnect_shutdown_test.go, whose cut is below), and drives them over their real HTTP API
-// and the real bus, because each thing it checks is a property of whole processes: which
-// of two processes delivers from the machine's durable, what happens to the messages one process
-// holds when it is stopped, killed or cut off, and what the other answers meanwhile. A row's
-// sessions are one NATS stand-in (mpNATSSession) that counts each frame it answered by event id;
-// the machine id is arbitrary (box-a). Every pod connects as the machine's nkey user, holding
-// exactly the grant envoy-infra renders for it (mpStartNATS), so a permissions gap fails the row;
-// the row's own clients connect as the server's admin.
+// multiprocess_takeover_test.go, multiprocess_state_test.go and multiprocess_handback_test.go,
+// under the same build tag. Every row of the suite starts real cmd/listener binaries against one
+// in-process NATS server, each behind a listenerRelay of its own (reconnect_shutdown_test.go,
+// whose cut is below), and drives them over their real HTTP API and the real bus, because each
+// thing it checks is a property of whole processes: which of two processes delivers from the
+// machine's durable, what happens to the messages one process holds when it is stopped, killed or
+// cut off, and what the other answers meanwhile. A row's sessions are one NATS stand-in
+// (mpNATSSession) that counts each frame it answered by event id; the machine id is arbitrary
+// (box-a). Every pod connects as the machine's nkey user, holding exactly the grant envoy-infra
+// renders for it (mpStartNATS), so a permissions gap fails the row; the row's own clients connect
+// as the server's admin.
 //
 // The rows use nothing but the binary cmdtest.Build builds, its environment, its HTTP API, NATS,
-// the relay in reconnect_shutdown_test.go and the APIs of the internal packages, among them the
-// names INFRA-557 gave the listener's state bucket, the last-seen bucket and their records
-// (bus.ListenerStateBucket, bus.LastSeenBucket, bus.ListenerLeaseKey, bus.LastSeenPrefix), which a
-// build before INFRA-557 (819dc283) lacks, so these files compile only from INFRA-557 on. The few
-// places a row has to recognise a listener binary of such a build (a /healthz without "role") say
-// so.
+// the relay in reconnect_shutdown_test.go and the APIs of the internal packages. The few places a
+// row has to recognise a listener binary of a build before INFRA-557 (819dc283) (a /healthz
+// without "role") say so.
 //
 // Its own build tag, and its own CI job, for the reason cmd/dispatch/multiprocess_test.go has
 // its: a row starts two processes and waits out a lease, an ack wait or a 140 s standby, tens of
@@ -30,7 +27,6 @@
 package main
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -216,13 +212,6 @@ type mpLaneRelay struct {
 	// for it to close, which healing does.
 	cuts  map[string]chan struct{}
 	links []*mpLaneLink
-	// blackhole, while open, holds every connection the pod opens from then on before its first
-	// byte in either direction, as a route that drops packets leaves a dial: the TCP connection is
-	// accepted, and nats.go waits out its connect timeout for an INFO that never comes.
-	blackhole chan struct{}
-	// drops holds, per client name, the subject prefix of the requests the relay drops on that
-	// name's connections (dropRequests).
-	drops map[string]string
 }
 
 // mpLaneLink is one connection through the relay: the pod's socket, the server's, and the client
@@ -233,8 +222,6 @@ type mpLaneLink struct {
 	mu   sync.Mutex
 	name string
 	seen []byte
-	// pending is what the pod has sent that does not yet make a whole protocol frame (forward).
-	pending []byte
 }
 
 func startMPLaneRelay(t *testing.T, uri string) *mpLaneRelay {
@@ -324,10 +311,8 @@ func (r *mpLaneRelay) relay(client net.Conn) {
 				return
 			}
 			r.pass(link)
-			if out := link.forward(buffer[:n], r.dropFor(link.lane())); len(out) > 0 {
-				if _, writeErr := server.Write(out); writeErr != nil {
-					return
-				}
+			if _, writeErr := server.Write(buffer[:n]); writeErr != nil {
+				return
 			}
 		}
 		if err != nil {
@@ -358,17 +343,6 @@ func (r *mpLaneRelay) toClient(link *mpLaneLink) {
 // pass waits while the link's connection is cut, and returns at once while it is not, once it is
 // healed, or once the relay is closed.
 func (r *mpLaneRelay) pass(link *mpLaneLink) {
-	if link.lane() == "" {
-		r.mu.Lock()
-		hole := r.blackhole
-		r.mu.Unlock()
-		if hole != nil {
-			select {
-			case <-hole:
-			case <-r.done:
-			}
-		}
-	}
 	gate := r.gate(link.lane())
 	if gate == nil {
 		return
@@ -377,104 +351,6 @@ func (r *mpLaneRelay) pass(link *mpLaneLink) {
 	case <-gate:
 	case <-r.done:
 	}
-}
-
-// blackholeNew holds every connection the pod opens from now on before its first byte, until the
-// returned func runs (pass). Connections already open are untouched.
-func (r *mpLaneRelay) blackholeNew() (heal func()) {
-	hole := make(chan struct{})
-	r.mu.Lock()
-	r.blackhole = hole
-	r.mu.Unlock()
-	return sync.OnceFunc(func() {
-		r.mu.Lock()
-		if r.blackhole == hole {
-			r.blackhole = nil
-		}
-		r.mu.Unlock()
-		close(hole)
-	})
-}
-
-// dropRequests drops, from now on, every PUB or HPUB frame the pod sends on a connection named
-// name whose subject starts with prefix, as a server that never answers those requests leaves
-// them: the requester waits out its own timeout. Every other frame passes. The returned func
-// stops the dropping, however often it is called.
-func (r *mpLaneRelay) dropRequests(name, prefix string) (stop func()) {
-	r.mu.Lock()
-	if r.drops == nil {
-		r.drops = map[string]string{}
-	}
-	r.drops[name] = prefix
-	r.mu.Unlock()
-	return sync.OnceFunc(func() {
-		r.mu.Lock()
-		if r.drops[name] == prefix {
-			delete(r.drops, name)
-		}
-		r.mu.Unlock()
-	})
-}
-
-// dropFor is the subject prefix dropped on connections named name, empty when none is.
-func (r *mpLaneRelay) dropFor(name string) string {
-	if name == "" {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.drops[name]
-}
-
-// forward takes what the pod sent and returns the whole protocol frames of it to send on, without
-// each PUB or HPUB frame whose subject starts with drop when drop is not empty. A frame not yet
-// whole waits in pending for the rest, so the frames stay whole whenever dropping starts.
-func (l *mpLaneLink) forward(data []byte, drop string) []byte {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.pending = append(l.pending, data...)
-	var out []byte
-	for {
-		end := bytes.Index(l.pending, []byte("\r\n"))
-		if end < 0 {
-			return out
-		}
-		size := end + 2
-		fields := strings.Fields(string(l.pending[:end]))
-		if len(fields) >= 3 && (strings.EqualFold(fields[0], "PUB") || strings.EqualFold(fields[0], "HPUB")) {
-			total, err := strconv.Atoi(fields[len(fields)-1])
-			if err == nil {
-				size += total + 2
-			}
-			if len(l.pending) < size {
-				return out
-			}
-			if drop != "" && strings.HasPrefix(fields[1], drop) {
-				l.pending = l.pending[size:]
-				continue
-			}
-		}
-		out = append(out, l.pending[:size]...)
-		l.pending = l.pending[size:]
-	}
-}
-
-// drop closes every connection the pod holds under name and every one it opens under that name
-// from its CONNECT frame on, as a server that went away does: the pod reads each close at once
-// and reconnects, and its reconnects land only once the returned func heals the name. The pod's
-// other connections are untouched.
-func (r *mpLaneRelay) drop(name string) (heal func()) {
-	heal = r.cut(name)
-	r.mu.Lock()
-	links := slices.Clone(r.links)
-	r.mu.Unlock()
-	for _, link := range links {
-		if link.lane() == name {
-			_ = link.client.Close()
-			_ = link.server.Close()
-		}
-	}
-	return heal
 }
 
 // gate is the open gate of a cut connection name, nil while connections under that name pass.
@@ -771,36 +647,22 @@ type mpNATSSession struct {
 	conn    *natsgo.Conn
 	journal *mpJournal
 
-	mu    sync.Mutex
-	holds map[string]chan struct{}
-	// gates holds, per session, the next frame's reply until its release closes, then answers it
-	// done (gate).
-	gates map[string]mpFrameGate
-	// receipts holds, per session, the next frame whose "received" goes out at once and whose
-	// "done" waits until its release closes (receiveThenGate), as a plugin that took the frame and
-	// is still writing it.
-	receipts   map[string]mpFrameGate
+	mu         sync.Mutex
+	holds      map[string]chan struct{}
 	failing    map[string]bool
 	failed     map[string]int
 	unexpected []string
-	// withheld holds, per session, the next frame, which is answered `received` at once and never
-	// `done`, nor recorded taken (withhold): a plugin that took the frame and never wrote it. The
-	// channel closes as the frame arrives. Unlike a gate it holds up no other frame.
-	withheld map[string]chan struct{}
-	stopping chan struct{}
 }
 
 func mpStartNATSSessions(t *testing.T, uri string) *mpNATSSession {
 	t.Helper()
-	serving := &mpNATSSession{journal: mpJournalOf(t), holds: map[string]chan struct{}{}, gates: map[string]mpFrameGate{}, receipts: map[string]mpFrameGate{}, failing: map[string]bool{}, failed: map[string]int{}, withheld: map[string]chan struct{}{}, stopping: make(chan struct{})}
+	serving := &mpNATSSession{journal: mpJournalOf(t), holds: map[string]chan struct{}{}, failing: map[string]bool{}, failed: map[string]int{}}
 	conn, err := natsgo.Connect(uri, natsgo.Name("mp-sessions"))
 	if err != nil {
 		t.Fatalf("connect the row's sessions to NATS: %v", err)
 	}
 	serving.conn = conn
 	t.Cleanup(conn.Close)
-	// Runs before the connection closes, which a gated frame's handler waits on.
-	t.Cleanup(func() { close(serving.stopping) })
 	if _, err := conn.Subscribe(bus.DeliverSubject("*"), serving.receive); err != nil {
 		t.Fatalf("subscribe the row's sessions to their relay subjects: %v", err)
 	}
@@ -834,45 +696,11 @@ func (s *mpNATSSession) receive(msg *natsgo.Msg) {
 	s.mu.Lock()
 	held, hold := s.holds[sessionID]
 	delete(s.holds, sessionID)
-	gate, gated := s.gates[sessionID]
-	delete(s.gates, sessionID)
-	receipt, received := s.receipts[sessionID]
-	delete(s.receipts, sessionID)
-	withheld, withholding := s.withheld[sessionID]
-	delete(s.withheld, sessionID)
 	failing := s.failing[sessionID]
 	if failing && !hold {
 		s.failed[sessionID]++
 	}
 	s.mu.Unlock()
-	if withholding {
-		s.reply(msg, relayReplyReceived)
-		s.journal.receipt(mpReceipt{session: sessionID, event: event, at: time.Now(), answer: mpFrameHeld})
-		close(withheld)
-		return
-	}
-	if received {
-		s.reply(msg, relayReplyReceived)
-		close(receipt.arrived)
-		select {
-		case <-receipt.release:
-		case <-s.stopping:
-			return
-		}
-		s.reply(msg, relayReplyDone)
-		taken := time.Now()
-		s.took(sessionID, event, taken)
-		s.journal.receipt(mpReceipt{session: sessionID, event: event, at: taken, answer: mpFrameTaken})
-		return
-	}
-	if gated {
-		close(gate.arrived)
-		select {
-		case <-gate.release:
-		case <-s.stopping:
-			return
-		}
-	}
 	if hold {
 		s.journal.receipt(mpReceipt{session: sessionID, event: event, at: time.Now(), answer: mpFrameHeld})
 		close(held)
@@ -890,51 +718,11 @@ func (s *mpNATSSession) receive(msg *natsgo.Msg) {
 	s.journal.receipt(mpReceipt{session: sessionID, event: event, at: taken, answer: mpFrameTaken})
 }
 
-// withhold has the next frame to sessionID answered `received` and never `done`, and not recorded
-// taken: the relay that sent it keeps it unacknowledged on the session's consumer, at its floor,
-// with no pause, since the frame was answered. The returned channel closes when it arrives.
-func (s *mpNATSSession) withhold(sessionID string) <-chan struct{} {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	arrived := make(chan struct{})
-	s.withheld[sessionID] = arrived
-	return arrived
-}
-
 // reply answers a frame with one word, as a session's plugin does.
 func (s *mpNATSSession) reply(msg *natsgo.Msg, word string) {
 	if err := s.conn.Publish(msg.Reply, []byte(word)); err == nil {
 		_ = s.conn.Flush()
 	}
-}
-
-// mpFrameGate is one gated frame: arrived closes when it reaches its session, and the session
-// answers it once release closes.
-type mpFrameGate struct {
-	arrived chan struct{}
-	release chan struct{}
-}
-
-// gate holds the next frame to sessionID until release runs, then answers it done and records it
-// taken, as a session that took a moment to accept it. The returned channel closes when that
-// frame arrives.
-func (s *mpNATSSession) gate(sessionID string) (arrived <-chan struct{}, release func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	g := mpFrameGate{arrived: make(chan struct{}), release: make(chan struct{})}
-	s.gates[sessionID] = g
-	return g.arrived, sync.OnceFunc(func() { close(g.release) })
-}
-
-// receiveThenGate answers the next frame to sessionID "received" at once and "done" only once
-// release runs, then records it taken: a session that has the frame and is still writing it. The
-// returned channel closes when that frame arrives.
-func (s *mpNATSSession) receiveThenGate(sessionID string) (arrived <-chan struct{}, release func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	g := mpFrameGate{arrived: make(chan struct{}), release: make(chan struct{})}
-	s.receipts[sessionID] = g
-	return g.arrived, sync.OnceFunc(func() { close(g.release) })
 }
 
 // hold holds the next frame to sessionID: the session never answers it, so the relay that

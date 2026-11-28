@@ -53,15 +53,17 @@ function topicRefusal(topic: string): string | undefined {
   ) {
     return `${JSON.stringify(topic)} is not a NATS subject`;
   }
+  // A private subject is refused as one first: the stream stores the failed-delivery lanes and the
+  // listener's own lanes under no kind `STORED_TOPIC_KINDS` names.
+  if (reachesPrivateStreamSubject("", topic)) {
+    return `${JSON.stringify(topic)} reaches a subject private to one session, which the listener stores for nobody else`;
+  }
   const stored = STORED_TOPIC_KINDS.some((kind) => {
     const prefix = `notifications.${kind}.`;
     return topic.length > prefix.length && topic.startsWith(prefix);
   });
   if (!stored) {
     return `the notification stream stores nothing on ${JSON.stringify(topic)}, so it would deliver nothing`;
-  }
-  if (reachesPrivateStreamSubject("", topic)) {
-    return `${JSON.stringify(topic)} reaches a subject private to one session, which the listener stores for nobody else`;
   }
   return undefined;
 }

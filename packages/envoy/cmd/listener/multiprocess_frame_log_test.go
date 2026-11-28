@@ -42,20 +42,6 @@ func (l *mpFrameLog) first(sessionID, event string) (time.Time, bool) {
 	return time.Time{}, false
 }
 
-// last is when event's last frame was answered, and whether any was.
-func (l *mpFrameLog) last(sessionID, event string) (time.Time, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	var at time.Time
-	var took bool
-	for _, frame := range l.frames[sessionID] {
-		if frame.event == event {
-			at, took = frame.at, true
-		}
-	}
-	return at, took
-}
-
 // order is the event ids sessionID took, each at its first frame, in the order it took them.
 func (l *mpFrameLog) order(sessionID string) []string {
 	l.mu.Lock()

@@ -101,9 +101,11 @@ it fails with messages missing on v2.10.29.
 - **Graceful stop** (SIGTERM on the active pod):
   the stopping pod stops handing messages to the handler, gives the message in hand its grace, and hands back everything it has not handled:
   it NAKs those messages with a 2 s delay (`handBackDelay`), as one batch in stream order, and releases the lease marked `unsettled`.
+  Right after its own release it drains its subscription, for 2 s at most (`handBackDrainWait`).
+  Until the drain ends, each repeat of a handed-back message that reaches it is NAKed again with the same delay, up to three NAKs of one message (`handBackNaksMax`);
+  a repeat past that is dropped and comes back at its ack wait.
   A standby takes the released lease at its next poll and settles (below):
   it subscribes at once and holds what it receives until every outstanding message is in its hands, then delivers in stream order, so per-session order is kept.
-  Then the stopping pod drains its subscription.
 
 - **Hard stop** (SIGKILL, node or network loss): a standby takes the expired lease about 5 to 6 s after the last renewal (the TTL and one poll).
   Its term must settle: it subscribes at once, beside the dead pod's push binding when the server still counts a lost node's connection, and holds every message it receives, keeping it alive with `InProgress`, until every message the durable has outstanding is in its hands.
@@ -295,38 +297,7 @@ A probe contract that fits these answers:
 
 ## State the pods share
 
-Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would:
-
-- **When a session can see a message twice.**
-  The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor is what says the session has it.
-  Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) sends again every frame above the consumer's ack floor.
-  That includes a frame the session answered `done` out of order above one it is still holding:
-  the server cannot move the floor past a frame still unacked, so the frames acked after it are above the floor and come again.
-  A consumer with a message that awaits an ack is deleted and created again at the sequence after its ack floor.
-  A consumer with nothing that awaits an ack has no frame above its floor, so the restart updates it in place (`keepAtFloor`):
-  the sequence it examines next is already the one after its floor, and the restart sends no delete and no create.
-  The exception is a consumer whose next sequence is past the stream's end, which the restart deletes and creates again too.
-  Every repeat carries the message's own event id, and the client's dedupe writes it once
-  — it joins a copy of a frame it still holds, and drops one it has already written (`packages/envoy-client`'s consumer delivery).
-
-  A relay restarts when:
-
-  - a receive term ends and the pod that takes over starts the session's relay:
-    every frame left above the consumer's ack floor is sent again, as above;
-
-  - its session-consumer link drops and comes back.
-    The frame's reply and the consumer's acknowledgement ride that one link, so a frame answered under the drop was recorded nowhere, and the relay restarts at the ack floor as soon as the link is back;
-
-  - a pod is killed or its node is lost: nothing settled the frames it had out, and the pod that takes the lease over restarts the consumer at the floor;
-
-  - a frame drew no reply inside the relay's receipt wait, so the relay pauses and probes again after 2, 4, 8, 16 and then every 30 s.
-    This one can therefore repeat a frame more than once;
-
-  - a pull, a publish or a restart failed and the run retries;
-
-  - the session registers again under a new epoch;
-
-  - the session leaves the set this pod relays and rejoins it.
+Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would, except where it answers from a record of its own (below):
 
 - **Role-claim grace** counts from the machine's service start, `service_since` in the lease record:
   the server's time of the write that took the lease when no pod of the machine was serving (no record, or one last written more than two TTLs before).
@@ -355,7 +326,8 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   A pod whose cache has not seen a registration reads the bucket before `/v1/messages/send` or `/v1/roles/set` answers that the session is unknown.
 
 Some records are each pod's own:
-the delivery caches of what the pod delivered and attempted (`listenerDeliveryHandlerConfig`'s `dedupeCache` and `attemptCache`, `internal/dedupe`'s in-process caches), so a pod that takes over can deliver again, under its own event id, a message the pod before it delivered;
+the delivery caches of what the pod delivered and attempted (`listenerDeliveryHandlerConfig`'s `dedupeCache` and `attemptCache`, `internal/dedupe`'s in-process caches), so a pod that takes over forwards again a role message the pod before it forwarded, which the stream stores once under its `Nats-Msg-Id`, and reports again, under a new event id, a refusal or give-up the pod before it reported;
+a lapsed session's `last_seen`, which each pod answers from its own memory of the session's registrations (`session.SessionRegistry.LastSeen`), so two pods can answer one session differently;
 and, deliberately, the **publish route's confirmation record** (`listenerDeps.confirmed`, `internal/dedupe`'s in-process cache), which holds each (dedupe key, session) the stream stored a forward of through `/v1/messages/publish` on this pod, with the stream sequence of that stored copy, and each such forward under the request that made it (`forwardRequest`: the source, the source session, the role topic and the dedupe key).
 Only a forward the route itself made counts.
 So a repeat of a role send to the same holder is answered from this record's sequence (`dedupe.Cache.Stored`), and an echo, the repeat of a sender that has since taken the role, from the forward recorded under its request (`dedupe.Cache.Forward`, `roleSend.settledBeforeForward`).
@@ -364,6 +336,38 @@ A send retried against another pod of the machine forwards again, and the stream
 An echo that reaches the other pod, after a take-over say, finds no forward recorded there under its request:
 it forwards nothing, as an echo never does, and is answered 200 with its own envelope, whose event id no stored message carries, so it gives no session a second copy.
 The control of `TestARoleRepeatFromTheSenderThatTookTheRoleAnswersTheStoredForward`, a holder's first publish to its own role, shows that answer.
+
+### When a session can see a message twice
+
+The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor is what says the session has it.
+Every restart of a session's consumer (`bus.SessionConsumers.RestartAtFloor`) sends again every frame above the consumer's ack floor.
+That includes a frame the session answered `done` out of order above one it is still holding:
+the server cannot move the floor past a frame still unacked, so the frames acked after it are above the floor and come again.
+A consumer with a message that awaits an ack is deleted and created again at the sequence after its ack floor.
+A consumer with nothing that awaits an ack has no frame above its floor, so the restart updates it in place (`keepAtFloor`):
+the sequence it examines next is already the one after its floor, and the restart sends no delete and no create.
+The exception is a consumer whose next sequence is past the stream's end, which the restart deletes and creates again too.
+Every repeat carries the message's own event id, and the client's dedupe writes it once
+— it joins a copy of a frame it still holds, and drops one it has already written (`packages/envoy-client`'s consumer delivery).
+
+A relay restarts when:
+
+- a receive term ends and the pod that takes over starts the session's relay:
+  every frame left above the consumer's ack floor is sent again, as above;
+
+- its session-consumer link drops and comes back.
+  The frame's reply and the consumer's acknowledgement ride that one link, so a frame answered under the drop was recorded nowhere, and the relay restarts at the ack floor as soon as the link is back;
+
+- a pod is killed or its node is lost: nothing settled the frames it had out, and the pod that takes the lease over restarts the consumer at the floor;
+
+- a frame drew no reply inside the relay's receipt wait, so the relay pauses and probes again after 2, 4, 8, 16 and then every 30 s.
+  This one can therefore repeat a frame more than once;
+
+- a pull, a publish or a restart failed and the run retries;
+
+- the session registers again under a new epoch;
+
+- the session leaves the set this pod relays and rejoins it.
 
 ## Two builds of the listener
 
@@ -408,15 +412,16 @@ The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/
 That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives): it writes each of them and reads each by key, and its other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
 that is a subject's reach, and what every listener user of the fleet can still do to the whole bucket is in `packages/envoy/infra/README.md` ("Permission sets").
 The grant reads each of the listener's other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
-So the listener reads back each write it must stamp, the lease's acquiring write and a session registration in `envoy_sessions`, by key, and counts it as its own only at the revision it wrote;
+So the listener reads back the one write it must stamp, the lease's acquiring write, by key, and counts it as its own only at the revision it wrote;
 another revision there means a newer write landed first.
 A listener whose grant refuses `envoy_listener` does not exit: it logs one ERROR, `listener lease unavailable: the NATS user lacks the grant for KV bucket envoy_listener; delivering without a lease`, and delivers as the machine's one deliverer, receiving from the durable only while no other subscriber holds it push-bound and waiting for as long as one does.
+It delivers without a lease until it restarts: the open closes the lease's connection and does not try the bucket again (`openDeliveryLease`), so a grant fixed meanwhile reaches it only at its next start.
 `/healthz` says so in `lease`: `"lease":"unavailable: missing NATS grant for KV bucket envoy_listener"`.
 The shared state above falls back to the pod's own: the role-claim grace counts from the pod's own start.
 Run one pod per machine id in this mode: it has no fencing against a second deliverer after a reconnect in place.
 
 Deploy prerequisite: render and apply the NATS grant carrying `envoy_listener` (for a `gcp:NatsHub`, its users;
-for a host, its NATS authorization) before running a second pod of a machine id.
+for a host, its NATS authorization) before running a second pod of a machine id, and restart every pod of it that started without that grant.
 
 An edge listener (`ENVOY_EDGE_PROJECTS` set) always runs in this mode.
 Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no lease connection, logs one INFO, `delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease`, and never tries the bucket again (`main.go`).
@@ -424,8 +429,9 @@ Its grant (`natsgrant.Edge`) holds no call of `envoy_listener`, so it opens no l
 Run one edge pod per machine id, since a second one has no lease to stand by under:
 a second edge pod for one machine id, a rolling update's surge pod included, can deliver a message twice, as an edge listener of a build before this release can.
 So an edge Deployment runs one replica under the `Recreate` strategy.
-The relays of an edge listener acknowledge a frame they withhold (a GitHub event while no fresh repository answer stands, or a frame of no project the session's token lists, `edge_frames.go`), or give it back (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`), because an edge listener holds no lease and runs one pod:
-an edge standby would need that withhold fenced by the lease, with the change to the edge's grant that its owner approves.
+The relays of an edge listener acknowledge a frame they withhold (a GitHub event while no fresh repository answer stands, or a frame of no project the session's token lists, `edge_frames.go`), or give it back (`acknowledgeWithheld`, `giveBackWithheld`, `session_relay.go`).
+An edge listener holds no lease and runs one pod, so nothing fences that withhold:
+an edge standby would need it fenced by the lease, with the change to the edge's grant that its owner approves.
 An edge listener serves its sessions' relay sockets (`relay_socket.go`) on a NATS connection of their own, and opens that connection by the start rule, as it opens the session consumers' (`openStartConnection`, "Start: what ends it and what it waits out" above).
 A server that refuses that connection, or dials that find no server, log `relay socket connection failed; retrying` (and a grant refusal `relay socket connection refused by the NATS grant; retrying`) and the start waits, since an exit would only send the pod into a crash loop.
 At a stop the relay sockets close, each with 1012, after the session relays stop (`shutdownListener`), and before the HTTP server shuts down, which does not wait for a hijacked connection.

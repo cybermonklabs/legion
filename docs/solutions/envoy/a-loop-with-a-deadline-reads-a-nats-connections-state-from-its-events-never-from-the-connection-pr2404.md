@@ -40,8 +40,8 @@ Extends docs/solutions/envoy/nats-go-facts-a-test-or-a-shutdown-path-must-design
 
 ## Evidence
 
-- The tester's row `TestTwoPodsReceiveConnectionLostToADroppingRouteReleasesTheLeaseWithin15s`
-  (`packages/envoy/cmd/listener/multiprocess_takeover_test.go`) failed 3 of 3. A goroutine dump
+- The tester's two-pod row whose receive connection's route dropped the pod's packets
+  failed 3 of 3. A goroutine dump
   showed `lease.step -> receiveDown -> durableReceiver.receiveUp -> bus.Client.Connected ->
   nats.Conn.Status` waiting on the lock that `doReconnect -> processConnectInit` held, so the
   lease's renewals stalled with its release.

@@ -242,9 +242,8 @@ func subscribeListenerDurable(client *bus.Client, consumer string, handler natsg
 	return client.Conn.Subscribe(info.Config.DeliverSubject, handler)
 }
 
-// putLeaseRecord writes machineID's lease record as another pod would have left it, and returns
-// its revision: the one a pod taking that record replaces.
-func putLeaseRecord(t *testing.T, uri, machineID, record string) uint64 {
+// putLeaseRecord writes machineID's lease record as another pod would have left it.
+func putLeaseRecord(t *testing.T, uri, machineID, record string) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
@@ -252,11 +251,9 @@ func putLeaseRecord(t *testing.T, uri, machineID, record string) uint64 {
 	if err != nil {
 		t.Fatalf("open the listener state bucket: %v", err)
 	}
-	rev, err := kv.Put("lease."+bus.ListenerDurable(machineID), []byte(record))
-	if err != nil {
+	if _, err := kv.Put("lease."+bus.ListenerDurable(machineID), []byte(record)); err != nil {
 		t.Fatalf("write the lease record: %v", err)
 	}
-	return rev
 }
 
 // A pod that is subscribed to the durable's deliver subject without holding the lease (the

@@ -1681,12 +1681,11 @@ func bucketSubject(subject, bucket string) bool {
 // close, and a handle on the replaced one would never renew the lease again. By the start rule
 // (cmd/listener/README.md, "Start"), an open the server cannot take in its cluster's present state
 // is tried again after waitOutClusterState, and an open that fails for want of a connection, or
-// for any other cause, every startRetry, so a NATS that answers
-// late does not end the start. An open the NATS user's grant refuses (errListenerStateRefused)
-// returns no lease, and closes the connection, after one ERROR naming the bucket and the missing
-// grant: the listener then delivers without a lease, as the machine's one deliverer receiving only
-// while no other subscriber holds the durable, and says so in /healthz. ctx is the start's
-// (openListenerState).
+// for any other cause, every startRetry, so a NATS that answers late does not end the start. An
+// open the NATS user's grant refuses (errListenerStateRefused) returns no lease, and closes the
+// connection, after one ERROR naming the bucket and the missing grant: the listener then delivers
+// without a lease, as the machine's one deliverer receiving only while no other subscriber holds
+// the durable, and says so in /healthz. ctx is the start's (openListenerState).
 func openDeliveryLease(ctx context.Context, urls []string, replicas int, machineID, instance string, logger *logging.Logger) *lease {
 	var conn *nats.Conn
 	clusterWait := clusterStateWait{next: durableBindPoll}
@@ -2241,9 +2240,7 @@ func runListener(credentialWait time.Duration) {
 		logger.Info("delivery lease not opened: an edge listener's grant holds no listener state bucket; delivering without a lease",
 			slog.String("bucket", bus.ListenerStateBucket))
 	}
-	var podLease atomic.Pointer[lease]
 	if deliveryLease != nil {
-		podLease.Store(deliveryLease)
 		client.KeepBucket(bus.ListenerStateBucket)
 	}
 	// CI-summary aggregation state. Its WatchAll cache warms asynchronously like the registries
@@ -2292,8 +2289,8 @@ func runListener(credentialWait time.Duration) {
 	// (store.WithLegacySubjectCounter).
 	registryOptions := []store.OpenOption{store.WithReplicas(cfg.NATSReplicas), store.WithLogger(logger.Slog()), store.WithLegacySubjectCounter(legacySubjects),
 		store.WithServiceSince(func() time.Time {
-			if l := podLease.Load(); l != nil {
-				return l.Status().ServiceSince
+			if deliveryLease != nil {
+				return deliveryLease.Status().ServiceSince
 			}
 			return time.Time{}
 		})}
@@ -3162,10 +3159,9 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	parts.relays.stop(shutdownCtx)
 	// An edge listener's relay sockets close next, each with 1012, on which its client opens it
 	// again at once on another replica, and every upgrade after it is refused. They close before
-	// the HTTP server's shutdown, which does not wait for a hijacked
-	// connection, so nothing else would close them. The close takes no context: it waits up to
-	// relaySocketCloseGrace whatever the steps above left of stopHTTPGrace (stopHTTPGrace says
-	// what that costs).
+	// the HTTP server's shutdown, which does not wait for a hijacked connection, so nothing else
+	// would close them. The close takes no context: it waits up to relaySocketCloseGrace whatever
+	// the steps above left of stopHTTPGrace (stopHTTPGrace says what that costs).
 	parts.sockets.stop()
 
 	// 4. HTTP server — stop accepting new requests, drain in-flight, within what is left of the

@@ -20,8 +20,8 @@ import (
 )
 
 // stateTestPod is one listener pod for a test of the state its pods share: its own NATS connection,
-// its own handle on the listener state bucket and its delivery lease over it, and its interest and
-// session registries wired to them as main wires them.
+// its own handle on the listener state bucket and its delivery lease over it, its interest
+// registry wired to that lease as main wires it, and its session registry.
 // startedAgo is how long before now the pod started, as its interest registry's clock reads while
 // it opens.
 type stateTestPod struct {
@@ -29,7 +29,7 @@ type stateTestPod struct {
 	lease *lease
 }
 
-func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, sessionOptions ...session.SessionRegistryOption) stateTestPod {
+func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration) stateTestPod {
 	t.Helper()
 	client := setupPublishTestClient(t)
 	stateKV := leaseBucket(t)
@@ -44,8 +44,7 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 	}
 	t.Cleanup(registry.StopWatch)
 	elapsed.Store(0)
-	sessionOptions = append([]session.SessionRegistryOption{session.WithSessionReplicas(1)}, sessionOptions...)
-	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, sessionOptions...)
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open pod %s's session registry: %v", instance, err)
 	}
@@ -62,7 +61,6 @@ func openStateTestPod(t *testing.T, instance string, startedAgo time.Duration, s
 type lapsedRoleAnswer struct {
 	Reason        roles.State `json:"reason"`
 	Holder        string      `json:"holder"`
-	LastSeen      *int64      `json:"last_seen"`
 	ClaimReleased *bool       `json:"claim_released"`
 }
 
@@ -188,9 +186,9 @@ func (kv *heldRoleDeleteKV) Delete(key string, opts ...natsgo.DeleteOpt) error {
 // under the context the receive loop makes for the term's loops from context.Background() and
 // cancels only once it hears the term has ended (durableReceiver.serve), and the pass sends each
 // release on that context (store.Registry.ReapRoleClaims): nothing holds the release to the term
-// or to the lease's loss deadline, so the release reaches the bucket. Here the pass has judged the
+// or to the lease's validity, so the release reaches the bucket. Here the pass has judged the
 // claim's holder gone and called the delete, which is held before it is sent while the lease
-// steps down, its loss deadline passes and the next holder claims the role, the loop's context
+// steps down, which ends its validity, and the next holder claims the role, the loop's context
 // still live. What refuses the delete is the revision the pass's scan read, which the next
 // holder's claim moved (store.Registry.releaseReadExpiredRoleClaim). The lease is stepped by
 // hand (stepLeaseDown, relay_ownership_test.go).

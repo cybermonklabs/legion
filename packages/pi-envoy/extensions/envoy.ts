@@ -4179,7 +4179,9 @@ export default async function envoyExtension(hostApi: PiApi): Promise<void> {
     //  - Followed again, so the registration that ends this pass carries it and the session's
     //    consumer relays what the stream kept for it.
     // A topic of the row the person unfollowed, whose release the ledger still owes
-    // (`releasedOnResume`), is released below and not followed again, whatever its fate.
+    // (`releasedOnResume`), is released below and not followed again as the session's own; one
+    // the role this session wants names is opened again below as that role's
+    // (`roleTopicFollows.open`).
     const registry = await handle.readInterest(sessionID);
     const slackRetired = publishedInterface?.roleClaim.slackRoleOwned === true;
     const registered = registry.known ? (registry.row?.topics ?? []) : [];

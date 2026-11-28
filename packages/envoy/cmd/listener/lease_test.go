@@ -73,14 +73,12 @@ func readLease(t *testing.T, kv bus.KeyValue) (leaseRecord, natsgo.KeyValueEntry
 	return record, entry
 }
 
-// putLease writes a lease record as another pod would have, and returns its revision.
-func putLease(t *testing.T, kv bus.KeyValue, record string) uint64 {
+// putLease writes a lease record as another pod would have.
+func putLease(t *testing.T, kv bus.KeyValue, record string) {
 	t.Helper()
-	rev, err := kv.Put(leaseTestKey, []byte(record))
-	if err != nil {
+	if _, err := kv.Put(leaseTestKey, []byte(record)); err != nil {
 		t.Fatalf("write the lease record: %v", err)
 	}
-	return rev
 }
 
 // drainChanges empties a lease's change signal and reports whether it held one.

@@ -58,19 +58,15 @@ func startEdgeListenerProcess(t *testing.T, binary, uri, machineID, projects, br
 // the subject it names.
 var edgeServerViolation = regexp.MustCompile(`(Publish|Subscription) Violation - .*?Subject "([^"]*)"`)
 
-// stateBucketRequests are the requests on the listener state bucket (bus.ListenerStateBucket)
-// or the last-seen bucket (bus.LastSeenBucket) a nats-server's log holds refused
-// (edgeServerViolation), each as its kind and subject: a JetStream API call that names either
-// bucket's stream, or a write of one of its keys.
+// stateBucketRequests are the requests on the listener state bucket (bus.ListenerStateBucket) a
+// nats-server's log holds refused (edgeServerViolation), each as its kind and subject: a JetStream
+// API call that names the bucket's stream, or a write of one of its keys.
 func stateBucketRequests(log string) []string {
 	var found []string
 	for _, match := range edgeServerViolation.FindAllStringSubmatch(log, -1) {
 		subject := match[2]
-		for _, bucket := range []string{bus.ListenerStateBucket, bus.LastSeenBucket} {
-			if strings.HasPrefix(subject, "$KV."+bucket+".") || slices.Contains(strings.Split(subject, "."), "KV_"+bucket) {
-				found = append(found, match[1]+" "+subject)
-				break
-			}
+		if strings.HasPrefix(subject, "$KV."+bus.ListenerStateBucket+".") || slices.Contains(strings.Split(subject, "."), "KV_"+bus.ListenerStateBucket) {
+			found = append(found, match[1]+" "+subject)
 		}
 	}
 	return found
@@ -118,16 +114,15 @@ func TestAnEdgeListenerWaitsForTheStreamUntilASharedListenerCreatesIt(t *testing
 	}
 }
 
-// An edge listener opens no delivery lease and no last-seen bucket, and sends nothing on the
-// listener state bucket or the last-seen bucket, as the server records it. The edge runs under its
-// rendered grant (natsgrant.Edge), which holds no call of envoy_listener or envoy_last_seen, so the
-// server refuses, and logs, every request the listener makes there: the lease's open, a delivery
-// ledger read or write, the last-seen bucket's open or a last-seen read or write. The admin made
-// both buckets before the edge started, as a shared listener's start does, so they are there to be
-// used. The edge starts, registers a session under a broker token of its project and relays a send
-// to it, and the server logs no refusal on either bucket but one the edge's own user is refused,
-// made last, which shows the log is read. A request is the one route to a bucket, so a listener
-// that sent none holds no lease there.
+// An edge listener opens no delivery lease and sends nothing on the listener state bucket, as the
+// server records it. The edge runs under its rendered grant (natsgrant.Edge), which holds no call
+// of envoy_listener, so the server refuses, and logs, every request the listener makes there: the
+// lease's open, or a read or a write of its record. The admin made the bucket before the edge
+// started, as a shared listener's start does, so it is there to be used. The edge starts,
+// registers a session under a broker token of its project and relays a send to it, and the server
+// logs no refusal on the bucket but one the edge's own user is refused, made last, which shows the
+// log is read. A request is the one route to a bucket, so a listener that sent none holds no lease
+// there.
 func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *testing.T) {
 	t.Parallel()
 	const (
@@ -150,7 +145,7 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 		t.Fatalf("the admin creates the stream: %v", err)
 	}
 	t.Cleanup(admin.Close)
-	for _, bucket := range append(bus.ListenerBuckets(), bus.ListenerStateBucket, bus.LastSeenBucket) {
+	for _, bucket := range append(bus.ListenerBuckets(), bus.ListenerStateBucket) {
 		if _, err := admin.JS().CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.FileStorage}); err != nil {
 			t.Fatalf("the admin makes the %s bucket: %v", bucket, err)
 		}
@@ -203,8 +198,8 @@ func TestAnEdgeListenerOpensNoLeaseAndSendsNothingOnTheListenerStateBucket(t *te
 	})
 	for _, request := range stateBucketRequests(granted.Log()) {
 		if request != "Publish "+provoked {
-			t.Fatalf("the server refused the edge listener %s on the %s or %s bucket: an edge listener opens neither and sends nothing there:\n%s",
-				request, bus.ListenerStateBucket, bus.LastSeenBucket, edge.Output.String())
+			t.Fatalf("the server refused the edge listener %s on the %s bucket: an edge listener opens no lease and sends nothing there:\n%s",
+				request, bus.ListenerStateBucket, edge.Output.String())
 		}
 	}
 }

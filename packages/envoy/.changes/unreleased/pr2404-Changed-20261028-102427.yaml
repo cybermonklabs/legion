@@ -16,7 +16,7 @@ body: |-
     listener without a lease, which is a listener whose NATS user lacks the grant for
     `envoy_listener`. A standby
     waits for as long as the active pod runs and never exits for it. A graceful
-    stop now ends receiving first: the holder-only loops stop, the handler
+    stop now ends receiving first and then stops HTTP: the holder-only loops stop, the handler
     takes no more messages, the message in hand gets 3 s before its handling is cancelled, every
     message not handled is NAKed with a 2 s delay in stream order, and the lease is marked released
     and `unsettled`, so a standby takes it at its next poll and settles (below). A pod that takes

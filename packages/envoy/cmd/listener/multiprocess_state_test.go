@@ -204,7 +204,7 @@ func TestTwoPodsRepeatAtMostOnceWhatAKilledPodDelivered(t *testing.T) {
 	binary := cmdtest.Build(t, "envoy-listener")
 	a, b := mpStartPair(t, binary, uri)
 	serving := mpStartNATSSessions(t, uri)
-	const sessionID = "ses_mp_ledger"
+	const sessionID = "ses_mp_killed_delivered"
 	a.registerNATS(t, serving, sessionID)
 	publisher := mpConnectPublisher(t, uri)
 

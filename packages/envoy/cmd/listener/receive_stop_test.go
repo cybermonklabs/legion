@@ -60,7 +60,7 @@ func TestAGracefulStopHandsWhatItHeldBackAndReleasesTheLeaseToTheStandby(t *test
 	defer cancel()
 	active.receiver.Stop(ctx)
 	if took := time.Since(stopped); took > 3*time.Second {
-		t.Fatalf("the stop took %s, want the 300 ms grace, the release and the standby's take-over", took)
+		t.Fatalf("the stop took %s, want the 300 ms grace, the flush, the release and the drain", took)
 	}
 	if handling.Err() == nil {
 		t.Fatal("the stop left the message in hand's handling running past its grace")

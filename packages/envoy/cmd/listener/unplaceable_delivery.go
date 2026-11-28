@@ -47,13 +47,12 @@ const defaultUnplaceableRetryWindow = 60 * time.Second
 //     its slot.
 //
 // The slack is a figure of its own, not a sum of consumerAckWait, since the ack wait bounds nothing
-// a message waits in the local queue: those waits come to under a minute, and 120 s leaves more
-// than as much again for messages queued ahead of the redelivery. A slot older than the expiry
-// belongs to a message that is not coming back here - the stream dropped or purged it, or its
-// redelivery reached another subscriber - and take reclaims it.
-// TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that it exceeds the window and the
-// AckWait at every window it tries, so a message that is still pending never has its slot
-// reclaimed early.
+// a message waits in the local queue: 120 s leaves room for the settle hold's cap and for messages
+// queued ahead of the redelivery. A slot older than the expiry belongs to a message that is not
+// coming back here - the stream dropped or purged it, or its redelivery reached another
+// subscriber - and take reclaims it. TestUnplaceableRetryWindowFitsTheBoundsItDependsOn pins that
+// it exceeds the window, the AckWait and the settle hold's cap at every window it tries, so a
+// message that is still pending never has its slot reclaimed early.
 func unplaceableDeferralExpiry(window time.Duration) time.Duration {
 	return max(window, 0) + unplaceableDeferralSlack
 }

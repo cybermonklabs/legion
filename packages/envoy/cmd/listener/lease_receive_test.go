@@ -24,10 +24,10 @@ func (s *receiveSignal) backUp()   { s.up.Store(true) }
 
 // A holder whose receive connection stays down releases the record once it has been down for the
 // bound, and not before: its renewals land all the while, so nothing but the signal ends the
-// term. The record it releases is unsettled, owes its successor an ack wait and carries a stale
-// binding - the dead connection's subscription can still be bound at the server - so the pod that
-// takes it settles for the full ack wait and is no hand-back candidate. The pod that released it
-// takes it back from no poll while the connection is down, and stands by again once it is up.
+// term. The record it releases is unsettled and carries a stale binding - the dead connection's
+// subscription can still be bound at the server - so the pod that takes it settles beside that
+// binding. The pod that released it takes it back from no poll while the connection is down, and
+// stands by again once it is up.
 func TestLeaseHolderReleasesTheRecordOnceItsReceiveConnectionHasBeenDownForTheBound(t *testing.T) {
 	t.Parallel()
 	kv := leaseBucket(t)

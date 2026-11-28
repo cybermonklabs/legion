@@ -161,10 +161,7 @@ func TestTwoPodsGracefulStopWithMessagesOnTheWireKeepsOrder(t *testing.T) {
 // standby takes over: T must take every message, the one in flight at the kill included, in the
 // order they were published and within the hard bound (architect Q2: in order within 15 s; a
 // repeat with the same id is allowed). TestTwoPodsSIGKILLHandsOverInOrderWithin15s leaves the
-// message in flight out of what it checks. The new holder must take the killed pod's ledger
-// attempt for that message over at once: deferred as another pod's live attempt, it would reach
-// T 35 s after the kill, after every newer message. The killed pod is the lease holder whose
-// expired record the new holder took, so its attempt is no live pod's.
+// message in flight out of what it checks.
 func TestTwoPodsSIGKILLMidFrameKeepsTheSessionsOrderWithin15s(t *testing.T) {
 	uri := mpNATS(t)
 	binary := cmdtest.Build(t, "envoy-listener")

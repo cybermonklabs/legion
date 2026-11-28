@@ -32,12 +32,12 @@ related_issues:
 
 ## Evidence
 
-- `packages/envoy/cmd/listener/main.go:1658` gives the receive stop 10 s
+- `packages/envoy/cmd/listener/main.go:3150` gives the receive stop 10 s
   (`shutdownCtx`). Its parts come to 9 s at most: a 3 s grace, a 1 s cancel wait, a 1 s flush,
   a 2 s release and a 2 s drain.
-- Past the budget the shutdown goes on to `server.Shutdown` (`:1673`), then `client.Drain`
-  (`:1703`), which ends a hand-back's subscription still draining, then `os.Exit(1)`. The comment
-  at `:1636-1657` says this.
+- Past the budget the shutdown goes on to `server.Shutdown` (`:3169`), then `client.Drain`
+  (`:3205`), which ends a hand-back's subscription still draining, then `os.Exit(1)`. The comment
+  at `:3138-3149` says this.
 - Round 7 of #2404 found the sum missing the mark write. Round 8 found the text blaming the
   runtime's kill. Round 9 found it naming `os.Exit` for what `client.Drain` does. Each finding
   was one line of prose, but a wrong line here misleads anyone sizing the pod's

@@ -644,9 +644,10 @@ func TestAKeptRoleMessageOlderThanTheKeepWindowIsDroppedAndTheCursorMovesPastIt(
 
 // The role lane's keepable give-ups - a role nobody claims, and a claim whose holder is not live -
 // keep the message instead of reporting it lost: no delivery exception goes out, and the lane's
-// kept line names the reason, and for a lapsed holder that holder, whose claim stands. The kept
-// copy lies on a subject no consumer filter carries (bus.StreamSubjects), so the durable never
-// delivers it back and it is never counted received a second time.
+// kept line names the reason, and for a lapsed holder that holder, whose claim stands. The durable
+// does take the kept copy, since it takes every subject the stream stores (consumerFilterAll),
+// and its path acknowledges the copy unhandled (durableNeedsDelivery), so the copy is never
+// delivered back and never counted received a second time.
 func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -679,7 +680,7 @@ func TestTheRoleLaneKeepsAMessageNoLiveHolderTakesWithNoException(t *testing.T) 
 			// delivery is the durable path, which this test runs over every message it takes,
 			// as a listener does. A copy the path delivered would be arbitrated to the role
 			// again, so each message is handed to it and what it did is read below: the
-			// exception probe, the received counter and the forwards.
+			// exception probe and the received counter.
 			handled := make(chan string, 8)
 			durable, err := startListenerSubscription(harness.client, "listener-kept-"+id.New(), func(message *natsgo.Msg) {
 				harness.handler(message)
