@@ -107,13 +107,8 @@ export function waitingOnReader(
     )
   );
   // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
-  const listed =
-    viewer === undefined
-      ? []
-      : (decisions?.entries ?? []).filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
-        );
-  const reviewing = listed.filter((decision) =>
+  const entries = viewer === undefined ? [] : (decisions?.entries ?? []);
+  const reviewing = entries.filter((decision) =>
     waitsOnReader(
       decision,
       isCoverageStatement,
@@ -121,11 +116,16 @@ export function waitingOnReader(
       unread.has(decision.ref)
     )
   ).length;
+  const mayWait = entries.filter(
+    (decision) =>
+      unread.has(decision.ref) &&
+      inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
+  ).length;
   return {
     approvals,
     asks,
     decisions: reviewing,
-    mayWait: listed.length - reviewing,
+    mayWait,
     total: asks + reviewing + approvals.length,
     unread: unread.size,
   };

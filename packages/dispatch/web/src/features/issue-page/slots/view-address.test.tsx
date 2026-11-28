@@ -1585,7 +1585,7 @@ function specPage(statements: readonly (readonly [string, number])[], cursor: st
  *  stage's first focus, and answers the control after the view's last row once it is drawn. */
 async function drawnSpecPress(client: QueryClient) {
   const view = drawStage("", { client, issue: verifiedIssue(), preset: "spec" });
-  await rowTakesFocus(view, specRow(STATEMENT), "the Spec view");
+  await rowTakesFocus(view, SPEC_STATEMENT_ROW, "the Spec view");
   const more = await waitFor(() => {
     const found = view.container.querySelector<HTMLButtonElement>("[data-tree-more] button");
     expect(found, "the Spec view drew no control for its next page").not.toBeNull();

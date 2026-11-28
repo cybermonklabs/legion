@@ -181,6 +181,13 @@ export interface DecisionEntry extends EntryBase {
   readonly standing?: DecisionState;
 }
 
+/** One decision of the review list. */
+export interface ReviewEntry extends DecisionEntry {
+  /** Whether it waits on the reader (`waitsOnReader`): not while the outline marks it as one
+   *  whose Change may stand on a comment page not read yet (`TreeNode.changeUnread`). */
+  readonly waits: boolean;
+}
+
 /** A node the address names that is neither an ask nor a decision, drawn as a row of its own
  *  kind by its words. */
 export interface NamedEntry extends EntryBase {
@@ -197,7 +204,7 @@ export interface DecisionsParts {
   readonly named: readonly NamedEntry[];
   readonly open_questions: readonly AskEntry[];
   readonly others: readonly DecisionsEntry[];
-  readonly review: readonly DecisionEntry[];
+  readonly review: readonly ReviewEntry[];
   readonly yours: readonly DecisionsEntry[];
 }
 
@@ -242,7 +249,7 @@ export function waitingOrder(parts: DecisionsParts): readonly string[] {
  * once that page is read, and which the "+" of the count counts (`waiting.ts`' `mayWait`).
  */
 export function mayWaitOrder(parts: Pick<DecisionsParts, "review">): readonly string[] {
-  return parts.review.filter((entry) => !waitsInReview(entry)).map((entry) => entry.node.id);
+  return parts.review.filter((entry) => !entry.waits).map((entry) => entry.node.id);
 }
 
 /**
@@ -253,26 +260,8 @@ export function mayWaitOrder(parts: Pick<DecisionsParts, "review">): readonly st
  * (`waiting.ts`). What the list's heading counts, and what the header's count walks
  * (`waitingOrder`).
  */
-export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly DecisionEntry[] {
-  return parts.review.filter(waitsInReview);
-}
-
-/**
- * Whether `entry`, an entry of the review list, waits on the reader (`waitsOnReader`). The list
- * holds an agent's decision that waits for review, that no Change of the reader's stands on, by
- * its ties to the statements its `shapes` name (`decisionsParts`), so those ties are the ones the
- * rule reads, each a statement already; whether it carries the mark is its node's to say.
- */
-function waitsInReview(entry: DecisionEntry): boolean {
-  return waitsOnReader(
-    {
-      shaped: entry.shapes.map((shape) => ({ to: { ref: shape.reference } })),
-      waiting_review: entry.standing === "waiting_review",
-    },
-    () => true,
-    false,
-    entry.node.changeUnread === true
-  );
+export function reviewWaiting(parts: Pick<DecisionsParts, "review">): readonly ReviewEntry[] {
+  return parts.review.filter((entry) => entry.waits);
 }
 
 /**
@@ -333,12 +322,17 @@ export function decisionsParts({
   // or, where the tree holds no node for it - it stands on a page of the outline read not read
   // yet - a statement of the coverage read, as the header's count reads it (`waiting.ts`), so the
   // decision stands where it will once that page lands (decision 579).
-  const isStatement = (reference: string): boolean => {
-    const held = placed.get(nodeIdOf(reference) ?? "")?.node;
-    return held === undefined ? isCoverageStatement(reference) : held.type === "requirement";
+  const statementAt = (reference: string): TiedStatement | undefined => {
+    const resolved = nodeIdOf(reference);
+    const node = placed.get(resolved ?? "")?.node;
+    if (node === undefined ? !isCoverageStatement(reference) : node.type !== "requirement") {
+      return undefined;
+    }
+    return { id: resolved ?? reference, node };
   };
+  const isStatement = (reference: string): boolean => statementAt(reference) !== undefined;
   const open: AskEntry[] = [];
-  const review: DecisionEntry[] = [];
+  const review: ReviewEntry[] = [];
   const yours: DecisionsEntry[] = [];
   const others: DecisionsEntry[] = [];
   const agents: DecisionEntry[] = [];
@@ -359,7 +353,7 @@ export function decisionsParts({
       // A person's decision is the answered ask itself (`personDecisionAsk`): its `shaped` ties
       // are the statements the person's decision shaped, each once.
       const shaped = (personal.get(askId) ?? []).flatMap((row) => row.shaped ?? []);
-      const shapes = shapesOf({ shaped }, nodeIdOf, placed, isStatement);
+      const shapes = shapesOf({ shaped }, statementAt);
       const closing = closings.get(askId);
       // `question` is the ask's own `state === "open"` (`tree-read/tree-nodes.ts`' `draftAsk`).
       if (node.question) {
@@ -401,7 +395,7 @@ export function decisionsParts({
       agents.push({ ...base, ...timeOf(node.at), kind: "decision", shapes: [] });
       continue;
     }
-    const shapes = shapesOf(row, nodeIdOf, placed, isStatement);
+    const shapes = shapesOf(row, statementAt);
     const asked = row.replaced ? undefined : changes?.get(row.ref);
     const standing = standingOf(row, asked !== undefined);
     const keptBy: Actor | undefined =
@@ -441,7 +435,10 @@ export function decisionsParts({
       // decisions of whoever asked, by the time they did.
       decidedBy(asked.author).push({ ...entry, ...timeOf(asked.created_at) });
     } else if (inReviewList(row, isStatement)) {
-      review.push(entry);
+      review.push({
+        ...entry,
+        waits: waitsOnReader(row, isStatement, false, node.changeUnread === true),
+      });
     } else if (shapes.length === 0) {
       agents.push(entry);
     } else {
@@ -472,6 +469,14 @@ export function decisionsParts({
 interface Placement {
   readonly node: TreeNode;
   readonly parent?: ParentLine;
+}
+
+/** The statement of this issue a tie names, where the tie counts (`decisionsParts`'
+ *  `statementAt`): by the id the tree resolves its address to, else by that address, with its
+ *  node where the tree holds one. */
+interface TiedStatement {
+  readonly id: string;
+  readonly node?: TreeNode;
 }
 
 /** Every node of the tree by its id, in reading order, at its first placement, which is where it
@@ -536,21 +541,19 @@ function standingOf(
 }
 
 /** The statements of this issue `row`'s ties name, each once, in the ties' own order: each tie
- *  whose far end `isStatement` counts (`decisionsParts`' own), by the address and the place in
+ *  whose far end `statementAt` answers (`decisionsParts`' own), by the address and the place in
  *  the conversation of its node where the tree holds one, else by the tie's own address. */
 function shapesOf(
   row: Pick<ReadEntry, "shaped">,
-  nodeIdOf: (reference: string) => string | undefined,
-  placed: ReadonlyMap<string, Placement>,
-  isStatement: (reference: string) => boolean
+  statementAt: (reference: string) => TiedStatement | undefined
 ): readonly ShapedStatement[] {
   const shapes = new Map<string, ShapedStatement>();
   for (const link of row.shaped ?? []) {
     const reference = link.to.ref;
-    if (reference === undefined || !isStatement(reference)) continue;
-    const resolved = nodeIdOf(reference);
-    const node = placed.get(resolved ?? "")?.node;
-    const id = resolved ?? reference;
+    if (reference === undefined) continue;
+    const statement = statementAt(reference);
+    if (statement === undefined) continue;
+    const { id, node } = statement;
     shapes.set(id, {
       id,
       ...pathOf(node ?? { reference }),

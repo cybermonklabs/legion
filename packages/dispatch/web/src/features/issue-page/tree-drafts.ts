@@ -89,8 +89,7 @@ export function blockNodeId(slug: string, blockId: string): string {
  *  the document's address in the store, its issue's key and its slug, with the block's id after
  *  `#`, as the server addresses a block. The tree draws a block of another issue by it
  *  (`tree-read/tree-nodes.ts`' `treeIdOfNode`), and the Plan view names by it a task of another
- *  issue that a task needs (`plan-filter/plan-order.ts`' `neededId`): the one place the page
- *  writes that id. */
+ *  issue that a task needs (`plan-filter/plan-order.ts`' `neededId`). */
 export function blockReadId(key: string, slug: string, blockId: string): string {
   return `${key}/${slug}#${blockId}`;
 }

@@ -275,6 +275,7 @@ export function NextViewPage({
     // The view draws the page's rows in a render after the answer lands, so each change of what it
     // draws is looked at until a row of the page is there.
     const land = (): void => {
+      if (page.size === 0) return;
       const row = rowOfPage(view, page);
       if (row === undefined) return;
       acts.abort();
@@ -283,13 +284,13 @@ export function NextViewPage({
     const drawn = new MutationObserver(land);
     drawn.observe(view, { childList: true, subtree: true });
     acts.signal.addEventListener("abort", () => drawn.disconnect());
-    // A press that merged no page lands nowhere. A refused page, or one that names a cursor the
-    // read asked for already, leaves the answer as it was (`readNextTreePage`), and the control
-    // stays for another press.
+    // A press that merged no page, or a page of no node, lands nowhere. A refused page, or one
+    // that names a cursor the read asked for already, leaves the answer as it was
+    // (`readNextTreePage`), and the control stays for another press.
     next.read().then(
       (merged) => {
         if (acts.signal.aborted) return;
-        if (merged === undefined) {
+        if (merged === undefined || merged.size === 0) {
           acts.abort();
           return;
         }

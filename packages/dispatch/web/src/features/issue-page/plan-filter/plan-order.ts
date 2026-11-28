@@ -52,13 +52,18 @@ export interface PlanCycle {
 /** One place in the plan's order: a step, or a cycle the page draws as one line. */
 export type PlanEntry = PlanCycle | PlanStep;
 
-/** Where the block `reference` names stands: the key of its issue, the slug of its document where
- *  the reference spells one, and the block's id; undefined for a reference that names no block of
- *  a document of an issue. A reference spells the issue's primary document `spec`, with no slug
+/** Where a block stands: the key of its issue, the slug of its document where its reference
+ *  spells one, and the block's id (`blockOf`). */
+interface BlockPlace {
+  readonly blockId: string;
+  readonly key: string;
+  readonly slug?: string;
+}
+
+/** Where the block `reference` names stands; undefined for a reference that names no block of a
+ *  document of an issue. A reference spells the issue's primary document `spec`, with no slug
  *  (`tree-read/tree-nodes.ts`' `referenceOf`), so `slug` is absent for a block of it. */
-function blockOf(
-  reference: string | undefined
-): { readonly blockId: string; readonly key: string; readonly slug?: string } | undefined {
+function blockOf(reference: string | undefined): BlockPlace | undefined {
   const route = reference === undefined ? undefined : parseNodeReference(reference);
   if ((route?.kind !== "artifact" && route?.kind !== "spec") || route.block === undefined) {
     return undefined;
@@ -89,10 +94,12 @@ function blockOf(
  * `treeIdOfNode`): two issues under one parent can each write a `t1`, and each is its own task.
  */
 function neededIds(task: TreeNode): readonly string[] {
+  if (task.type !== "plan_task") return [];
+  const own = blockOf(task.reference);
   return [
     ...new Set(
       task.chips.flatMap((chip) => {
-        const id = neededId(task, chip);
+        const id = neededId(task, own, chip);
         return id === undefined ? [] : [id];
       })
     ),
@@ -105,15 +112,15 @@ function neededIds(task: TreeNode): readonly string[] {
  * chip's reference names, as the tree draws it, by its block's id in its document where it is of
  * the issue `task` is drawn in (`task` is of this issue, and so is the pointer), and by the read's
  * id where it is of another. The task's own issue and document are its own reference's
- * (`TreeNode.reference`), which the tree writes by its document's slug.
+ * (`TreeNode.reference`), which the tree writes by its document's slug: `own`, that reference's
+ * `blockOf`, which the caller reads once for all of `task`'s chips.
  *
  * The chip names a block of the primary document as `spec`, with no slug, and this module holds no
  * issue to read that document's slug from, so such a pointer of the task's own issue names its
  * block in the task's own document, which is the primary document where the task stands in it.
  */
-function neededId(task: TreeNode, chip: NodeChip): string | undefined {
+function neededId(task: TreeNode, own: BlockPlace | undefined, chip: NodeChip): string | undefined {
   if (task.type !== "plan_task" || chip.label !== BLOCK_ATTRIBUTE_LABELS.needs) return undefined;
-  const own = blockOf(task.reference);
   const needed = blockOf(chip.ref);
   if (own === undefined || needed === undefined) return undefined;
   const slug = needed.slug ?? (needed.key === own.key ? own.slug : undefined);
@@ -396,5 +403,6 @@ export function planChart(entries: readonly PlanEntry[]): PlanChart {
  * already names.
  */
 export function needsChip(task: TreeNode, needed: TreeNode): NodeChip | undefined {
-  return task.chips.find((chip) => neededId(task, chip) === needed.id);
+  const own = blockOf(task.reference);
+  return task.chips.find((chip) => neededId(task, own, chip) === needed.id);
 }

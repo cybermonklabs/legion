@@ -665,9 +665,9 @@ export function IssueTree({
     setDrawnFrom({ key: rowKeyOf({ kind: "node", level: page.level, node: next, trail }) });
   };
   // Claims the focus for the first row of the page `read` merges, and none while it is out, so a
-  // row an event adds meanwhile is not the page's. Where the read merges no page or is refused,
-  // the press ends its claim and its acts, each only where it is still this press's own: a later
-  // press, or the reader's act, may have replaced or ended it.
+  // row an event adds meanwhile is not the page's. Where the read merges no page, or a page of no
+  // node, or is refused, the press ends its claim and its acts, each only where it is still this
+  // press's own: a later press, or the reader's act, may have replaced or ended it.
   const focusFirstRead = (read: Promise<ReadonlySet<string> | undefined>): void => {
     olderActs.current?.abort();
     const acts = abortOnReaderAct(() => setDrawnFrom(undefined));
@@ -679,7 +679,7 @@ export function IssueTree({
       if (olderActs.current === acts) acts.abort();
     };
     read.then((page) => {
-      if (page === undefined) end();
+      if (page === undefined || page.size === 0) end();
       else setDrawnFrom((held) => (held === claim ? { page } : held));
     }, end);
   };

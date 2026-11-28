@@ -75,11 +75,13 @@ import { plainWrite, writesOf } from "../writes/write-store";
 import { issueAddress, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import * as issueTreeModel from "./issue-tree";
+import { waitInAct } from "./outline-fixtures";
 import { CONTROL_LABELS, NODE_TYPE_NAMES, PRESET_NAMES } from "./page-words";
 import { presetView } from "./presets";
 import { nameOf, Publisher, publishedNames } from "./projection-fixture";
 import { BodySlot } from "./slots/body";
 import { ProvidersSlot } from "./slots/providers";
+import { focusedRow } from "./slots/stage-fixtures";
 import { nodeRowSelectorOf } from "./tree-focus";
 import { nodesInOrder } from "./tree-keys";
 import {
@@ -1746,11 +1748,6 @@ function laterPage(comments: readonly Comment[]): TreeAnswer {
   };
 }
 
-/** The node id of the outline's row that holds the focus, or undefined where none does. */
-function focusedNodeId(): string | undefined {
-  return document.activeElement?.closest<HTMLElement>("[data-node-row]")?.dataset.nodeId;
-}
-
 /** Draws the page's body around the hook with the issue's keys on, as the page has them (`k` on
  *  the first row presses the control above it), and answers the node id of the outline's first
  *  row once the outline's first focus has landed on it, and how to take the body off the page. */
@@ -1777,13 +1774,6 @@ async function drawnForPress(
 async function readOutlineAgain(client: QueryClient): Promise<void> {
   await act(async () => {
     await client.refetchQueries({ exact: true, queryKey: conversationTreeKey(KEY) });
-  });
-}
-
-/** Lets a page's answer, or its refusal, reach the press that asked for it, and what it draws. */
-async function pageSettled(): Promise<void> {
-  await act(async () => {
-    await Bun.sleep(30);
   });
 }
 
@@ -1815,14 +1805,14 @@ test("a More press whose next page is refused leaves the focus where it is as a 
       moreControl()?.click();
     });
     await waitFor(() => expect(cursorsAsked()).toEqual([undefined, "page-2"]));
-    await pageSettled();
+    await waitInAct(30);
     expect(moreControl(), "the control went with the refused page").not.toBeNull();
 
     first = firstPage([comment, ADDED], "page-2");
     await readOutlineAgain(client);
     await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
-    await pageSettled();
-    expect(focusedNodeId(), "the refused press gave the focus to the comment drawn after it").toBe(
+    await waitInAct(30);
+    expect(focusedRow(), "the refused press gave the focus to the comment drawn after it").toBe(
       held
     );
 
@@ -1830,7 +1820,7 @@ test("a More press whose next page is refused leaves the focus where it is as a 
     await act(async () => {
       moreControl()?.click();
     });
-    await waitFor(() => expect(focusedNodeId()).toBe(LATER.id));
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
     unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -1869,22 +1859,22 @@ test("a More press whose page lands once the answer has moved on leaves the focu
       expect(client.getQueryData<TreeAnswer>(conversationTreeKey(KEY))?.cursor).toBe("page-3")
     );
     await act(async () => out.resolve(laterPage([LATER])));
-    await pageSettled();
+    await waitInAct(30);
     expect(outlineRowOf(LATER.id), "the page that landed late was merged").toBeNull();
 
     first = firstPage([comment, ADDED], "page-3");
     await readOutlineAgain(client);
     await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
-    await pageSettled();
+    await waitInAct(30);
     expect(
-      focusedNodeId(),
+      focusedRow(),
       "the press whose page merged nothing gave the focus to the comment drawn after it"
     ).toBe(held);
 
     await act(async () => {
       moreControl()?.click();
     });
-    await waitFor(() => expect(focusedNodeId()).toBe(LATER.id));
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
     unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -1913,14 +1903,14 @@ test("a More press leaves the focus where it is as a read made again draws a new
     first = firstPage([comment, ADDED], "page-2");
     await readOutlineAgain(client);
     await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
-    await pageSettled();
+    await waitInAct(30);
     expect(
-      focusedNodeId(),
+      focusedRow(),
       "the press out gave the focus to a comment that is no row of its page"
     ).toBe(held);
 
     await act(async () => out.resolve(laterPage([LATER])));
-    await waitFor(() => expect(focusedNodeId()).toBe(LATER.id));
+    await waitFor(() => expect(focusedRow()).toBe(LATER.id));
     unmount();
   } finally {
     for (const stub of stubs) stub.mockRestore();
@@ -1955,7 +1945,7 @@ test("the older comments' key press whose page is refused leaves the focus where
       );
     });
     await waitFor(() => expect(treeReadsSent()["kind comments"]).toBe(1));
-    await pageSettled();
+    await waitInAct(30);
     expect(
       document.body.querySelector("[data-older-comments] button"),
       "the control went with the refused page"
@@ -1964,8 +1954,8 @@ test("the older comments' key press whose page is refused leaves the focus where
     first = { ...firstPage([comment, ADDED], null), comments_before: before };
     await readOutlineAgain(client);
     await waitFor(() => expect(outlineRowOf(ADDED.id)).not.toBeNull());
-    await pageSettled();
-    expect(focusedNodeId(), "the refused press gave the focus to the comment drawn after it").toBe(
+    await waitInAct(30);
+    expect(focusedRow(), "the refused press gave the focus to the comment drawn after it").toBe(
       held
     );
 
@@ -1975,7 +1965,7 @@ test("the older comments' key press whose page is refused leaves the focus where
         new KeyboardEvent("keydown", { bubbles: true, key: "k" })
       );
     });
-    await waitFor(() => expect(focusedNodeId()).toBe(OLDER.id));
+    await waitFor(() => expect(focusedRow()).toBe(OLDER.id));
     expect(treeReadsSent()["kind comments"]).toBe(2);
     unmount();
   } finally {

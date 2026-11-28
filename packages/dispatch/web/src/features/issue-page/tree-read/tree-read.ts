@@ -881,11 +881,14 @@ function useReadPages(
   const refused = named && page === refusedAt;
   const reading = named && !refused;
   useEffect(() => {
-    if (!reading || !mayStart || page === undefined) return;
+    if (!reading || !mayStart) return;
     readPage().catch(() => setRefusedAt(page));
   }, [mayStart, page, readPage, reading]);
   return { reading, refused };
 }
+
+/** The read of no page, for a reading that names none (`useReadPages`). */
+const noPage = (): Promise<undefined> => Promise.resolve(undefined);
 
 /**
  * Reads the next pages of the outline read the page holds, or of `outline`'s read where one is
@@ -904,7 +907,6 @@ export function useReadUntilHeld(
   wanted: boolean,
   outline?: Outline
 ): PagesReading {
-  const queryClient = useQueryClient();
   const choice = useOutlineChoice();
   const read = outline ?? choice.outline;
   const answer = useQuery(
@@ -913,15 +915,8 @@ export function useReadUntilHeld(
       : { ...outlineQuery(issue.key, outline), enabled: false }
   ).data;
   const cursor = answer === undefined ? undefined : nextTreeCursor(answer);
-  const named = wanted && read !== undefined && cursor !== undefined;
-  const readNext = useCallback(
-    () =>
-      read === undefined
-        ? Promise.resolve(undefined)
-        : readNextTreePage(queryClient, issue.key, read),
-    [issue.key, queryClient, read]
-  );
-  return useReadPages(cursor, readNext, named, true);
+  const next = useNextPage(issue.key, read, answer);
+  return useReadPages(cursor, next?.read ?? noPage, wanted && next !== undefined, true);
 }
 
 /**

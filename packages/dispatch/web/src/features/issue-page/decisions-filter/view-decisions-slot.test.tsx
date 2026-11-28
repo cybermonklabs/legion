@@ -760,6 +760,23 @@ function answerOlderChange(page: Promise<TreeAnswer>): () => number {
   return () => tree.mock.calls.filter(([, query]) => query?.comments_before !== undefined).length;
 }
 
+/** The row the Decisions view draws of the decision of block `block`; throws where it draws none. */
+function decisionRow(view: RenderResult, block: string): HTMLElement {
+  const row = view.container.querySelector<HTMLElement>(
+    `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
+  );
+  if (row === null) throw new Error(`the view drew no row for ${block}`);
+  return row;
+}
+
+/** The decisions of the older-Change cases, `newer` then `older`, whose rows the Decisions view
+ *  draws with the outline's mark ("+" after the state). */
+function markedDecisions(view: RenderResult): string[] {
+  return ["newer", "older"].filter(
+    (block) => decisionRow(view, block).querySelector("[data-change-unread]")?.textContent === "+"
+  );
+}
+
 // Decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z (choice (b)): a decision whose
 // Change may stand on a comment page Conversation's read has not loaded stays in the review list,
 // drawn with the outline's mark ("+" after its state), and the list's count leaves it out until
@@ -770,10 +787,6 @@ test("a decision whose Change stands on an older comment page stays in the revie
   const page = Promise.withResolvers<TreeAnswer>();
   const pagesSent = answerOlderChange(page.promise);
   const view = drawStage("");
-  const rowOf = (block: string) =>
-    view.container.querySelector<HTMLElement>(
-      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
-    );
   const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
   const reviewRows = () =>
     [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
@@ -782,7 +795,7 @@ test("a decision whose Change stands on an older comment page stays in the revie
   const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
   await waitFor(() =>
     expect(
-      rowOf("older")?.querySelector("[data-change-unread]")?.textContent,
+      decisionRow(view, "older").querySelector("[data-change-unread]")?.textContent,
       `the decision is not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
     ).toBe("+")
   );
@@ -795,12 +808,18 @@ test("a decision whose Change stands on an older comment page stays in the revie
   ).toBe("1");
   await act(async () => page.resolve(OLDER_PAGE));
   await waitFor(() =>
-    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
-      "change_requested"
-    )
+    expect(
+      decisionRow(view, "older").dataset.nodeState,
+      "the decision does not carry its Change"
+    ).toBe("change_requested")
   );
-  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
-  expect(rowOf("older")?.querySelector("[data-change-unread]"), "the mark stayed").toBeNull();
+  expect(decisionRow(view, "older").querySelector("[data-change-words]")?.textContent).toBe(
+    OLDER_CHANGE.body
+  );
+  expect(
+    decisionRow(view, "older").querySelector("[data-change-unread]"),
+    "the mark stayed"
+  ).toBeNull();
   expect(reviewRows(), "the review list once the Change is held").toEqual([
     decisionNode("newer").id,
   ]);
@@ -868,14 +887,6 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
   const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
   const view = drawStage("");
-  const rowOf = (block: string) =>
-    view.container.querySelector<HTMLElement>(
-      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
-    );
-  const marked = () =>
-    ["newer", "older"].filter(
-      (block) => rowOf(block)?.querySelector("[data-change-unread]")?.textContent === "+"
-    );
   const review = () => view.container.querySelector<HTMLElement>('[data-decisions-part="review"]');
   const reviewRows = () =>
     [...(review()?.querySelectorAll<HTMLElement>("[data-node-row]") ?? [])].map(
@@ -884,7 +895,7 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   const reviewCount = () => review()?.querySelector("[data-decisions-count]")?.textContent;
   await waitFor(() =>
     expect(
-      marked(),
+      markedDecisions(view),
       `the decisions are not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
     ).toEqual(["newer", "older"])
   );
@@ -899,12 +910,15 @@ test("a decision whose Change stands on the next page of Conversation's read sta
   await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
   await act(async () => next.resolve(NEXT_PAGE));
   await waitFor(() =>
-    expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
-      "change_requested"
-    )
+    expect(
+      decisionRow(view, "older").dataset.nodeState,
+      "the decision does not carry its Change"
+    ).toBe("change_requested")
   );
-  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
-  expect(marked(), "the mark stayed").toEqual([]);
+  expect(decisionRow(view, "older").querySelector("[data-change-words]")?.textContent).toBe(
+    OLDER_CHANGE.body
+  );
+  expect(markedDecisions(view), "the mark stayed").toEqual([]);
   expect(reviewRows(), "the review list once the next page is read").toEqual([
     decisionNode("newer").id,
   ]);
@@ -926,25 +940,14 @@ test("a press of a count that only may wait goes to the first marked decision at
   const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
   const held: { navigate?: NavigateFunction } = {};
   const view = drawStage("", { held });
-  const rowOf = (block: string) => {
-    const row = view.container.querySelector<HTMLElement>(
-      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode(block).id}"]`
-    );
-    if (row === null) throw new Error(`the view drew no row for ${block}`);
-    return row;
-  };
-  const marked = () =>
-    ["newer", "older"].filter(
-      (block) => rowOf(block).querySelector("[data-change-unread]")?.textContent === "+"
-    );
   await waitFor(() =>
     expect(
-      marked(),
+      markedDecisions(view),
       `the decisions are not drawn with the outline's mark; the stage drew ${drawnSlot(view)}`
     ).toEqual(["newer", "older"])
   );
   await waitFor(() => expect(focusedRow(), "the stage put the focus on no row").toBeDefined());
-  await act(async () => rowOf("older").focus());
+  await act(async () => decisionRow(view, "older").focus());
   // The count's press, as the header makes it: the view's address, with the press in its entry.
   await act(async () =>
     held.navigate?.(presetPath(KEY, "decisions"), { replace: true, state: { waitingPress: 1 } })
@@ -955,11 +958,16 @@ test("a press of a count that only may wait goes to the first marked decision at
       "the press did not go to the first marked decision while the next page was out"
     ).toBe(decisionNode("newer").id)
   );
-  expect(marked(), "a mark cleared before the next page answered").toEqual(["newer", "older"]);
-  await act(async () => rowOf("older").focus());
+  expect(markedDecisions(view), "a mark cleared before the next page answered").toEqual([
+    "newer",
+    "older",
+  ]);
+  await act(async () => decisionRow(view, "older").focus());
   await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
   await act(async () => next.resolve(treeAnswer([])));
-  await waitFor(() => expect(marked(), "a mark stayed once the next page answered").toEqual([]));
+  await waitFor(() =>
+    expect(markedDecisions(view), "a mark stayed once the next page answered").toEqual([])
+  );
   await waitInAct(20);
   expect(focusedRow(), "a mark that cleared moved the focus").toBe(decisionNode("older").id);
 });

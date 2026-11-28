@@ -665,12 +665,11 @@ test("each entry carries its address in the conversation and its parent's line",
   expect(conversationPath({ reference: `dispatch://${KEY}` })).toBeUndefined();
 });
 
-// R1 and R22: the filter's one line for a parent and for a statement a decision shaped is drawn
-// as every one line of a node is (`lineReading`, `drawnLine`): projected from the words of the
-// node's first block, so a heading never runs into the paragraph after it; with an ellipsis where
-// the cut ends inside a sentence; and a node with no words is named by its kind's word, never by
-// its id.
-test("a parent's line and a statement's line are cut from the node's first block", () => {
+// R1 and R22: the filter's one line for a parent is drawn as every one line of a node is
+// (`lineReading`, `drawnLine`): projected from the words of the node's first block, so a heading
+// never runs into the paragraph after it, and a node with no words is named by its kind's word,
+// never by its id.
+test("a parent's line is cut from the node's first block", () => {
   const words = Array.from({ length: 30 }, (_unused, at) => `word${at + 1}`).join(" ");
   // A question whose reading opens on a heading, then a paragraph.
   const headed: DisplayTree = {

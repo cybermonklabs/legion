@@ -413,16 +413,17 @@ export function DecisionsFilterBody({
   const pressed = useRef<number | undefined>(undefined);
   const went = useRef<string | undefined>(undefined);
   const waiting = useMemo(() => waitingOrder(parts), [parts]);
-  const mayWait = useMemo(() => mayWaitOrder(parts), [parts]);
+  const waitingInReview = useMemo(() => reviewWaiting(parts).length, [parts]);
   useEffect(() => {
     if (waitingPress === undefined || waitingPress === pressed.current || !entriesHeld) return;
     pressed.current = waitingPress;
-    const order = waiting.length > 0 ? waiting : mayWait;
+    const order = waiting.length > 0 ? waiting : mayWaitOrder(parts);
+    if (order.length === 0) return;
     const next = order[(order.indexOf(went.current ?? "") + 1) % order.length];
     if (next === undefined) return;
     went.current = next;
     goTo(next);
-  }, [entriesHeld, goTo, mayWait, waiting, waitingPress]);
+  }, [entriesHeld, goTo, parts, waiting, waitingPress]);
 
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
@@ -897,7 +898,7 @@ export function DecisionsFilterBody({
                   data-decisions-count=""
                   {...authorText}
                 >
-                  {part === "review" ? reviewWaiting(parts).length : entries.length}
+                  {part === "review" ? waitingInReview : entries.length}
                 </span>
               </div>
               {entries.map((entry) => rowFor(entry, part))}

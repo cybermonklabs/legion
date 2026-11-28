@@ -160,12 +160,6 @@ export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"
   readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
 };
 
-/** What the review list reads of a decision: whether it waits for a person's review, and the far
- *  end of each of its `shaped` ties. */
-type ListedDecision = Pick<DecisionEntry, "waiting_review"> & {
-  readonly shaped?: readonly { readonly to: { readonly ref?: string } }[] | null;
-};
-
 /**
  * Whether `decision` is an entry of the review list (R35): an agent's decision that waits for a
  * person's review - neither kept as it reads now nor replaced, which is the server's
@@ -181,7 +175,7 @@ type ListedDecision = Pick<DecisionEntry, "waiting_review"> & {
  * waits on the reader is `waitsOnReader`'s to say.
  */
 export function inReviewList(
-  decision: ListedDecision,
+  decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
   isCoverageStatement: (reference: string) => boolean,
   changed = false
 ): boolean {
@@ -204,7 +198,7 @@ export function inReviewList(
  * (`decisions-filter/decisions-parts.ts`' `reviewWaiting`).
  */
 export function waitsOnReader(
-  decision: ListedDecision,
+  decision: Pick<DecisionEntry, "shaped" | "waiting_review">,
   isCoverageStatement: (reference: string) => boolean,
   changed: boolean,
   unread: boolean
