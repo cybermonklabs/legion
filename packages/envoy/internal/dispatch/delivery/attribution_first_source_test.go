@@ -215,20 +215,91 @@ func TestAttributionStopsAtTheFirstSourceThatNamesAnIssue(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			picks, commitReads := attributeEachWay(t, ctx, pool, tc.number, tc.pull)
-			for place, pick := range picks {
-				wantSource := tc.from
-				if place == "the stored rows' batch" {
-					wantSource = ""
-				}
-				if pick.key != tc.want || pick.source != wantSource {
-					t.Errorf("%s: #%d is credited to %q from %q, want %q from %q", place, tc.number, pick.key, pick.source, tc.want, wantSource)
-				}
-			}
-			if reads := commitReads > 0; reads != tc.readsCommits {
-				t.Errorf("the refresh read #%d's commits %d times, want reads %v: they are read only where no source above them names an issue",
-					tc.number, commitReads, tc.readsCommits)
-			}
+			wantAttributedEachWay(t, ctx, pool, tc.number, tc.pull, tc.want, tc.from, tc.readsCommits)
+		})
+	}
+}
+
+// wantAttributedEachWay runs pull, as pull request number of acme/gadgets, through the three
+// places the pick is made (attributeEachWay) and fails where any of them credits another issue
+// than want, or names another source than from (the batch stores no source), or where the
+// refresh reads the commit messages when readsCommits says it must not, or the other way round.
+func wantAttributedEachWay(t *testing.T, ctx context.Context, pool *store.Pool, number int, pull firstSourcePull, want string, from attributionSource, readsCommits bool) {
+	t.Helper()
+	picks, commitReads := attributeEachWay(t, ctx, pool, number, pull)
+	for place, pick := range picks {
+		wantSource := from
+		if place == "the stored rows' batch" {
+			wantSource = ""
+		}
+		if pick.key != want || pick.source != wantSource {
+			t.Errorf("%s: #%d is credited to %q from %q, want %q from %q", place, number, pick.key, pick.source, want, wantSource)
+		}
+	}
+	if reads := commitReads > 0; reads != readsCommits {
+		t.Errorf("the refresh read #%d's commits %d times, want reads %v: they are read only where no source above them names an issue",
+			number, commitReads, readsCommits)
+	}
+}
+
+// TestADispatchTrailerOutranksAMentionInTheSameSource: a `Dispatch:` trailer line is the pull
+// request's own statement of its issue, so within one source it outranks a key the same source
+// only mentions. Stopping at the first source that names an issue left the mention free to win
+// inside that source: a body whose trailer names an issue of another repository and whose prose
+// names an issue of this one was credited to the issue the prose names, which is the failure of
+// TestAPullRequestIsNotCreditedToAnIssueOnlyItsMergeCommitMentions inside one source, and the
+// commit messages did the same with a merge commit's prose above the last commit's trailer.
+func TestADispatchTrailerOutranksAMentionInTheSameSource(t *testing.T) {
+	fastPageRetries(t)
+	pool, ctx := deliveryTestPool(t)
+	other := seedHeadIssue(t, ctx, pool, 47)
+	own := seedGadgetsIssue(t, ctx, pool, 48)
+	bystander := seedGadgetsIssue(t, ctx, pool, 647)
+	for _, tc := range []struct {
+		name         string
+		number       int
+		pull         firstSourcePull
+		want         string
+		from         attributionSource
+		readsCommits bool
+	}{
+		{
+			name:   "the body's trailer names an issue of another repository, its prose one of this repository",
+			number: 401,
+			pull: firstSourcePull{
+				title: "feat: the work", body: "Dispatch: " + other + "\n\nKeeps the " + bystander + " rows.", branch: "topic",
+			},
+			want: "", from: sourceNone,
+		},
+		{
+			name:   "a merge commit's prose names an issue of this repository, the last commit's trailer the pull request's own",
+			number: 407,
+			pull: firstSourcePull{
+				title: "feat: the work", branch: "topic",
+				commits: []string{"Merge main\n\nKeep the " + bystander + " rows.", "Dispatch: " + own},
+			},
+			want: own, from: sourceCommitMessage, readsCommits: true,
+		},
+		{
+			name:   "a merge commit's prose names an issue of this repository, the last commit's trailer one of another repository",
+			number: 408,
+			pull: firstSourcePull{
+				title: "feat: UTF-8", body: "See GDGT-9999.", branch: "topic",
+				commits: []string{"Keep the " + bystander + " rows.", "Dispatch: " + other},
+			},
+			want: "", from: sourceNone, readsCommits: true,
+		},
+		{
+			name:   "with no trailer, one source naming an issue of another repository and then one of this repository still takes this one's",
+			number: 409,
+			pull: firstSourcePull{
+				title: other + ": the other repository's issue, and " + own + " (this one)", branch: "topic",
+			},
+			want: own, from: sourceTitleBody,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wantAttributedEachWay(t, ctx, pool, tc.number, tc.pull, tc.want, tc.from, tc.readsCommits)
 		})
 	}
 }
