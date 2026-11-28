@@ -202,6 +202,60 @@ test("a document anchor's thread stands at the match its occurrence names", () =
   ]);
 });
 
+// R2 ("Quote and block"): the server stores a comment on a typed block's words under the inner
+// paragraph that holds them (`pmdoc.BlockIDForRange`), which no node stands for, so the read
+// hangs it under the typed block and counts its `occurrence` in that paragraph alone, and
+// `text_tree` names no paragraph. In a requirement of the paragraphs "Keep the note." and "Draw
+// the note beside the note.", only the second holds two matches of "note": a thread on a second
+// match is marked there, the block's third match (offset 40), and a thread on a first match,
+// which both paragraphs hold, and one on a third, which neither holds, stand at the row's first
+// line with no mark. Counted from the start of the block's whole text instead, the thread on a
+// second match would be marked at offset 24, the one on a first at 9 and the one on a third at 40.
+test("a thread in a typed block of two paragraphs marks its words only where one paragraph alone can hold the match, and else stands at the row's first line", () => {
+  const paragraphs = ["Keep the note.", "Draw the note beside the note."];
+  const requirement = treeNode("r-two", "requirement", KEY, {
+    ...inDocument(SPEC_DOCUMENT, 2),
+    text: `:::requirement{#r-two}\n${paragraphs.join("\n\n")}\n:::`,
+    text_tree: {
+      content: [
+        {
+          attrs: { blockId: "r-two" },
+          content: paragraphs.map((text) => ({
+            content: [{ text, type: "text" }],
+            type: "paragraph",
+          })),
+          type: "requirement",
+        },
+      ],
+      type: "doc",
+    },
+  });
+  const comments: Comment[] = [];
+  const nodes: TreeAnswerNode[] = [];
+  for (const [id, at, occurrence] of [
+    ["in-one", 1, 1],
+    ["in-both", 2, 0],
+    ["in-neither", 3, 2],
+  ] as const) {
+    // Each is on words of the second paragraph, whose id no node of the read stands for.
+    const anchor = anchorOn(SPEC_DOCUMENT, "r-two-draw", "note");
+    const comment = { ...readComment(id, at), anchor };
+    comments.push(comment);
+    nodes.push(nodeOf(comment, "r-two", { anchor: { ...treeAnchorOf(anchor), occurrence } }));
+  }
+  const tree = treeOf([...seededNodes([]), requirement, ...nodes], SERVES);
+
+  expect(
+    threadsOver(tree, comments)
+      .get(blockNodeId(SPEC_DOCUMENT.slug, "r-two"))
+      ?.threads.map(({ firstLine, thread, words }) => [thread.key, firstLine, words.occurrence])
+  ).toEqual([
+    ["in-both", true, 0],
+    ["in-neither", true, 2],
+    ["in-one", false, 2],
+  ]);
+});
+
 // R2: where the view does not draw the node the anchor names - Plan draws its plan tasks - the
 // thread stands by the node the read hangs it under; where it draws both, by the anchor's.
 test("a thread whose node the view does not draw stands by the read's parent", () => {

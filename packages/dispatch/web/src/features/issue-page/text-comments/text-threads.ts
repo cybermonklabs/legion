@@ -21,7 +21,7 @@ import {
   type TextPlace,
   withoutTextFacts,
 } from "./on-text";
-import { type QuotedNode, quotedNodeOf, quoteStart } from "./selection-quote";
+import { anchorMatch, type QuotedNode, quotedNodeOf, quoteStart } from "./selection-quote";
 import type { QuotedWords } from "./text-comment-write";
 
 /**
@@ -41,8 +41,9 @@ import type { QuotedWords } from "./text-comment-write";
 
 /** One thread on text, as the column and a node's sheet draw it. */
 export interface TextThread {
-  /** Whether its words stand at its node's first line: they left the node's text (`orphaned`), or
-   *  the node's words hold no such match, so the row draws its first line instead. */
+  /** Whether its words stand at its node's first line: they left the node's text (`orphaned`), the
+   *  node's words hold no such match, or, in a typed block of more than one paragraph, no one
+   *  paragraph alone holds it (`anchorMatch`), so the row draws its first line instead. */
   readonly firstLine: boolean;
   /** The lenses on each comment of the thread, by the comment's id, each a row of W's with its
    *  findings and risks under it, in the read's order (R7). A comment with none has no entry. */
@@ -57,9 +58,10 @@ export interface TextThread {
   /** What the column finds the thread's words by in its node's row (`rangeOf`): the quoted words
    *  whole, as the read holds them, which the card cuts to one line at its top (`quoteLine`, R4);
    *  which match of them in the node's words the thread is on, zero-based - the one the tree read's
-   *  anchor names for a document anchor (G3b), the first where it names none, and the stored one
-   *  for a node anchor and a reply; and, for a reply with a quote, whose card draws no Resolve or
-   *  Reopen (R4), the item's block it quotes, null for every other root. */
+   *  anchor names for a document anchor (G3b), counted in the node's whole words where the read
+   *  counts it in one paragraph of a typed block (`anchorMatch`), the first where it names none,
+   *  and the stored one for a node anchor and a reply; and, for a reply with a quote, whose card
+   *  draws no Resolve or Reopen (R4), the item's block it quotes, null for every other root. */
   readonly words: QuotedWords;
 }
 
@@ -202,9 +204,10 @@ interface Placed {
 /**
  * The thread of `root`, whose words are at `place`, as the card draws it (`record`, with
  * `entries` its replies in time order), with where its words start in `node`'s words as the
- * server's plain text reads them (`quoteStart`): the match its occurrence names, counted in the
- * quoted block for a reply, and the node's first line for words that left the text or that the
- * node's words do not hold.
+ * server's plain text reads them (`anchorMatch`, `quoteStart`): the match its occurrence names,
+ * counted in the one paragraph of a typed block that alone can hold it for a document anchor and
+ * in the quoted block for a reply, and the node's first line for words that left the text, that
+ * the node's words do not hold, or that no one paragraph alone holds.
  */
 function placedThread(
   root: TreeAnswerNode,
@@ -223,7 +226,12 @@ function placedThread(
         ? place.orphaned
         : place.block.removed;
   const block = place.kind === "item" ? place.block : null;
-  const at = orphaned ? -1 : quoteStart(node, quote, occurrence, block);
+  const match = orphaned
+    ? null
+    : place.kind === "block"
+      ? anchorMatch(node, quote, occurrence)
+      : { occurrence, start: quoteStart(node, quote, occurrence, block) };
+  const at = match === null ? -1 : match.start;
   const anchor = cardAnchorOf(place);
   const own = new Map(
     [record.id, ...entries.map((entry) => entry.id)].flatMap(
@@ -250,7 +258,7 @@ function placedThread(
           record.resolved || (record.suggestion !== null && record.suggestion.accepted !== null),
         root: { comment: { ...record, anchor }, kind: "comment" },
       },
-      words: { block: block?.block_id ?? null, occurrence, quote },
+      words: { block: block?.block_id ?? null, occurrence: match?.occurrence ?? occurrence, quote },
     },
   };
 }

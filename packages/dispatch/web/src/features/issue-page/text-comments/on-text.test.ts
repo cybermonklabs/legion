@@ -480,12 +480,30 @@ test("each item the margin draws is an item no outline row draws", () => {
 // block whose paragraph its anchor names. A comment the read hangs under the issue, its anchor
 // orphaned or in a block no node stands for, stands beside the typed block the read names as its
 // container (`container_node_id`, on this base since part W's commit `bf9ba8550e4`) where the
-// view draws it, and in no margin where the read names none.
+// view draws it, and in no margin where the read names none. B0's recording predates that member,
+// so the case gives the recorded orphaned comment's node the container the server answers for
+// it, the requirement `r-orphan`; Graph's two comments on the document nothing cites get none.
 test("the tree read's anchor places each comment on text", () => {
-  for (const [view, answer] of [
-    ["conversation", CONVERSATION],
-    ["graph", GRAPH],
+  for (const [view, recordedAnswer, besideContainer] of [
+    ["conversation", CONVERSATION, { orphanedThread: "spec#b-r-orphan" }],
+    [
+      "graph",
+      GRAPH,
+      {
+        orphanedThread: "spec#b-r-orphan",
+        "uncitedThreads[0]": undefined,
+        "uncitedThreads[1]": undefined,
+      },
+    ],
   ] as const) {
+    const answer: TreeAnswer = {
+      ...recordedAnswer,
+      nodes: (recordedAnswer.nodes ?? []).map((node) =>
+        node.id === "orphanedThread" && node.anchor !== undefined
+          ? { ...node, anchor: { ...node.anchor, container_node_id: "key/tree#r-orphan" } }
+          : node
+      ),
+    };
     const reads: IssueTreeReads = { issue: recordedIssue(), tree: answer };
     const rows = new Set(rowsOf(buildIssueTree(reads)).keys());
     const placed = new Map<string, string>();
@@ -506,15 +524,7 @@ test("the tree read's anchor places each comment on text", () => {
     expect(
       new Map(underIssue.map(({ id }) => [id, placed.get(id)])),
       `${view} places a thread of a block no node stands for`
-    ).toEqual(
-      new Map(
-        underIssue.map(({ anchor, id }) => {
-          const container = anchor?.container_node_id;
-          const at = container === undefined ? undefined : idOf(container);
-          return [id, at !== undefined && rows.has(at) ? at : undefined];
-        })
-      )
-    );
+    ).toEqual(new Map(Object.entries(besideContainer)));
   }
 });
 

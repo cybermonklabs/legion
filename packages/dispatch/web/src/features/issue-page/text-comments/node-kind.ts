@@ -9,7 +9,10 @@ const TYPED_BLOCKS: ReadonlySet<string> = new Set(
 /**
  * `node`'s kind as the server's tree read tells it apart (`kind=`, `treeKinds`): a port of the
  * server's `issueTreeBuilder.nodeKind` (`api/issue_tree_kinds.go`), its branches in its order, and
- * the page's one copy of that rule. A node whose store kind is not `block` is of its store kind. A
+ * the copy of that rule the margin's write (`subjectOf`) and its read (`conversationKindOf`, which
+ * the Contents list reads) take; the page's drawing (`lensTypeOf` in `lenses/lens-drafts.ts`,
+ * `isPlainBlock` in `tree-read/tree-nodes.ts`) keeps a parent-based rule of its own: a block moved
+ * under a lens is a finding there. A node whose store kind is not `block` is of its store kind. A
  * block whose id names its lens (`lens/<uuid>#<block id>`, as `graphstore.ParseFindingID` reads
  * it) is a finding, whatever its supertag and its parent. A block whose supertag is a typed block
  * of the schema (`pmdoc.IsTypedBlock`; `compiledBlockSchema`, the manifest the server of the same

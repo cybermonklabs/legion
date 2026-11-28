@@ -1,5 +1,6 @@
 import { referenceSpans } from "@legion/contracts";
 
+import type { DisplayTree } from "../../../api/types";
 import { wordsOf } from "../../refs/tree-fragment";
 import { storeKindText } from "../lenses/lens-drafts";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
@@ -194,6 +195,52 @@ export function quoteStart(
 ): number {
   if (quote === "") return -1;
   return startIn(sourceOf(node), quote, occurrence, block ?? undefined, node.blocks) ?? -1;
+}
+
+/**
+ * The match of a document anchor's stored `quote` that the tree read's `occurrence` names in
+ * `node`'s text, read as the server's plain text reads it (`sourceOf`): where it starts, and which
+ * match of the whole text it is, which `rangeOf` marks it by; null where no match stands for it.
+ * The read counts `occurrence` within the anchor's `block_id` (R2, "Quote and block"). Where the
+ * node's text holds more than one paragraph, a typed block's, that block is the inner paragraph
+ * that holds the words (`pmdoc.BlockIDForRange`), which no node stands for and `text_tree` does
+ * not name, so the match is the one in the only paragraph that holds at least `occurrence` + 1
+ * matches, and none where no paragraph or more than one does. A text of one paragraph, or with no
+ * reading, is counted whole (`quoteStart`).
+ */
+export function anchorMatch(
+  node: QuotedNode,
+  quote: string,
+  occurrence: number
+): { readonly occurrence: number; readonly start: number } | null {
+  const paragraphs = node.text_tree === undefined ? [] : paragraphsOf(node.text_tree);
+  if (paragraphs.length <= 1) {
+    const start = quoteStart(node, quote, occurrence);
+    return start < 0 ? null : { occurrence, start };
+  }
+  if (quote === "") return null;
+  const source = sourceOf(node);
+  const spans = blockSpans(
+    source,
+    paragraphs.map((paragraph) => ({ text: "", text_tree: paragraph }))
+  );
+  const starts = (spans ?? []).flatMap(({ end, start }) => {
+    const at = matchAt(source, quote, occurrence, start, end);
+    return at === undefined ? [] : [at];
+  });
+  const [start] = starts;
+  return start === undefined || starts.length > 1
+    ? null
+    : { occurrence: matchesBefore(source, quote, start), start };
+}
+
+/** The paragraphs of a reading, in its order: each block of `tree`, at any depth, that holds a
+ *  run of text itself, a paragraph of a list inside a typed block among them. */
+function paragraphsOf(tree: DisplayTree): DisplayTree[] {
+  const content: readonly DisplayTree[] = Array.isArray(tree.content) ? tree.content : [];
+  return content.some((child) => typeof child.text === "string")
+    ? [tree]
+    : content.flatMap(paragraphsOf);
 }
 
 /**

@@ -312,6 +312,66 @@ test("a block written in the room anchors in the issue's tree, and a criterion w
   );
 });
 
+// R5: the tree read answers a criterion written in the room with its paragraph as a node of its
+// own, a plain block (supertag `block`, no document) whose read parent is the criterion, as the
+// recorder read `key/tree#MRG-1/tree#k-room.itemBlock[0]` under `key/tree#k-room`
+// (`fixtures/tree-b0-conversation.json`). Its words are the criterion's, so its control waits for
+// part Y as the criterion's does (`CRITERION`), and not for the room's gate.
+test("a criterion's inner paragraph has no write while part Y is off", () => {
+  const paragraph = {
+    block_id: "MRG-1/tree#k-room.itemBlock[0]",
+    id: "key/tree#MRG-1/tree#k-room.itemBlock[0]",
+    kind: "block",
+    parent: {
+      first_line: "Keep the boundary visible when the boundary wraps.",
+      id: "key/tree#k-room",
+      kind: "block",
+      supertag: "criterion",
+    },
+    supertag: "block",
+    visibility: "project" as const,
+  };
+  const subject = subjectOf(paragraph, "key");
+  expect(
+    writeFor(subject, gatesWith("PART_Y")),
+    "the criterion's paragraph draws a control with PART_Y off"
+  ).toBeNull();
+  expect(writeFor(subject), "the criterion's paragraph on this base").toEqual(
+    GATES.PART_Y ? { gate: "PART_Y", issue: "key", place: "room", request: "tree_block" } : null
+  );
+  expect(
+    writeFor(subject, gatesWith()),
+    "the criterion's paragraph takes the criterion's write once part Y is on"
+  ).toEqual({ gate: "PART_Y", issue: "key", place: "room", request: "tree_block" });
+});
+
+// R5: a picture (a block of supertag `image`, which `draftBlock` draws) draws no text to select,
+// in a document and in the room. The schema names no typed block `image`, so the server's kind of
+// it is prose, whose row takes a control; the write keeps the page's own kind.
+test("a picture has no write, in a document or in the room", () => {
+  const inRoom = {
+    block_id: "i1",
+    id: "CORE-1/tree#i1",
+    kind: "block",
+    supertag: "image",
+    visibility: "project" as const,
+  };
+  const inDocument = {
+    ...inRoom,
+    block_id: "i2",
+    document: { artifact_id: "spec-1", position: 5, slug: "spec" },
+    id: "CORE-1/spec#i2",
+  };
+  expect(
+    writeFor(subjectOf(inDocument, "CORE-1"), gatesWith()),
+    "a picture in a document draws a control"
+  ).toBeNull();
+  expect(
+    writeFor(subjectOf(inRoom, "CORE-1"), gatesWith()),
+    "a picture in the room draws a control"
+  ).toBeNull();
+});
+
 // R5 (G2, G3a): a finding is the block whose read id names its lens (`lens/<uuid>#<block>`), as
 // the server reads it (`nodeKind` in `api/issue_tree_kinds.go`, `decodeNodeAddress` in
 // `api/node_address.go`), whatever its supertag: a typed block written as a finding takes the

@@ -161,12 +161,24 @@ function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
 /** `node` as `writeFor` asks for it on the page of the issue `page`: its kind, its place, its
  *  visibility and its own issue, which is the page's where the read names none. The kind is the
  *  server's (`nodeKindOf`), so a finding is a block whose id names its lens (`lens/<uuid>#<block>`)
- *  whatever its supertag, and a paragraph moved under a lens keeps its own kind. */
+ *  whatever its supertag, and a paragraph moved under a lens keeps its own kind; but a picture
+ *  keeps the page's own kind `image`, which the schema names no typed block, so it draws no
+ *  control, and a plain block whose read parent is a criterion - the criterion's paragraph, which
+ *  the read answers as a node of its own under it - is the criterion's words, so its control
+ *  waits for part Y as the criterion's does. `conversationKindOf` keeps the server's kind. */
 export function subjectOf(
-  node: Pick<TreeAnswerNode, "document" | "id" | "issue" | "kind" | "supertag" | "visibility">,
+  node: Pick<TreeAnswerNode, "document" | "id" | "issue" | "kind" | "supertag" | "visibility"> & {
+    readonly parent?: TreeAnswerNode["parent"];
+  },
   page: string
 ): WriteSubject {
-  const kind = nodeKindOf(node);
+  const read = nodeKindOf(node);
+  const kind =
+    node.supertag === "image"
+      ? "image"
+      : read === "prose" && node.parent?.supertag === "criterion"
+        ? "criterion"
+        : read;
   return {
     issue: node.issue ?? page,
     kind,
