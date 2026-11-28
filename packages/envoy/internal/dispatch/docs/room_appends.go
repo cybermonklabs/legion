@@ -49,9 +49,9 @@ const roomAppendLinger = 50 * time.Millisecond
 
 // roomAppendBatchUpdates and roomAppendBatchBytes cap the run batchRunLocked takes from the update
 // whose call runs the batch: after that update, it takes another only while the run stays within
-// both. The batch also stores the unstored updates queued before that update (flushRun), which
-// the caps do not count. queueUpdateClass wakes the waiting lingers when the room's queue reaches
-// either.
+// both. The batch also takes the unstored durable updates of that update's room instance queued
+// before it (flushRun), which the caps do not count. queueUpdateClass wakes the waiting lingers
+// when the room's queue reaches either.
 const (
 	roomAppendBatchUpdates = 256
 	roomAppendBatchBytes   = 1 << 20
@@ -436,7 +436,8 @@ func (s *Service) warmRoomAppends() {
 
 // roomAppendBatchSizes are the upper bounds of the batch-size histogram's buckets: 1, 2, 3-4, 5-8,
 // and so on to 129-256, roomAppendBatchUpdates. committed counts a larger batch in the last
-// bucket: a batch also stores the unstored updates queued before its caller's.
+// bucket: a batch's run also takes the unstored durable updates of its caller's room instance
+// queued before its caller's.
 var roomAppendBatchSizes = [...]int{1, 2, 4, 8, 16, 32, 64, 128, 256}
 
 // roomAppendFigures counts the rooms' flushes (AppendRoomFlush) for the room figures: batches and
