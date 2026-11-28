@@ -105,9 +105,11 @@ function lens(
   return bare(id, "lens", parent, { made_at: madeAt, ...extra });
 }
 
-/** A finding of the lens `parent`, its words stored as markdown and read by the server. Its read
- *  id is `id` itself, not the id of a document's block `treeNode` gives a block: the server reads
- *  a block as a finding by that id alone (`lens/<uuid>#<block id>`), so a bare id is none. */
+/** A block written under the lens `parent`, its words stored as markdown and read by the server,
+ *  as the route sends one. Where `id` names a lens (`lens/<uuid>#<block id>`), it is a finding:
+ *  its read id is `id` itself and its block id the part after the first `#`
+ *  (`api/issue_tree_read.go`), so its row is drawn by that block id (`treeIdOfNode`). Any other
+ *  `id` is a block's of the issue's own tree, read as `treeNode` writes one, and is no finding. */
 function finding(
   id: string,
   parent: string,
@@ -115,15 +117,16 @@ function finding(
   supertag = "block",
   extra: TreeNodeExtra = {}
 ): TreeAnswerNode {
-  return {
-    ...node(id, supertag, parent, {
-      author: [READER_ACTOR],
-      text: `**${words}**`,
-      text_tree: reading(words),
-      ...extra,
-    }),
-    id,
-  };
+  const written = node(id, supertag, parent, {
+    author: [READER_ACTOR],
+    text: `**${words}**`,
+    text_tree: reading(words),
+    ...extra,
+  });
+  const hash = id.indexOf("#");
+  return id.startsWith("lens/") && hash !== -1
+    ? { ...written, block_id: id.slice(hash + 1), id }
+    : written;
 }
 
 /** A kind of the catalogue, which the read brings in as context for a `has_kind` tuple. */
@@ -258,7 +261,7 @@ test("a lens hangs under its parent, among its conversation nodes and before its
     blockNodeId("verification-md", "c1"),
     blockNodeId("plan-md", "t1"),
   ]);
-  expect(childIds(rowOf(root, FIRST))).toEqual([`lens/${FIRST}#f-b`, `lens/${FIRST}#f-a`]);
+  expect(childIds(rowOf(root, FIRST))).toEqual(["f-b", "f-a"]);
   expect(
     statement.children.slice(0, 3).map((row) => [row.type, row.readId, row.at, row.author])
   ).toEqual([
@@ -300,7 +303,7 @@ test("a lens is found by its parent's id on an unconverted issue", () => {
 // prose rather than a finding, and a lens block of no lens is drawn nowhere. A lens's read id may
 // carry its kind, which its address does not repeat. Another address in a verdict stays as
 // written, for the row's renderer to name.
-test("a finding is a block whose parent is a lens", () => {
+test("a finding is a block whose own id names its lens, by either spelling of its kind", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(
     answer(
@@ -338,7 +341,7 @@ test("a finding is a block whose parent is a lens", () => {
     ])
   ).toEqual([
     [
-      `${lensId}#first`,
+      "first",
       "finding",
       `dispatch://lens/${FIRST}#b-first`,
       "A second region doubles the cost.",
@@ -346,7 +349,7 @@ test("a finding is a block whose parent is a lens", () => {
       NO_FACTS,
     ],
     [
-      `${lensId}#second`,
+      "second",
       "finding",
       `dispatch://lens/${FIRST}#b-second`,
       "Failover takes minutes.",
@@ -363,7 +366,8 @@ test("a finding is a block whose parent is a lens", () => {
 // A block is a finding by its own id alone, as the server reads one, wherever it stands. A
 // paragraph moved under a lens keeps its own id, which names no lens, so it is no finding and
 // carries no finding's address, which the server would not answer; the lens's own finding beside
-// it is one.
+// it is one. A finding moved under another lens keeps the lens its own id names, so its address
+// names that lens, not the one it stands under.
 test("a block under a lens is a finding only by its own id, as the server reads it", () => {
   const lensId = `lens/${FIRST}`;
   const { drafts, root } = drawn(
@@ -371,12 +375,18 @@ test("a block under a lens is a finding only by its own id, as the server reads 
       block("r1", "requirement", KEY, SPEC, 0),
       lens(lensId, "r1"),
       finding(`${lensId}#first`, lensId, "A second region doubles the cost."),
+      finding(`lens/${SECOND}#carried`, lensId, "Failover takes minutes."),
       node("moved", "block", lensId),
     ])
   );
-  const found = rowOf(root, `${lensId}#first`);
+  const found = rowOf(root, "first");
+  const carried = rowOf(root, "carried");
 
   expect([found.type, found.reference]).toEqual(["finding", `dispatch://lens/${FIRST}#b-first`]);
+  expect([carried.type, carried.reference]).toEqual([
+    "finding",
+    `dispatch://lens/${SECOND}#b-carried`,
+  ]);
   expect(drafts.get("moved")?.type).not.toBe("finding");
   expect(idsOf(root).map((id) => rowOf(root, id).reference)).not.toContain(
     `dispatch://lens/${FIRST}#b-moved`
@@ -424,7 +434,7 @@ test("a lens's, a risk's and a finding's words draw no address of a lens, a risk
   );
   const drawnWords = {
     earlyWarning: lineText(factsOf(rowOf(root, risk)).earlyWarning),
-    finding: lineWordsRaw(rowOf(root, `${lensId}#first`)),
+    finding: lineWordsRaw(rowOf(root, "first")),
     heading: rowOf(root, risk).text,
     verdict: rowOf(root, lensId).text,
   };
@@ -1744,8 +1754,8 @@ test("a lens on an ask's block stands under the ask, and one on no drafted paren
   );
 
   expect(parentsOf(root, FIRST)).toEqual(["q1"]);
-  expect(childIds(rowOf(root, FIRST))).toEqual([`lens/${FIRST}#kept-finding`, "kept-risk"]);
-  for (const lost of [SECOND, `lens/${SECOND}#lost-finding`, "lost-risk", THIRD]) {
+  expect(childIds(rowOf(root, FIRST))).toEqual(["kept-finding", "kept-risk"]);
+  for (const lost of [SECOND, "lost-finding", "lost-risk", THIRD]) {
     expect(drafts.has(lost)).toBe(false);
     expect(idsOf(root)).not.toContain(lost);
   }
