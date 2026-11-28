@@ -21,6 +21,7 @@ import { useKnownReferences } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
 import type { TextSource } from "../refs/text-references";
 import { wordsOf } from "../refs/tree-fragment";
+import { joinSplitLinks } from "./joined-links";
 import { documentWord } from "./node-row-chip";
 import { authorText } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
@@ -533,6 +534,8 @@ function DrawnText({
     const element = box.current;
     if (element === null) return;
     dropDirectiveLines(element);
+    // A link whose words carry a mark is drawn as one anchor (decision 407).
+    joinSplitLinks(element);
     linkRowReferences(element, names, issues, issue, ambiguous, edited);
     for (const anchor of element.querySelectorAll<HTMLAnchorElement>("a[data-row-reference]")) {
       const reference = anchor.getAttribute("data-row-reference") ?? "";
