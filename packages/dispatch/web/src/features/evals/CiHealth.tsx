@@ -205,8 +205,11 @@ function failedColumns(nowMs: number): ColumnDef<EvalItemRow>[] {
   ];
 }
 
-/** One CI eval's timing chart, in a box naming the eval (`data-eval`), "no data" where the view
- *  holds no row of its series. */
+/** One CI eval's timing chart, in a box naming the eval (`data-eval`), "no data" with no figure
+ *  where its `minutes` series holds no day row at all (no `data_since`): the deploy source names no
+ *  job of the eval's, as no staging gate, or the job it names has not run yet, which the box says
+ *  as every chart says it (spec R18). A series whose input has begun draws its figures, each "no
+ *  data" where the window holds none. */
 function CiChart({
   answer,
   item,
@@ -238,16 +241,25 @@ function CiChart({
       ),
     [answer, item, slug, title]
   );
+  const begun = (item.series ?? []).some(
+    (series) => series.series === "minutes" && series.data_since !== null
+  );
+  const note = model?.series[0]?.dataNote ?? null;
   return (
     <article
       aria-label={title}
       className={`flex min-w-0 flex-col gap-1 rounded border px-2.5 py-2 ${surfaceBg} ${borderDefault}`}
       data-eval={slug}
     >
-      {model === null ? (
+      {model === null || !begun ? (
         <>
           <span className={`text-xs ${textMutedOnSurface}`}>{title}</span>
           <p className={`text-sm ${textMutedOnSurface}`}>no data</p>
+          {note === null ? null : (
+            <span className={`text-xs ${textMutedOnSurface}`} data-note="data">
+              {note}
+            </span>
+          )}
         </>
       ) : (
         <EvalChart model={model} opensPanel={slug} renderer={Timing} />

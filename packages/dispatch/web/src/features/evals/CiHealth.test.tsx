@@ -301,6 +301,31 @@ test('a staging chart whose eval has no data reads "no data", never 0, and an ev
   ).toHaveLength(0);
 });
 
+test('a timing chart whose series holds no day row draws no figure, and reads "no data" and that its input has not begun', async () => {
+  // The view's answer for staging-e2e where the deploy source names no staging gate: the eval's
+  // series holds no day row, so it names no first day (data_since), and every figure is null.
+  const none = {
+    cancelled: null,
+    failure: null,
+    median: null,
+    n: null,
+    p90: null,
+    success: null,
+    success_rate: null,
+  };
+  await renderSection([
+    timed("pr-ci", PR_CI),
+    evalItem("staging-e2e", "ci", [
+      evalSeries("minutes", "minutes", { data_since: null, is_primary: true, window: none }),
+    ]),
+  ]);
+  const staging = chart("Staging end-to-end gate");
+  expect(staging.querySelectorAll("[data-window-statistic]")).toHaveLength(0);
+  expect(within(staging).getByText("no data")).toBeTruthy();
+  expect(staging.querySelector('[data-note="data"]')?.textContent).toBe("its input has not begun");
+  expect(figure("PR CI", "n")).toBe("40");
+});
+
 test("pr-ci's timing with a via_repository count of 2 shows the note, and one of 0 none", async () => {
   await renderSection([timed("pr-ci", PR_CI, 2), timed("staging-e2e", PR_CI, 0)]);
   const figures = chart("PR CI").querySelector('[data-window-series="minutes"]');

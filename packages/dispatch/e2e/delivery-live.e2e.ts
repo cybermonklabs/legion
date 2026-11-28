@@ -470,10 +470,12 @@ test("the Pipeline page updates live", async ({ browser }) => {
 
   try {
     const live = watchDeliverySocket(page);
-    // The seven UTC days ending on the Pipeline fixture's pinned day, as the tab's custom window.
-    const day = new Date(PIPELINE_AT);
-    const to = new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate() + 1));
-    const from = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000);
+    // The Pipeline fixture's pinned day alone, as the tab's custom window: every deploy of the
+    // fixture runs that day, the first day of production-deploy's input, and a window that
+    // starts before it reads "no data" and names that day (spec R18), as the fixture's seven
+    // days do.
+    const from = new Date(`${PIPELINE_AT.slice(0, 10)}T00:00:00Z`);
+    const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
     await page.goto(
       evalsTabPath(
         `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`

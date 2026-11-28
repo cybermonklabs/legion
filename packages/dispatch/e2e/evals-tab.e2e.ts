@@ -31,6 +31,7 @@ import {
   evalsViews,
   expectEveryRelation,
   expectLegionWork,
+  expectNumberStands,
   GONE_LINK,
   getJson,
   groupLinks,
@@ -964,10 +965,18 @@ interface Narrowed {
  *  answers as the base's did (decision 1). The base server reads the database this row seeds. */
 const BASE_URL = process.env.EVALS_K24_BASE_URL ?? "";
 
-/** The base's measures over TAB_WINDOW with `query` (a facet's value, or nothing). */
+/** The window k24 compares the numbers over: from the first day of EVERY_SOURCE's pull-request
+ *  input, 2026-09-05 (the measures fixture's first merge), to TAB_WINDOW's end. A number reads "no
+ *  data before <day>" over a window that starts before its input began (spec R18), which the base's
+ *  measures route does not, so over TAB_WINDOW, five days earlier, every narrowed number of the
+ *  tab reads no value where the base's reads one. */
+const K24_WINDOW = { from: "2026-09-05T00:00:00Z", to: TAB_WINDOW.to } as const;
+const K24_QUERY = windowQuery(K24_WINDOW);
+
+/** The base's measures over K24_WINDOW with `query` (a facet's value, or nothing). */
 async function baseMeasures(token: string, query: string): Promise<Narrowed> {
   const answered = await fetch(
-    new URL(`/api/v1/delivery/measures?${TAB_QUERY}${query}`, BASE_URL === "" ? baseUrl : BASE_URL),
+    new URL(`/api/v1/delivery/measures?${K24_QUERY}${query}`, BASE_URL === "" ? baseUrl : BASE_URL),
     { headers: { Authorization: `Bearer ${token}` } }
   );
   const text = await answered.text();
@@ -994,7 +1003,7 @@ async function narrowedOnTheTab(
   const tab = await page.context().newPage();
   try {
     const record = recordLive(tab);
-    await openTab(tab, EVERY_SOURCE, `${TAB_QUERY}&${facet.url}=${encodeURIComponent(value)}`);
+    await openTab(tab, EVERY_SOURCE, `${K24_QUERY}&${facet.url}=${encodeURIComponent(value)}`);
     const cards = await paintedSection(tab, "cards");
     const what = `${facet.param}=${value}`;
     if (facet.param !== "repo") {
@@ -1033,13 +1042,23 @@ test("a facet narrows the pull-request numbers as the base's measures do, and a 
   // One tab is opened for each of the nine facets and the search.
   test.setTimeout(180_000);
   await seedEverySource();
+  // The window's numbers stand built before any is compared (a window over days the walk has not
+  // built reads no value).
+  await expectNumberStands(
+    EVERY_SOURCE,
+    K24_WINDOW,
+    "delivery",
+    "pr-open-to-merge",
+    "minutes",
+    "median"
+  );
   const tokenFile = process.env.EVALS_K24_BASE_TOKEN ?? "";
   const token =
     tokenFile === ""
       ? await mintAgentToken("evals-k24", "alice")
       : readFileSync(tokenFile, "utf8").trim();
   const unfiltered = await baseMeasures(token, "");
-  const timeline = await readTimeline(EVERY_SOURCE, TAB_WINDOW, 200);
+  const timeline = await readTimeline(EVERY_SOURCE, K24_WINDOW, 200);
   const titles = (timeline.items ?? []).flatMap((row) => (row.kind === "merge" ? [row.title] : []));
 
   const checked: string[] = [];
@@ -1071,7 +1090,7 @@ test("a facet narrows the pull-request numbers as the base's measures do, and a 
     // from the base stands in.
     const listed = await listEvals(
       EVERY_SOURCE,
-      TAB_WINDOW,
+      K24_WINDOW,
       `&kind=delivery&${facet.param}=${encodeURIComponent(chosen.value)}`
     );
     const route = new Map((listed.items ?? []).map((item) => [item.id, item]));
@@ -1098,7 +1117,7 @@ test("a facet narrows the pull-request numbers as the base's measures do, and a 
   expect(checked).toEqual(expect.arrayContaining(["repo", "issue", "priority", "rework", "q"]));
 
   // A write moves the narrowed numbers within 2 s: one more rework pull request of the window.
-  await openTab(page, EVERY_SOURCE, `${TAB_QUERY}&rework=rework`);
+  await openTab(page, EVERY_SOURCE, `${K24_QUERY}&rework=rework`);
   const deploys = await paintedSection(page, "deploys");
   const timed = deploys.locator(
     '[data-eval="pr-open-to-merge"] [data-window-series="minutes"] [data-window-statistic="n"]'

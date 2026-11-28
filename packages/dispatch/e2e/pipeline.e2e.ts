@@ -25,10 +25,27 @@ function pipelineWindow(): string {
   return `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
 }
 
-/** Opens `project`'s Evals tab on the Pipeline fixture's seven days, once its CI health section
- *  has painted. */
-async function openCiHealth(page: Page, project = DELIVERY_PROJECT): Promise<Locator> {
-  await page.goto(evalsTabPath(pipelineWindow(), project));
+/** The first UTC day of the fixture's deploys and merges, `PIPELINE_AT`'s, as YYYY-MM-DD. */
+const DEPLOYS_DAY = PIPELINE_AT.slice(0, 10);
+
+/** The tab's custom window of `DEPLOYS_DAY` alone. Every deploy run and merge of the fixture is of
+ *  that day, so it is the first day of the deploy stages' and the lead times' input: a window that
+ *  starts before it reads "no data" and names that day (spec R18), as the seven days do, and this
+ *  one reads what the seven days hold of them. */
+function deploysWindow(): string {
+  const from = new Date(`${DEPLOYS_DAY}T00:00:00Z`);
+  const to = new Date(from.getTime() + 24 * 60 * 60 * 1000);
+  return `from=${encodeURIComponent(from.toISOString())}&to=${encodeURIComponent(to.toISOString())}`;
+}
+
+/** Opens `project`'s Evals tab on `window` (the Pipeline fixture's seven days unless named), once
+ *  its CI health section has painted. */
+async function openCiHealth(
+  page: Page,
+  project = DELIVERY_PROJECT,
+  window = pipelineWindow()
+): Promise<Locator> {
+  await page.goto(evalsTabPath(window, project));
   await expectEvalsTab(page);
   return paintedSection(page, "ci");
 }
@@ -78,26 +95,12 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
   const page = await context.newPage();
   const ci = await openCiHealth(page);
 
-  // The window's two timed staging end-to-end results, 40 and 70 minutes, one of them a failure;
-  // the cancelled one and the workflow_dispatch run's are not timed.
-  await expect(ciFigure(ci, "staging-e2e", "n")).toHaveText(/^2(?!\d)/);
-  await expect(ciFigure(ci, "staging-e2e", "median")).toContainText("55");
-  await expect(ciFigure(ci, "staging-e2e", "success_rate")).toContainText("50");
-  // The three staging deploys that finished; the one still running is not timed.
-  await expect(ciFigure(ci, "staging-deploy", "n")).toHaveText(/^3(?!\d)/);
-  // The feature/x run's successful production job is not counted, so the week has one result.
-  await expect(ciFigure(ci, "production-deploy", "n")).toHaveText(/^1(?!\d)/);
-  await expect(ciFigure(ci, "production-deploy", "success_rate")).toContainText("100");
-
-  // The two lead-time cards: merge to production misses its 45 minutes, open to merge meets 60.
-  const cards = await paintedSection(page, "cards");
+  // Over the seven days, which start before the deploys' day, a deploy stage reads "no data" and
+  // names the day its input begins (spec R18).
+  await expect(ciFigure(ci, "staging-e2e", "n")).toHaveText("no data");
   await expect(
-    cards.locator('[data-card="merge-to-production"] [data-target-met]')
-  ).toHaveAttribute("data-target-met", "false");
-  await expect(cards.locator('[data-card="pr-open-to-merge"] [data-target-met]')).toHaveAttribute(
-    "data-target-met",
-    "true"
-  );
+    ci.locator('[data-eval="staging-e2e"] [data-window-series="minutes"] [data-note="data"]')
+  ).toHaveText(`no data before ${DEPLOYS_DAY}`);
 
   const slowest = await jobList(ci, "slowest-jobs");
   await expect(jobRow(slowest, "build / unit")).toHaveCount(1);
@@ -113,6 +116,29 @@ test("the Pipeline page shows each stage's timing and the failing jobs @pr", asy
   // The roll-up job is left out; a job that only failed before the 24 hours is not listed.
   await expect(jobRow(failing, "checks-complete")).toHaveCount(0);
   await expect(jobRow(failing, "typecheck")).toHaveCount(0);
+
+  // The deploys' day: each stage's timing and the two lead-time cards.
+  const deploys = await openCiHealth(page, DELIVERY_PROJECT, deploysWindow());
+  // The window's two timed staging end-to-end results, 40 and 70 minutes, one of them a failure;
+  // the cancelled one and the workflow_dispatch run's are not timed.
+  await expect(ciFigure(deploys, "staging-e2e", "n")).toHaveText(/^2(?!\d)/);
+  await expect(ciFigure(deploys, "staging-e2e", "median")).toContainText("55");
+  await expect(ciFigure(deploys, "staging-e2e", "success_rate")).toContainText("50");
+  // The three staging deploys that finished; the one still running is not timed.
+  await expect(ciFigure(deploys, "staging-deploy", "n")).toHaveText(/^3(?!\d)/);
+  // The feature/x run's successful production job is not counted, so the day has one result.
+  await expect(ciFigure(deploys, "production-deploy", "n")).toHaveText(/^1(?!\d)/);
+  await expect(ciFigure(deploys, "production-deploy", "success_rate")).toContainText("100");
+
+  // The two lead-time cards: merge to production misses its 45 minutes, open to merge meets 60.
+  const cards = await paintedSection(page, "cards");
+  await expect(
+    cards.locator('[data-card="merge-to-production"] [data-target-met]')
+  ).toHaveAttribute("data-target-met", "false");
+  await expect(cards.locator('[data-card="pr-open-to-merge"] [data-target-met]')).toHaveAttribute(
+    "data-target-met",
+    "true"
+  );
 
   await page.screenshot({ path: testInfo.outputPath("pipeline.png"), fullPage: true });
   await context.close();

@@ -8,7 +8,7 @@
 //
 // - EVERY_SOURCE (ACME, the delivery fixtures' project): delivery on with its deploy source, the
 //   measures fixture's pull requests, deploys and failures with its unowned P0 issue, the Pipeline
-//   fixture's PR checks and deploy jobs, a Legion daemon with six issues Legion worked and closed,
+//   fixture's PR checks and deploy jobs, a Legion daemon with seven issues Legion worked and closed,
 //   and one logged eval that declares a chart;
 // - NO_DAEMON (EVALB): delivery on, no Legion daemon;
 // - DELIVERY_OFF (EVALC): a Legion daemon, and delivery settings with delivery off;
@@ -243,14 +243,27 @@ const LEGION_ROLES = [
   { role: "reviewer", hours: 7 },
 ] as const;
 
-/** The issues Legion worked on EVERY_SOURCE and closed, one on each of the six days before today,
- *  so a window that ends today holds them, beside the unowned P0 card, whose issue is today's,
- *  and each day's row of a Legion chart links to its own (k8); each closed nine hours after its
- *  planner began. */
-export const LEGION_WORK = [201, 202, 203, 204, 205, 206].map((number, index) => ({
-  day: dayAfter(new Date().toISOString().slice(0, 10), index - 6),
-  number,
-}));
+/** How many days before today the first issue of LEGION_WORK closed: before the first day of the
+ *  tab's default window (28 days, `DEFAULT_WINDOW_PRESET`). A Legion number reads "no data before
+ *  <day>" over a window that starts before its input began (spec R18): with every issue inside
+ *  the window, its headlines and its phase bars would read no value, and draw no group link. */
+const FIRST_LEGION_WORK_DAYS_AGO = 35;
+
+/** The issues Legion worked on EVERY_SOURCE and closed: 200, FIRST_LEGION_WORK_DAYS_AGO days before
+ *  today, where the Legion evals' input begins, and then one on each of the six days before today,
+ *  so a window that ends today holds those six, beside the unowned P0 card, whose issue is
+ *  today's, and each day's row of a Legion chart links to its own (k8); each closed nine hours
+ *  after its planner began. */
+export const LEGION_WORK = [
+  {
+    day: dayAfter(new Date().toISOString().slice(0, 10), -FIRST_LEGION_WORK_DAYS_AGO),
+    number: 200,
+  },
+  ...[201, 202, 203, 204, 205, 206].map((number, index) => ({
+    day: dayAfter(new Date().toISOString().slice(0, 10), index - 6),
+    number,
+  })),
+];
 
 /** The handoff each role writes when its phase ends (legion/metrics' `handoffPhase`). */
 const HANDOFF_WORDS: Readonly<Record<(typeof LEGION_ROLES)[number]["role"], string>> = {
@@ -400,6 +413,43 @@ export function listEvals(
   return getJson<EvalListResponse>(
     `/api/v1/projects/${encodeURIComponent(project)}/evals?${windowQuery(window)}&limit=200${extra}`
   );
+}
+
+/** Holds, before a row compares a number of `project`'s tab, that the stored number `statistic`
+ *  of `series` of the eval `slug` (of `kind`) has a value over `window`: the refresher's walk has
+ *  built every day of the window before today (a window holding a day the walk has not built reads
+ *  no value, evals.Built), and the window starts on or after the series' first day (spec R18). A
+ *  failure names the series' first day (`data_since`) and how far each walk serves the rows. */
+export async function expectNumberStands(
+  project: string,
+  window: { readonly from: string; readonly to: string },
+  kind: string,
+  slug: string,
+  series: string,
+  statistic: string
+): Promise<void> {
+  const read = async () => {
+    const listed = await listEvals(project, window, `&kind=${kind}`);
+    const item = (listed.items ?? []).find((candidate) => candidate.definition.slug === slug);
+    const values = item?.series?.find((one) => one.series === series);
+    return { since: values?.data_since ?? null, value: values?.window?.[statistic] ?? null };
+  };
+  try {
+    await expect
+      .poll(async () => (await read()).value, {
+        message: `${project}'s ${slug} ${series} ${statistic} over ${window.from}..${window.to} has a value`,
+        timeout: 60_000,
+      })
+      .not.toBeNull();
+  } catch (error) {
+    const { since } = await read();
+    const serving = await sql(
+      `SELECT coalesce(string_agg(family || ' ' || project_key || ' ' || next_day, '; '), 'none') FROM eval_days_serving`
+    );
+    throw new Error(
+      `${String(error)}\n${slug} ${series}: data_since ${since ?? "none"}; the walks serve ${serving}`
+    );
+  }
 }
 
 /** One page of `slug`'s readings over `window` (the items route, `source=readings`). */
@@ -915,9 +965,10 @@ export interface GroupLink {
 }
 
 /** Holds, before a row reads a group link, that Dispatch counted the Legion work the seed wrote:
- *  the facts loop stored each issue's facts (issue_facts), and the refresher wrote the Legion
- *  evals' rows of their close days (eval_days), so a link that is missing names which half of
- *  the seed's precondition failed. */
+ *  the facts loop stored each issue's facts (issue_facts), the refresher wrote the Legion evals'
+ *  rows of their close days (eval_days), and the phase bars' issue counts stand over the tab's
+ *  default window (expectNumberStands), so a link that is missing names which part of the seed's
+ *  precondition failed. */
 export async function expectLegionWork(): Promise<void> {
   try {
     // A whole read that began before the seed committed records the project as read with none
@@ -932,7 +983,7 @@ export async function expectLegionWork(): Promise<void> {
             `SELECT count(*) FROM issue_facts WHERE project_key = ${lit(EVERY_SOURCE)} AND closed_at IS NOT NULL`
           ),
         {
-          message: "the facts loop stored the facts of the six issues Legion worked",
+          message: `the facts loop stored the facts of the ${LEGION_WORK.length} issues Legion worked`,
           timeout: 30_000,
         }
       )
@@ -966,6 +1017,17 @@ export async function expectLegionWork(): Promise<void> {
       }
     )
     .toBe(String(new Set(LEGION_WORK.map(({ day }) => day)).size));
+  // The tab's default window, the 28 UTC days ending today, which showGroupLinks opens: each phase
+  // bar's issue count stands there once the Legion walk has built its days.
+  const today = new Date().toISOString().slice(0, 10);
+  await expectNumberStands(
+    EVERY_SOURCE,
+    { from: `${dayAfter(today, -27)}T00:00:00Z`, to: `${dayAfter(today, 1)}T00:00:00Z` },
+    "legion",
+    "legion-phase-time",
+    "implementer",
+    "issues"
+  );
 }
 
 /** Every group link `showGroupLinks` draws, once at least `minimum` are drawn, each found by the
