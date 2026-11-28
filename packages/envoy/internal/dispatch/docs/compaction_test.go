@@ -446,11 +446,7 @@ func TestAStoreWritesToTheLoggerOfItsBuilder(t *testing.T) {
 		shrinkPendingItems(t, nil, versioned)
 		artifactID := createDocument(t, database, "unfoldable")
 		rows, _ := unfoldableHistory()
-		for index, row := range rows {
-			if _, err := versioned.AppendUpdate(context.Background(), artifactID, row); err != nil {
-				t.Fatalf("append update %d: %v", index+1, err)
-			}
-		}
+		appendUpdates(t, versioned, artifactID, rows...)
 		ageUpdatesThrough(t, database, artifactID, everyVersion, time.Hour)
 		if attempt := service.tryCompaction(context.Background(), artifactID, false); attempt.try != tryDone {
 			t.Fatalf("the service's compaction = %+v, want the rows left as unfoldable", attempt)
@@ -489,7 +485,7 @@ func TestAStoreWritesToTheLoggerOfItsBuilder(t *testing.T) {
 		})
 		artifactID := compactUnfoldable(t, database, service, versioned)
 		logtest.AwaitLogged(t, storeLogs, "the line leaving the document's rows as stored in the store's builder's logger", leftAsStored(artifactID))
-		if got := linesHolding(serviceLogs.String(), "compaction leaves them as stored"); got != "" {
+		if got := serviceLogs.Lines("compaction leaves them as stored"); got != "" {
 			t.Fatalf("the service's logger holds the line of the store it was handed:\n%s", got)
 		}
 	})

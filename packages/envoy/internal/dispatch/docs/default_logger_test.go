@@ -16,8 +16,8 @@ import (
 )
 
 // A service built with no logger (Deps.Logger nil) writes each line where the default logger
-// points as the line is written, as each line of the package did before the service took a logger,
-// so a program that sets the default after it builds its service finds the service's lines there.
+// points as the line is written, so a program that sets the default after it builds its service
+// finds the service's lines there.
 // A service built with a logger writes to it and not to the default, the review a route queues
 // through a ledger joined to the service (Ledger.QueueReview, api's route) included. A review
 // queued with no ledger (QueueReview) belongs to no service and writes where the default points.
@@ -86,7 +86,7 @@ func TestAServiceWithNoLoggerWritesWhereTheDefaultPointsAtEachLine(t *testing.T)
 		})
 		logtest.AwaitLogged(t, logs, "the room's failure and the review's warning in the service's logger",
 			failed(artifactID), unhashed(t, artifactID, review))
-		if got := linesHolding(defaults.String(), artifactID); got != "" {
+		if got := defaults.Lines(artifactID); got != "" {
 			t.Errorf("the default holds lines of the document of a service built with a logger:\n%s", got)
 		}
 	})

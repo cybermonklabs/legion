@@ -65,8 +65,8 @@ func newSeededProcessPair(t *testing.T, markdown string) processPair {
 }
 
 // newSeededProcessPairTo is newSeededProcessPair with both processes, and task B's gated store,
-// writing their lines to logger (Deps.Logger), as two processes of one test wrote theirs to the
-// one default logger; nil writes them where the default logger points as each is written.
+// writing their lines to logger (Deps.Logger); nil writes them where the default logger points as
+// each is written.
 func newSeededProcessPairTo(t *testing.T, markdown string, logger *slog.Logger) processPair {
 	t.Helper()
 	database := storetest.Open(t)
