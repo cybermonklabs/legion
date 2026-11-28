@@ -343,8 +343,8 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 		{"a comment anchored inside a decision's paragraph stands under that paragraph", digestStepAnchoredComment},
 		{"an approval stands only while its review stands on the digest its version answers", digestStepGate},
 		{"a version whose record did not move leaves the approval standing, and one whose record moved stales it", digestStepRecordUnmoved},
-		{"a result carries the approval to the version it writes, in the person's name", digestStepResultCarry},
-		{"a carry refuses two versions whose definition_version differ", digestStepDefinitionControl},
+		{"recording and retracting a result leave the Verification approval standing without a carry", digestStepResultLeavesApproval},
+		{"a definition change stales an otherwise matching approval", digestStepDefinitionControl},
 		{"a request states one approves tuple to each query version node, which its row projects", digestStepApproves},
 		{"the row the release before writes is admitted, and the review's column and triggers stand", digestStepRowAndColumns},
 		{"the record of the approved version, rebuilt at its cut, digests to the review's content_sha256", digestStepApprovedRecord},
@@ -352,7 +352,7 @@ func TestApprovalCoversTheDigestOfOneQuerysRecord(t *testing.T) {
 		{"a block retyped later is typed at an earlier cut as its text then opens", digestStepRetype},
 		{"the migration set runs no statement against artifact_reviews", digestStepMigrations},
 		{"an approval given before the move reads approved after it by the carry, and only a review after the cutover compares a digest", digestStepCarriedAcrossTheMove},
-		{"a person's answer to an ask block carries the approval before the move and after it, with the same verdict", digestStepAnswerCarryAcrossTheMove},
+		{"a person's answer carries a markdown approval before the move and only preserves the digest after it", digestStepAnswerCarryAcrossTheMove},
 		// Last: it runs graphcensus.Backfill over the whole database.
 		{"the request's query version holds its definition, and the backfill's version of a later query holds none", digestStepDefinitionNodes},
 	} {
@@ -490,7 +490,7 @@ func approveStanding(t *testing.T, rig *digestRig, key, step, artifactID, before
 }
 
 func digestStepRelations(t *testing.T, rig *digestRig) {
-	c1, c2, r1, r2 := rig.block("c1"), rig.block("c2"), rig.block("r1"), rig.block("r2")
+	c2, r1, r2 := rig.block("c2"), rig.block("r1"), rig.block("r2")
 	verification := digestGates(t, rig)
 	before := rig.record(t, rig.issue.Key, graphstore.QueryVerification)
 	spec := rig.record(t, rig.issue.Key, graphstore.QuerySpec)
@@ -525,20 +525,18 @@ func digestStepRelations(t *testing.T, rig *digestRig) {
 	requireWalkOrder(t, rig.walk(t, rig.issue.Key))
 	requireGate(t, rig, rig.issue.Key, model.GatedStepCriteria, model.AskApprovalDocument{ArtifactID: verification.id}, false, "the move of c2 under "+r2)
 
-	// A result: a node under c1, in the verification record, moving its digest. carryVerdict
-	// carries the approval across it (digestStepResultCarry reads the carried review).
+	// A result under c1 belongs to the evidence view, not the Verification approval record.
 	recorded := recordResult(t, rig.handler, rig.issue.Key, resultBody("c1", "pass", headCommit, map[string]any{"surface": "cli"}))
 	if recorded.Code != http.StatusCreated {
 		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
 	}
 	result := decodeBody[recordedResult](t, recorded).Result
 	resulted := rig.record(t, rig.issue.Key, graphstore.QueryVerification)
-	if resulted.Digest == moved.Digest {
-		t.Errorf("a recorded result leaves the verification digest at %s", moved.Digest)
+	if resulted.Digest != moved.Digest {
+		t.Errorf("the verification digest moved across a recorded result %s: %s, want %s", result.ID, resulted.Digest, moved.Digest)
 	}
-	index := slices.IndexFunc(resulted.Nodes, func(node docs.TreeNode) bool { return node.Address() == graphstore.KindResult+":"+result.ID })
-	if index < 0 || resulted.Nodes[index].Parent.ID != c1 || resulted.Nodes[index].Type != graphstore.SupertagResult {
-		t.Errorf("the verification record takes %v, want the result %s under %s", walkAddresses(resulted.Nodes), result.ID, c1)
+	if slices.Contains(walkAddresses(resulted.Nodes), graphstore.KindResult+":"+result.ID) {
+		t.Errorf("the verification record takes %v, want only checks, not result %s", walkAddresses(resulted.Nodes), result.ID)
 	}
 
 	// The removal: c2 goes, the digest moves and the approval is superseded.
@@ -1166,70 +1164,48 @@ func digestVerifiedIssue(t *testing.T, rig *digestRig, title string) (model.Issu
 	uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md",
 		":::check{#c1 serves=\""+serves+"\" surface=\"cli\" run=\"go test ./...\"}\nThe list reads urgent asks first.\n:::\n\n"+
 			":::check{#c2 serves=\""+serves+"\" surface=\"cli\" run=\"go test ./...\"}\nThe list reads an ask's urgency back.\n:::\n")
-	return issue, readDecisionDocument(t, rig.database, issue.Key, "verification-md")
+	verification := readDecisionDocument(t, rig.database, issue.Key, "verification-md")
+	publishDesignGates(t, rig.handler, issue.Key, []issueDesignGate{{Step: model.GatedStepCriteria, ArtifactID: verification.id}})
+	return issue, verification
 }
 
-// recordDigestResult records a passed result of check on issue as alice and answers how many
-// versions the Verification document holds after it.
-func recordDigestResult(t *testing.T, rig *digestRig, issue, verification, check string) int {
-	t.Helper()
-	recorded := recordResult(t, rig.handler, issue, resultBody(check, "pass", headCommit, map[string]any{"surface": "cli"}))
-	if recorded.Code != http.StatusCreated {
-		t.Fatalf("record a result of %s on %s: status=%d body=%s", check, issue, recorded.Code, recorded.Body.String())
-	}
-	return len(documentVersions(t, rig.handler, verification))
-}
-
-// digestStepResultCarry pins the result carry (R14): a result recorded on a check moves the
-// Verification record by an appended result node alone, the drain writes the version that holds it,
-// and Dispatch writes a review in alice's name at that version, whose reason opens as every carried
-// reason does and which names the version she approved. The review pins the record's digest, which
-// the version answers, its row of artifact_review_carries names the version it carries from, and
-// alice's own review of the version before reads as her own act.
-func digestStepResultCarry(t *testing.T, rig *digestRig) {
-	issue, verification := digestVerifiedIssue(t, rig, "A carried verification")
+// digestStepResultLeavesApproval pins the check-only record: recording and retracting evidence
+// changes neither the current query digest nor the person's approval.
+func digestStepResultLeavesApproval(t *testing.T, rig *digestRig) {
+	issue, verification := digestVerifiedIssue(t, rig, "Evidence outside the Verification record")
 	own := reviewDocument(t, rig.handler, verification.id, "alice", "approved", "")
-	before := len(documentVersions(t, rig.handler, verification.id))
-	if after := recordDigestResult(t, rig, issue.Key, verification.id, "c1"); after != before+1 {
-		t.Fatalf("a result of c1 left %d versions of the Verification document of %s, want %d: the drain writes the version that holds the result", after, issue.Key, before+1)
+	digest := rig.record(t, issue.Key, graphstore.QueryVerification).Digest
+	approvals := len(loggedEvents(t, rig.database, "artifact.approved", verification.id))
+	requireUnchanged := func(result string) {
+		t.Helper()
+		if after := rig.record(t, issue.Key, graphstore.QueryVerification); after.Digest != digest {
+			t.Errorf("the verification digest moved across a recorded result %s: %s, want %s", result, after.Digest, digest)
+		}
+		if number := newestVersionOf(t, rig.database, verification.id); number != own.Version {
+			t.Errorf("result %s left version %d of %s newest, want %d", result, number, verification.refKey, own.Version)
+		}
+		if reviews := listReviews(t, rig.handler, verification.id); len(reviews) != 1 || reviews[0].ID != own.ID || reviews[0].CarriedFromVersion != nil {
+			t.Errorf("the reviews of %s read %+v, want only the person's approval %s", verification.refKey, reviews, own.ID)
+		}
+		if count := len(loggedEvents(t, rig.database, "artifact.approved", verification.id)); count != approvals {
+			t.Errorf("the issue holds %d artifact.approved events after result %s, want the %d before it", count, result, approvals)
+		}
+		requireGate(t, rig, issue.Key, model.GatedStepCriteria, model.AskApprovalDocument{ArtifactID: verification.id}, true, result)
 	}
-	latest := before + 1
-	reviews := listReviews(t, rig.handler, verification.id)
-	if len(reviews) != 2 || reviews[1].ID != own.ID {
-		t.Fatalf("the reviews of %s read %+v after the result, want alice's review %s and one carried review of it", verification.refKey, reviews, own.ID)
+	recorded := recordResult(t, rig.handler, issue.Key, resultBody("c1", "pass", headCommit, nil))
+	if recorded.Code != http.StatusCreated {
+		t.Fatalf("record a result of c1: status=%d body=%s", recorded.Code, recorded.Body.String())
 	}
-	carried := reviews[0]
-	if carried.Version != latest || carried.State != "approved" || carried.Kind != docs.ReviewKindPerson || carried.Actor.ID != "alice" ||
-		carried.Reason == nil || !strings.HasPrefix(*carried.Reason, docs.CarriedReviewReasonPrefix) {
-		t.Errorf("the carried review of %s reads %+v, want alice's approval of version %d with a reason opening %q", verification.refKey, carried, latest, docs.CarriedReviewReasonPrefix)
+	result := decodeBody[recordedResult](t, recorded).Result
+	requireUnchanged(result.ID)
+	if retracted := retractAsPerson(t, rig.handler, result.ID, "The result belongs to another run."); retracted.Code != http.StatusCreated {
+		t.Fatalf("retract %s: status=%d body=%s", result.ID, retracted.Code, retracted.Body.String())
 	}
-	// The reason names the result that arrived, by its check's block id and its verdict, after the
-	// opening the daemon matches.
-	wantReason := fmt.Sprintf("%s%d: the results of c1 (pass), which arrived after it, were the whole change since it.", docs.CarriedReviewReasonPrefix, own.Version)
-	if carried.Reason == nil || *carried.Reason != wantReason {
-		t.Errorf("the carried review of %s states the reason %v, want %q: the carried review states the results that arrived after it",
-			verification.refKey, carried.Reason, wantReason)
-	}
-	if carried.CarriedFromVersion == nil || *carried.CarriedFromVersion != own.Version || reviews[1].CarriedFromVersion != nil {
-		t.Errorf("the carried review names version %v and alice's own review names %v, want %d and none", carried.CarriedFromVersion, reviews[1].CarriedFromVersion, own.Version)
-	}
-	if want := versionDigestOf(t, rig.database, verification.id, latest); carried.ContentSHA256 == nil || *carried.ContentSHA256 != want {
-		t.Errorf("the carried review pins %v, want the digest %s version %d answers", carried.ContentSHA256, want, latest)
-	}
-	if from, held := carriedFromRow(t, rig.database, carried.ID); !held || from != own.Version {
-		t.Errorf("the carried review %s holds %s, want the artifact_review_carries row naming version %d", carried.ID, carriedFromRowWords(from, held), own.Version)
-	}
-	if got := readApproval(t, rig.handler, verification.id); got.Approval == nil || got.Approval.State != "approved" || got.Approval.Version == nil || *got.Approval.Version != latest {
-		t.Errorf("the approval of %s reads %+v after the result, want approved at version %d", verification.refKey, got.Approval, latest)
-	}
+	requireUnchanged(result.ID + " (retracted)")
 }
 
-// digestStepDefinitionControl is c-approval-bytes' ninth control (R14). The verification approval
-// stands at a version holding definition_version 1. The query node is restated with
-// definition_version 2, and a result recorded on a check writes a version that differs from the
-// approved one by that appended result alone, which a carry would otherwise carry: the version
-// holds definition_version 2, so no carry crosses the two definitions, no review is written, and the
-// approval reads stale.
+// digestStepDefinitionControl pins R14's version check where the reviewed and current records
+// digest to the same bytes, but the definition_version on the current version differs.
 func digestStepDefinitionControl(t *testing.T, rig *digestRig) {
 	issue, verification := digestVerifiedIssue(t, rig, "A verification whose definition changes")
 	own := reviewDocument(t, rig.handler, verification.id, "alice", "approved", "")
@@ -1239,19 +1215,32 @@ func digestStepDefinitionControl(t *testing.T, rig *digestRig) {
 	node := graphstore.QueryNode(verification.refKey, "CORE", graphstore.QueryVerification, digestWriter, time.Now().UTC())
 	node.Attributes[graphstore.AttributeDefinitionVersion] = graphstore.QueryDefinitionVersion + 1
 	rig.write(t, []graphstore.Node{node}, graphstore.AttributeFacts(nil, node))
-	before := len(documentVersions(t, rig.handler, verification.id))
-	if after := recordDigestResult(t, rig, issue.Key, verification.id, "c2"); after != before+1 {
-		t.Fatalf("a result of c2 left %d versions of the Verification document of %s, want %d", after, issue.Key, before+1)
+	text := versionMarkdown(t, rig.handler, verification.id, own.Version) + "\nA paragraph outside the Verification record.\n"
+	uploadDocument(t, rig.handler, "/api/v1/issues/"+issue.Key, "verification.md", text)
+	latest := newestVersionOf(t, rig.database, verification.id)
+	if latest != own.Version+1 {
+		t.Fatalf("the prose edit left version %d of %s newest, want %d", latest, verification.refKey, own.Version+1)
 	}
-	latest := before + 1
 	if supertag, held := versionDefinition(t, rig.database, verification.refKey, latest); supertag != graphstore.SupertagQueryVersion || valueOrNone(held) != "2" {
-		t.Fatalf("version %d of %s, which the result wrote, is a %s holding definition_version %s, want a query version holding 2", latest, verification.refKey, supertag, valueOrNone(held))
+		t.Fatalf("version %d of %s is a %s holding definition_version %s, want a query version holding 2", latest, verification.refKey, supertag, valueOrNone(held))
 	}
 	if reviews := listReviews(t, rig.handler, verification.id); len(reviews) != 1 || reviews[0].ID != own.ID {
 		t.Errorf("the approval of verification at version %d carried to version %d, whose definition_version is 2, not 1: the reviews of %s read %+v", own.Version, latest, verification.refKey, reviews)
 	}
 	if got := readApproval(t, rig.handler, verification.id); got.Approval == nil || got.Approval.State != "stale" {
 		t.Errorf("the approval of verification at version %d reads %+v at version %d, whose definition_version is 2, want stale", own.Version, got.Approval, latest)
+	}
+	if digest := versionDigestOf(t, rig.database, verification.id, latest); own.ContentSHA256 == nil || digest != *own.ContentSHA256 {
+		t.Fatalf("the definition-only case digests to %s, want the approved version's %v", digest, own.ContentSHA256)
+	}
+	var events []hashGateEvent
+	for _, event := range loggedEvents(t, rig.database, "artifact.digest", verification.id) {
+		if event.payload["version"] == float64(latest) {
+			events = append(events, event)
+		}
+	}
+	if len(events) != 1 || events[0].payload["approval_current"] != false {
+		t.Errorf("the approval of verification at version %d reads current at version %d, whose definition_version is 2, not 1: artifact.digest events %+v", own.Version, latest, events)
 	}
 }
 
@@ -1440,16 +1429,15 @@ func awaitDigestsFilled(t *testing.T, database *store.Store, artifactID string) 
 
 // digestStepRecordUnmoved pins the rule for a version whose record did not move (R14): "A
 // paragraph moved before a requirement leaves both standing, although the version's bytes
-// changed", "a historical review authorizes no later version whose digest differs", and a version
-// whose record digest equals the approved one's is carried as the result carry is. A spec holds a
-// criterion k1, a paragraph and a requirement r1 under k1, in that text order, its spec query gated
-// and approved. Moving the requirement before the paragraph through the edits route gives the
-// requirement a new text_rank: the new version's digest moves, no carried review is written, and
-// the approval reads stale on every gate. Approved again, moving the paragraph before the
-// requirement gives the paragraph, which the spec query does not take, the new text_rank: the new
-// version's digest is the approved version's, and the write carries alice's approval to it
-// (docs.RecordCarryReason), its artifact.approved before the version's artifact.version, so every
-// gate reads approved at a version equal to latest_version, which the Legion daemon reads.
+// changed", and "a historical review authorizes no later version whose digest differs". A spec
+// holds a criterion k1, a paragraph and a requirement r1 under k1, in that text order, its spec
+// query gated and approved. Moving the requirement before the paragraph through the edits route
+// gives the requirement a new text_rank: the new version's digest moves, no carried review is
+// written, and the approval reads stale on every gate. Approved again, moving the paragraph before
+// the requirement gives the paragraph, which the spec query does not take, the new text_rank: the
+// new version's digest is the approved version's, no review is written, and every gate reads the
+// person's own approval standing by that digest (R14's hash gate), at the version the person
+// approved.
 func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "A spec whose paragraph moves",
 		":::criterion{#k1}\nI want the urgent list.\n:::\n\nA paragraph between.\n", false)
@@ -1486,13 +1474,15 @@ func digestStepRecordUnmoved(t *testing.T, rig *digestRig) {
 	if moved != approved+1 {
 		t.Fatalf("the move of the paragraph before r1 left version %d of %s newest, want %d", moved, spec.refKey, approved+1)
 	}
-	if after := listReviews(t, rig.handler, spec.id); len(after) != reviews+1 {
-		t.Errorf("the move of the paragraph left %d reviews of %s, want the %d before it and the record carry", len(after), spec.refKey, reviews)
+	if after := listReviews(t, rig.handler, spec.id); len(after) != reviews {
+		t.Errorf("the move of the paragraph left %d reviews of %s, want the %d before it: the hash gate writes no carried review", len(after), spec.refKey, reviews)
 	}
-	requireApprovalCarriedByRecord(t, rig.handler, rig.database, spec.id, approved, moved)
+	if got, want := versionDigestOf(t, rig.database, spec.id, moved), versionDigestOf(t, rig.database, spec.id, approved); got != want {
+		t.Errorf("version %d of %s answers the digest %s, want the approved version %d's, %s", moved, spec.refKey, got, approved, want)
+	}
 	requireGate(t, rig, issue.Key, model.GatedStepSpec, gate, true, "the paragraph moved before the requirement")
-	if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.Version == nil || *got.Approval.Version != moved || got.Approval.LatestVersion != moved {
-		t.Errorf("the approval of %s reads %+v, want approved at version %d, its latest version", spec.refKey, got.Approval, moved)
+	if got := readApproval(t, rig.handler, spec.id); got.Approval == nil || got.Approval.State != "approved" || got.Approval.Version == nil || *got.Approval.Version != approved || got.Approval.LatestVersion != moved {
+		t.Errorf("the approval of %s reads %+v, want approved at the version %d the person approved, with latest version %d", spec.refKey, got.Approval, approved, moved)
 	}
 }
 
@@ -1538,10 +1528,8 @@ func digestStepApprovedRecord(t *testing.T, rig *digestRig) {
 	}
 }
 
-// digestStepResultOrder is control seven's step (R14): two results of one check written straight
-// into the store, the second made a second later than the first and at an address that sorts
-// before the first's, stand in the verification record first-made first, because the walk takes
-// the children that hold no rank by the time each was made and then by address.
+// digestStepResultOrder keeps the view's result order distinct from the check-only approval
+// record. Results in the view sort by made_at, not their addresses.
 func digestStepResultOrder(t *testing.T, rig *digestRig) {
 	ctx := context.Background()
 	issue, verification := digestVerifiedIssue(t, rig, "Two results of one check")
@@ -1564,14 +1552,19 @@ func digestStepResultOrder(t *testing.T, rig *digestRig) {
 	}); err != nil {
 		t.Fatalf("write the two results: %v", err)
 	}
-	record := rig.record(t, issue.Key, graphstore.QueryVerification)
+	tree := rig.walk(t, issue.Key)
+	indices, _ := tree.Takes(graphstore.QueryVerification)
+	var addresses []string
+	for _, index := range indices {
+		addresses = append(addresses, tree.Nodes[index].Address())
+	}
 	made, later := graphstore.KindResult+":"+first, graphstore.KindResult+":"+second
-	a, b := slices.Index(walkAddresses(record.Nodes), made), slices.Index(walkAddresses(record.Nodes), later)
+	a, b := slices.Index(addresses, made), slices.Index(addresses, later)
 	if a < 0 || b < 0 {
-		t.Fatalf("the verification record of %s takes %v, want both results %s and %s", issue.Key, walkAddresses(record.Nodes), made, later)
+		t.Fatalf("the verification view of %s takes %v, want both results %s and %s", issue.Key, addresses, made, later)
 	}
 	if b < a {
-		t.Errorf("the verification record holds result %s before result %s, which was made first", later, made)
+		t.Errorf("the verification view holds result %s before result %s, which was made first", later, made)
 	}
 }
 

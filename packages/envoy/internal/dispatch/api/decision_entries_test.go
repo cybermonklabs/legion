@@ -972,7 +972,9 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	// test's own server, the agent inserts a reading into a person's answered ask of a spec a person
 	// approved, with the insert whose into names the ask's block. The write is taken, the Decisions
 	// read answers the reading under the ask with the agent as its author, and the spec's approval
-	// still reads approved at the version the write stored.
+	// still reads approved at the version alice approved: the spec query takes no reading, so the
+	// write leaves the digest she approved where it stands, and under R14's hash gate it carries no
+	// approval to the version it stored.
 	approvedIssue := createSpecIssue(t, handler, "CORE", "An approved spec.\n\n"+
 		":::ask{#s1 urgency=\"med\" multiple=\"false\"}\nWhich store holds the queue?\n\n- Postgres: The one we run\n- Redis: The faster one\n:::\n")
 	settleIssue(t, documents, approvedIssue.Key)
@@ -1002,10 +1004,14 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if held, want := readingsOf(underAsk), []string{g5 + "<-" + graphstore.KindSession + ":" + decidingSession}; !slices.Equal(held, want) {
 		t.Errorf("the answered ask %s answers the readings %v after the CLI's insert, want %v, by the agent", storeAskRef, held, want)
 	}
-	if got := readApproval(t, handler, spec.id).Approval; got == nil || got.State != "approved" || got.Version == nil ||
-		*got.Version != got.LatestVersion || got.LatestVersion != approval.Version+1 {
-		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the latest, carried from alice's approval of version %d",
-			spec.id, entryJSON(t, got), approval.Version+1, approval.Version)
+	read := decodeBody[struct {
+		Approval *model.ArtifactApproval `json:"approval"`
+	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+spec.id, nil, "alice"))
+	if got := read.Approval; got == nil || got.State != "approved" || got.Version == nil || *got.Version != approval.Version ||
+		got.LatestVersion != approval.Version+1 || got.DigestOwed == nil || *got.DigestOwed ||
+		got.ContentSHA256 == nil || got.CurrentSHA256 == nil || *got.CurrentSHA256 != *got.ContentSHA256 {
+		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the one alice approved, with latest_version %d, digest_owed false and current_sha256 the content_sha256 she approved",
+			spec.id, entryJSON(t, got), approval.Version, approval.Version+1)
 	}
 }
 

@@ -3,6 +3,7 @@ package api
 import (
 	"cmp"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -111,6 +112,80 @@ var textCommentsStatement = `
 	         select b.node_id from comment_blocks b where b.comment_id = m.id and b.position is not null order by b.position) end
 	from members m join heads h on h.id = m.head`
 
+// viewTextCommentsStatement is textCommentsStatement over the newest comments of threads on text
+// alone, which a view's read of its rows chooses from (chooseViewText): of every comment of a
+// thread of a first comment found as textCommentsStatement finds it, the $8 newest older than the
+// position $6 and $7 names (every one where $8 is null, and from the newest where $6 is null),
+// with each comment of those threads that one of them answers or replies to, and so on up, which
+// the read places each of them under; each answered as that statement answers it where its
+// thread's first comment's current anchored_in names a node. The anchored_in of the first comment
+// and whether a person wrote in its thread are read for the threads of those comments alone, so
+// the read of an issue of 9,252 comments on text reads the tuples of the page's few. The first
+// column of every row is how many comments it chose, and one row answers that alone where none was
+// chosen.
+var viewTextCommentsStatement = `
+	with recursive heads as (
+		select c.id
+		from artifacts a
+		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
+		where a.issue_key = $1 and c.issue_key = $1 and c.created_at <= $2
+		  and c.reply_to is null and c.answers is null and c.ask_id is null
+		union all
+		select c.id
+		from comments c
+		where c.issue_key = $1 and c.node_anchor is not null and c.created_at <= $2
+		  and c.reply_to is null and c.answers is null and c.ask_id is null
+	),
+	thread as (
+		select h.id as head, h.id, 0 as depth from heads h
+		union all
+		select thread.head, c.id, thread.depth + 1
+		from thread join comments c on c.reply_to = thread.id
+		where thread.depth < $5 and c.created_at <= $2
+	),
+	newest as (
+		select thread.id
+		from thread join comments c on c.id = thread.id
+		where $6::timestamptz is null or (c.created_at, c.id) < ($6::timestamptz, $7::uuid)
+		order by c.created_at desc, c.id desc
+		limit $8
+	),
+	chosen (id) as (
+		select newest.id from newest
+		union
+		select above.id from chosen
+		join comments c on c.id = chosen.id
+		cross join lateral (values (c.answers), (c.reply_to)) above (id)
+		where above.id is not null
+	),
+	members as (
+		select thread.head, thread.id from thread join chosen on chosen.id = thread.id
+	),
+	anchored as (
+		select first.head, held.to_kind, held.to_id
+		from (select distinct members.head from members) first
+		join comments c on c.id = first.head
+		cross join lateral (` + textCommentAnchoredIn + `
+		) held
+	),
+	voicing as (
+		select thread.head, bool_or(coalesce(c.author->>'kind' = 'user', false)) as voiced
+		from thread join comments c on c.id = thread.id
+		where thread.head in (select anchored.head from anchored)
+		group by thread.head
+	)
+	select total.chosen, m.head::text, m.id::text, m.created_at, m.answers::text, m.voiced, m.to_kind, m.to_id, m.blocks
+	from (select count(*) as chosen from newest) total
+	left join (
+		select members.head, members.id, c.created_at, coalesce(c.answers, c.reply_to) as answers, v.voiced, h.to_kind, h.to_id,
+		       case when not v.voiced then array(
+		         select b.node_id from comment_blocks b where b.comment_id = members.id and b.position is not null order by b.position) end as blocks
+		from members
+		join comments c on c.id = members.id
+		join anchored h on h.head = members.head
+		join voicing v on v.head = members.head
+	) m on true`
+
 // olderCommentStatement is whether the issue $1 holds a comment written by $2 older than the
 // position $3 and $4 names (refs.CommentPosition): a view's comments_before that no such comment
 // follows is refused.
@@ -124,38 +199,51 @@ const olderCommentStatement = `
 // the order each was written and then by id.
 func (b *issueTreeBuilder) queueTextComments(batch *pgx.Batch) {
 	seq, at := treeCutBounds(b.cut)
-	b.textComments, b.textThreads = map[refs.Target]treeTextComment{}, map[string]*treeTextThread{}
+	b.textComments, b.textThreads, b.textOrder = map[refs.Target]treeTextComment{}, map[string]*treeTextThread{}, nil
 	batch.Queue(textCommentsStatement, b.key, b.cut.At, seq, at, refs.IssueDepthCap).Query(func(rows pgx.Rows) error {
 		for rows.Next() {
 			var head, id, onKind, onID string
 			var answers *string
 			var voiced bool
 			var blocks []string
-			text := treeTextComment{}
-			if err := rows.Scan(&head, &id, &text.madeAt, &answers, &voiced, &onKind, &onID, &blocks); err != nil {
+			var madeAt time.Time
+			if err := rows.Scan(&head, &id, &madeAt, &answers, &voiced, &onKind, &onID, &blocks); err != nil {
 				return fmt.Errorf("read a comment on the text of a node of %s: %w", b.key, err)
 			}
-			text.head = head
-			if answers != nil && id != head {
-				text.answers = refs.Target{Kind: graphstore.KindComment, ID: *answers}
-			}
-			for _, block := range blocks {
-				text.blocks = append(text.blocks, refs.Target{Kind: refs.ItemComment.BlockKind(), ID: block})
-			}
-			target := refs.Target{Kind: graphstore.KindComment, ID: id}
-			b.textComments[target] = text
-			b.textOrder = append(b.textOrder, target)
-			if _, held := b.textThreads[head]; !held {
-				b.textThreads[head] = &treeTextThread{on: refs.Target{Kind: onKind, ID: onID}, voiced: voiced}
-			}
+			b.holdTextComment(head, id, madeAt, answers, voiced, onKind, onID, blocks)
 		}
 		if err := rows.Err(); err != nil {
 			return fmt.Errorf("read the comments on the text of the nodes of %s: %w", b.key, err)
 		}
-		slices.SortFunc(b.textOrder, func(left, right refs.Target) int {
-			return cmp.Or(b.textComments[left].madeAt.Compare(b.textComments[right].madeAt), strings.Compare(left.ID, right.ID))
-		})
+		b.orderTextComments()
 		return nil
+	})
+}
+
+// holdTextComment holds one comment of a thread on text as a statement of them answers it
+// (textCommentsStatement): its thread's first comment, the comment, when it was written, what it
+// answers, whether a person wrote in its thread, the node the thread is on and, of a thread no
+// person wrote in, the comment's current blocks.
+func (b *issueTreeBuilder) holdTextComment(head, id string, madeAt time.Time, answers *string, voiced bool, onKind, onID string, blocks []string) {
+	text := treeTextComment{head: head, madeAt: madeAt}
+	if answers != nil && id != head {
+		text.answers = refs.Target{Kind: graphstore.KindComment, ID: *answers}
+	}
+	for _, block := range blocks {
+		text.blocks = append(text.blocks, refs.Target{Kind: refs.ItemComment.BlockKind(), ID: block})
+	}
+	target := refs.Target{Kind: graphstore.KindComment, ID: id}
+	b.textComments[target] = text
+	b.textOrder = append(b.textOrder, target)
+	if _, held := b.textThreads[head]; !held {
+		b.textThreads[head] = &treeTextThread{on: refs.Target{Kind: onKind, ID: onID}, voiced: voiced}
+	}
+}
+
+// orderTextComments orders textOrder in the order each comment was written, and then by id.
+func (b *issueTreeBuilder) orderTextComments() {
+	slices.SortFunc(b.textOrder, func(left, right refs.Target) int {
+		return cmp.Or(b.textComments[left].madeAt.Compare(b.textComments[right].madeAt), strings.Compare(left.ID, right.ID))
 	})
 }
 
@@ -163,8 +251,23 @@ func (b *issueTreeBuilder) queueTextComments(batch *pgx.Batch) {
 // (queueTextComments) and, beside comments_before, whether the issue holds a comment older than
 // it, in one batch: a comments_before no older comment of the issue follows is 400 INVALID_QUERY.
 func (b *issueTreeBuilder) readViewTextComments() error {
+	return b.readViewText(b.queueTextComments)
+}
+
+// readViewTextChoice is readViewTextComments for a view's read of its rows: it reads of the
+// comments of threads on text those chooseViewText may choose (viewTextCommentsStatement), the
+// viewTextChoice newest older than the read's position and one more, or every one where the read
+// is everyText, and whether more remain than it read (textMore).
+func (b *issueTreeBuilder) readViewTextChoice() error {
+	return b.readViewText(b.queueViewTextComments)
+}
+
+// readViewText reads, in one batch, what queue queues of the comments of threads on text and,
+// beside comments_before, whether the issue holds a comment older than it: a comments_before no
+// older comment of the issue follows is 400 INVALID_QUERY.
+func (b *issueTreeBuilder) readViewText(queue func(*pgx.Batch)) error {
 	batch := &pgx.Batch{}
-	b.queueTextComments(batch)
+	queue(batch)
 	older := false
 	if b.before != nil {
 		batch.Queue(olderCommentStatement, b.key, b.cut.At, b.before.MadeAt, b.before.ID).QueryRow(func(row pgx.Row) error {
@@ -178,6 +281,105 @@ func (b *issueTreeBuilder) readViewTextComments() error {
 		return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", commentsBeforeRefusal(b.key))
 	}
 	return nil
+}
+
+// queueViewTextComments queues into batch the read of the comments of threads on text a view's
+// read of its rows may choose (viewTextCommentsStatement), into textComments, textThreads and
+// textOrder as queueTextComments reads them, and whether more remain than it read (textMore).
+func (b *issueTreeBuilder) queueViewTextComments(batch *pgx.Batch) {
+	seq, at := treeCutBounds(b.cut)
+	b.textComments, b.textThreads, b.textOrder = map[refs.Target]treeTextComment{}, map[string]*treeTextThread{}, nil
+	var beforeAt *time.Time
+	var beforeID *string
+	if b.before != nil {
+		beforeAt, beforeID = &b.before.MadeAt, &b.before.ID
+	}
+	var limit *int
+	if !b.everyText {
+		read := viewTextChoice + 1
+		limit = &read
+	}
+	batch.Queue(viewTextCommentsStatement, b.key, b.cut.At, seq, at, refs.IssueDepthCap, beforeAt, beforeID, limit).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			var chosen int
+			var head, id, onKind, onID *string
+			var answers *string
+			var voiced *bool
+			var blocks []string
+			var madeAt *time.Time
+			if err := rows.Scan(&chosen, &head, &id, &madeAt, &answers, &voiced, &onKind, &onID, &blocks); err != nil {
+				return fmt.Errorf("read a comment on the text of a node of %s: %w", b.key, err)
+			}
+			b.textMore = limit != nil && chosen > viewTextChoice
+			if id == nil {
+				continue
+			}
+			b.holdTextComment(*head, *id, *madeAt, answers, *voiced, *onKind, *onID, blocks)
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read the comments on the text of the nodes of %s: %w", b.key, err)
+		}
+		b.orderTextComments()
+		return nil
+	})
+}
+
+// viewTextChoice is how many of the comments on text a view's read of its rows reads first, the
+// newest of those older than the read's position (chooseViewText): twice its comment page, so a
+// read whose newest comments stand mostly on nodes it answers reads its page at the first read.
+const viewTextChoice = 2 * issueTreeCommentPageSize
+
+// errViewTextShort is a view's read of its rows that chose too few of the comments on text to know
+// its comment page (viewTextHolds): readIssueTree reads it again with every one of them.
+var errViewTextShort = errors.New("the comments on text a view's read chose hold too few of its comment page")
+
+// chooseViewText chooses the comments on text a view's read of the issue's head rows reads
+// (refs.HeadView), into textChosen: of those older than the read's position, the newest
+// viewTextChoice, or every one where the read is everyText, and whether that is all of them
+// (textWhole), which it is not where more remain than readViewTextChoice read (textMore). It
+// answers their ids and, once for each of their threads, the node the thread is on, whose rows and
+// those above it the read reads too, so the node each thread stands with is a node of its walk
+// where it is one of the walk of the whole tree.
+func (b *issueTreeBuilder) chooseViewText() ([]string, []refs.Target) {
+	b.textChosen, b.textWhole = map[refs.Target]bool{}, !b.textMore
+	var comments []string
+	var nodes []refs.Target
+	on := map[string]bool{}
+	for index := len(b.textOrder) - 1; index >= 0; index-- {
+		target := b.textOrder[index]
+		text := b.textComments[target]
+		if !commentOlder(text.madeAt, target.ID, b.before) {
+			continue
+		}
+		if !b.everyText && len(comments) == viewTextChoice {
+			b.textWhole = false
+			break
+		}
+		b.textChosen[target] = true
+		comments = append(comments, target.ID)
+		if !on[text.head] {
+			on[text.head] = true
+			nodes = append(nodes, b.textThreads[text.head].on)
+		}
+	}
+	return comments, nodes
+}
+
+// viewTextHolds reports whether the read knows its comment page: every read but a view's read of
+// its rows, and that one where it chose every comment on text older than its position (textWhole),
+// or where its answer carries more than a page of those it chose (textCarried), or a page of them
+// and an older one. Every comment it did not choose is older than each it chose, so its page is
+// the newest it carries of those it chose, and its position holds where an older one is carried.
+// Otherwise the newest comments it carries may be ones it did not choose.
+func (b *issueTreeBuilder) viewTextHolds() bool {
+	return b.heads == nil || b.view == "" || b.textWhole || b.textCarried > issueTreeCommentPageSize ||
+		b.textCarried == issueTreeCommentPageSize && b.viewNext != nil
+}
+
+// viewRows reports whether the read is a view's read of its rows (readViewRows), which holds the
+// rows of the comments on text it chose and of those above them alone.
+func (b *issueTreeBuilder) viewRows() bool {
+	return b.heads != nil && b.view != ""
 }
 
 // textOnSkeleton reports whether the read with no view can answer the thread's first comment by
@@ -283,11 +485,24 @@ func (b *issueTreeBuilder) mergeCommentPage(page refs.CommentPage, pastEnd bool,
 // resolveTextThreads gives each thread on text the node of the walk it is on (treeTextThread's
 // node): the node its anchored_in names where the walk took it, else the first node of the walk
 // its moved_to tuples carry that address to (refs.TreeMovedTo), read in one statement where the
-// walk took none of the addresses.
+// walk took none of the addresses. A view's read of its rows (viewRows) resolves only the threads
+// a comment of its rows is of, since it holds no other comment of a thread on text.
 func (b *issueTreeBuilder) resolveTextThreads() error {
+	var read map[string]bool
+	if b.viewRows() {
+		read = map[string]bool{}
+		for target, text := range b.textComments {
+			if _, held := b.heads.Rows[target]; held {
+				read[text.head] = true
+			}
+		}
+	}
 	var unheld []string
 	queued := map[string]bool{}
-	for _, thread := range b.textThreads {
+	for head, thread := range b.textThreads {
+		if read != nil && !read[head] {
+			continue
+		}
 		if _, held := b.entries[thread.on]; held {
 			thread.node = thread.on
 		} else if thread.on.Kind == refs.BlockNodeKind && !queued[thread.on.ID] {
@@ -302,8 +517,8 @@ func (b *issueTreeBuilder) resolveTextThreads() error {
 	if err != nil {
 		return err
 	}
-	for _, thread := range b.textThreads {
-		if thread.node != (refs.Target{}) {
+	for head, thread := range b.textThreads {
+		if thread.node != (refs.Target{}) || read != nil && !read[head] {
 			continue
 		}
 		for _, reached := range moved[thread.on.ID] {
@@ -317,12 +532,12 @@ func (b *issueTreeBuilder) resolveTextThreads() error {
 }
 
 // placeTextComments adds to the answer's candidates each comment of a thread on text no person
-// wrote in, which the walk does not take: of a view, each of them; of the read with no view and
-// the read with kind, those of the comment page (textPage). Each stands under what it answers,
-// the first of its thread under the node of the walk it is on, and each of its blocks under it,
-// each marked as on text (treeEntry's onText). A thread on a node the walk does not hold comes
-// with no answer, and a reply whose comment the answer does not hold stands under the issue,
-// naming that comment (named).
+// wrote in, which the walk does not take: of a view, each of them, of a view's read of its rows
+// each whose row it read (viewRows); of the read with no view and the read with kind, those of the
+// comment page (textPage). Each stands under what it answers, the first of its thread under the
+// node of the walk it is on, and each of its blocks under it, each marked as on text (treeEntry's
+// onText). A thread on a node the walk does not hold comes with no answer, and a reply whose
+// comment the answer does not hold stands under the issue, naming that comment (named).
 func (b *issueTreeBuilder) placeTextComments() error {
 	if err := b.resolveTextThreads(); err != nil {
 		return err
@@ -333,6 +548,9 @@ func (b *issueTreeBuilder) placeTextComments() error {
 		text := b.textComments[target]
 		thread := b.textThreads[text.head]
 		if thread.voiced || thread.node == (refs.Target{}) || b.skeleton != nil && !b.textPage[target.ID] {
+			continue
+		}
+		if _, held := b.headRow(target); b.viewRows() && !held {
 			continue
 		}
 		adding[target] = true
@@ -395,7 +613,8 @@ func (b *issueTreeBuilder) carriedText(target refs.Target, in map[refs.Target]bo
 // the comments on text it carries: the issueTreeCommentPageSize newest of those older than the
 // read's position, by each comment's own time and then its id, each of the others left out with
 // its blocks. It keeps the page in viewPage and, where older comments remain, the position of the
-// oldest of it in viewNext.
+// oldest of it in viewNext; and how many of those it carries a view's read of its rows chose
+// (textCarried, viewTextHolds).
 func (b *issueTreeBuilder) pageViewComments(viewed []refs.Target) []refs.Target {
 	var carried []refs.Target
 	for _, target := range viewed {
@@ -413,9 +632,12 @@ func (b *issueTreeBuilder) pageViewComments(viewed []refs.Target) []refs.Target 
 		if !commentOlder(b.textComments[target].madeAt, target.ID, b.before) {
 			continue
 		}
+		if b.textChosen[target] {
+			b.textCarried++
+		}
 		if len(b.viewPage) == issueTreeCommentPageSize {
 			remains = true
-			break
+			continue
 		}
 		b.viewPage[target], oldest = true, target
 	}

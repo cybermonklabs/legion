@@ -16647,6 +16647,12 @@
           "content_sha256_source": {
             "type": "string"
           },
+          "current_sha256": {
+            "type": "string"
+          },
+          "digest_owed": {
+            "type": "boolean"
+          },
           "documents": {
             "items": {
               "$ref": "#/components/schemas/AskApprovalDocument"
@@ -16706,6 +16712,12 @@
           },
           "content_sha256_source": {
             "type": "string"
+          },
+          "current_sha256": {
+            "type": "string"
+          },
+          "digest_owed": {
+            "type": "boolean"
           },
           "documents": {
             "items": {

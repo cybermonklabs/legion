@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # The declaration comparison of check c-windows-kept: every xid window a Go file under
 # packages/envoy declares, at a baseline and at a head, compared declaration by declaration, so
-# that no window this branch inherits is loosened, dropped or hidden, apart from root R29's
-# approved restore exception, and no new window holds more than the Verification names.
+# that no window this branch inherits is loosened, dropped or hidden - the two route-table rows
+# and the dedicated test that restore the approved text keep main's 2-statement
+# storetest.XidBatchedWindow, with no restore exception (root R29) - and no new window holds more
+# than the Verification names.
 #
 #   bash packages/dispatch/e2e/acceptance/xid-window-bounds.sh BASELINE HEAD
 #
@@ -18,7 +20,7 @@
 # a reader this script writes into its own directory and builds with the go on PATH. A
 # declaration is one of:
 #   - a use of XidWindowOf or XidBatchedWindow, or of a package-level window a package names
-#     (specRestoreWindow, specVersionWindow, xidRigWindow), wherever it stands;
+#     (specVersionWindow, xidRigWindow), wherever it stands;
 #   - a call of a window helper, a function of the package whose own body declares a window and
 #     that no single test case names (measureBatched), read as the windows that helper declares;
 #   - the definitions of the window helpers themselves, XidWindowOf and XidBatchedWindow.
@@ -35,21 +37,17 @@
 #
 # What it prints: both commits in full (or the directories), the count of declarations each side
 # holds, and `diff -u` of the two lists. Then one line for each declaration that differs:
-#   RESTORE: a named restore assertion with its baseline and head windows - the two route-table rows
-#            that restore the approved text, which use specRestoreWindow at 17, the definition of
-#            specRestoreWindow, and the dedicated upload test
-#            TestXidWindowUploadRestoringTheApprovedText, which uses XidWindowOf(18);
 #   MISSING: a baseline declaration the head no longer holds;
 #   CHANGED: a baseline declaration the head holds with another window, with both statement counts;
 #   HIDDEN:  a baseline declaration some test ran at the baseline that no test reaches at the head;
 #   NEW:     a declaration the head adds, and whether it is a case the Verification names at its
-#            batched limit (`accepted`) or not (`refused`): the node routes' test
-#            TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill, and the route-table rows of the
-#            Verification uploads above the bound and of the writes on the deep spec that defer
-#            their block index (c-render-at-version), each at storetest.XidBatchedWindow.
+#            batched limit (`accepted`) or not (`refused`): the node routes' test, the hash
+#            gate's test (c-approval-bytes), and the route-table rows of the Verification uploads
+#            above the bound and of the writes on the deep spec that defer their block index
+#            (c-render-at-version), each at storetest.XidBatchedWindow.
 # A new case cannot hide or replace a baseline one: a baseline key the head lacks is MISSING
 # whatever the head adds. The run fails when either side reads no declaration, and on any MISSING,
-# CHANGED, HIDDEN or refused NEW line and any restore assertion the head does not hold, naming
+# CHANGED, HIDDEN or refused NEW line, naming
 # each. Its last line, printed only once every comparison passed, is
 #   PASS: xid-window-bounds.sh complete <N> comparisons
 # N being the declarations compared: the baseline's and the head's new ones.
@@ -95,19 +93,11 @@ trap 'exit 143' TERM
 
 # What a file names when it declares an xid window.
 readonly window_pattern='XidWindowOf|XidBatchedWindow'
-# The route-table rows the restore exception names, the window both use, and the dedicated upload
-# test it names: the keys the reader below gives them.
+# The package the route-table rows and the tests it names are keyed under.
 readonly api_package='internal/dispatch/api:api'
-readonly restore_rows=(
-  "$api_package:var documentRouteXidWindows/case \"the spec edit restoring the approved text under an open approval request\"#1"
-  "$api_package:var documentRouteXidWindows/case \"the spec upload restoring the approved text under an open approval request\"#1"
-)
-readonly restore_window="$api_package:var specRestoreWindow#1"
-readonly restore_test="$api_package:TestXidWindowUploadRestoringTheApprovedText#1"
-readonly restore_row_count=17 restore_test_count=18
 # The new cases this Verification names, each at storetest.XidBatchedWindow: the rows of the
-# documents table that c-render-at-version names, and every declaration the node routes' test alone
-# runs (c-windows-kept).
+# documents table that c-render-at-version names, and declarations run only by the node routes'
+# test (c-windows-kept) or the hash gate's test (c-approval-bytes).
 readonly accepted_rows=(
   "the Verification upload above the bound on an issue that has not converted"
   "the Verification upload above the bound on a converted issue"
@@ -119,6 +109,7 @@ readonly accepted_rows=(
   "the rebuild of a spec of more than 2,000 blocks nested six deep"
 )
 readonly accepted_test=TestXidWindowsOfTheNodeRoutesTheDrainAndTheFill
+readonly accepted_hash_gate_test=TestHashGateEmitsDigestAndDropsSyntheticCarries
 readonly batched=XidBatchedWindow
 
 # --- the reader ----------------------------------------------------------------------------------
@@ -855,44 +846,6 @@ xid_window_bounds_problem() {
   problems+=("$1")
 }
 
-# xid_window_bounds_is_restore KEY: whether KEY is a named restore assertion.
-xid_window_bounds_is_restore() {
-  local restore
-  for restore in "${restore_rows[@]}" "$restore_window" "$restore_test"; do
-    [[ "$1" != "$restore" ]] || return 0
-  done
-  return 1
-}
-
-# xid_window_bounds_restore KEY: prints the restore diff of KEY, its baseline and its head window.
-xid_window_bounds_restore() {
-  printf 'RESTORE: %s\n  baseline: statements %s, %s\n  head:     statements %s, %s\n' "$1" \
-    "${base_count[$1]:-(none)}" "${base_value[$1]:-(no declaration)}" \
-    "${head_count[$1]:-(none)}" "${head_value[$1]:-(no declaration)}"
-}
-
-# --- the restore exception -----------------------------------------------------------------------
-
-printf -- '--- the restore exception (root R29) ---\n'
-for key in "${restore_rows[@]}"; do
-  xid_window_bounds_restore "$key"
-  [[ "${head_value[$key]:-}" == "specRestoreWindow = "* && "${head_count[$key]:-}" == "$restore_row_count" ]] ||
-    xid_window_bounds_problem "RESTORE REFUSED: $key: the head declares statements ${head_count[$key]:-(none)}, ${head_value[$key]:-(no declaration)}; the row that restores the approved text uses specRestoreWindow at $restore_row_count"
-done
-xid_window_bounds_restore "$restore_window"
-[[ "${head_count[$restore_window]:-}" == "$restore_row_count" && "${head_value[$restore_window]:-}" == *XidWindowOf* ]] ||
-  xid_window_bounds_problem "RESTORE REFUSED: $restore_window: the head declares statements ${head_count[$restore_window]:-(none)}, ${head_value[$restore_window]:-(no declaration)}; specRestoreWindow is XidWindowOf($restore_row_count, ...)"
-xid_window_bounds_restore "$restore_test"
-[[ "${head_count[$restore_test]:-}" == "$restore_test_count" && "${head_value[$restore_test]:-}" == *XidWindowOf* ]] ||
-  xid_window_bounds_problem "RESTORE REFUSED: $restore_test: the head declares statements ${head_count[$restore_test]:-(none)}, ${head_value[$restore_test]:-(no declaration)}; the dedicated upload restore test uses XidWindowOf($restore_test_count, ...)"
-[[ -z "${head_count[${restore_test%#1}#2]:-}" ]] ||
-  xid_window_bounds_problem "RESTORE REFUSED: ${restore_test%#1}#2: the dedicated upload restore test declares a second window, statements ${head_count[${restore_test%#1}#2]}, beside its XidWindowOf($restore_test_count, ...)"
-for key in "${!head_count[@]}"; do
-  [[ "$key" == *"restoring the approved text"* ]] || continue
-  xid_window_bounds_is_restore "$key" ||
-    xid_window_bounds_problem "RESTORE REFUSED: $key: a declaration restoring the approved text that the exception does not name, statements ${head_count[$key]}, ${head_value[$key]}"
-done
-
 # --- every baseline declaration ------------------------------------------------------------------
 
 printf -- '--- the baseline declarations at the head ---\n'
@@ -902,7 +855,7 @@ while IFS= read -r key; do
     xid_window_bounds_problem "MISSING: $key: the baseline declares statements ${base_count[$key]}, ${base_value[$key]} (at ${base_where[$key]}), and the head holds no declaration there"
     continue
   fi
-  if [[ "${head_value[$key]}" != "${base_value[$key]}" ]] && ! xid_window_bounds_is_restore "$key"; then
+  if [[ "${head_value[$key]}" != "${base_value[$key]}" ]]; then
     xid_window_bounds_problem "CHANGED: $key: baseline statements ${base_count[$key]}, ${base_value[$key]} (at ${base_where[$key]}); head statements ${head_count[$key]}, ${head_value[$key]} (at ${head_where[$key]})"
     continue
   fi
@@ -922,13 +875,13 @@ while IFS= read -r key; do
   [[ -z "${base_count[$key]+held}" ]] || continue
   new=$((new + 1))
   compared=$((compared + 1))
-  ! xid_window_bounds_is_restore "$key" || continue
   named=""
   for row in "${accepted_rows[@]}"; do
     [[ "$key" != "$api_package:var documentRouteXidWindows/case \"$row\"#1" ]] ||
       named="the documents table's row \"$row\" (c-render-at-version)"
   done
   [[ "${head_owners[$key]}" != "$accepted_test" ]] || named="$accepted_test, the node routes' test"
+  [[ "${head_owners[$key]}" != "$accepted_hash_gate_test" ]] || named="$accepted_hash_gate_test (c-approval-bytes)"
   if [[ -z "$named" ]]; then
     xid_window_bounds_problem "NEW refused: $key: statements ${head_count[$key]}, ${head_value[$key]} (at ${head_where[$key]}, run by ${head_owners[$key]}): no case this Verification names"
   elif [[ "${head_count[$key]}" != "$batched" ]]; then
@@ -945,5 +898,5 @@ if ((${#problems[@]} > 0)); then
   fail verdict "the head keeps every baseline xid window and adds only the cases the Verification names" \
     "${#problems[@]} problem(s) over $compared comparisons, baseline $baseline_label, head $head_label: $(printf '%s | ' "${problems[@]}")"
 fi
-pass verdict "the head keeps all ${#base_count[@]} baseline xid windows, the restore exception holds, and its $new new declarations are cases the Verification names"
+pass verdict "the head keeps all ${#base_count[@]} baseline xid windows, with no restore exception, and its $new new declarations are cases the Verification names"
 printf 'PASS: %s complete %d comparisons\n' "$driver" "$compared"

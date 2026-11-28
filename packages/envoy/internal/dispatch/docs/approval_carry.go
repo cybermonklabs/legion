@@ -164,8 +164,8 @@ func refuseSecondCarry(ctx context.Context, tx pgx.Tx, artifactID string) error 
 // NewerContentError, which fails the version write (skipUnreadableVersion). It reads rendered.tree
 // and never changes it: the tree is the live document's. steps names the decisions step's phases
 // whose own write the version is (versionWrite.steps), whose cases alone it weighs beside the
-// answer case, the reading case and the attribute-removal case. record is what the record case
-// weighs the version by (RecordCarry, carryNewestApprovalNaming).
+// answer case, the reading case and the attribute-removal case. A converted query document
+// carries nothing (textCarries): its approval stands by its record's digest (R14's hash gate).
 //
 // Every read and every rule run where it is called, the transaction's read phase: the newest
 // review, the ask rows and the copies' sources the version's blocks are held to
@@ -176,8 +176,8 @@ func refuseSecondCarry(ctx context.Context, tx pgx.Tx, artifactID string) error 
 // document's approval at most once; the ask rows and the request are read as this transaction's
 // own queued writes leave them (loadAskBlocks, openApprovalAsk). The answer and the review are
 // written through write, so a transaction whose writes are queued runs them in its write phase,
-// after the version they carry to.
-func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree, steps decisionStepCases, record RecordCarry, sink func(model.Event)) error {
+// in their place, before the version's artifact.version.
+func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version, rendered renderedTree, steps decisionStepCases, sink func(model.Event)) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
 	}
@@ -187,7 +187,10 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
 	}
-	return carryNewestApprovalNaming(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL, steps, "", record, sink)
+	if carries, err := textCarries(ctx, tx, artifactID); err != nil || !carries {
+		return err
+	}
+	return carryNewestApproval(ctx, tx, s.events, artifactID, version.Number, rendered.markdown, rendered.tree, *newest, s.serverURL, steps, sink)
 }
 
 // CarryUploadedApproval is carryApproval for the route that writes a document version itself
@@ -199,17 +202,13 @@ func (s *Service) carryApproval(ctx context.Context, tx pgx.Tx, artifactID strin
 // that adds, edits or removes the readings of its decisions and answered asks, or that drops the
 // server-owned attributes of an ask block, as every upload does, carries its approval where those
 // are the whole change, and an upload that makes the change of the restore or of the conversion
-// carries nothing by their cases (restoreCase, conversionCase), which no route can reach. Its
-// reads run where it is called, the route's read phase, and its writes are queued there, as
-// carryApproval's are; the events it appends reach the ledger of the transaction it runs in
-// (eventSink), which publishes them after its Commit, beside the version move's own. Its writes
-// keep their place, before the version's artifact.version, which the upload appends after it
-// (R14): the review it inserts pins the digest of the version's stored markdown while the
-// version's record digest is owed, and the fill after the commit repins it to the record
-// (fillOwedDigests); an upload of the approved text writes the version's row itself first, with
-// the approval's digest (carryRestored). record is what its record case weighs the version by: the
-// facts the upload's bytes stated (StatedWhole).
-func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, record RecordCarry, serverURL string) error {
+// carries nothing by their cases (restoreCase, conversionCase), which no route can reach. An
+// upload of a converted query document carries nothing (textCarries). Its reads run where it is
+// called, the route's read phase, and its writes are queued there, as carryApproval's are; the
+// events it appends reach the ledger of the transaction it runs in (eventSink), which publishes
+// them after its Commit, beside the version move's own. Its writes keep their place, before the
+// version's artifact.version, which the upload appends after it (R14).
+func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
 	}
@@ -217,12 +216,68 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	if err != nil || newest == nil || newest.State != "approved" {
 		return err
 	}
+	if carries, err := textCarries(ctx, tx, artifactID); err != nil || !carries {
+		return err
+	}
 	if tree == nil {
 		if tree, err = pmdoc.ParseRendering(markdown); err != nil {
 			return skipUnreadableVersion(artifactID, number, err)
 		}
 	}
-	return carryNewestApprovalNaming(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, "", record, eventSink(ctx))
+	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
+}
+
+// carryToLatest carries the document's newest review, an approval of a version before number, its
+// latest, stored as markdown, to that version, on carryNewestApproval's conditions: the reopen's
+// follow (followLatestVersion). A transaction carries one document's approval at most once
+// (refuseSecondCarry), an approval of the latest version carries nothing, and neither does an
+// approval of a converted query document (textCarries).
+func carryToLatest(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown, serverURL string) error {
+	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
+		return err
+	}
+	newest, err := NewestReview(ctx, tx, artifactID)
+	if err != nil || newest == nil || newest.State != "approved" || newest.Version >= number {
+		return err
+	}
+	if carries, err := textCarries(ctx, tx, artifactID); err != nil || !carries {
+		return err
+	}
+	// The answer carry reads the version's blocks from its tree, as the version's own write reads
+	// the live tree it rendered: the stored text's read-back is that tree.
+	tree, err := pmdoc.ParseRendering(markdown)
+	if err != nil {
+		return skipUnreadableVersion(artifactID, number, err)
+	}
+	return carryNewestApproval(ctx, tx, broker, artifactID, number, markdown, tree, *newest, serverURL, decisionStepCases{}, eventSink(ctx))
+}
+
+// queryDocumentStatement reports whether the document $1 is a query node of a converted issue -
+// its issue holds an issue_trees row and its node carries the supertag query - as ReviewStandJoin
+// reads it for every gate.
+const queryDocumentStatement = `
+	select exists (
+		select 1 from artifacts a
+		join issue_trees t on t.issue_key = a.issue_key
+		join graph_nodes n on n.kind = '` + graphstore.KindArtifact + `' and n.id = a.ref_key and n.supertag = '` + graphstore.SupertagQuery + `'
+		where a.id = $1::uuid)`
+
+// textCarries reports whether an approval of artifactID carries to a later version by its text
+// (carryNewestApproval): on every document but a query node of a converted issue. The hash gate
+// (R14) decides such a document's approval by the digest of its query's record alone
+// (ApprovalStand.Approves), at whatever version the approval names, so no version write, settlement,
+// upload, drain or reopen writes a carried review there: a version whose record did not move keeps
+// the approval standing, and one whose record moved leaves it stale whatever its text holds. The
+// one carry such a document takes on a write is the conversion's own (issueConversion.finish), and
+// the first pass of a version approved before its record's digest stood moves that approval onto
+// the digest at the same version (carryFirstStated). A document this transaction creates holds no
+// approval, so the read is of stored rows alone; it runs once an approval is known to stand.
+func textCarries(ctx context.Context, tx pgx.Tx, artifactID string) (bool, error) {
+	var query bool
+	if err := tx.QueryRow(ctx, queryDocumentStatement, artifactID).Scan(&query); err != nil {
+		return false, fmt.Errorf("read whether %s is a query document of a converted issue: %w", artifactID, err)
+	}
+	return !query, nil
 }
 
 // carryNewestApproval carries newest, the document's newest review and an approval of version A,
@@ -231,42 +286,15 @@ func CarryUploadedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 // version agrees with its node (asksAgreeWithTheirNodes), and then either the version's text is
 // A's stored text byte for byte (restoresApprovedText), or every difference from it is one of the
 // carry cases (carryVerdict). It appends nothing otherwise, and hands sink what it appends, as
-// carryApproval does. A version that holds A's text carries where carryRestored places the carry's
-// writes. A is read only for a version holding an ask block or a decision: every case
+// carryApproval does. A is read only for a version holding an ask block or a decision: every case
 // is a difference in one of those blocks, and a version holding neither either holds A's text or
 // holds none of A's decisions and ask blocks, which still have to stand. steps names the decisions
 // step's phases whose own write the version is, and what that write added, whose cases
-// (restoreCase, conversionCase) it weighs beside the other three; zero for every other write. It
-// weighs no record case: its callers, the pass that first states a version and the fill, carry an
-// approval of the version itself.
+// (restoreCase, conversionCase) it weighs beside the other three; zero for every other write. Its
+// callers are the text carries of a document that is no converted query document (textCarries),
+// and the first pass that states a version whose approval of that same version pinned its stored
+// markdown's digest (carryFirstStated).
 func carryNewestApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, sink func(model.Event)) error {
-	return carryNewestApprovalNaming(ctx, tx, broker, artifactID, number, markdown, tree, newest, serverURL, steps, "", RecordCarry{}, sink)
-}
-
-// carryNewestApprovalNaming is carryNewestApproval whose carried reason names arrived, a change no
-// version's text shows, where it is not "": the results that arrived since the approved version
-// (arrivedResultsChange), which the drain's result carry names (carryAppendedResults). The reason
-// keeps the opening every carried reason has (carriedReasonPrefix), which the daemon matches.
-//
-// carryVerdict's cases and the restore compare the two versions' texts alone, so on a query
-// document of a converted issue a carry by them also keeps to the record newest stands on
-// (carryKeepsTheRecord): no case carries a version whose record the read phase shows moved since -
-// a version whose text differs in its ask blocks' attributes alone, after a criterion of the room's
-// tree that the drain's version before it recorded - and then no case after them is weighed, since
-// the record case would find the same record moved. The restore is held to it onto a version that
-// stands stored or whose digest is known (storedRecord, knownRecord), as the reopen's follow and
-// the fill carry it: a drain's version that holds the approved bytes over a moved record restores
-// the approved text and nothing the person approved of the record. A restore onto a version this
-// write makes is held to its record by carryRestored, where that version takes its row in the
-// write. A carry naming arrived keeps to the record its caller held to the approved one with the
-// arrived results alone (appendsResultsAlone).
-//
-// Where neither the restore nor carryVerdict's cases carry, and no result arrived, the record case
-// runs last (carryUnmovedRecord): a version whose record digest is the one newest stands on, as a
-// paragraph moved in the text before a requirement leaves it, carries by its reason
-// (RecordCarryReason), weighed by record (RecordCarry, recordUnmoved). The earlier cases keep their
-// reasons.
-func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, newest model.ArtifactReview, serverURL string, steps decisionStepCases, arrived string, record RecordCarry, sink func(model.Event)) error {
 	sameDefinition, err := sameDefinitionVersion(ctx, tx, artifactID, newest.Version, number)
 	if err != nil || !sameDefinition {
 		return err
@@ -280,78 +308,45 @@ func carryNewestApprovalNaming(ctx context.Context, tx pgx.Tx, broker *events.Br
 		return err
 	}
 	if restored {
-		if record.stored || record.digest != nil {
-			kept, err := carryKeepsTheRecord(ctx, tx, artifactID, number, newest, record)
-			if err != nil || !kept {
-				return err
-			}
-		}
 		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
 		if err != nil {
 			return err
 		}
-		reason := restoredReason(newest.Version, origin)
-		if arrived != "" {
-			reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + carriedReasonEnd
-		}
-		return carryRestored(ctx, tx, artifactID, number, newest, func() error {
-			return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
-		})
+		return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, restoredReason(newest.Version, origin), serverURL, sink)
 	}
-	change, carried := "", false
-	if len(shown.nodes) > 0 || holdsBlockType(tree, decisionType) {
-		approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
-		if err != nil {
-			return err
-		}
-		if readable {
-			answered, err := answeredAskBlocks(ctx, tx, shown, approved)
-			if err != nil {
-				return err
-			}
-			input := carryInput{
-				approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree,
-				approverAnswered: approverAnswers(shown, newest), answered: answered,
-				// kept for one release: decisions-step
-				decided: decidedAskBlocks(shown), steps: steps,
-			}
-			// kept for one release: decisions-step
-			if steps.restore {
-				input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
-			}
-			if change, carried, err = carryVerdict(input); err != nil {
-				return skipUnreadableVersion(artifactID, number, err)
-			}
-		}
-	}
-	if carried {
-		if arrived == "" {
-			kept, err := carryKeepsTheRecord(ctx, tx, artifactID, number, newest, record)
-			if err != nil || !kept {
-				return err
-			}
-		}
-		origin, err := approvalOrigin(ctx, tx, artifactID, newest)
-		if err != nil {
-			return err
-		}
-		reason := fmt.Sprintf(carriedReasonPrefix, origin) + change
-		if arrived != "" {
-			reason = fmt.Sprintf(carriedReasonPrefix, origin) + arrived + ", and " + change
-		}
-		return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, reason, serverURL, sink)
-	}
-	if arrived != "" {
+	if len(shown.nodes) == 0 && !holdsBlockType(tree, decisionType) {
 		return nil
 	}
-	return carryUnmovedRecord(ctx, tx, broker, artifactID, number, newest, serverURL, record, sink)
-}
-
-// arrivedResultsChange is what a carried reason says of results that arrived after the approved
-// version, each named by its check's block id and its verdict, in the record's order:
-// "the results of c1 (pass) and c2 (fail), which arrived after it".
-func arrivedResultsChange(named []string) string {
-	return "the results of " + joinWithAnd(named) + ", which arrived after it"
+	approved, approvedText, otherRenderer, readable, err := approvedVersion(ctx, tx, artifactID, newest.Version)
+	if err != nil || !readable {
+		return err
+	}
+	answered, err := answeredAskBlocks(ctx, tx, shown, approved)
+	if err != nil {
+		return err
+	}
+	input := carryInput{
+		approved: approved, approvedText: approvedText, approvedOtherRenderer: otherRenderer, version: tree,
+		approverAnswered: approverAnswers(shown, newest), answered: answered,
+		// kept for one release: decisions-step
+		decided: decidedAskBlocks(shown), steps: steps,
+	}
+	// kept for one release: decisions-step
+	if steps.restore {
+		input.restored = restoredAskBlocks(approved, tree, steps.restored, steps.restoredShaped)
+	}
+	change, carried, err := carryVerdict(input)
+	if err != nil {
+		return skipUnreadableVersion(artifactID, number, err)
+	}
+	if !carried {
+		return nil
+	}
+	origin, err := approvalOrigin(ctx, tx, artifactID, newest)
+	if err != nil {
+		return err
+	}
+	return writeCarriedReview(ctx, tx, broker, artifactID, number, origin, newest, fmt.Sprintf(carriedReasonPrefix, origin)+change, serverURL, sink)
 }
 
 // sameDefinitionVersion reports whether carrying an approval from version approved to version
@@ -367,6 +362,16 @@ func sameDefinitionVersion(ctx context.Context, tx pgx.Tx, artifactID string, ap
 	if approved == target {
 		return true, nil
 	}
+	approvedDef, targetDef, err := readVersionDefinitions(ctx, tx, artifactID, approved, target)
+	if err != nil {
+		return false, err
+	}
+	return approvedDef == nil || targetDef == nil || *approvedDef == *targetDef, nil
+}
+
+// readVersionDefinitions reads the definitions the two version nodes recorded. No definition is
+// inferred for an existing historical version node; a target not inserted yet uses its query's.
+func readVersionDefinitions(ctx context.Context, tx pgx.Tx, artifactID string, approved, target int) (*string, *string, error) {
 	var approvedDef, targetDef *string
 	err := tx.QueryRow(ctx, `
 		select
@@ -387,15 +392,12 @@ func sameDefinitionVersion(ctx context.Context, tx pgx.Tx, artifactID string, ap
 		where a.id = $1
 	`, artifactID, approved, target).Scan(&approvedDef, &targetDef)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return true, nil
+		return nil, nil, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read definition_version of versions %d and %d of %s: %w", approved, target, artifactID, err)
+		return nil, nil, fmt.Errorf("read definition_version of versions %d and %d of %s: %w", approved, target, artifactID, err)
 	}
-	if approvedDef == nil || targetDef == nil {
-		return true, nil
-	}
-	return *approvedDef == *targetDef, nil
+	return approvedDef, targetDef, nil
 }
 
 // restoredReason describes a carry to a version that restores the text of version restored.
@@ -666,22 +668,18 @@ func attributesOf(node *pmdoc.Node) *pmdoc.Node {
 	return &pmdoc.Node{Type: node.Type, Attrs: attributes}
 }
 
-// writeCarriedReview carries review from its original approved version (from) to number.
-// When the carry leaves every document of an open approval request approved, it queues the
-// answer in the approver's name, then the review's artifact.approved with the row that records the
-// carry's source and that event, in their place, before the version's artifact.version; and at the
-// end of the write phase's batch (writeLast), after that version event and the version's
-// version_renders row, the review's row and the statements that complete the review and its
-// event, which name the event by its own id (reviewEventID), as R14 orders a carry. It hands sink
-// each event in the place its append runs, and completes the ledger's copy of the
-// artifact.approved once the end of the batch has completed its payload (Ledger.completeEvent).
-// The carry records
-// the kind of the review it carries, since it is that review's approval it follows: a plan version
-// restored to the text its plan review approved stays approved by that plan review, not by the
-// session that wrote the version (ReviewKindPlanReview). A row read from artifact_reviews always
-// names its kind, and a review that names none is a person's, as the column's default says. It
-// holds no document service: every write it makes is a package function over tx and the broker,
-// which is what the upload's own caller outside this package holds (CarryUploadedApproval).
+// writeCarriedReview carries review from its original approved version (from) to number with
+// reason: the open approval request's answer, Approve in the approver's name, when one is open and
+// this carry leaves every document it names approved, then the approved review, its row of
+// artifact_review_carries naming from, and its artifact.approved, each in its place, before the
+// version's artifact.version (R14). It hands sink those events in that order, once the write
+// phase has appended them. The carry records the kind of the review it carries, since it is that
+// review's approval it follows: a plan version restored to the text its plan review approved stays
+// approved by that plan review, not by the session that wrote the version (ReviewKindPlanReview).
+// A row read from artifact_reviews always names its kind, and a review that names none is a
+// person's, as the column's default says. It holds no document service: every write it makes is a
+// package function over tx and the broker, which is what the upload's own caller outside this
+// package holds (CarryUploadedApproval).
 func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number, from int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
 	var askID *string
 	// The request as the version write's own move left it (MoveApprovalAsk), which names this
@@ -716,16 +714,8 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 		if err != nil {
 			return err
 		}
-		// A review of another document this carry read off the ledger can be a restore carry's
-		// (carryRestored), which the write phase drops where its version's record is not the
-		// approved one: the answer is then dropped with it, so no request stays answered on a
-		// review the transaction did not write (answerOn). A request that names one document
-		// reads no such review, and its answer is queued as it always was.
 		if closes {
-			ledger := queueFor(ctx, tx)
-			if err := ledger.answerOn(ledger.restoresRead(open.Approval.Documents, artifactID), func() error {
-				return answerApprovalAsk(ctx, tx, broker, artifactID, open, review.Actor, reason, serverURL, sink)
-			}); err != nil {
+			if err := answerApprovalAsk(ctx, tx, broker, artifactID, open, review.Actor, reason, serverURL, sink); err != nil {
 				return err
 			}
 		}
@@ -734,22 +724,10 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// The carried review keeps the kind of the review it follows, which its row records; a review
 	// read from a row that names no kind is a person's.
 	kind := cmp.Or(review.Kind, ReviewKindPerson)
-	carried, err := newReviewWrite(artifact, number, "approved", kind, review.Actor, &reason, askID, &from)
-	if err != nil {
-		return err
-	}
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {
-		return carried.queueEvent(b, broker, sink)
-	}); err != nil {
-		return err
-	}
-	ledger := ledgerFrom(ctx)
-	if err := writeLast(ctx, tx, func(b *store.WriteBatch) error {
-		carried.queueRow(b)
-		carried.queueCompletion(b, func(_ model.ArtifactReview, event model.Event) {
-			ledger.completeEvent(event)
+		return queueReviewOf(b, broker, artifact, number, "approved", kind, review.Actor, &reason, askID, &from, func(_ model.ArtifactReview, event model.Event) {
+			sink(event)
 		})
-		return nil
 	}); err != nil {
 		return err
 	}
@@ -758,9 +736,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// this transaction's read phase - a second carry's refusal (refuseSecondCarry), a request's
 	// other documents (namedDocumentsApproved) - takes it off the ledger. The carry makes no such
 	// read itself: it runs at most once for a document in a transaction (refuseSecondCarry). The
-	// write advice takes the review the write phase kept (Ledger.WrittenReview) once Commit has
-	// returned, since the write phase drops a restore's carry whose version's record is not the
-	// approved one.
+	// write advice takes it (Ledger.WrittenReview) once Commit has returned.
 	//
 	// The ledger's review is dated with tx's now() (recordPendingReview, Ledger.Now), and the row
 	// reviewWrite.queueRow inserts is dated by its column's default, now() (artifact_reviews.created_at,
@@ -938,10 +914,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// MoveApprovalAsk), and a read of the request between this answer and the write phase
 	// (openApprovalAsk) must see this answer rather than that move.
 	recordPendingApproval(ctx, tx, artifactID, &answered)
-	// The step below leaves the answer on ask, the row the move recorded, once it runs; a restore
-	// carry the write phase drops (restoredCarry.drop) leaves ask as the move left it.
-	state, given, resolution := ask.State, ask.Answer, ask.Resolution
-	queueFor(ctx, tx).noteUndo(func() { ask.State, ask.Answer, ask.Resolution = state, given, resolution })
+	// The step below leaves the answer on ask, the row the move recorded, once it runs.
 	return write(ctx, tx, func(b *store.WriteBatch) error {
 		if err := settled.Queue(b); err != nil {
 			return fmt.Errorf("answer approval ask: %w", err)

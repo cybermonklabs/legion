@@ -3,30 +3,23 @@ package docs
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/rank"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-// Every carried approval is written before its version (R14): a carry's artifact.approved comes
-// before the version's artifact.version, in event id and in seq, which the deployed Legion daemon
-// reads a restore and a carry by; the carried review names its own event; and a restore of a
-// version that holds no record digest carries once, in the write's batch.
+// A carried approval is written before its version (R14): a carry's artifact.approved comes before
+// the version's artifact.version, in event id and in seq, which the deployed Legion daemon reads a
+// carry by; and the one carry a write of a converted query document still holds, the cutover's,
+// is written once, in the write's batch, and pinned to its record's digest by the fill.
 
-// The decision document the readings and upload carries are written over: a decision with no
-// reading, and the same decision with the agent's reading under it, the whole change the reading
-// case carries an approval across (readingCase).
-const (
-	orderDecision        = "Context\n\n:::decision{#d1}\nWe ship on Friday.\n:::\n"
-	orderDecisionReading = "Context\n\n::::decision{#d1}\nWe ship on Friday.\n\n:::reading{#d1-r1}\nThe agent reads it as Friday.\n:::\n::::\n"
-)
+// orderDecisionReading is a decision document with the agent's reading under its decision.
+const orderDecisionReading = "Context\n\n::::decision{#d1}\nWe ship on Friday.\n\n:::reading{#d1-r1}\nThe agent reads it as Friday.\n:::\n::::\n"
 
 // orderAgent is the session that writes the versions the carries go to.
 var orderAgent = model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
@@ -39,7 +32,7 @@ var orderAgent = model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 func queueVersionEvent(ctx context.Context, service *Service, issue, artifactID string, version model.Version, stated graphstore.Uncaused, who model.Actor) error {
 	event := model.Event{
 		IssueKey: &issue, Type: "artifact.version", Actor: who,
-		Payload: ArtifactVersionEventPayload(artifactID, "document.md", version, nil, model.ReferenceChanges{}),
+		Payload: ArtifactVersionEventPayload(artifactID, "document.md", version, nil, model.ReferenceChanges{}, VersionDigest{}),
 	}
 	sink := eventSink(ctx)
 	return ledgerFrom(ctx).Queue(func(b *store.WriteBatch) error {
@@ -72,100 +65,6 @@ func namedVersionWithItsEvent(t *testing.T, service *Service, issue, artifactID,
 		t.Fatalf("name %q: %v", summary, err)
 	}
 	return number
-}
-
-// uploadWithItsEvent writes markdown over artifactID, a document of issue, as api's storeArtifact
-// writes an upload over a document: the text's replacement with the token of the version it
-// replaces (ReplaceText), the version (Ledger.QueueVersion), its index (IndexDocumentReferences), its
-// node (WriteVersionNode), the upload's carry (CarryUploadedApproval, weighing the facts the index
-// and the node stated) and then the version's event with what the write stated, in one transaction
-// joined to the service. It answers the version.
-func uploadWithItsEvent(t *testing.T, service *Service, issue, artifactID, markdown string) int {
-	t.Helper()
-	ctx := context.Background()
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	tx, err := service.store.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the upload over %s: %v", artifactID, err)
-	}
-	defer tx.Rollback(ctx)
-	joined, ledger := service.Join(ctx, tx)
-	defer ledger.Discard()
-	precondition, err := replacementPrecondition(joined, service, artifactID)
-	if err != nil {
-		t.Fatalf("read the token of %s: %v", artifactID, err)
-	}
-	stored, err := service.ReplaceText(joined, artifactID, markdown, alice, precondition)
-	if err != nil {
-		t.Fatalf("replace the text of %s: %v", artifactID, err)
-	}
-	version, err := ledger.QueueVersion(ctx, artifactID, stored, []model.Actor{alice}, nil)
-	if err != nil {
-		t.Fatalf("queue the upload's version of %s: %v", artifactID, err)
-	}
-	ledger.WroteVersion(artifactID, version, stored)
-	_, stated, err := service.IndexDocumentReferences(joined, artifactID, version.Number, stored)
-	if err != nil {
-		t.Fatalf("index the upload's version of %s: %v", artifactID, err)
-	}
-	owner, err := ReadVersionOwner(joined, tx, artifactID)
-	if err != nil {
-		t.Fatalf("read the owner of the upload's version of %s: %v", artifactID, err)
-	}
-	node, err := WriteVersionNode(joined, tx, owner, version.Number, alice, version.CreatedAt)
-	if err != nil {
-		t.Fatalf("write the node of the upload's version of %s: %v", artifactID, err)
-	}
-	if err := CarryUploadedApproval(joined, tx, service.events, artifactID, version.Number, stored, nil, StatedWhole(stated, node), service.serverURL); err != nil {
-		t.Fatalf("carry the approval of %s to the upload's version: %v", artifactID, err)
-	}
-	if err := queueVersionEvent(joined, service, issue, artifactID, version, graphstore.Joined(stated, node), alice); err != nil {
-		t.Fatalf("queue the upload's version event of %s: %v", artifactID, err)
-	}
-	if err := ledger.Commit(ctx); err != nil {
-		t.Fatalf("commit the upload over %s: %v", artifactID, err)
-	}
-	return version.Number
-}
-
-// addDecisionReading is the live-tree edit of a browser that writes the agent's reading under the
-// decision d1 (orderDecisionReading), the whole change between the two texts.
-func addDecisionReading(t *testing.T) func(*pmdoc.Node) *pmdoc.Node {
-	t.Helper()
-	read, err := pmdoc.Parse(orderDecisionReading)
-	if err != nil {
-		t.Fatalf("parse the decision with its reading: %v", err)
-	}
-	decisionOf := func(tree *pmdoc.Node) *pmdoc.Node {
-		for _, child := range tree.Children {
-			if child.Type == decisionType {
-				return child
-			}
-		}
-		t.Fatalf("the tree holds no decision: %+v", tree)
-		return nil
-	}
-	written := decisionOf(read)
-	reading := written.Children[len(written.Children)-1]
-	return func(tree *pmdoc.Node) *pmdoc.Node {
-		decision := decisionOf(tree)
-		decision.Children = append(decision.Children, reading)
-		return tree
-	}
-}
-
-// approvedDecisionDocument seeds orderDecision into a new document of DOC-1, has settlement write
-// its version, and records alice's approval of it; it answers the service, the document and the
-// version alice approved.
-func approvedDecisionDocument(t *testing.T) (*Service, string, int) {
-	t.Helper()
-	service, artifactID := newTestService(t)
-	service.settle = time.Hour
-	seedServiceText(t, service, artifactID, orderDecision)
-	settleCurrentGeneration(t, service, artifactID)
-	approved := latestVersionNumber(t, service, artifactID)
-	approveStoredVersion(t, service.store, artifactID, approved, "alice")
-	return service, artifactID, approved
 }
 
 // carriedOrder is what a carry to a version wrote, as the order tests read it: the carried
@@ -234,143 +133,18 @@ func requireApprovalFirst(t *testing.T, row string, order carriedOrder) {
 	}
 }
 
-// recordResult records a result of the check c1 of the issue room room with the mark of the room
-// issue's queries (leaveResultOwed), and drains that mark (DrainOwedQueries), whose version of the
-// Verification document carries an approval across the appended result.
-func recordResult(t *testing.T, database *store.Store, service *Service, room issueRoom) {
-	t.Helper()
-	leaveResultOwed(t, database, room)
-	service.DrainOwedQueries(context.Background(), room.issue)
-}
-
-// TestEachCarryKindIsWrittenBeforeItsVersion holds each kind of carry to R14's order, one row for
-// each: readings, a named version whose one change from the approved version is the agent's
-// reading under a decision (writeVersionTx's carry); answer, bob's answer to an ask block, which
-// settlement writes as a version whose block shows the answer (the settlement's carry); upload,
-// an upload whose one change is that reading (CarryUploadedApproval); result, a result
-// recorded on a check, whose drain writes a Verification version that differs from the approved
-// one by the appended result alone (carryAppendedResults); record, a version whose record digest
-// equals the approved one, as a paragraph moved in the text before a requirement makes it, which
-// the settlement of a peer's move writes (the record case, recordUnmoved); and drain, a version the
-// drain writes whose rendering alone moved, its record digest the approved one (the drain's record
-// case, knownRecord). Each row reads the carry written - a carried review with its row of
-// artifact_review_carries - and its artifact.approved before the version's artifact.version, in
-// event id and in seq; the two record rows read the carry's reason and the version it names, and
-// the version's digest, the approved one's.
-func TestEachCarryKindIsWrittenBeforeItsVersion(t *testing.T) {
-	t.Parallel()
-	t.Run("readings", func(t *testing.T) {
-		service, artifactID, approved := approvedDecisionDocument(t)
-		editLiveTree(t, service, artifactID, addDecisionReading(t))
-		number := namedVersionWithItsEvent(t, service, "DOC-1", artifactID, "The agent's reading")
-		if number != approved+1 {
-			t.Fatalf("the named version is version %d, want %d", number, approved+1)
-		}
-		requireApprovalFirst(t, "readings", readCarriedOrder(t, service.store, "the readings carry", artifactID, number))
-	})
-	t.Run("answer", func(t *testing.T) {
-		service, artifactID := newTestService(t)
-		service.settle = time.Hour
-		seedServiceText(t, service, artifactID, carrySpec)
-		settleCurrentGeneration(t, service, artifactID)
-		approved := latestVersionNumber(t, service, artifactID)
-		approveStoredVersion(t, service.store, artifactID, approved, "alice")
-		answerBlockAs(t, service, artifactID, "ask-1", "bob", []string{"Yes"})
-		settleCurrentGeneration(t, service, artifactID)
-		number := latestVersionNumber(t, service, artifactID)
-		if number != approved+1 {
-			t.Fatalf("the latest version is %d after bob's answer settled, want the one version settlement wrote of it, %d", number, approved+1)
-		}
-		requireApprovalFirst(t, "answer", readCarriedOrder(t, service.store, "the answer carry", artifactID, number))
-	})
-	t.Run("upload", func(t *testing.T) {
-		service, artifactID, approved := approvedDecisionDocument(t)
-		number := uploadWithItsEvent(t, service, "DOC-1", artifactID, orderDecisionReading)
-		if number != approved+1 {
-			t.Fatalf("the upload wrote version %d, want %d", number, approved+1)
-		}
-		requireApprovalFirst(t, "upload", readCarriedOrder(t, service.store, "the upload carry", artifactID, number))
-	})
-	t.Run("result", func(t *testing.T) {
-		ctx := context.Background()
-		database := storetest.Open(t)
-		service, server := newTestServiceInstance(t, database)
-		room := createIssueRoom(t, database, 4)
-		writeRoomQueryNodes(t, database, room)
-		settleVerification(t, ctx, database, service, server.URL, room)
-		approved := savedVersion(t, database, room.verification)
-		requireStatedRow(t, database, room.issue, graphstore.QueryVerification, room.verification, approved)
-		approveStoredVersion(t, database, room.verification, approved, "alice")
-		recordResult(t, database, service, room)
-		number := savedVersion(t, database, room.verification)
-		if number != approved+1 {
-			t.Fatalf("the drain of the result wrote version %d of DOC-4's Verification document, want %d", number, approved+1)
-		}
-		requireApprovalFirst(t, "result", readCarriedOrder(t, database, "the result carry", room.verification, number))
-	})
-	t.Run("record", func(t *testing.T) {
-		written := approvedRecordRoom(t, 5)
-		written.settleSpecEdit(t, context.Background(), moveParagraphBeforeRequirement)
-		number := savedVersion(t, written.database, written.room.spec)
-		if number != written.approved+1 {
-			t.Fatalf("the settlement of the paragraph's move wrote version %d of DOC-5's spec, want %d", number, written.approved+1)
-		}
-		if count := carriedReviewCount(t, written.database, written.room.spec, number); count != 1 {
-			t.Fatalf("version %d of DOC-5's spec holds %d carried reviews, want the record carry alone", number, count)
-		}
-		requireRecordCarry(t, written.database, "record", written.room.spec, written.approved, number)
-	})
-	t.Run("drain", func(t *testing.T) {
-		written := approvedRecordRoom(t, 6)
-		criterion, requirement := blockAddressByText(t, written.database, ":::criterion{#k1}"), blockAddressByText(t, written.database, ":::requirement{#r1}")
-		statePlacedParagraph(t, written, rank.Between(textRankOf(t, written.database, criterion), textRankOf(t, written.database, requirement)))
-		written.service.DrainOwedQueries(context.Background(), written.room.issue)
-		number := savedVersion(t, written.database, written.room.spec)
-		if number != written.approved+1 {
-			t.Fatalf("the drain of the paragraph's text_rank wrote version %d of DOC-6's spec, want %d: its rendering moved", number, written.approved+1)
-		}
-		if stored := storedVersionMarkdown(t, written.database, written.room.spec, number); strings.Index(stored, recordParagraph) > strings.Index(stored, "An urgent ask") {
-			t.Fatalf("the drain's version %d of DOC-6's spec reads\n%s\nwant the paragraph before the requirement", number, stored)
-		}
-		requireRecordCarry(t, written.database, "drain", written.room.spec, written.approved, number)
-	})
-}
-
-// TestACarriedApprovalNamesItsOwnEvent holds the carried review to its own artifact.approved (R14):
-// a named version whose one change from alice's approved version is a reading carries her approval,
-// and the carried review's event_seq is that artifact.approved's seq, the event's payload carries
-// the carried review's content_sha256, and the version's artifact.version, appended after it,
-// carries no review digest at all.
-func TestACarriedApprovalNamesItsOwnEvent(t *testing.T) {
-	t.Parallel()
-	service, artifactID, _ := approvedDecisionDocument(t)
-	editLiveTree(t, service, artifactID, addDecisionReading(t))
-	number := namedVersionWithItsEvent(t, service, "DOC-1", artifactID, "The agent's reading")
-	order := readCarriedOrder(t, service.store, "the carry", artifactID, number)
-	requireApprovalFirst(t, "readings", order)
-	if order.reviewSeq == nil || *order.reviewSeq != order.approvedSeq {
-		t.Errorf("the carried review %s holds event_seq %v, want the seq of its own artifact.approved, %d: the statement that sets event_seq named another event",
-			order.review, order.reviewSeq, order.approvedSeq)
-	}
-	if order.reviewDigest == nil || order.approvedDigest == nil || *order.approvedDigest != *order.reviewDigest {
-		t.Errorf("the artifact.approved of the carried review %s carries content_sha256 %v, want the review's %v: the statement that completes the payload named another event",
-			order.review, order.approvedDigest, order.reviewDigest)
-	}
-	if order.versionDigest {
-		t.Errorf("the artifact.version of version %d carries a content_sha256, want no review digest on the version event", number)
-	}
-}
-
 // TestAPreCutoverRestoreCarriesOnce restores the approved text of a version that holds no
 // version_renders row, and so no record digest (R14): PRE-1's spec, a query version's document,
 // stores version 1 by SQL, as a release before the cutover wrote it, and alice approves it, pinning
 // its stored markdown's sha256. Version 2 changes the text through the real version write, and
-// version 3 restores version 1's text. The approval stands on no record's digest (recordPin), so
-// version 3's write carries it as one plain carry, in its batch: exactly one carried review, which
-// pins the sha256 of version 3's stored markdown, with one artifact.approved before the version's
-// artifact.version; the write's own pass carries nothing again; and the fill after the COMMIT
-// repins that carry on its own row of artifact_review_carries to version 3's record digest, with no
-// second review and no second event, leaving the review's content_sha256 as it was.
+// version 3 restores version 1's text. PRE-1 has not converted, so its write carries alice's
+// approval by its text, once, in its batch: exactly one carried review, which pins the sha256 of
+// version 3's stored markdown, with one artifact.approved before the version's artifact.version;
+// the write's own pass carries nothing again. The fill after the COMMIT pins the record's digest
+// on that carry's own row of artifact_review_carries and appends one artifact.digest, with no
+// second review and no second artifact.approved, leaving the review's content_sha256 as it was.
+// The case reads the review, its pin and its row at the start of the fill (HoldFills), on a
+// connection of its own, and again once the fill has run.
 func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -413,44 +187,93 @@ func TestAPreCutoverRestoreCarriesOnce(t *testing.T) {
 	if _, err := joinedReplaceText(service, spec, approvedText, alice); err != nil {
 		t.Fatalf("write the approved text again: %v", err)
 	}
-	restored := namedVersionWithItsEvent(t, service, "PRE-1", spec, "The approved text again")
-	if restored != 3 || storedVersionMarkdown(t, database, spec, restored) != approvedText {
-		t.Fatalf("the restore wrote version %d storing %q, want version 3 storing %q", restored, storedVersionMarkdown(t, database, spec, restored), approvedText)
+
+	// before is what a connection of its own reads of the carry at the start of the fill, once the
+	// write has committed: the carry's review, the digest it pins and the digest every gate reads
+	// it standing on (reviewPin), its row of artifact_review_carries, and what the log holds.
+	type reading struct {
+		review, pinned, standing, rowRecord *string
+		reviews, approvals, digests         int
+		owed                                bool
+	}
+	read := func(number int) reading {
+		var got reading
+		if err := database.Pool.QueryRow(ctx, `
+			select (select id::text from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
+			       (select content_sha256 from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
+			       (select `+reviewPin+` from artifact_reviews where artifact_id = $1 and version = $2 order by created_at desc, id desc limit 1),
+			       (select c.record_sha256 from artifact_review_carries c join artifact_reviews r on r.id = c.review_id where r.artifact_id = $1 and r.version = $2),
+			       (select count(*) from artifact_reviews where artifact_id = $1 and version = $2),
+			       (select count(*) from events where type = 'artifact.approved' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2),
+			       (select count(*) from events where type = 'artifact.digest' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2),
+			       coalesce((select r.digest_owed from version_renders r where r.artifact_id = $1 and r.number = $2), false)`,
+			spec, number).Scan(&got.review, &got.pinned, &got.standing, &got.rowRecord, &got.reviews, &got.approvals, &got.digests, &got.owed); err != nil {
+			t.Fatalf("read the carry to version %d: %v", number, err)
+		}
+		return got
+	}
+	const restored = 3
+	var before reading
+	service.HoldFills(func(issueKey string) {
+		if issueKey == "PRE-1" {
+			before = read(restored)
+		}
+	})
+	defer service.HoldFills(nil)
+	if number := namedVersionWithItsEvent(t, service, "PRE-1", spec, "The approved text again"); number != restored || storedVersionMarkdown(t, database, spec, number) != approvedText {
+		t.Fatalf("the restore wrote version %d storing %q, want version %d storing %q", number, storedVersionMarkdown(t, database, spec, number), restored, approvedText)
 	}
 
-	var reviews, approvals int
-	if err := database.Pool.QueryRow(ctx, `
-		select (select count(*) from artifact_reviews where artifact_id = $1 and version = $2),
-		       (select count(*) from events where type = 'artifact.approved' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2)`,
-		spec, restored).Scan(&reviews, &approvals); err != nil {
-		t.Fatalf("count the reviews of version %d: %v", restored, err)
+	if before.reviews != 1 || before.approvals != 1 || before.digests != 0 || !before.owed {
+		t.Fatalf("at the start of the fill version %d holds %d reviews, %d artifact.approved events and %d artifact.digest events, owed %t, want the one carry its write's batch made, no digest event yet, and its digest owed: the write's own pass carried again",
+			restored, before.reviews, before.approvals, before.digests, before.owed)
 	}
-	if reviews != 1 || approvals != 1 {
-		t.Fatalf("version %d holds %d reviews and %d artifact.approved events, want the one carry its write's batch made: the write's own pass carried again", restored, reviews, approvals)
+	if before.pinned == nil || *before.pinned != reviewTextHash(approvedText) || before.standing == nil || *before.standing != reviewTextHash(approvedText) || before.rowRecord != nil {
+		t.Fatalf("at the start of the fill the carry pins %v, stands on %v and holds record_sha256 %v on its row, want the sha256 of its stored markdown, %s, twice, and none",
+			before.pinned, before.standing, before.rowRecord, reviewTextHash(approvedText))
 	}
 	order := readCarriedOrder(t, database, "the restore's carry", spec, restored)
 	requireApprovalFirst(t, "restore", order)
-	if order.reviewDigest == nil || *order.reviewDigest != reviewTextHash(approvedText) {
-		t.Errorf("the carry to version %d pins %v, want the sha256 of its stored markdown, %s", restored, order.reviewDigest, reviewTextHash(approvedText))
+	if order.review != *before.review {
+		t.Fatalf("the carry to version %d is the review %s after the fill, want %s: the fill wrote another review", restored, order.review, *before.review)
 	}
-	var record, repinned *string
-	var owed bool
-	if err := database.Pool.QueryRow(ctx, `
-		select r.record_sha256, r.digest_owed, (select c.record_sha256 from artifact_review_carries c where c.review_id = $3::uuid)
-		from version_renders r where r.artifact_id = $1 and r.number = $2`, spec, restored, order.review).Scan(&record, &owed, &repinned); err != nil {
-		t.Fatalf("read the row of version %d and its carry's: %v", restored, err)
+
+	after := read(restored)
+	var record *string
+	if err := database.Pool.QueryRow(ctx, `select record_sha256 from version_renders where artifact_id = $1 and number = $2`, spec, restored).Scan(&record); err != nil {
+		t.Fatalf("read the row of version %d: %v", restored, err)
 	}
 	switch {
-	case record == nil || owed:
-		t.Errorf("version %d's row holds record digest %v, owed %t, after its write committed: want the fill to have recorded it", restored, record, owed)
-	case repinned == nil || *repinned != *record:
-		t.Errorf("the carry %s holds record_sha256 %v on its row of artifact_review_carries, want version %d's record digest %s: the fill did not repin it",
-			order.review, repinned, restored, *record)
+	case record == nil || after.owed:
+		t.Fatalf("version %d's row holds record digest %v, owed %t, after its write committed: want the fill to have recorded it", restored, record, after.owed)
 	case *record == reviewTextHash(approvedText):
-		t.Errorf("version %d's record digest is the sha256 of its stored markdown, %s, want its record's", restored, *record)
+		t.Fatalf("version %d's record digest is the sha256 of its stored markdown, %s, want its record's", restored, *record)
+	case after.rowRecord == nil || *after.rowRecord != *record:
+		t.Errorf("the carry %s holds record_sha256 %v on its row of artifact_review_carries, want version %d's record digest %s: the fill did not pin it",
+			order.review, after.rowRecord, restored, *record)
+	case after.standing == nil || *after.standing != *record:
+		t.Errorf("the carry %s stands on %v after the fill, want version %d's record digest %s: every gate reads its row's digest", order.review, after.standing, restored, *record)
 	}
-	if after := readCarriedOrder(t, database, "the restore's carry after the fill", spec, restored); after.review != order.review ||
-		after.reviewDigest == nil || *after.reviewDigest != reviewTextHash(approvedText) {
-		t.Errorf("after the fill the carry to version %d is %s pinning %v, want %s still pinning %s", restored, after.review, after.reviewDigest, order.review, reviewTextHash(approvedText))
+	if after.review == nil || *after.review != *before.review || after.pinned == nil || *after.pinned != *before.pinned {
+		t.Errorf("after the fill the carry to version %d is %v pinning %v, want %s still pinning %v: the fill changed the immutable review", restored, after.review, after.pinned, *before.review, *before.pinned)
+	}
+	if after.reviews != 1 || after.approvals != 1 {
+		t.Errorf("after the fill version %d holds %d reviews and %d artifact.approved events, want the one carry's: the fill added a review or an approval", restored, after.reviews, after.approvals)
+	}
+	if after.digests != 1 {
+		t.Fatalf("after the fill version %d holds %d artifact.digest events, want the fill's one", restored, after.digests)
+	}
+	var current bool
+	var digest, approvedDigest *string
+	var approvedVersion *int
+	if err := database.Pool.QueryRow(ctx, `
+		select (payload->>'approval_current')::boolean, payload->>'content_sha256', payload->>'approved_sha256', (payload->>'approved_version')::int
+		from events where type = 'artifact.digest' and payload->>'artifact_id' = $1::text and (payload->>'version')::int = $2`,
+		spec, restored).Scan(&current, &digest, &approvedDigest, &approvedVersion); err != nil {
+		t.Fatalf("read the artifact.digest of version %d: %v", restored, err)
+	}
+	if !current || digest == nil || record == nil || *digest != *record || approvedVersion == nil || *approvedVersion != restored || approvedDigest == nil || *approvedDigest != *record {
+		t.Errorf("the artifact.digest of version %d reads approval_current %t, content_sha256 %v, approved_version %v and approved_sha256 %v, want true, the record's %v, %d and the record's",
+			restored, current, digest, approvedVersion, approvedDigest, record, restored)
 	}
 }

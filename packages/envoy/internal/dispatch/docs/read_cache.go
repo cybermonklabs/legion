@@ -112,12 +112,13 @@ var coldReadTimeout = 60 * time.Second
 // may write through them; none does, and copying them would cost every hit an allocation for a
 // table's size.
 //
-// tree is the tree it was rendered from, kept only for a document holding an ask block: the text
-// an agent reads takes the server-owned attributes off each ask block of it and reads each ask
-// block's answer from the store (TextWithAsks), which a read taking the cached rendering would
-// otherwise have to decode the stored history again for. It is shared with every read of the
-// stored head as the rest is, so no reader writes into it; the attributes are taken off a copy of
-// the path to each block that holds one (withoutAskServerAttributes).
+// tree is the tree it was rendered from, kept only for a document holding an ask block or a
+// comment's mark. The text an agent reads takes the server-owned attributes off each ask block of
+// it and reads each ask block's answer from the store (TextWithAsks), and the tree read finds where
+// each comment's anchor stands in its block (AnchorOccurrences), both of which a read taking the
+// cached rendering would otherwise have to decode the stored history again for. It is shared with
+// every read of the stored head as the rest is, so no reader writes into it; the attributes are
+// taken off a copy of the path to each block that holds one (withoutAskServerAttributes).
 type documentRead struct {
 	artifactID string
 	stamp      DocumentStamp
@@ -390,11 +391,30 @@ func buildDocumentRead(artifactID string, stamp DocumentStamp, tree pmdoc.ValidD
 		return nil, rendered.tokenErr
 	}
 	read := &documentRead{artifactID: artifactID, stamp: stamp, markdown: rendered.markdown, token: rendered.token, blocks: rendered.blocks, paths: paths}
-	if pmdoc.HoldsAskBlock(tree.Node()) {
-		read.tree = tree.Node()
+	if node := tree.Node(); pmdoc.HoldsAskBlock(node) || holdsCommentMark(node) {
+		read.tree = node
 	}
 	read.weight = read.measure()
 	return read, nil
+}
+
+// holdsCommentMark reports whether node, or a node under it, carries a comment's mark: a comment
+// mark or a suggestion mark (AnchorOccurrences, which finds each anchor by one of them).
+func holdsCommentMark(node *pmdoc.Node) bool {
+	if node == nil {
+		return false
+	}
+	for _, mark := range node.Marks {
+		if mark.Type == string(MarkComment) || mark.Type == string(MarkSuggestion) {
+			return true
+		}
+	}
+	for _, child := range node.Children {
+		if holdsCommentMark(child) {
+			return true
+		}
+	}
+	return false
 }
 
 // coldFold is a fold of a document's stored history: read, its rendering, which it stored; tree,

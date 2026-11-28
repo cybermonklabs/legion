@@ -233,6 +233,8 @@ function describe(event: DispatchEvent): string | SentencePart[] {
     // bookkeeping, which names the documents by id alone.
     case "artifact.indexed":
       return `Finished indexing ${documentCount(event.payload.artifact_ids.length)}`;
+    case "artifact.digest":
+      return `Recorded digest for ${event.payload.name} v${event.payload.version}`;
     case "suggestion.accepted":
       return "Suggestion accepted";
     case "suggestion.rejected":

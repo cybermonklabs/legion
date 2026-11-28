@@ -652,6 +652,10 @@ var indexPasses = map[string]string{
 	"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx": "the asks an issue's close withdraws and the events it appended",
 	"api/issue_ask_lifecycle.go#recordRestoredAsksTx":  "the asks an issue's reopen restores and the events it appended",
 	"docs/approval_carry.go#answerApprovalAsk":         "the approval the carry answers and the event it appended",
+	// The digest fill's no-longer-needed close states the request's resolution from the open ask
+	// row and the standing approval the fill just read, under its own ask.resolved. It reads no
+	// side of a projection to mend the other.
+	"docs/version_render.go#closeSatisfiedApprovalRequests": "the open approval requests of the document whose digest the fill settled, and the standing approval verdict the fill read",
 	// A settlement states each copy among a document's ask blocks as a claim on its source, once
 	// its version is indexed: the copies its own reconciliation read off the document, and the
 	// rows of the version it indexed, which name each copy's block node. It retracts the

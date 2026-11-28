@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
@@ -186,10 +188,11 @@ func afterMergePull(issue string, number int, head, headRef, base, merge, merged
 // afterMergeRig is a Dispatch holding an App key whose GitHub is github: every repository is
 // installed and answers main as its default branch, and holds every commit asked about.
 type afterMergeRig struct {
-	handler  http.Handler
-	database *store.Store
-	github   *afterMergeGitHub
-	issues   int
+	handler   http.Handler
+	database  *store.Store
+	documents *docs.Service
+	github    *afterMergeGitHub
+	issues    int
 }
 
 func newAfterMergeRig(t *testing.T) *afterMergeRig {
@@ -227,24 +230,40 @@ func newAfterMergeRig(t *testing.T) *afterMergeRig {
 		fmt.Fprint(w, `[]`)
 	})
 	upstream := githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-	handler, database, _, _ := newRegisteredTestServer(t, testServerOptions{
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
 		githubAPIBase: upstream,
 	})
-	return &afterMergeRig{handler: handler, database: database, github: github}
+	return &afterMergeRig{handler: handler, database: database, documents: deps.Docs.(*docs.Service), github: github}
 }
 
 // issue is a new issue of acme/widgets holding verification as its Verification document, and
-// its key: ACME-1 for the rig's first, ACME-2 for its second, and on.
+// its key: ACME-1 for the rig's first, ACME-2 for its second, and on. It settles the issue's
+// documents before it answers, under the manifest the caller reads by (SettleIssueDocuments), so
+// the issue owes no settlement once the caller puts this build's manifest back
+// (useTheNextReleasesManifest's restore). Left to the timer, the upload's settlement is refused at
+// first, since the Verification document joined the issue's room after the room loaded, and the
+// room settles again from the store later: under this build's manifest, a check the next
+// release's manifest wrote as `:::check{#live subject="graph" when="after_merge"}` is saved again
+// as `:::check{#live when="after_merge" subject="graph"}`, a version that moves the check's text
+// digest and its changed version (document_blocks.text_sha256 and changed_version). A result
+// recorded before that version then reads as recorded under other words (check_words_moved) and
+// counts for nothing, and whether it does turned on whether that version landed before or after
+// the record.
 func (r *afterMergeRig) issue(t *testing.T, title, verification string) string {
 	t.Helper()
 	r.issues++
+	var key string
 	if r.issues == 1 {
-		key := issueInRepository(t, r.handler, afterMergeProject, "acme/widgets", title).Key
+		key = issueInRepository(t, r.handler, afterMergeProject, "acme/widgets", title).Key
 		uploadDocument(t, r.handler, "/api/v1/issues/"+key, "verification.md", verification)
-		return key
+	} else {
+		key = issueOfProject(t, r.handler, afterMergeProject, title, verification)
 	}
-	return issueOfProject(t, r.handler, afterMergeProject, title, verification)
+	if err := r.documents.SettleIssueDocuments(context.Background(), key); err != nil {
+		t.Fatalf("settle the documents of %s: %v", key, err)
+	}
+	return key
 }
 
 // record records role's verdict of check of issue at commit, and answers the stored result's id.

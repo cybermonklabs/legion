@@ -178,7 +178,8 @@ func TestAnOpenApprovalRequestIsAnsweredByTheVersionRestoringTheApprovedText(t *
 // versions route writes whatever changed - holds the approved text, so the approval stays current.
 func TestANamedVersionThatChangesNothingKeepsTheApprovalCurrent(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Name an unchanged version", restoreSpec)
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 
@@ -338,6 +339,7 @@ func TestANamedVersionKeepsCurrentAnApprovalOfATextAnotherRendererVersionStored(
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+			holdIssuesUnconverted(t, database)
 			issue := createInteractionIssue(t, handler, "TEST", "Name a version of a text another renderer version stored", respellSpec)
 			artifactID := issue.PrimaryArtifactID
 			awaitSettled(t, database, artifactID)

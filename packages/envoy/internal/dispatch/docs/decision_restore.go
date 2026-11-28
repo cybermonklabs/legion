@@ -719,7 +719,7 @@ func (r *issueRestore) writeVersion(ctx context.Context, document issueDocument,
 	*number = written.Version.Number
 	event, err := r.service.events.Append(ctx, r.tx, model.Event{
 		IssueKey: new(r.issue), Type: "artifact.version", Actor: DecisionStepActor,
-		Payload: ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes),
+		Payload: ArtifactVersionEventPayload(document.id, document.name, written.Version, nil, written.Changes, written.Digest),
 	})
 	if err != nil {
 		return graphstore.NoEvent, fmt.Errorf("append the version event of %s: %w", document.address, err)

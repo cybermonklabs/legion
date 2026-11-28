@@ -455,6 +455,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, _, err := HeadRows(ctx, recorder, who, "CORE-1", &HeadSkeleton{Documents: []string{"CORE-1/spec"}})
 		return err
 	})
+	record("HeadViewRows", "HeadViewRows of the spec view of CORE-1", func() error {
+		_, _, err := HeadViewRows(ctx, recorder, who, "CORE-1", HeadView{Types: []string{"requirement"}, Comments: []string{"no-such-comment"},
+			Nodes: []Target{{Kind: BlockNodeKind, ID: "CORE-1/spec#r1"}}})
+		return err
+	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
 		_, err := TargetNames(ctx, recorder, who, everyKind, "")
 		return err
@@ -638,22 +643,72 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	// The tree is reserved for its author at its root issue: the author reads its plan node and
-	// that node's needs, and another reader reads no node of it.
+	// that node's needs, and another reader reads no node of it. It is read over the tuples, and
+	// then, with each issue of it marked whole, over the head rows (planTreeHeads): by PlanOrder,
+	// and by PlanOrderOfRows from the rows the root's plan view reads (HeadViewRows).
 	planned := seedPlanOrder(t, ctx, database)
-	for _, reader := range []model.Actor{who, privateReader} {
-		record("PlanOrder", "PlanOrder of "+planned+" as "+reader.ID, func() error {
-			order, err := PlanOrder(ctx, recorder, reader, planned)
-			switch {
-			case err != nil:
-			case reader.ID == who.ID && len(order.Order) < 5:
-				err = fmt.Errorf("the tree of %s answers its author the order %+v, want both issues' halves and the plan node: with no plan node the read never reaches its read of the needs", planned, order.Order)
-			case reader.ID != who.ID && len(order.Order) != 0:
-				err = fmt.Errorf("the tree of %s, reserved for its author at its root, answers another reader the order %+v, want none", planned, order.Order)
-			}
-			return err
-		})
+	readOrder := func(function, over string, read func(reader model.Actor) (TreeOrder, error)) {
+		for _, reader := range []model.Actor{who, privateReader} {
+			record(function, function+" of "+planned+" over the "+over+" as "+reader.ID, func() error {
+				order, err := read(reader)
+				switch {
+				case err != nil:
+				case reader.ID == who.ID && len(order.Order) < 5:
+					err = fmt.Errorf("the tree of %s answers its author the order %+v, want both issues' halves and the plan node: with no plan node the read never reaches its read of the needs", planned, order.Order)
+				case reader.ID != who.ID && len(order.Order) != 0:
+					err = fmt.Errorf("the tree of %s, reserved for its author at its root, answers another reader the order %+v, want none", planned, order.Order)
+				}
+				return err
+			})
+		}
 	}
+	planOrder := func(reader model.Actor) (TreeOrder, error) { return PlanOrder(ctx, recorder, reader, planned) }
+	readOrder("PlanOrder", "tuples", planOrder)
+	markPlanOrder(t, ctx, database)
+	readOrder("PlanOrder", "head rows", planOrder)
+	readOrder("PlanOrderOfRows", "head rows", func(reader model.Actor) (TreeOrder, error) {
+		heads, marked, err := HeadViewRows(ctx, database.Pool, reader, planned, HeadView{Types: graphstore.QueryTakes(graphstore.QueryPlan)})
+		switch {
+		case err != nil:
+			return TreeOrder{}, fmt.Errorf("read the rows of the plan view of %s: %w", planned, err)
+		case !marked:
+			return TreeOrder{}, fmt.Errorf("the rows of the plan view of %s are read with no mark of %s, so the read never reaches the head rows", planned, planned)
+		}
+		return PlanOrderOfRows(ctx, recorder, reader, planned, heads)
+	})
 	return reads
+}
+
+// markPlanOrder writes the head rows of every node of the store seedPlanOrder wrote again
+// (graphstore.WriteHeads) and marks both issues of its tree whole, so PlanOrder reads them
+// (planTreeHeads).
+func markPlanOrder(t *testing.T, ctx context.Context, database *store.Store) {
+	t.Helper()
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan order's marks: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := tx.Query(ctx, `select kind, id from graph_nodes union select from_kind, from_id from graph_tuples`)
+	if err != nil {
+		t.Fatalf("list the nodes of the store: %v", err)
+	}
+	nodes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.NodeKey, error) {
+		var node graphstore.NodeKey
+		return node, row.Scan(&node.Kind, &node.ID)
+	})
+	if err != nil {
+		t.Fatalf("list the nodes of the store: %v", err)
+	}
+	if err := graphstore.WriteHeads(ctx, tx, nodes); err != nil {
+		t.Fatalf("write the head rows of the store's nodes: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) values ('PLAN-1', now()), ('PLAN-2', now()) on conflict do nothing`); err != nil {
+		t.Fatalf("mark the plan order's tree whole: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the plan order's marks: %v", err)
+	}
 }
 
 // seedBlockLink indexes one document whose first block links to its second, and answers the

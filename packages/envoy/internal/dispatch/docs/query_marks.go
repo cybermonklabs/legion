@@ -1,13 +1,11 @@
 package docs
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -15,8 +13,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -446,9 +442,9 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string, drain que
 // owed it - a version of the decisions query, or one whose bytes are the version before it's
 // (queueRevisionStand) - with the delete of the rows of the re-index queue its insert made for the
 // document (restoreReindexQueue). For each version it then queues what an edit route's version
-// writes beside it (finishRevision): the move of the document's open approval request, the carry
-// of an approval where the record moved by appended results alone, and the version's
-// artifact.version. Last it queues the clear of the mark, only where it still holds the causes
+// writes beside it (finishRevision): the move of the document's open approval request, the
+// version's artifact.version and, after it, its artifact.digest, which writes no carried review
+// (R14's hash gate). Last it queues the clear of the mark, only where it still holds the causes
 // read, and then what the versions state, caused by the mark's greatest_event or at the sentinel
 // where it holds none, with their head rows, the last rows the write takes. The write phase is one
 // batch, and the COMMIT follows it: the transaction's window is that batch and its COMMIT. A
@@ -523,172 +519,29 @@ func (s *Service) drainMark(ctx context.Context, issueKey string, drain queryDra
 // finishRevision queues, in the drain's transaction, what an edit route's version writes beside
 // the version revised: the move of the document's open approval request to it, in writer's name,
 // as a route's version moves one (moveApprovalAsk, versionWrite.settlement unset), so a person's
-// approval of the version before reads changed since; the carry of the document's newest approval
-// where the version differs from the approved one by appended result nodes alone
-// (carryAppendedResults), which appends its artifact.approved after the move; and last the
-// version's artifact.version, in writer's name, which every version the drain writes appends.
+// approval of the version before reads changed since where its record moved; the version's
+// artifact.version, in writer's name, which every version the drain writes appends, with the
+// record's digest the drain read, which is no longer owed; and then the version's artifact.digest
+// (queueDigestEvent), which says whether the document's newest approval stands at that digest.
+// The drain carries no approval (R14's hash gate): a version whose record did not move keeps the
+// approval standing by its digest, and one whose record moved leaves it stale.
 func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision, writer model.Actor) error {
 	id, version := revised.document.id, revised.version
 	if err := moveApprovalAsk(ctx, tx, s.events, id, version, revised.markdown, nil, writer, nil, false, s.serverURL); err != nil {
 		return err
 	}
-	if err := s.carryAppendedResults(ctx, tx, issueKey, revised); err != nil {
-		return err
-	}
 	sink := eventSink(ctx)
 	event := model.Event{
 		IssueKey: &issueKey, Type: "artifact.version", Actor: writer,
-		Payload: ArtifactVersionEventPayload(id, revised.document.name, version, nil, model.ReferenceChanges{}),
+		Payload: ArtifactVersionEventPayload(id, revised.document.name, version, nil, model.ReferenceChanges{},
+			VersionDigest{ContentSHA256: revised.record.Digest}),
 	}
-	return write(ctx, tx, func(b *store.WriteBatch) error {
+	if err := write(ctx, tx, func(b *store.WriteBatch) error {
 		return s.events.QueueAppend(b, event, sink)
-	})
-}
-
-// carryAppendedResults carries the newest approval of the document of revised to its version where
-// R14 has carryVerdict carry one across a version the drain writes: a version whose only difference
-// from the approved one is appended result nodes and the tuples out of them, with every check node
-// unchanged. The approved version's record is built again at the cut its version_renders row
-// records (approvedRecord), and the version's record holds it, byte for byte, once the result
-// nodes it does not hold are taken out (appendsResultsAlone). The carry is then the one every
-// version write runs (carryNewestApproval): where the version's text is the approved one's, as a
-// version of a record moved alone is, the restore's carry, and where it is not, carryVerdict's
-// cases; its reason names the results that arrived, each by its check's block id and its verdict
-// (arrivedResults), after the opening the daemon matches. A version whose record digest is the one
-// the approval stands on (approvalPin) - one only the rendering moved, whose record the drain read
-// in its read phase (planRevisions) - carries by the record case instead (knownRecord,
-// carryNewestApprovalNaming), its artifact.approved before the version's artifact.version as every
-// carry the drain writes. A version whose record moved otherwise - a result retracted, a check
-// moved or retargeted - carries nothing, and the approval reads changed since. Its reads run where
-// it is called, the drain's read phase, and its writes are queued after the move's.
-func (s *Service) carryAppendedResults(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision) error {
-	id, number := revised.document.id, revised.version.Number
-	if err := refuseSecondCarry(ctx, tx, id); err != nil {
+	}); err != nil {
 		return err
 	}
-	newest, err := NewestReview(ctx, tx, id)
-	if err != nil || newest == nil || newest.State != "approved" {
-		return err
-	}
-	pin, err := approvalPin(ctx, tx, *newest)
-	if err != nil {
-		return err
-	}
-	if pin != nil && *pin == revised.record.Digest {
-		tree, err := pmdoc.ParseRendering(revised.markdown)
-		if err != nil {
-			return skipUnreadableVersion(id, number, err)
-		}
-		return carryNewestApprovalNaming(ctx, tx, s.events, id, number, revised.markdown, tree, *newest, s.serverURL, decisionStepCases{},
-			"", knownRecord(revised.record.Digest), eventSink(ctx))
-	}
-	approved, held, err := approvedRecord(ctx, tx, issueKey, revised.document.query, id, newest.Version)
-	if err != nil || !held {
-		return err
-	}
-	approvedNodes := recordAddresses(approved)
-	if !appendsResultsAlone(approvedNodes, approved, revised.record) {
-		return nil
-	}
-	arrived, err := arrivedResults(ctx, tx, approvedNodes, revised.record)
-	if err != nil {
-		return err
-	}
-	tree, err := pmdoc.ParseRendering(revised.markdown)
-	if err != nil {
-		return skipUnreadableVersion(id, number, err)
-	}
-	return carryNewestApprovalNaming(ctx, tx, s.events, id, number, revised.markdown, tree, *newest, s.serverURL, decisionStepCases{},
-		arrivedResultsChange(arrived), RecordCarry{}, eventSink(ctx))
-}
-
-// recordAddresses is the address of each node record takes.
-func recordAddresses(record QueryRecord) map[string]bool {
-	addresses := make(map[string]bool, len(record.Nodes))
-	for _, node := range record.Nodes {
-		addresses[node.Address()] = true
-	}
-	return addresses
-}
-
-// arrivedResults names each result node record holds that approved does not, approved being the
-// address of each node of the approved version's record (recordAddresses), in record's order, as
-// "<check block id> (<verdict>)": the block id is the part of its check's address after the last
-// '#', and the verdict the result's verdict value (graphstore.AttributeVerdict).
-func arrivedResults(ctx context.Context, tx pgx.Tx, approved map[string]bool, record QueryRecord) ([]string, error) {
-	var named []string
-	for _, node := range record.Nodes {
-		if node.Type != graphstore.SupertagResult || approved[node.Address()] {
-			continue
-		}
-		verdict, _, err := graphstore.CurrentValue(ctx, tx, node.Kind, node.ID, graphstore.AttributeVerdict)
-		if err != nil {
-			return nil, err
-		}
-		check := node.Parent.ID
-		if at := strings.LastIndexByte(check, '#'); at >= 0 {
-			check = check[at+1:]
-		}
-		named = append(named, check+" ("+verdict+")")
-	}
-	return named, nil
-}
-
-// approvedRecord is the record of query of the issue issueKey at the cut the version_renders row of
-// version number of the document artifactID records, and whether that row holds one this build
-// builds again: a row with its digest and its cut, whose record digests to that digest. A version
-// whose row holds none, or whose record this build digests otherwise - a record of an earlier
-// definition - holds no record a carry compares.
-func approvedRecord(ctx context.Context, tx pgx.Tx, issueKey, query, artifactID string, number int) (QueryRecord, bool, error) {
-	var digest *string
-	var at *time.Time
-	var readSeq *int64
-	err := tx.QueryRow(ctx, `select record_sha256, at, read_seq from version_renders where artifact_id = $1 and number = $2`,
-		artifactID, number).Scan(&digest, &at, &readSeq)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return QueryRecord{}, false, nil
-	}
-	if err != nil {
-		return QueryRecord{}, false, fmt.Errorf("read the record of version %d of %s: %w", number, artifactID, err)
-	}
-	if digest == nil || at == nil || readSeq == nil {
-		return QueryRecord{}, false, nil
-	}
-	tree, err := WalkIssueTree(ctx, tx, issueKey, refs.TreeCut{At: *at, ReadSeq: *readSeq})
-	if err != nil {
-		return QueryRecord{}, false, err
-	}
-	record, err := tree.QueryRecord(ctx, tx, query)
-	if err != nil {
-		return QueryRecord{}, false, err
-	}
-	return record, record.Digest == *digest, nil
-}
-
-// appendsResultsAlone reports whether record differs from approved, the record of the same query
-// at an approved version whose node addresses are held (recordAddresses), by result nodes approved
-// does not hold alone: with each of them taken out, record's entries are approved's, byte for
-// byte and in its order, so every other node, each check among them, and every result approved
-// holds stand as they stood. A record that appends no result node is no such difference.
-func appendsResultsAlone(held map[string]bool, approved, record QueryRecord) bool {
-	rest, before := record.Record, approved.Record
-	appended := false
-	for _, node := range record.Nodes {
-		entry, after, ok := nextRecordEntry(rest)
-		if !ok {
-			return false
-		}
-		rest = after
-		if !held[node.Address()] && node.Kind == graphstore.KindResult {
-			appended = true
-			continue
-		}
-		if !bytes.HasPrefix(before, entry) {
-			return false
-		}
-		before = before[len(entry):]
-	}
-	return appended && len(rest) == 0 && len(before) == 0
+	return s.queueDigestEvent(ctx, tx, issueKey, id, revised.document.name, version.Number, revised.record.Digest, nil)
 }
 
 // drainOwedQueryMarks is the block-index tick's pass over what requests left owed: first the fills

@@ -32,11 +32,10 @@ func TestACheckWhoseWordsChangedCarriesNoApprovalThoughItsServesDidNot(t *testin
 	if edges != 1 {
 		t.Fatalf("unchanged serves edges = %d, want 1", edges)
 	}
-	// Negative control: byte-identical restore really does carry an approval.
+	// Restoring the approved record makes the original review current without carrying it.
 	reviseDocument(t, handler, id, "The read returns 404.", "The read returns 200.", 3)
-	reviews := documentReviews(t, handler, id)
-	approval := readApproval(t, handler, id).Approval
-	if approval.State != "approved" || approval.Version == nil || *approval.Version != 3 || len(reviews) != 2 || reviews[0].Version != 3 || reviews[0].Reason == nil || len(*reviews[0].Reason) < len("Carried forward") || (*reviews[0].Reason)[:len("Carried forward")] != "Carried forward" {
-		t.Fatalf("restore approval=%#v reviews=%#v", approval, reviews)
+	requireNoCarry(t, handler, id, 1, "approved")
+	if approval := readApproval(t, handler, id).Approval; approval.Version == nil || *approval.Version != 1 || approval.LatestVersion != 3 {
+		t.Fatalf("restore approval=%#v, want the person's review of version 1 standing at version 3", approval)
 	}
 }

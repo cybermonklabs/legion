@@ -1281,15 +1281,14 @@ func (s *server) storeArtifact(
 		// It carries the document's newest approval as every version the document service writes
 		// does (docs.carryApproval): when its text is the approved text again, or when every
 		// difference from it is a carry case - the readings of its decisions and answered asks, and
-		// the server-owned ask attributes an upload drops - and its ask blocks agree with
-		// their nodes, or when its record is the approved one by the facts its bytes stated: its
-		// block index's and its version's node (docs.StatedWhole, the record case). It runs where
-		// the route's other document work runs, so the open approval request and the ask rows it
-		// reads are as this transaction's own queued writes leave them, its own writes join the
-		// queue, and its events reach the ledger beside the move's.
+		// the server-owned ask attributes an upload drops - and its ask blocks agree with their
+		// nodes, on a document that is no query document of a converted issue, whose approval
+		// stands by its record's digest alone (R14's hash gate). It runs where the route's other
+		// document work runs, so the open approval request and the ask rows it reads are as this
+		// transaction's own queued writes leave them, its own writes join the queue, and its events
+		// reach the ledger beside the move's.
 		if err := docs.CarryUploadedApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack,
-			docs.StatedWhole(indexedBlocks, documentNode), s.deps.ServerURL,
+			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.ServerURL,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1303,7 +1302,13 @@ func (s *server) storeArtifact(
 	// An uploaded document's body cites nodes whose rows carry a backlink count, exactly as a
 	// message or comment body does, so both payload shapes name what the upload moved.
 	eventType := "artifact.version"
-	payload := docs.ArtifactVersionEventPayload(artifact.ID, artifact.Name, version, diff, documentChanges)
+	// A document's version says what an approval of it covers: its stored markdown's digest, owed
+	// its record's where a query's record covers it (docs.WrittenVersionDigest).
+	var digest docs.VersionDigest
+	if kind == "doc" {
+		digest = docs.WrittenVersionDigest(documentMarkdown, versionOwner)
+	}
+	payload := docs.ArtifactVersionEventPayload(artifact.ID, artifact.Name, version, diff, documentChanges, digest)
 	if created {
 		eventType = "artifact.created"
 		artifact.Versions = []model.Version{version}
@@ -1403,7 +1408,7 @@ func (s *server) storeArtifact(
 	}
 	// The review and the request as the transaction wrote them (docs.Ledger.WrittenReview,
 	// WrittenApproval): a file, and a new document, wrote neither, and keep what was read.
-	superseded = supersededAsWritten(ledger, artifact.ID, version.Number, superseded)
+	superseded = supersededAsWritten(ledger, artifact.ID, version.Number, digest.Owed, superseded)
 	moved := movedRead.asWritten(ledger)
 	if !created && input.precondition == nil {
 		if kind == "doc" {
@@ -1921,7 +1926,7 @@ func (s *server) commitArtifactVersionEvent(
 	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
-		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
+		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes, written.Digest),
 	), "artifact", artifactID)
 	if err != nil {
 		return nil, err
@@ -2347,7 +2352,7 @@ func (s *server) editArtifact(w http.ResponseWriter, r *http.Request) {
 	release()
 	if written != nil {
 		// The review as the transaction wrote it (docs.Ledger.WrittenReview).
-		superseded = supersededAsWritten(ledger, artifact.ID, written.Version.Number, superseded)
+		superseded = supersededAsWritten(ledger, artifact.ID, written.Version.Number, written.Digest.Owed, superseded)
 	}
 	moved := movedRead.asWritten(ledger)
 	var version *model.Version
@@ -3121,14 +3126,24 @@ const versionColumns = `v.number, v.named, v.summary, v.authors, v.created_at, `
 // it: the version read (loadVersion) and the artifact read's list (artifactVersionDigestsStatement).
 const versionDigest = `artifact_version_text_sha256(v.artifact_id, v.number)`
 
+// versionDigestOwed reads the render row's flag for a converted query document. Absent on other
+// documents, it tells clients there to keep the version-number rule even on a newer Dispatch.
+const versionDigestOwed = `(select coalesce(r.digest_owed, false)
+	from artifacts a
+	join issue_trees t on t.issue_key = a.issue_key
+	join graph_nodes n on n.kind = 'artifact' and n.id = a.ref_key and n.supertag = 'query'
+	left join version_renders r on r.artifact_id = v.artifact_id and r.number = v.number
+	where a.id = v.artifact_id)`
+
 // artifactVersionsSelecting is the statement that reads the versions of every artifact in $1 at
 // once, so a list of artifacts costs one statement rather than one per artifact. Ordering by the
 // artifact first leaves each artifact's own versions in `order by v.number`, the order one
 // artifact's read answers. After versionColumns each row holds the version's artifact id, which
-// scanVersionsByArtifact keys it by, and then digest, which it reads as the version's Digest.
-func artifactVersionsSelecting(digest string) string {
+// scanVersionsByArtifact keys it by, then digest, which it reads as the version's Digest, and then
+// owed, which it reads as the version's DigestOwed.
+func artifactVersionsSelecting(digest, owed string) string {
 	return `
-		select ` + versionColumns + `, v.artifact_id::text, ` + digest + `
+		select ` + versionColumns + `, v.artifact_id::text, ` + digest + `, ` + owed + `
 		from artifact_versions v where v.artifact_id = any($1::uuid[]) order by v.artifact_id, v.number
 	`
 }
@@ -3136,10 +3151,11 @@ func artifactVersionsSelecting(digest string) string {
 var (
 	// artifactVersionsStatement reads a list's versions with no digest: every read of a list of
 	// versions but the artifact read's answers none, so none of them reads a version's markdown.
-	artifactVersionsStatement = artifactVersionsSelecting(`null::text`)
-	// artifactVersionDigestsStatement reads them with each version's digest (versionDigest), which
-	// the artifact read answers (getArtifact).
-	artifactVersionDigestsStatement = artifactVersionsSelecting(versionDigest)
+	artifactVersionsStatement = artifactVersionsSelecting(`null::text`, `null::boolean`)
+	// artifactVersionDigestsStatement reads them with each version's digest (versionDigest) and
+	// whether that digest is still owed (versionDigestOwed), which the artifact read answers
+	// (getArtifact).
+	artifactVersionDigestsStatement = artifactVersionsSelecting(versionDigest, versionDigestOwed)
 )
 
 // scanVersion reads versionColumns from row; extra receives the columns after them. It states no
@@ -3168,11 +3184,12 @@ func scanVersionsByArtifact(rows pgx.Rows, versions map[string][]model.Version) 
 	for rows.Next() {
 		var artifactID string
 		var digest *string
-		version, err := scanVersion(rows, &artifactID, &digest)
+		var owed *bool
+		version, err := scanVersion(rows, &artifactID, &digest, &owed)
 		if err != nil {
 			return err
 		}
-		version.Digest = digest
+		version.Digest, version.DigestOwed = digest, owed
 		versions[artifactID] = append(versions[artifactID], version)
 	}
 	return rows.Err()

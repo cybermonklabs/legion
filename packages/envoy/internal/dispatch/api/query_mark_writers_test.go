@@ -156,32 +156,62 @@ func TestAKeepWritesADecisionsQueryVersion(t *testing.T) {
 
 // The fence of expected_sequence (PATCH /api/v1/issues/{key}, and each step of a status change)
 // passes over a version of the issue's decisions query, which only a query drain writes, after the
-// write that moved the query's record committed and appended its own event, and it still reads a
-// document's version. A version the drain writes of the decisions query between the read and the
-// PATCH - a value of the ask's node stated with its mark, and the drain run - leaves the PATCH
-// taken at the sequence read before it; a version of the spec written between a second read and
-// a second PATCH refuses that PATCH 409 ISSUE_CHANGED.
+// write that moved the query's record committed and appended its own event, and over every
+// artifact.digest, which the digest fill and the drain append after the version it names (R14's
+// hash gate), and it still reads a document's version. The create answers the sequence of its
+// issue.created, and the two events past it are the artifact.digest its fill appended of the spec's
+// version 1 and of the decisions query's: a PATCH fenced at the sequence the create answered is
+// taken. A version the drain writes of the decisions query between the read and the PATCH - a
+// value of the ask's node stated with its mark, and the drain run - and that version's
+// artifact.digest leave the PATCH taken at the sequence read before them; a version of the spec
+// written between a second read and a second PATCH refuses that PATCH 409 ISSUE_CHANGED.
 func TestAFencePassesOverADrainsDecisionsQueryVersionAndReadsADocumentVersion(t *testing.T) {
 	t.Parallel()
 	rig := newQueryMarkRig(t)
 	key := rig.issue.Key
+	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
+	rows, err := rig.database.Pool.Query(context.Background(), `
+		select type || ' ' || coalesce(payload->>'artifact_id', '') || ' v' || coalesce(payload->>'version', '')
+		from events where issue_key = $1 and seq > $2 order by seq
+	`, key, rig.issue.LastSeq)
+	if err != nil {
+		t.Fatalf("read the events of %s past its create's answer: %v", key, err)
+	}
+	created, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the events of %s past its create's answer: %v", key, err)
+	}
+	// The fill fills the owed versions by document id, so the two digests come in either order.
+	want := []string{model.ArtifactDigestEventType + " " + decisions + " v1", model.ArtifactDigestEventType + " " + rig.spec.id + " v1"}
+	slices.Sort(created)
+	slices.Sort(want)
+	if !slices.Equal(created, want) {
+		t.Fatalf("the events of %s past the sequence %d its create answered are %q, want the artifact.digest of version 1 of its spec %s and of its decisions query %s alone",
+			key, rig.issue.LastSeq, created, rig.spec.id, decisions)
+	}
+	if patched := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
+		"title": "A title fenced at the create's answer", "expected_sequence": rig.issue.LastSeq,
+	}, "alice"); patched.Code != http.StatusOK {
+		t.Fatalf("the PATCH fenced at %d, the sequence the create answered, past which its fill appended two artifact.digest events: status=%d body=%s, want 200",
+			rig.issue.LastSeq, patched.Code, patched.Body.String())
+	}
+
 	ask := createIssueAsk(t, rig.handler, key, "Does the fence read the drain's version?")
 	requireNoQueryMark(t, rig.database, "once the ask's create answered", key)
-	decisions := queryArtifactOf(t, rig.database, key, graphstore.QueryDecisions)
 	read := readIssueDetail(t, rig.handler, key).LastSeq
 	standing := newestVersionOf(t, rig.database, decisions)
 	rig.stateDrained(t, key, nodeValue(graphstore.KindAsk, ask, "probe", "drained"))
 	if newest := newestVersionOf(t, rig.database, decisions); newest != standing+1 {
 		t.Fatalf("the drain left version %d of the decisions query of %s newest, want %d", newest, key, standing+1)
 	}
-	if after := readIssueDetail(t, rig.handler, key).LastSeq; after != read+1 {
-		t.Fatalf("the issue %s answers last_seq %d after the drain, want %d: the decisions query's version past the read", key, after, read+1)
+	if after := readIssueDetail(t, rig.handler, key).LastSeq; after != read+2 {
+		t.Fatalf("the issue %s answers last_seq %d after the drain, want %d: the decisions query's version and its artifact.digest past the read", key, after, read+2)
 	}
 	requireDecisionsVersionEventAt(t, rig.database, key, read+1, decisions)
 	if patched := dispatchRequest(t, rig.handler, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{
 		"title": "A title the fenced write takes", "expected_sequence": read,
 	}, "alice"); patched.Code != http.StatusOK {
-		t.Fatalf("the PATCH fenced at %d past which a drain wrote the decisions query's version: status=%d body=%s, want 200", read, patched.Code, patched.Body.String())
+		t.Fatalf("the PATCH fenced at %d past which a drain wrote the decisions query's version and its digest: status=%d body=%s, want 200", read, patched.Code, patched.Body.String())
 	}
 
 	read = readIssueDetail(t, rig.handler, key).LastSeq

@@ -25,6 +25,7 @@ const PAYLOAD_TYPES = [
   "ArchitectureSyncFailedEventPayload",
   "ArchitectureSyncedEventPayload",
   "ArtifactCreatedEventPayload",
+  "ArtifactDigestEventPayload",
   "ArtifactHumanEditedEventPayload",
   "ArtifactIndexedEventPayload",
   "ArtifactRemovedEventPayload",

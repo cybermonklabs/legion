@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -187,4 +189,54 @@ func TestAnEditOfAConvertedSpecWritesOneVersionOfIt(t *testing.T) {
 		t.Errorf("version %d of the decisions query stores %q, want the decision's words %q in it", number, stored, decided)
 	}
 	requireTreeRendersAsStored(t, database, "the edit that adds the decision d1", decisions)
+}
+
+// recordRoom is an issue room with a peer connected to it, for settling live fragment edits in a
+// test (settleSpecEdit, settleEdit).
+type recordRoom struct {
+	database  *store.Store
+	service   *Service
+	serverURL string
+	peer      *docstest.Peer
+	room      issueRoom
+	approved  int
+}
+
+// settleSpecEdit has the peer write into the spec's fragment the tree edit makes of the one the
+// fragment holds, in one transaction of the peer's, waits for the room to store it, and settles the
+// room under ctx (settleLandedWrite). A fragment that holds nothing yet hands edit nil.
+func (r recordRoom) settleSpecEdit(t *testing.T, ctx context.Context, edit func(*pmdoc.Node) (*pmdoc.Node, error)) {
+	t.Helper()
+	r.settleEdit(t, ctx, r.peer, r.room.spec, edit)
+}
+
+// settleEdit is settleSpecEdit for the fragment named fragment of the room, which peer writes.
+func (r recordRoom) settleEdit(t *testing.T, ctx context.Context, peer *docstest.Peer, fragment string, edit func(*pmdoc.Node) (*pmdoc.Node, error)) {
+	t.Helper()
+	stored := storedUpdateCount(t, r.database, r.room.tree)
+	held := peer.Doc.GetXmlFragment(fragment)
+	var want string
+	var failed error
+	if _, err := peer.Send(func(txn *crdt.Transaction) {
+		var tree *pmdoc.Node
+		if held.Len() > 0 {
+			if tree, failed = pmdoc.ReadInTransaction(txn, held); failed != nil {
+				return
+			}
+		}
+		tree, err := edit(tree)
+		if err == nil {
+			want, err = pmdoc.Render(tree)
+		}
+		if err == nil {
+			err = pmdoc.Update(txn, held, tree)
+		}
+		failed = err
+	}); err != nil || failed != nil {
+		t.Fatalf("write the fragment %s of %s's room: %v, %v", fragment, r.room.issue, err, failed)
+	}
+	if err := peer.WaitForText(fragmentMarkdown(fragment), want, roomWait(t)); err != nil {
+		t.Fatalf("a peer's copy of the fragment %s of %s's room: %v", fragment, r.room.issue, err)
+	}
+	settleLandedWrite(t, ctx, r.database, r.service, r.room, stored)
 }

@@ -512,10 +512,11 @@ const dropSettledClosedEditSources = `
 // request in mover's name. Whether the document's stored updates are ahead of its latest version
 // is read on the room it is edited in, whose head a version records (doc_update_version), as
 // SnapshotVersion reads it. It carries an approval of a version before the latest one
-// (carryToLatest), by the cases every carry weighs and, last, by the latest version's stored
-// record digest (storedRecord): a version a closed issue's settlement wrote carried nothing, and a
-// version whose record is the approved one, as a paragraph moved before a requirement leaves it,
-// is carried here, its request answered in the approver's name (writeCarriedReview).
+// (carryToLatest), by the cases every carry weighs: a version a closed issue's settlement wrote
+// carried nothing, and one that holds the approved text again, or differs from it by a carry case
+// alone, is carried here, its request answered in the approver's name (writeCarriedReview). A
+// converted query document carries nothing (textCarries): its approval stands by its record's
+// digest (R14's hash gate).
 func (s *Service) followLatestVersion(ctx context.Context, tx pgx.Tx, artifactID string, mover model.Actor) error {
 	latest, err := latestVersion(ctx, tx, artifactID)
 	if err != nil {

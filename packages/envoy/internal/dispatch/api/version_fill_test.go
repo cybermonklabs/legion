@@ -219,22 +219,6 @@ func versionFillApprovalsAfter(t *testing.T, database *store.Store, artifactID s
 	return approvals, newest
 }
 
-// requireApprovedAfterVersion fails unless the newest artifact.approved naming version number of
-// artifactID comes after that version's artifact.version, in event id and in seq: the carry of an
-// approval given between the version's COMMIT and its fill, R14's one exception to the order.
-func requireApprovedAfterVersion(t *testing.T, database *store.Store, artifactID string, number int) {
-	t.Helper()
-	var approvedID, approvedSeq, versionID, versionSeq int64
-	if err := database.Pool.QueryRow(context.Background(), approvedBeforeVersionStatement, artifactID, number).Scan(
-		&approvedID, &approvedSeq, &versionID, &versionSeq); err != nil {
-		t.Fatalf("read the artifact.approved and the artifact.version of version %d of %s: %v", number, artifactID, err)
-	}
-	if approvedID <= versionID || approvedSeq <= versionSeq {
-		t.Errorf("the carry to version %d of %s appended artifact.approved at id %d, seq %d and the version's artifact.version at id %d, seq %d: want the approval after the version in both",
-			number, artifactID, approvedID, approvedSeq, versionID, versionSeq)
-	}
-}
-
 // TestVersionRecordDigestFillsAfterCommit writes versions of the spec of a converted issue through
 // the edit route, versions a query's record covers, and holds each version's fill after the
 // write's COMMIT and before the fill begins (versionFillPause). Each case runs twice: filled by the
@@ -244,24 +228,23 @@ func requireApprovedAfterVersion(t *testing.T, database *store.Store, artifactID
 //
 //   - An ordinary fill: the committed version_renders row holds its time and its read_seq, no
 //     digest and digest_owed true, and artifact_version_text_sha256 answers the sha256 of the
-//     version's stored markdown; the server has published no artifact.version of it yet. The case
-//     then moves the head record of the spec query, stating a placement value on the spec's
-//     requirement by SQL, and lets the fill go: the fill records the digest of the record at the
-//     cut the row saved, not the head's, clears digest_owed, and the function answers that digest
-//     from then on; only then does the server publish the version's artifact.version, and the fill
-//     appends no artifact.approved.
-//   - A fill that carries an approval given before it: alice approves the version while its fill
-//     is held, which pins the digest of its stored markdown; the fill then carries her approval at
-//     that version, appends the carry's artifact.approved, after the version's artifact.version,
-//     and no other approval; the carried review names the version itself, pins the record's
-//     digest, and the approval reads approved.
-//   - A fill that repins a batched carry: with alice's approval standing, an edit of the paragraph
-//     the spec query's record does not take carries it in its own batch, so at the pause the newest
-//     review is that carry, pinned to the version's stored markdown, with no record digest on its
-//     row of artifact_review_carries yet. The fill writes the version's record digest on that row,
-//     leaves the review and its pin as they were, adds no review and no artifact.approved, and the
-//     approval reads approved through the carry row's digest, which is the version's, where the
-//     review's own pin is not.
+//     version's stored markdown; GET /api/v1/artifacts/{id} answers digest_owed true and the
+//     markdown's digest as current_sha256; the server has published no artifact.version of it yet.
+//     The case then moves the head record of the spec query, stating a placement value on the
+//     spec's requirement by SQL, and lets the fill go: the fill records the digest of the record at
+//     the cut the row saved, not the head's, clears digest_owed, and the function and the artifact
+//     read answer that digest from then on; only then does the server publish the version's
+//     artifact.version, and the fill appends one artifact.digest and no artifact.approved.
+//   - An approval given while the fill is held: alice approves the version while its fill is held.
+//     The review route fills the owed digest first, so the row owes nothing before the request's
+//     fill runs and her review pins the record's digest, never the stored markdown's; nothing
+//     carries, so the only artifact.approved of the version is hers, and the version holds one
+//     artifact.digest.
+//   - A write under an approval carries nothing: with alice's approval standing, an edit of the
+//     paragraph the spec query's record does not take has written, at the pause after its COMMIT,
+//     no review, no carry row and no artifact.approved; its fill appends one artifact.digest
+//     reading approval_current true, and the approval still reads approved at the version she
+//     approved.
 func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -274,9 +257,10 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 		t.Fatalf("issue %s holds no tree, want it born converted", issue.Key)
 	}
 	spec := issue.PrimaryArtifactID
+	service := deps.Docs.(*docs.Service)
+	settleIssue(t, service, issue.Key)
 	awaitSettled(t, database, spec)
 	requirement := blockAddressOf(t, database, issue.Key, "r1")
-	service := deps.Docs.(*docs.Service)
 	published, unsubscribe := deps.Events.Subscribe()
 	defer unsubscribe()
 	defer service.HoldFills(nil)
@@ -312,6 +296,9 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 			if got, want := versionFillDigest(t, database, spec, number), contentHash(stored); got != want {
 				t.Errorf("artifact_version_text_sha256 answers %s for version %d before the fill, want the stored markdown's %s", got, number, want)
 			}
+			if read := artifactDigestApproval(t, handler, spec).Approval; read == nil || read.DigestOwed == nil || !*read.DigestOwed || read.CurrentSHA256 == nil || *read.CurrentSHA256 != contentHash(stored) {
+				t.Errorf("GET /api/v1/artifacts/%s answers %+v while version %d's fill is held, want digest_owed true and current_sha256 the stored markdown's, %s", spec, read, number, contentHash(stored))
+			}
 			if early := versionFillEvents(published, issue.Key)["artifact.version"]; early > 0 {
 				t.Errorf("the server published %d artifact.version events of %s before the fill, want none", early, issue.Key)
 			}
@@ -342,86 +329,109 @@ func TestVersionRecordDigestFillsAfterCommit(t *testing.T) {
 			if got := versionFillDigest(t, database, spec, number); got != saved.Digest {
 				t.Errorf("artifact_version_text_sha256 answers %s for version %d after the fill, want the record's digest %s", got, number, saved.Digest)
 			}
-			events := versionFillEvents(published, issue.Key)
+			latest := renderAtVersionNewest(t, database, spec)
+			current := versionFillDigest(t, database, spec, latest)
+			if read := artifactDigestApproval(t, handler, spec).Approval; read == nil || read.LatestVersion != latest || read.DigestOwed == nil || *read.DigestOwed || read.CurrentSHA256 == nil || *read.CurrentSHA256 != current {
+				t.Errorf("GET /api/v1/artifacts/%s answers %+v after the fill, want digest_owed false and current_sha256 %s of latest version %d", spec, read, current, latest)
+			}
+			events := map[string]int{}
+			for _, event := range publishedSince(published) {
+				if event.IssueKey == nil || *event.IssueKey != issue.Key {
+					continue
+				}
+				if digest, ok := event.Payload.(model.ArtifactDigestEventPayload); ok && (digest.ArtifactID != spec || digest.Version != number) {
+					continue
+				}
+				events[event.Type]++
+			}
 			if events["artifact.version"] == 0 {
 				t.Errorf("the server published no artifact.version of %s once the edit answered", issue.Key)
 			}
 			if approved := events["artifact.approved"]; approved > 0 {
 				t.Errorf("the ordinary fill of version %d appended %d artifact.approved events, want none", number, approved)
 			}
+			digests := 0
+			for _, held := range loggedEvents(t, database, "artifact.digest", spec) {
+				if got, _ := held.payload["version"].(float64); int(got) == number {
+					digests++
+					if digest, _ := held.payload["content_sha256"].(string); digest != saved.Digest {
+						t.Errorf("the artifact.digest of %s@v%d carries content_sha256 %q, want the record's digest at the saved cut, %s", issue.Key, number, digest, saved.Digest)
+					}
+				}
+			}
+			if digests != 1 || events["artifact.digest"] != 1 {
+				t.Errorf("no artifact.digest for %s@v%d after its fill: the log holds %d and the server published %d, want the fill's one", spec, number, digests, events["artifact.digest"])
+			}
 		})
 	}
 
 	for _, by := range versionFillers {
-		t.Run("a fill that carries an approval given before it, by "+by.name, func(t *testing.T) {
-			hold, done := edit(t, "The words alice approves before the fill by "+by.name+".")
+		t.Run("an approval given while the fill is held, by "+by.name, func(t *testing.T) {
+			hold, done := edit(t, "The words alice approves while the fill is held by "+by.name+".")
 			number := renderAtVersionNewest(t, database, spec)
+			approvedBefore, _ := versionFillApprovalsAfter(t, database, spec, number, 0)
 			approval := reviewDocument(t, handler, spec, "alice", "approved", "")
-			if want := contentHash(storedVersionMarkdown(t, database, spec, number)); approval.Version != number || approval.ContentSHA256 == nil || *approval.ContentSHA256 != want {
-				t.Errorf("alice's approval given before the fill is of version %d pinning %v, want version %d pinning the stored markdown's %s",
-					approval.Version, approval.ContentSHA256, number, want)
+			row := versionFillRowOf(t, database, spec, number)
+			if row.owed || row.digest == nil {
+				t.Fatalf("version %d holds digest_owed %t and record %s after alice's review, want the review's own fill to have recorded it before the request's fill ran", number, row.owed, versionFillWords(row.digest))
 			}
-			// The edit's own batch may carry the approval that stood before it; the fill's carry is the
-			// one artifact.approved of the version appended after alice's own.
-			_, given := versionFillApprovalsAfter(t, database, spec, number, 0)
+			stored := contentHash(storedVersionMarkdown(t, database, spec, number))
+			if approval.Version != number || approval.ContentSHA256 == nil || *approval.ContentSHA256 == stored || *approval.ContentSHA256 != *row.digest {
+				t.Errorf("approval of %s@v%d pinned the markdown digest while its digest was owed: alice's review is of version %d pinning %v, want version %d pinning the record's digest %s, not the stored markdown's %s",
+					spec, number, approval.Version, approval.ContentSHA256, number, *row.digest, stored)
+			}
+			if approval.CarriedFromVersion != nil {
+				t.Errorf("alice's review of version %d is carried from version %d, want her own", number, *approval.CarriedFromVersion)
+			}
 			if edited := by.fill(t, service, database, hold, done, spec, number); edited.Code != http.StatusOK {
 				t.Fatalf("the edit answered %d %s, want 200", edited.Code, edited.Body.String())
 			}
-			if approved, _ := versionFillApprovalsAfter(t, database, spec, number, given); approved != 1 {
-				t.Errorf("the fill that carries alice's approval appended %d artifact.approved events of version %d after hers, want the carry's one", approved, number)
+			if approved, _ := versionFillApprovalsAfter(t, database, spec, number, 0); approved != approvedBefore+1 {
+				t.Errorf("version %d holds %d artifact.approved events after both fills, want alice's one beyond the %d before it: no carry", number, approved, approvedBefore)
 			}
-			carried := requireReviewCarriedWith(t, handler, spec, number, number, restoreSentence(number), nil)
-			var pinned string
-			if err := database.Pool.QueryRow(ctx, `select coalesce(content_sha256, '') from artifact_reviews where id = $1::uuid`, carried.ID).Scan(&pinned); err != nil {
-				t.Fatalf("read the carried review's digest: %v", err)
+			if carried := newestCarryOf(t, database, spec); carried.id != approval.ID || carried.from != nil {
+				t.Errorf("the newest review of the spec is %+v, want alice's own %s with no carry row: nothing carries to the version", carried, approval.ID)
 			}
-			if filled := versionFillRowOf(t, database, spec, number); filled.digest == nil || pinned != *filled.digest {
-				t.Errorf("the carried review of version %d pins %q, want the record's digest the fill recorded, %v", number, pinned, filled.digest)
+			if read := readApproval(t, handler, spec).Approval; read == nil || read.State != "approved" || read.Version == nil || *read.Version != number {
+				t.Errorf("the approval of the spec reads %+v, want approved at version %d", read, number)
 			}
-			requireApprovedAfterVersion(t, database, spec, number)
 		})
 	}
 
 	for _, by := range versionFillers {
-		t.Run("a fill that repins a batched carry, by "+by.name, func(t *testing.T) {
+		t.Run("a write under an approval carries nothing, by "+by.name, func(t *testing.T) {
+			reviewDocument(t, handler, spec, "alice", "approved", "")
 			if standing := newestCarryOf(t, database, spec); standing.state != "approved" || standing.version != renderAtVersionNewest(t, database, spec) {
-				t.Fatalf("the newest review of the spec is %+v, want an approval of its newest version for the edit's batch to carry", standing)
+				t.Fatalf("the newest review of the spec is %+v, want an approval of its newest version for the edit to leave standing", standing)
 			}
-			hold, done := edit(t, "The words the edit's batch carries the approval over, by "+by.name+".")
+			standing := newestCarryOf(t, database, spec)
+			reviews, approvals := versionFillReviewCounts(t, database, spec, renderAtVersionNewest(t, database, spec)+1)
+			hold, done := edit(t, "The words the edit under an approval writes, by "+by.name+".")
 			number := renderAtVersionNewest(t, database, spec)
-			stored := contentHash(storedVersionMarkdown(t, database, spec, number))
-			carry := newestCarryOf(t, database, spec)
-			if carry.version != number || carry.state != "approved" || carry.from == nil || carry.pinned != stored || carry.record != nil {
-				t.Fatalf("at the pause after the edit's COMMIT the newest review of the spec is %+v (carried from %v, record digest %s), want the edit's batch's carry to version %d pinning its stored markdown's %s, with no record digest on its carry row yet",
-					carry, carry.from, versionFillWords(carry.record), number, stored)
+			if after := newestCarryOf(t, database, spec); after.id != standing.id || after.version != standing.version {
+				t.Fatalf("at the pause after the edit's COMMIT the newest review of the spec is %+v, want alice's %s of version %d untouched: the write carried an approval", after, standing.id, standing.version)
 			}
-			reviews, approvals := versionFillReviewCounts(t, database, spec, number)
+			if gotReviews, gotApprovals := versionFillReviewCounts(t, database, spec, number); gotReviews != reviews || gotApprovals != approvals {
+				t.Fatalf("at the pause the spec holds %d reviews and %d artifact.approved events of version %d, want the %d and %d before the edit: the write's batch wrote a synthetic carry", gotReviews, gotApprovals, number, reviews, approvals)
+			}
 			versionFillEvents(published, issue.Key)
 			if edited := by.fill(t, service, database, hold, done, spec, number); edited.Code != http.StatusOK {
 				t.Fatalf("the edit answered %d %s, want 200", edited.Code, edited.Body.String())
 			}
-			filled := versionFillRowOf(t, database, spec, number)
-			after := newestCarryOf(t, database, spec)
-			switch {
-			case after.id != carry.id || after.pinned != carry.pinned:
-				t.Errorf("after the fill the newest review of the spec is %s pinning %s, want the batch's carry %s still pinning %s", after.id, after.pinned, carry.id, carry.pinned)
-			case filled.digest == nil || filled.owed:
-				t.Errorf("after the fill the row of version %d holds record_sha256 %s and digest_owed %t, want the record's digest and false", number, versionFillWords(filled.digest), filled.owed)
-			case after.record == nil || *after.record != *filled.digest:
-				t.Errorf("after the fill the carry %s holds record_sha256 %s on its row of artifact_review_carries, want version %d's record digest %s",
-					after.id, versionFillWords(after.record), number, *filled.digest)
+			if after := newestCarryOf(t, database, spec); after.id != standing.id || after.from != nil {
+				t.Errorf("after the fill the newest review of the spec is %+v, want alice's %s still: the fill wrote a review", after, standing.id)
 			}
-			if gotReviews, gotApprovals := versionFillReviewCounts(t, database, spec, number); gotReviews != reviews || gotApprovals != approvals {
-				t.Errorf("the fill left %d reviews of the spec and %d artifact.approved events of version %d, want the %d and %d of the pause: no second review or approval",
-					gotReviews, gotApprovals, number, reviews, approvals)
+			var current bool
+			if err := database.Pool.QueryRow(ctx, `
+				select (payload->>'approval_current')::boolean from events
+				where type = 'artifact.digest' and payload->>'artifact_id' = $1 and (payload->>'version')::int = $2`, spec, number).Scan(&current); err != nil {
+				t.Fatalf("no artifact.digest for %s@v%d after its fill: %v", spec, number, err)
 			}
-			digest := versionFillDigest(t, database, spec, number)
-			if after.record == nil || digest != *after.record || digest == after.pinned {
-				t.Errorf("version %d answers the digest %s, its carry row holds %s and the review pins %s: want the version's digest the carry row's and not the review's own pin",
-					number, digest, versionFillWords(after.record), after.pinned)
+			if !current {
+				t.Errorf("the artifact.digest of %s@v%d carries approval_current false, want true: a prose edit leaves the spec query's record where alice approved it", spec, number)
 			}
-			if read := readApproval(t, handler, spec).Approval; read == nil || read.State != "approved" || read.Version == nil || *read.Version != number {
-				t.Errorf("the approval of the spec reads %+v after the fill, want approved at version %d through its carry row's digest", read, number)
+			if read := readApproval(t, handler, spec).Approval; read == nil || read.State != "approved" || read.Version == nil || *read.Version != standing.version {
+				t.Errorf("the approval of the spec reads %+v after the fill, want approved at version %d, the one alice approved", read, standing.version)
 			}
 		})
 	}

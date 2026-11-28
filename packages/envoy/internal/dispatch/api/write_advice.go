@@ -776,12 +776,15 @@ func supersededApprovalGates(ctx context.Context, q docs.Queryer, artifactID str
 	return gates, rows.Err()
 }
 
-// supersededAsWritten is the approval the write of version made stale as the transaction wrote the
-// document's reviews, once Commit has returned: the rule over the review the transaction wrote
-// (docs.Ledger.WrittenReview), the approval carry's own, newer than every stored one, where the
-// write phase kept it, and else stored, what the read phase read off the table
-// (supersededApprovalAdvice). It runs no statement.
-func supersededAsWritten(ledger *docs.Ledger, artifactID string, version int, stored *supersededApproval) *supersededApproval {
+// supersededAsWritten reports a supersession only if the committed write actually closed the
+// gate. Query writes use the fill's verdict; without that verdict they cannot report a
+// supersession. Markdown writes keep the rule over their legacy carried review.
+func supersededAsWritten(ledger *docs.Ledger, artifactID string, version int, digestOwed bool, stored *supersededApproval) *supersededApproval {
+	if stored != nil && digestOwed {
+		if current, found := ledger.DigestApprovalCurrent(artifactID, version); !found || current {
+			return nil
+		}
+	}
 	if review, wrote := ledger.WrittenReview(artifactID); wrote {
 		return supersededBy(&review, version)
 	}

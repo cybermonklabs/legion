@@ -183,16 +183,10 @@ func requireAnswerCarry(t *testing.T, rig *digestRig, when string, document deci
 	}
 }
 
-// digestStepAnswerCarryAcrossTheMove pins the answer carry, which the move leaves as it is (R10,
-// R14): a person's own answer to an ask block still carries her approval as it does today, once
-// before the move and once after, with the same verdict. On an issue that has not converted, an
-// agent writes an ask block into the spec through the edits route and settlement makes its ask;
-// alice approves the spec and answers the ask, and the version her answer writes, which changes the
-// server-owned attributes of the block alone, carries her approval in her name with the reason
-// R10's case writes. docs.ConvertIssue then moves the issue into its room, where her approval
-// stands at the version the conversion wrote by the conversion's carry; the agent writes a second
-// ask block the same way, alice approves the spec and answers it, and the version her answer
-// writes carries her approval with that same reason.
+// digestStepAnswerCarryAcrossTheMove pins the answer on both sides of conversion. On a markdown
+// document, the answer carries the approval. Conversion carries it to the query version once.
+// On the converted issue the next answer moves no node the spec query takes, so no review is
+// written and the approval stands at the version the person actually approved.
 func digestStepAnswerCarryAcrossTheMove(t *testing.T, rig *digestRig) {
 	issue := createDigestIssue(t, rig.handler, rig.database, "CORE", "An answer carried across the move",
 		":::requirement{#r1}\nThe answered list comes first.\n:::\n", true)
@@ -221,6 +215,20 @@ func digestStepAnswerCarryAcrossTheMove(t *testing.T, rig *digestRig) {
 	convertDigestIssue(t, rig, issue.Key)
 	requireCarriedAcrossTheMove(t, rig, "the spec of "+issue.Key+", whose answer carried its approval before the move", spec, approved, carried)
 
+	before := len(listReviews(t, rig.handler, spec.id))
+	events := len(loggedEvents(t, rig.database, "artifact.approved", spec.id))
 	approved, answered = answer(regionAsk, "region", "Which region goes first?", "East")
-	requireAnswerCarry(t, rig, "after the move", spec, answered, approved)
+	if after := len(listReviews(t, rig.handler, spec.id)); after != before+1 {
+		t.Errorf("the converted spec gained %d reviews, want the person's approval alone", after-before)
+	}
+	if after := len(loggedEvents(t, rig.database, "artifact.approved", spec.id)); after != events+1 {
+		t.Errorf("the converted spec gained %d artifact.approved events, want the person's event alone", after-events)
+	}
+	if current := readApproval(t, rig.handler, spec.id).Approval; current == nil || current.State != "approved" ||
+		current.Version == nil || *current.Version != approved || current.LatestVersion != answered {
+		t.Errorf("after the answer the converted spec reads approval %+v, want version %d approved with latest version %d", current, approved, answered)
+	}
+	if approvedDigest, answeredDigest := versionDigestOf(t, rig.database, spec.id, approved), versionDigestOf(t, rig.database, spec.id, answered); approvedDigest != answeredDigest {
+		t.Errorf("the answer on the converted spec moved its digest from %s to %s", approvedDigest, answeredDigest)
+	}
 }

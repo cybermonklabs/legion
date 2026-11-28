@@ -205,7 +205,10 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 // for every other document, at its latest version alone. A retired document's approval is
 // superseded by its retirement (docs.RetireDocument), which writes no version, so it reads stale
 // at its latest version as an approval a later version left behind reads: a gate or a reader that
-// asks whether the document stands approved hears that it does not.
+// asks whether the document stands approved hears that it does not. Where the versions were read
+// with their digests (artifactVersionDigestsStatement, the artifact read), the approval also
+// answers the latest version's digest, the one it stands against (current_sha256), and whether
+// that version still owes its record's digest (digest_owed), R14's hash gate.
 func applyApprovals(
 	byID map[string]*model.Artifact,
 	latestReviews map[string]latestReview,
@@ -213,12 +216,16 @@ func applyApprovals(
 ) {
 	for _, artifact := range byID {
 		latest := 0
-		for _, version := range artifact.Versions {
+		var current *model.Version
+		for index, version := range artifact.Versions {
 			if version.Number > latest {
-				latest = version.Number
+				latest, current = version.Number, &artifact.Versions[index]
 			}
 		}
 		approval := &model.ArtifactApproval{State: "draft", LatestVersion: latest}
+		if current != nil && current.DigestOwed != nil {
+			approval.CurrentSHA256, approval.DigestOwed = current.Digest, current.DigestOwed
+		}
 		if held, ok := latestReviews[artifact.ID]; ok {
 			review := held.review
 			version := review.Version
@@ -545,6 +552,12 @@ func (s *server) queueApprovalReviews(
 	reason *string,
 	askID *string,
 ) (*model.ArtifactReview, []*model.Event, error) {
+	// A version whose record digest its write left owed is filled first, in this transaction and
+	// before the reviews are queued, so each review pins its version's record digest at its insert
+	// and no later fill has anything to carry to it (R14's hash gate).
+	if err := s.deps.Docs.FillReviewedDigests(ctx, tx, documents); err != nil {
+		return nil, nil, err
+	}
 	named := new(model.ArtifactReview)
 	appended := make([]*model.Event, 0, len(documents))
 	for _, document := range documents {
@@ -740,30 +753,8 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	if settled {
 		// A document of a converted issue stands approved by its digest, at whatever version its
-		// approval names. Where that version is before the latest one and the latest version's
-		// record digest is the one the approval stands on, the approval is carried to the latest
-		// version in the approver's name (docs.CarryApprovalToLatest), so the Legion daemon, which
-		// reads an approval at latest_version alone, reads it approved too; the carry answers an
-		// open request that names that version. Each named document is carried on its own.
-		carried := false
-		for _, document := range documents {
-			if err := docs.CarryApprovalToLatest(documentCtx, tx, s.deps.Events, document.ArtifactID, s.deps.ServerURL); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			_, queued := ledger.PendingReview(document.ArtifactID)
-			carried = carried || queued
-		}
-		if carried {
-			if err := ledger.Commit(r.Context()); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-			if err := s.attachApprovals(r.Context(), pool, []*model.Artifact{&artifact}); err != nil {
-				s.writeHandlerError(w, err)
-				return
-			}
-		}
+		// approval names (R14's hash gate): no carry moves that approval to the latest version,
+		// and the Legion daemon reads the version's artifact.digest for it.
 		// The approval's reason is read where it stands: this answer carries what the request
 		// has just written, and the write beside it stored the tree.
 		WriteJSON(w, http.StatusOK, approvalRequestResponse{Ask: nil, ArtifactID: artifact.ID, Version: version,
@@ -1271,10 +1262,9 @@ type createPlanReviewInput struct {
 
 // POST /api/v1/artifacts/{id}/plan-reviews  {version}  (any authenticated actor)
 //
-// A plan is approved by the plan review an agent runs over it, never by a person: this records
-// that approval of one plan version, as a person's answer records theirs, so every read of the
-// document shows it approved and a later version makes it stale. It is refused on any document
-// whose role is not plan, the issue's spec included.
+// An agent's plan review records approval of a plan version. On a converted query document,
+// the approval stands while the query digest and definition match. On legacy documents the
+// version rule applies. This route refuses documents whose role is not plan, including the spec.
 func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request) {
 	var input createPlanReviewInput
 	if err := decodeJSON(r, &input); err != nil {
@@ -1293,7 +1283,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	defer tx.Rollback(r.Context())
 	// The review is this route's one write, queued on the ledger and sent by Commit; everything
 	// it is decided on - the document, its owner and its settled versions - is read before it.
-	_, ledger := s.deps.Docs.Join(r.Context(), tx)
+	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	artifact, err := s.loadArtifact(r.Context(), tx, r.PathValue("id"))
 	if err != nil {
@@ -1321,6 +1311,12 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	if input.Version < 1 || input.Version > latest {
 		writeError(w, "INVALID_REVIEW", http.StatusBadRequest,
 			fmt.Sprintf("version must name a settled version of the plan, between 1 and %d", latest))
+		return
+	}
+	// The plan version's record digest, where its write left it owed, is filled first, so the
+	// review pins it (R14's hash gate, queueApprovalReviews).
+	if err := s.deps.Docs.FillReviewedDigests(documentCtx, tx, []model.AskApprovalDocument{{ArtifactID: artifact.ID, Version: input.Version}}); err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
 	var review model.ArtifactReview

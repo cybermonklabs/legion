@@ -357,7 +357,7 @@ func (s *Service) RebuildDocument(ctx context.Context, artifactID string, markdo
 		return RebuildReport{}, VersionResult{}, err
 	}
 	report.SourceVersion = written.version.Number
-	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks}, nil
+	return report, VersionResult{Version: written.version, Wrote: true, Changes: written.changes, Blocks: written.blocks, Digest: written.digest}, nil
 }
 
 // rebuildRoomSeeds is the tree each fragment of the issue room room holds once it is rebuilt, in

@@ -363,6 +363,7 @@ var DispatchEventTypes = []string{
 	"artifact.approved",
 	"artifact.changes_requested",
 	"artifact.created",
+	"artifact.digest",
 	"artifact.human_edited",
 	"artifact.indexed",
 	"artifact.removed",

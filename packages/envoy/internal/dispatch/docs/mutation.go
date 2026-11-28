@@ -2148,7 +2148,7 @@ func (s *Service) snapshotVersion(ctx context.Context, artifactID string, actor 
 	if err := s.settledEditNotice(ctx, tx, artifactID, closedIssue, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks, Digest: result.digest}, nil
 }
 
 // readsAs reports whether stored, a version's markdown that any build may have rendered, reads as
@@ -2738,7 +2738,7 @@ func (s *Service) NamedVersion(ctx context.Context, artifactID, summary string, 
 	if err := s.recordEditNotice(ctx, tx, artifactID, result.version.Number, actorSlice(capture.authors), capture.latest); err != nil {
 		return VersionResult{}, err
 	}
-	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks}, nil
+	return VersionResult{Version: result.version, Wrote: true, Changes: result.changes, Blocks: result.blocks, Digest: result.digest}, nil
 }
 
 // serviceTransact wraps Server.Apply's transact so the room's update observer can tell the
@@ -3156,15 +3156,12 @@ func (s *Service) storedWithUpdates(ctx context.Context, artifactID string, unst
 // latestVersionRow is a document's latest version as a write reads it to decide whether to write
 // the next: the version, its stored markdown, the update its write recorded (doc_update_version),
 // and the renderer version that wrote that markdown (renderer_version), nil where no write
-// stamped one. A version this transaction has queued and not yet written (Ledger.queuedVersion)
-// carries queued too, the place in the write queue of its insert, before which the write phase
-// takes the savepoint of a restore carry to it (carryRestored); a stored version holds none.
+// stamped one.
 type latestVersionRow struct {
 	model.Version
 	markdown         string
 	docUpdateVersion int64
 	rendererVersion  *int
-	queued           int
 }
 
 // holds reports whether the version holds rendering, the document as this build renders it, by
@@ -3235,12 +3232,14 @@ func contentChangedSinceVersion(ctx context.Context, tx pgx.Tx, artifactID strin
 // event it appends (graphstore.Caused). A version of a document of an issue room
 // (versionWrite.roomIndexed) is indexed by its room's pass and has neither yet: owner is what its
 // row returned of its document, which that caller writes the version's node from after the pass
-// (WriteVersionNode).
+// (WriteVersionNode). digest is what the version's artifact.version says of the digest an approval
+// of it covers (WrittenVersionDigest).
 type versionWriteResult struct {
 	version model.Version
 	changes model.ReferenceChanges
 	blocks  graphstore.Uncaused
 	owner   graphstore.VersionOwner
+	digest  VersionDigest
 }
 
 // renderedTree is a document tree with its canonical markdown and each identified block's byte
@@ -3291,13 +3290,10 @@ type renderedTree struct {
 // the version's insert, the task counts, the index, the move, the carry, the anchors - so a
 // transaction whose writes are queued runs them in its write phase, and the ledger records the
 // version as it will stand (latestVersion). The carry's writes keep their place, before the
-// version's artifact.version, which its caller appends after this returns (R14): its review pins
-// the digest of the version's stored markdown, which artifact_version_text_sha256 answers while
-// the version's record digest is owed, and the fill after the COMMIT repins it to the record
-// (fillOwedDigests). A carry to a version that restores the approved text writes behind a row of
-// the approval's digest, under a savepoint the write phase takes before the version's insert
-// (carryRestored); a version an issue room's settlement writes takes its carry after the room's
-// pass (commitRoomVersions).
+// version's artifact.version, which its caller appends after this returns (R14); a version of a
+// converted query document takes no carry (textCarries), and its artifact.version says its digest
+// is owed (WrittenVersionDigest); a version an issue room's settlement writes takes its carry after
+// the room's pass (commitRoomVersions).
 func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID string, rendered renderedTree, actor model.Actor, spec *versionWrite) (versionWriteResult, error) {
 	markdown, tree := rendered.markdown, rendered.tree
 	if spec == nil {
@@ -3340,7 +3336,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 	// leaves the blocks of a document or a room above deferBlockIndexBlocks to the block-index
 	// reconciliation, as an upload's does, and states no version_renders row of its own.
 	if spec.roomIndexed {
-		return s.finishVersionWrite(ctx, tx, artifactID, rendered, actor, spec, versionWriteResult{version: version, owner: owner})
+		return s.finishVersionWrite(ctx, tx, artifactID, rendered, actor, spec, versionWriteResult{version: version, owner: owner, digest: WrittenVersionDigest(markdown, owner)})
 	}
 	changes, blocks, err := s.indexVersion(ctx, tx, artifactID, refs.OneVersion(artifactID, version.Number, version.CreatedAt), markdown, rendered, spec.settled, spec.deferLarge)
 	if err != nil {
@@ -3354,7 +3350,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 		return versionWriteResult{}, err
 	}
 	return s.finishVersionWrite(ctx, tx, artifactID, rendered, actor, spec,
-		versionWriteResult{version: version, changes: changes, blocks: graphstore.Joined(blocks, versionNode)})
+		versionWriteResult{version: version, changes: changes, blocks: graphstore.Joined(blocks, versionNode), digest: WrittenVersionDigest(markdown, owner)})
 }
 
 // finishVersionWrite is what writeVersionTx does once the version's row (result.version) is
@@ -3381,13 +3377,12 @@ func (s *Service) finishVersionWrite(ctx context.Context, tx pgx.Tx, artifactID 
 		// The document's newest approval carries to the version this writes by carryApproval's
 		// rules: every ask block of the version agrees with its node, and the version holds the
 		// approved text again or every difference from it is one of the carry cases
-		// (carryVerdict), or its record is the approved one by the facts its pass stated
-		// (versionWriteRecord, recordUnmoved). It runs after the move, so an open request already
-		// names this version when the carry answers it in the approver's name, and its writes keep
-		// their place, before the version's artifact.version (R14), or, for a restore, behind the
-		// row it writes itself (carryRestored).
+		// (carryVerdict), on a document that is no converted query document (textCarries). It runs
+		// after the move, so an open request already names this version when the carry answers it
+		// in the approver's name, and its writes keep their place, before the version's
+		// artifact.version (R14).
 		if !spec.roomIndexed {
-			if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, versionWriteRecord(ctx, spec.steps, result.blocks), eventSink(ctx)); err != nil {
+			if err := s.carryApproval(ctx, tx, artifactID, version, rendered, spec.steps, eventSink(ctx)); err != nil {
 				return versionWriteResult{}, err
 			}
 		}
@@ -3500,8 +3495,7 @@ func versionRoomHead(ctx context.Context, tx pgx.Tx, artifactID string) (int64, 
 // head the insert meets - and queues the insert in tx's write phase (write). The ledger that
 // queues tx's writes records the version as it will stand, so the reads that follow in this
 // transaction take it from there rather than from a table that holds the row only once the write
-// phase has run (latestVersion, PendingVersionMarkdown), and the place of its insert in the queue,
-// before which the write phase takes the savepoint of a restore carry to it (carryRestored).
+// phase has run (latestVersion, PendingVersionMarkdown).
 func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown string, authors []model.Actor, named bool, summary *string, docUpdateVersion *int64, stamp RenderStamp) (model.Version, error) {
 	number, createdAt, err := versionSlot(ctx, tx, artifactID)
 	if err != nil {
@@ -3521,7 +3515,7 @@ func queueVersionInsert(ctx context.Context, tx pgx.Tx, artifactID, markdown str
 		return model.Version{}, err
 	}
 	if ledger := queueFor(ctx, tx); ledger != nil {
-		ledger.queuedVersion(artifactID, latestVersionRow{Version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer, queued: len(ledger.queue) - 1})
+		ledger.queuedVersion(artifactID, latestVersionRow{Version: version, markdown: markdown, docUpdateVersion: cursor, rendererVersion: stamp.Renderer})
 	}
 	return version, nil
 }

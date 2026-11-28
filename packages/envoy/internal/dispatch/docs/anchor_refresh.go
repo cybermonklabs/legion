@@ -402,13 +402,14 @@ type CommentAnchorInBlock struct {
 // on artifactID's document within the block it names (this issue's spec R31): the number of that
 // block's matches of its quote that start before its mark, the occurrence
 // pmdoc.QuoteFinder.FindInBlock takes for the mark (QuoteFinder.OccurrenceInBlock). The document is
-// read as a read of its text reads it (documentTree), with no lock taken and no room loaded, and
+// read as a read of its blocks reads it (anchoredTree), with no lock taken and no room loaded, and
 // every mark is found in one walk of it (pmdoc.FindMarks). A comment's mark is a comment mark or,
 // for a suggestion, a suggestion mark (commentMarkType), and an anchor names its id alone, so each
 // is looked up as either. An anchor whose mark the document no longer holds, or holds outside the
-// block it names, has no occurrence, nor has any anchor on a document with no state.
+// block it names, has no occurrence, nor has any anchor on a document with no state or with no
+// comment's mark.
 func (s *Service) AnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error) {
-	tree, err := s.documentTree(ctx, artifactID)
+	tree, err := s.anchoredTree(ctx, artifactID)
 	if err != nil || tree == nil {
 		return nil, err
 	}
@@ -435,6 +436,22 @@ func (s *Service) AnchorOccurrences(ctx context.Context, artifactID string, anch
 		}
 	}
 	return occurrences, nil
+}
+
+// anchoredTree is artifactID's document as a read of its text and blocks reads it (readDocument),
+// for AnchorOccurrences: the tree of the transaction's fork or of the room this process holds,
+// else, for a document no room holds, the tree its cold read kept beside the rendering of the
+// stored state (buildDocumentRead keeps it for a document holding a comment's mark), so every read
+// of one stored state, the tree read's positions of its blocks (Blocks) among them, folds the
+// history once: a read of the spec of 1,393 requirements beside 9,252 comments decoded that
+// history on every read. It is nil for a document with no state and for a cold read of one that
+// holds no comment's mark, in which no anchor finds its mark.
+func (s *Service) anchoredTree(ctx context.Context, artifactID string) (*pmdoc.Node, error) {
+	read, tree, err := s.readDocument(ctx, artifactID)
+	if err != nil || read == nil {
+		return tree, err
+	}
+	return read.tree, nil
 }
 
 // NodeAnchorOrphans is what one write orphans of the node anchors on the nodes it writes

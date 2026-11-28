@@ -65,6 +65,7 @@ var carriedFromProseChanged = replaceOp(readingProse, "The service ships behind 
 func carriedFromFixture(t *testing.T, title string) (http.Handler, *store.Store, readingFixture) {
 	t.Helper()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	createRoomProject(t, handler, "TEST")
 	return handler, database, approvedReadingSpec(t, handler, database, title)
 }

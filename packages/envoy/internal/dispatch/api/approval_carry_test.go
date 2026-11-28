@@ -915,6 +915,7 @@ func TestAParagraphEditBeforeTheAnswerDoesNotCarry(t *testing.T) {
 func TestAnswersByHumansOtherThanTheApproverWriteTheirStatesVersionsAndTheApprovalIsCarried(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Approved by another", "Context\n\n"+waveAsk+"\n"+regionAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID,
 		map[string]string{"wave": "How many regions take the first wave?", "region": "Which region goes first?"})
@@ -1037,6 +1038,7 @@ func TestADeletedAndRestoredAnsweredBlockIsApprovedOnceItsTextIsTheApprovedText(
 func TestAnAnswerThroughACopysSourceWritesOneStateVersionOfEachDocumentAndCarriesBothApprovals(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "TEST", "Copied block", "Context\n\n"+waveAsk)
 	asks := indexedDecisionBlocks(t, handler, issue.Key, issue.PrimaryArtifactID, map[string]string{"wave": "How many regions take the first wave?"})
 	uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{

@@ -95,29 +95,29 @@ func settleReindexQueue(t *testing.T, handler http.Handler, database *store.Stor
 // Once its settlements and their drains have run, and the reconciliation has left no document owed
 // and no row of the re-index queue (refs_grammar_owed) naming one, an agent session opens an ask on
 // the issue, as the issue page's seeded planner does (e2e/issue-layout-seed-support.ts), which
-// moves the answer of the issue's decisions query and writes no version of it. The result's drain
-// (docs.Service.DrainOwedQueries) then writes a version of the Verification document holding the
-// bytes of the one before, and a version of the decisions query holding the ask's question, whose
-// bytes moved; the retraction's drain writes a version of the Verification document again. Each
-// insert owes its document its block index (migration 0122's trigger) and two rows of the re-index
-// queue, its own text's and its scope's (migration 20261103205041's trigger). The drain stands each
-// version's index (docs' queueRevisionStand) and deletes the two rows the insert made
-// (docs' restoreReindexQueue). After each, the test reads the coverage at once, then runs one tick
-// as the server's loop runs it and reads again: the tick indexed no document, left none owed, and
-// the queue holds no row of the issue's documents.
+// moves the answer of the issue's decisions query. After the result the decisions query holds a
+// version past the ask holding its question, a drained version whose bytes moved. The result and
+// its retraction write no version of the Verification document: its query takes check nodes
+// alone, so neither moves its record, and a drain writes a version only of a query whose record
+// moved (R14's hash gate; R12: "It writes a version only of a query whose record moved, which a
+// result alone never moves"). A drained version's insert owes its document its block index
+// (migration 0122's trigger) and two rows of the re-index queue, its own text's and its scope's
+// (migration 20261103205041's trigger). The drain stands the version's index (docs'
+// queueRevisionStand) and deletes the two rows the insert made (docs' restoreReindexQueue). After
+// each, the test reads the coverage at once, then runs one tick as the server's loop runs it and
+// reads again: the tick indexed no document, left none owed, and the queue holds no row of the
+// issue's documents.
 //
 // Without the stand, the read made at once names the decisions query owed. Without the delete, the
-// queue read made at once holds the artifact and scope rows of verification.md and of the decisions
-// query, and the tick's text pass drains them by owing both documents a block index
-// (docs' drainOwedDocument, and reindexScope for verification.md, whose `#q1` is a candidate): the
-// tick then reports OwedDocuments 2, and the coverage read after it names both documents owed and
-// draws no `r2 has no check`, until the tick after that indexes them.
+// queue read made at once holds the artifact and scope rows of the decisions query, and the tick's
+// text pass drains them by owing the document a block index (docs' drainOwedDocument): the tick
+// then reports a document owed, and the coverage read after it names it owed, until the tick after
+// that indexes it.
 //
 // Last, a person's edit of the check leaves verification.md's scope row standing, as every indexed
-// version write does, and a result recorded after it writes a version holding the edit's bytes:
-// the drain deletes the artifact row its insert made and leaves the scope row, which stood before
-// it and is still owed. Without the delete the artifact row stands too; a delete of both rows would
-// take the scope row.
+// version write does, and a result recorded after it writes no version of verification.md and
+// leaves that scope row, which stood before it and is still owed, with no artifact row beside it.
+// A refs_forms_owed row standing before a result stays too.
 func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -186,9 +186,9 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 
 	before := newestQueryVersion(t, database, verification.id)
 	result := recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
-	if held := newestQueryVersion(t, database, verification.id); held.number != before.number+1 || held.markdown != before.markdown {
-		t.Errorf("the result leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
-			held.number, held.markdown, before.number+1, before.markdown)
+	if held := newestQueryVersion(t, database, verification.id); held.number != before.number || held.markdown != before.markdown {
+		t.Errorf("the result leaves verification.md at version %d holding %q, want it at version %d holding %q: a result moves no record of the Verification query, which takes check nodes alone, so no drain writes a version of it (R14)",
+			held.number, held.markdown, before.number, before.markdown)
 	}
 	if held := newestQueryVersion(t, database, decisions); held.number <= unasked.number || !strings.Contains(held.markdown, question) {
 		t.Errorf("after the result the decisions query %s stands at version %d holding %q, want a version past %d holding the ask's question %q: "+
@@ -203,17 +203,17 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 	if retracted := retractAsSession(t, handler, result.ID, "ses-recorder", "The run measured the wrong build."); retracted.Code != http.StatusCreated {
 		t.Fatalf("the recording session retracts the result %s: status=%d body=%s", result.ID, retracted.Code, retracted.Body.String())
 	}
-	if held := newestQueryVersion(t, database, verification.id); held.number != before.number+1 || held.markdown != before.markdown {
-		t.Errorf("the retraction leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
-			held.number, held.markdown, before.number+1, before.markdown)
+	if held := newestQueryVersion(t, database, verification.id); held.number != before.number || held.markdown != before.markdown {
+		t.Errorf("the retraction leaves verification.md at version %d holding %q, want it at version %d holding %q: a retraction moves no record of the Verification query (R14)",
+			held.number, held.markdown, before.number, before.markdown)
 	}
 	requireDrawn("its retraction by the session that recorded it")
 	requireNothingQueued("its retraction by the session that recorded it")
 	oneTick("its retraction by the session that recorded it")
 
-	// A scope row that stood before the drain's insert stays: a person's edit of the check, which
-	// versions verification.md and indexes it in its own transaction, settles its artifact row and
-	// leaves its scope row for the sources around it.
+	// A scope row that stood before the result stays: a person's edit of the check, which versions
+	// verification.md and indexes it in its own transaction, settles its artifact row and leaves
+	// its scope row for the sources around it.
 	edited := newestQueryVersion(t, database, verification.id).number + 1
 	edit := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+verification.id+"/edits", map[string]any{
 		"ops": []map[string]string{{"op": "replace", "find": "The first requirement holds", "with": "The first requirement still holds"}},
@@ -226,29 +226,29 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 	requireDrawn("the edit of the check")
 	if kinds := queueKindsOf(t, database, refs.RefsGrammarOwed, verification.id); !slices.Equal(kinds, []string{"scope"}) {
 		t.Fatalf("the edit of the check leaves the re-index queue holding %q of verification.md (%s), want its scope row alone: "+
-			"the case this step reads is a scope row that stood before the drain's insert", kinds, documentsAt())
+			"the case this step reads is a scope row that stood before the result", kinds, documentsAt())
 	}
 	before = newestQueryVersion(t, database, verification.id)
 	recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("c1", "fail", headCommit, map[string]any{"failed": 1}))
-	if held := newestQueryVersion(t, database, verification.id); held.number != before.number+1 || held.markdown != before.markdown {
-		t.Errorf("the result after the edit leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
-			held.number, held.markdown, before.number+1, before.markdown)
+	if held := newestQueryVersion(t, database, verification.id); held.number != before.number || held.markdown != before.markdown {
+		t.Errorf("the result after the edit leaves verification.md at version %d holding %q, want it at version %d holding the edit's bytes %q: a result writes no version of the Verification query (R14)",
+			held.number, held.markdown, before.number, before.markdown)
 	}
 	if kinds := queueKindsOf(t, database, refs.RefsGrammarOwed, verification.id); !slices.Equal(kinds, []string{"scope"}) {
-		t.Errorf("the drain of a result after the edit leaves the re-index queue holding %q of verification.md (%s), want the scope row that stood before its insert, and no artifact row",
+		t.Errorf("the result after the edit leaves the re-index queue holding %q of verification.md (%s), want the scope row that stood before it, and no artifact row",
 			kinds, documentsAt())
 	}
 	for _, queue := range formsQueues {
 		if forms := queueKindsOf(t, database, queue, verification.id); len(forms) > 0 {
-			t.Errorf("the drain of a result after the edit leaves %s holding %q of verification.md (%s), want none",
+			t.Errorf("the result after the edit leaves %s holding %q of verification.md (%s), want none",
 				queue.Table(), forms, documentsAt())
 		}
 	}
 	requireDrawn("a result recorded over a scope row that stood")
 
 	// A refs_forms_owed row that already stood before the result (as an older build's write
-	// leaves it) stays standing across a result's drain, and since the drain deletes none of it,
-	// the relay of a delete from refs_forms_owed owes neither half of the Decisions page's queue
+	// leaves it) stays standing across a result, and since nothing deletes it, the relay of a
+	// delete from refs_forms_owed owes neither half of the Decisions page's queue
 	// verification.md.
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into refs_forms_owed (kind, id) values ('artifact', $1::uuid)
@@ -258,17 +258,17 @@ func TestARecordedOrRetractedResultLeavesNoDocumentOwedItsBlockIndex(t *testing.
 	}
 	before = newestQueryVersion(t, database, verification.id)
 	recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("c1", "pass", headCommit, map[string]any{"passed": 1}))
-	if held := newestQueryVersion(t, database, verification.id); held.number != before.number+1 || held.markdown != before.markdown {
-		t.Errorf("the result over a standing forms row leaves verification.md at version %d holding %q, want the drained version %d holding the bytes of the one before, %q",
-			held.number, held.markdown, before.number+1, before.markdown)
+	if held := newestQueryVersion(t, database, verification.id); held.number != before.number || held.markdown != before.markdown {
+		t.Errorf("the result over a standing forms row leaves verification.md at version %d holding %q, want it at version %d holding %q: a result writes no version of the Verification query (R14)",
+			held.number, held.markdown, before.number, before.markdown)
 	}
 	if forms := queueKindsOf(t, database, refs.RefsFormsOwed, verification.id); !slices.Equal(forms, []string{"artifact"}) {
-		t.Errorf("the drain of a result over a standing forms row leaves refs_forms_owed holding %q of verification.md (%s), want the artifact row that stood before its insert",
+		t.Errorf("the result over a standing forms row leaves refs_forms_owed holding %q of verification.md (%s), want the artifact row that stood before it",
 			forms, documentsAt())
 	}
 	for _, queue := range []refs.OwedQueue{refs.RefsDecisionsFormsOwed, refs.RefsDecisionsFormsSeedOwed} {
 		if forms := queueKindsOf(t, database, queue, verification.id); len(forms) > 0 {
-			t.Errorf("the drain of a result over a standing forms row leaves %s holding %q of verification.md (%s), want none",
+			t.Errorf("the result over a standing forms row leaves %s holding %q of verification.md (%s), want none",
 				queue.Table(), forms, documentsAt())
 		}
 	}

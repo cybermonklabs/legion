@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -63,12 +64,11 @@ func TestPlanReviewApprovesAPlanVersionAndNoPersonIsAsked(t *testing.T) {
 // (docs.carryApproval's restore), and the carry stays the plan review's: the carried review and
 // the artifact.approved it emits both record kind plan_review, so the document's chip still reads
 // "Approved by plan review" and the agent that restored the text is never recorded as a person
-// approving a plan. The agent's edit rewords the plan's task: under R14 an edit of a plan's prose
-// alone changes nothing the Plan query takes, so the record carry would carry the approval to it
-// and the restore would have nothing to carry.
+// approving a plan. This is a markdown plan, before its issue converts to a query document.
 func TestARestoredPlanVersionCarriesThePlanReviewsOwnKind(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	issue := createInteractionIssue(t, handler, "PLAN", "Restore the approved plan", "A spec\n")
 	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\n:::plan_task{#t1}\nThe service ships behind a flag.\n:::\n")
 	if recorded := sessionRequest(t, handler, http.MethodPost,

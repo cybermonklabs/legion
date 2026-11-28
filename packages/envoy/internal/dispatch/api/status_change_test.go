@@ -1619,8 +1619,10 @@ func requireEachWriteKeepsTheRule(t *testing.T, database *store.Store, after int
 // the issue the call names, after them: the comment that lists what the options changed, which
 // the call writes after its last step. A version of the issue's decisions query stands among them
 // too wherever a step withdrew or restored a question: the step's drain writes it once the step has
-// committed (R14), past the last_seq the step answers. The answer's issue is the named issue's
-// entry's.
+// committed (R14), past the last_seq the step answers. So does the artifact.digest of each version
+// a step's write or its drain wrote, which the digest fill and the drain append once the step has
+// committed (R14's hash gate). A fence passes over both (fencePassesOverSQL). The answer's issue is
+// the named issue's entry's.
 func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after int64, named string, answer statusChangeAnswer) {
 	t.Helper()
 	for index, entry := range answer.Changed {
@@ -1632,7 +1634,7 @@ func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after in
 			later[next.Key] = true
 		}
 		rows, err := database.Pool.Query(context.Background(), `
-			select id, seq, type, coalesce(payload ->> 'child_key', ''), `+decisionsQueryVersionSQL("events")+`
+			select id, seq, type, coalesce(payload ->> 'child_key', ''), `+fencePassesOverSQL("events")+`
 			from events where issue_key = $1 and seq > $2 order by seq
 		`, entry.Key, entry.PreviousLastSeq)
 		if err != nil {
@@ -1643,14 +1645,14 @@ func requireTheCallWroteItsEntries(t *testing.T, database *store.Store, after in
 			var id int64
 			var seq int
 			var kind, child string
-			var drained bool
-			if err := rows.Scan(&id, &seq, &kind, &child, &drained); err != nil {
+			var passed bool
+			if err := rows.Scan(&id, &seq, &kind, &child, &passed); err != nil {
 				t.Fatalf("read an event of %s: %v", entry.Key, err)
 			}
 			switch {
 			case id <= after:
 				t.Errorf("the event %d of %s at seq %d, after the entry's previous_last_seq %d, was appended before the call", id, entry.Key, seq, entry.PreviousLastSeq)
-			case seq > entry.Issue.LastSeq && drained:
+			case seq > entry.Issue.LastSeq && passed:
 			case seq > entry.Issue.LastSeq && entry.Key == named && kind == "comment.created" && !commented:
 				commented = true
 			case seq > entry.Issue.LastSeq && (commented || kind != "child.status" || !later[child]):
@@ -2558,9 +2560,10 @@ func TestARepeatOfAStatusChangeFinishesWhatItsFirstRunLeft(t *testing.T) {
 				write := statusChangeOf(named, map[string]any{"status": "done", "include_children": true, "expected_sequence": seq[named]})
 				resume := rig.stopAfterStep(t, write, key, 1)
 				// The close's step left the issue at this last_seq, which its stored entry holds: the
-				// one event past it is the version of the decisions query the step's drain wrote once
-				// the close, which withdrew the ask, had committed (R14).
-				closed := issueLastSeq(t, rig.database, named) - 1
+				// two events past it are the version of the decisions query the step's drain wrote
+				// once the close, which withdrew the ask, had committed (R14), and that version's
+				// artifact.digest, which the drain appends after it (R14's hash gate).
+				closed := issueLastSeq(t, rig.database, named) - 2
 				requireDecisionsVersionEventAt(t, rig.database, named, closed+1, queryArtifactOf(t, rig.database, named, graphstore.QueryDecisions))
 				rig.lapse(t, key)
 				if swept := rig.sweptOf(named); len(swept) != 0 {

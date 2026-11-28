@@ -123,22 +123,23 @@ const planOrderDepth = authoredChainDepth
 // read off its row and the issues it needs off its needs tuples; and every plan node under each
 // of them - a block node not gone whose document_blocks row is a plan_task, a block of the
 // issue's room keyed by its tree (`<KEY>/tree#<id>`) as much as one of a document - whose issue
-// is the first one its part_of chain reaches, whatever its address spells, a block of the
-// issue's asks, comments and messages reaching their issue. A plan node waits on
+// is the first one its chain in the tree reaches, whatever its address spells: up its part_of,
+// and from the issue's conversation up the item it stands in, a block to its ask, comment or
+// message, and an item to the item it answers or to its issue (planHangs). A plan node waits on
 // its issue's start, and its issue's done waits on it; a needs tuple out of a plan node waits on
 // the plan node it names, or on the done half of the issue it names. A node the tree does not
 // hold is a fixed node. An issue the reader may not see, and every node under it, is no node of
 // the tree, and a node that waits on one waits on nothing there; an issueKey the reader may not
 // see answers nothing.
 //
-// It reads the tree in two statements beside IssueDescendants', however large: the walk down
-// the current part_of tuples into each issue and into each current block of its asks, comments
-// and messages (graph_tuples_inbound), through every node who may see and never into an issue,
-// which answers each issue's parent, its node's current rank and when its node was made, and
-// each plan node with its issue, its current text_rank, size, skills
-// and docs values (graph_tuples_values), which the block index states from the node's place in
-// its document and its opening line (planBlockValues), and whether it or a node above it is
-// overtaken; and one read of every current needs tuple out of those nodes (graph_tuples_current).
+// It reads the tree in three statements beside IssueDescendants', however large: whether a mark
+// names each issue of the tree whole; one walk (readPlanTree) down the tree from each issue's
+// node, through every node who may see and never into an issue, which answers each issue's
+// parent, its node's current rank and when its node was made, and each plan node with its issue,
+// its current text_rank, size, skills and docs values, which the block index states from the
+// node's place in its document and its opening line (planBlockValues), and whether it or a node
+// above it is overtaken; and one read of every current needs tuple out of those nodes
+// (graph_tuples_current).
 //
 // It finds the cycles by Tarjan's strongly connected components, iteratively, so a long chain
 // costs no depth of the stack: every component of more than one node, or of one node that needs
@@ -156,9 +157,35 @@ const planOrderDepth = authoredChainDepth
 // as needs: the walk reaches a done at its place in the base order, or earlier through a node
 // that needs its issue, and then places first the nodes it waits on that no node needs, so the
 // plan nodes of an issue keep the order the issue's own read gives them. A node whose state is
-// overtaken, every node under it on its part_of chain, and an overtaken issue with every issue
-// and node under it get no position.
+// overtaken - a block, an ask, a comment or a message among them - every node under it on its
+// chain in the tree, and an overtaken issue with every issue and node under it get no position
+// (R7: such a node counts as closed with its subtree).
 func PlanOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string) (TreeOrder, error) {
+	return planOrder(ctx, q, who, issueKey, nil)
+}
+
+// PlanOrderOfRows is PlanOrder for a read that holds heads, the head rows of issueKey that a view
+// whose Types hold plan_task reads (HeadViewRows): every row of issueKey whose block_type is
+// plan_task is among them, since a view reads each of the issue's own blocks a typed block of its
+// types may be and every block past those whole (HeadView). So the climb over the head projection
+// (planTreeHeads) starts, for issueKey's own documents, from the blocks of heads alone
+// (planSeedsOfRows), and reads the blocks of the documents of the issues under it as PlanOrder
+// does: never every block of issueKey's documents for its type, which the planner read in a
+// sequential scan of document_blocks, the 52,266 blocks of the store, for each plan view of an
+// issue of the largest plan (12 of the statement's 34 ms).
+func PlanOrderOfRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, heads *HeadTree) (TreeOrder, error) {
+	blocks := make([]string, 0, len(heads.Rows))
+	for node := range heads.Rows {
+		if node.Kind == BlockNodeKind {
+			blocks = append(blocks, node.ID)
+		}
+	}
+	return planOrder(ctx, q, who, issueKey, blocks)
+}
+
+// planOrder is PlanOrder, whose climb over the head projection starts, for issueKey's own
+// documents, from the blocks blocks names where it is not nil (PlanOrderOfRows).
+func planOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string, blocks []string) (TreeOrder, error) {
 	if issueKey == "" {
 		return TreeOrder{}, nil
 	}
@@ -166,7 +193,7 @@ func PlanOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string)
 	if err != nil {
 		return TreeOrder{}, err
 	}
-	tree, err := readPlanTree(ctx, q, who, issueKey, descendants)
+	tree, err := readPlanTree(ctx, q, who, issueKey, descendants, blocks)
 	if err != nil || tree.issues[issueKey] == nil {
 		return TreeOrder{}, err
 	}
@@ -211,96 +238,331 @@ type planNode struct {
 	needs        []Target
 }
 
-// planConversationBlocks is the second start of readPlanTree's walk, a lateral read over the issue
-// i: each current block (itemBlockCurrent) of each of its asks, comments and messages, by its kind
-// as the walk of the tree takes it (ItemKind.BlockKind) and its node id. A criterion a person
-// writes in that exchange, and every node under it, stands under such a block, and the
-// conversation holds no part_of tuple into the issue - the walk of the tree reads it apart and
-// walks down from its blocks (docs' readConversation, TreeSubtrees) - so the walk down the issue's
-// own part_of tuples reaches none of them.
-func planConversationBlocks() string {
-	arms := make([]string, len(itemKinds))
-	for index, item := range itemKinds {
+// planHang is one way the tree hangs a conversation item that no part_of places (docs'
+// placeItems, commentReplyParent, loadMessageNodes): an item of kind item, a row of table, stands
+// under the node of kind parent its column names - an id, or an issue's key - where each of unset
+// is null. So a comment stands under the comment it answers, else the comment its reply_to names,
+// else the ask it answers, else its issue; a message under the message it answers, else its
+// issue; an ask under its issue.
+type planHang struct {
+	item, parent  ItemKind
+	table, column string
+	unset         []string
+}
+
+// planHangs is every planHang, each item's in the order its parent is taken.
+var planHangs = []planHang{
+	{item: ItemComment, parent: ItemComment, table: "comments", column: "answers"},
+	{item: ItemComment, parent: ItemComment, table: "comments", column: "reply_to", unset: []string{"answers"}},
+	{item: ItemComment, parent: ItemAsk, table: "comments", column: "ask_id", unset: []string{"answers", "reply_to"}},
+	{item: ItemComment, parent: graphstore.KindIssue, table: "comments", column: "issue_key", unset: []string{"answers", "reply_to", "ask_id"}},
+	{item: ItemMessage, parent: ItemMessage, table: "messages", column: "in_reply_to"},
+	{item: ItemMessage, parent: graphstore.KindIssue, table: "messages", column: "issue_key", unset: []string{"in_reply_to"}},
+	{item: ItemAsk, parent: graphstore.KindIssue, table: "asks", column: "issue_key"},
+}
+
+// named is the hang's column of the row item as text, as a node's id spells it.
+func (hang planHang) named() string {
+	if hang.column == "issue_key" {
+		return `item.issue_key`
+	}
+	return `item.` + hang.column + `::text`
+}
+
+// unsetSQL is the test that each column of the hang's unset is null on the row item.
+func (hang planHang) unsetSQL() string {
+	tests := make([]string, 0, len(hang.unset))
+	for _, column := range hang.unset {
+		tests = append(tests, ` and item.`+column+` is null`)
+	}
+	return strings.Join(tests, "")
+}
+
+// planWalkChildren is the body of readPlanTree's lateral read of the children the tree holds under
+// the node below of its walk of the tuples, each with whether it is a conversation node the
+// conversation places (conversed), which the reader's predicate does not test (every reader sees
+// each ask, comment and message: graphstore.AdmitAuthorOnly): each node whose current part_of
+// names below - of its part_of tuples into below, the newest by time and then seq, kept while it
+// asserts, as the head projection holds a node's relations (graphstore.HeadRowsSQL) - and, of the
+// conversation, each current block (itemBlockCurrent) of an item, and each item that hangs under
+// below (planHangs) and holds no current part_of of its own, which places it there instead.
+func planWalkChildren() string {
+	arms := []string{`select placed.from_kind, placed.from_id, false as conversed from (
+				select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
+				from graph_tuples t
+				where t.to_kind = below.kind and t.to_id = below.id and t.kind = '` + graphstore.TuplePartOf + `'
+				  and t.to_kind <> '` + graphstore.KindValue + `'
+				order by t.from_kind, t.from_id, t.at desc, t.seq desc
+			) placed
+			where placed.asserted`}
+	for _, item := range itemKinds {
 		tables, _ := item.tables()
-		arms[index] = `select '` + item.BlockKind() + `'::text as kind, b.node_id from ` + tables.items + ` item
-				join ` + tables.blocks + ` b on b.` + tables.item + ` = item.id
-				where item.issue_key = i.key and ` + itemBlockCurrent
+		arms = append(arms, `select '`+item.BlockKind()+`'::text, b.node_id, true from `+tables.blocks+` b
+			where below.kind = '`+string(item)+`' and b.`+tables.item+`::text = below.id and `+itemBlockCurrent)
+	}
+	for _, hang := range planHangs {
+		arms = append(arms, `select '`+string(hang.item)+`'::text, item.id::text, true from `+hang.table+` item
+			where below.kind = '`+string(hang.parent)+`' and `+hang.named()+` = below.id`+hang.unsetSQL()+`
+			  and not exists (
+				select 1 from (
+					select distinct on (t.to_kind, t.to_id) t.asserted
+					from graph_tuples t
+					where t.from_kind = '`+string(hang.item)+`' and t.from_id = item.id::text and t.kind = '`+graphstore.TuplePartOf+`'
+					  and t.to_kind <> '`+graphstore.KindValue+`'
+					order by t.to_kind, t.to_id, t.at desc, t.seq desc
+				) placed
+				where placed.asserted)`)
+	}
+	return strings.Join(arms, `
+			union all
+			`)
+}
+
+// planHeadParents is the body of readPlanTree's lateral read, over the head projection, of each
+// node the node of kind kind and id id stands under in the tree, with whether it is a conversation
+// node the conversation places (conversed), as planWalkChildren finds it there: the far end of each
+// part_of its head row, row, states now (graphstore.HeadRowsSQL); for a current block of an item,
+// the item; and for an item whose row states no part_of, the node it hangs under (planHangs). A
+// node that holds no head row (row null) states no part_of.
+func planHeadParents(kind, id, row string) string {
+	stored := id + ` collate "default"`
+	// placed is the part_of relations a head row's relation arrays, columns, name (names).
+	placed := func(columns, names string) string {
+		return `from unnest(` + columns + `) stated (` + names + `)
+				where stated.kind = '` + graphstore.TuplePartOf + `' and stated.to_kind <> '` + graphstore.KindValue + `'`
+	}
+	arms := []string{`select stated.to_kind, stated.to_id, false as conversed
+				` + placed(row+`.relation_kinds, `+row+`.relation_to_kinds, `+row+`.relation_to_ids`, `kind, to_kind, to_id`)}
+	for _, item := range itemKinds {
+		tables, _ := item.tables()
+		arms = append(arms, `select '`+string(item)+`'::text, b.`+tables.item+`::text, true from `+tables.blocks+` b
+				where `+kind+` = '`+item.BlockKind()+`' and b.node_id = `+stored+` and `+itemBlockCurrent)
+	}
+	for _, hang := range planHangs {
+		arms = append(arms, `select '`+string(hang.parent)+`'::text, `+hang.named()+`, true from `+hang.table+` item
+				where `+kind+` = '`+string(hang.item)+`' and item.id::text = `+stored+` and item.`+hang.column+` is not null`+hang.unsetSQL()+`
+				  and not exists (select 1 `+placed(row+`.relation_kinds, `+row+`.relation_to_kinds`, `kind, to_kind`)+`)`)
 	}
 	return strings.Join(arms, `
 				union all
 				`)
 }
 
-// readPlanTree reads the tree of root, whose descendants are descendants, in one statement: the
-// walk down each issue's current part_of tuples, from the issue's node and from each current block
-// of its asks, comments and messages (planConversationBlocks), which answers a row per issue and a
-// row per plan node (PlanOrder).
-func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants []string) (*planTree, error) {
-	rows, err := q.Query(ctx, `
-		with recursive below (issue, parent, kind, id, depth, state, overtaken, made) as (
-			select i.key, i.parent_key, '`+graphstore.KindIssue+`'::text, i.key, 0, n.state,
-			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false), n.made_at
-			from issues i
-			left join graph_nodes n on n.kind = '`+graphstore.KindIssue+`' and n.id = i.key
-			where i.key = any($1::text[]) and `+VisibleKind(graphstore.KindIssue, "i.key", "$3")+`
+// planIssueStarts is the first arm of both of readPlanTree's walks: each issue of $1 who, at $3,
+// may see, as its node, with its parent, its node's state and when its node was made.
+func planIssueStarts() string {
+	return `select i.key, i.parent_key, '` + graphstore.KindIssue + `'::text, i.key, 0, n.state,
+			       coalesce(n.state = '` + graphstore.StateOvertaken + `', false), n.made_at`
+}
+
+// planIssueRank is the body of readPlanTree's lateral read of the rank of the issue found's node:
+// the newest rank value tuple out of it, by time and then seq, where it asserts.
+const planIssueRank = `select case when t.asserted then t.to_id end as held
+			from graph_tuples t
+			where t.from_kind = '` + graphstore.KindIssue + `' and t.from_id = found.id and t.kind = '` + AttributeRank + `'
+			  and t.to_kind = '` + graphstore.KindValue + `'
+			order by t.at desc, t.seq desc
+			limit 1`
+
+// planAnswer is the answer of both of readPlanTree's statements over their walk, below, and plans,
+// their select of the rows of its plan nodes from below as found: each issue's node, with its rank
+// (planIssueRank), and each plan node, with its text_rank, size, skills and docs, as one row each,
+// ordered by node, then depth, then issue.
+func planAnswer(plans string) string {
+	return `
+		select answered.issue, answered.parent, answered.id, answered.root, answered.overtaken, answered.made,
+		       answered.ranked, answered.sized, answered.skilled, answered.documented
+		from (
+			select found.issue, found.parent, found.id, true, found.overtaken, found.made, ranked.held, null::text, null::text, null::text, found.depth
+			from below found
+			left join lateral (` + planIssueRank + `) ranked on true
+			where found.depth = 0
 			union all
-			select i.key, null::text, conversation.kind, conversation.node_id, 1, null::text,
-			       coalesce(n.state = '`+graphstore.StateOvertaken+`', false), null::timestamptz
+			` + plans + `
+		) answered (issue, parent, id, root, overtaken, made, ranked, sized, skilled, documented, depth)
+		order by answered.id, answered.depth, answered.issue`
+}
+
+// planTreeWalk is readPlanTree's statement over the tuples. Its walk, below, starts at each issue's
+// node and takes, level by level, the children each node holds in the tree (planWalkChildren),
+// every node that holds a part_of through who's predicate over its graph_nodes row
+// (VisibleNodeOfRow), never into an issue and at most $2 levels down, each a node overtaken where
+// its state or the state of a node above it on the walk is. It answers each issue's node with its
+// rank, and each plan node - a block not gone whose document_blocks row is a plan_task - with its
+// text_rank, size, skills and docs, each the newest value tuple of its attribute by time and then
+// seq where it asserts, ordered by node, depth and issue.
+func planTreeWalk() string {
+	return `
+		with recursive below (issue, parent, kind, id, depth, state, overtaken, made) as (
+			` + planIssueStarts() + `
 			from issues i
-			left join graph_nodes n on n.kind = '`+graphstore.KindIssue+`' and n.id = i.key
-			cross join lateral (`+planConversationBlocks()+`) conversation
-			where i.key = any($1::text[]) and `+VisibleKind(graphstore.KindIssue, "i.key", "$3")+`
+			left join graph_nodes n on n.kind = '` + graphstore.KindIssue + `' and n.id = i.key
+			where i.key = any($1::text[]) and ` + VisibleKind(graphstore.KindIssue, "i.key", "$3") + `
 			union all
 			select below.issue, null::text, held.from_kind, held.from_id, below.depth + 1, n.state,
-			       below.overtaken or coalesce(n.state = '`+graphstore.StateOvertaken+`', false), null::timestamptz
+			       below.overtaken or coalesce(n.state = '` + graphstore.StateOvertaken + `', false), null::timestamptz
 			from below
 			cross join lateral (
-				`+graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.asserted`,
-		`t.to_kind = below.kind and t.to_id = below.id and t.kind = '`+graphstore.TuplePartOf+`'
-				  and t.to_kind <> '`+graphstore.KindValue+`'`)+`
-			) held
+			` + planWalkChildren() + `
+			) held (from_kind, from_id, conversed)
 			left join graph_nodes n on n.kind = held.from_kind and n.id = held.from_id
-			where held.asserted and held.from_kind <> '`+graphstore.KindIssue+`' and below.depth < $2
-			  and `+VisibleNodeOfRow("held.from_kind", "held.from_id", "n", "$3")+`
+			where held.from_kind <> '` + graphstore.KindIssue + `' and below.depth < $2
+			  and (held.conversed or ` + VisibleNodeOfRow("held.from_kind", "held.from_id", "n", "$3") + `)
 		)
-		select found.issue, found.parent, found.id, found.root, found.overtaken, found.made,
-		       case when ranked.asserted then ranked.value end,
-		       case when sized.asserted then sized.value end, case when skilled.asserted then skilled.value end,
-		       case when documented.asserted then documented.value end
-		from (
-			select below.issue, below.parent, below.kind, below.id, below.depth, below.depth = 0 as root, below.overtaken, below.made
-			from below
-			where below.depth = 0
-			   or (below.kind = '`+BlockNodeKind+`' and coalesce(below.state, '`+graphstore.StateLive+`') <> '`+graphstore.StateGone+`'
-			       and exists (select 1 from document_blocks d where d.node_id = below.id and d.type = '`+planTaskType+`'))
-		) found
-		left join lateral (
-			select t.to_id as value, t.asserted from graph_tuples t
-			where t.from_kind = found.kind and t.from_id = found.id
-			  and t.kind = case when found.root then '`+AttributeRank+`' else '`+AttributeTextRank+`' end
-			  and t.to_kind = '`+graphstore.KindValue+`'
-			order by t.seq desc limit 1
-		) ranked on true
-		left join lateral (
-			select t.to_id as value, t.asserted from graph_tuples t
-			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
-			  and t.kind = '`+AttributePlanSize+`' and t.to_kind = '`+graphstore.KindValue+`'
-			order by t.seq desc limit 1
-		) sized on true
-		left join lateral (
-			select t.to_id as value, t.asserted from graph_tuples t
-			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
-			  and t.kind = '`+AttributePlanSkills+`' and t.to_kind = '`+graphstore.KindValue+`'
-			order by t.seq desc limit 1
-		) skilled on true
-		left join lateral (
-			select t.to_id as value, t.asserted from graph_tuples t
-			where not found.root and t.from_kind = '`+BlockNodeKind+`' and t.from_id = found.id
-			  and t.kind = '`+AttributePlanDocs+`' and t.to_kind = '`+graphstore.KindValue+`'
-			order by t.seq desc limit 1
-		) documented on true
-		order by found.id, found.depth, found.issue
-	`, append([]string{root}, descendants...), planOrderDepth, VisibilityArg(who))
+	` + planAnswer(`select found.issue, found.parent, found.id, false, found.overtaken, found.made,
+			       valued.ranked, valued.sized, valued.skilled, valued.documented, found.depth
+			from below found
+			cross join lateral (
+				select max(newest.to_id) filter (where newest.asserted and newest.kind = '`+AttributeTextRank+`') as ranked,
+				       max(newest.to_id) filter (where newest.asserted and newest.kind = '`+AttributePlanSize+`') as sized,
+				       max(newest.to_id) filter (where newest.asserted and newest.kind = '`+AttributePlanSkills+`') as skilled,
+				       max(newest.to_id) filter (where newest.asserted and newest.kind = '`+AttributePlanDocs+`') as documented
+				from (
+					select distinct on (t.kind) t.kind, t.to_id, t.asserted from graph_tuples t
+					where t.from_kind = found.kind and t.from_id = found.id and t.to_kind = '`+graphstore.KindValue+`'
+					  and t.kind in ('`+AttributeTextRank+`', '`+AttributePlanSize+`', '`+AttributePlanSkills+`', '`+AttributePlanDocs+`')
+					order by t.kind, t.at desc, t.seq desc
+				) newest
+			) valued
+			where found.depth > 0 and found.kind = '`+BlockNodeKind+`' and coalesce(found.state, '`+graphstore.StateLive+`') <> '`+graphstore.StateGone+`'
+			  and exists (select 1 from document_blocks d where d.node_id = found.id and d.type = '`+planTaskType+`')`)
+}
+
+// planTreeHeads is readPlanTree's statement over the head projection, for a tree whose every issue
+// a mark names whole (issue_head_marks), which answers what planTreeWalk answers there. It reads
+// only where a plan node stands: instead of walking down from each issue, paths climbs from each
+// plan node up each node it stands under (planHeadParents), one level a step, until the path
+// reaches an issue's node. Every path down from an issue to a plan node that planTreeWalk's walk
+// takes is such a climb read the other way: each node on it stands under the next, through an edge
+// planHeadParents reads off the node's row and the conversation's tables. So a path holds the same
+// test as a step of the walk down - the node it climbs from passes who's predicate over its row
+// (VisibleNodeOfRow) unless the conversation places it, and its state joins the path's overtaken -
+// the same bound of $2 levels, and reaches the same depth under the same issue (below), and the
+// read costs the plan's nodes and the nodes above them alone, so a tree of 45,000 blocks of other
+// documents or of 9,252 comments reads its plan's few. Each node's state, its graph_nodes row's
+// columns who's predicate reads (its kind and id as graph_nodes keys them, its visibility and its
+// maker) and its relations, and a plan node's values, are its head row's. A path carries the head
+// row of the node it stands at (node_row), read once: a start's by its seed, every other node's
+// by the step that climbs to it, under any issue of the tree (a node's row says the same under
+// each issue that holds it), and none for an issue's node, where a path ends. A step that read the
+// row of the node it climbs from read each start's row twice, the 1,393 of an issue of the largest
+// plan (4.6 of its 23 ms).
+//
+// The plan nodes the climb starts from (seeds, planSeeds or planSeedsOfRows) are the plan_task rows
+// of the documents of the tree's issues, each whose head row, under its own issue, names it a
+// plan_task: every plan node the walk reaches is one, since a block of an issue stands in the tree
+// of that issue or of an issue above it (R7: a move refuses a parent outside the issue's tree and a
+// node of an issue above under a node of an issue below), and the tree's issues are an issue and
+// every issue under it. The rows of the issues themselves are no index of a block's type: a filter
+// of them by block_type reads every row of the issue, 45,000 for an issue of the most blocks, and
+// the planner, which takes an issue's rows for its share of the table, read the whole table for an
+// issue of 9,252 comments and three plan tasks.
+func planTreeHeads(seeds string) string {
+	value := func(attribute string) string {
+		return `path.value_texts[array_position(path.value_kinds, '` + attribute + `'::text)]`
+	}
+	return `
+		with recursive below (issue, parent, kind, id, depth, state, overtaken, made) as (
+			` + planIssueStarts() + `
+			from issues i
+			left join graph_nodes n on n.kind = '` + graphstore.KindIssue + `' and n.id = i.key
+			where i.key = any($1::text[]) and ` + VisibleKind(graphstore.KindIssue, "i.key", "$3") + `
+		), paths (plan, kind, id, depth, overtaken, state, value_kinds, value_texts, node_row) as (
+			` + seeds + `
+			union all
+			select path.plan, up.kind, up.id, path.depth + 1, path.overtaken or coalesce(node.state = '` + graphstore.StateOvertaken + `', false),
+			       path.state, path.value_kinds, path.value_texts, next.held
+			from paths path
+			cross join lateral (select (path.node_row).node_kind as kind, (path.node_row).node_address as id, (path.node_row).*) node
+			cross join lateral (
+				` + planHeadParents("path.kind", "path.id", "node") + `
+			) up (kind, id, conversed)
+			left join lateral (
+				select held from issue_head_nodes held
+				where up.kind <> '` + graphstore.KindIssue + `' and held.issue_key = any($1::text[])
+				  and held.node_kind = up.kind collate "C" and held.node_address = up.id collate "C"
+				order by held.issue_key
+				limit 1) next on true
+			where path.kind <> '` + graphstore.KindIssue + `' and path.depth < $2
+			  and (up.conversed or ` + VisibleNodeOfRow("path.kind", "path.id", "node", "$3") + `)
+		)
+	` + planAnswer(`select issue.issue, null::text, path.plan, false, issue.overtaken or path.overtaken, null::timestamptz,
+			       `+value(AttributeTextRank)+`, `+value(AttributePlanSize)+`, `+value(AttributePlanSkills)+`, `+value(AttributePlanDocs)+`, path.depth
+			from paths path
+			join below issue on issue.kind = '`+graphstore.KindIssue+`' and issue.id = path.id
+			where path.kind = '`+graphstore.KindIssue+`' and coalesce(path.state, '`+graphstore.StateLive+`') <> '`+graphstore.StateGone+`'`)
+}
+
+// planSeedColumns is a start of planTreeHeads' climb: the plan node of the head row seed, at depth
+// 0, with its state and values, and the row itself.
+const planSeedColumns = `seed.node_address collate "default", seed.node_kind collate "default", seed.node_address collate "default", 0, false,
+			       seed.state, seed.value_kinds, seed.value_texts, seed.held`
+
+// planSeedRow is the read of the head row, under the issue issue, of the block address, where that
+// row names it a plan_task.
+func planSeedRow(issue, address string) string {
+	return `select held.node_kind, held.node_address, held.state, held.value_kinds, held.value_texts, held from issue_head_nodes held
+				where held.issue_key = ` + issue + ` and held.node_kind = '` + BlockNodeKind + `' and held.node_address = ` + address + ` collate "C"
+				  and held.block_type = '` + planTaskType + `'
+				limit 1`
+}
+
+// planSeeds is the starts of planTreeHeads' climb for PlanOrder: every plan_task block of the
+// documents of the issues of $1 (document_blocks, read through each document's key).
+var planSeeds = `select ` + planSeedColumns + `
+			from artifacts document
+			join document_blocks block on block.artifact_id = document.id
+			cross join lateral (` + planSeedRow("document.issue_key", "block.node_id") + `) seed
+			where document.issue_key = any($1::text[]) and block.type = '` + planTaskType + `'`
+
+// planSeedsOfRows is planSeeds for PlanOrderOfRows, the same starts read two ways: of the
+// documents of the issues under the root, $1 past its first, every plan_task block, each
+// document's blocks read through its key behind an `offset 0`, so that a tree with no issue under
+// its root reads no block; and of the root's own documents, of the blocks $4 names alone, each
+// that is a plan_task block of one of them (document_blocks_node_id) and whose head row under the
+// root names it a plan_task. Each probe of a block of $4 is a lateral read with a limit, which the
+// planner keeps a probe of its index and never turns into a join over every row of
+// document_blocks.
+var planSeedsOfRows = `select ` + planSeedColumns + `
+			from artifacts document
+			cross join lateral (
+				select block.node_id from document_blocks block
+				where block.artifact_id = document.id and block.type = '` + planTaskType + `'
+				offset 0) block
+			cross join lateral (` + planSeedRow("document.issue_key", "block.node_id") + `) seed
+			where document.issue_key = any(($1::text[])[2:])
+			union all
+			select ` + planSeedColumns + `
+			from unnest($4::text[]) named (address)
+			cross join lateral (` + planSeedRow("($1::text[])[1]", "named.address") + `) seed
+			cross join lateral (
+				select from document_blocks block
+				join artifacts document on document.id = block.artifact_id
+				where block.node_id = named.address and block.type = '` + planTaskType + `' and document.issue_key = ($1::text[])[1]
+				limit 1) typed`
+
+// readPlanTree reads the tree of root, whose descendants are descendants, in one statement, which
+// answers a row per issue and a row per plan node (PlanOrder): over the head projection where a
+// mark names each issue of the tree whole (planTreeHeads), from the starts planSeedsOfRows reads
+// where blocks is not nil (PlanOrderOfRows) and from planSeeds' otherwise, and over the tuples
+// otherwise (planTreeWalk). A tree with an issue no mark names walks the tuples whole: the rows of
+// a marked issue do not hold a node of an issue under it that stands under a node of that issue
+// below, which that issue's rows hold.
+func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants, blocks []string) (*planTree, error) {
+	issues := append([]string{root}, descendants...)
+	var marked int
+	if err := q.QueryRow(ctx, `select count(*) from issue_head_marks mark where mark.issue_key = any($1::text[])`, issues).Scan(&marked); err != nil {
+		return nil, fmt.Errorf("read the head marks of the tree of %s: %w", root, err)
+	}
+	statement, args := planTreeWalk(), []any{issues, planOrderDepth, VisibilityArg(who)}
+	switch {
+	case marked != len(issues):
+	case blocks != nil:
+		statement, args = planTreeHeads(planSeedsOfRows), append(args, blocks)
+	default:
+		statement = planTreeHeads(planSeeds)
+	}
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the plan nodes of the tree of %s: %w", root, err)
 	}

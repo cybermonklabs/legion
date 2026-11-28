@@ -187,9 +187,17 @@ func (s *server) readIssueTree(ctx context.Context, who model.Actor, key, view s
 	if err := refs.TurnJITOff(ctx, tx); err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
-	builder := &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before,
-		pageSize: cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize), serverURL: s.deps.ServerURL}
-	if err := builder.build(version, cursor); err != nil {
+	newBuilder := func(everyText bool) *issueTreeBuilder {
+		return &issueTreeBuilder{ctx: ctx, q: tx, who: who, key: key, view: view, kinds: kinds, before: before,
+			pageSize: cmp.Or(s.deps.IssueTreePageSize, issueTreePageSize), serverURL: s.deps.ServerURL, everyText: everyText}
+	}
+	builder := newBuilder(false)
+	err = builder.build(version, cursor)
+	if errors.Is(err, errViewTextShort) {
+		builder = newBuilder(true)
+		err = builder.build(version, cursor)
+	}
+	if err != nil {
 		return model.IssueTreeRead{}, treePagePlan{}, err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -256,9 +264,12 @@ type issueTreeBuilder struct {
 	atVersion bool
 	tree      docs.IssueTree
 	// heads is the issue's rows of the head projection a head read of a marked issue reads in
-	// place of the walk of the tuples (refs.HeadRows), nil for a read at a version and for an issue
-	// no mark names.
-	heads *refs.HeadTree
+	// place of the walk of the tuples, nil for a read at a version and for an issue no mark names:
+	// the skeleton's for the read with no view and the read with kind (refs.HeadRows), and a
+	// view's own for a view (readViewRows); viewWalked is, of a view's rows, each comment R2's test
+	// passes, which the walk of them takes as its comments (docs.WalkIssueView).
+	heads      *refs.HeadTree
+	viewWalked []string
 
 	entries   map[refs.Target]*treeEntry
 	walked    []refs.Target
@@ -281,6 +292,17 @@ type issueTreeBuilder struct {
 	textPage     map[string]bool
 	viewPage     map[refs.Target]bool
 	viewNext     *refs.CommentPosition
+	// everyText says a view's read of its rows reads every comment on text older than the read's
+	// position, where the first read, of the newest of them alone, held too few that its answer
+	// carries (errViewTextShort); textMore whether more comments on text remain than such a read
+	// read of them (readViewTextChoice); textChosen is the comments on text it chose
+	// (chooseViewText), textWhole whether they are all those older than the read's position, and
+	// textCarried how many of them its answer carries (pageViewComments).
+	everyText   bool
+	textMore    bool
+	textChosen  map[refs.Target]bool
+	textWhole   bool
+	textCarried int
 
 	// facts, loaded, rows and blocks are what readFacts read of each node of read, every node it
 	// has read.
@@ -391,12 +413,14 @@ func (b *issueTreeBuilder) root() refs.Target {
 // each node of the whole answer and says whether the reader may see it, then the page of the
 // answer from cursor on (window), then the members of the page's nodes alone (readMembers). The
 // read with no view, and the read with kind, walks the skeleton of the tree (readSkeleton,
-// docs.WalkIssueSkeleton), and a view the whole tree. A read of the head (version 0) of an issue
-// the head projection holds whole (issue_head_marks) reads the issue's rows of it in ranges of its
-// key (refs.HeadRows), the skeleton's alone for the read with no view, and walks them
-// (docs.WalkIssueHead); a read at a version, and a read of an issue no mark names, walks the
-// tuples (docs.WalkIssueTree). Every read reads the comments of the issue's threads on text
-// (queueTextComments), and adds to the walk's those no person wrote in (placeTextComments).
+// docs.WalkIssueSkeleton), and a view the nodes it may answer and those above them. A read of the
+// head (version 0) of an issue the head projection holds whole (issue_head_marks) reads the
+// issue's rows of it in ranges of its key and walks them: the skeleton's for the read with no view
+// (refs.HeadRows), and a view's own (readViewRows, docs.WalkIssueView). A read at a version, and a
+// read of an issue no mark names, walks the tuples (docs.WalkIssueTree), a view the whole tree.
+// Every read reads the comments of the issue's threads on text (queueTextComments), and adds to
+// the walk's those no person wrote in (placeTextComments). A view's read of its rows that chose too
+// few of the comments on text for its comment page is errViewTextShort (viewTextHolds).
 func (b *issueTreeBuilder) build(version int, cursor string) error {
 	cut, err := issueTreeCut(b.ctx, b.q, b.key, b.view, version)
 	if err != nil {
@@ -404,18 +428,26 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	}
 	b.cut = cut
 	b.atVersion = version != 0
-	var skeleton *refs.HeadSkeleton
 	if b.view == "" {
 		documents, err := b.readSkeleton()
 		if err != nil {
 			return err
 		}
-		skeleton = &refs.HeadSkeleton{Documents: documents, Comments: b.skeleton.Comments.IDs}
-	} else if err := b.readViewTextComments(); err != nil {
-		return err
-	}
-	if version == 0 {
-		if b.heads, _, err = refs.HeadRows(b.ctx, b.q, b.who, b.key, skeleton); err != nil {
+		if version == 0 {
+			skeleton := &refs.HeadSkeleton{Documents: documents, Comments: b.skeleton.Comments.IDs}
+			if b.heads, _, err = refs.HeadRows(b.ctx, b.q, b.who, b.key, skeleton); err != nil {
+				return err
+			}
+		}
+	} else if version != 0 {
+		if err := b.readViewTextComments(); err != nil {
+			return err
+		}
+	} else {
+		if err := b.readViewTextChoice(); err != nil {
+			return err
+		}
+		if err := b.readViewRows(); err != nil {
 			return err
 		}
 	}
@@ -423,7 +455,7 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	case b.skeleton != nil:
 		b.tree, err = docs.WalkIssueSkeleton(b.ctx, b.q, b.key, cut, b.heads, *b.skeleton)
 	case b.heads != nil:
-		b.tree, err = docs.WalkIssueHead(b.ctx, b.q, b.key, cut, b.heads)
+		b.tree, err = docs.WalkIssueView(b.ctx, b.q, b.key, cut, b.heads, b.viewWalked)
 	default:
 		b.tree, err = docs.WalkIssueTree(b.ctx, b.q, b.key, cut)
 	}
@@ -451,7 +483,52 @@ func (b *issueTreeBuilder) build(version int, cursor string) error {
 	if err := b.window(cursor); err != nil {
 		return err
 	}
+	if !b.viewTextHolds() {
+		return errViewTextShort
+	}
 	return b.readMembers()
+}
+
+// viewTypes is the types of typed block each view reads of the blocks of the issue's own documents
+// (refs.HeadView): those its query takes (graphstore.QueryTakes); the decisions whose shaped ties
+// the spec and the verification views carry (readTies); the requirements the verification view
+// carries (verificationRequirements); and the checks whose serves a child issue's spec view
+// carries the requirements of above it (viewContext).
+var viewTypes = map[string][]string{
+	graphstore.QuerySpec:         append(graphstore.QueryTakes(graphstore.QuerySpec), refs.DecisionSupertag, graphstore.BlockTypeCheck),
+	graphstore.QueryVerification: append(graphstore.QueryTakes(graphstore.QueryVerification), requirementBlockType, refs.DecisionSupertag),
+	graphstore.QueryPlan:         graphstore.QueryTakes(graphstore.QueryPlan),
+	graphstore.QueryDecisions:    graphstore.QueryTakes(graphstore.QueryDecisions),
+}
+
+// readViewRows reads, for a view's read of the head, the rows of the issue's head projection the
+// view reads (refs.HeadViewRows): the blocks of its types (viewTypes), the comments on text it
+// chose (chooseViewText) with the node each of their threads is on, and every node above any of
+// them; and which comments of them R2's test passes, which its walk takes (viewWalked,
+// refs.CommentsOffPage over a page of none). An issue no mark names reads none, and its view walks
+// the tuples, with every comment on text (readViewTextComments).
+func (b *issueTreeBuilder) readViewRows() error {
+	comments, nodes := b.chooseViewText()
+	heads, marked, err := refs.HeadViewRows(b.ctx, b.q, b.who, b.key, refs.HeadView{Types: viewTypes[b.view], Comments: comments, Nodes: nodes})
+	if err != nil {
+		return err
+	}
+	if !marked {
+		return b.readViewTextComments()
+	}
+	b.heads = heads
+	var held []string
+	for node := range heads.Rows {
+		if node.Kind == graphstore.KindComment {
+			held = append(held, node.ID)
+		}
+	}
+	passing, err := refs.CommentsOffPage(b.ctx, b.q, b.key, b.cut.At, refs.CommentPage{}, held)
+	if err != nil {
+		return err
+	}
+	b.viewWalked = slices.Sorted(maps.Keys(passing))
+	return nil
 }
 
 // enterWalk enters each node the walk took (b.tree) as a candidate of the answer, in the walk's
@@ -482,7 +559,11 @@ const placementCutSQL = `t.seq <= $3 and ($4::timestamptz is null or t.at <= $4)
 // asserts), the newest of those, else, for a child issue that holds none, the seq of its current
 // child_of (childOfPlacementSQL). A node that holds neither answers no row, and neither does the
 // read's own issue node, the node of the issue $5. A node's kind is read as the store keys it
-// (refs.StoredKindSQL), a finding of a lens as the store's block.
+// (refs.StoredKindSQL), a finding of a lens as the store's block. The inner select ends in `offset
+// 0`, which Postgres does not flatten into the outer one: flattened, the test that seq is not null
+// and the answer's seq were two copies of the coalesce, each of its sub-plans run once for the test
+// and again for the answer: in EXPLAIN ANALYZE of the plan view of an issue of the largest plan,
+// two copies of the part_of read of 1,393 loops each, 19.96 ms in all.
 var placementSeqsStatement = `
 	select placed.kind, placed.id, placed.seq from (
 		select p.kind, p.id, coalesce((
@@ -496,6 +577,7 @@ var placementSeqsStatement = `
 		), ` + childOfPlacementSQL("p.kind", "p.id", placementCutSQL) + `) as seq
 		from unnest($1::text[], $2::text[]) as p (kind, id)
 		where not (p.kind = '` + graphstore.KindIssue + `' and p.id = $5::text)
+		offset 0
 	) placed
 	where placed.seq is not null`
 
@@ -836,9 +918,16 @@ func tuplesInto(ctx context.Context, q queryer, kind string, blocks []string, cu
 // readPlanOrder reads the ordered read of the issue's whole tree (refs.PlanOrder) for the plan
 // view: each node's position, needs and size, a plan node's skills and docs, every plan node of an
 // issue under the issue added beside the issue's own, and each issue of the tree answered as its
-// two halves.
+// two halves. A read of the head reads it from the rows its view read (readViewRows, whose types,
+// viewTypes, hold plan_task: refs.PlanOrderOfRows).
 func (b *issueTreeBuilder) readPlanOrder() error {
-	order, err := refs.PlanOrder(b.ctx, b.q, b.who, b.key)
+	var order refs.TreeOrder
+	var err error
+	if b.heads != nil {
+		order, err = refs.PlanOrderOfRows(b.ctx, b.q, b.who, b.key, b.heads)
+	} else {
+		order, err = refs.PlanOrder(b.ctx, b.q, b.who, b.key)
+	}
 	if err != nil {
 		return err
 	}
@@ -924,7 +1013,10 @@ func (b *issueTreeBuilder) candidates() []refs.Target {
 // answers it the same. A head read takes each of these from the node's head row where the issue's
 // rows hold one (refs.HeadRow): its facts, its row, and for a document block what the block loader
 // answers of it for the reader and its document_blocks row; any other kind is still read through
-// its loader.
+// its loader. A node of the walk's conversation that its rows would hold if the store held anything
+// of it, and hold no row of, states nothing and has no row (unstated): its facts and its row are
+// not read, so a read whose context is read in a statement of its own sends each loader's
+// statement once (R8).
 func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	if b.facts == nil {
 		size := len(targets)
@@ -938,7 +1030,7 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 		}
 		b.read[target] = true
 		unread = append(unread, target)
-		if _, held := b.headRow(target); !held {
+		if _, held := b.headRow(target); !held && !b.unstated(target) {
 			fromStore = append(fromStore, target)
 		}
 	}
@@ -959,6 +1051,10 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 		}
 		if head, held := b.headRow(target); held {
 			b.rows[target] = head.Row()
+			continue
+		}
+		if b.unstated(target) {
+			b.rows[target] = refs.TreeNodeRow{}
 			continue
 		}
 		unrowed = append(unrowed, target)
@@ -1034,6 +1130,28 @@ func (b *issueTreeBuilder) readFacts(targets []refs.Target) error {
 	}
 	maps.Copy(b.blocks, blockRows)
 	return nil
+}
+
+// unstated reports whether target is a node of the walk's conversation (docs' IssueTree's
+// Conversation) that the rows of a head read do not hold although they would hold it had the store
+// anything of it: an ask or a message of the issue, or a block of one. Every head read of an issue
+// reads each of its rows of a kind other than a document's block, a comment and a comment's block
+// (refs.HeadRows, refs.HeadViewRows), and the issue's rows hold each node of its own conversation
+// the store holds a graph_nodes row or a tuple of (graphstore.HeadRowsSQL). So such a node states
+// nothing at the head and the store holds no row of it: TreeFactsOf answers it nothing and
+// TreeNodeRows no row. A comment and a comment's block are read for the comment page alone, so their
+// absence says nothing.
+func (b *issueTreeBuilder) unstated(target refs.Target) bool {
+	if b.heads == nil {
+		return false
+	}
+	if _, held := b.heads.Rows[target]; held {
+		return false
+	}
+	if _, conversed := b.tree.Conversation[target]; !conversed {
+		return false
+	}
+	return target.Kind != graphstore.KindComment && target.Kind != refs.ItemComment.BlockKind()
 }
 
 // readHistoricalBlocks loads blocks the walk reached at the version's cut but whose current

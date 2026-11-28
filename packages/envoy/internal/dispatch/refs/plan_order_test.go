@@ -215,14 +215,28 @@ func (f *orderFixture) needs(key string, targets ...string) {
 // the issue's node.
 func (f *orderFixture) overtake(kind, id string) {
 	f.t.Helper()
+	project, _, _ := strings.Cut(id, "-")
+	f.markOvertaken(kind, id, graphstore.IssueNode(id, project, orderAuthor, time.Now()))
+}
+
+// overtakeItem marks the ask, comment or message of kind and id overtaken, as overtake marks a
+// node: the node the store holds, or, where the fixture wrote the item's row alone, a node of that
+// kind in project, as the item's writer states one.
+func (f *orderFixture) overtakeItem(kind, id, project string) {
+	f.t.Helper()
+	f.markOvertaken(kind, id, graphstore.Node{Kind: kind, ID: id, Supertag: kind, Visibility: graphstore.VisibilityProject, Project: project})
+}
+
+// markOvertaken writes the node of kind and id overtaken: the node the store holds, else made.
+func (f *orderFixture) markOvertaken(kind, id string, made graphstore.Node) {
+	f.t.Helper()
 	ctx := context.Background()
 	node, held, err := graphstore.ReadNode(ctx, f.tx, kind, id)
 	if err != nil {
 		f.t.Fatalf("read %s %s: %v", kind, id, err)
 	}
 	if !held {
-		project, _, _ := strings.Cut(id, "-")
-		node = graphstore.IssueNode(id, project, orderAuthor, time.Now())
+		node = made
 	}
 	node.State, node.Restates, node.KeepsCause = graphstore.StateOvertaken, false, true
 	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now(), orderAuthor, graphstore.NoEvent
@@ -231,7 +245,36 @@ func (f *orderFixture) overtake(kind, id string) {
 	}
 }
 
-// read is the ordered read of issue key for who, read twice to hold it to one answer.
+// place moves the block moved from the place the index pass gave it under the node of kind toKind
+// and id toID, as a move writes it: its newest part_of retracted, the new one asserted.
+func (f *orderFixture) place(moved, toKind, toID string) {
+	f.t.Helper()
+	ctx := context.Background()
+	var fromKind, fromID string
+	if err := f.tx.QueryRow(ctx, `
+		select to_kind, to_id from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind <> $4
+		order by seq desc limit 1
+	`, BlockNodeKind, moved, graphstore.TuplePartOf, graphstore.KindValue).Scan(&fromKind, &fromID); err != nil {
+		f.t.Fatalf("read the part_of of %s: %v", moved, err)
+	}
+	at := time.Now()
+	placement := func(toKind, toID string, asserted bool) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: moved, Kind: graphstore.TuplePartOf, ToKind: toKind, ToID: toID,
+			At: at, Who: orderAuthor, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+		}
+	}
+	if err := store.RunWrite(ctx, f.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{placement(fromKind, fromID, false), placement(toKind, toID, true)})
+		return nil
+	}); err != nil {
+		f.t.Fatalf("move %s under %s %s: %v", moved, toKind, toID, err)
+	}
+}
+
+// read is the ordered read of issue key for who, read twice to hold it to one answer, and held to
+// the same answer over the tuples and over the head projection (readWithMarks).
 func (f *orderFixture) read(who model.Actor, key string) TreeOrder {
 	f.t.Helper()
 	answer, err := PlanOrder(context.Background(), f.tx, who, key)
@@ -244,6 +287,74 @@ func (f *orderFixture) read(who model.Actor, key string) TreeOrder {
 	}
 	if !reflect.DeepEqual(answer, again) {
 		f.t.Fatalf("two reads of the order of %s answer\n%+v\nand\n%+v\nwant one answer", key, answer, again)
+	}
+	walked, headed := f.readWithMarks(who, key, false), f.readWithMarks(who, key, true)
+	if !reflect.DeepEqual(walked, answer) {
+		f.t.Fatalf("the order of %s as %s over the tuples answers\n%+v\nwant the read's\n%+v", key, who.ID, walked, answer)
+	}
+	if !reflect.DeepEqual(headed, walked) {
+		f.t.Errorf("the order of %s as %s over the head rows answers\n%+v\nwant the order over the tuples\n%+v", key, who.ID, headed, walked)
+	}
+	return answer
+}
+
+// readWithMarks is the ordered read of issue key for who in a savepoint of the fixture's
+// transaction, which it rolls back: with no issue marked, which walks the tuples (planTreeWalk);
+// or, where marked is true, with the head rows of every node the store holds written again
+// (graphstore.WriteHeads) and every issue marked whole, which reads the rows (planTreeHeads), and
+// is held there to the same answer from the rows key's plan view reads (PlanOrderOfRows).
+func (f *orderFixture) readWithMarks(who model.Actor, key string, marked bool) TreeOrder {
+	f.t.Helper()
+	ctx := context.Background()
+	tx, err := f.tx.Begin(ctx)
+	if err != nil {
+		f.t.Fatalf("open a savepoint for the order of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `delete from issue_head_marks`); err != nil {
+		f.t.Fatalf("take the head marks away: %v", err)
+	}
+	if marked {
+		rows, err := tx.Query(ctx, `
+			select kind, id from graph_nodes
+			union select from_kind, from_id from graph_tuples
+			union select '`+ItemComment.BlockKind()+`', node_id from comment_blocks
+			union select '`+ItemMessage.BlockKind()+`', node_id from message_blocks
+			union select '`+ItemAsk.BlockKind()+`', node_id from ask_blocks`)
+		if err != nil {
+			f.t.Fatalf("list the nodes of the store: %v", err)
+		}
+		nodes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (graphstore.NodeKey, error) {
+			var node graphstore.NodeKey
+			return node, row.Scan(&node.Kind, &node.ID)
+		})
+		if err != nil {
+			f.t.Fatalf("list the nodes of the store: %v", err)
+		}
+		if err := graphstore.WriteHeads(ctx, tx, nodes); err != nil {
+			f.t.Fatalf("write the head rows of the store's nodes: %v", err)
+		}
+		if _, err := tx.Exec(ctx, `insert into issue_head_marks (issue_key, filled_at) select key, now() from issues`); err != nil {
+			f.t.Fatalf("mark every issue whole: %v", err)
+		}
+	}
+	answer, err := PlanOrder(ctx, tx, who, key)
+	if err != nil {
+		f.t.Fatalf("read the order of %s as %s with marks %t: %v", key, who.ID, marked, err)
+	}
+	if !marked {
+		return answer
+	}
+	heads, held, err := HeadViewRows(ctx, tx, who, key, HeadView{Types: graphstore.QueryTakes(graphstore.QueryPlan)})
+	if err != nil || !held {
+		f.t.Fatalf("read the rows of the plan view of %s as %s: marked %t, %v", key, who.ID, held, err)
+	}
+	ofRows, err := PlanOrderOfRows(ctx, tx, who, key, heads)
+	if err != nil {
+		f.t.Fatalf("read the order of %s as %s from the rows of its plan view: %v", key, who.ID, err)
+	}
+	if !reflect.DeepEqual(ofRows, answer) {
+		f.t.Errorf("the order of %s as %s from the rows of its plan view answers\n%+v\nwant the order over the head rows\n%+v", key, who.ID, ofRows, answer)
 	}
 	return answer
 }
@@ -707,36 +818,65 @@ func TestTheOrderedReadReachesAPlanNodeUnderTheConversation(t *testing.T) {
 	`, comment, block); err != nil {
 		t.Fatalf("index the comment's block: %v", err)
 	}
-	// b moves from the place the index pass gave it to the comment's block, as a move writes it:
-	// the old part_of retracted, the new one asserted.
-	moved := f.address("TALK-1", "b")
-	var fromKind, fromID string
-	if err := f.tx.QueryRow(ctx, `
-		select to_kind, to_id from graph_tuples
-		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind <> $4
-		order by seq desc limit 1
-	`, BlockNodeKind, moved, graphstore.TuplePartOf, graphstore.KindValue).Scan(&fromKind, &fromID); err != nil {
-		t.Fatalf("read the part_of of %s: %v", moved, err)
-	}
-	at := time.Now()
-	placement := func(toKind, toID string, asserted bool) graphstore.Tuple {
-		return graphstore.Tuple{
-			FromKind: BlockNodeKind, FromID: moved, Kind: graphstore.TuplePartOf, ToKind: toKind, ToID: toID,
-			At: at, Who: orderAuthor, SourceEvent: graphstore.NoEvent, Asserted: asserted,
-		}
-	}
-	if err := store.RunWrite(ctx, f.tx, func(b *store.WriteBatch) error {
-		graphstore.QueueWrite(b, nil, []graphstore.Tuple{placement(fromKind, fromID, false), placement(ItemComment.BlockKind(), block, true)})
-		return nil
-	}); err != nil {
-		t.Fatalf("move %s under %s: %v", moved, block, err)
-	}
+	// b moves from the place the index pass gave it to the comment's block, as a move writes it.
+	f.place(f.address("TALK-1", "b"), ItemComment.BlockKind(), block)
 
 	answer := f.read(orderAuthor, "TALK-1")
 	requireOrderStands(t, answer)
 	want := []OrderNode{issueStart("TALK-1"), f.task("TALK-1", "a"), f.task("TALK-1", "b"), issueDone("TALK-1")}
 	if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
 		t.Errorf("the ordered read of TALK-1 answers the order\n%v\nwant b, which stands under the comment's block %s, at its place after a, which it needs:\n%v", got, block, want)
+	}
+}
+
+// TestTheOrderedReadGivesNoPositionUnderAClosedConversationNode: a node whose state is overtaken
+// counts as closed with its subtree (R7 of the issue-tree spec, r-reparent-and-state), an ask, a
+// comment or a message among them, and the plan read gives every plan node under one no position
+// (c-ordered-read), as it gives one under an overtaken block none. CLOSE-1's plan writes the tasks
+// a to g, and each but a moves under a node of the issue's conversation, as a move or a plan
+// task's `parent` attribute places it: b under a block of a comment marked overtaken; c under a
+// block of an overtaken message; d under a live comment itself, its part_of naming the comment; e
+// under an overtaken comment itself; f under a block of a reply to the overtaken comment, which the
+// tree hangs under that comment; and g under a block of a live reply to a live comment. The read
+// answers a, d and g in their places and b, c, e and f overtaken, over the tuples and over the head
+// rows alike (orderFixture.read). The faults it holds the read to: one that reads no item's own
+// state answers b and c at positions; one that starts the conversation at the items' blocks alone
+// answers d and e in neither the order nor the overtaken; and one that hangs every item under the
+// issue answers f at a position. Each fails the test, which prints the order and the overtaken
+// nodes it read.
+func TestTheOrderedReadGivesNoPositionUnderAClosedConversationNode(t *testing.T) {
+	database := storetest.Open(t)
+	f := newOrderFixture(t, database, "CLOSE")
+	const key = "CLOSE-1"
+	f.issue(key, "")
+	f.plan(key, orderTask("a", ""), orderTask("b", ""), orderTask("c", ""), orderTask("d", ""), orderTask("e", ""), orderTask("f", ""), orderTask("g", ""))
+	at := time.Now()
+	const person = `{"kind":"user","id":"alice"}`
+	closed, closedBlock := conversationItem(t, f.tx, "comments", key, person, "The thread a step came out of.", at, "")
+	message, messageBlock := conversationItem(t, f.tx, "messages", key, person, "The message a step came out of.", at, "")
+	live, _ := conversationItem(t, f.tx, "comments", key, person, "The thread a step stands under.", at, "")
+	overtaken, _ := conversationItem(t, f.tx, "comments", key, person, "The thread another step stands under.", at, "")
+	_, replyBlock := conversationItem(t, f.tx, "comments", key, person, "A reply in the closed thread.", at, closed)
+	_, liveReplyBlock := conversationItem(t, f.tx, "comments", key, person, "A reply in the live thread.", at, live)
+	f.place(f.address(key, "b"), ItemComment.BlockKind(), closedBlock)
+	f.place(f.address(key, "c"), ItemMessage.BlockKind(), messageBlock)
+	f.place(f.address(key, "d"), graphstore.KindComment, live)
+	f.place(f.address(key, "e"), graphstore.KindComment, overtaken)
+	f.place(f.address(key, "f"), ItemComment.BlockKind(), replyBlock)
+	f.place(f.address(key, "g"), ItemComment.BlockKind(), liveReplyBlock)
+	f.overtakeItem(graphstore.KindComment, closed, "CLOSE")
+	f.overtakeItem(graphstore.KindMessage, message, "CLOSE")
+	f.overtakeItem(graphstore.KindComment, overtaken, "CLOSE")
+
+	answer := f.read(orderAuthor, key)
+	requireOrderStands(t, answer)
+	order := namesOf(answer.Order)
+	closedNodes := slices.SortedFunc(slices.Values(namesOf(answer.Overtaken)), compareOrderNodes)
+	wantOrder := []OrderNode{issueStart(key), f.task(key, "a"), f.task(key, "d"), f.task(key, "g"), issueDone(key)}
+	wantClosed := slices.SortedFunc(slices.Values([]OrderNode{f.task(key, "b"), f.task(key, "c"), f.task(key, "e"), f.task(key, "f")}), compareOrderNodes)
+	if !reflect.DeepEqual(order, wantOrder) || !reflect.DeepEqual(closedNodes, wantClosed) {
+		t.Errorf("the ordered read of %s answers the order\n%v\nand overtaken\n%v\nwant a, d (under a live comment) and g (under a live reply) in the order:\n%v\n"+
+			"and b, c, e and f, under an overtaken comment, message or reply's thread, overtaken:\n%v", key, order, closedNodes, wantOrder, wantClosed)
 	}
 }
 

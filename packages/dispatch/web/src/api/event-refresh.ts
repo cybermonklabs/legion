@@ -1306,6 +1306,16 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     );
     return targets;
   }
+  if (event.type === "artifact.digest") {
+    // Dispatch filled the record digest of a query document's version and evaluated whether its
+    // approval stands: refresh the document's own read and the issue's document list so the
+    // approval chip moves from owed/stale to its verdict.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact_id] }
+    );
+    return targets;
+  }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
     targets.push(
       { queryKey: ["artifacts", key] },

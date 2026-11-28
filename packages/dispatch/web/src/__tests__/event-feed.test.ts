@@ -2007,6 +2007,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     to_version: 7,
   }),
   "artifact.indexed": event("artifact.indexed", { artifact_ids: ["artifact-3"] }),
+  "artifact.digest": event("artifact.digest", {
+    artifact_id: "artifact-3",
+    name: "spec.md",
+    version: 7,
+    content_sha256: "0".repeat(64),
+    approval_current: true,
+  }),
   "ask.anchor_refreshed": event("ask.anchor_refreshed", { anchor: null, id: "ask-1" }),
   "ask.answered": event("ask.answered", { anchor: null, id: "ask-1" }),
   "ask.asked_of": event("ask.asked_of", { anchor: null, id: "ask-1", asked_of: "bob" }),

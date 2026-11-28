@@ -198,17 +198,22 @@ func latestIssueSeq(t *testing.T, database *store.Store, issue string) int {
 }
 
 // requireQuietVersionEvents fails t unless the events of issue whose seq is above seq are exactly
-// want artifact.version events, none of which notifies anyone (events.Broker.Notify): the
-// versions settlements wrote of documents nobody named a version of (events.Quiet), and nothing
-// else.
-func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string, seq, want int) {
+// versions artifact.version events and digests artifact.digest events, none of which notifies
+// anyone (events.Broker.Notify): the versions settlements and drains wrote of documents nobody
+// named a version of (events.Quiet), and the artifact.digest the fill or the drain appends after
+// the artifact.version of each version of a query document (R14's hash gate), and nothing else.
+func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string, seq, versions, digests int) {
 	t.Helper()
 	type appendedEvent struct {
-		Type   string
-		Notify bool
+		Type     string
+		Notify   bool
+		Artifact string
+		Version  string
 	}
+	// An artifact.version's payload holds its version whole, and an artifact.digest's its number.
 	rows, err := database.Pool.Query(context.Background(), `
-		select type, notify from events where issue_key = $1 and seq > $2 order by seq
+		select type, notify, coalesce(payload->>'artifact_id', ''), coalesce(payload->'version'->>'number', payload->>'version', '')
+		from events where issue_key = $1 and seq > $2 order by seq
 	`, issue, seq)
 	if err != nil {
 		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
@@ -217,13 +222,21 @@ func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string
 	if err != nil {
 		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
 	}
-	if len(appended) != want {
-		t.Fatalf("%s appended %+v after seq %d, want %d artifact.version events", issue, appended, seq, want)
-	}
+	counted := map[string]int{}
+	versioned := map[[2]string]bool{}
 	for _, event := range appended {
-		if event.Type != "artifact.version" || event.Notify {
-			t.Fatalf("%s appended %+v after seq %d, want only artifact.version events that notify nobody", issue, appended, seq)
+		counted[event.Type]++
+		switch {
+		case event.Notify:
+			t.Fatalf("%s appended %+v after seq %d, want only events that notify nobody", issue, appended, seq)
+		case event.Type == "artifact.version":
+			versioned[[2]string{event.Artifact, event.Version}] = true
+		case event.Type == model.ArtifactDigestEventType && !versioned[[2]string{event.Artifact, event.Version}]:
+			t.Fatalf("%s appended %+v after seq %d, want each artifact.digest after the artifact.version of its version", issue, appended, seq)
 		}
+	}
+	if len(appended) != versions+digests || counted["artifact.version"] != versions || counted[model.ArtifactDigestEventType] != digests {
+		t.Fatalf("%s appended %+v after seq %d, want %d artifact.version events and %d artifact.digest events", issue, appended, seq, versions, digests)
 	}
 }
 
@@ -302,8 +315,10 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 
 	// The repair's write of the blocks left the document owing a settlement, which runs on the
 	// closed issue; it is done before the second repair's snapshot, which counts that repair's
-	// writes alone.
-	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	// writes alone. So are the fill and the drain the settlement runs once it has committed, whose
+	// artifact.digest of the spec's new version (R14's hash gate) would otherwise land after the
+	// snapshot (awaitNoSettlementOwed).
+	awaitNoSettlementOwed(t, f.database)
 	rows := askRowTexts(t, f.database, asks...)
 	events := eventCount(t, f.database, issue.Key)
 	live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
@@ -548,7 +563,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	if _, version := documentTexts(t, f.handler, swept.PrimaryArtifactID); !strings.Contains(version, `#other-room urgency="low" multiple="false" state="resolved"`) {
 		t.Fatalf("the settlement after the sweep left the latest version reading:\n%s\nwant the block saved resolved", version)
 	}
-	requireQuietVersionEvents(t, f.database, swept.Key, sweptSeq, 1)
+	requireQuietVersionEvents(t, f.database, swept.Key, sweptSeq, 1, 0)
 	if got, _ := documentTexts(t, f.handler, untouched.PrimaryArtifactID); got != untouchedText {
 		t.Fatalf("the repair changed the untouched document:\n%s\nwant\n%s", got, untouchedText)
 	}

@@ -1671,7 +1671,8 @@ func (c *issueConversion) finish(ctx context.Context) error {
 		issue := c.key
 		event := model.Event{
 			IssueKey: &issue, Type: "artifact.version", Actor: ConversionActor,
-			Payload: ArtifactVersionEventPayload(document.id, document.name, document.version, nil, model.ReferenceChanges{}),
+			Payload: ArtifactVersionEventPayload(document.id, document.name, document.version, nil, model.ReferenceChanges{},
+				WrittenVersionDigest(document.markdown, graphstore.VersionOwner{Query: true})),
 		}
 		stated := graphstore.Joined(document.retired, c.index.facts[document.id], document.versionNode)
 		caused[document.id] = true
