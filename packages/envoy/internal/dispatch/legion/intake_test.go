@@ -726,15 +726,17 @@ func (r *intakeRig) quiet() bool {
 
 // runUntil runs the rig until cond holds, and answers true then. Each time the shared wait asks
 // (testwait), it answers whether cond holds, and where it does not and the rig is quiet (quiet), it
-// moves the rig's clock to its earliest armed deadline (nextDue), a parked hand-back or a deferred
-// call, with no gap between the reading and the move (clocktest.Fake.SetWhen), as long as the moves
-// it makes itself add up to jumps at the most; the clock's other moves, a test's or a stalled
-// read's, are not counted. It moves the clock only while nothing runs, which keeps the order a wait
-// in real time gives. It answers false where the rig is quiet with no deadline armed within what is
-// left of jumps. deadline is the wall-clock deadline of the wait runUntil replaces, which it hands
-// to the shared wait's bounded form (testwait.Holds, clamped to the binary's deadline by
-// testwait.Bounded), and it answers false once that passes; with 0 the wait is the shared one
-// (testwait.Until), whose give-up at the binary's deadline fails the test.
+// asks cond once more, since what cond waits for may have landed while quiet read the rig, and
+// where cond still does not hold it moves the rig's clock to its earliest armed deadline
+// (nextDue), a parked hand-back or a deferred call, with no gap between the reading and the move
+// (clocktest.Fake.SetWhen), as long as the moves it makes itself add up to jumps at the most; the
+// clock's other moves, a test's or a stalled read's, are not counted. It moves the clock only while
+// nothing runs and cond does not hold, which keeps the order a wait in real time gives. It answers
+// false where the rig is quiet with no deadline armed within what is left of jumps. deadline is
+// the wall-clock deadline of the wait runUntil replaces, which it hands to the shared wait's
+// bounded form (testwait.Holds, clamped to the binary's deadline by testwait.Bounded), and it
+// answers false once that passes; with 0 the wait is the shared one (testwait.Until), whose give-up
+// at the binary's deadline fails the test.
 func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bool {
 	r.t.Helper()
 	var jumped time.Duration
@@ -747,6 +749,10 @@ func (r *intakeRig) runUntil(cond func() bool, jumps, deadline time.Duration) bo
 		if !r.quiet() {
 			reading = "the condition does not hold and the rig is not quiet"
 			return false
+		}
+		if cond() {
+			held = true
+			return true
 		}
 		var by time.Duration
 		armed, moved := r.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
@@ -823,6 +829,32 @@ func (r *intakeRig) settledHolding(held int) {
 		return fmt.Sprintf("the intake has not answered through stream sequence %d with %d messages held (%d logged): %+v, %v",
 			last, held, len(r.logRecords(heldLine)), info, err)
 	})
+}
+
+// waitingOn is how many of project's messages wait on its runner (Intake.waiting), the one running
+// included, for the deliver subject the running intake delivers at now.
+func (r *intakeRig) waitingOn(project string) int {
+	in := r.intake
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	return in.waiting.projects[project]
+}
+
+// judgedOrWaiting reports whether every message the stream holds has been delivered, and each one
+// the durable has not acknowledged waits on project's runner (waitingOn) or is parked to come back
+// on the rig's clock (park), and answers what it read, for a wait's failure to print. A message
+// keyed beside the runner, to project's crowded key, has then been judged there (judgeCrowded): a
+// message judged there is acknowledged or handed back, and one not judged yet is neither and waits
+// on no runner's count. A message delivered and not keyed yet waits on no runner's count either, so
+// it is keyed by then. It reads the durable first, so a message that moves from the runner's count
+// to its acknowledgement meanwhile counts on the durable's side. The durable's counts are every
+// project's, so it is for a test whose messages are all project's.
+func (r *intakeRig) judgedOrWaiting(project string) (string, bool) {
+	r.t.Helper()
+	info := r.consumerInfo()
+	waiting, parked := r.waitingOn(project), len(r.parked())
+	return fmt.Sprintf("%d messages not delivered, %d not acknowledged, %d waiting on %s's runner, %d parked", info.NumPending, info.NumAckPending, waiting, project, parked),
+		info.NumPending == 0 && info.NumAckPending == waiting+parked
 }
 
 // lastStreamSeq is the stream sequence of the message published last.
@@ -3285,6 +3317,23 @@ func wholeReadsOf(t *testing.T, database *store.Store, project string) []readRec
 		}
 	}
 	return reads
+}
+
+// requireReadsServed fails the test unless daemons served, together, as many reads as the intake
+// recorded whole reads of project (wholeReadsOf): each read the intake made reached a daemon once,
+// so a read that stalls (fakeDaemon.stalls) moved the intake's clock RequestTimeout on once, and
+// no read was sent twice. A read a stop cuts short records nothing (readWhole), so a test calls it
+// only where no stop cut a read short, and once no read is in flight.
+func (r *intakeRig) requireReadsServed(project string, daemons ...*fakeDaemon) {
+	r.t.Helper()
+	served := 0
+	for _, daemon := range daemons {
+		served += daemon.served()
+	}
+	if recorded := len(wholeReadsOf(r.t, r.database, project)); served != recorded {
+		r.t.Errorf("the daemons of %s served %d reads and the intake recorded %d whole reads of it, want one read served for each read recorded: a read reached its daemon twice, or one was made and not recorded",
+			project, served, recorded)
+	}
 }
 
 // heldValues is the value of attribute each heldLine names, in order, and fails unless each names
