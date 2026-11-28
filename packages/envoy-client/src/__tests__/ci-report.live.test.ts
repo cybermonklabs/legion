@@ -1,7 +1,9 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { cpSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { until } from "@legion/test-fixtures/wait";
 import {
   commitSpec,
   DISPATCH_CLI,
@@ -66,6 +68,9 @@ const FOUR = ["probe-a-passes", "probe-b-passes", "probe-c-passes", "probe-d-pas
 /** The gate in front of each call of the step's CLI (test/gated-cli.ts): the first call runs at
  *  once, and each later one waits for the row's `release`. */
 const GATED_CLI = join(import.meta.dir, "..", "..", "test", "gated-cli.ts");
+/** The guard of each row that gates its calls: Bun's kill of the row (`test`'s third argument)
+ *  and the deadline of its waits (`useRowGuard`), which ends the wait for the stack's log lines. */
+const GATED_ROW_GUARD_MS = 180_000;
 /** The line every refusal of either port of a broker is logged as (answer.RefusalMessage). */
 const REFUSAL_LINE = "broker: answer refused";
 /** What the CLI prints when the airlock's proxy refuses its CONNECT with 407: Bun gives it the
@@ -1028,8 +1033,8 @@ describe.skipIf(!dispatchStackEnabled)(
 
       // Each later call was refused at the CONNECT, which a broker logs, or written, which
       // Dispatch logs; a log line is written as its call ends, which can be after the command that
-      // made the call exits, so the logs are read every 100 ms until they hold a line for each of
-      // the three calls, or for 2 s.
+      // made the call exits, so the row waits until the logs hold a line for each of the three
+      // calls, whichever each was. Both rows reach that; the row's guard ends a wait that does not.
       const resultsPath = `/api/v1/projects/${running().project}/results`;
       const since = () => {
         const lines = running().linesSince(mark);
@@ -1040,14 +1045,13 @@ describe.skipIf(!dispatchStackEnabled)(
           ).length,
         };
       };
-      let seen = since();
-      for (
-        const until = Date.now() + 2_000;
-        seen.refusals.length + seen.posts < FOUR.length - 1 && Date.now() < until;
-        seen = since()
-      ) {
-        await Bun.sleep(100);
-      }
+      const seen = await until(
+        "a broker's refusal or Dispatch's write logged for each call after the first",
+        () => {
+          const logged = since();
+          return logged.refusals.length + logged.posts >= FOUR.length - 1 && logged;
+        }
+      );
       return {
         sha: checkout.sha,
         firstExit,
@@ -1073,69 +1077,79 @@ describe.skipIf(!dispatchStackEnabled)(
     // would, and lets the step go on. The broker that takes each later CONNECT refuses it 407
     // GRANT_NOT_LIVE, nothing goes on to Dispatch, and ci-report prints the refusal on each of
     // those checks' lines, naming the grant's end, and exits 1.
-    test("a write after the run's result grant ended is refused at the proxy, and the step prints that refusal on its check's line", async () => {
-      const gated = await gatedStep("grant-ends", 961, true);
-      const at = (check: string): string =>
-        `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
-      expect({
-        ...gated,
-        refusals: gated.refusals.map(({ status, code, method, caller_class, host }) => ({
-          status,
-          code,
-          method,
-          caller_class,
-          host,
-        })),
-      }).toEqual({
-        sha: gated.sha,
-        firstExit: "0",
-        storedFirst: [at(FOUR[0])],
-        grantsEnded: 1,
-        code: 1,
-        lines: [
-          `${FOUR[0]} pass exit 0`,
-          `${FOUR[1]} pass exit 1`,
-          `${FOUR[2]} pass exit 1`,
-          `${FOUR[3]} pass exit 1`,
-        ],
-        grantEnd: [false, true, true, true],
-        airlockWords: [false, true, true, true],
-        counted: "1 results written, 3 calls failed",
-        exits: ["0", "1", "1", "1"],
-        refusals: [1, 2, 3].map(() => ({
-          status: 407,
-          code: "GRANT_NOT_LIVE",
-          method: "CONNECT",
-          caller_class: "airlock",
-          host: DISPATCH_HOST,
-        })),
-        posts: 0,
-        stored: [at(FOUR[0])],
-      });
-    }, 180_000);
+    test(
+      "a write after the run's result grant ended is refused at the proxy, and the step prints that refusal on its check's line",
+      async () => {
+        useRowGuard(GATED_ROW_GUARD_MS);
+        const gated = await gatedStep("grant-ends", 961, true);
+        const at = (check: string): string =>
+          `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
+        expect({
+          ...gated,
+          refusals: gated.refusals.map(({ status, code, method, caller_class, host }) => ({
+            status,
+            code,
+            method,
+            caller_class,
+            host,
+          })),
+        }).toEqual({
+          sha: gated.sha,
+          firstExit: "0",
+          storedFirst: [at(FOUR[0])],
+          grantsEnded: 1,
+          code: 1,
+          lines: [
+            `${FOUR[0]} pass exit 0`,
+            `${FOUR[1]} pass exit 1`,
+            `${FOUR[2]} pass exit 1`,
+            `${FOUR[3]} pass exit 1`,
+          ],
+          grantEnd: [false, true, true, true],
+          airlockWords: [false, true, true, true],
+          counted: "1 results written, 3 calls failed",
+          exits: ["0", "1", "1", "1"],
+          refusals: [1, 2, 3].map(() => ({
+            status: 407,
+            code: "GRANT_NOT_LIVE",
+            method: "CONNECT",
+            caller_class: "airlock",
+            host: DISPATCH_HOST,
+          })),
+          posts: 0,
+          stored: [at(FOUR[0])],
+        });
+      },
+      GATED_ROW_GUARD_MS
+    );
 
     // Row (b)'s control: the same gated step, and no grant ended. Each write is stored, no broker
     // refuses a CONNECT, and the step exits 0: what row (b) reads of the refusals and of the
     // stored rows comes from the grant's end, and not from the gate or the release.
-    test("the same gated step with its grant live writes each of its four results", async () => {
-      const gated = await gatedStep("grant-live", 962, false);
-      const at = (check: string): string =>
-        `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
-      expect(gated).toEqual({
-        sha: gated.sha,
-        firstExit: "0",
-        storedFirst: [at(FOUR[0])],
-        grantsEnded: 0,
-        code: 0,
-        lines: FOUR.map((check) => `${check} pass exit 0`),
-        grantEnd: [false, false, false, false],
-        airlockWords: [false, false, false, false],
-        counted: "4 results written, 0 calls failed",
-        exits: ["0", "0", "0", "0"],
-        refusals: [],
-        posts: 3,
-        stored: FOUR.map(at),
-      });
-    }, 180_000);
+    test(
+      "the same gated step with its grant live writes each of its four results",
+      async () => {
+        useRowGuard(GATED_ROW_GUARD_MS);
+        const gated = await gatedStep("grant-live", 962, false);
+        const at = (check: string): string =>
+          `${check} pass job ${JOB} leg - attempt 1 at ${gated.sha}`;
+        expect(gated).toEqual({
+          sha: gated.sha,
+          firstExit: "0",
+          storedFirst: [at(FOUR[0])],
+          grantsEnded: 0,
+          code: 0,
+          lines: FOUR.map((check) => `${check} pass exit 0`),
+          grantEnd: [false, false, false, false],
+          airlockWords: [false, false, false, false],
+          counted: "4 results written, 0 calls failed",
+          exits: ["0", "0", "0", "0"],
+          refusals: [],
+          posts: 3,
+          stored: FOUR.map(at),
+        });
+      },
+      GATED_ROW_GUARD_MS
+    );
   }
 );
