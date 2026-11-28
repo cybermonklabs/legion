@@ -224,9 +224,14 @@ test("a look's report refuses here only what no state decides", async () => {
       verdict: "pending",
       wake_at: NEXT_LOOK,
       check_opened_at: CHECK_OPENED,
+      look_id: LOOK_ID,
     })
   ).rejects.toThrow("CHECK_WAKE_UNEXPECTED");
-  expect(posted.at(-1)).toMatchObject({ checkOpenedAt: CHECK_OPENED, wakeAt: NEXT_LOOK });
+  expect(posted.at(-1)).toMatchObject({
+    checkOpenedAt: CHECK_OPENED,
+    lookId: LOOK_ID,
+    wakeAt: NEXT_LOOK,
+  });
 });
 
 test("a tester's step completion beside an open check of its role sends its report and return_to", async () => {
@@ -959,9 +964,9 @@ function closedRuntime(
 
 test("a report on the production check the claim's own role works carries a verdict and no commit, and a pending its next look", async () => {
   const { ops, posted } = closedRuntime(implementer, checkRecord());
-  // Each of the three verdicts is posted with a fresh grant, the summary and no commit: no
-  // handoff was written and nothing pushed, so the lookup is never asked. The pending names the
-  // next look, which travels as the daemon's own `wakeAt`.
+  // Each of the three verdicts is posted with a fresh grant, the summary, the look id and no
+  // commit: no handoff was written and nothing pushed, so the lookup is never asked. The pending
+  // names the next look, which travels as the daemon's own `wakeAt`.
   for (const verdict of ["pending", "pass", "fail"]) {
     const wake = verdict === "pending" ? { wake_at: NEXT_LOOK } : {};
     await expect(
@@ -970,6 +975,7 @@ test("a report on the production check the claim's own role works carries a verd
         summary: `Look 2: ${verdict}.`,
         verdict,
         check_opened_at: CHECK_OPENED,
+        look_id: LOOK_ID,
         ...wake,
       })
     ).resolves.toEqual({});
@@ -978,6 +984,7 @@ test("a report on the production check the claim's own role works carries a verd
       summary: `Look 2: ${verdict}.`,
       verdict,
       checkOpenedAt: CHECK_OPENED,
+      lookId: LOOK_ID,
       ...(verdict === "pending" ? { wakeAt: NEXT_LOOK } : {}),
     });
   }
@@ -997,6 +1004,7 @@ test("a tester's pending report on its closed issue's check reaches the daemon, 
       verdict: "pending",
       wake_at: NEXT_LOOK,
       check_opened_at: CHECK_OPENED,
+      look_id: LOOK_ID,
     })
   ).resolves.toEqual({});
   expect(posted).toEqual([
@@ -1007,6 +1015,7 @@ test("a tester's pending report on its closed issue's check reaches the daemon, 
       verdict: "pending",
       wakeAt: NEXT_LOOK,
       checkOpenedAt: CHECK_OPENED,
+      lookId: LOOK_ID,
     },
   ]);
 });
@@ -1053,6 +1062,7 @@ test("a rating on a production check's report is sent, and the daemon's PLAN_RAT
       summary: "Look 2: pass.",
       verdict: "pass",
       check_opened_at: CHECK_OPENED,
+      look_id: LOOK_ID,
       plan_rating: 4,
       plan_reason: "The plan fit the work.",
     })
@@ -1062,6 +1072,7 @@ test("a rating on a production check's report is sent, and the daemon's PLAN_RAT
     summary: "Look 2: pass.",
     verdict: "pass",
     checkOpenedAt: CHECK_OPENED,
+    lookId: LOOK_ID,
     planRating: 4,
     planReason: "The plan fit the work.",
   });
@@ -1120,9 +1131,14 @@ test("the daemon, not the record's last-look flag, decides whether a pending nee
       summary: "Looked.",
       verdict: "pending",
       check_opened_at: CHECK_OPENED,
+      look_id: LOOK_ID,
     })
   ).rejects.toThrow("400 CHECK_WAKE_REQUIRED");
-  expect(posted.at(-1)).toMatchObject({ verdict: "pending", checkOpenedAt: CHECK_OPENED });
+  expect(posted.at(-1)).toMatchObject({
+    verdict: "pending",
+    checkOpenedAt: CHECK_OPENED,
+    lookId: LOOK_ID,
+  });
 });
 
 test("the check's last look asks for no wake: a pending there is posted without one", async () => {
@@ -1133,6 +1149,7 @@ test("the check's last look asks for no wake: a pending there is posted without 
       summary: "Look 2: production never carried the merge.",
       verdict: "pending",
       check_opened_at: CHECK_OPENED,
+      look_id: LOOK_ID,
     })
   ).resolves.toEqual({});
   expect(posted.at(-1)).toEqual({
@@ -1140,6 +1157,7 @@ test("the check's last look asks for no wake: a pending there is posted without 
     summary: "Look 2: production never carried the merge.",
     verdict: "pending",
     checkOpenedAt: CHECK_OPENED,
+    lookId: LOOK_ID,
   });
 });
 

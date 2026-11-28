@@ -17,7 +17,7 @@ The daemon examines each check report before it records anything. It refuses the
 1. `CHECK_NOT_OPEN`: the check is missing or closed, or it opened at a time other than `check_opened_at`.
 2. `CHECK_ROLE_MISMATCH`: the check is the work of another role.
 3. `CHECK_LOOK_ID_REQUIRED`: the report gives no `look_id`.
-4. `CHECK_LOOK_NOT_OPEN`: the `look_id` is not the id of the current look. The look of that id ended, or the id is not from the task of the current look.
+4. `CHECK_LOOK_NOT_OPEN`: the `look_id` is not the id of the current look. A later look replaced the look of that id, or the id is not from the task of the current look.
 
 None of these refusals records anything. Refusals 3 and 4 give the number of the current look. Refusal 1 also gives it when the check is open and opened at another time. A call on a done issue without `check_opened_at` gets `CHECK_LOOK_NOT_SERVED` and records nothing. The daemon also refuses a report with no verdict of pass, pending or fail (`CHECK_VERDICT_REQUIRED`). It refuses a `pending` before the last look without `wake_at` (`CHECK_WAKE_REQUIRED`). That refusal records nothing and keeps the look open. It refuses a wake on a pass, on a fail or on the last look (`CHECK_WAKE_UNEXPECTED`). The record lives on the pull request and in that result: a closed issue takes a result for an `after_merge` or `default_branch` check, a comment and a message. `skill://legion-worker/references/merge-gate.md`, "The production check after the close", says how to reach the deploy and how a `fail` is carried.
 

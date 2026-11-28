@@ -2135,6 +2135,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       verdict: "pending",
       wake_at: NEXT_LOOK,
       check_opened_at: openCheck.openedAt,
+      look_id: LOOK_ID,
     },
     undefined,
     undefined,
@@ -2149,6 +2150,7 @@ test("a report on its closed issue's production check carries a verdict and no c
       verdict: "pending",
       wakeAt: NEXT_LOOK,
       checkOpenedAt: openCheck.openedAt,
+      lookId: LOOK_ID,
     },
   ]);
 

@@ -30,9 +30,10 @@ const lookIDRelease = "the release whose look report gives its look id"
 // and deletes each of its retire_look rows, which the release before refuses
 // (DisallowUnknownFields, an unknown op), and leaves every other key and every row of another kind
 // as it stands. It clears opened_generation on LEGION's checks, which the release before's upsert
-// of a new check would leave in place. It drops no column and deletes no version row, so the roll
-// forward applies nothing. The negative control is the store before the migration, whose tables
-// hold none of the five columns.
+// of a new check would leave in place, and the look id of each of LEGION's open checks, so the
+// roll forward's boot gives each open look a new look id and a new task. It drops no column and
+// deletes no version row, so the roll forward applies nothing. The negative control is the store
+// before the migration, whose tables hold none of the five columns.
 func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefuses(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -141,11 +142,11 @@ func TestTheLookIDColumnsArriveEmptyAndTheWayBackStripsWhatTheReleaseBeforeRefus
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the queued rows after the way back = %q, want %q: lookId and lookReissue off each supervise row, every retire_look row gone, every other key and row kept", got, want)
 	}
-	kept := append(rowsAsText(t, store, `select row(look_id, look_id_look, look_id_opened_at = '2026-11-27T09:00:00Z'::timestamptz, opened_generation is null)::text
+	kept := append(rowsAsText(t, store, `select row(look_id, look_id_look, look_id_opened_at, opened_generation)::text
 		from production_checks`), rowsAsText(t, store, `select row(look_id)::text from pending_task_deliveries`)...)
 	kept = append(kept, rowsAsText(t, store, `select count(*)::text from schema_version where version = 20261127171352`)...)
-	if want := []string{"(LOOKIDOFLOOKTWOOFTHECHECK,2,t,t)", "(LOOKIDOFLOOKTWOOFTHECHECK)", "1"}; !reflect.DeepEqual(kept, want) {
-		t.Fatalf("after the way back the check, the delivery and the version row = %v, want %v: the generation cleared, the look ids and the version row kept", kept, want)
+	if want := []string{"(,,,)", "(LOOKIDOFLOOKTWOOFTHECHECK)", "1"}; !reflect.DeepEqual(kept, want) {
+		t.Fatalf("after the way back the check, the delivery and the version row = %v, want %v: the open check's look id and generation cleared, the delivery's look id and the version row kept", kept, want)
 	}
 
 	applied, err := store.Migrate(ctx)

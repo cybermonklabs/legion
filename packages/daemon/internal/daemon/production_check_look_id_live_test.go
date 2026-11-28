@@ -2814,7 +2814,7 @@ func (r *lookIDLive) upgrade() {
 	})
 	r.part(3, "the same, the tester held by the operator's suspension, which the operator lifts after the boot", r.upgradeHeldLook)
 	if !r.base {
-		r.part(4, "a stored look id made for look 1 while the check is open at look 2, as a rollback to the release before leaves it", r.upgradeRolledBackLook)
+		r.part(4, "a stored look id made for look 1 while the check is open at look 2, written after the way back", r.upgradeRolledBackLook)
 	}
 	r.part(5, "a look that ended at the operator's hold, the tester held and the text of an earlier look pending; the operator resumes the tester after the boot, and the next look's wake comes due", r.upgradeEndedLook)
 	r.part(6, "first order: an open look with no look id, and a start row of that look the release before queued, which waits on `a delivery is already pending` and runs after the boot's row", func() {
@@ -2851,8 +2851,9 @@ func lookIDOldContract() int {
 // of the release before this change leaves it (seedOlder): task, the text of the tester's pending
 // task, which gives no look id, and look, the look it is the task of; and, at the head, stored, the
 // look id the check holds, made for look storedLook of the check opened at storedOpened ("" for
-// none) — what a rollback to that release leaves (part 4), and what that release's write of a later
-// merge's check leaves of the check it replaced (part 7).
+// none) — an id made for the previous look of the check (part 4), and what that release's write of
+// a later merge's check leaves of the check it replaced (part 7), each written after the way back
+// (seedOlder).
 type lookIDSeed struct {
 	task         string
 	look         int
@@ -2894,11 +2895,15 @@ const lookIDMigration = 20261127171352
 // this change leaves it: the tester's pending task holds seed's text, a task of seed's look of the
 // check, and carries no look id — a claim that holds none, whose look ended and took its task with
 // it (part 5), is given one — and the tester's claim is registered on that release's contract
-// (lookIDOldContract). At the head, the check holds no look id but seed's stored one, and the way
-// back of this release runs for the fixture's project, its key in place of <PROJECT>, as an
-// operator runs it: no supervise row carries a look id or the mark of a reissue, no row retires a
-// look's task, and no check keeps the generation it opened in. The base commit has none of the
-// look-id columns and no such migration, so there only the task and the contract are written.
+// (lookIDOldContract). At the head, the way back of this release runs for the fixture's project,
+// its key in place of <PROJECT>, as an operator runs it: no supervise row carries a look id or the
+// mark of a reissue, no row retires a look's task, and no check keeps the generation it opened in
+// or, while open, a look id. Only then is the check left holding no look id but seed's stored one:
+// parts 4 and 7 hold the boot to whatever look-id columns it finds, an id made for an earlier look
+// of the check or for the check a later merge replaced, and the way back clears the look id of an
+// open check, so a write before it would leave the boot nothing stale to read. The base commit has
+// none of the look-id columns and no such migration, so there only the task and the contract are
+// written.
 func (f *lookIDFixture) seedOlder(seed lookIDSeed) {
 	f.t.Helper()
 	ctx := context.Background()
@@ -2914,6 +2919,11 @@ func (f *lookIDFixture) seedOlder(seed lookIDSeed) {
 		return
 	}
 	f.exec("take the look id off the tester's pending task", "update pending_task_deliveries set look_id = null where claim_token = $1", token)
+	wayBack, err := migrations.WayBack(lookIDMigration)
+	if err != nil {
+		f.t.Fatalf("read the way back of migration %d: %v", lookIDMigration, err)
+	}
+	f.exec("run the way back of this release for the fixture's project", strings.ReplaceAll(wayBack, "<PROJECT>", f.cfg.Project))
 	var stored, storedLook, storedOpened any
 	if seed.stored != "" {
 		stored, storedLook, storedOpened = seed.stored, seed.storedLook, seed.storedOpened
@@ -2921,11 +2931,6 @@ func (f *lookIDFixture) seedOlder(seed lookIDSeed) {
 	f.exec("leave the check with the look id the release before leaves",
 		"update production_checks set look_id = $2, look_id_look = $3, look_id_opened_at = $4 where issue = $1",
 		f.key, stored, storedLook, storedOpened)
-	wayBack, err := migrations.WayBack(lookIDMigration)
-	if err != nil {
-		f.t.Fatalf("read the way back of migration %d: %v", lookIDMigration, err)
-	}
-	f.exec("run the way back of this release for the fixture's project", strings.ReplaceAll(wayBack, "<PROJECT>", f.cfg.Project))
 }
 
 // bootOver stops the fixture's daemon, writes seed with no daemon running (seedOlder) and then what
@@ -3243,11 +3248,12 @@ func (r *lookIDLive) reissueWaitsOnTheHold(f *lookIDFixture, opened time.Time) {
 // upgradeRolledBackLook is part 4, which the base does not run: look 1's task reaches the tester,
 // whose turn reports it pending with a wake and its look id; the wake, brought forward, starts look
 // 2, which resumes the tester, and look 2's task reaches it. With the daemon stopped, the store is
-// left as a rollback to the release before leaves it: that release opened look 2 and made no look
-// id, so the check still holds look 1's, made for look 1, and the tester's pending task is that
-// release's text of look 2. The boot gives look 2 an id of its own, whose task reaches the tester
-// relaunched on this change's contract; from its turn a pass with look 1's id is answered 409
-// CHECK_LOOK_NOT_OPEN, and a pending with look 2's new id 200.
+// left as the release before leaves it when it opens look 2 on a check that holds look 1's id: that
+// release made no look id, so the check still holds look 1's, made for look 1, and the tester's
+// pending task is that release's text of look 2. The way back clears the look id of an open check,
+// so seedOlder writes look 1's after it. The boot gives look 2 an id of its own, whose task
+// reaches the tester relaunched on this change's contract; from its turn a pass with look 1's id is
+// answered 409 CHECK_LOOK_NOT_OPEN, and a pending with look 2's new id 200.
 func (r *lookIDLive) upgradeRolledBackLook() {
 	f, tester, check := r.firstLook("upgrade part 4", nil)
 	first := tester.prompt("the look-1 task", checkTaskLeadText)

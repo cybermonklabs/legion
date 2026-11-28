@@ -2364,7 +2364,7 @@ A check outlives a child's re-entry, and it closes `not_run` when a later merge 
 The boot gives each open look that has no id of its own an id and a new task of that look, through a start that carries `lookReissue`, and gives each open check its `opened_generation`, the issue's generation when the check opened.
 Its migration `20261127171352_production_check_look_id` adds five columns, null on every row it finds: `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`.
 
-**Four things of this release need SQL before the earlier image runs on this database.**
+**Five things of this release need SQL before the earlier image runs on this database.**
 
 - The release before decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`) and knows neither `lookId` nor `lookReissue`, so it fails a supervise row that carries either at every attempt.
   A start without the two keys runs under the release before as a start of its look.
@@ -2380,6 +2380,16 @@ Its migration `20261127171352_production_check_look_id` adds five columns, null 
 
 - The release before's upsert of a new check names only its own columns, so it leaves `opened_generation` of the check it replaces in place.
   At the roll forward this release would then read the new check as opened in the generation of the check it replaced, so the block clears the column on every check of the project.
+
+- The release before's write of a new delivery names no look id, so the delivery holds none, or the look id of the delivery it replaces, which is another look's.
+  This release sends a look's task only while the look id its delivery holds is the current look's, so it drops such a task.
+  The release before can run a start of the current look that this release queued, with `lookId` taken off by the block.
+  The task then gives the look id that this release made for that look, and the check still holds that id as its current look's.
+  At the roll forward the boot would give that look no new task, since the look has an id of its own, and the send would drop the old task.
+  The look would then end at its bound with no report, and the check would close `not_run` where that look is its last.
+  The operator's claim view withholds only the look id that a delivery holds, so it would show the current look's id.
+  So the block clears the look id of each open check of the project, and the roll forward's boot gives each open look a new look id and a new task of that look, which replaces the old task.
+  The old id is then the id of no current look.
 
 Stop every daemon of the database.
 Then run the block below in one `PGPASSFILE=<pgpass file> psql '<postgres_url>' -X -v ON_ERROR_STOP=1` session ([Reaching the daemon's database by hand](#reaching-the-daemons-database-by-hand)), once for each project that rolls back, with `<PROJECT>` replaced by the project's key: `project` in its `legion.yaml`, the part of each of its issue keys before the hyphen, such as `LEGION`.
@@ -2404,6 +2414,9 @@ where c.issue = i.key and c.closed_at is null
 -- The generation each check of one project opened in.
 update production_checks set opened_generation = null
 where opened_generation is not null and project = '<PROJECT>';
+-- The look id of each open check of one project.
+update production_checks set look_id = null, look_id_look = null, look_id_opened_at = null
+where closed_at is null and project = '<PROJECT>';
 commit;
 ```
 
@@ -2417,12 +2430,14 @@ The header of `20261127171352_production_check_look_id.up.sql` carries this same
 
 The block drops none of the five columns and deletes no version row, so the roll forward applies nothing.
 The release before names none of the five columns in a statement, so it writes none of them.
-Its upsert of a later look, or of the check a later merge opens, leaves the three look id columns as this release wrote them.
+Each look id that the block leaves is the id of a closed check.
+The release before's upsert of the check that a later merge opens leaves that id as this release wrote it.
 Such a look id counts for nothing: this release reads an id as the current look's only for the look number and the check instance it was made for (`ProductionCheck.CurrentLookID`).
-At the roll forward, the first boot of this release gives each open check its generation again, and each open look with no id of its own an id and a new task of that look.
+At the roll forward, the first boot of this release gives each open check its generation again, and each open look an id of its own and a new task of that look: the block cleared the look id of each open check, and the release before makes none.
 Until then, the release before takes a report's look from the turn the claim is in, as it did before this release.
 
-`internal/store`'s `TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain` runs the header's block over queued rows of two projects with and without the two keys, `retire_look` rows, and the checks of a child that runs again, of a done child, of a parked child, of a root in the workflow and of another project's child.
+`internal/store`'s `TestTheWayBackStripsTheLookIDRowsAndClosesTheChecksOfChildrenThatRunAgain` runs the header's block over queued rows of two projects with and without the two keys, `retire_look` rows, and the checks, each with a look id, of a child that runs again, of a done child, of a parked child, of a root in the workflow, of a child whose check closed already, of a done root whose check is open, of a done root whose check closed, and of another project's done root and child.
+It holds that the block clears the look id of each check of the project that the block leaves open, and keeps the look id of each closed check and of each check of the other project.
 `internal/textcheck`'s `TestTheLookIDWayBackIsOneTextInTheHeaderAndTheGuide` holds the header's block to this block, so change the two in one commit.
 
 #### Rolling back the release whose cap counts issues
@@ -4433,7 +4448,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
-20261127171352_production_check_look_id, of dispatch://INFRA-3518, adds `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its own section first, [Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id), with every daemon of the database stopped, whose block, run for each project that rolls back, takes `lookId` and `lookReissue` off the project's supervise rows and deletes its supervise rows of the op `retire_look`, keys and an op that the release before refuses as ones it does not know, closes `not_run` the open check of each of its children that runs again, which the release before would let start looks after the child's next leave, and clears `production_checks.opened_generation` on its checks, which the release before's upsert of a new check would leave as the generation of the check it replaced; the migration's own header carries that section's block.
+20261127171352_production_check_look_id, of dispatch://INFRA-3518, adds `production_checks.look_id`, `production_checks.look_id_look`, `production_checks.look_id_opened_at`, `production_checks.opened_generation` and `pending_task_deliveries.look_id`, null on every row it finds, and touches none of the six, so the block holds over it and leaves the five columns standing, which the earlier release names in no statement; a rollback to a release before it takes the steps of its own section first, [Rolling back the release whose look report gives its look id](#rolling-back-the-release-whose-look-report-gives-its-look-id), with every daemon of the database stopped, whose block, run for each project that rolls back, takes `lookId` and `lookReissue` off the project's supervise rows and deletes its supervise rows of the op `retire_look`, keys and an op that the release before refuses as ones it does not know, closes `not_run` the open check of each of its children that runs again, which the release before would let start looks after the child's next leave, clears `production_checks.opened_generation` on its checks, which the release before's upsert of a new check would leave as the generation of the check it replaced, and clears the look id of each of its open checks, which a start of the current look that the release before runs would otherwise leave with no task after the roll forward, whose boot then gives each open look a new look id and a new task; the migration's own header carries that section's block.
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.

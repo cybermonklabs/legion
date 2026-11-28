@@ -1936,7 +1936,8 @@ func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 // OpenedAt is the check instance the report names (record.ProductionCheck.OpenedAt), the
 // report's checkOpenedAt that the route matched to the open check, so a report of a check that a
 // later merge of the same issue replaced before the fact applied is not recorded on the check
-// that replaced it; a zero OpenedAt names none.
+// that replaced it. The route always sets it; a zero OpenedAt is not fenced
+// (record.ProductionCheck.NamedBy).
 type CheckReport struct {
 	Issue    string
 	Claim    claim.Token

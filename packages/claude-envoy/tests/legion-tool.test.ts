@@ -197,6 +197,7 @@ test("answerLegionTool tells the host an update answered and nothing of a comple
       summary: "looked",
       verdict: "pass",
       check_opened_at: "2026-10-19T06:00:00.123456Z",
+      look_id: "AW4FVNJMOMMYLHJQ7XVPHX5RIA",
     },
     hook,
   )

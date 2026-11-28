@@ -282,10 +282,10 @@ func boundText(bound time.Duration) string {
 // and this transaction: the report of the replaced check or of the ended look is never recorded
 // on the check or the look after it. Each says that a report gives check_opened_at and look_id
 // from the task of its look, in the route's own words for that rule (intake.LookIDRule), and
-// neither holds a look id. A zero OpenedAt names the open check, as NamedBy reads a zero for
-// every fact of a check: the route always sends the opening time it matched, and an older daemon
-// applied its own reports, which carried none, in the transaction of their request, so no such
-// fact waits to be applied here.
+// neither holds a look id. The route always sets the fact's OpenedAt; a zero OpenedAt is not
+// fenced (record.ProductionCheck.NamedBy, intake.CheckReport.OpenedAt): an older daemon applied
+// its own reports, which carried none, in the transaction of their request, so no such fact waits
+// to be applied here.
 //
 // The look ends: pass closes the check as recorded and fail as a defect (closeCheck), and pending
 // ends the look as one with nothing to show (endLookPending), named for the next look at the time

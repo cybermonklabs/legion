@@ -20,13 +20,24 @@
 -- The release before this one names each column it reads and writes in production_checks (the
 -- record store's productionCheckColumns and PutProductionCheck) and in pending_task_deliveries
 -- (the claim store's putDelivery and claimSelect), so it neither reads nor writes these. Its
--- upsert of a later look, or of the check that a later merge opens, leaves the look id's three
--- columns as this release wrote them, which CurrentLookID reads as no id of the current look.
--- Its upsert of a new check also leaves opened_generation of the check it replaces in place, so
--- the way back below clears that column, and the next boot of this release writes each open
--- check's generation again. Its write of a new delivery leaves the look id of the delivery it
--- replaces in place. This release keeps a look's task only while the id the task carries is the
--- current look id of its look (ProductionCheck.CurrentLookID), so such an id holds no task.
+-- upsert of a new check leaves opened_generation of the check it replaces in place, so the way
+-- back below clears that column, and the next boot of this release writes each open check's
+-- generation again. Its write of a new delivery names no look id, so the delivery holds null, or
+-- the look id of the delivery it replaces, which is another look's. This release keeps and sends
+-- a look's task only while the look id its delivery holds is the current look id of its look
+-- (ProductionCheck.CurrentLookID), so it drops such a task. The release before can run a start
+-- row of the current look that this release queued and the way back below stripped of lookId:
+-- the task then gives the look id this release made for that look, the check still holds that id
+-- as its current look's, and the delivery holds no id of that look. At the roll forward the boot
+-- would then give the look no new task, since the look has an id of its own, and the send would
+-- drop the old task, so the look would end with no report at its bound, and the check would close
+-- not_run where that look is its last; the operator claim view, which withholds only the id a
+-- delivery holds, would show the current look's id. So the way back below also clears the look
+-- id of each open check, and the roll forward's boot gives each open look a new look id and a new
+-- task of that look, which replaces the old task: the old id is then the id of no current look.
+-- Each look id the way back leaves is a closed check's. The release before's upsert of the check
+-- that a later merge opens leaves that id as this release wrote it, which CurrentLookID reads as
+-- no id of the current look.
 --
 -- This release also writes the keys lookId and lookReissue into supervise rows
 -- (record.SuperviseRequest.LookID and LookReissue), and queues supervise rows of the op
@@ -73,6 +84,9 @@
 -- -- The generation each check of one project opened in.
 -- update production_checks set opened_generation = null
 -- where opened_generation is not null and project = '<PROJECT>';
+-- -- The look id of each open check of one project.
+-- update production_checks set look_id = null, look_id_look = null, look_id_opened_at = null
+-- where closed_at is null and project = '<PROJECT>';
 -- commit;
 alter table production_checks add column look_id text;
 alter table production_checks add column look_id_look integer;

@@ -1257,15 +1257,16 @@ assert_round_handoff() {
 # `legion state --json` shows it as `.issues[KEY].check` (repo, pullRequest, mergeCommit, openedAt,
 # role, looks, lookOpen, lastWake{kind, detail, at}, nextWakeAt, last) while it is open, and omits
 # it once it has closed. A look's report is that role's `handoff_complete` with `check_opened_at`
-# from its look task, a verdict and no commit. A `pending` before the last look ends the look and
-# suspends the role's claim with the issue's Sandbox, so the check stays open with `lookOpen`
-# false. That report carries `wake_at`, when the agent wants its next look, and the daemon starts
-# the next look then (`nextWakeAt`). Only that report starts a look before the bound: no deploy,
-# Dispatch notice or boot of the daemon's own wakes a check any more. A wake at or past the
-# check's bound starts no look of its own. The bound (`production_check_hours`) starts the last
-# look. Its `pending` closes the check as not_run and retires that role's claim (`issue_close`). Every
-# reader over daemon_state is a jq predicate, so a wait polls it as it polls issue_phase; the
-# readers over daemon.log parse each line on its own, since the log carries the daemon's stderr too.
+# and `look_id` from its look task, a verdict and no commit. A `pending` before the last look ends
+# the look and suspends the role's claim with the issue's Sandbox, so the check stays open with
+# `lookOpen` false. That report carries `wake_at`, when the agent wants its next look, and the
+# daemon starts the next look then (`nextWakeAt`). Only that report starts a look before the
+# bound: no deploy, Dispatch notice or boot of the daemon's own wakes a check any more. A wake at
+# or past the check's bound starts no look of its own. The bound (`production_check_hours`) starts
+# the last look. Its `pending` closes the check as not_run and retires that role's claim
+# (`issue_close`). Every reader over daemon_state is a jq predicate, so a wait polls it as it polls
+# issue_phase; the readers over daemon.log parse each line on its own, since the log carries the
+# daemon's stderr too.
 # check_open ISSUE: the issue's production check is open.
 check_open() { daemon_state | jq -e --arg issue "$1" '.issues[$issue].check != null' >/dev/null; }
 # check_opened_on ISSUE MERGE: the check is open on the merge commit MERGE, at its first look, still
