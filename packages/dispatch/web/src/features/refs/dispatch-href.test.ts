@@ -10,7 +10,7 @@ import { parseDispatchReference, referenceRouteFromHref } from "./routes";
 test.each(DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const))(
   "%s names the same reference as %s",
   (href, ref) => {
-    expect(referenceRouteFromHref(href, "http://dispatch.test")).toEqual(
+    expect(referenceRouteFromHref(href, ["http://dispatch.test"])).toEqual(
       parseDispatchReference(ref)
     );
   }
@@ -18,6 +18,6 @@ test.each(DISPATCH_HREF_REFERENCES.map((row) => [row.href, row.ref] as const))(
 
 test("an issue document href carrying both item parameters names nothing", () => {
   expect(
-    referenceRouteFromHref("/issues/CORE-1/spec?comment=c1&ask=a1", "http://dispatch.test")
+    referenceRouteFromHref("/issues/CORE-1/spec?comment=c1&ask=a1", ["http://dispatch.test"])
   ).toBeUndefined();
 });

@@ -318,6 +318,10 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_reconcile_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-reconcile.test.sh .github/scripts/ci-ok-reconcile.test.sh
 
+      - name: Test the large pull request's label and its approval-time ci-ok (a stand-in gh)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"large_pr_lanes_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/large-pr-lanes.test.sh .github/scripts/large-pr-lanes.test.sh
+
       - name: Test the pull request payload both pr-title checks read (a stand-in gh)
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"find_pr_payload_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/find-pr-payload.test.sh .github/scripts/find-pr-payload.test.sh

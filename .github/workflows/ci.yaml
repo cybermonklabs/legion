@@ -22,6 +22,7 @@ on:
         description: Run every job on a branch too, as a run on main does.
         type: boolean
         default: false
+  workflow_call:
 
 # why: .github/ci-notes/ci.md#what-a-newer-push-cancels-and-what-is-never-cancelled
 concurrency:
@@ -247,7 +248,7 @@ jobs:
       # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
       - name: Find the commit this run's change is measured against
         id: base
-        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
         env:
           MIGRATION_BASE: ${{ inputs.migration-base }}

@@ -4,7 +4,10 @@
 # outputs are false whatever their paths say, `full-ci` turns every one of them on, a
 # `lane:<output>` label turns on that one output and no other, still only where its paths
 # matched, and a label that names no such output turns on nothing
-# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request).
+# (.github/ci-notes/ci.md#a-lane-label-turns-on-one-slow-suite-on-a-pull-request). On an
+# approval's pull_request_review run, the event .github/workflows/large-pr-lanes.yaml calls
+# ci.yaml under, every output reads as a merge group's with the same paths verdicts, whatever the
+# labels (.github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head).
 #
 # The held-back set is read, not listed here, and read apart from the label terms it tests: the
 # outputs a merge group turns on and an unlabelled pull request holds false, every paths filter
@@ -701,6 +704,8 @@ check "  or the migration-base it names, which the filter step diffs with too" \
 check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
 check "a pull request: the first parent the base step finds, not the event's own base" \
   "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
+check "an approval's run (pull_request_review, large-pr-lanes.yaml's call): the same first parent" \
+  "$(is "$(generate_step_of "$ci" --event pull_request_review --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
 check "a dispatch of main: none, since it selects every job" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=")"
 check "every-job: none" \
@@ -791,10 +796,17 @@ check "a pull request then hands the generation the event's older base" \
 
 echo "case: a base step that runs on no pull request fails the pull-request case"
 broken=$(copy_with "$work/base-no-pull-request" ci.yaml \
-  "if: \${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
-  "if: \${{ github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job }}")
+  "if: \${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
+  "if: \${{ github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}")
 check "a pull request then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
+
+echo "case: a base step that runs on no approval's run fails the approval case"
+broken=$(copy_with "$work/base-no-review" ci.yaml \
+  "if: \${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}" \
+  "if: \${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}")
+check "an approval's run then hands the generation no base" \
+  "$(is "$(generate_step_of "$broken" --event pull_request_review --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
 # A dispatch of main selects every job and needs no base. edited-migrations-base.sh exits 2 on one
@@ -827,7 +839,7 @@ base_step=$(cat <<'YAML'
       # why: .github/ci-notes/ci.md#the-commit-a-change-is-measured-against
       - name: Find the commit this run's change is measured against
         id: base
-        if: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
+        if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
         env:
           MIGRATION_BASE: ${{ inputs.migration-base }}
@@ -1058,6 +1070,62 @@ broken=$(copy_with "$work/no-fall-open" ci.yaml " || steps.generate.outputs.ever
 got=$(fallen "$broken" --event merge_group --steps test)
 check "none of them runs" "$(is "$(running "$got")" "")"
 
+echo "case: an approval's run evaluates every output"
+# The comparisons below diff two lists; two empty lists would compare equal, so this reads the
+# review run's list on its own first.
+review_lines=$(outputs --event pull_request_review | wc -l)
+check "as many outputs as a merge group's" \
+  "$(is "$review_lines" "$(outputs --event merge_group | wc -l)")"
+check "and more than fifty" "$(is "$((review_lines > 50))" 1)"
+
+# verdicts_half <0|1>: a --verdict argument for every filter of the computed filters, every
+# other one true (starting at the first for 0, the second for 1), so the comparisons below cover
+# each filter both ways.
+verdicts_half() {
+  local at=0 name
+  for name in "${names[@]}"; do
+    if [ $(((at + $1) % 2)) -eq 0 ]; then echo "--verdict $name=true"; else echo "--verdict $name=false"; fi
+    at=$((at + 1))
+  done
+}
+# review_differs <workflow> <argument>...: each output a pull_request_review run, the event
+# .github/workflows/large-pr-lanes.yaml calls ci.yaml under, holds differently from a merge
+# group with the same paths verdicts, as the review run's `name=value`, on one line.
+review_differs() {
+  local workflow=$1
+  shift
+  { diff <(outputs_of "$workflow" --event pull_request_review "$@") \
+    <(outputs_of "$workflow" --event merge_group "$@") || true; } | sed -n 's/^< //p' | tr '\n' ' '
+}
+
+echo "case: an approval's run selects, value for value, what a merge group selects"
+# .github/ci-notes/ci.md#a-large-pull-request-runs-its-slow-suites-once-at-the-approved-head: the
+# approval-time run of a large pull request is ci.yaml called on pull_request_review, and it
+# must run exactly the slow suites the change's paths select, beside every fast job.
+check "every filter yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts true)" "")"
+check "every filter no" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" --verdicts false)" "")"
+mapfile -t half0 < <(verdicts_half 0)
+mapfile -t half1 < <(verdicts_half 1)
+check "the halves name every filter" "$(is "$((${#half0[@]} > 50))" 1)"
+# shellcheck disable=SC2068 # each element is `--verdict name=value`, split on purpose
+check "every other filter yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" ${half0[@]})" "")"
+# shellcheck disable=SC2068 # as above
+check "the other half yes" "$(is "$(review_differs "$repo/.github/workflows/ci.yaml" ${half1[@]})" "")"
+got=$(outputs --event pull_request_review --verdicts false --verdict "${held[0]}=true")
+check "one slow suite's paths alone turn on that suite" "$(is "$(value "$got" "${held[0]}")" true)"
+check "and no other slow suite" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request_review --verdicts false --verdict "${held[0]}=true" | tr '\n' ' ')" "${held[0]} ")"
+check "full-ci on the pull request turns on no suite its paths did not select" \
+  "$(is "$(not_value "$repo/.github/workflows/ci.yaml" false --event pull_request_review --verdicts false --label full-ci | tr '\n' ' ')" "")"
+
+echo "case: an output whose event term admits only the merge group fails the approval case"
+broken=$(copy_with "$work/merge-group-only" ci.yaml \
+  "(github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion'))" \
+  "(github.event_name == 'merge_group' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, 'lane:pi_legion'))")
+check "the copy differs from ci.yaml" "$(is "$(cmp -s "$broken" "$repo/.github/workflows/ci.yaml" && echo same)" "")"
+check "a merge group still turns it on" "$(is "$(not_value "$broken" true --event merge_group | tr '\n' ' ')" "")"
+check "an approval's run differs from the merge group's on exactly pi_legion" \
+  "$(is "$(review_differs "$broken" --verdicts true)" "pi_legion=false ")"
 
 # The statement step's widened lines, read from files ci-filters-generate.sh itself wrote: the
 # fail-open file above, and two runs of the real script below, one over a base it cannot read and

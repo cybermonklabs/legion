@@ -231,7 +231,7 @@ func backoffAttempts(t *testing.T, database *store.Store, document string) (vers
 // database's own when nil).
 func newExcerptService(t *testing.T, database *store.Store, persistence VersionedStore) *Service {
 	t.Helper()
-	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), ServerURL: "https://dispatch.example", Settle: time.Hour})
+	service := New(Deps{Store: database, Persistence: persistence, Events: events.NewBroker(), Origins: testOrigins, Settle: time.Hour})
 	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
