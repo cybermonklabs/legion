@@ -473,14 +473,15 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
-      # After setup-go, whose Go resolves the workspace graph this check lists.
-      - name: Check that every checksum a Go download needs is committed
+      # After setup-go, which installs the Go version pinned by go.work, so the check does not
+      # switch toolchains.
+      - name: Check that every checksum a root workspace download needs is committed
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum"')
         run: .github/scripts/check-go-work-sum.sh
 
-      # After setup-go: its fixtures run the real go over a scratch workspace whose requirement a
-      # file proxy serves, with a module cache of their own, so it downloads nothing.
-      - name: Test the go.work.sum check over a fixture workspace and a file proxy
+      # After setup-go: the harness runs the real Go over scratch workspaces, each with its own
+      # module cache and requirements served by a file proxy, so nothing comes from the network.
+      - name: Test the go.work.sum check over fixture workspaces and a file proxy
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-go-work-sum.test.sh .github/scripts/check-go-work-sum.test.sh
 

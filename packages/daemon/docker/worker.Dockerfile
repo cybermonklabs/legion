@@ -600,15 +600,17 @@ COPY packages/envoy/go.mod packages/envoy/go.sum packages/envoy/
 # a 404 from the file proxy and falls through to the public proxy, while the `.info`, `.mod` and
 # `.zip` of a pinned version still come from the cache. The final stage's toolchain step refuses
 # an image that ships one of these files again.
-# The download also fetches from sum.golang.org the go.mod sums go.work.sum lacks, into the cache's
-# sumdb directory (240 lines and 487 files on 2026-11-22), and those tiles and lookups differ with
-# the hour they are read. So the RUN deletes that directory too: the cache it ships is then the same
-# bytes for the same module files, and the runtime stage's layer of it, with every layer after it,
-# is reused rather than built and pushed again on every build. A pod's go reads this cache only
-# through GOPROXY's file proxy, and a go asks a proxy for the checksum database at
-# <proxy>/sumdb/<name>/supported, which this cache has never held. A go whose own GOMODCACHE is the
-# image's (`docker run`, with no pod's GOMODCACHE) reads it as its checksum cache, and without it
-# fetches from sum.golang.org the checksums it lacks, as it does for any module not in the cache.
+# The root go.work.sum and the two modules' go.sum files hold every checksum this download needs.
+# The test job's .github/scripts/check-go-work-sum.sh checks that they stay complete. The download
+# asks sum.golang.org for nothing and writes no sumdb directory into the cache. On a branch that
+# the check has not yet run on, a missing checksum can make the download fetch into that directory
+# tiles and lookups that differ with the hour they are read, so the RUN still deletes it: the
+# cache it ships is then the same bytes for the same module files, and the runtime stage's layer of
+# it, with every layer after it, is reused. A pod's go reads this cache only through GOPROXY's file
+# proxy, and a go asks a proxy for the checksum database at <proxy>/sumdb/<name>/supported, which
+# this cache has never held. A go whose own GOMODCACHE is the image's (`docker run`, with no pod's
+# GOMODCACHE) would read a sumdb directory there as its checksum cache, and with none it fetches
+# from sum.golang.org the checksums it lacks, as it does for any module not in the cache.
 RUN go mod download \
     && find /gomodcache/cache/download \( -path '*/@v/list' -o -name '@latest' \) -delete \
     && rm -rf /gomodcache/cache/download/sumdb

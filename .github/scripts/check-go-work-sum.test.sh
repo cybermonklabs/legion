@@ -1,14 +1,11 @@
 #!/usr/bin/env bash
-# Tests for check-go-work-sum.sh, over a fixture workspace whose one requirement a file proxy
-# serves, so no case reaches the network: every go command runs with GOPROXY at that proxy,
-# GOTOOLCHAIN=local and an empty module cache of the case's own.
+# Tests for check-go-work-sum.sh over fixture workspaces. A file proxy serves their requirements,
+# so no case reaches the network. Each download uses GOTOOLCHAIN=local and a cold module cache.
 #
-# What the cases hold: a workspace whose hashes are all committed passes; one with a hash removed
-# fails naming the module; and either way the module files are left byte for byte as committed.
-# In a workspace `go mod download` writes the hashes it computes into go.work.sum, and the check
-# downloads with GOSUMDB=off, so a hash it left there would be one no checksum database verified,
-# which a developer following its refusal would commit. The last case stops the check while a
-# stand-in go is writing go.work.sum, and the file is back as committed.
+# With every hash committed, the check passes. It names a missing content hash, a missing go.mod
+# hash of an unselected version, and a hash held only outside the workspace. Each case checks
+# that the checkout's sum files stay unchanged. The last case kills the check with SIGKILL while
+# a stand-in Go is writing to the copy.
 #
 # Run from anywhere: .github/scripts/check-go-work-sum.test.sh
 # CI runs it in ci.yaml's test job.
@@ -21,84 +18,127 @@ script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 source "$script_dir/test-lib.sh"
 
 work=$(mktemp -d)
-# The module cache is read-only as go leaves it, and GOFLAGS=-modcacherw below makes it writable.
-trap 'chmod -R u+w "$work" 2> /dev/null; rm -rf "$work"' EXIT
+trap 'chmod -R u+w "$work" 2> /dev/null; rm -rf -- "$work"' EXIT
 
 export GOPROXY="file://$work/proxy" GOTOOLCHAIN=local GOFLAGS=-modcacherw GOWORK='' GOENV=off GONOSUMDB='' GOPRIVATE=''
 
-# The proxy: example.com/dep v1.0.0, one package, laid out as a module proxy serves it.
-mkdir -p "$work/proxy/example.com/dep/@v"
-python3 - "$work/proxy/example.com/dep/@v" <<'PY'
-import pathlib, sys, zipfile
-at = pathlib.Path(sys.argv[1])
-mod = "module example.com/dep\n\ngo 1.21\n"
-(at / "list").write_text("v1.0.0\n")
-(at / "v1.0.0.info").write_text('{"Version":"v1.0.0","Time":"2026-01-01T00:00:00Z"}\n')
-(at / "v1.0.0.mod").write_text(mod)
-with zipfile.ZipFile(at / "v1.0.0.zip", "w") as z:
-    z.writestr("example.com/dep@v1.0.0/go.mod", mod)
-    z.writestr("example.com/dep@v1.0.0/dep.go", "package dep\n")
+# The proxy serves two dep versions. The older go line in other makes Go read the go.mod of
+# dep v1.0.0 even though the workspace selects v1.1.0.
+python3 - "$work/proxy" <<'PY'
+import json, pathlib, sys, zipfile
+
+proxy = pathlib.Path(sys.argv[1])
+for name, version, directives in (
+    ("dep", "v1.0.0", "go 1.16\n"),
+    ("dep", "v1.1.0", "go 1.21\n"),
+    ("other", "v1.0.0", "go 1.16\n\nrequire example.com/dep v1.0.0\n"),
+):
+    module = f"example.com/{name}"
+    at = proxy / module / "@v"
+    at.mkdir(parents=True, exist_ok=True)
+    mod = f"module {module}\n\n{directives}"
+    with (at / "list").open("a") as versions:
+        versions.write(f"{version}\n")
+    (at / f"{version}.info").write_text(json.dumps({"Version": version, "Time": "2026-01-01T00:00:00Z"}))
+    (at / f"{version}.mod").write_text(mod)
+    with zipfile.ZipFile(at / f"{version}.zip", "w") as z:
+        z.writestr(f"{module}@{version}/go.mod", mod)
+        z.writestr(f"{module}@{version}/{name}.go", f"package {name}\n")
 PY
 
-# tree <name>: a workspace under $work/<name> using ./a, which requires example.com/dep, with
-# the script under test at its .github/scripts and every file in git's index, as a checkout has
-# them. Echoes its root. Its go.work.sum is empty; the cases write the one they test.
+# tree <name>: create a workspace using ./a and echo its root. Keep a Git index so the old
+# check sees the same tracked files when this harness runs as a negative control.
 tree() {
   local root="$work/$1"
   mkdir -p "$root/.github/scripts" "$root/a"
   cp "$script_dir/check-go-work-sum.sh" "$root/.github/scripts/"
   printf 'go 1.21\n\nuse ./a\n' > "$root/go.work"
-  printf 'module example.com/a\n\ngo 1.21\n\nrequire example.com/dep v1.0.0\n' > "$root/a/go.mod"
-  printf 'package a\n\nimport _ "example.com/dep"\n' > "$root/a/a.go"
+  cat > "$root/a/go.mod" <<'MOD'
+module example.com/a
+
+go 1.21
+
+require (
+	example.com/dep v1.1.0
+	example.com/other v1.0.0
+)
+MOD
+  printf 'package a\n\nimport (\n\t_ "example.com/dep"\n\t_ "example.com/other"\n)\n' > "$root/a/a.go"
   : > "$root/go.work.sum"
-  git -C "$root" init -q
-  git -C "$root" add -A
+  git -C "$root" init -q && git -C "$root" add -A
   echo "$root"
 }
 
-# The two hashes of example.com/dep v1.0.0, as a download computes them into go.work.sum.
 seed=$(tree seed)
 (cd "$seed" && GOMODCACHE="$work/seed-cache" GOSUMDB=off go mod download all)
-hashes=$(cat "$seed/go.work.sum" "$seed/a/go.sum" 2> /dev/null | grep '^example.com/dep v1.0.0' | sort || true)
-check "the fixture's download computes both hashes of example.com/dep" "$(is "$(grep -c . <<< "$hashes")" 2)"
+selected=$(grep '^example\.com/dep v1\.1\.0 h1:' "$seed/go.work.sum" || true)
+unselected=$(grep '^example\.com/dep v1\.0\.0/go\.mod h1:' "$seed/go.work.sum" || true)
+check "the seed has the selected dep content hash" "$(is "${selected:+present}" present)"
+check "the seed has the unselected dep go.mod hash" "$(is "${unselected:+present}" present)"
+if ((FAIL > 0)); then
+  summary "fixture seed"
+fi
 
-# run_check <root>: the check in the tree, on a cold module cache of its own, with its output in
-# `out` and its status in `status`.
-run_check() {
-  set +e
-  out=$(cd "$1" && GOMODCACHE="$1.cache" timeout 120 .github/scripts/check-go-work-sum.sh 2>&1)
-  status=$?
-  set -e
+stage_fixture() {
+  git -C "$1" add -A
+  git -C "$1" show :go.work.sum > "$1.committed"
 }
 
-echo "case: every hash the workspace needs is committed"
+# run_check <root>: stage its inputs and run on a cold cache, recording output and status.
+run_check() {
+  stage_fixture "$1"
+  status=0
+  out=$(cd "$1" && TMPDIR="$work" GOMODCACHE="$1.cache" timeout 120 .github/scripts/check-go-work-sum.sh 2>&1) || status=$?
+}
+
+assert_unchanged() {
+  check "go.work.sum is still the committed file, byte for byte" \
+    "$(cmp -s "$1/go.work.sum" "$1.committed" && echo true || echo false)"
+  check "no a/go.sum was created" "$([[ ! -e "$1/a/go.sum" ]] && echo true || echo false)"
+}
+
+echo "case 1: every hash the workspace needs is committed"
 root=$(tree complete)
-printf '%s\n' "$hashes" > "$root/go.work.sum"
-cp "$root/go.work.sum" "$work/complete.committed"
+cp "$seed/go.work.sum" "$root/go.work.sum"
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
-check "counts the one module it checked" "$(contains "$out" "every checksum the workspace's 1 modules need is committed")"
-check "and leaves go.work.sum as committed" "$(cmp -s "$root/go.work.sum" "$work/complete.committed" && echo true || echo false)"
+check "prints the success line" \
+  "$(is "$out" 'no checksum is missing: go mod download all in a copy of the root workspace added nothing to go.work.sum or to the go.sum of a')"
+assert_unchanged "$root"
 
-echo "case: a hash is missing on a cold module cache"
-root=$(tree missing)
-grep '/go.mod ' <<< "$hashes" > "$root/go.work.sum"
-cp "$root/go.work.sum" "$work/missing.committed"
+echo "case 2: a selected module's content hash is missing"
+root=$(tree missing-content)
+grep -Fxv -- "$selected" "$seed/go.work.sum" > "$root/go.work.sum"
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "naming the module whose hash no file holds" \
-  "$(contains "$out" "^::error file=go.work.sum::1 of the 1 modules this workspace needs have a checksum in no committed file")"
-check "and the module itself" "$(contains "$out" '^  example.com/dep v1.0.0$')"
-check "go.work.sum is still the committed file, byte for byte" \
-  "$(cmp -s "$root/go.work.sum" "$work/missing.committed" && echo true || echo false)"
-check "and no go.sum the tree did not have is left" "$(is "$([ -e "$root/a/go.sum" ] && echo left || echo none)" none)"
+check "counts one missing checksum" \
+  "$(contains "$out" '^::error file=go\.work\.sum::no committed file holds 1 of the checksums a download in the root workspace needs')"
+check "names the selected content hash verbatim" "$(grep -Fxq -- "  $selected" <<< "$out" && echo true || echo false)"
+assert_unchanged "$root"
 
-# A stand-in go: `go env GOROOT` names a GOROOT whose go writes a line into go.work.sum, as a
-# download does, then waits to be stopped.
-echo "case: a run stopped mid-download leaves go.work.sum as committed"
-root=$(tree stopped)
-printf '%s\n' "$hashes" > "$root/go.work.sum"
-cp "$root/go.work.sum" "$work/stopped.committed"
+echo "case 3: an unselected version's go.mod hash is missing"
+root=$(tree missing-unselected)
+grep -Fxv -- "$unselected" "$seed/go.work.sum" > "$root/go.work.sum"
+run_check "$root"
+check "exits 1 (got $status)" "$(is "$status" 1)"
+check "names the unselected go.mod hash verbatim" "$(grep -Fxq -- "  $unselected" <<< "$out" && echo true || echo false)"
+assert_unchanged "$root"
+
+echo "case 4: a hash is held only in a go.sum outside the use list"
+root=$(tree outside-use)
+grep -Fxv -- "$selected" "$seed/go.work.sum" > "$root/go.work.sum"
+mkdir "$root/b"
+printf 'module example.com/b\n\ngo 1.21\n\nrequire example.com/dep v1.1.0\n' > "$root/b/go.mod"
+printf '%s\n' "$selected" > "$root/b/go.sum"
+run_check "$root"
+check "exits 1 (got $status)" "$(is "$status" 1)"
+check "names the hash held only outside the workspace" "$(grep -Fxq -- "  $selected" <<< "$out" && echo true || echo false)"
+assert_unchanged "$root"
+
+echo "case 5: SIGKILL while Go writes a checksum leaves the checkout unchanged"
+root=$(tree killed)
+cp "$seed/go.work.sum" "$root/go.work.sum"
+stage_fixture "$root"
 mkdir -p "$work/stand-in/bin" "$work/stand-in-root/bin"
 cat > "$work/stand-in/bin/go" <<SH
 #!/usr/bin/env bash
@@ -107,28 +147,35 @@ exit 2
 SH
 cat > "$work/stand-in-root/bin/go" <<'SH'
 #!/usr/bin/env bash
-echo "example.com/planted v1.0.0 h1:unverified=" >> go.work.sum
-touch "$STAND_IN_WROTE"
-sleep 60
+set -e
+case "$1 $2" in
+  'work edit') echo '{"Go":"1.21","Use":[{"DiskPath":"./a"}]}' ;;
+  'mod download')
+    echo 'example.com/planted v1.0.0 h1:unverified=' >> ./go.work.sum
+    touch "$STAND_IN_WROTE"
+    exec sleep 60
+    ;;
+  *) exit 2 ;;
+esac
 SH
 chmod +x "$work/stand-in/bin/go" "$work/stand-in-root/bin/go"
-# Its own process group (job control on), so the TERM reaches the check and the go it waits on
-# together, as a Ctrl-C or a cancelled job's signal reaches a terminal's foreground group: bash
-# runs a trap only once the command it waits on has ended.
+# Give the check its own process group so SIGKILL stops both it and the stand-in Go.
 set -m
-(cd "$root" && PATH="$work/stand-in/bin:$PATH" STAND_IN_WROTE="$work/stopped.wrote" \
-  exec .github/scripts/check-go-work-sum.sh > "$work/stopped.out" 2>&1) &
+(cd "$root" && export PATH="$work/stand-in/bin:$PATH" STAND_IN_WROTE="$work/killed.wrote" TMPDIR="$work" &&
+  exec .github/scripts/check-go-work-sum.sh > "$work/killed.out" 2>&1) &
 pid=$!
 set +m
-for _ in $(seq 100); do [ -e "$work/stopped.wrote" ] && break; sleep 0.1; done
-check "the stand-in wrote into go.work.sum" "$(is "$([ -e "$work/stopped.wrote" ] && echo wrote || echo none)" wrote)"
-kill -TERM -- "-$pid"
-set +e
-wait "$pid"
-status=$?
-set -e
-check "the check ends on the TERM" "$(is "$status" 143)"
-check "and go.work.sum is the committed file again, byte for byte" \
-  "$(cmp -s "$root/go.work.sum" "$work/stopped.committed" && echo true || echo false)"
+for ((i = 0; i < 100; i++)); do
+  [[ -e "$work/killed.wrote" ]] && break
+  sleep 0.1
+done
+check "the stand-in wrote a checksum before SIGKILL" "$([[ -e "$work/killed.wrote" ]] && echo true || echo false)"
+kill -KILL -- "-$pid" 2> /dev/null || true
+status=0
+wait "$pid" 2> /dev/null || status=$?
+check "the check ends on SIGKILL" "$(is "$status" 137)"
+assert_unchanged "$root"
+check "the planted line did not reach the checkout" \
+  "$(grep -Fq -- 'example.com/planted' "$root/go.work.sum" && echo false || echo true)"
 
-summary "check-go-work-sum.sh's checks and the module files it leaves"
+summary "check-go-work-sum.sh and the checkout's unchanged sum files"
