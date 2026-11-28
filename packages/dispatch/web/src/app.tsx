@@ -1173,16 +1173,12 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
                 <Route element={<ProjectPage />} path="/projects/:key/architecture" />
                 <Route element={<ProjectPage />} path="/projects/:key/issues" />
                 <Route element={<ProjectPage />} path="/projects/:key/documents" />
-                {/* The Evals tab's route opens the tab's first views as it matches, while the
-                    page's code loads (EvalsTabRoute). */}
-                <Route
-                  element={
-                    <EvalsTabRoute fallback={<IssuePageFallback />}>
-                      <ProjectPage />
-                    </EvalsTabRoute>
-                  }
-                  path="/projects/:key/evals"
-                />
+                {/* The Evals tab's route is under a layout route of its own, which opens the tab's
+                    first views as the route matches, while the page's code loads
+                    (EvalsTabRoute). */}
+                <Route element={<EvalsTabRoute fallback={<IssuePageFallback />} />}>
+                  <Route element={<ProjectPage />} path="/projects/:key/evals" />
+                </Route>
                 <Route element={<ProjectPage />} path="/projects/:key/settings" />
                 <Route element={<EvalsAcrossProjects />} path="/evals" />
                 <Route element={<DocumentPage />} path="/projects/:key/documents/:slug" />
