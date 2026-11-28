@@ -27,9 +27,10 @@ GATE = gate("envoy_session_stall", STALL, runs=[
                f"the packages that test hands buildGoBinaries, run by "
                f"{at(STALL, 'Broker credential tests on a hub behind the auth service')}",
                ENVOY, ["./internal/testnats/cmd/natsd", "./internal/testnats/cmd/calloutd"], mode="build"),
-    step_run(STALL, "Build the Dispatch server and the NATS auth service once for the suites below",
-             "go build ./cmd/dispatch ./internal/testnats/cmd/calloutd",
-             ENVOY, ["./cmd/dispatch", "./internal/testnats/cmd/calloutd"], mode="build"),
+    step_run(STALL, "Build once the Go commands the suites below build",
+             "go build ./cmd/dispatch ./internal/testnats/cmd/calloutd ./cmd/cipherd ./cmd/dev-oidc-issuer ./cmd/dev-proxy-stands ./cmd/cipher",
+             ENVOY, ["./cmd/dispatch", "./internal/testnats/cmd/calloutd", "./cmd/cipherd", "./cmd/dev-oidc-issuer",
+                     "./cmd/dev-proxy-stands", "./cmd/cipher"], mode="build"),
     ceiling_run(STALL),
 ], reads=reads(
     ("packages/envoy-client/**", f"{at(STALL, STALL_CLIENT)}: src/__tests__/nats-stall.test.ts and test/*.ts, which the other two import"),
@@ -43,6 +44,9 @@ GATE = gate("envoy_session_stall", STALL, runs=[
     # them, so a change to the pool must start this job.
     (".github/scripts/harness-pool.sh",
      f"{at(STALL, HARNESS_POOL_WAIT_STEP)}, and each suite step above it queues its suite through it"),
+    (".github/scripts/harness_line_times.py",
+     f"{at(STALL, HARNESS_POOL_WAIT_STEP)}: .github/scripts/harness-pool.sh starts it beside each suite it runs, on that suite's log"),
+    (".github/actions/harness-times-upload/**", at(STALL, "Upload the harness case times")),
 ) + ceiling_reads(STALL) + service_settings_reads(STALL) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_session_stall held packages/envoy/** by hand before the filters were computed: it selected 1962 file(s) no other read of this gate declares", but=('**/*_test.go',)),

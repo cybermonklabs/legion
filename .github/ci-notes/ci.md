@@ -2451,8 +2451,8 @@ of them and ci-router-outputs.test.sh after the
 step that fetches the filters the run's changes job computed, whose path each takes in its step's
 env). In envoy-go-checks they are queued right after the Go cache restore and the helm install
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
-step that queued it), longest first. envoy-session-stall queues its ten stack suites the same
-way, after the contracts build they all import
+step that queued it), longest first. envoy-session-stall queues its thirteen stack suites the
+same way, after the contracts build they all import and the build of the Go commands they build
 (#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 Each job that queues harnesses also keeps a record of when each line of each harness's log was
@@ -2481,9 +2481,9 @@ failure to write it cannot end the recorder, the harness runs in a subshell of i
 `times` is the harness's CPU alone (`?` where that cannot be read, never 0), and a stamper that
 fails leaves an incomplete record, which the reader reports as UNKNOWN, and its error output in
 the entry's recorder log, which the wait prints in the harness's group. The upload step has
-`continue-on-error: true` in both jobs: an upload that fails is a red mark on that step, the job
-and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN for a job with no
-artifact covers the lost record. The one thing the
+`continue-on-error: true` in each job that queues harnesses: an upload that fails is a red mark
+on that step, the job and its ci-ok report keep the harnesses' verdict, and the reader's UNKNOWN
+for a job with no artifact covers the lost record. The one thing the
 pool changes for a harness is PYTHONUNBUFFERED=1, so that a Python program's lines reach the log
 when it prints them rather than when it ends and carry their own times.
 
@@ -3273,19 +3273,22 @@ envoy-client job sets up neither, so a suite gated on LEGION_E2E_DISPATCH_STACK 
 there for ever. The filter envoy_session_stall already selects packages/envoy/** and
 packages/envoy-client/**, so the suite brings no new path into this job's closure.
 
-Each of these suites, and the role takeover smoke beside them, starts a stack of its own: its
-binaries built into a scratch directory of its own that also keeps its servers' state, its
-servers on ports the kernel chose for them, and each Dispatch server on a database of its own.
-They share the checkout, the Postgres service and the Go module and build caches. Most of each
-suite's time is a real window or timer it is about (nats.js's ping and dial timers, the
-listener's live window, gone horizon and reap interval), so as one step after another they were
-508 s of the job's 556 s median (17 green merge-group jobs, 2026-11-27) with the runner's four
-cores about 10 % busy. The job queues them through the harness pool (#the-harness-pool),
-longest first, and its wait step is their verdict. The go-envoy entry holds no objects of
-./cmd/dispatch or of the NATS auth service, and each Dispatch suite and the broker credential
-suite builds its own, so the job compiles both once before the pool starts any suite: started
-at once, the four Dispatch suites each compiled ./cmd/dispatch again, and a compile beside the
-suites would share the processors with rows that read real clocks.
+Each of these suites, the role topics and CI-result suites and the role takeover smoke beside
+them starts a stack of its own: its binaries built into a scratch directory of its own that also
+keeps its servers' state, its servers on ports the kernel chose for them, and each Dispatch
+server and the CI-result stack's brokers on a database of their own. They share the checkout,
+the Postgres service and the Go module and build caches. Most of each suite's time is a real
+window or timer it is about (nats.js's ping and dial timers, the listener's live window, gone
+horizon and reap interval), so as one step after another the thirteen were 628 s of the job's
+673 s median (31 green merge-group jobs, 2026-11-27 and 28), and over the ten that ran on
+2026-11-27 the runner's four cores were about 10 % busy. The job queues them through the harness
+pool (#the-harness-pool), longest first, and its wait step is their verdict. The go-envoy entry
+holds no objects of ./cmd/dispatch, of the NATS auth service or of the four commands the
+CI-result stack builds (./cmd/cipherd, ./cmd/dev-oidc-issuer, ./cmd/dev-proxy-stands and
+./cmd/cipher), and each suite that runs one builds its own, so the job compiles each once before
+the pool starts any suite: started at once, the four Dispatch suites of 2026-11-27 each compiled
+./cmd/dispatch again, and a compile beside the suites would share the processors with rows that
+read real clocks.
 
 ## What the refill live proof shows
 
