@@ -140,11 +140,13 @@ func TestAClusteredHubsTokenListenerRollsTheHubOnTheSwitch(t *testing.T) {
 // natsAudience is refused, wherever the listener is declared, as a core.InputError naming
 // <path>.natsAudience, and nothing registers: without authCallout, whose auth service alone admits
 // a token; beside each of the seed's three inputs, naming it, since a listener connects as one
-// identity; padded, or holding a control character, since the broker reads its own audience
-// trimmed; and equal to the listener's own oidcAudience, where it requires one (the hub's own
-// listener, and a tailnet.listener with clientNamespaces). A machine id holding a space, which no
-// BROKER_NATS_SERVICES entry can name, is refused naming <path>.machineId. Each want holds %[1]s
-// for the listener's path.
+// identity; padded, or holding a control character, since natsAudience may hold neither anywhere,
+// the broker trimming its own audience; and equal to the listener's own oidcAudience or
+// oidcIssuer, whose URL a cluster's API server takes as an audience, where it requires a
+// credential (the hub's own listener, and a tailnet.listener with clientNamespaces). A machine id
+// no BROKER_NATS_SERVICES entry can name, one holding a space, '/' or '=', or the id '-', each of
+// which core takes, is refused naming <path>.machineId. Each want holds %[1]s for the listener's
+// path.
 func TestAClusteredHubsListenerAudienceRefusals(t *testing.T) {
 	type (
 		A = gcp.ClusteredNatsHubArgs
@@ -174,8 +176,21 @@ func TestAClusteredHubsListenerAudienceRefusals(t *testing.T) {
 			}
 			l.NatsAudience = l.OidcAudience
 		}, []string{"%[1]s.natsAudience is %[1]s.oidcAudience's audience"}},
+		{"the listener's own oidcIssuer", "natsAudience", func(a *A, l *L) {
+			if a.Listener == nil {
+				// A tailnet.listener requires a caller's token only with clientNamespaces.
+				withCredential(l).ClientNamespaces = []string{"legion"}
+			}
+			l.NatsAudience = l.OidcIssuer
+		}, []string{"%[1]s.natsAudience is %[1]s.oidcIssuer's URL"}},
 		{"a machine id holding a space", "machineId", func(_ *A, l *L) { l.MachineID = pulumi.StringRef("envoy hub") },
 			[]string{`%[1]s.machineId "envoy hub" holds a space`}},
+		{"a machine id holding a slash", "machineId", func(_ *A, l *L) { l.MachineID = pulumi.StringRef("a/b") },
+			[]string{`%[1]s.machineId "a/b" holds a space, '*', '>', '/', '=' or a control character, or is '-', which no BROKER_NATS_SERVICES entry can name`}},
+		{"a machine id holding an equals sign", "machineId", func(_ *A, l *L) { l.MachineID = pulumi.StringRef("a=b") },
+			[]string{`%[1]s.machineId "a=b" holds a space, '*', '>', '/', '=' or a control character, or is '-', which no BROKER_NATS_SERVICES entry can name`}},
+		{"the machine id '-'", "machineId", func(_ *A, l *L) { l.MachineID = pulumi.StringRef("-") },
+			[]string{`%[1]s.machineId "-" holds a space, '*', '>', '/', '=' or a control character, or is '-', which no BROKER_NATS_SERVICES entry can name`}},
 	}
 	for _, placement := range clusteredListenerPlacements() {
 		t.Run(placement.name, func(t *testing.T) {

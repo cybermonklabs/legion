@@ -307,15 +307,55 @@ func envVars(env []string) corev1.EnvVarArray {
 	return values
 }
 
+// dispatchMountedSecret is one Secret Manager secret the pods mount through the Secret Manager
+// add-on's CSI driver: input is the input whose resource path names it, which the seed refusal and
+// the existingCluster lookup's refusal name, secret reads that input from the component's args,
+// volume is the pod volume that mounts it, backed by SecretProviderClass <hostname>-<volume>
+// (secretClassName), and file is the one file that class mounts it as.
+type dispatchMountedSecret struct {
+	input, volume, file string
+	secret              func(*DispatchArgs) pulumi.StringInput
+}
+
+// mountedSecrets lists the Secret Manager secrets the pods mount through the CSI driver, in the
+// order newDispatchKubernetes registers their SecretProviderClasses, one for each: natsSeedSecret
+// without natsAudience, which both pods mount; azureEmbedKeySecret with the Azure embedder's key
+// form; and chatTokenSecret with the endpoint answerer, both of which the app's pod mounts. It is
+// the one list of them: newDispatchKubernetes registers a class for each secret it lists and none
+// for any other, and lookupDispatchCluster refuses a cluster with the add-on off exactly while it
+// lists one, naming them.
+func (s dispatchSettings) mountedSecrets() []dispatchMountedSecret {
+	var mounted []dispatchMountedSecret
+	if s.natsAudience == "" {
+		mounted = append(mounted, dispatchMountedSecret{input: "natsSeedSecret", volume: natsSeedFile, file: natsSeedFile,
+			secret: func(a *DispatchArgs) pulumi.StringInput { return a.NatsSeedSecret }})
+	}
+	if s.azure.key {
+		mounted = append(mounted, dispatchMountedSecret{input: "azureEmbedKeySecret", volume: "azure-embed-key", file: "key",
+			secret: func(a *DispatchArgs) pulumi.StringInput { return a.AzureEmbedKeySecret }})
+	}
+	if s.answerer.place == dispatchAnswererEndpoint {
+		mounted = append(mounted, dispatchMountedSecret{input: "chatTokenSecret", volume: "chat-token", file: "token",
+			secret: func(a *DispatchArgs) pulumi.StringInput { return a.ChatTokenSecret }})
+	}
+	return mounted
+}
+
+// secretClassName is the name of the SecretProviderClass that backs the pod volume volume, one of
+// mountedSecrets': <hostname>-<volume>, which the class registers under and the volume mounts.
+func (s dispatchSettings) secretClassName(volume string) string {
+	return s.hostname + "-" + volume
+}
+
 // newDispatchKubernetes registers the component's Kubernetes provider, built from the cluster
 // half's kubeconfig, whichever cluster that is, and every Kubernetes object on it, each a child of
 // the component that depends on the cluster half's waitFor: the component's own Cluster, or nothing
 // for a cluster existingCluster names. It also prepares the pods' NATS credential
-// (newDispatchNATSCredential): without natsAudience that registers the NATS seed's
-// SecretProviderClass and its two grants by uid, which take the app's and the listener's
-// ServiceAccounts' uids and so follow those accounts, and with natsAudience nothing. It answers
-// with the app's account's uid (dispatchServiceAccountUID), the serviceAccountUid output, in
-// either mode.
+// (newDispatchNATSCredential): without natsAudience that registers the NATS seed's two grants by
+// uid, which take the app's and the listener's ServiceAccounts' uids and so follow those accounts,
+// and with natsAudience nothing; and it registers the SecretProviderClass of each secret
+// mountedSecrets lists, the NATS seed's among them without natsAudience. It answers with the
+// app's account's uid (dispatchServiceAccountUID), the serviceAccountUid output, in either mode.
 func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, args *DispatchArgs, s dispatchSettings, cloud *dispatchCluster, database *dispatchDatabase) (pulumi.StringOutput, error) {
 	dispatch := dispatchType + " " + name
 	// The provider is the component's own, so it can promise mutable ConfigMaps: pulumi-kubernetes
@@ -396,40 +436,30 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		return pulumi.StringOutput{}, err
 	}
 	// The app's uid is the serviceAccountUid output in either mode. The NATS seed's grants by uid,
-	// which take each account's uid, register with the seed's other resources, after both accounts
-	// (newDispatchNATSCredential).
+	// which take each account's uid, register with the rest of the pods' NATS credential, after
+	// both accounts and before the seed's SecretProviderClass (newDispatchNATSCredential).
 	appUID := dispatchServiceAccountUID(ctx, dispatch, s.hostname, appAccount)
-	// One of the three SecretProviderClasses, which differ in nothing else: the CSI driver reads
-	// the Secret Manager secret the consumer's Input names, at its latest version, and mounts it
-	// as the one file file names. input is that Input's own schema name, which the seed refusal
-	// names (refuseDispatchSeed): a seed there fails the output, so no child is registered with
-	// it. The rendered YAML is what the goldens hold, so writing it once changes nothing about
-	// what is applied.
-	secretClass := func(name string, secret pulumi.StringInput, input, file string) error {
-		path := refuseDispatchSeed(secret, dispatch, input).ApplyT(func(resource string) string {
-			return strings.TrimSuffix(resource, "/") + "/versions/latest"
-		}).(pulumi.StringOutput)
-		_, err := apiextensions.NewCustomResource(ctx, name, &apiextensions.CustomResourceArgs{
-			ApiVersion: pulumi.String("secrets-store.csi.x-k8s.io/v1"), Kind: pulumi.String("SecretProviderClass"), Metadata: metadata(name),
-			OtherFields: kubernetes.UntypedArgs{"spec": pulumi.Map{"provider": pulumi.String("gke"), "parameters": pulumi.Map{"secrets": path.ApplyT(func(path string) string { return "- resourceName: " + path + "\n  path: " + file + "\n" }).(pulumi.StringOutput)}}},
-		}, child...)
-		return err
-	}
-	nats, err := newDispatchNATSCredential(ctx, comp, name, args, s, cloud, database, appUID, listenerAccount, secretClass)
+	nats, err := newDispatchNATSCredential(ctx, comp, name, args, s, cloud, database, appUID, listenerAccount)
 	if err != nil {
 		return pulumi.StringOutput{}, err
 	}
 
-	azureKeyClassName := s.hostname + "-azure-embed-key"
-	if s.azure.key {
-		if err := secretClass(azureKeyClassName, args.AzureEmbedKeySecret, "azureEmbedKeySecret", "key"); err != nil {
-			return pulumi.StringOutput{}, err
-		}
-	}
-
-	chatTokenClassName := s.hostname + "-chat-token"
-	if s.answerer.place == dispatchAnswererEndpoint {
-		if err := secretClass(chatTokenClassName, args.ChatTokenSecret, "chatTokenSecret", "token"); err != nil {
+	// One SecretProviderClass for each secret mountedSecrets lists, in its order, and none for any
+	// other, the classes differing in nothing else: the CSI driver reads the Secret Manager secret
+	// the consumer's Input names, at its latest version, and mounts it as the one file file names,
+	// in the pod volume that names the class (secretClassName). input is that Input's own schema
+	// name, which the seed refusal names (refuseDispatchSeed): a seed there fails the output, so no
+	// child is registered with it. The rendered YAML is what the goldens hold, so writing it once
+	// changes nothing about what is applied.
+	for _, mounted := range s.mountedSecrets() {
+		path := refuseDispatchSeed(mounted.secret(args), dispatch, mounted.input).ApplyT(func(resource string) string {
+			return strings.TrimSuffix(resource, "/") + "/versions/latest"
+		}).(pulumi.StringOutput)
+		className := s.secretClassName(mounted.volume)
+		if _, err := apiextensions.NewCustomResource(ctx, className, &apiextensions.CustomResourceArgs{
+			ApiVersion: pulumi.String("secrets-store.csi.x-k8s.io/v1"), Kind: pulumi.String("SecretProviderClass"), Metadata: metadata(className),
+			OtherFields: kubernetes.UntypedArgs{"spec": pulumi.Map{"provider": pulumi.String("gke"), "parameters": pulumi.Map{"secrets": path.ApplyT(func(path string) string { return "- resourceName: " + path + "\n  path: " + mounted.file + "\n" }).(pulumi.StringOutput)}}},
+		}, child...); err != nil {
 			return pulumi.StringOutput{}, err
 		}
 	}
@@ -667,7 +697,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		ServiceAccountName: pulumi.String(listenerName), TerminationGracePeriodSeconds: pulumi.Int(40), EnableServiceLinks: pulumi.Bool(false),
 		Containers: corev1.ContainerArray{
 			corev1.ContainerArgs{
-				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: corev1.VolumeMountArray{nats.mount},
+				Name: pulumi.String("envoy-listener"), Image: pulumi.String(s.images.envoy), Resources: resources("500m", "512Mi"), Env: listenerEnv, VolumeMounts: corev1.VolumeMountArray{natsCredentialMount(nats.volume)},
 				Lifecycle: sleepPreStop(5), StartupProbe: answersProbe(core.DefaultListenerPort, 5, 60), LivenessProbe: answersProbe(core.DefaultListenerPort, 10, 3), ReadinessProbe: readyProbe(core.DefaultListenerPort, 5, 6, 2),
 			},
 		},
@@ -783,7 +813,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 	// frontDoor), so a new app pod can reach an old listener pod while both roll. A send for a
 	// role: route is never made on it.
 	appEnv = append(appEnv, valueEnv("ENVOY_URL", listenerURL), valueEnv("ENVOY_ACCOUNT_TOKEN_FILE", dispatchAccountTokenFile), secretEnv("ENVOY_TOKEN", listenerName, "ENVOY_API_TOKEN"))
-	appMounts := corev1.VolumeMountArray{nats.mount}
+	appMounts := corev1.VolumeMountArray{natsCredentialMount(nats.volume)}
 	tokenMount, tokenVolume := dispatchAccountTokenVolume(listenerURL)
 	appMounts = append(appMounts, tokenMount)
 	appVolumes := corev1.VolumeArray{nats.volume}
@@ -842,7 +872,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 		// SecretProviderClass and volume, as the NATS seed is, and the pods wait for its grant.
 		appEnv = append(appEnv, valueEnv("DISPATCH_AZURE_EMBED_KEY_FILE", "/var/run/secrets/azure-embed/key"))
 		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("azure-embed-key"), MountPath: pulumi.String("/var/run/secrets/azure-embed"), ReadOnly: pulumi.Bool(true)})
-		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("azure-embed-key"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(azureKeyClassName)}}})
+		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("azure-embed-key"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(s.secretClassName("azure-embed-key"))}}})
 		appGrants = append(appGrants, database.azureKeyAccessor)
 	}
 	if s.answerer.place == dispatchAnswererAzure {
@@ -872,7 +902,7 @@ func newDispatchKubernetes(ctx *pulumi.Context, comp *Dispatch, name string, arg
 			valueEnv("DISPATCH_CHAT_MODEL", s.answerer.model),
 			valueEnv("DISPATCH_CHAT_TOKEN_FILE", "/var/run/secrets/chat-token/token"))
 		appMounts = append(appMounts, corev1.VolumeMountArgs{Name: pulumi.String("chat-token"), MountPath: pulumi.String("/var/run/secrets/chat-token"), ReadOnly: pulumi.Bool(true)})
-		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("chat-token"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(chatTokenClassName)}}})
+		appVolumes = append(appVolumes, corev1.VolumeArgs{Name: pulumi.String("chat-token"), Csi: &corev1.CSIVolumeSourceArgs{Driver: pulumi.String("secrets-store-gke.csi.k8s.io"), ReadOnly: pulumi.Bool(true), VolumeAttributes: pulumi.StringMap{"secretProviderClass": pulumi.String(s.secretClassName("chat-token"))}}})
 		appGrants = append(appGrants, database.chatTokenAccessor)
 	}
 	if s.azure.keyless {

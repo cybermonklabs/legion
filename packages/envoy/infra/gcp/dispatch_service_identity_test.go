@@ -181,12 +181,12 @@ func TestDispatchRunsByItsServiceIdentity(t *testing.T) {
 
 // natsAudience is refused, as a core.InputError naming it, and nothing registers: beside
 // natsSeedSecret, since each connection presents one credential and the bus refuses a token beside
-// a seed; and padded, or holding a control character, since the broker reads its own audience
-// trimmed, so a token minted for such an audience would never verify. Neither of the two set is
-// natsSeedSecret's refusal (TestDispatchResolverRefusesInvalidInputs' row "no NATS seed secret"),
-// a seed in natsAudience is refused with every other plain input's
-// (TestDispatchRefusesAnNKeySeedInAPlainInput), and natsUrl stays required beside natsAudience:
-// the audience says how the pods connect, not where.
+// a seed; and holding whitespace or a control character anywhere, padded or inside it, since the
+// broker trims its own audience, so a token minted for a padded one would never verify, and the
+// rule is held to the whole audience. Neither of the two set is natsSeedSecret's refusal
+// (TestDispatchResolverRefusesInvalidInputs' row "no NATS seed secret"), a seed in natsAudience is
+// refused with every other plain input's (TestDispatchRefusesAnNKeySeedInAPlainInput), and natsUrl
+// stays required beside natsAudience: the audience says how the pods connect, not where.
 func TestDispatchServiceIdentityRefusals(t *testing.T) {
 	for _, row := range []struct {
 		name, want string
@@ -221,13 +221,14 @@ func TestDispatchServiceIdentityRefusals(t *testing.T) {
 }
 
 // natsAudience is the NATS auth service's, and the NATS token crosses every CONNECT. Equal to
-// another audience the app presents a token for or a pod verifies one under, the NATS token would
-// be spendable there and a token minted for that one would be a bearer the auth service admits,
-// so natsAudience equal to agentSecretsAudience (the secrets broker's), the listener's own
-// audience (its Service address, in whichever namespace), oidcAudience, azureFederationAudience,
-// or the keyless Azure sign-in's default audience while azureFederationAudience is unset, is
-// refused as a core.InputError naming natsAudience, its message naming the other, and nothing
-// registers. Five distinct audiences resolve.
+// another audience the app presents a token for or a pod verifies one under, or to an issuer's URL,
+// which a cluster's API server takes as an audience, the NATS token would be spendable there and a
+// token minted for that one would be a bearer the auth service admits, so natsAudience equal to
+// agentSecretsAudience (the secrets broker's), the listener's own audience (its Service address,
+// in whichever namespace), oidcAudience, oidcIssuer, azureFederationAudience, or the keyless Azure
+// sign-in's default audience while azureFederationAudience is unset, is refused as a
+// core.InputError naming natsAudience, its message naming the other, and nothing registers. Five
+// distinct audiences and a distinct oidcIssuer resolve.
 func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	for _, row := range []struct {
 		name, other string
@@ -244,6 +245,10 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 			a.NatsAudience = "http://example-dispatch-listener.example-namespace.svc.cluster.local:9020"
 		}},
 		{"oidcAudience", "oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchNatsAudience }},
+		{"oidcIssuer", "oidcIssuer", func(a *gcp.DispatchArgs) {
+			a.OidcAudience, a.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
+			a.NatsAudience = dispatchOidcIssuer
+		}},
 		{"azureFederationAudience", "azureFederationAudience", func(a *gcp.DispatchArgs) {
 			setAzureFederation(a)
 			a.AzureFederationAudience = pulumi.StringRef(dispatchNatsAudience)
@@ -267,8 +272,8 @@ func TestDispatchRefusesAnAudienceAnotherAudienceShares(t *testing.T) {
 	}
 	args := dispatchServiceIdentityArgs()
 	args.AgentSecretsUrl, args.AgentSecretsAudience = "https://example-broker.internal.example", "example-broker-audience"
-	args.OidcAudience = dispatchOidcAudience
+	args.OidcAudience, args.OidcIssuer = dispatchOidcAudience, dispatchOidcIssuer
 	setAzureFederation(args)
 	_, err := gcp.ResolveDispatch(args)
-	require.NoError(t, err, "five distinct audiences, the listener's own and the Azure default among them")
+	require.NoError(t, err, "five distinct audiences and a distinct oidcIssuer, the listener's own audience and the Azure default among them")
 }

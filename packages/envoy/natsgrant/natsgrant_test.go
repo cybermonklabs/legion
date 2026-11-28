@@ -601,6 +601,23 @@ func TestSessionGrantNamesOnlyItsOwnSession(t *testing.T) {
 	require.True(t, natsgrant.SessionToken("ses_a"))
 }
 
+// A BROKER_NATS_SERVICES entry's machine id is one MachineIDToken takes, a dotted one among them,
+// that holds neither delimiter of the entry's own form, '/' and '=', and is not "-", the entry's
+// spelling of no machine id: ServiceMachineID takes those and refuses a space, a wildcard, either
+// delimiter, "-", the empty id and a control character. MachineIDToken itself still takes the
+// three ids only the entry's form refuses, so the difference is ServiceMachineID's own.
+func TestServiceMachineIDIsAnIDAnEntryCanName(t *testing.T) {
+	for _, id := range []string{"envoy-hub", "envoy.hub"} {
+		require.True(t, natsgrant.ServiceMachineID(id), "ServiceMachineID(%q)", id)
+	}
+	for _, id := range []string{"a b", "a*", "a>", "a/b", "a=b", "-", "", "a\x00b"} {
+		require.False(t, natsgrant.ServiceMachineID(id), "ServiceMachineID(%q)", id)
+	}
+	for _, id := range []string{"a/b", "a=b", "-"} {
+		require.True(t, natsgrant.MachineIDToken(id), "MachineIDToken(%q)", id)
+	}
+}
+
 // The read-only bucket grant reads a bucket and watches it, and writes nothing: no key, no stream
 // create or update.
 func TestKVReadIsReadOnly(t *testing.T) {

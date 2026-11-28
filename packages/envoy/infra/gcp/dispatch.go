@@ -214,9 +214,9 @@ type DispatchArgs struct {
 	// (dispatch/<hostname>/*=system:serviceaccount:<namespace>:<hostname>, and the same for
 	// <hostname>-listener): the one grant the two connections share, as they share the seed
 	// (natsgrant.Dispatch). It is refused beside natsSeedSecret, since a connection presents one
-	// credential, holding whitespace or a control character, which the broker's own audience, read
-	// trimmed, never holds, and equal to any other audience the component renders
-	// (refuseSharedAudiences).
+	// credential, holding whitespace or a control character anywhere (the broker trims its own
+	// audience, so one with leading or trailing whitespace would never verify), and equal to any
+	// other audience the component renders or to oidcIssuer (refuseSharedAudiences).
 	NatsAudience string `pulumi:"natsAudience,optional"`
 
 	SignInClientId     string             `pulumi:"signInClientId,optional"`
@@ -1622,18 +1622,21 @@ func refuseDispatchRegion(region string) error {
 
 // refuseSharedAudiences keeps natsAudience, the audience the NATS auth service admits each pod's
 // projected token for, apart from every other audience the component's pods present a token for
-// or verify one under: agentSecretsAudience (the secrets broker's BROKER_K8S_OIDC_AUDIENCE, on
-// every broker call), the listener's own audience (its Service address, dispatchListenerURL, which
-// it verifies the app's token for), oidcAudience (Dispatch's own verifier of its callers) and the
-// keyless Azure sign-in's audience (azureFederationAudience, or its default when that is unset). A
-// token is spendable wherever its audience is verified, and the NATS token crosses every CONNECT,
-// so with two of them equal whoever reads a CONNECT could present it at the other, and a token
-// minted for the other would be a bearer the auth service admits, since it matches a
-// BROKER_NATS_SERVICES entry by its account alone. Each refusal is a core.InputError naming
-// natsAudience and, in its message, the other input; it quotes no value but the public Azure
-// default and the listener's own address, which is no secret. It reads the resolved settings, so
-// it runs once the namespace the listener's address names is resolved, and it refuses nothing
-// without natsAudience.
+// or verify one under, and from an issuer's URL, which another verifier takes as an audience:
+// agentSecretsAudience (the secrets broker's BROKER_K8S_OIDC_AUDIENCE, on every broker call), the
+// listener's own audience (its Service address, dispatchListenerURL, which it verifies the app's
+// token for), oidcAudience (Dispatch's own verifier of its callers), oidcIssuer when it is set
+// (the issuer that verifier takes, whose URL the API server of its cluster takes as an audience on
+// GKE) and the keyless Azure sign-in's audience (azureFederationAudience, or its default when that
+// is unset). The cluster's own issuer, which the verifier takes when oidcIssuer is unset, is an
+// output of the cluster half, known only once it resolves, so it is not compared here. A token is
+// spendable wherever its audience is verified, and the NATS token crosses every CONNECT, so with
+// two of them equal whoever reads a CONNECT could present it at the other, and a token minted for
+// the other would be a bearer the auth service admits, since it matches a BROKER_NATS_SERVICES
+// entry by its account alone. Each refusal is a core.InputError naming natsAudience and, in its
+// message, the other input; it quotes no value but the public Azure default and the listener's own
+// address, which is no secret. It reads the resolved settings, so it runs once the namespace the
+// listener's address names is resolved, and it refuses nothing without natsAudience.
 func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 	if s.natsAudience == "" {
 		return nil
@@ -1647,11 +1650,13 @@ func refuseSharedAudiences(args *DispatchArgs, s dispatchSettings) error {
 		{"agentSecretsAudience", s.agentSecretsAudience},
 		{"the listener's own audience, " + listenerURL, listenerURL},
 		{"oidcAudience", s.oidcAudience},
+		{"oidcIssuer", s.oidcIssuer},
 		{azureInput, s.azure.audience},
 	} {
 		if other.audience == s.natsAudience {
 			return core.InputErrorf("natsAudience", "natsAudience is also %s: a token minted for that audience would be a bearer the NATS auth service admits, "+
-				"and the NATS token, which crosses every CONNECT, would be spendable there, so give natsAudience an audience of its own", other.input)
+				"and the NATS token, which crosses every CONNECT, would be spendable wherever that audience is taken, as a cluster's API server takes its issuer's URL, "+
+				"so give natsAudience an audience of its own", other.input)
 		}
 	}
 	return nil

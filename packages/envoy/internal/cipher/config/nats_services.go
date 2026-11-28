@@ -97,7 +97,7 @@ const (
 // none of these forms or of an unknown kind; a dispatch, listener, webhook-listener or
 // edge-listener entry with no machine id, and a daemon, measure, jsread, operator or probe entry
 // with one; an empty machine id, one holding a wildcard, a space or a control character
-// (natsgrant.MachineIDToken), and one the listener itself refuses (bus.CheckListenerMachineID: one
+// (natsgrant.ServiceMachineID), and one the listener refuses (bus.CheckListenerMachineID: one
 // holding the escape character '%', or whose durable name is too long), so the auth service takes
 // every machine id a listener starts with, a dotted one among them, whose names the grant escapes
 // as the listener does (bus.ListenerSpelling), an edge listener's inbox prefix among them; a
@@ -151,7 +151,7 @@ func parseNATSService(text string) (NATSService, error) {
 		if machineID == noMachineID {
 			return NATSService{}, fmt.Errorf("%s entry %q names no machine id, which the %s grant is built for", NATSServicesVariable, text, entry.Kind)
 		}
-		if !natsgrant.MachineIDToken(machineID) {
+		if !natsgrant.ServiceMachineID(machineID) {
 			return NATSService{}, fmt.Errorf("%s entry %q names a machine id that is empty or holds a wildcard, a space or a control character", NATSServicesVariable, text)
 		}
 		if err := bus.CheckListenerMachineID(machineID); err != nil {

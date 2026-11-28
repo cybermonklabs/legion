@@ -99,7 +99,7 @@ func clusteredHubListenerNATSCredential(l *clusteredHubListener) (corev1.EnvVarA
 	if l.natsAudience != "" {
 		env, volume = natsTokenCredential(l.natsAudience)
 	} else {
-		env = valueEnv("NATS_NKEY_SEED_FILE", natsCredentialDir+"/"+natsSeedFile)
+		env = natsSeedEnv()
 		volume = corev1.VolumeArgs{Name: pulumi.String(natsSeedFile), Secret: &corev1.SecretVolumeSourceArgs{
 			SecretName: pulumi.String(l.seedSecretName),
 			Items: corev1.KeyToPathArray{corev1.KeyToPathArgs{

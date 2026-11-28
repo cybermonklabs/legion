@@ -227,8 +227,9 @@ type ClusteredHubListenerArgs struct {
 	Image string `pulumi:"image"` // pinned: <name>@sha256:<digest>
 	// The listener's machine id: tailnet.serviceName by default with tailnet, and required
 	// without it. In the seeded mode it names the listener's NATS user, so a dotted one is refused;
-	// in the token mode it names no user, so a dotted one is taken, and one holding a space, '*' or
-	// '>', which no BROKER_NATS_SERVICES entry can name, is refused.
+	// in the token mode it names no user, so a dotted one is taken, and one holding a space, '*',
+	// '>', '/', '=' or a control character, or the id '-', which no BROKER_NATS_SERVICES entry can
+	// name, is refused.
 	MachineID *string `pulumi:"machineId,optional"`
 	// The seeded mode's NATS user: the seed's public key, never the seed, and the Secret in the
 	// hub's namespace, and the key in it, holding the seed. Each is required without natsAudience
@@ -241,8 +242,9 @@ type ClusteredHubListenerArgs struct {
 	// the broker's BROKER_NATS_K8S_AUDIENCE, whose BROKER_NATS_SERVICES lists the listener's
 	// account, system:serviceaccount:<namespace>:<name>-listener, as a listener of its machine id.
 	// Refused without authCallout, beside nkey, seedSecretName or seedSecretKey, holding whitespace
-	// or a control character, and equal to oidcAudience. Unset, the listener runs in the seeded
-	// mode, as it always has.
+	// or a control character anywhere (the broker trims its own audience, so one with leading or
+	// trailing whitespace would never verify), and equal to oidcAudience or oidcIssuer. Unset, the
+	// listener runs in the seeded mode, as it always has.
 	NatsAudience string `pulumi:"natsAudience,optional"`
 	// The namespaces whose pods reach the listener's port at its cluster Service,
 	// <name>-listener.<namespace>.svc.cluster.local, which the listener then serves beside the

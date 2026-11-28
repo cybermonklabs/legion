@@ -564,11 +564,22 @@ func SessionToken(id string) bool {
 // each dot out (bus.ListenerSpelling: bus.ListenerDurable, bus.ListenerQueue, EdgeInboxPrefix and
 // EdgeRelayReplyPrefix), so each name stays one token. A wildcard, a space or a control character
 // is still refused, as SessionToken refuses them. The auth service reads a BROKER_NATS_SERVICES
-// entry's machine id by it (internal/cipher/config), and Edge holds its own machine id to it.
+// entry's machine id by it, within ServiceMachineID (internal/cipher/config), and Edge holds its
+// own machine id to it.
 func MachineIDToken(id string) bool {
 	return id != "" && !strings.ContainsFunc(id, func(r rune) bool {
 		return r == '*' || r == '>' || unicode.IsSpace(r) || unicode.IsControl(r)
 	})
+}
+
+// ServiceMachineID is whether id can be a BROKER_NATS_SERVICES entry's machine id, the one an
+// entry <kind>/<machine id>/<scope>=<account> names: an id MachineIDToken takes, holding neither
+// '/' nor '=', at which the entry's own form is split, and not "-", which an entry writes for no
+// machine id. The auth service reads each entry's machine id by it (internal/cipher/config), and
+// envoy-infra holds by it the machine id of a clustered hub's listener that connects by a service
+// token, which the auth service admits by its entry listener/<machine id>.
+func ServiceMachineID(id string) bool {
+	return MachineIDToken(id) && !strings.ContainsAny(id, "/=") && id != "-"
 }
 
 // Daemon is the NATS grant of one Legion daemon. Its three durable consumers inspect and create
