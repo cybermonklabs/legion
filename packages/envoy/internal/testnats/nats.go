@@ -432,7 +432,7 @@ func (s *Server) Start(t testing.TB) {
 func (s *Server) Terminate(t testing.TB) {
 	t.Helper()
 	s.stop()
-	s.relay.Close()
+	s.relay.Close(t)
 }
 
 // Freeze stops the relay moving bytes between the test and the server, in either direction, and
@@ -693,6 +693,12 @@ func newServer(t testing.TB, config string, serverArgs []string) *Server {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("hold the server's port: %v", err)
 	}
+	tcpListener, ok := listener.(*net.TCPListener)
+	if !ok {
+		_ = listener.Close()
+		_ = os.RemoveAll(dir)
+		t.Fatalf("hold the server's port: got %T, want *net.TCPListener", listener)
+	}
 	address := listener.Addr().String()
 	server := &Server{
 		store:      filepath.Join(dir, "store"),
@@ -702,12 +708,12 @@ func newServer(t testing.TB, config string, serverArgs []string) *Server {
 		url:        "nats://" + address,
 		host:       listener.Addr().(*net.TCPAddr).IP.String(),
 	}
-	server.relay = newRelay(listener, server.address, true)
+	server.relay = newRelay(tcpListener, server.address, true)
 	registerServer(address, server)
 	t.Cleanup(func() {
 		unregisterServer(address)
 		server.stop()
-		server.relay.Close()
+		server.relay.Close(t)
 		if err := os.RemoveAll(dir); err != nil {
 			t.Errorf("remove the test NATS server's directory: %v", err)
 		}

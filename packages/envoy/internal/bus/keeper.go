@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // defaultKeepInterval is the keeper's period (keep): how long, at most, a stream or bucket a
@@ -18,11 +19,23 @@ import (
 const defaultKeepInterval = 30 * time.Second
 
 // WithKeepInterval sets the keeper's period in place of defaultKeepInterval, so a test sees a
-// period pass without waiting one. It is exported for the tests of the programs that connect
-// through this package, as WithReconnectErrClock is: no deployment sets it, and no caller outside
-// a test may.
+// period pass without waiting one. The period is armed on the keeper's clock (WithKeepClock). It is
+// exported for the tests of the programs that connect through this package, as
+// WithReconnectErrClock is: no deployment sets it, and no caller outside a test may.
 func WithKeepInterval(interval time.Duration) ConnectOption {
 	return clientOption(func(o *connectOpts) { o.keepInterval = interval })
+}
+
+// WithKeepClock replaces the clock the keeper arms each period on, the process's (clock.Real),
+// with c: each period, defaultKeepInterval or WithKeepInterval's, is one tick of a clock.Ticker on
+// c (keep). A test of a program that connects through this package hands it a clocktest.Fake,
+// which reports the period the keeper arms (AwaitArmedAt), so the test moves the keeper's time
+// past that period and waits for what the pass keeps, without waiting out a period or shortening
+// it. Only the period is on c: the hang guard of a pass's steps stays on the wall clock
+// (keepPass). It is exported for those tests, as WithKeepInterval is: no deployment sets it, and
+// no caller outside a test may.
+func WithKeepClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.keepClock = c })
 }
 
 // withKeeperStepGuard sets the hang guard of each step of the keeper's passes in place of
@@ -75,26 +88,30 @@ func (c *Client) buckets() []string {
 	return c.keptBuckets
 }
 
-// keep is the keeper: every interval it puts back what the deployment's settings and this binary
-// ask of the stream (keepStream) and raises each of the client's buckets (WithKeptBuckets,
-// KeepBucket) back to the deployment's copies (raiseReplicas), until the client stops. A start's
-// reconcile can lose to a concurrent start with other settings or subjects, since JetStream's
-// stream update has no compare-and-swap (ensureStreamWithConfig), and an operator can lower
-// either by hand; the keeper ends both within one period. A pass waits for a live connection: a
-// pass while the client is not connected is skipped, and none starts once the client has stopped,
-// though a tick and the stop came together. A pass that fails is logged and the next period tries
-// again: the keeper never stops the client or the process. A failure once the client has stopped
-// is the stop's, and is not logged. Each pass that ran is counted once it has ended (keepPasses);
-// a tick skipped while the client is not connected counts nothing.
+// keep is the keeper: every interval on the keeper's clock (WithKeepClock) it puts back what the
+// deployment's settings and this binary ask of the stream (keepStream) and raises each of the
+// client's buckets (WithKeptBuckets, KeepBucket) back to the deployment's copies (raiseReplicas),
+// until the client stops. A start's reconcile can lose to a concurrent start with other settings
+// or subjects, since JetStream's stream update has no compare-and-swap (ensureStreamWithConfig),
+// and an operator can lower either by hand; the keeper ends both within one period. A pass waits
+// for a live connection: a pass while the client is not connected is skipped, and none starts once
+// the client has stopped, though a tick and the stop came together. A pass that fails is logged and
+// the next period tries again: the keeper never stops the client or the process. A failure once
+// the client has stopped is the stop's, and is not logged. Each pass that ran is counted once it
+// has ended (keepPasses); a tick skipped while the client is not connected counts nothing. The
+// ticks are a clock.Ticker's, which on clock.Real come as a time.Ticker's do, and the tick after
+// each is armed only once that tick's pass has been counted or skipped, so a test that sees the
+// next period armed on a clocktest.Fake knows the pass before it has ended.
 func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, interval time.Duration) {
 	defer close(done)
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
+	ticks := clock.NewTicker(c.keepClock, interval, false)
+	defer ticks.Stop()
 	for {
 		select {
 		case <-c.stopCh:
 			return
-		case <-ticker.C:
+		case <-ticks.C():
+			ticks.Took()
 		}
 		if c.stopped() {
 			return
@@ -103,6 +120,7 @@ func (c *Client) keep(done chan struct{}, cfg nats.StreamConfig, interval time.D
 			c.keepPass(&cfg, c.buckets())
 			c.keepPasses.Add(1)
 		}
+		ticks.Next()
 	}
 }
 

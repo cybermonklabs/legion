@@ -98,17 +98,22 @@ func startCluster(t testing.TB, n, running int, config string) *Cluster {
 		if err != nil {
 			t.Fatalf("hold member %d's route port: %v", i, err)
 		}
+		tcpListener, ok := listener.(*net.TCPListener)
+		if !ok {
+			_ = listener.Close()
+			t.Fatalf("hold member %d's route port: got %T, want *net.TCPListener", i, listener)
+		}
 		listeners[i] = listener
 		routes[i] = listener.Addr().String()
 		member := &members[i]
-		routeRelay := newRelay(listener, func() (string, error) {
+		routeRelay := newRelay(tcpListener, func() (string, error) {
 			server := member.Load()
 			if server == nil {
 				return "", errors.New("the NATS server has not started")
 			}
 			return server.clusterAddress()
 		}, false)
-		t.Cleanup(routeRelay.Close)
+		t.Cleanup(func() { routeRelay.Close(t) })
 		relays[i] = routeRelay
 	}
 	cluster := &Cluster{Servers: make([]*Server, n), routes: relays}

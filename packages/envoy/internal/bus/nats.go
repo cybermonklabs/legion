@@ -44,6 +44,7 @@ type connectOpts struct {
 	replicas                    int
 	streamMaxBytes              int64
 	keepInterval                time.Duration
+	keepClock                   clock.Clock
 	keptBuckets                 []string
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
@@ -107,7 +108,7 @@ func (o connectOpts) connectionSettings(credential nats.Option) nats.Option {
 
 // parseConnectOptions applies options over the defaults every connect starts from.
 func parseConnectOptions[O ConnectOption](options []O) connectOpts {
-	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: clock.Real()}
+	opts := connectOpts{name: "envoy", replicas: 1, keepInterval: defaultKeepInterval, keepClock: clock.Real(), publishAcknowledgementClock: wallClock{}, environment: os.LookupEnv, streamSubjectsRefresh: streamSubjectsRefresh, startClock: clock.Real()}
 	for _, o := range options {
 		o.apply(&opts)
 	}
@@ -757,6 +758,9 @@ type Client struct {
 	// keeperStepGuard is withKeeperStepGuard's hang guard of each keeper step, zero for
 	// startHangGuard (keepPass). It is set before the keeper starts and never changed.
 	keeperStepGuard time.Duration
+	// keepClock is the clock the keeper arms each period on (WithKeepClock; clock.Real by
+	// default). It is set before the keeper starts and never changed.
+	keepClock clock.Clock
 	// finishedTakeovers holds each finished takeover record this client read, with the count of
 	// messages its subject held then, so TakeoverRecords reads none of them again while that count
 	// stands (takeover.go).
@@ -1018,6 +1022,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		afterPublishTransport:       opts.afterPublishTransport,
 		streamMessageReads:          opts.streamMessageReads,
 		keeperStepGuard:             opts.keeperStepGuard,
+		keepClock:                   opts.keepClock,
 		requestExpiry:               opts.requestExpiry,
 		closedHook:                  opts.closedHook,
 		closeSettleBound:            opts.closeSettleBound,

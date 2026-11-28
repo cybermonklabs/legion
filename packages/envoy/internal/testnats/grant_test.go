@@ -13,6 +13,7 @@ import (
 // Each fixture is read with the machine id in place of every placeholder: the listener's durable,
 // queue and lease key name the machine, and nothing names the placeholder.
 func TestTheGrantFixturesNameTheMachine(t *testing.T) {
+	t.Parallel()
 	for name, grant := range map[string]Grant{"listener": ListenerGrant(t, "box-a"), "host": HostGrant(t, "box-a")} {
 		for _, want := range []string{
 			"$JS.API.CONSUMER.CREATE.ENVOY_NOTIFICATIONS.listener-box-a",
@@ -39,6 +40,7 @@ func TestTheGrantFixturesNameTheMachine(t *testing.T) {
 // A granted user may publish what its grant allows and is refused anything else, while the admin
 // publishes anything; a client with no credential is refused.
 func TestAGrantedServerHoldsEachUserToItsGrant(t *testing.T) {
+	t.Parallel()
 	seed, public := User(t)
 	granted := StartGranted(t, GrantedUser{Public: public, Grant: Grant{
 		Publish:   GrantRules{Allow: []string{"allowed.>"}},
