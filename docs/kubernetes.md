@@ -3182,9 +3182,9 @@ With no such row left, it writes the five checks again as the earlier release wr
 Run it with every project's daemon on that database stopped, before the earlier image is pinned: the checks are the database's, and so are the rows they read.
 The controller's claim and the release of an unowned pod, which names no role, pass the way back and stay.
 
-**A queued outbox row that names a role of the deployment must be cleared before the earlier image is pinned.**
+**A queued outbox row that names a role of the deployment, and a queued hook prompt of a move that leaves or reaches `step`, must be cleared before the earlier image is pinned.**
 Finishing or stopping an issue does not take back a row queued for it before the finish.
-An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, and holds the role a row names to Legion's six (its `claim.IsRole`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
+An earlier release decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), refuses a controller notice of a kind it does not know, holds the role a row names to Legion's six (its `claim.IsRole`), and holds the move a hook prompt names to two different phases of its own line, which has no `step` (its `phase.IsMovePair` over `phase.Order`), so each row below fails its decode at every attempt, logs the failure each time and never finishes.
 The block below clears those rows of one project, a statement for each kind of row.
 
 Its first statement deletes each `pod-wait-held` notice to the controller, a kind the earlier release does not know, which tells of a start that waits for its pod: the start of a role that release does not have.
@@ -3194,8 +3194,11 @@ The delivery replaces the issues of a catch-up with its own read of the tree, so
 Its third takes `worker` off each queued merge-forward review, the role of the running step that the reviewer tells beside the architect, so the earlier release sends the review and the reviewer tells the architect alone.
 Its fourth deletes each queued pause's stop (a `supervise` row whose `op` is `pause_stop`), `phase_ended` message, hook prompt, update ask, and merge-forward hold or landed whose `role` is none of Legion's six.
 Each is work for a role the earlier release has no claim of: the way back in the migration's header refuses while an issue stands at such a role's step or a claim of such a role remains, so deleting the row loses nothing that release could do.
+Its fifth deletes each queued hook prompt whose move leaves or reaches `step` (its `from` or its `to` is `step`), whatever role it goes to.
+A step of a role of the deployment that fails moves the issue back from `step`, and a move back can reach such a step, so a hook fires on such a move and prompts each role it names, Legion's own among them: the hook a deployment runs when it writes no `hooks:` key prompts the implementer, the tester and the reviewer on every fifth move back of any kind.
+Only an issue whose plan names a role of the deployment makes such a move, and it is finished or stopped before the rollback, so deleting the prompt loses nothing the earlier release could act on.
 
-Its fifth deletes each queued state event (`state_change`) that names `stepRole` or a claim of a role outside the six, which the earlier release's check of a state change refuses.
+Its sixth deletes each queued state event (`state_change`) that names `stepRole` or a claim of a role outside the six, which the earlier release's check of a state change refuses.
 Such a row holds back every later state row of its project, so Dispatch would hear no state event of the project again, the earlier release's own boot event included.
 The statement deletes the row rather than the change: a row whose one change it took out could not stand, since a state change names at least one field, and Dispatch would keep the role or the claim that a change taken out of a longer row moved.
 Dispatch reads each project's state events in sequence order (`stateMessage.unfollowed` in `packages/envoy/internal/dispatch/legion/state_message.go`).
@@ -3230,6 +3233,10 @@ where (kind in ('phase_ended', 'hook_prompt', 'update_ask')
     or (kind = 'merge_forward' and payload->>'step' in ('hold', 'landed')))
   and payload->>'role' not in ('architect', 'planner', 'implementer', 'tester', 'reviewer', 'merger')
   and split_part(issue, '-', 1) = '<PROJECT>';
+-- The hook prompts one project still has queued of a move that leaves or reaches step.
+delete from outbox
+where kind = 'hook_prompt' and (payload->>'from' = 'step' or payload->>'to' = 'step')
+  and split_part(issue, '-', 1) = '<PROJECT>';
 -- The state events one project still has queued that name the role of a running step or a claim
 -- of a role of the deployment.
 delete from outbox
@@ -3242,7 +3249,7 @@ where kind = 'state_change' and exists (
 ```
 
 This block is the one source of its statements.
-`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, and reads each row of the project that rolls back as the release before this one reads it and each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
+`internal/store`'s `TestTheDeploymentRolesWayBackLeavesWhatTheReleaseBeforeReads` runs it over queued rows of two projects, from the copy `internal/store/deployment_roles_way_back_extract.txt`, reads each row of the project that rolls back with `refusedBeforeTheRoles`, a model written from the code of the release before this one that refuses a row this release queues wherever that release's decode refuses it, and reads each of the other project's as this release left it; `internal/textcheck`'s `TestTheDeploymentRolesWayBackExtractIsTheGuidesBlock` holds that copy to this block, so change the two in one commit.
 Each statement names the project, so a daemon of another project left on this release keeps its rows.
 
 #### Rolling back the release that names the variant on each step record
