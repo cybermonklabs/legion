@@ -74,6 +74,8 @@ function issue(key: string, advances: string[] = []): IssueSummary {
     title: `Work ${key}`,
     status: "in_progress",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: key,
     labels: [],
     parent: null,
@@ -312,9 +314,7 @@ test("the description is a disclosure that closes, and the work fills the page b
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
-  expect(
-    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description, closed" }));
   expect(await screen.findByRole("textbox", { name: "Description" })).toBeDefined();
 });
@@ -337,7 +337,7 @@ test("the description is the documents' editor, with no action on a selection, a
     expect(screen.queryByRole("button", { name })).toBeNull();
   }
   writeAtEnd(handle, " More.", "More");
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
   expect(patch.mock.calls[0]?.[1]).toEqual({
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. **More**.\n",
@@ -470,13 +470,17 @@ test("an empty description is, for a writer, the prompt above the empty editor",
 });
 
 test("the owner is a chip beside the title, which opens into its field and writes the owner", async () => {
-  const user = userEvent.setup();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
   const { patch } = page();
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
   expect(document.activeElement).toBe(owner);
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
@@ -488,20 +492,37 @@ test("the owner is a chip beside the title, which opens into its field and write
 // The changes to one priority go out in press order (`priority:<id>`): a change made while an
 // earlier one is out waits for it, so an older write never lands after a newer one.
 test("a change made while an earlier change to the priority is out waits for it", async () => {
-  const user = userEvent.setup();
-  const { patch } = page();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here: each change is one
+  // write, written as the reader leaves the field.
+  const user = userEvent.setup({ delay: null });
+  const { client, patch } = page();
   const first = Promise.withResolvers<Priority>();
   patch.mockImplementationOnce(() => first.promise);
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   const title = await openTitle(user);
-  await user.type(title, " again");
+  await onFakeClock(async () => {
+    await user.type(title, " again");
+  });
   await user.tab();
-  await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
+  // The title's change is pressed and waits its turn on the priority's line, never sent, while
+  // the owner's is still out: the fact the count below is read at.
+  await waitFor(() =>
+    expect(writesOf(client).rows()).toContainEqual(
+      expect.objectContaining({
+        detail: expect.objectContaining({ text: "Rocq and Lean speed work restarted again" }),
+        sent: false,
+        status: "queued",
+      })
+    )
+  );
   expect(patch).toHaveBeenCalledTimes(1);
   await act(async () => first.resolve(saved("rocq-lean")));
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(2));
@@ -533,9 +554,7 @@ test("one link out leaves the scope, naming the issues and why", async () => {
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
   const { listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  expect(
-    await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });
@@ -547,7 +566,7 @@ test("the work table opens with the issue, its title, its status and its project
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 });
+  await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await user.click(within(work).getByRole("button", { name: "Columns" }));
   const menu = screen.getByRole("dialog", { name: "Columns" });
   for (const name of ["Key", "Title", "Status", "Project"])
@@ -561,11 +580,7 @@ test("j, k, x and Enter act on the work rows, the one table the page draws", asy
   const user = userEvent.setup();
   page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("CORE-4", ["rocq-lean"])]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  const first = await within(work).findByRole(
-    "row",
-    { name: "CORE-1 Work CORE-1" },
-    { timeout: 3000 }
-  );
+  const first = await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" });
   await within(work).findByRole("row", { name: "CORE-4 Work CORE-4" });
   const focused = () => document.activeElement?.getAttribute("data-issue-row");
   first.focus();
@@ -637,22 +652,25 @@ function keepRefusedTitle(id: string, text: string, over: string) {
 test.each([
   ["whose read Dispatch refused", "rocq-lean", "Could not load the priority."],
   ["of an id no priority carries", "not-written", "No priority of that id is written."],
-] as const)("a priority's page %s leaves a refused title on the shell's line", async (_how, id, says) => {
-  const { priorities, reload } = page(id);
-  await screen.findByRole("link", { name: "‹ Priorities" });
-  const mine = "Their title, mine";
-  keepRefusedTitle(id, mine, "Their title");
-  if (id === "rocq-lean")
-    priorities.mockRejectedValue(new ApiError(500, { error: "Dispatch could not read it" }));
-  const client = reload();
-  expect(await screen.findByText(says)).toBeDefined();
-  expect(writesOf(client).rows()).toMatchObject([
-    { claimed: false, detail: { id, text: mine }, status: "refused" },
-  ]);
-  const line = await screen.findByTestId("pending-writes");
-  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
-  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
-});
+] as const)(
+  "a priority's page %s leaves a refused title on the shell's line",
+  async (_how, id, says) => {
+    const { priorities, reload } = page(id);
+    await screen.findByRole("link", { name: "‹ Priorities" });
+    const mine = "Their title, mine";
+    keepRefusedTitle(id, mine, "Their title");
+    if (id === "rocq-lean")
+      priorities.mockRejectedValue(new ApiError(500, { error: "Dispatch could not read it" }));
+    const client = reload();
+    expect(await screen.findByText(says)).toBeDefined();
+    expect(writesOf(client).rows()).toMatchObject([
+      { claimed: false, detail: { id, text: mine }, status: "refused" },
+    ]);
+    const line = await screen.findByTestId("pending-writes");
+    expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
+    expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+  }
+);
 
 // A write a reload took up is the page's to settle with the reader as much as one pressed on it:
 // refused because another person wrote the description since the reader's edit started, it
@@ -768,75 +786,74 @@ const titleFlows = [
 // takes it from there and offers it beside the title once more. Using it then writes it over the
 // other person's title, as a press of its own, and nothing of it stays, in the store or in what
 // the tab keeps.
-test.each(
-  titleFlows
-)("a title %s outlives leaving the page, is offered again on the way back, and using it lets it go", async (_flow, {
-  over,
-  sent,
-}) => {
-  const { client, patch, user } = await titleBesideTheirs(sent);
-  const mine = `${ROWS[1]?.title}, mine`;
-  const sentBefore = sent ? 1 : 0;
-  expect(patch).toHaveBeenCalledTimes(sentBefore);
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
-  // The store holds it, as a write the page holds that another person's text refused: the
-  // reader's text, over the title the write names.
-  expect(writesOf(client).rows()).toMatchObject([
-    {
-      claimed: true,
-      detail: { attribute: "title", expected: over, text: mine },
-      sent,
-      status: "refused",
-    },
-  ]);
+test.each(titleFlows)(
+  "a title %s outlives leaving the page, is offered again on the way back, and using it lets it go",
+  async (_flow, { over, sent }) => {
+    const { client, patch, user } = await titleBesideTheirs(sent);
+    const mine = `${ROWS[1]?.title}, mine`;
+    const sentBefore = sent ? 1 : 0;
+    expect(patch).toHaveBeenCalledTimes(sentBefore);
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
+    // The store holds it, as a write the page holds that another person's text refused: the
+    // reader's text, over the title the write names.
+    expect(writesOf(client).rows()).toMatchObject([
+      {
+        claimed: true,
+        detail: { attribute: "title", expected: over, text: mine },
+        sent,
+        status: "refused",
+      },
+    ]);
 
-  await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
-  const line = await screen.findByTestId("pending-writes");
-  expect(
-    within(line).getByText(
-      `Not saved because another person changed it: Rename the priority “${over}” to “${mine}”`
-    )
-  ).toBeDefined();
-  expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
-  expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
+    await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+    const line = await screen.findByTestId("pending-writes");
+    expect(
+      within(line).getByText(
+        `Not saved because another person changed it: Rename the priority “${over}” to “${mine}”`
+      )
+    ).toBeDefined();
+    expect(within(line).getByRole("note", { name: "Your text:" }).textContent).toBe(mine);
+    expect(within(line).queryByRole("button", { name: "Retry" })).toBeNull();
 
-  await user.click(screen.getByRole("link", { name: "Back to the priority" }));
-  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(mine)).toBeDefined();
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
-  expect(patch).toHaveBeenCalledTimes(sentBefore);
+    await user.click(screen.getByRole("link", { name: "Back to the priority" }));
+    const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+    expect(within(notice).getByText(mine)).toBeDefined();
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
+    expect(patch).toHaveBeenCalledTimes(sentBefore);
 
-  await user.click(within(notice).getByRole("button", { name: "Use my text" }));
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(sentBefore + 1));
-  expect(patch.mock.calls[sentBefore]?.slice(0, 2)).toEqual([
-    "rocq-lean",
-    { expected: { title: "Theirs" }, title: mine },
-  ]);
-  await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
-  expect(keptWrites()).toEqual([]);
-});
+    await user.click(within(notice).getByRole("button", { name: "Use my text" }));
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(sentBefore + 1));
+    expect(patch.mock.calls[sentBefore]?.slice(0, 2)).toEqual([
+      "rocq-lean",
+      { expected: { title: "Theirs" }, title: mine },
+    ]);
+    await waitFor(() => expect(writesOf(client).rows()).toEqual([]));
+    expect(keptWrites()).toEqual([]);
+  }
+);
 
 // A reload takes the write up again from what the tab kept, as it takes up any refused write,
 // and the page drawn on it offers the reader's text as the page before did. Keeping the other
 // person's title lets the write go, and nothing of it is kept or sent.
-test.each(titleFlows)("a title %s outlives a reload, and keeping theirs lets it go", async (_flow, {
-  sent,
-}) => {
-  const { patch, reload } = await titleBesideTheirs(sent);
-  expect(keptWrites()).toHaveLength(1);
-  const client = reload();
-  const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
-  expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
-  expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
-  expect(screen.queryByTestId("pending-writes")).toBeNull();
+test.each(titleFlows)(
+  "a title %s outlives a reload, and keeping theirs lets it go",
+  async (_flow, { sent }) => {
+    const { patch, reload } = await titleBesideTheirs(sent);
+    expect(keptWrites()).toHaveLength(1);
+    const client = reload();
+    const notice = await screen.findByRole("alert", { name: "Title, changed by another person" });
+    expect(within(notice).getByText(`${ROWS[1]?.title}, mine`)).toBeDefined();
+    expect(writesOf(client).rows()).toMatchObject([{ claimed: true, status: "refused" }]);
+    expect(screen.queryByTestId("pending-writes")).toBeNull();
 
-  await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
-  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
-  expect(writesOf(client).rows()).toEqual([]);
-  expect(keptWrites()).toEqual([]);
-  expect(titleHeading().textContent).toBe("Theirs");
-  expect(patch).toHaveBeenCalledTimes(sent ? 1 : 0);
-});
+    await userEvent.setup().click(within(notice).getByRole("button", { name: "Keep their text" }));
+    expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
+    expect(writesOf(client).rows()).toEqual([]);
+    expect(keptWrites()).toEqual([]);
+    expect(titleHeading().textContent).toBe("Theirs");
+    expect(patch).toHaveBeenCalledTimes(sent ? 1 : 0);
+  }
+);
 
 // A write the page holds whose text the page then reads is one Dispatch holds: the reader wrote
 // it again, or another person wrote the same text. It goes, from the store and from what the tab
@@ -1137,69 +1154,74 @@ test.each(
   (["title", "description"] as const).flatMap((attribute) =>
     RUNS.map(([run, count, again]) => [attribute, run, count, again] as const)
   )
-)("Use my text in the %s, of %s, is made on the stopped write, which its landing lets go", async (attribute, _run, count, again) => {
-  const user = userEvent.setup({ delay: null });
-  const { client, editors, patch, priorities } = page();
-  const start = ROWS[1]?.[attribute] ?? "";
-  const ends = (attribute === "title" ? [", A", "B", "C"] : [" A", " B", " C"]).slice(0, count);
-  const texts = ends.map((_end, at) => {
-    const typed = `${start}${ends.slice(0, at + 1).join("")}`;
-    return attribute === "title" ? typed : `${typed}\n`;
-  });
-  const dispatch = dispatchLosing(attribute, texts[0] ?? "");
-  patch.mockImplementation(dispatch.write);
-  priorities.mockImplementation(dispatch.read);
-  if (attribute === "title") {
-    const title = await openTitle(user);
-    await onFakeClock(async () => {
-      for (const end of ends) {
-        await user.type(title, end);
-        await jump(SAVE_AFTER_MS);
-      }
-      await stopTheLateWrite(client);
+)(
+  "Use my text in the %s, of %s, is made on the stopped write, which its landing lets go",
+  async (attribute, _run, count, again) => {
+    const user = userEvent.setup({ delay: null });
+    const { client, editors, patch, priorities } = page();
+    const start = ROWS[1]?.[attribute] ?? "";
+    const ends = (attribute === "title" ? [", A", "B", "C"] : [" A", " B", " C"]).slice(0, count);
+    const texts = ends.map((_end, at) => {
+      const typed = `${start}${ends.slice(0, at + 1).join("")}`;
+      return attribute === "title" ? typed : `${typed}\n`;
     });
-  } else {
-    const { handle } = await editors.named("Description");
-    await onFakeClock(async () => {
-      for (const end of ends) {
-        handle.view.focus();
-        writeAtEnd(handle, end);
-        act(() => handle.view.dom.blur());
-      }
-      await stopTheLateWrite(client);
+    const dispatch = dispatchLosing(attribute, texts[0] ?? "");
+    patch.mockImplementation(dispatch.write);
+    priorities.mockImplementation(dispatch.read);
+    if (attribute === "title") {
+      const title = await openTitle(user);
+      await onFakeClock(async () => {
+        for (const end of ends) {
+          await user.type(title, end);
+          await jump(SAVE_AFTER_MS);
+        }
+        await stopTheLateWrite(client);
+      });
+    } else {
+      const { handle } = await editors.named("Description");
+      await onFakeClock(async () => {
+        for (const end of ends) {
+          handle.view.focus();
+          writeAtEnd(handle, end);
+          act(() => handle.view.dom.blur());
+        }
+        await stopTheLateWrite(client);
+      });
+    }
+    const writes = writesOf(client);
+    const [stopped] = writes.rows();
+    expect(stopped).toMatchObject({ detail: { text: texts[0] }, status: "refused" });
+    const named = `${attribute === "title" ? "Title" : "Description"}, changed by another person`;
+    let notice = await screen.findByRole("alert", { name: named });
+    if (again) {
+      await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
+      await user.click(await screen.findByRole("link", { name: "Back to the priority" }));
+      notice = await screen.findByRole("alert", { name: named });
+    }
+    const [newest, ...older] = within(notice).getAllByRole("button", {
+      name: /^Use (my|this) text$/,
     });
+    expect(older).toHaveLength(count - 2);
+    if (newest === undefined) throw new Error("no Use my text beside the field");
+    await user.click(newest);
+    const used = texts.at(-1);
+    await waitFor(() =>
+      expect(patch.mock.calls.at(-1)?.[1]).toEqual(
+        attribute === "title"
+          ? { expected: { title: start }, title: used }
+          : { description: used, expected: { description: start } }
+      )
+    );
+    await waitFor(() =>
+      expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull()
+    );
+    const sent = patch.mock.calls.length;
+    act(() => writes.retry(stopped?.id ?? 0));
+    await waitFor(() => expect(writes.rows()).toEqual([]));
+    expect(patch).toHaveBeenCalledTimes(sent);
+    expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
   }
-  const writes = writesOf(client);
-  const [stopped] = writes.rows();
-  expect(stopped).toMatchObject({ detail: { text: texts[0] }, status: "refused" });
-  const named = `${attribute === "title" ? "Title" : "Description"}, changed by another person`;
-  let notice = await screen.findByRole("alert", { name: named });
-  if (again) {
-    await user.click(screen.getByRole("link", { name: "‹ Priorities" }));
-    await user.click(await screen.findByRole("link", { name: "Back to the priority" }));
-    notice = await screen.findByRole("alert", { name: named });
-  }
-  const [newest, ...older] = within(notice).getAllByRole("button", {
-    name: /^Use (my|this) text$/,
-  });
-  expect(older).toHaveLength(count - 2);
-  if (newest === undefined) throw new Error("no Use my text beside the field");
-  await user.click(newest);
-  const used = texts.at(-1);
-  await waitFor(() =>
-    expect(patch.mock.calls.at(-1)?.[1]).toEqual(
-      attribute === "title"
-        ? { expected: { title: start }, title: used }
-        : { description: used, expected: { description: start } }
-    )
-  );
-  await waitFor(() => expect(sessionStorage.getItem(`dispatch.write:${stopped?.key}`)).toBeNull());
-  const sent = patch.mock.calls.length;
-  act(() => writes.retry(stopped?.id ?? 0));
-  await waitFor(() => expect(writes.rows()).toEqual([]));
-  expect(patch).toHaveBeenCalledTimes(sent);
-  expect(screen.queryByRole("alert", { name: /changed by another person/ })).toBeNull();
-});
+);
 
 /** Dispatch's refusal of a description it will not take: its body, not another person's text. */
 const DESCRIPTION_REFUSED = new ApiError(400, {
@@ -1215,29 +1237,32 @@ const DESCRIPTION_REFUSED = new ApiError(400, {
 test.each([
   ["the refusal", true],
   ["the server's word", false],
-] as const)("after a description write Dispatch refused, the editor draws the server's reading once the server cannot read the text as markdown, %s first", async (_first, refusedFirst) => {
-  // The server's reading of the stored text is read with the page's own engine (`displayTree`).
-  await warmMarkdownRenderer();
-  const { editors, patch, writtenElsewhere } = page();
-  const { box, handle } = await editors.named("Description");
-  handle.view.focus();
-  const refusal = Promise.withResolvers<Priority>();
-  patch.mockImplementationOnce(() => refusal.promise);
-  writeAtEnd(handle, " Mine.");
-  act(() => handle.view.dom.blur());
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
-  const refuse = () =>
-    act(async () => {
-      refusal.reject(DESCRIPTION_REFUSED);
-      await settle();
-    });
-  const stored = ROWS[1]?.description ?? "";
-  if (refusedFirst) await refuse();
-  writtenElsewhere({ description_tree: displayTree(stored), description_tree_exact: false });
-  if (!refusedFirst) await refuse();
-  await waitFor(() => expect(box.textContent).not.toContain("Mine."));
-  expect(box.textContent).toBe("Rocq and Lean speed work restartedSpeedruns run again.");
-  expect(box.getAttribute("contenteditable")).toBe("false");
-  expect(screen.getByText(/^Dispatch cannot read this description as markdown/)).toBeDefined();
-  expect(patch).toHaveBeenCalledTimes(1);
-});
+] as const)(
+  "after a description write Dispatch refused, the editor draws the server's reading once the server cannot read the text as markdown, %s first",
+  async (_first, refusedFirst) => {
+    // The server's reading of the stored text is read with the page's own engine (`displayTree`).
+    await warmMarkdownRenderer();
+    const { editors, patch, writtenElsewhere } = page();
+    const { box, handle } = await editors.named("Description");
+    handle.view.focus();
+    const refusal = Promise.withResolvers<Priority>();
+    patch.mockImplementationOnce(() => refusal.promise);
+    writeAtEnd(handle, " Mine.");
+    act(() => handle.view.dom.blur());
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
+    const refuse = () =>
+      act(async () => {
+        refusal.reject(DESCRIPTION_REFUSED);
+        await settle();
+      });
+    const stored = ROWS[1]?.description ?? "";
+    if (refusedFirst) await refuse();
+    writtenElsewhere({ description_tree: displayTree(stored), description_tree_exact: false });
+    if (!refusedFirst) await refuse();
+    await waitFor(() => expect(box.textContent).not.toContain("Mine."));
+    expect(box.textContent).toBe("Rocq and Lean speed work restartedSpeedruns run again.");
+    expect(box.getAttribute("contenteditable")).toBe("false");
+    expect(screen.getByText(/^Dispatch cannot read this description as markdown/)).toBeDefined();
+    expect(patch).toHaveBeenCalledTimes(1);
+  }
+);

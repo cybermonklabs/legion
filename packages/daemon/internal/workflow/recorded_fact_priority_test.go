@@ -61,6 +61,7 @@ var inherited = record.Resolved{Priority: record.P0, From: "OTHER-7", Known: tru
 // inherited P0 would make the member wait under the cap after its re-entry or its adoption (C1 of
 // dispatch://INFRA-5636).
 func TestTheDaemonBuiltFactsKeepAnInheritedPriority(t *testing.T) {
+	t.Parallel()
 	t.Run("a re-entered child", func(t *testing.T) {
 		t.Parallel()
 		pool := migratedPool(t)

@@ -398,6 +398,8 @@ function issue(fields: Record<string, unknown> = {}): Record<string, unknown> {
     key: "CORE-1",
     parent: "CORE-0",
     priority: 1,
+    resolved_priority: 1,
+    priority_from: null,
     project: "CORE",
     status: "in_progress",
     title: "Ship the release",
@@ -637,6 +639,37 @@ const rules: Record<string, Rule> = {
         "steps",
       ],
     },
+  "a resolved_priority-only issue event refreshes its detail, Inbox ask rows and Inbox thread rows":
+    {
+      event: event(
+        "issue.updated",
+        issue({
+          ancestors: ["CORE-0", "CORE-00"],
+          changed: ["resolved_priority"],
+          priority: null,
+          resolved_priority: 0,
+          priority_from: "CORE-0",
+        }),
+        { notify: false }
+      ),
+      refreshes: ["detail", "inbox", "inboxThreads"],
+      spares: ["unrelatedDetail", "otherProjectList"],
+    },
+  "a priority_from-only issue event refreshes the Inbox rows that name the new source": {
+    event: event(
+      "issue.updated",
+      issue({
+        ancestors: ["CORE-0", "CORE-00"],
+        changed: ["priority_from"],
+        priority: null,
+        resolved_priority: 0,
+        priority_from: "CORE-00",
+      }),
+      { notify: false }
+    ),
+    refreshes: ["detail", "inbox", "inboxThreads"],
+    spares: ["unrelatedDetail", "otherProjectList"],
+  },
   "a write of any field refreshes every ancestor's children, which show the subtree's newest activity":
     {
       event: event(
@@ -775,6 +808,17 @@ const rules: Record<string, Rule> = {
     event: event("issue.deployed", { number: 1, repo: "acme/widgets" }),
     refreshes: ["detail", "log"],
     spares: ["steps", "collaborators"],
+  },
+  "a change of the role holders refreshes the issue's log and no step or collaborator": {
+    event: event("issue.role_holders_changed", {
+      holders: [{ recorded_at: "2026-11-25T18:06:17Z", role: "architect", session: "session-b" }],
+      key: "CORE-1",
+      previous_holders: [
+        { recorded_at: "2026-11-25T00:34:14Z", role: "architect", session: "session-a" },
+      ],
+    }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: ["steps", "collaborators", "summary", "pinned", "inbox", "projects"],
   },
   "a person's edit notice refreshes the issue's log only, since each edit's version refreshed the rest":
     {
@@ -1889,18 +1933,18 @@ const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
 // an issue row carries a priority by its id alone, so not one issue read refetches, even where
 // every row names the priority. The description autosaves as the person types, so each save
 // would otherwise refetch both fault lists on every open Priorities page.
-test.each([
-  "created",
-  "updated",
-] as const)("a priority.updated of a %s priority refreshes ['priorities'] and no issue read", (change) => {
-  const incoming = priorityWrite(change);
-  expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
-  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
-    "priorities",
-    "priorityHistory",
-    "prioritySummary",
-  ]);
-});
+test.each(["created", "updated"] as const)(
+  "a priority.updated of a %s priority refreshes ['priorities'] and no issue read",
+  (change) => {
+    const incoming = priorityWrite(change);
+    expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
+    expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+      "priorities",
+      "priorityHistory",
+      "prioritySummary",
+    ]);
+  }
+);
 
 // A delete takes the priority out of every relation and writes no issue event: the work under it
 // and the work under none read again whatever they hold, and every issue read and issue list
@@ -2025,6 +2069,11 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     source: "route",
   }),
   "issue.released": event("issue.released", { key: "CORE-1" }),
+  "issue.role_holders_changed": event("issue.role_holders_changed", {
+    holders: [],
+    key: "CORE-1",
+    previous_holders: [],
+  }),
   "issue.updated": event("issue.updated", issue()),
   "message.accepted": event("message.accepted", { target: "session:planner" }),
   "message.answered": event("message.answered", { id: "message-2" }),
@@ -2100,13 +2149,16 @@ test.each(
   Object.entries(eventsByType).filter(
     ([type, incoming]) => incoming.issue_key !== null && type !== "subscription.remove_requested"
   )
-)("%s refreshes its issue's detail, its log and its project list, and no other issue's detail", (_type, incoming) => {
-  const refreshed = refreshedReads(incoming);
-  expect(refreshed).toContain("detail");
-  expect(refreshed).toContain("log");
-  expect(refreshed).toContain("projectList");
-  expect(refreshed).not.toContain("otherProjectList");
-});
+)(
+  "%s refreshes its issue's detail, its log and its project list, and no other issue's detail",
+  (_type, incoming) => {
+    const refreshed = refreshedReads(incoming);
+    expect(refreshed).toContain("detail");
+    expect(refreshed).toContain("log");
+    expect(refreshed).toContain("projectList");
+    expect(refreshed).not.toContain("otherProjectList");
+  }
+);
 
 test("a feed event prepends a newer event to the loaded log page", () => {
   const client = new QueryClient();

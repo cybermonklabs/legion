@@ -6,8 +6,8 @@ sidebar:
 ---
 
 `packages/envoy/scripts/dev-broker.sh` creates a Postgres database of its own, builds the broker,
-its clients, `dev-oidc-issuer` and `dev-airlock-stands`, writes a fake secrets file, which stands
-in for Secrets Manager, and a profiles file, which names the profile each `github-app` secret is
+its clients, `dev-oidc-issuer` and `dev-airlock-stands`, writes a memory secrets file, which the
+memory store reads, and a profiles file, which names the profile each `github-app` secret is
 served as, starts `dev-airlock-stands`, whose GitHub stand is the GitHub the `github-app`
 secrets mint at, starts `dev-oidc-issuer`, which stands in both for a cluster's
 ServiceAccount token issuer and for the identity provider a person signs in to the broker at, and
@@ -22,11 +22,20 @@ role that may create databases; the script then creates and drops its database t
 
 Set `DEV_BROKER_GCP_PREFIX` (`projects/<project number>/secrets/<id prefix>`) and
 `DEV_BROKER_GCP_KMS_KEY_NAME` (a global Cloud KMS key) together to give the broker Google Cloud
-Secret Manager as its store under them, with an empty fake secrets file: `GET /v1/settings` then
-describes that store, so `agent-secrets secret` writes the real Secret Manager under the
-credential you choose for it ([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)),
-while the broker serves none of the demo secrets below. Its profiles file names no profile, so the
-broker binds no proxy port and the banner's `proxy:` line says `none`.
+Secret Manager as its store under them, with no memory secrets file.
+The broker then reads the real Secret Manager under your
+[Application Default Credentials](https://cloud.google.com/docs/authentication/application-default-credentials),
+which need the roles the Google Cloud Secret Manager row of
+[What it depends on](/legion/broker/operate/#what-it-depends-on) lists: with no application-default
+login, or without `secretmanager.secrets.list` on the project, the broker does not boot.
+It serves that prefix's secrets, `owner=shared` ones among them, to this stack's sessions, which
+the stack's issuer signs in with no page, so point it at a scratch project that holds nothing
+anyone needs kept.
+`GET /v1/settings` then describes that store, so `agent-secrets secret` writes the real Secret
+Manager under the credential you choose for it
+([Manage a secret](/legion/broker/guides/manage-a-secret/#before-you-start)); none of the demo
+secrets below is served, since they are the memory store's. Its profiles file names no profile,
+so the broker binds no proxy port and the banner's `proxy:` line says `none`.
 One of the two alone is refused (exit 2).
 
 ## Start the stack
@@ -56,7 +65,7 @@ dev-broker: starting broker...
 {"time":"2026-11-22T18:14:08.696464357Z","severity":"INFO","message":"broker stop budget","drain":"0s","shutdown":"60s","total":"60s"}
 {"time":"2026-11-22T18:14:08.696508928Z","severity":"INFO","message":"database sign-in","method":"password"}
 {"time":"2026-11-22T18:14:08.696512855Z","severity":"INFO","message":"approval sign-in on","issuer":"http://127.0.0.1:45983","client_id":"dev-broker","domain":"example.com"}
-{"time":"2026-11-22T18:14:08.82726499Z","severity":"INFO","message":"secret store","store":"aws-secrets-manager","credentials":"fake secrets file"}
+{"time":"2026-11-22T18:14:08.82726499Z","severity":"INFO","message":"secret store","store":"memory","credentials":"memory secrets file"}
 {"time":"2026-11-22T18:14:08.832569148Z","severity":"INFO","message":"broker: profiles applied","served":5,"refused":0,"file_digest":"43c09443bc35d5082de9e2e066e13e251c06b0370d57db3824657ed9bce57a73"}
 {"time":"2026-11-22T18:14:08.845442154Z","severity":"INFO","message":"broker: listening for the other pods' secret rereads","channel":"broker_secret_reread"}
 {"time":"2026-11-22T18:14:08.846128621Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:37577"}
@@ -83,6 +92,8 @@ dev-broker: ready.
   export AGENT_SECRETS_OPERATOR_FILE=/tmp/agent-secrets-dev.nkqDjj/operator
   export AGENT_SECRETS_MACHINE_FILE=/tmp/agent-secrets-dev.nkqDjj/machine.json
   export AGENT_SECRETS_STATE_FILE=/tmp/agent-secrets-dev.nkqDjj/sessions.json
+  export AGENT_SECRETS_SIGNIN_DIR=/tmp/agent-secrets-dev.nkqDjj/signins
+  export AGENT_SECRETS_MACHINE_IDENTITY=
   export DEV_BROKER_DIR=/tmp/agent-secrets-dev.nkqDjj
   export DEV_BROKER_METRICS_URL=http://127.0.0.1:42175/metrics
   export DEV_BROKER_POD_UID=eb9d903e-d8bb-404f-a9c7-d4e61fe28b75
@@ -132,7 +143,14 @@ helper's socket, its operator file (the Dispatch login the helper's machine logi
 `ada@example.com`) and its
 machine file (the login the helper keeps across restarts) in the stack's workdir, so the helper
 never touches one already running for your user, or your own machine's login, and nothing lands in
-your current directory. Check that `type agent-secrets` names the workdir's `bin/`: a tool manager
+your current directory. The exports name a sign-in store in the workdir (`AGENT_SECRETS_SIGNIN_DIR`),
+which holds no sign-in, and no machine identity (`AGENT_SECRETS_MACHINE_IDENTITY` empty), whatever
+your shell set before; an identity named in `~/.config/agent-secrets/config` is read all the same,
+since `agent-secrets` takes the file's value where the variable is empty. `agent-secrets` takes a
+person's sign-in before the helper, so with your own `agent-secrets login` the session below would
+sign as you at this broker, which refuses it; and a helper given your machine's identity would
+trade it here and keep its key in your own `~/.config/agent-secrets`. Check that
+`type agent-secrets` names the workdir's `bin/`: a tool manager
 that puts its own directories first on `PATH` at every prompt runs an installed `agent-secrets`
 instead.
 
@@ -156,8 +174,8 @@ An account `BROKER_API_ACCOUNTS` does not list at all is `403 ACCOUNT_NOT_LISTED
 entry naming a caller the broker does not know refuses the boot, naming that name and the names it
 knows, so a typo never becomes a caller that reaches nothing.
 
-The fake secrets file holds three secrets of `ada@example.com`'s, under the namespace
-`example/agent-secrets/` and on its example key: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
+The memory secrets file holds three secrets of `ada@example.com`'s, under the namespace
+`example/agent-secrets/`: `DEMO_READ_TOKEN`, tagged `tier=agent`, which her
 own sessions ([the kinds of session](/legion/broker/concepts/#sessions-and-enrollment)) get without
 asking, and `DEMO_API_KEY` and `DEMO_GITHUB_APP_HUMAN`, tagged `tier=human`, which she approves.
 The last of those is a `github-app` secret whose `github-owners` tag names `acme-org`, and it is
@@ -244,16 +262,17 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-03T03:36:40Z
-source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+source: the broker AGENT_SECRETS_URL names (memory)
 $ agent-secrets DEMO_READ_TOKEN -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 demo-read-token-value
 $ agent-secrets DEMO_API_KEY --reason "Deploy the example service" -- sh -c 'echo "deploying with a ${#DEMO_API_KEY}-character key"'
 ```
 
 Every line about a secret names where it came from: the broker this stack runs, and the kind of
-store that broker reads. The local stack's store is `BROKER_FAKE_SECRETS_FILE`, which stands in for
-AWS Secrets Manager. No session's line names the broker's host or the store's account or region,
+store that broker reads. The local stack's store is the memory one, which
+`BROKER_SECRETS_STORE=memory` and `BROKER_MEMORY_SECRETS_FILE` name. No session's line names the
+broker's host or the store's account or region,
 since an agent's output is often quoted; `agent-secrets secret show` names the account and region
 its key ARN carries.
 
@@ -279,7 +298,7 @@ passed, while the session lives on:
 
 ```console
 $ agent-secrets DEMO_READ_TOKEN --ttl 2m -- printenv DEMO_READ_TOKEN
-agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_READ_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 demo-read-token-value
 $ agent-secrets self
 enrollment_id: 7cf72ec3-d10f-46fd-984f-ddd856b229c2
@@ -287,7 +306,7 @@ kind: session
 operator: ada@example.com
 projects: -
 lease_expires_at: 2026-10-11T01:51:13Z
-source: the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+source: the broker AGENT_SECRETS_URL names (memory)
 grant: f81251ab-6552-450c-9eca-12a793a29f4c (request 86237327-1f78-4c79-82a5-4f71174e71c5, expires 2026-10-11T01:38:14Z)
 ```
 
@@ -311,7 +330,7 @@ Every row is a login to the broker AGENT_SECRETS_URL names.
 $ agent-secrets grant list
 GRANT_ID                              SECRETS          GRANTED    APPROVER  DECIDED_BY  SESSION                                       OPERATOR         EXPIRES
 8fe92a26-b355-4c28-8679-60e8ce98b1d9  DEMO_READ_TOKEN  automatic  -         -           session/example-host-devbox:2856922:35395441  ada@example.com  session-end
-Every row is a grant from the broker AGENT_SECRETS_URL names (AWS Secrets Manager).
+Every row is a grant from the broker AGENT_SECRETS_URL names (memory).
 ```
 
 Each list says on standard error which broker and store its rows are from, so the table on
@@ -340,18 +359,17 @@ process of your user, so such a process can also enroll a box and read your agen
 
 ## Write a secret and see it served
 
-The broker reads the fake secrets file again each time it lists the secrets, describes one or
-reads a value, so an edit to the file is what a write to Secrets Manager is in production, where a
+The broker reads the memory secrets file again each time it lists the secrets, describes one or
+reads a value, so an edit to the file is what a write to the store is in production, where a
 person writes with `agent-secrets secret` ([manage a secret](/legion/broker/guides/manage-a-secret/));
-that CLI calls AWS itself, so it cannot write this file. Add a secret of `ada@example.com`'s to it,
-here with `jq`:
+that CLI writes the cloud store a deployment runs on, not this file. Add a secret of
+`ada@example.com`'s to it, here with `jq`:
 
 ```sh
 jq '.secrets += [{"name": "example/agent-secrets/demo-new-token",
-  "kms_key_id": "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab",
   "tags": {"owner": "ada@example.com", "tier": "agent"}, "value": "demo-new-token-value"}]' \
-  "$DEV_BROKER_DIR/fake-secrets.json" >"$DEV_BROKER_DIR/fake-secrets.json.new"
-mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
+  "$DEV_BROKER_DIR/memory-secrets.json" >"$DEV_BROKER_DIR/memory-secrets.json.new"
+mv "$DEV_BROKER_DIR/memory-secrets.json.new" "$DEV_BROKER_DIR/memory-secrets.json"
 ```
 
 and ask the broker to reread it, as `agent-secrets secret` does right after each write
@@ -384,7 +402,7 @@ cannot mint from is refused before anyone asks for it. Here a copy of `DEMO_GITH
 has no `app_id` is added, and then read twice:
 
 ```console
-$ jq '.secrets += [(.secrets[] | select(.name=="example/agent-secrets/demo-github-app") | .name="example/agent-secrets/demo-broken-app" | .value=(.value|fromjson|del(.app_id)|tojson))]' "$DEV_BROKER_DIR/fake-secrets.json" >"$DEV_BROKER_DIR/fake-secrets.json.new" && mv "$DEV_BROKER_DIR/fake-secrets.json.new" "$DEV_BROKER_DIR/fake-secrets.json"
+$ jq '.secrets += [(.secrets[] | select(.name=="example/agent-secrets/demo-github-app") | .name="example/agent-secrets/demo-broken-app" | .value=(.value|fromjson|del(.app_id)|tojson))]' "$DEV_BROKER_DIR/memory-secrets.json" >"$DEV_BROKER_DIR/memory-secrets.json.new" && mv "$DEV_BROKER_DIR/memory-secrets.json.new" "$DEV_BROKER_DIR/memory-secrets.json"
 $ reread DEMO_BROKEN_APP
 {"name":"DEMO_BROKEN_APP","served":false,"reason":"value-malformed"}
 $ reread DEMO_BROKEN_APP
@@ -499,10 +517,12 @@ and its token keeps the person, the session and the project `EXAMPLE`, carries t
 trade. Such a token writes nothing.
 
 Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
-`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
-read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
-`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
-stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
+`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. A read-only
+token that carries a cut reads as of its cut on each route that answers `as_of`, and
+`GET /api/v1/whoami` names the cut. Every other read and `GET /ws/live` answer it
+`403 AS_OF_TOKEN_NOT_SERVED`. `packages/dispatch/e2e/read-token-live.ts` shows each of these
+against this stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it
+takes a shell of
 its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
 the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
 `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
@@ -534,8 +554,9 @@ ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token]: 200 - (want 200)
 ok   GET /ws/live [machine login's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ok   POST /v1/oauth/introspect [machine login's read token with a cut]: the answer machine-login-with-a-cut (want machine-login-with-a-cut)
 ok   GET /api/v1/whoami [machine login's read token with a cut]: 200 cut 2026-11-18T09:30:00.123456Z (want 200 cut 2026-11-18T09:30:00.123456Z)
-ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
-ok   GET /ws/live [machine login's read token with a cut]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 404 NOT_FOUND (want 404)
+ok   GET /api/v1/issues/EXAMPLE-1/references [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
+ok   GET /ws/live [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
 ```
 
 The script creates the project `EXAMPLE` and an issue in that Dispatch. It trades the read entry's
@@ -545,8 +566,10 @@ account entry's ordinary token, which may write `EXAMPLE`. It logs a machine in,
 this stack, and trades that machine login's token with `scope=read`, then with `scope=read` and
 the cut the golden answers name. It checks each answer of the broker's introspection against
 `packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json`, sends the first token a read
-and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read and a
-`GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
+and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, the issue read, a read of
+the issue's references and a `GET /ws/live`. The issue read answers `404`, because the script
+made the issue after the cut. The references hold no past answer. It prints one line for each
+request, with its status and its code, and exits 1
 when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
 
@@ -649,7 +672,7 @@ $ curl -s -X POST -d '{"mode": "fail-once"}' "$DEV_BROKER_GITHUB_ANSWER_URL"
 {"mode":"fail-once","repository":""}
 $ AGENT_SECRETS_KEY_DIR=$KEYS agent-secrets DEMO_GITHUB_APP -- sh -c 'printf %s "$DEMO_GITHUB_APP" | jq -c ".installations | map_values(.installation_id)"'
 agent-secrets: the profile DEMO_GITHUB_APP left out issues, statuses:write, workflows for acme-org, since the installation there does not hold them
-agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: DEMO_GITHUB_APP from the broker AGENT_SECRETS_URL names (memory)
 {"acme-org":7}
 $ curl -s "$DEV_BROKER_METRICS_URL" | grep -v '^#'
 broker_policy_store_reads_total{read="describe"} 2
@@ -671,7 +694,7 @@ The release made two calls to the stand. Its listing of the App's installations 
 and its token request two: the first answered `503`, `outcome="upstream"`, and the broker's second
 attempt minted. `broker_unservable_secrets` holds the one secret the broker refuses now. It drops
 that secret at the first scrape after a reread or a load reads a new version of its value, unless
-the decoder refuses that value too. After an edit of the fake secrets file, that is the next
+the decoder refuses that value too. After an edit of the memory secrets file, that is the next
 reread of the name (`reread <NAME>`, or a `curl -s -X POST "$AGENT_SECRETS_URL/v1/secrets/<NAME>/reread"`
 with no proof, which the broker rereads after its answer) or the five-minute reload.
 
@@ -693,11 +716,11 @@ what the stand's installation holds left out: `issues`, which the installation h
 airlock needs: `cmd/dev-proxy-stands`, which serves the stand-in services and records every
 request each one is sent; a profiles file (`BROKER_PROFILES_FILE`) in the kinds form, whose
 `kinds` list declares a test kind for each stand-in and the `anthropic` kind as the deployment
-writes it, and a fake secrets file whose secrets each name their kind in a `proxy` tag; two broker
-processes on one database, each with an API port and a proxy port of its own, behind one TCP front
-over both API ports and one over both proxy ports; one enrolled pod session, whose key directory
-the exports name and whose lease an `agent-secrets renew` keeps alive for as long as the stack
-runs, as a Legion worker pod's is; and the model judge on both brokers
+writes it, and a memory secrets file whose secrets each name their kind in a `proxy` tag; two
+broker processes on one database, each with an API port and a proxy port of its own, behind one TCP
+front over both API ports and one over both proxy ports; one enrolled pod session, whose key
+directory the exports name and whose lease an `agent-secrets renew` keeps alive for as long as the
+stack runs, as a Legion worker pod's is; and the model judge on both brokers
 ([let the judge decide a request](#let-the-judge-decide-a-request)). Each broker takes its
 proxy's intermediate from the `ca` stand of `cmd/dev-proxy-stands`, which answers the certificate
 request a pod sends Certificate Authority Service under a test root of its own, so every call
@@ -768,7 +791,7 @@ dev-airlock: ready.
   export AGENT_SECRETS_KEY_DIR=/tmp/agent-secrets-airlock.c0eVnK/session-key
   export AIRLOCK_PROXY_URL=http://127.0.0.1:33921
   export AIRLOCK_PROFILES_FILE=/tmp/agent-secrets-airlock.c0eVnK/profiles.json
-  export AIRLOCK_FAKE_SECRETS_FILE=/tmp/agent-secrets-airlock.c0eVnK/fake-secrets.json
+  export AIRLOCK_MEMORY_SECRETS_FILE=/tmp/agent-secrets-airlock.c0eVnK/memory-secrets.json
   export AIRLOCK_S_URL=https://s.airlock.test
   export AIRLOCK_S_RECORDS=http://127.0.0.1:44887/records/s
 ...
@@ -789,7 +812,7 @@ dev-airlock: ready.
 ```
 
 Paste these exports into a second shell, as above, and check that `type agent-secrets` names the
-stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the fake secrets file names the kind
+stack's `bin/`. `AIRLOCK_DEMO_TOKEN`'s `proxy` tag in the memory secrets file names the kind
 `stest`, which binds the stand-in service S, `s.airlock.test`, and names no headers, so its value
 travels in `authorization`, the one header a kind with none takes. The command gets a placeholder of 58 characters in place of the
 value, and its `HTTPS_PROXY` names the proxy front with that grant's proxy password, so the
@@ -797,13 +820,13 @@ command's call to S goes through the broker:
 
 ```console
 $ agent-secrets AIRLOCK_DEMO_TOKEN --reason 'read the example service behind the airlock' -- sh -c 'printf "AIRLOCK_DEMO_TOKEN: %s characters, starting %s\n" "${#AIRLOCK_DEMO_TOKEN}" "${AIRLOCK_DEMO_TOKEN%%-*}"; printf "Authorization: Bearer %s" "$AIRLOCK_DEMO_TOKEN" | curl -sS https://s.airlock.test/read -H @-'
-agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: AIRLOCK_DEMO_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 AIRLOCK_DEMO_TOKEN: 58 characters, starting agent
 the s stand-in answered
 ```
 
 What S was sent is at its recording route, `$AIRLOCK_S_RECORDS`. The header it read is not the
-placeholder the command held: it is the value the fake secrets file holds for that secret, which
+placeholder the command held: it is the value the memory secrets file holds for that secret, which
 the proxy swapped in. The two SHA-256 digests below are of the whole `Authorization` header S
 recorded and of `Bearer ` and that stored value, and they are the same. Neither command prints
 either string:
@@ -813,7 +836,7 @@ $ curl -sS "$AIRLOCK_S_RECORDS" | jq -r '.[-1] | .method + " " + .path + " host=
 GET /read host=s.airlock.test
 $ curl -sS "$AIRLOCK_S_RECORDS" | jq -j '.[-1].header.Authorization[0]' | sha256sum
 a2ecdfa9af6567f28055293e907aaec873a545fa2b0ee30c14e8e2a7b27aa149  -
-$ jq -j '.secrets[] | select(.name | endswith("airlock-demo-token")) | "Bearer " + .value' "$AIRLOCK_FAKE_SECRETS_FILE" | sha256sum
+$ jq -j '.secrets[] | select(.name | endswith("airlock-demo-token")) | "Bearer " + .value' "$AIRLOCK_MEMORY_SECRETS_FILE" | sha256sum
 a2ecdfa9af6567f28055293e907aaec873a545fa2b0ee30c14e8e2a7b27aa149  -
 ```
 
@@ -823,7 +846,7 @@ id:
 
 ```console
 $ agent-secrets AIRLOCK_SCOPED_TOKEN --reason 'a path its rule does not allow' -- sh -c 'printf "Authorization: Bearer %s" "$AIRLOCK_SCOPED_TOKEN" | curl -sS -o /dev/stdout -w " (%{http_code})\n" -X POST https://s.airlock.test/write -H @-'
-agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (AWS Secrets Manager)
+agent-secrets: AIRLOCK_SCOPED_TOKEN from the broker AGENT_SECRETS_URL names (memory)
 airlock: not allowed by rule (answer c7f4a80240ca972a4baa9eb47b6648f2)
  (403)
 ```
@@ -852,7 +875,7 @@ this script started, drops its database and prints the workdir it kept.
 The stack of the first section runs no model judge. The airlock stack runs one, on both broker
 processes. Three more stand-ins of `cmd/dev-proxy-stands` serve it: a model endpoint, a
 Dispatch holding one open issue, one done one and one answered ask, and a Compute Engine metadata
-server, where the broker mints the identity token it presents to the model. Its fake store says
+server, where the broker mints the identity token it presents to the model. Its memory store says
 who decides each human-tier secret, in each secret's own tags:
 
 | Secret | Its tags | Who decides a request for it |
@@ -910,7 +933,7 @@ beside what the check expected.
    database, and prints the workdir it kept. A token the issuer minted verifies nowhere else, and no
    longer verifies once it stops.
 2. In the second shell, leave the registered session (`exit`), then stop the helper: `kill %1`.
-3. Remove the workdir, which holds the binaries, the fake secrets, the token files and the logs:
+3. Remove the workdir, which holds the binaries, the memory secrets, the token files and the logs:
    `rm -rf "$DEV_BROKER_DIR"`.
 
 ## What is real and what is not
@@ -924,10 +947,11 @@ token issuer and the Workspace a person signs in to the broker at (the Go tests'
 the stack's six token files, one pod uid per service account, so the exchange pod's two — one for
 each audience — are one pod, and signs every authorization in as `ada@example.com` with no page to
 fill in); the pod-session registration the script makes before it is ready stands in for the
-deployment's own daemon, which makes that call as it starts a pod; and the fake secrets file
-(`BROKER_FAKE_SECRETS_FILE`: each secret's name, key, tags and value, as JSON) plays Secrets
-Manager and KMS. The broker reads that file again on every call it makes to it, so editing it is
-how you write a secret here.
+deployment's own daemon, which makes that call as it starts a pod; and the memory store
+(`BROKER_SECRETS_STORE=memory`, the development store, read from `BROKER_MEMORY_SECRETS_FILE`: each
+secret's name, tags and value, as JSON) stands in for the secret store, with no key of its own. The
+broker reads that file again on every call it makes to it, so editing it is how you write a secret
+here.
 
 The airlock's proxy, its profiles, its decision and its swap are the real ones too, and so is each
 broker process the airlock stack runs. Five more things stand in there. `cmd/dev-proxy-stands`

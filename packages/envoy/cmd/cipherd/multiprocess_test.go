@@ -53,6 +53,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -62,6 +63,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -90,29 +92,29 @@ const (
 	multiprocessNewOwner = "grace@example.com"
 )
 
-// fakeSecretsJSON is the secret store every broker here is started over: BROKER_FAKE_SECRETS_FILE's
-// shape (cmd/cipherd/main.go's own note on it) holding the one agent-tier secret, owned by owner.
-// A row that retags the secret writes this same function's output with another owner, so what it
-// writes differs from what the processes booted on in the owner tag and nothing else — which is
-// what a retag in the real store is.
+// memorySecretsJSON is the secret store every broker here is started over: the memory store's file
+// (BROKER_MEMORY_SECRETS_FILE) holding the one agent-tier secret, owned by owner. A row that
+// retags the secret writes this same function's output with another owner, so what it writes
+// differs from what the processes booted on in the owner tag and nothing else — which is what a
+// retag in the real store is.
 //
-// Its prefix and its key are main_test.go's own constants, the ones productionEnv starts every
-// broker here with: the policy loader refuses a secret under another prefix or on another key, a
-// refusal that would show up as nothing but this one secret never being served, so the fixture
-// and the configuration name one value rather than two that must agree.
-func fakeSecretsJSON(owner string) string {
+// Its prefix is main_test.go's own constant, the one productionEnv starts every broker here with:
+// the policy loader refuses a secret under another prefix, a refusal that would show up as nothing
+// but this one secret never being served, so the fixture and the configuration name one value
+// rather than two that must agree.
+func memorySecretsJSON(owner string) string {
 	return `{"secrets": [
-		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
+		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "tags": {"owner": "` + owner + `", "tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
 	]}`
 }
 
-// writeFakeSecrets writes the store's content to path, as a write to the real store would land:
+// writeMemorySecrets writes the store's content to path, as a write to the real store would land:
 // the brokers read the file again on every list and every describe, so this is the only kind of
 // "the store changed" these rows can stage.
-func writeFakeSecrets(t *testing.T, path, owner string) {
+func writeMemorySecrets(t *testing.T, path, owner string) {
 	t.Helper()
-	if err := os.WriteFile(path, []byte(fakeSecretsJSON(owner)), 0o600); err != nil {
-		t.Fatalf("write the fake secrets file %s: %v", path, err)
+	if err := os.WriteFile(path, []byte(memorySecretsJSON(owner)), 0o600); err != nil {
+		t.Fatalf("write the memory secrets file %s: %v", path, err)
 	}
 }
 
@@ -193,7 +195,7 @@ func newListedCaller(t *testing.T) listedCaller {
 }
 
 // brokerFleet is the cmd/cipherd processes of one Deployment: as many as a row asks for, serving
-// one database, one fake secrets file and one BROKER_PUBLIC_URL, with a client pinned to each.
+// one database, one memory secrets file and one BROKER_PUBLIC_URL, with a client pinned to each.
 //
 // The count is a row's own input rather than the two this file was fixed at, because what each
 // pod derives from the pods it counts — its share of the fleet's reread budget, which the rows
@@ -203,10 +205,9 @@ type brokerFleet struct {
 	// DatabaseURL is the DSN every process was started with, which a row connects to directly
 	// to read a table no broker route exposes.
 	DatabaseURL string
-	// FakeSecretsFile is the file standing in for the secret store, which every process reads
-	// again on every call, so rewriting it is the write the reread row needs the store to have
-	// taken.
-	FakeSecretsFile string
+	// MemorySecretsFile is the memory store's file, which every process reads again on every
+	// call, so rewriting it is the write the reread row needs the store to have taken.
+	MemorySecretsFile string
 	// Processes and Clients are index-matched: Clients[i] drives Processes[i] and nothing else.
 	// Start appends to both and Stop drops one of each, so a row that adds a pod or stops one
 	// reads the fleet that is serving now rather than keeping a count of its own.
@@ -242,15 +243,15 @@ func startBrokerPair(t *testing.T, binary string) *brokerFleet {
 func startBrokerFleet(t *testing.T, binary string, drains []time.Duration, env ...string) *brokerFleet {
 	t.Helper()
 	fleet := &brokerFleet{
-		DatabaseURL:     storetest.DatabaseURL(t),
-		FakeSecretsFile: filepath.Join(t.TempDir(), "fake-secrets.json"),
-		binary:          binary,
+		DatabaseURL:       storetest.DatabaseURL(t),
+		MemorySecretsFile: filepath.Join(t.TempDir(), "memory-secrets.json"),
+		binary:            binary,
 		// One issuer and one listed caller for every process, as every pod of a Deployment
 		// trusts the one cluster's issuer and lists the one Dispatch.
 		caller: newListedCaller(t),
 		env:    env,
 	}
-	writeFakeSecrets(t, fleet.FakeSecretsFile, multiprocessPerson)
+	writeMemorySecrets(t, fleet.MemorySecretsFile, multiprocessPerson)
 	for _, drain := range drains {
 		fleet.Processes = append(fleet.Processes, fleet.launch(t, drain))
 	}
@@ -275,7 +276,8 @@ func (f *brokerFleet) launch(t *testing.T, drain time.Duration) *brokerProcess {
 			"BROKER_DATABASE_URL=" + f.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=" + multiprocessPublicURL,
-			"BROKER_FAKE_SECRETS_FILE=" + f.FakeSecretsFile,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + f.MemorySecretsFile,
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, f.caller.Env...), f.env...),
 	})
@@ -512,7 +514,7 @@ type soloBroker struct {
 }
 
 // startSoloBroker starts one broker from binary with drain as its BROKER_DRAIN_SECONDS, on a
-// database and a fake secrets file of its own, and returns once it has logged the address it
+// database and a memory secrets file of its own, and returns once it has logged the address it
 // bound.
 //
 // Its BROKER_PUBLIC_URL is dev-broker.sh's derive-from-bind convention (http://127.0.0.1:0,
@@ -522,8 +524,8 @@ type soloBroker struct {
 func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBroker {
 	t.Helper()
 	solo := &soloBroker{DatabaseURL: storetest.DatabaseURL(t)}
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	writeFakeSecrets(t, fakeSecretsFile, multiprocessPerson)
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	writeMemorySecrets(t, memorySecretsFile, multiprocessPerson)
 	caller := newListedCaller(t)
 	solo.Process = startBroker(t, brokerOptions{
 		Binary: binary,
@@ -533,7 +535,8 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 			"BROKER_DATABASE_URL=" + solo.DatabaseURL,
 			"BROKER_LISTEN_ADDR=127.0.0.1:0",
 			"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-			"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+			"BROKER_SECRETS_STORE=memory",
+			"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 			"BROKER_DRAIN_SECONDS=" + strconv.Itoa(int(drain/time.Second)),
 		}, caller.Env...),
 	})
@@ -541,32 +544,32 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	return solo
 }
 
-// freshRequest GETs path at addr over a connection of its own and answers the status, the body,
-// and whatever went wrong instead. A transport per call, never a client's idle keep-alive
-// connection: what a drain is about is whether the listener is still ACCEPTING, which only a
-// connection opened after the signal can show, and whether it is gone, which a reused connection
-// would not notice at all.
-func freshRequest(addr, path string) (int, string, error) {
+// mustRequest GETs path at addr over a connection of its own and answers the status and the body.
+// A transport per call, never a client's idle keep-alive connection: what a drain is about is
+// whether the listener is still ACCEPTING, which only a connection opened after the signal can
+// show. Its one bound is the test binary's deadline (testwait.Context): a broker the machine's
+// load slows is waited for, and one that never answers fails the row when the test gives up, with
+// the error naming the request. Every caller asserts what the broker ANSWERED, so a request that
+// never reached it at all is the row's failure rather than its observation.
+func mustRequest(t *testing.T, addr, path string) (int, string) {
+	t.Helper()
+	target := "http://" + addr + path
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatalf("GET %s: %v", target, err)
+	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
-	resp, err := (&http.Client{Transport: transport, Timeout: 10 * time.Second}).Get("http://" + addr + path)
+	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body), err
-}
-
-// mustRequest is freshRequest for a caller that is asserting what the broker ANSWERED: a request
-// that never reached it at all is this row's failure rather than its observation.
-func mustRequest(t *testing.T, addr, path string) (int, string) {
-	t.Helper()
-	status, body, err := freshRequest(addr, path)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
-	return status, body
+	return resp.StatusCode, string(body)
 }
 
 // errorCode is the code an error answer names ({"code", "error"}, api/server.go's writeError),
@@ -830,7 +833,7 @@ func TestTwoBrokers(t *testing.T) {
 				b.Addr, multiprocessSecret, baseline.Status, baseline.Body)
 		}
 
-		writeFakeSecrets(t, pair.FakeSecretsFile, multiprocessNewOwner)
+		writeMemorySecrets(t, pair.MemorySecretsFile, multiprocessNewOwner)
 
 		if control := ask(); control.State != "granted" {
 			t.Fatalf("with the store retagged but nothing reread, B (%s) already answered %d %s; want it still granted — a write to the store changes what a pod serves only once something makes that pod read it again",
@@ -949,24 +952,29 @@ func TestTwoBrokers(t *testing.T) {
 	// the handler, with nothing faked and nothing sleeping in the broker.
 	t.Run("6_ADrainingProcessFailsReadinessAndServesOn", func(t *testing.T) {
 		const (
-			// drain is this broker's BROKER_DRAIN_SECONDS: long enough to get both observations
-			// out inside the window, short enough that the row pays for no budget it does not
-			// use.
-			drain = 5 * time.Second
+			// drain is this broker's BROKER_DRAIN_SECONDS, the longest config.Load accepts. Once
+			// both observations are in, the row ends the drain with a second SIGTERM and requires
+			// the broker's log to say that signal ended it. The drain's own clock still runs: a
+			// stall of two minutes before the second signal ends the drain first, and the row then
+			// fails by name rather than reading the shutdown as the drain.
+			drain = 120 * time.Second
 			// oldShutdownBudget is what main.go's shutdownTimeout was before it became the
 			// write timeout: the figure this row exists to outlive.
 			oldShutdownBudget = 10 * time.Second
-			// holdFor is when the blocked refresh is let go, measured from the signal, past
-			// oldShutdownBudget by a margin no scheduling hiccup closes.
+			// holdFor is how long the blocked refresh stays held once the broker has logged that
+			// its shutdown began: past oldShutdownBudget, counted from inside the shutdown, by a
+			// margin no scheduling hiccup closes.
 			holdFor = 12 * time.Second
-			// controlWindow is how long the control broker, signalled with no drain, may go on
-			// answering a fresh connection. It is a window, not a wait: the control's claim is
-			// that without a drain the listener is gone almost at once, which a wait with no span
-			// of its own would grant any process that stops at all.
-			controlWindow = 2 * time.Second
-			host          = "draining-broker"
+			host    = "draining-broker"
+			// secondSignalEndedTheDrain is the line boot.go's stop logs when a second signal,
+			// and not the drain's clock, ends the drain.
+			secondSignalEndedTheDrain = "broker: a second signal ended the drain early"
 		)
 		solo := startSoloBroker(t, binary, drain)
+		// A row that fails before its first SIGTERM leaves that signal to startBroker's cleanup,
+		// which would begin a two-minute drain, past its stopGrace: the broker is killed here, once
+		// the row has its verdict.
+		t.Cleanup(func() { _ = solo.Process.Cmd.Process.Kill() })
 		machineKey := ciphertest.NewSigningKey(t)
 		authorization := solo.Client.DeviceLogin(t, machineKey, multiprocessPerson, host)
 		credentialID := solo.Client.ApproveMachineLogin(t, multiprocessPerson, authorization.UserCode)
@@ -1024,12 +1032,26 @@ func TestTwoBrokers(t *testing.T) {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
 				solo.Process.Addr, time.Since(signalled).Round(time.Millisecond), status, body)
 		}
+		// The drain ends here, on the row's word: a second SIGTERM, which the watchdog at the top
+		// of main hands to the drain. Readiness failing above shows the first signal was taken,
+		// so the two cannot merge into one pending signal. The broker logs a line only when this
+		// signal, and not its clock, ends the drain, so finding that line says both answers above
+		// came inside the drain.
+		if err := solo.Process.Cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			t.Fatalf("send the broker at %s its second SIGTERM: %v", solo.Process.Addr, err)
+		}
+		solo.Process.AwaitRecord(t, "broker shutting down", nil)
+		shutdownBegan := time.Now()
+		if len(recordsWith(solo.Process.Log(), secondSignalEndedTheDrain, nil)) == 0 {
+			t.Fatalf("the broker at %s began its shutdown without logging %q: the second SIGTERM, which the row sent once GET /healthz had answered 503 and GET /v1/settings 200, did not end its %s drain:\n%s",
+				solo.Process.Addr, secondSignalEndedTheDrain, drain, solo.Process.Log())
+		}
 
-		// This wait IS the experiment, and it is the only bare sleep in this file: the claim is
+		// This wait IS the experiment, and it is the only bare sleep in this row: the claim is
 		// about a request still in flight when the old ten-second shutdown budget would have run
 		// out, so the length of the wait is the thing under test rather than a stand-in for some
 		// observable the row could have waited on instead.
-		time.Sleep(time.Until(signalled.Add(holdFor)))
+		time.Sleep(time.Until(shutdownBegan.Add(holdFor)))
 		if err := holder.Rollback(ctx); err != nil {
 			t.Fatalf("release the refresh token's row: %v", err)
 		}
@@ -1046,37 +1068,43 @@ func TestTwoBrokers(t *testing.T) {
 		if err := solo.Process.AwaitExit(t); err != nil {
 			t.Fatalf("the broker exited with %v after draining; want 0:\n%s", err, solo.Process.Log())
 		}
-		stopped := time.Since(signalled)
-		t.Logf("the broker exited 0 %s after its SIGTERM, having finished the refresh it was holding",
-			stopped.Round(time.Millisecond))
-		if stopped <= oldShutdownBudget {
-			t.Fatalf("the broker exited %s after its SIGTERM, inside the old %s budget; the row says nothing about that budget unless the request it held outlived it",
-				stopped.Round(time.Millisecond), oldShutdownBudget)
+		t.Logf("the broker exited 0 %s after its first SIGTERM and %s after its shutdown began, having finished the refresh it was holding",
+			time.Since(signalled).Round(time.Millisecond), time.Since(shutdownBegan).Round(time.Millisecond))
+		// The shutdown's own record says whether it finished that request inside its budget: stop
+		// logs "broker: shutdown" with the error when srv.Shutdown's budget runs out first
+		// (boot.go). The old ten-second budget runs out while the request is still held, and logs
+		// so. Neither the answer nor the exit shows it: closing the store waits for the request's
+		// connection only until the request commits, and the answer it writes after that races the
+		// process's exit.
+		if gaveUp := recordsWith(solo.Process.Log(), "broker: shutdown", nil); len(gaveUp) != 0 {
+			t.Fatalf("the broker's shutdown gave up on the request it held (%v), which it held %s into the shutdown; want a shutdown budget that outlasts the old %s:\n%s",
+				gaveUp[0]["error"], holdFor, oldShutdownBudget, solo.Process.Log())
 		}
 
-		// The control, which is what makes the serving window above mean anything: the same
-		// binary and the same request, with the drain set to zero and nothing in flight. Here
-		// the listener must be gone almost at once, where the drained process answered
-		// /v1/settings at the same point after its own signal — so that window came from
-		// BROKER_DRAIN_SECONDS and not from a process that happens to be slow to stop.
+		// The control: the same binary, with the drain set to zero and nothing in flight, stopped
+		// by one SIGTERM. It must log that it began a drain of 0s and exit cleanly with no second
+		// signal. That shows BROKER_DRAIN_SECONDS reaches stop, so the drain the row ended above
+		// came from the setting and not from its 5 s default (config.Load).
 		control := startSoloBroker(t, binary, 0)
 		if status, body := mustRequest(t, control.Process.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the control broker %s before its signal = %d %s; want 200",
 				control.Process.Addr, status, body)
 		}
 		controlSignalled := control.Process.Terminate(t)
-		for {
-			status, body, err := freshRequest(control.Process.Addr, "/v1/settings")
-			if err != nil {
-				t.Logf("the control broker refused a fresh connection %s after its signal: %v",
-					time.Since(controlSignalled).Round(time.Millisecond), err)
-				break
-			}
-			if time.Since(controlSignalled) > controlWindow {
-				t.Fatalf("the control broker at %s went on answering GET /v1/settings %d %s for %s after a SIGTERM with BROKER_DRAIN_SECONDS=0; want its listener gone",
-					control.Process.Addr, status, body, controlWindow)
-			}
+		draining := control.Process.AwaitRecord(t, "broker draining", nil)
+		if draining["drain"] != "0s" {
+			t.Fatalf("the control broker at %s, with BROKER_DRAIN_SECONDS=0, began a drain of %v; want 0s:\n%s",
+				control.Process.Addr, draining["drain"], control.Process.Log())
 		}
+		if err := control.Process.AwaitExit(t); err != nil {
+			t.Fatalf("the control broker exited with %v after its SIGTERM; want 0:\n%s", err, control.Process.Log())
+		}
+		// Exited closes once cmd.Wait has drained the output pipe, so this is the whole log.
+		if controlLog := control.Process.Log(); len(recordsWith(controlLog, "broker shutting down", nil)) == 0 {
+			t.Fatalf("the control broker at %s exited without logging its shutdown:\n%s", control.Process.Addr, controlLog)
+		}
+		t.Logf("the control broker exited 0 %s after its one SIGTERM, having begun a drain of 0s",
+			time.Since(controlSignalled).Round(time.Millisecond))
 	})
 
 	// A pod that is stopping still takes the other pods' rereads. The drain exists because new
@@ -1156,9 +1184,9 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 	//
 	// The budget it holds them to is the one the issue states: "two pods together cannot send
 	// more metadata traffic than one pod was allowed to". One pod was allowed four rereads a
-	// second against a store where a reread is one read (api.DefaultRereadFleetBudget, Every
-	// 250ms), and one a second against Google Secret Manager (api.GCPRereadFleetBudget), where
-	// api.GCPRereadOverallLimit's own comment turns that figure into the 120 metadata reads a
+	// second against a store where a reread is one read (secretstore.DefaultRereadBudget, Every
+	// 250ms), and one a second against Google Secret Manager (gcp.RereadBudget), where
+	// gcp.RereadBudget's own comment turns that figure into the 120 metadata reads a
 	// minute the public route may spend of the project's shared 600. Those two figures are the
 	// product budget — the share of someone else's quota this route is allowed — not an
 	// implementation detail, which is why they are written here rather than read from the
@@ -1221,7 +1249,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 					// process, in internal/cipher/api's reread_replicas_test.go. What this row
 					// adds to that arithmetic is the one thing only real processes can measure:
 					// what a single accepted reread costs the fleet.
-					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(api.GCPRereadFleetBudget, replicas).Every, onePodGCPRereadsPerSecond},
+					{"the Secret Manager bucket api.RereadOverallFor derives", api.RereadOverallFor(gcp.RereadBudget, replicas).Every, onePodGCPRereadsPerSecond},
 				} {
 					perPod := float64(time.Second) / float64(bucket.every)
 					fleetReads := float64(replicas) * perPod * float64(reads)

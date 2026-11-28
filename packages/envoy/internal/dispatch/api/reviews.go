@@ -14,11 +14,13 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -83,26 +85,47 @@ const latestReviewsStatement = `
 		order by artifact_id, ` + docs.ReviewOrder + `
 	`
 
+// openApprovalAsksHead is the select list, the from and the head of the lateral join that both
+// statements of the open approval requests share, so the two scan alike
+// (scanOpenApprovalRequests). Each statement goes on with the documents it joins.
+const openApprovalAsksHead = `
+		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
+		from asks a` + lastReplyJoin + `
+		cross join lateral jsonb_array_elements(`
+
 // openApprovalAsksStatement reads the open approval requests naming any document in $1, with the
 // turn waitingOnExpression gives each; scanOpenApprovalRequests reads its rows. One row per
 // document of each open request naming one of these documents, so a request that covers a spec
 // and its Verification document is found by either and reported on both.
-const openApprovalAsksStatement = `
-		select a.id::text, a.author, document ->> 'artifact_id', a.approval -> 'documents', ` + waitingOnExpression + `
-		from asks a` + lastReplyJoin + `
-		cross join lateral jsonb_array_elements(a.approval -> 'documents') document
+const openApprovalAsksStatement = openApprovalAsksHead + `a.approval -> 'documents') document
 		where a.kind = 'approval' and a.state = 'open'
 		  and ` + docs.ApprovalDocumentsJSONPath + ` ?| $1::text[]
 		  and document ->> 'artifact_id' = any($1::text[])
 	`
 
+// openApprovalAsksAtCutStatement is openApprovalAsksStatement for a read at a cut, where the asks
+// shadow gives the approval of each request as its newest event at the cut wrote it. A request
+// whose newest event at the cut is older than the documents of approval requests (event 186,599)
+// holds no documents there: migration 20261102110100 filled them in the row with no event. Such a
+// request named one document, its approval.artifact_id, and the statement finds the request by
+// that document, with null documents (scanOpenApprovalRequests). The shadow is a relation of its
+// own, which the index asks_open_approval_documents does not serve, so the statement does not test
+// the path of the documents.
+const openApprovalAsksAtCutStatement = openApprovalAsksHead + `coalesce(a.approval -> 'documents',
+			jsonb_build_array(jsonb_build_object('artifact_id', a.approval -> 'artifact_id')))) document
+		where a.kind = 'approval' and a.state = 'open'
+		  and document ->> 'artifact_id' = any($1::text[])
+	`
+
 // openApprovalRequest is one document's open approval request: who asked, whose turn it is, and
-// the documents the request names when it names more than this one.
+// the documents the request names when it names more than this one. documentsUnknown is set for a
+// request that a read at a cut finds with no documents (openApprovalAsksAtCutStatement).
 type openApprovalRequest struct {
-	id        string
-	author    model.Actor
-	waitingOn string
-	documents []model.AskApprovalDocument
+	id               string
+	author           model.Actor
+	waitingOn        string
+	documents        []model.AskApprovalDocument
+	documentsUnknown bool
 }
 
 // approvalTargets is the documents of artifacts, whose approval the two statements read, and the
@@ -141,7 +164,8 @@ func scanLatestReviews(rows pgx.Rows, latestReviews map[string]model.ArtifactRev
 // scanOpenApprovalRequests reads the rows openApprovalAsksStatement returns into requests, keyed
 // by document id, reaching an error the way scanLatestReviews does: the statement's own failure
 // is the last rows.Err(), unwrapped, and the leading check names the read for an error pgx
-// recorded before this callback ran.
+// recorded before this callback ran. Null documents are a request that a read at a cut finds with
+// none (openApprovalAsksAtCutStatement).
 func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalRequest) error {
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load open approval asks: %w", err)
@@ -156,11 +180,13 @@ func scanOpenApprovalRequests(rows pgx.Rows, requests map[string]openApprovalReq
 		if err := json.Unmarshal(author, &actor); err != nil {
 			return fmt.Errorf("decode approval ask author: %w", err)
 		}
+		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn, documentsUnknown: documents == nil}
 		var named []model.AskApprovalDocument
-		if err := json.Unmarshal(documents, &named); err != nil {
-			return fmt.Errorf("decode approval ask documents: %w", err)
+		if documents != nil {
+			if err := json.Unmarshal(documents, &named); err != nil {
+				return fmt.Errorf("decode approval ask documents: %w", err)
+			}
 		}
-		request := openApprovalRequest{id: id, author: actor, waitingOn: waitingOn}
 		// One document is the document being read, which the chip already names; two or more are
 		// what it must spell out.
 		if len(named) > 1 {
@@ -216,6 +242,7 @@ func applyApprovals(
 			approval.AskID = &id
 			approval.WaitingOn = request.waitingOn
 			approval.Documents = request.documents
+			approval.DocumentsUnknown = request.documentsUnknown
 		}
 		artifact.Approval = approval
 	}
@@ -225,8 +252,9 @@ func applyApprovals(
 // artifacts, and returns the apply that fills each document's Approval once the batch is closed.
 // The apply reads each document's Versions (applyApprovals), so a caller that queues those too
 // applies them first (queueArtifactDetails). No document queues nothing and its apply fills
-// nothing.
-func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
+// nothing. A read at the cut ctx carries finds the open requests then, with each request whose
+// documents no record at the cut gives (openApprovalAsksAtCutStatement).
+func queueApprovals(ctx context.Context, b *pgx.Batch, artifacts []*model.Artifact) func() {
 	ids, byID := approvalTargets(artifacts)
 	if len(ids) == 0 {
 		return func() {}
@@ -236,7 +264,11 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 	b.Queue(latestReviewsStatement, ids).Query(func(rows pgx.Rows) error {
 		return scanLatestReviews(rows, latestReviews)
 	})
-	b.Queue(openApprovalAsksStatement, ids).Query(func(rows pgx.Rows) error {
+	openRequests := openApprovalAsksStatement
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		openRequests = openApprovalAsksAtCutStatement
+	}
+	b.Queue(openRequests, ids).Query(func(rows pgx.Rows) error {
 		return scanOpenApprovalRequests(rows, requests)
 	})
 	return func() { applyApprovals(byID, latestReviews, requests) }
@@ -248,7 +280,7 @@ func queueApprovals(b *pgx.Batch, artifacts []*model.Artifact) func() {
 // queues nothing and reads nothing.
 func (s *server) attachApprovals(ctx context.Context, q queryer, artifacts []*model.Artifact) error {
 	batch := &pgx.Batch{}
-	apply := queueApprovals(batch, artifacts)
+	apply := queueApprovals(ctx, batch, artifacts)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -422,25 +454,27 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	}
 	// Without a request open, this reviews the document at its latest settled version; with one,
 	// it answers that request, so it reviews every document the request named, each at the
-	// version the request named, and the request is answered once for both.
-	approval := &model.AskApproval{Documents: []model.AskApprovalDocument{{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}}}
+	// version the request named, and the request is answered once for both (approvalDocuments).
+	// The version this review records for the document is the one the open request names for it
+	// (OpenApprovalAsk finds only a request that names it, so a request with no entry for it is a
+	// fault of this server's, answered 500 before anything is written), else the latest settled
+	// version. A caller that names the version it read (readVersion) is refused here when that is
+	// not it, before the request is answered or anything is written, so no review records in a
+	// person's name a version of this document that person did not name. With a request open,
+	// every other document the request names is reviewed at the version the request names for it,
+	// which the caller does not name and this check does not compare.
+	reviewed := model.AskApprovalDocument{ArtifactID: artifact.ID, Name: artifact.Name, Version: version}
+	var request *model.AskApproval
 	if open != nil {
-		approval = open.Approval
+		request = open.Approval
+		entry := request.Document(artifact.ID)
+		if entry == nil {
+			s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
+			return
+		}
+		reviewed = *entry
 	}
-	// The version this review records for the document is approval's entry for it: the one the
-	// open request names for it (OpenApprovalAsk finds only a request that names it, so a request
-	// with no entry for it is a fault of this server's, answered 500 before anything is written),
-	// else the latest settled version. A caller that names the version it read (readVersion) is
-	// refused here when that is not it, before the request is answered or anything is written, so
-	// no review records in a person's name a version of this document that person did not name.
-	// With a request open, every other document the request names is reviewed at the version the
-	// request names for it, which the caller does not name and this check does not compare.
-	entry := approval.Document(artifact.ID)
-	if entry == nil {
-		s.writeHandlerError(w, fmt.Errorf("the open approval request %s names no entry for the document %s it was found by", open.ID, artifact.ID))
-		return
-	}
-	recorded := entry.Version
+	recorded := reviewed.Version
 	if readVersion != nil && *readVersion != recorded {
 		writeError(w, "REVIEW_VERSION_MOVED", http.StatusConflict, fmt.Sprintf(
 			"the review would record version %d of %s, not version %d: read version %d and review it",
@@ -462,7 +496,7 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 		appended = append(appended, answeredEvents...)
 		askID = &answered.ID
 	}
-	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, approval.Documents, state, actor, reason, askID)
+	review, reviewEvents, err := s.queueApprovalReviews(documentCtx, tx, ledger, artifact, request, reviewed, state, actor, reason, askID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -482,29 +516,37 @@ func (s *server) recordArtifactReview(w http.ResponseWriter, r *http.Request, ve
 	WriteJSON(w, http.StatusCreated, *review)
 }
 
-// queueApprovalReviews queues state on every document a review covers - the one being reviewed,
-// or every document the approval request it answers named - each at the version named for it,
-// and returns the named document's review with one event per document, all filled in once
-// Commit has run the write phase (docs.QueueReview). Each is a person's review
-// (docs.ReviewKindPerson): a plan review writes its own, on one document.
+// queueApprovalReviews queues state on every document a review of document covers
+// (approvalDocuments): document alone, or every document of request, the approval request the
+// review answers, each at the version named for it. An approval is judged for the form first,
+// each of those documents, as the carry of an approval judges them (spec_form.go). It returns the
+// named document's review with one event per document, all filled in once Commit has run the
+// write phase (docs.QueueReview). Each is a person's review (docs.ReviewKindPerson): a plan review
+// writes its own, on one document.
 //
 // A second document's row is read here, in the read phase. This transaction does write artifacts:
 // an event on a document no issue holds is owned by that document (docs.documentAskEvent), and the
 // append moves the row's last_seq (events/broker.go). What makes the read safe is that no write
-// this transaction queues changes a column artifactMetadata returns - artifactColumns, the row's
-// id, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role, created_by
-// and created_at - so the stored row is the one a read after the write phase would return.
+// this transaction queues changes a column artifactMetadata returns - docs.ArtifactColumns, the
+// row's id, issue_key, project_key, session_id, ref_key, slug, name, kind, is_primary, role,
+// created_by and created_at - so the stored row is the one a read after the write phase would
+// return.
 func (s *server) queueApprovalReviews(
 	ctx context.Context,
 	tx pgx.Tx,
 	ledger *docs.Ledger,
 	artifact model.Artifact,
-	documents []model.AskApprovalDocument,
+	request *model.AskApproval,
+	document model.AskApprovalDocument,
 	state string,
 	actor model.Actor,
 	reason *string,
 	askID *string,
 ) (*model.ArtifactReview, []*model.Event, error) {
+	documents, err := s.deps.SpecForm.approvalDocuments(ctx, tx, request, document, state)
+	if err != nil {
+		return nil, nil, err
+	}
 	named := new(model.ArtifactReview)
 	appended := make([]*model.Event, 0, len(documents))
 	for _, document := range documents {
@@ -555,6 +597,9 @@ type approvalRequestResponse struct {
 	// CoverageUnread says the spec's coverage could not be read, so the empty Coverage is
 	// no answer about it. The request is recorded either way.
 	CoverageUnread bool `json:"coverage_unread,omitempty"`
+	// SpecForm is what Dispatch read of the form of The Spec in the documents this request hands
+	// the person, when the document it names is in scope (spec_form.go); absent otherwise.
+	SpecForm *specFormSummary `json:"spec_form,omitempty"`
 }
 
 // POST /api/v1/artifacts/{id}/approval-requests  {summary?, include_verification?}  (any
@@ -694,6 +739,20 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The form of The Spec, call site 1 (spec_form.go), judged at the versions this request
+	// hands the person: the documents it names, or, with a request open, every document the open
+	// request names at the version the row records, which a hand-back hands back
+	// (handBackApprovalAsk), and any document this request adds. It comes after the settled
+	// branch above, which opens nothing.
+	judged := documents
+	if open != nil {
+		judged = renewedApprovalDocuments(open.Approval.Documents, documents)
+	}
+	form, err := s.deps.SpecForm.refuseSpecForm(r.Context(), tx, judged, specform.ActRequest)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The person this request reaches, named on the answer as the question create names it
 	// (createAskFor in api/asks.go): read here in the read phase, under the owner's lock, through
 	// the rule every read of that person shares, before the insert or the hand-back below is
@@ -766,7 +825,8 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
 		Approval:       newArtifactApprovalRead(approval, trees),
 		Coverage:       coverage,
-		CoverageUnread: coverageUnread})
+		CoverageUnread: coverageUnread,
+		SpecForm:       form.summary(artifact.ID)})
 }
 
 // approvalAfterRequest is the document's approval as this request's writes leave it: the approval
@@ -952,7 +1012,7 @@ func (s *server) renewApprovalAsk(
 			open.Question)
 	case waitingOn == "agent":
 		if changed {
-			if err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.ServerURL); err != nil {
+			if err := docs.RewriteApprovalAsk(ctx, tx, s.deps.Events, open, actor, renewed, summary, s.deps.Origins); err != nil {
 				return nil, err
 			}
 		}
@@ -1106,7 +1166,7 @@ func approvalQuestion(documents []model.AskApprovalDocument, summary string) (st
 // artifactMetadata reads one document's row as QueueReview takes it, without its versions or its
 // derived approval: the reader of a second document an approval request names.
 func artifactMetadata(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `select `+artifactColumns+` from artifacts where id = $1`, id))
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `select `+docs.ArtifactColumns+` from artifacts where id = $1`, id))
 	if err != nil {
 		return model.Artifact{}, fmt.Errorf("read the document an approval request names: %w", err)
 	}

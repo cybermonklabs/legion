@@ -177,11 +177,43 @@ a reload.
 Dragging a card across lanes sets its priority, in the same drop that a drag across columns sets
 its status. Keyboard roving (`j`/`k`, the arrow keys) stays within the focused lane.
 
+A card sits in the lane of the priority its issue works at: its own, or the one it inherits (see
+[Priority](#priority)). A drag within that lane keeps an inherited priority. A drag to another
+lane sets the issue's own priority. A card that inherits its priority does not move to
+**No priority**, because it has no priority of its own to clear.
+
 ### Priority
 
 Priority runs from P0, the highest, to P3. An issue with no priority shows a muted **Priority**
 tag. The badge is a picker wherever it appears: the issue header, a Board card, a List row, and an
 Inbox row. Choose it and pick a value. Closed issues cannot change priority.
+
+An issue with no priority of its own takes the priority of the nearest issue above it that has
+one, in any project. Its badge shows that priority and the issue it comes from, such as
+**P0 · from ACME-1**, and the key is a link to that issue. The picker sets the issue's own
+priority, so for an inherited priority it reads **Unset**. A pick of **Unset** clears the issue's
+own priority, and the issue then takes the priority of the nearest issue above it that has one.
+
+These use the priority an issue works at, its own or the inherited one:
+
+- the Board's lanes
+- the List's **Priority** column, its sort and its filter
+- the Inbox's grouping and its priority tag
+- the `dispatch` command, which prints an inherited priority as `P0 (from ACME-1)`
+
+Setting an issue's own priority to P0 needs the `p0` scope. A browser sign-in holds it. A personal
+token holds it only when its maker gave it. A write that needs `p0` and comes without it gets
+`403 OAUTH_SCOPE_REQUIRED`, and Dispatch writes nothing of it.
+
+Each of these writes needs `p0` too when the issue, or an issue under it that takes its priority
+from it, would then work at P0:
+
+- a move of an issue under another parent
+- a clear of an issue's own priority
+- a new child with no priority of its own under a P0 issue, unless the writer's session is the
+  parent's own architect
+
+A move or a clear that makes no issue P0 needs no scope. A move to no parent never needs `p0`.
 
 ### Assignee
 
@@ -353,15 +385,20 @@ agents using it stop working at once.
   retracted with its reason, and counts as no evidence.
 - **Plan** is the issue's plan document, the plan review's approval, and each plan task the
   document marks, with the requirements that task serves and the tasks it needs.
-- **Steps** lists each step Legion ran on the issue, one table per task: each run of a step with
-  its role, type, agent, model, attempt, start, end and result.
-  Where the records of the issue's newest run name an experiment, the tab shows
-  `Experiment <experiment>: variant <variant>` once above its tables. A step that ran twice, after a
-  review sent its task back, has a row for each run, and the second reads attempt 2; a run that
-  failed or stopped and sent its task back says which step it returned to. A run that has not
-  ended reads **running**, and a field Legion did not record reads `—`. Legion's daemon writes
-  these records, and the tab only reads them. An issue Legion never ran reads **No step of this
-  issue has run in Legion.**
+- **Steps** lists each task of the issue: first the tasks of the issue's newest plan, in the plan's
+  order, then each other task that ran, in the order each first ran. Where the records of the
+  issue's newest run name an experiment, the tab shows `Experiment <experiment>: variant <variant>`
+  once above its tasks. A task of the plan shows the tasks it needs, or **Needs not recorded**
+  where the plan Dispatch holds does not record them. It shows each step the plan gives it, with
+  where that step stands: **not started**, **running**, **passed**, **failed**, **stopped**, or
+  Dispatch's own word for a state this page does not know. Under that, each task has one table of
+  its runs: each run of a step with its role, type, agent, model, attempt, start, end and result.
+  A task none of whose steps has run says so in place of the table, for example **No step of task
+  b has run yet.** A step that ran twice, after a review sent its task back, has a row for each
+  run, and the second reads attempt 2; a run that failed or stopped and sent its task back says
+  which step it returned to. A run that has not ended reads **running**, and a field Legion did
+  not record reads `—`. Legion's daemon writes these records, and the tab only reads them. An
+  issue with no plan and no run reads **No step of this issue has run in Legion.**
 - **Conversation** is the issue's conversations, one card each: every ask with its replies and
   its answer, every comment thread with its replies, every message thread with its replies. The
   conversation with the newest reply is at the top, so a thread rises when someone answers it,

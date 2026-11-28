@@ -20,7 +20,7 @@
 // whole-daemon live proof.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration load,
+// whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration load,
 // the real store and its migrations, the real HTTP API, the real claim supervision, the real
 // openWorkflow, the real JetStream consumers and the real outbox lanes. Facts enter only by the
 // transports production has: the Dispatch envelopes of the ENVOY_NOTIFICATIONS stream, the
@@ -154,7 +154,7 @@ func newSubArchitectLive(t *testing.T) *subArchitectLive {
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = childAdoptionGitHub(t)
 	r.logged = newRecordingLog(r.log())
-	r.d = startDaemonWithin(t, r.cfg, o, slog.New(r.logged), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, slog.New(r.logged))
 	r.root = r.register(r.tree, claim.RoleArchitect, "ses_root_architect", 0)
 	r.note("registered and readied %s's architect as session %s", r.tree, r.root.session)
 	return r

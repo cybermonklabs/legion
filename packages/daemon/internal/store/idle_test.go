@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -691,6 +692,7 @@ func queueWaitingKeptRow(t *testing.T, st *Store, payload record.OutboxPayload) 
 // other's control: a term that let every such row go would fail the rows that hold, and the
 // predicate before the term, which held the pod for every such row, fails the rest.
 func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *testing.T) {
+	t.Parallel()
 	for _, message := range keptRoleMessageRows {
 		for _, tc := range []struct {
 			name      string
@@ -754,6 +756,7 @@ func TestAKeptRoleMessageHoldsThePodOnlyWhileItsRoleHasAClaimThisPodAnswers(t *t
 // control: a predicate that let the slot term exempt the phase-ended row would fail the first, and
 // one that let the claim term hold the start would fail the second.
 func TestAPhaseEndedMessageToARoleWhoseStartWaitsForItsSlotHoldsThePodByItsOwnRule(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name  string
 		by    supervise.SuspendSource
@@ -1034,14 +1037,16 @@ func TestAPendingStepRecordHoldsNoIdlePod(t *testing.T) {
 
 // waitingOnTheSerializer is whether a backend of this test's database other than the reader waits
 // on an advisory lock: the shared serializer (treelifecycle.Serialize) is the only one the store
-// takes by that name outside a migration, so a waiter here is a transaction held at its head.
+// takes by that name outside a migration, so a waiter here is a transaction held at its head. The
+// wait is read from pg_locks (lockwaittest.WaitingOn, whose package comment says why not from the
+// wait event).
 func waitingOnTheSerializer(t *testing.T, st *Store) bool {
 	t.Helper()
 	var waiting bool
 	if err := st.Pool().QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
 		where datname = current_database() and pid <> pg_backend_pid()
-		and wait_event_type = 'Lock' and wait_event = 'advisory')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		and `+lockwaittest.WaitingOn("advisory")+`)`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

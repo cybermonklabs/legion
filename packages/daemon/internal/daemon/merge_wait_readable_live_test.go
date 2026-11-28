@@ -17,7 +17,7 @@
 // shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
 // state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -65,7 +65,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -175,7 +174,7 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	return r
 }
 
@@ -245,15 +244,7 @@ func (r *mergeWaitReadableLive) seed() {
 		if key == r.closed {
 			continue
 		}
-		token := r.token(key, claim.RoleReviewer)
-		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-			Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleReviewer,
-			Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
-			Session: mergeWaitReviewerSession, SessionFile: t.TempDir() + "/" + mergeWaitReviewerSession + ".jsonl",
-			BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
-		}); err != nil {
-			t.Fatalf("record the reviewer's claim %s: %v", token, err)
-		}
+		r.admitReleased(r.token(key, claim.RoleReviewer), key, claim.RoleReviewer, mergeWaitReviewerSession)
 	}
 	r.note("seeded: %s in reviewing on open pull request #%d at %s, %s in reviewing on open #%d at %s, and %s in reviewing with #%d recorded closed at %s, its reviewer's approval standing there; the reviewer's claim of %s and of %s released with session %s kept; base %s, GitHub's clock %s",
 		r.stuck, r.stuckNumber, mergeWaitShort(mergeWaitFirstHead), r.moving, r.movingNumber, mergeWaitShort(mergeWaitMovingHead),

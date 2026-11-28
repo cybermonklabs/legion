@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // A human's answer to a decision block carries his approval forward. He approved the document at
@@ -156,6 +157,34 @@ func CarriedFromVersion(reason string) (int, bool) {
 // itself, so the sentence and its reader (CarriedFromVersion) cannot drift apart.
 const reopenReason = CarriedReviewReasonPrefix + "%d: this version's text is that version's, with the questions it showed resolved open again."
 
+// FormGate is the form gate of The Spec (R49) as a carry asks it: whether the approval the carry
+// would write in the person's name - of document, at its version, answering request, the approval
+// request open on it, or nil when none is - breaks the form. An approval that answers a request
+// covers each document the request names, so the gate judges each of them, as it judges the
+// person's own Approve of that request. The API package's form is the one implementation
+// (api.SpecForm, whose gate api.NewSpecForm sets): one function gives the documents an approval
+// covers and judges each, and it reads nothing more for a document that no root of The Spec
+// covers. A carry writes no approval in the person's name, and answers no open request with
+// Approve, when the gate finds a break: the person's own Approve then gets the gate's refusal.
+type FormGate func(ctx context.Context, tx pgx.Tx, request *model.AskApproval, document model.AskApprovalDocument) (bool, error)
+
+// SetFormGate is the gate each carry of this service's version writes asks before it writes an
+// approval (writeCarriedReview). A service built without one carries no approval at all. Its one
+// caller is api.NewSpecForm: the server's boot sets the gate before its restoration settles a
+// document, and each backfill command sets it on the service it writes through, so each of their
+// settlements carries an approval through the same gate.
+func (s *Service) SetFormGate(gate FormGate) {
+	s.formGate.Store(&gate)
+}
+
+// gate is the form gate SetFormGate set, or nil, with which no carry writes anything.
+func (s *Service) gate() FormGate {
+	if gate := s.formGate.Load(); gate != nil {
+		return *gate
+	}
+	return nil
+}
+
 // carryInput is what the rule is decided on once H, the version he approved, A, and when he
 // approved it are known: the blocks of N by block id, each its row (rowBackedBlocks); the block
 // ids of A, each whether its stored block is as that row has it (heldAsItsRow); and the two
@@ -257,7 +286,7 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 			return err
 		}
 		if review != nil {
-			return writeCarriedReview(ctx, tx, s.events, artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.serverURL, sink)
+			return writeCarriedReview(ctx, tx, s.events, s.gate(), artifactID, number, *review, fmt.Sprintf(carryReason, review.Version), s.origins, sink)
 		}
 	}
 	restored, err := restoresVersionText(ctx, tx, artifactID, newest.Version, rendered.markdown)
@@ -265,9 +294,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 		return err
 	}
 	if restored {
-		return writeCarriedReview(ctx, tx, s.events, artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.serverURL, sink)
+		return writeCarriedReview(ctx, tx, s.events, s.gate(), artifactID, number, newest, fmt.Sprintf(restoreReason, newest.Version), s.origins, sink)
 	}
-	return reopenedApproval(ctx, tx, s.events, artifactID, number, rendered.tree, blocks, newest, s.serverURL, sink)
+	return reopenedApproval(ctx, tx, s.events, s.gate(), artifactID, number, rendered.tree, blocks, newest, s.origins, sink)
 }
 
 // CarryRestoredApproval is the restore alone, for the route that writes a document version itself
@@ -284,8 +313,9 @@ func (s *Service) carryStandingApproval(ctx context.Context, tx pgx.Tx, artifact
 // rows are the rows this transaction's own queued writes leave (loadAskBlocks). Its reads run
 // where it is called, the route's read phase, and its writes are queued there, as carryApproval's
 // are; the events it appends reach the ledger of the transaction it runs in (eventSink), which
-// publishes them after its Commit, beside the version move's own.
-func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, markdown string, tree *pmdoc.Node, serverURL string) error {
+// publishes them after its Commit, beside the version move's own. gate judges the version's form,
+// as every carry's (writeCarriedReview).
+func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, markdown string, tree *pmdoc.Node, origins text.Origins) error {
 	if err := refuseSecondCarry(ctx, tx, artifactID); err != nil {
 		return err
 	}
@@ -305,7 +335,7 @@ func CarryRestoredApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker
 	if _, known, err := versionBlocks(ctx, tx, artifactID, tree); err != nil || !known {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), serverURL, eventSink(ctx))
+	return writeCarriedReview(ctx, tx, broker, gate, artifactID, number, *newest, fmt.Sprintf(restoreReason, newest.Version), origins, eventSink(ctx))
 }
 
 // versionBlocks is every ask block of a version, tree, as its row, the row of artifactID that
@@ -336,7 +366,7 @@ func versionBlocks(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdo
 // (restoresVersionText); it appends nothing otherwise, and hands sink what it appends, as
 // carryApproval does. The rows are decided first, from the asks' events: a version write whose
 // open blocks hold any other ask renders nothing more.
-func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, serverURL string, sink func(model.Event)) error {
+func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, tree *pmdoc.Node, blocks map[string]model.Ask, newest model.ArtifactReview, origins text.Origins, sink func(model.Event)) error {
 	var opened []string
 	for _, ask := range blocks {
 		if ask.State == "open" {
@@ -356,7 +386,7 @@ func reopenedApproval(ctx context.Context, tx pgx.Tx, broker *events.Broker, art
 	if rendersApproved, err := restoresVersionText(ctx, tx, artifactID, newest.Version, closed); err != nil || !rendersApproved {
 		return err
 	}
-	return writeCarriedReview(ctx, tx, broker, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), serverURL, sink)
+	return writeCarriedReview(ctx, tx, broker, gate, artifactID, number, newest, fmt.Sprintf(reopenReason, newest.Version), origins, sink)
 }
 
 // reopenRestoredSince reports whether every ask of asks, the open rows of a version's blocks, is
@@ -451,12 +481,26 @@ func withOpenBlocksResolved(node *pmdoc.Node, blocks map[string]model.Ask) *pmdo
 // names its kind, and a review that names none is a person's, as the column's default says. It
 // holds no document service: every write it makes is a package function over tx and the broker,
 // which is what the restore's own caller outside this package holds (CarryRestoredApproval).
-func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, number int, review model.ArtifactReview, reason, serverURL string, sink func(model.Event)) error {
+// Every kind of carry writes here, so the form gate judges the approval first - this version, and
+// each other document of the open request the carried review is given against - and an approval
+// that breaks the form carries nothing, and nothing is written or queued in anyone's name. With
+// no gate, nothing is carried either.
+func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, gate FormGate, artifactID string, number int, review model.ArtifactReview, reason string, origins text.Origins, sink func(model.Event)) error {
+	if gate == nil {
+		return nil
+	}
 	var askID *string
 	// The request as the version write's own move left it (MoveApprovalAsk), which names this
 	// version already.
 	open, err := openApprovalAsk(ctx, tx, artifactID)
 	if err != nil {
+		return err
+	}
+	var request *model.AskApproval
+	if open != nil {
+		request = open.Approval
+	}
+	if breaks, err := gate(ctx, tx, request, model.AskApprovalDocument{ArtifactID: artifactID, Version: number}); err != nil || breaks {
 		return err
 	}
 	artifact, err := reviewedArtifact(ctx, tx, artifactID)
@@ -467,7 +511,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 	// issue's Verification document - is answered by this carry, as it always was. One that names
 	// two is answered only once both stand approved at the versions it names, which this review
 	// settles for this document; the request stays open for the other, and the carried review
-	// records the request it was given against either way.
+	// records the request it was given against either way. The gate above judged both.
 	if open != nil {
 		// This document's own review, the one this carry queues, is never read back: the carry
 		// hands its verdict over (carriedAtNamedVersion), which is what known is for. Every
@@ -486,7 +530,7 @@ func writeCarriedReview(ctx context.Context, tx pgx.Tx, broker *events.Broker, a
 			return err
 		}
 		if closes {
-			if err := answerApprovalAsk(ctx, tx, broker, artifactID, open, review.Actor, reason, serverURL, sink); err != nil {
+			if err := answerApprovalAsk(ctx, tx, broker, artifactID, open, review.Actor, reason, origins, sink); err != nil {
 				return err
 			}
 		}
@@ -872,7 +916,7 @@ func (s *Service) storedVersionTree(ctx context.Context, tx pgx.Tx, artifactID s
 // The update, the parts, the append and the stamp are one step (write); the event carries the
 // row as the step leaves it, after the move this version write queued before it, which set the
 // request's edited_at (RewriteApprovalAsk).
-func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason, serverURL string, sink func(model.Event)) error {
+func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, artifactID string, ask *model.Ask, actor model.Actor, reason string, origins text.Origins, sink func(model.Event)) error {
 	answeredAt, err := transactionNow(ctx, tx)
 	if err != nil {
 		return err
@@ -894,7 +938,7 @@ func answerApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, ar
 	// already, and this plan runs against what that one leaves, so the answer takes a revision
 	// of its own. The answer holds the parts alone, so the step reconciles the question's
 	// references after them too and settles the forms queue there (questionReconciled false).
-	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, serverURL),
+	changes, parts, err := planAskPartsCounted(ctx, tx, refs.NewReader(ctx, tx, ask.Author, "ask", ask.ID, origins),
 		answered, answer.At, false, model.ReferenceChanges{})
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)

@@ -20,7 +20,8 @@
 # filters through an anchor (filters.yaml beside the fixture, which CI_FILTERS_FILE names), a
 # package and a library it compiles, and a ci_ts_programs.py pairing them - and symlinks the real
 # script, the listing it shares with the changes job (ci_ts_listing.py), the engine it borrows the
-# quantifier and the block reader from (ci_filter_coverage.py), the path model both import
+# quantifier and the block reader from (ci_filter_coverage.py), the readings that engine reads a
+# step through (audited_scripts.py), the path model both import
 # (workflow_paths.py) and the Go build-tag module the engine imports (go_build_tags.py) into it,
 # so the code under test is the code CI runs. The programs are listed by a stand-in bunx on the
 # fixture's PATH, which prints the list the fixture wrote for the project, and the bundles built by
@@ -69,7 +70,7 @@ fixture() {
   fi
   mkdir -p "$root/.github/scripts" "$root/.github/workflows" "$root/bin" "$root/pkg/app/src" "$root/pkg/lib" \
     "$root/other"
-  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py workflow_paths.py go_build_tags.py; do
+  for linked in check-ts-filters.sh ci_ts_listing.py ci_filter_coverage.py audited_scripts.py workflow_paths.py go_build_tags.py; do
     ln -s "$script_dir/$linked" "$root/.github/scripts/$linked"
   done
   ln -s "$python" "$root/bin/python3"
@@ -89,16 +90,17 @@ node_modules/typescript/lib/lib.es5.d.ts
 LIST
   cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
-# A stand-in bunx for the fixtures: `bunx tsc -p <project> --noEmit --listFilesOnly` prints the
-# lines of <project>/listed, each made absolute against the fixture root unless it already starts
-# with / or ./, as tsc prints absolute paths and the script must read either. With a <project>/fails
-# file it prints that file and exits 2, as tsc does on a project it cannot read.
+# A stand-in bunx for the fixtures: `bunx --no-install tsc -p <project> --noEmit --listFilesOnly`
+# prints the lines of <project>/listed, each made absolute against the fixture root unless it
+# already starts with / or ./, as tsc prints absolute paths and the script must read either. With a
+# <project>/fails file it prints that file and exits 2, as tsc does on a project it cannot read. It
+# refuses any other argv, a listing without --no-install among them.
 set -euo pipefail
-if [ "$1" != tsc ] || [ "$2" != -p ]; then
+if [ "$1" != --no-install ] || [ "$2" != tsc ] || [ "$3" != -p ]; then
   echo "stand-in bunx: unexpected argv: $*" >&2
   exit 64
 fi
-project=$3
+project=$4
 if [ -f "$project/fails" ]; then
   cat "$project/fails" >&2
   exit 2
@@ -250,7 +252,7 @@ printf 'error TS5083: cannot read file tsconfig.json\n' > "$root/pkg/app/fails"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the command and what it printed" \
-  "$(contains "$out" '::error file=pkg/app::`bunx tsc -p pkg/app --noEmit --listFilesOnly` failed (exit 2), so the files its program holds are unknown: error / TS5083')"
+  "$(contains "$out" '::error file=pkg/app::`bunx --no-install tsc -p pkg/app --noEmit --listFilesOnly` failed (exit 2), so the files its program holds are unknown: error / TS5083')"
 
 echo "case: a pair naming a filter the changes job does not have"
 root=$(fixture unknown-filter)

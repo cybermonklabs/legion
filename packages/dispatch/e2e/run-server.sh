@@ -31,8 +31,11 @@ unset NATS_NKEY_SEED NATS_NKEY_SEED_FILE
 # server binds exactly that port, and an occupied one fails with "address
 # already in use". DISPATCH_E2E_LISTEN_FROM instead names the unix socket of a
 # `held-port.py keep` process, for a caller that needs the port before the
-# server starts: the server serves on that keeper's port. The server's
-# dashboard origin is its own, http://127.0.0.1:<port>.
+# server starts: the server serves on that keeper's port. The server's dashboard origin is its own,
+# http://127.0.0.1:<port>, unless DISPATCH_E2E_SERVER_URL names another: a caller that stands a
+# front door of its own before the server (e2e/served-addresses.e2e.ts, whose TLS proxy answers
+# https://a.example.test) hands the server that origin as its DISPATCH_SERVER_URL, and reaches the
+# server through that front door.
 #
 # Two processes (DISPATCH_E2E_PROCESSES=2, e2e/harness-processes.ts): the
 # harness runs this script twice, Dispatch A and B, behind the round-robin proxy
@@ -58,13 +61,17 @@ case "${DISPATCH_E2E_PROCESSES:-1}" in
   1)
     own_port_variable=DISPATCH_E2E_PORT
     own_port="${DISPATCH_E2E_PORT:-}"
-    dashboard_origin=""
+    dashboard_origin="${DISPATCH_E2E_SERVER_URL:-}"
     ;;
   2)
     if [ -z "${DISPATCH_E2E_SIGNIN:-}" ]; then
       : "${DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY:?DISPATCH_E2E_DEV_SIGNIN_SHARED_KEY must give both processes of DISPATCH_E2E_PROCESSES=2 one cookie key}"
     fi
     : "${DISPATCH_E2E_PORT:?DISPATCH_E2E_PORT must name the round-robin proxy (e2e/round-robin-proxy.ts) both processes of DISPATCH_E2E_PROCESSES=2 serve behind}"
+    if [ -n "${DISPATCH_E2E_SERVER_URL:-}" ]; then
+      echo "run-server.sh: DISPATCH_E2E_SERVER_URL names one server's front door; both processes of DISPATCH_E2E_PROCESSES=2 serve the round-robin proxy's origin" >&2
+      exit 2
+    fi
     own_port_variable=DISPATCH_E2E_SERVER_PORT
     own_port="${DISPATCH_E2E_SERVER_PORT:-}"
     dashboard_origin="http://127.0.0.1:$DISPATCH_E2E_PORT"
@@ -248,6 +255,16 @@ if [ -n "$server_bin" ]; then
   fi
 fi
 
+# The roots of The Spec, read before the sweep below: DISPATCH_E2E_SPEC_ROOTS names the issue
+# keys, separated by commas, that the server takes as DISPATCH_SPEC_ROOTS, so Dispatch refuses an
+# approval request of a document under one of them that breaks the form of The Spec
+# (internal/dispatch/api/spec_form.go). Unset, the root is STE-1, the root e2e/spec-form.e2e.ts
+# seeds; no other spec makes the project STE, so the documents of every other row are outside it.
+# Empty names no root, the server's own default. `bun run dispatch:local` hands it on, so a person
+# names a root of the instance with it. No colon, so empty and unset differ, as for
+# DISPATCH_E2E_AGENT_SECRETS_URL above.
+spec_roots="${DISPATCH_E2E_SPEC_ROOTS-STE-1}"
+
 # How long a document room waits after its last live update before it settles, read before the
 # sweep below: a settlement is when an `:::ask` block becomes an ask row and when live typing is
 # written as a version, so it is what every row that waits for one waits for. 250ms in place of
@@ -303,6 +320,18 @@ if [ -n "${DISPATCH_PARENT_STATUS_RULE+set}" ]; then
   parent_status_rule_env=(DISPATCH_PARENT_STATUS_RULE="$DISPATCH_PARENT_STATUS_RULE")
 fi
 
+# The addresses the server answers at beside its dashboard origin (DISPATCH_SERVED_ORIGINS) and the
+# ones it answered at before (DISPATCH_FORMER_ORIGINS), read before the sweep below. Unset is the
+# server's own none, which every run keeps but e2e/served-addresses.e2e.ts's, whose servers stand
+# behind that spec's own TLS proxy with DISPATCH_E2E_SERVER_URL. A caller that sets either gets
+# it passed on as it set it, and the server refuses a list it cannot serve.
+served_origins_env=()
+for name in DISPATCH_SERVED_ORIGINS DISPATCH_FORMER_ORIGINS; do
+  if [ -n "${!name+set}" ]; then
+    served_origins_env+=("$name=${!name}")
+  fi
+done
+
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
 # process the AWS SDK's own variables so it can reach the stack's S3 server, and Bedrock - the
 # default place DISPATCH_EMBEDDER names - takes those same static keys as its credentials and the
@@ -354,26 +383,6 @@ if [ "$stacks" -gt 1 ]; then
   gomaxprocs_env=(GOMAXPROCS="$gomaxprocs")
 fi
 
-# The agent bearer the server accepts (DISPATCH_AGENT_TOKEN), read before the sweep below: the
-# contents of the file DISPATCH_E2E_AGENT_TOKEN_FILE names, where a caller names one, and
-# otherwise `e2e-token`, the bearer every row, acceptance script and e2e/api.ts default to. A
-# caller whose agents read the bearer names a file of its own (the skill-scenario rig, whose
-# agents `cat` their DISPATCH_TOKEN_FILE), so the harness's name does not reach them; e2e/api.ts
-# reads the same file, and the file, not a variable, carries the value, as DISPATCH_TOKEN_FILE
-# does. `$(<file)` drops the line feed a file ends with.
-agent_token=e2e-token
-if [ -n "${DISPATCH_E2E_AGENT_TOKEN_FILE:-}" ]; then
-  if [ ! -r "$DISPATCH_E2E_AGENT_TOKEN_FILE" ]; then
-    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE cannot be read" >&2
-    exit 2
-  fi
-  agent_token="$(<"$DISPATCH_E2E_AGENT_TOKEN_FILE")"
-  if [ -z "$agent_token" ]; then
-    echo "run-server.sh: DISPATCH_E2E_AGENT_TOKEN_FILE=$DISPATCH_E2E_AGENT_TOKEN_FILE holds no token" >&2
-    exit 2
-  fi
-fi
-
 # The events outbox publishes through NATS, and this rig has none, so the server runs with
 # DISPATCH_NATS_DISABLED=1 by default: no spec here wants a bus, and a server that kept trying to
 # reach one would log a reconnect loop for every run. The publisher is the only writer of what a
@@ -412,7 +421,8 @@ done
 # run's DISPATCH_SIGNING_KEY, which keeps the data dir out of it too.
 # DISPATCH_INSECURE_COOKIE=1 keeps the cookie usable over plain HTTP in every
 # engine. DISPATCH_SERVER_URL is the dashboard origin above,
-# http://127.0.0.1:<port> of the port the server serves on, or in two-process
+# http://127.0.0.1:<port> of the port the server serves on, DISPATCH_E2E_SERVER_URL where a caller
+# that stands a front door before it names one, or in two-process
 # mode the round-robin proxy's: it is the origin the CSRF guard compares writes
 # against, the only Host the router serves under dev sign-in, the origin of the
 # sign-in's /auth/callback, and the Playwright config's baseURL. Dev sign-in
@@ -436,17 +446,17 @@ if [ -z "$server_bin" ]; then
   server_bin=./dispatch-e2e
 fi
 # The settings that hold a secret, the caller's DATABASE_URL (password and all), the App key made
-# above, the agent bearer (agent_token, which a caller's file can carry) and the sign-in keys
-# (signin_secret_env), are exported and so reach the server through the environment held-port.py
-# and env hand on, never through their arguments, which every user of the machine reads for as
-# long as each runs. Every other setting is env's, as before.
-export DATABASE_URL="$database_url" DISPATCH_APP_PEM_B64="$app_pem" DISPATCH_AGENT_TOKEN="$agent_token"
+# above and the sign-in keys (signin_secret_env), are exported and so reach the server through the
+# environment held-port.py and env hand on, never through their arguments, which every user of
+# the machine reads for as long as each runs. Every other setting is env's, as before.
+export DATABASE_URL="$database_url" DISPATCH_APP_PEM_B64="$app_pem"
 [ "${#signin_secret_env[@]}" -eq 0 ] || export "${signin_secret_env[@]}"
 exec "${listen[@]}" env \
   "${broker_env[@]}" \
   "${file_store_env[@]}" \
   "${fake_embedder_env[@]}" \
   "${signin_env[@]}" \
+  DISPATCH_AGENT_TOKEN=e2e-token \
   DISPATCH_APP_CLIENT_ID=Iv1.e2efake \
   DISPATCH_GITHUB_API_BASE="http://127.0.0.1:$fake_github_port" \
   DISPATCH_IDENTITY=cookie \
@@ -456,6 +466,8 @@ exec "${listen[@]}" env \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
   "${parent_status_rule_env[@]}" \
+  "${served_origins_env[@]}" \
+  DISPATCH_SPEC_ROOTS="$spec_roots" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \

@@ -16,6 +16,7 @@ import {
   CONTROL_LABELS,
   PROGRESS_NOUNS,
 } from "../web/src/features/issue-page/page-words";
+import { PAGE_SIZE, showMoreName } from "../web/src/features/issue-page/show-more-fixture";
 import { priorityTriggerName } from "../web/src/features/priorities/IssuePriorityLine";
 import { buildDispatchReference, buildIssuePath } from "../web/src/features/refs/routes";
 import { setLiveSessions } from "./agents";
@@ -38,12 +39,11 @@ import {
   CHANGES_REASON,
   COMPONENT_TITLE,
   detailsRow,
-  FOLD_AFTER,
   filesList,
   marginSection,
   marginSectionDisclosure,
   marginSlot,
-  ONE_PAST_FOLD,
+  ONE_PAST_PAGE,
   OTHER_LINK,
   PINNED_FIRST_LINE,
   PLANNER,
@@ -339,7 +339,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
       // its links on GitHub.
       await page.setViewportSize(viewportAt(1440));
       const traffic = watchRequests(page);
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await expect(marginSlot(page)).toHaveCount(1);
       await expect
         .poll(() => traffic.settled(), { message: "the load's reads never ended" })
@@ -446,7 +446,7 @@ test("Details opens on the properties and holds no conversation @phone", async (
     // (4) On a phone: Escape in a box, the three sections inside Details' width, and a pin's
     // and a document's link that close it.
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     // Escape in the blocked-by box leaves the box's editor and goes no further: the sheet stays.
     const blockedBy = detailsRow(page, PROPERTY_LABELS.blocked_by);
@@ -514,7 +514,7 @@ test("every property with a value is visible in Details at every width @phone", 
     // (5) Every width: the rows' order, the twenty labels whole, and each value in its row.
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       // The labels of Development's rows, in the order they stand (`details-leaves.tsx`'s `Row`).
       await expect(
@@ -692,10 +692,10 @@ test("every property with a value is visible in Details at every width @phone", 
           ),
         ],
         [
-          "Referenced by's count",
+          "Referenced by's control",
           marginSection(page, "references").getByRole("button", {
             exact: true,
-            name: referencedByControlName(oneRead.referenced_by_count),
+            name: referencedByControlName(undefined),
           }),
         ],
         [
@@ -799,17 +799,16 @@ test("every property with a value is visible in Details at every width @phone", 
       await closeDetails(page);
     }
 
-    // (6) Blocks, and Files and documents, fold after ten behind Show all with the count, read on
-    // a phone.
+    // (6) Blocks, and Files and documents, draw their first `PAGE_SIZE` entries and under them
+    // Show more, which says how many are left, read on a phone.
     await page.setViewportSize(viewportAt(390));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
+    const oneLeft = showMoreName(ONE_PAST_PAGE - PAGE_SIZE);
     const blocking = detailsRow(page, PROPERTY_LABELS.blocks).getByRole("link");
-    await expect(blocking).toHaveCount(FOLD_AFTER);
-    await detailsRow(page, PROPERTY_LABELS.blocks)
-      .getByRole("button", { name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}` })
-      .click();
-    await expect(blocking).toHaveCount(ONE_PAST_FOLD);
+    await expect(blocking).toHaveCount(PAGE_SIZE);
+    await detailsRow(page, PROPERTY_LABELS.blocks).getByRole("button", { name: oneLeft }).click();
+    await expect(blocking).toHaveCount(ONE_PAST_PAGE);
     expect(
       await blocking.evaluateAll((links) =>
         links
@@ -830,20 +829,20 @@ test("every property with a value is visible in Details at every width @phone", 
         `Blocks draws ${key} without its title`
       ).toHaveText(seeded.titles.blocks[index] ?? "");
     }
-    // Show all is read as it is drawn, with the space before its count: below 1280 px every
+    // Show more is read as it is drawn, with the space before its count: below 1280 px every
     // button is a flex box (`styles.css`), which drops a space between two of its children.
-    const showAllFiles = marginSection(page, "references").getByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`,
+    const showMoreFiles = marginSection(page, "references").getByRole("button", {
+      name: oneLeft,
     });
     await expect
-      .poll(() => showAllFiles.evaluate((button) => (button as HTMLElement).innerText), {
-        message: "Files and documents' Show all is drawn without the space before its count",
+      .poll(() => showMoreFiles.evaluate((button) => (button as HTMLElement).innerText), {
+        message: "Files and documents' Show more is drawn without the space before its count",
       })
-      .toBe(`${CONTROL_LABELS.show_all} ${ONE_PAST_FOLD}`);
+      .toBe(oneLeft);
     const documents = filesList(page).getByRole("link");
-    await expect(documents).toHaveCount(FOLD_AFTER);
-    await showAllFiles.click();
-    await expect(documents).toHaveCount(ONE_PAST_FOLD);
+    await expect(documents).toHaveCount(PAGE_SIZE);
+    await showMoreFiles.click();
+    await expect(documents).toHaveCount(ONE_PAST_PAGE);
     const firstDocument = (await getIssue(one)).artifacts?.[0];
     expect(firstDocument, `${one} holds no document`).toBeDefined();
     await expect(documents.first()).toHaveAttribute(
@@ -865,7 +864,7 @@ test("every property with a value is visible in Details at every width @phone", 
     if (!desktopProject) return;
     // (7) At 1440 px, the prototype's sizes and the page's own colours.
     await page.setViewportSize(viewportAt(1440));
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const row = await detailsRow(page, PROPERTY_LABELS.parent).evaluate((element) => {
       const style = getComputedStyle(element);
@@ -981,7 +980,7 @@ test("every property with a value is visible in Details at every width @phone", 
         entries.map((entry) => getComputedStyle(entry).textDecorationLine)
       ),
       "a document's entry in Details is underlined"
-    ).toEqual(Array.from({ length: FOLD_AFTER }, () => "none"));
+    ).toEqual(Array.from({ length: PAGE_SIZE }, () => "none"));
     const approve = detailsRow(page, PROPERTY_LABELS.approval).getByRole("button", {
       exact: true,
       name: "Approve",
@@ -1019,7 +1018,7 @@ test("a label of the most characters Dispatch takes is whole in Details at every
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.labels);
       const label = row.getByText(LONGEST_LABEL, { exact: true });
@@ -1054,7 +1053,7 @@ test("a repository of a long name is whole in Details at every width @phone", as
     const desktopProject = test.info().project.name !== "iphone";
     for (const width of desktopProject ? [1440, 1280, 1024, 390] : [390]) {
       await page.setViewportSize(viewportAt(width));
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.repository);
       const repository = row.getByText(LONG_REPOSITORY, { exact: true }).first();
@@ -1092,7 +1091,7 @@ test("Add brings a control it reaches into view, so its popover opens under Deta
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { two } = seeded.keys;
     await page.setViewportSize({ height: 400, width: 390 });
-    await gotoIssue(page, `/issues/${two}`);
+    await gotoIssue(page, `/issues/${two}/conversation`);
     await openDetails(page);
     const labelsControl = detailsRow(page, PROPERTY_LABELS.labels).getByRole("button", {
       name: labelsControlName(two, { labels: [], saving: false, words: CONTROL_NAME_WORDS }),
@@ -1129,7 +1128,7 @@ test("each control in Details saves and reads back", async ({ browser }) => {
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one, three, two } = seeded.keys;
     const reopen = async (key: string) => {
-      await gotoIssue(page, `/issues/${key}`);
+      await gotoIssue(page, `/issues/${key}/conversation`);
       await openDetails(page);
     };
 
@@ -1641,7 +1640,7 @@ test.describe("the shared controls of Details keep the focus while their write l
       // still drawn once ONE's own priority is removed.
       const inherited = await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
       await patchIssue(parent, { advances: [inherited.id] });
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
       await expect(advances).toContainText(SECOND_PRIORITY_TITLE);
@@ -1682,7 +1681,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { one } = seeded.keys;
       await createPriority({ owner: "alice", title: SECOND_PRIORITY_TITLE });
-      await gotoIssue(page, `/issues/${one}`);
+      await gotoIssue(page, `/issues/${one}/conversation`);
       await openDetails(page);
       const advances = detailsRow(page, PROPERTY_LABELS.advances);
       const trigger = advances.getByRole("button", { name: priorityTriggerName(one, false) });
@@ -1733,7 +1732,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
@@ -1773,7 +1772,7 @@ test.describe("the shared controls of Details keep the focus while their write l
     test.setTimeout(120_000);
     await phase(browser, seedDetailsIssue, async (page, seeded) => {
       const { three, two } = seeded.keys;
-      await gotoIssue(page, `/issues/${two}`);
+      await gotoIssue(page, `/issues/${two}/conversation`);
       await openDetails(page);
       const row = detailsRow(page, PROPERTY_LABELS.blocked_by);
       const open = row.getByRole("button", { name: blockedByControlName(two, 0) });
@@ -1823,7 +1822,7 @@ test("Details' Add a priority on an issue that advances none keeps the focus in 
   test.setTimeout(120_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { three } = seeded.keys;
-    await gotoIssue(page, `/issues/${three}`);
+    await gotoIssue(page, `/issues/${three}/conversation`);
     await openDetails(page);
     const addPriority = priorityLine(page).getByRole("button", {
       name: priorityTriggerName(three, true),
@@ -1863,7 +1862,7 @@ test("Details' priority picker's removal of an issue's last priority keeps the f
   test.setTimeout(120_000);
   await phase(browser, seedDetailsIssue, async (page, seeded) => {
     const { one } = seeded.keys;
-    await gotoIssue(page, `/issues/${one}`);
+    await gotoIssue(page, `/issues/${one}/conversation`);
     await openDetails(page);
     const trigger = detailsRow(page, PROPERTY_LABELS.advances).getByRole("button", {
       name: priorityTriggerName(one, false),

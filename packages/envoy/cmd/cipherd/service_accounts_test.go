@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -35,13 +35,12 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 		accountC     = "system:serviceaccount:example:example-worker-c"
 		secretName   = "SERVICE_KEY"
 		secretValue  = "service-value"
-		kmsKey       = "arn:aws:kms:us-east-1:111122223333:key/1234abcd-12ab-34cd-56ef-1234567890ab"
 	)
-	fakeSecretsFile := filepath.Join(t.TempDir(), "fake-secrets.json")
-	fakeSecrets := `{"secrets": [
-		{"name": "example/agent-secrets/service-key", "kms_key_id": "` + kmsKey + `", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
+	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
+	memorySecrets := `{"secrets": [
+		{"name": "example/agent-secrets/service-key", "tags": {"owner": "` + service + `", "tier": "agent"}, "value": "` + secretValue + `"}
 	]}`
-	if err := os.WriteFile(fakeSecretsFile, []byte(fakeSecrets), 0o600); err != nil {
+	if err := os.WriteFile(memorySecretsFile, []byte(memorySecrets), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -49,7 +48,8 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 		"BROKER_DATABASE_URL=" + databaseURL,
 		"BROKER_LISTEN_ADDR=127.0.0.1:0",
 		"BROKER_PUBLIC_URL=http://127.0.0.1:0",
-		"BROKER_FAKE_SECRETS_FILE=" + fakeSecretsFile,
+		"BROKER_SECRETS_STORE=memory",
+		"BROKER_MEMORY_SECRETS_FILE=" + memorySecretsFile,
 		"BROKER_K8S_OIDC_ISSUER=" + issuer.URL(),
 		"BROKER_K8S_OIDC_AUDIENCE=" + podAudience,
 		"BROKER_SERVICE_LOGINS=" + service + "=" + loginAccount,
@@ -60,7 +60,7 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 	if strings.Contains(boot, "agent secret policy refused") || strings.Contains(boot, policy.ReasonOwnerTagMalformed) {
 		t.Fatalf("boot log refuses the secret %s owns, which BROKER_SERVICES registers for two accounts:\n%s", service, boot)
 	}
-	broker := ciphertest.Pods{T: t, Base: "http://" + addr, Token: ciphertest.IssuerTokens(t, issuer, podKey, podAudience)}
+	broker := podclient.Pods{T: t, Base: "http://" + addr, Token: podclient.IssuerTokens(t, issuer, podKey, podAudience)}
 
 	t.Log("--- the service logs in once with its own token")
 	launcher := broker.LogIn(service, loginAccount)
@@ -68,7 +68,7 @@ func TestOneServicesTwoAccountsEachGetItsSecret(t *testing.T) {
 	t.Log("--- the one credential enrolls a pod as each of accounts A and B")
 	granted := []struct {
 		name string
-		pod  ciphertest.Pod
+		pod  podclient.Pod
 	}{{"A", broker.Enroll(launcher, "pod-a", accountA)}, {"B", broker.Enroll(launcher, "pod-b", accountB)}}
 
 	for _, p := range granted {

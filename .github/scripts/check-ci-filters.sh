@@ -68,15 +68,33 @@
 #      as one read through an output does,
 #   3. a job or step gated on a filter the table neither lists in GATES nor EXCLUDES, in ci.yaml
 #      or in a workflow it calls, where the filter is the one the resolved condition names, or
-#      the one it reads out of the list,
+#      the one it reads out of the list. A term that tests an output for not being 'true'
+#      (`needs.changes.outputs.<x> != 'true'`) gates on no filter: it holds the job back where
+#      <x> selected its own job, as dispatch-references' holds the preview off a run whose full
+#      lane runs (.github/ci-notes/ci.md#the-reference-rows-preview-job), and reads none of <x>'s
+#      paths; the same rule refuses one whose <x> is no output of the changes job, since
+#      needs.changes.outputs.<x> is then empty on every run and the term always holds,
 #   4. a run: line of a job of ci.yaml, or of a job of a workflow ci.yaml calls - which is where
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
 #      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
-#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
-#      in the called file, which runs them inside the caller's own run, so the steps of every one
-#      of those files are read here and each refusal names the file the step is in,
+#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id, its
+#      needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps in
+#      the called file, which runs them inside the caller's own run, so the steps of every one of
+#      those files are read here and each refusal names the file the step is in.
+#
+#      Rule 4's script half (ci_filter_coverage.check_script_steps): a step that a filter gates
+#      and whose text names a script a Run's go command is in (its `source`) fails unless, for
+#      each filter that gates it, a Run of that script in a gate of that filter on the step's job
+#      cites the step with at(), and no other step of the job answers to that citation. The
+#      failure names the file, the job, the step, the script and the filter. A step's text is its
+#      run:, or the values of its with: and the run: of each step of a composite action of this
+#      repository that it uses, through the composite actions those steps use in turn. The check
+#      visits each action once per step and does not follow a uses: path outside the repository.
+#      A word is a run of that text between blanks, quotes, = and ;&|()<>, less one leading ./.
+#      It names a script when the shorter of the word and the script's path is the end of the
+#      longer, whole or after a /. No shell or expression syntax is evaluated: a name spelled
+#      another way is the review's to catch, as rules 10 and 15 say for their own cases.
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a
@@ -171,7 +189,7 @@
 #      of the matching actions/cache/restore nor that key followed by `-${{ github.sha }}`, or
 #      whose `path:` is not exactly that restore's, for a restore of ci.yaml or of a workflow
 #      ci.yaml calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs
-#      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
+#      restore go-browser-binaries, go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      the fill workflows' own restores), since a drift there misses as silently (the keys compared
 #      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming
@@ -262,10 +280,22 @@
 #      passes both `-tags` and `-run` must be named by an entry, matched by the file it is in and
 #      by its job and step name, and one no entry names fails naming that file, the job and the
 #      step, so a tag step added without an entry, or an entry deleted while its step stays, is
-#      held too. Nor can the table go stale: an entry naming a filter the changes job does not
-#      have, a job the file the entry names does not have (the job that runs the untagged tests
-#      may be in any of those files, since it keeps its caller in ci.yaml), a step that job does
-#      not have, or a step whose run: holds no -run is a failure of its own.
+#      held too. What a step runs is its go test lines: its run:'s own, or, where the run: is an
+#      audited_scripts.AUDITED_SCRIPTS script, the go test commands of that entry's reading, which
+#      a person made and the script's SHA-256 pins. audited_scripts.reading_of says which: a run:
+#      that is the script's path, alone or followed by an argument list the entry lists, from the
+#      repository root or from any directory on the script's own path, spelled from there, or a legs
+#      step's `set -o pipefail` and lister piped to `xargs <path> <an argument list the entry's xargs
+#      lists>`, from the entry's module; go-test-step-expansion.py reads the same step through the
+#      same function, and no script is read line by line. A step that names an audited script in any
+#      other form - a run from a directory off the script's path among them, which bash would run -
+#      fails by name, since the rule cannot tell what it runs: failing closed is the design, a
+#      reading being of a form a person read. A run: that spells the script's name some other way,
+#      quotes inside it or the path in a variable, holds no file name, and is read as running none.
+#      Nor can the table go stale: an entry naming a filter the changes job does not have, a job
+#      the file the entry names does not have (the job that runs the untagged tests may be in any
+#      of those files, since it keeps its caller in ci.yaml), a step that job does not have, or a
+#      step that runs no `go test` carrying a -run is a failure of its own.
 #  16. a `go test -race` build of a .github/workflows/ci-caches.yaml job ci_job_reads.py's
 #      RACE_FILLS names whose packages are not that entry's lane, in its order: the daemon's
 #      DAEMON_RACE_FILL_JOB against DAEMON_RACE_PACKAGES, and the envoy race lane's
@@ -378,6 +408,55 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
+#  25. a step of a ci_job_reads.py BINARIES_FILLS pair - the build and connections steps of
+#      .github/workflows/ci-caches.yaml's browser-binaries job, and the two steps of
+#      dispatch-browser.yaml's binaries job they fill the cache family for - that does not run the
+#      pair's text (compared as an Exact entry compares a step's, the whole text), in the pair's
+#      directory, with no `if:` of its own, no GOCACHE of the workflow, the job or the step, no
+#      other env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or
+#      running `go env -w`, and no shell or container, naming the file, the step and its first
+#      line that differs; before each paired step, a fill job whose last actions/setup-go step
+#      gives another go-version-file, go-version, go-download-base-url or architecture than
+#      the reader job's last before the step it pairs with, each compared as text, naming the
+#      file, the job, the paired step and both; a job of either side with no setup-go step
+#      before a paired step that gives a go-version-file or go-version (one that gives neither
+#      installs no Go, and counts as none), which then builds on whatever Go the runner
+#      carries, naming the file, the job and the step, and saying to set Go up there as the
+#      other side's job does where that job's installs Go, else to set both jobs' Go up from
+#      one go-version-file, such as the go.mod of the pair's directory; that setup-go step
+#      with an `if:` of its own, which may install no Go at all, naming the file, the job, the
+#      step and the `if:`; a step of the reader job whose run: holds a go command and that no
+#      pair names, naming the file, the job and the step: the fill does not run it, so the job
+#      restores the entry and that step's own packages miss on every run; a job or step of
+#      either side that is gone, each in its own words; and an entry that names no pair, an
+#      empty text or a workflow the tree does not have. An object's cache key holds the
+#      compiler's flags, CGO_ENABLED and the other GO* variables that enter the build, with
+#      the source it compiles, so a fill that drifts saves an entry with which the job
+#      compiles again each package whose key the drift changes, and nothing fails: with a cgo
+#      drift, the binaries job's build step compiles again 427 of the 1,034 packages of its
+#      whole build closure, as measured on a go-envoy-test entry, a family filled with cgo on;
+#      with another Go, every package. GOCACHE and a step's `if:` are refused although neither
+#      enters a key: a GOCACHE sends the objects away from the `~/.cache/go-build` the fill saves,
+#      which leaves the fill saving an empty entry, and a step that does not run compiles nothing,
+#      while every text still matches. Whole texts rather than the go commands read out of them, so
+#      that no shape of a command (a `GOFLAGS=` prefix, a `time`, a continued line, an `export`)
+#      can read as no command on both sides and pass. The two steps of a pair are two copies of one
+#      text rather than one script: a Run pinned to a script's text is reduced over every job of
+#      the called workflow, and the shard and alone jobs run in a container, so a shared script
+#      would make that filter read every Go file of the repository (ci_job_reads.py's browser gate
+#      says so where it lists no script Run). The setup-go inputs are compared because the readers'
+#      restore-keys do not carry the Go version: an entry a fill on another Go saved is restored,
+#      and every object of it misses - go-download-base-url chooses the distribution setup-go
+#      downloads, and another distribution's toolchain has another build ID; architecture chooses
+#      the architecture whose Go setup-go installs, and that Go's default GOARCH changes the key of
+#      every object, while the restore-keys carry only `runner.arch`. Not compared: a job's
+#      `if:` - the fill job's is `inputs.only != 'dispatch-builds'`, the selection every fill job
+#      of ci-caches.yaml but dispatch-builds carries, and no rule holds a fill job's `if:` for any
+#      family; the runner, whose OS and architecture the readers' restore-keys carry too, so an
+#      entry another OS or architecture filled is never restored - the binaries job then compiles
+#      everything, and its restore step shows the miss as "Cache not found" - and no rule holds the
+#      runner of any other fill family either; and GOPROXY, which decides where a module comes from
+#      and enters no key.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to
@@ -386,9 +465,18 @@
 #
 # Every rule reads the filters from the same run of the engine that computes them, in memory, and
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate
-# and every //ci:builds line run at once, in a pool of CI_FILTERS_JOBS (default: the machine's
-# processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
-# filters are the same text whatever the pool's size.
+# and every //ci:builds line run at once, in two pools of CI_FILTERS_JOBS threads each (default:
+# the machine's processors, at most 8; 1 runs them one after another, in no pool), each answer
+# keyed by what it asks, so the filters are the same text whatever the pools' size. With more than
+# one, each Run's `go list -deps` starts in the first pool as the table declares the Run
+# (ci_filter_coverage.start_early), so those listings run while the rest of the table loads, and
+# toolchain()'s `go env GOROOT`, once per module directory, runs on the table's thread during the
+# load; the other go commands, module_files()'s `go env -json` and `go work edit -json` and
+# check_vet_tags()'s `go list`, run when the walk asks them. The second pool runs what the walk
+# asks of each Run (ci_filter_coverage.Session.prefetch): a listing the first pool began is waited
+# for there, not run again, but module_files()'s commands run beside the early listings still
+# running, so up to twice CI_FILTERS_JOBS go commands can run at once. A listing's failure waits
+# in its answer and is reported when the walk asks it, as it is when the command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -591,8 +679,14 @@ export CI_FILTERS_MODE="${1:-check}"
 # The first reading comes before the audit hook too, since it opens every file of the tree and none
 # of those opens is the computation's. A run whose imports fail is a failure before the second
 # read has anything to add. The generate mode starts its TypeScript listings
-# (ci_ts_listing.start) right after the engine's own import, so tsc and Bun list while the table
-# loads and the go commands run; they read the tree and write nothing in it.
+# (ci_ts_listing.start), with tsgo (ci_ts_listing.COMPILER), right after the engine's own import,
+# and every mode starts each Run's `go list -deps` as the table declares the Run
+# (ci_filter_coverage.start_early), so they run while the table loads. The TypeScript listings
+# read the tree and write nothing in it; the early go list commands run, like the walk's, in the
+# Session's environment (GOPROXY=off over an empty module cache), which rewrites no go.sum or
+# go.work.sum, and the guard below names any file of the tree that still changes. After the load,
+# the generate mode prints the command the programs are listed with and how many listings start()
+# began (ci_ts_listing.started_summary).
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -661,36 +755,49 @@ before = tree()
 opened = []
 sys.addaudithook(lambda event, args: opened.append(args[0]) if event == "open" and isinstance(args[0], str) else None)
 
+import contextlib
 import secrets
 import time
 import warnings
 
 token = secrets.token_hex(16)
 print(f"::stop-commands::{token}", flush=True)
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    import ci_filter_coverage
-    ci_filter_coverage.OPENED = opened
-    if os.environ["CI_FILTERS_MODE"] == "generate":
-        import ci_ts_listing
-        ci_ts_listing.start()
-    started = time.monotonic()
-    try:
-        import ci_job_reads
-    except ci_filter_coverage.RepositoryInputError as exc:
-        print(f"::{token}::", flush=True)
-        ci_filter_coverage.print_annotation(exc.annotation())
-        sys.exit(1)
-    loaded = time.monotonic() - started
-    import ci_workflow_rules
-print(f"::{token}::", flush=True)
-print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
-for import_warning in caught:
-    ci_filter_coverage.print_import_warning(import_warning)
-status = ci_filter_coverage.main()
+mode = os.environ["CI_FILTERS_MODE"]
+# Every way out after start_early() passes its one stop_early() before the second reading of the
+# tree: a table that fails to load, any other fault of the imports, and main(), however it ends.
+with contextlib.ExitStack() as stop:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        import ci_filter_coverage
+        ci_filter_coverage.OPENED = opened
+        ci_filter_coverage.TREE_FILES = list(before) if isinstance(before, dict) else None
+        if mode == "generate":
+            import ci_ts_listing
+            ci_ts_listing.COMPILER = "tsgo"
+            ci_ts_listing.start()
+        ci_filter_coverage.start_early()
+        stop.callback(ci_filter_coverage.stop_early)
+        started = time.monotonic()
+        try:
+            import ci_job_reads
+        except ci_filter_coverage.RepositoryInputError as exc:
+            print(f"::{token}::", flush=True)
+            ci_filter_coverage.print_annotation(exc.annotation())
+            sys.exit(1)
+        loaded = time.monotonic() - started
+        progress = ci_filter_coverage.early_progress()
+        import ci_workflow_rules
+    print(f"::{token}::", flush=True)
+    print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
+    if progress is not None:
+        print(progress, flush=True)
+    if mode == "generate":
+        print(ci_ts_listing.started_summary(), flush=True)
+    for import_warning in caught:
+        ci_filter_coverage.print_import_warning(import_warning)
+    status = ci_filter_coverage.main()
 after = tree(before if isinstance(before, dict) else None)
 
-mode = os.environ["CI_FILTERS_MODE"]
 written = []
 if mode == "write":
     written = list(getattr(ci_job_reads, "PUSH_WORKFLOWS", {}).values())

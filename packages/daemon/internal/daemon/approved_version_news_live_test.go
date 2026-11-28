@@ -13,7 +13,7 @@
 // version through POST /api/v1/artifacts/{id}/reviews, and each tree's architect writes every new
 // version through Dispatch's own edit route and opens its approval request through
 // POST /api/v1/artifacts/{id}/approval-requests, the route `dispatch request-approval` calls. The
-// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonWithin),
+// daemon is the whole daemon (run, the function `legion start` calls, through startDaemonLogging),
 // booted with dispatch_url at that server, on a database of its own on the same PostgreSQL, and it
 // hears every document event Dispatch publishes over JetStream, as it does in production. Each
 // role the proof acts as speaks the daemon's worker stream as `legion worker-shim` speaks it
@@ -22,7 +22,7 @@
 //
 // What is stood in for lies outside the approval path. The broker is a native nats-server the
 // script starts and names in LEGION_E2E_NATS_URL. GitHub is the package's repositoriesGitHub,
-// which startDaemonWithin boots the daemon with: each repository with default branch main, and
+// which startDaemonLogging boots the daemon with: each repository with default branch main, and
 // every other request answered 404. Envoy's listener is the package's noticeListener, the two
 // Apps' tokens are workflowTokenRecorder's placeholders, and no agent runs: each claim is launched
 // by the package's fake runtime, which provisions each workspace in its own pod. A merged pull
@@ -319,7 +319,7 @@ func (r *versionNewsLive) boot(gates string, steps []record.DesignStep, repo str
 	r.seed()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
-	r.d = startDaemonWithin(t, cfg, o, r.log(), 2*time.Minute)
+	r.d = startDaemonLogging(t, cfg, o, r.log())
 	r.note("daemon booted under gates.design: %s, project %s with default repository %s, set through %s, dispatch_url %s", gates, cfg.Project, repo, route, r.dispatch.base)
 	// The boot's run of each seeded start is its claim's first launch, so none before it counts.
 	for _, tree := range r.trees {

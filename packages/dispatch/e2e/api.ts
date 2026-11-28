@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import {
   AGENT_STREAM_LIMITS,
   type DispatchEvent,
@@ -34,15 +33,12 @@ export function baseUrlOf(env: NodeJS.ProcessEnv = process.env): string {
 export const baseUrl = baseUrlOf();
 /** The origin the server compares every cookie-authenticated write against (enforceCookieOrigin). */
 export const dashboardOrigin = new URL(baseUrl).origin;
-// A deployed server has its own agent token; the local harness's is the one e2e/run-server.sh
-// gives its server, the contents of DISPATCH_E2E_AGENT_TOKEN_FILE where the caller that started it
-// names one and `e2e-token` otherwise, so an E2E_AGENT_TOKEN left in the shell from a deployed run
-// would only make every bearer-seeded call 401 against it.
+// A deployed server has its own agent token; the local harness pins `e2e-token` in
+// e2e/run-server.sh, so an E2E_AGENT_TOKEN left in the shell from a deployed run would only
+// make every bearer-seeded call 401 against it.
 export const e2eAgentToken = process.env.PLAYWRIGHT_BASE_URL
   ? (process.env.E2E_AGENT_TOKEN ?? "e2e-token")
-  : process.env.DISPATCH_E2E_AGENT_TOKEN_FILE
-    ? readFileSync(process.env.DISPATCH_E2E_AGENT_TOKEN_FILE, "utf8").replace(/\n+$/, "")
-    : "e2e-token";
+  : "e2e-token";
 const seedActor: Actor = { kind: "session", id: "e2e-seed" };
 
 interface ApiOptions {
@@ -422,6 +418,12 @@ export function getIssueDecisions(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/legion`: the issue's Legion state as the sampler recorded the daemon
+ *  of its project, which Dashboard's track and agents part draw from. */
+export function getIssueLegion(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/legion", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`
@@ -664,8 +666,14 @@ export function createAsk(
 }
 
 /** Every ask on the issue, whatever its state (the route's default `state=all`). */
-export function listIssueAsks(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+export async function listIssueAsks(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/asks", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/asks answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function createProjectDocument(
@@ -876,16 +884,22 @@ export function getCommentHistory(id: string, options: ApiOptions = {}) {
   return get("/api/v1/comments/{id}/history", { params: { id } }, options);
 }
 
-export function listComments(
+export async function listComments(
   issue: string,
   artifact: string | undefined = undefined,
   options: ApiOptions = {}
 ) {
-  return get(
+  const answered = await get(
     "/api/v1/issues/{key}/comments",
     { params: { key: issue }, query: { artifact } },
     options
   );
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/comments answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 /** One comment and its reply chain, as the server holds them now: its anchor's quote included. */
@@ -1118,8 +1132,14 @@ export function getBroadcast(id: string, options: ApiOptions = {}) {
 
 /** `GET /api/v1/issues/{key}/messages`: every root message of the issue, oldest first, each with
  *  its replies, as the Conversation reads them. */
-export function listIssueMessages(issue: string, options: ApiOptions = {}) {
-  return get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+export async function listIssueMessages(issue: string, options: ApiOptions = {}) {
+  const answered = await get("/api/v1/issues/{key}/messages", { params: { key: issue } }, options);
+  if (!Array.isArray(answered)) {
+    throw new Error(
+      "GET /api/v1/issues/{key}/messages answered a page where the whole list was asked for"
+    );
+  }
+  return answered;
 }
 
 export function getMessage(issue: string, messageID: string, options: ApiOptions = {}) {
@@ -1231,6 +1251,13 @@ export function createHandoff(
   );
 }
 
+/** The actor the Legion daemon of `issue`'s project writes as: the session
+ *  `legion-daemon:<PROJECT>`, `<PROJECT>` the key up to its first `-`, the server's own rule
+ *  (`legionDaemonSessionOf`, `packages/envoy/internal/dispatch/api/issue_role_holders.go`). */
+function legionDaemonOf(issue: string): Actor {
+  return { id: `legion-daemon:${issue.slice(0, issue.indexOf("-"))}`, kind: "session" };
+}
+
 /** The Legion daemon of `issue`'s project writes one run of a step, as its outbox does: under the
  *  agent bearer, naming the session `legion-daemon:<PROJECT>`, the one writer the route admits
  *  for that project's issues. A field the record already holds is kept, so a start and an end
@@ -1240,11 +1267,28 @@ export function putStep(
   id: string,
   input: Body<"/api/v1/issues/{key}/steps/{id}", "put">
 ) {
-  const project = issue.slice(0, issue.indexOf("-"));
   return put(
     "/api/v1/issues/{key}/steps/{id}",
     { body: input, params: { id, key: issue } },
-    { actor: { id: `legion-daemon:${project}`, kind: "session" }, as: "agent" }
+    { actor: legionDaemonOf(issue), as: "agent" }
+  );
+}
+
+/** `PUT /api/v1/issues/{key}/role-holders`: the session that holds each Legion role of `key`, the
+ *  issue's whole set, published as the Legion daemon of its project publishes it - over the agent
+ *  bearer, naming the session `legion-daemon:<PROJECT>`. The harness runs the server without
+ *  `DISPATCH_LEGION_STATUS_SCOPE`, so the shared bearer may name that session in the body, and a
+ *  project of the harness has `proven_sessions` off, so the session it names is taken at its word
+ *  (the route's comment in `issue_role_holders.go`). The server reads the set where a role decides
+ *  a write, such as the architect of a P0 issue filing a child under it with no p0. */
+export function putIssueRoleHolders(
+  key: string,
+  holders: NonNullable<Body<"/api/v1/issues/{key}/role-holders", "put">["holders"]>
+) {
+  return put(
+    "/api/v1/issues/{key}/role-holders",
+    { body: { holders }, params: { key } },
+    { actor: legionDaemonOf(key), as: "agent" }
   );
 }
 

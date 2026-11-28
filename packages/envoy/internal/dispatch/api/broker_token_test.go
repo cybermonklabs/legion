@@ -77,6 +77,18 @@ func personScopedTokenAnswer(jkt string) ciphertoken.Introspection {
 	return answer
 }
 
+// consentedSignIn is the launcher credential of the Dispatch sign-in consentedToken's answers name.
+const consentedSignIn = "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
+
+// consentedToken is the broker's answer for a Dispatch sign-in's traded token bound to jkt: the
+// person-scoped answer with the project scope consented, scope, the space-separated scopes its
+// person approved, as its OAuth scope, and the sign-in it was traded from (consentedSignIn).
+func consentedToken(jkt, scope string) ciphertoken.Introspection {
+	answer := personScopedTokenAnswer(jkt)
+	answer.ProjectScope, answer.Scope, answer.SignIn = ciphertoken.ProjectScopeConsented, scope, consentedSignIn
+	return answer
+}
+
 // serviceOnlyToken is the broker's answer for a machine nobody has signed in on: live, bound to
 // jkt, naming a session and the service its fleet is, and no person. It names no project either.
 // The exchange mints this shape for one caller only, a machine whose fleet entry names neither a
@@ -279,10 +291,12 @@ func newBrokerTokenRigOn(t *testing.T, serving testServerOptions, options ...fun
 			Replay:    store.NewDPoPProofs(database.Pool),
 			// What Dispatch itself passes: the check keys its bucket on the address
 			// Dispatch's own proxy-trust rule reads, never one of its own, and serves a
-			// read-only token on the reads of its read class and an approve-only token on the
-			// routes its approve list names (cmd/dispatch, brokerTokenVerifier).
+			// read-only token on the reads of its read class, a results token on the routes its
+			// results list names and an approve-only token on the routes its approve list names
+			// (cmd/dispatch, brokerTokenVerifier).
 			Address:           auth.ForwardedAddress,
 			ServesReadOnly:    true,
+			ServesResults:     true,
 			ServesApproveOnly: true,
 		}
 		for _, option := range options {
@@ -502,14 +516,7 @@ func TestABrokerPersonIsStoredCanonicalOnASessionsRow(t *testing.T) {
 		ID string `json:"id"`
 	}](t, commented).ID
 
-	var raw []byte
-	if err := rig.database.Pool.QueryRow(t.Context(), `select author from comments where id = $1`, commentID).Scan(&raw); err != nil {
-		t.Fatalf("read the comment's author: %v", err)
-	}
-	var author model.Actor
-	if err := json.Unmarshal(raw, &author); err != nil {
-		t.Fatalf("decode the comment's author %s: %v", raw, err)
-	}
+	author := storedAuthor(t, rig.database, commentID)
 	requireSessionProven(t, "the comment's author", author, true)
 	stored := "none"
 	if author.Owner != nil {
@@ -1163,8 +1170,8 @@ func TestAServiceOnlyBrokerTokenIsRefusedEveryWrite(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(caller.presenting(t, write.method, write.path, token, write.body))
 			refusal := decodeBody[refusalAnswer](t, response)
@@ -1519,8 +1526,8 @@ func TestAJobBrokerTokenWritesEveryClass(t *testing.T) {
 	}
 	for name, write := range writes {
 		t.Run(name, func(t *testing.T) {
-			if got := writeClasses[write.method+" "+write.pattern]; got != write.class {
-				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, got, write.class)
+			if route, _ := declaredRoute(write.method + " " + write.pattern); route.WriteClass != write.class {
+				t.Fatalf("%s %s is classed %q, want %q", write.method, write.pattern, route.WriteClass, write.class)
 			}
 			response := rig.serve(write.request(t))
 			if response.Code < 200 || response.Code > 299 {

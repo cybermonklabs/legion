@@ -11,8 +11,7 @@ body: |-
     read finds that the pass does not hold or cannot decide, and only at the reviewer's commit: in
     the workspace where it stands there unchanged, else in a read-only `git archive` copy of that
     commit outside the workspace. The pod-update message now tells the reviewer to push its
-    commits, as it tells
-    every other role.
+    commits, as it tells every other role.
 time: 2026-11-25T04:16:13Z
 custom:
     Issue: pr2827

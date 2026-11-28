@@ -39,6 +39,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
@@ -83,7 +84,7 @@ func readProfile(value, permissions, allow string) string {
 
 // profiledSource is the github-app secret stored as source holds it: of profileOperator at agent
 // tier, holding value, behind profileKind by its proxy tag and narrowed by its one profile.
-func profiledSource(source, secretType, value string) secrets.LocalSecret {
+func profiledSource(source, secretType, value string) memory.Secret {
 	return policytest.Narrowed(policytest.Proxied(policytest.TypeSecret(source, profileOperator, policy.TierAgent, secretType, value), profileKind))
 }
 
@@ -113,6 +114,13 @@ func (g *rolledGrants) AirlockAccessPlaceholder(ctx context.Context, grantID, na
 	return g.machine.Load().AirlockAccessPlaceholder(ctx, grantID, name, slot)
 }
 
+func (g *rolledGrants) ProxyGrantsOfEnrollment(ctx context.Context, enrollmentID, exceptGrantID string, names []string) ([]requests.AirlockConnection, error) {
+	return g.machine.Load().ProxyGrantsOfEnrollment(ctx, enrollmentID, exceptGrantID, names)
+}
+
+func (g *rolledGrants) ProxyPlaceholderGrant(ctx context.Context, placeholder string) (string, error) {
+	return g.machine.Load().ProxyPlaceholderGrant(ctx, placeholder)
+}
 func (g *rolledGrants) AirlockRules() proxyrules.Rules { return g.machine.Load().AirlockRules() }
 
 // profileRig is the rig with a broker behind its proxy: the store, the stored App key, the GitHub
@@ -121,7 +129,7 @@ func (g *rolledGrants) AirlockRules() proxyrules.Rules { return g.machine.Load()
 type profileRig struct {
 	*rig
 	st           *store.Store
-	local        *secrets.Local
+	local        *memory.Store
 	stand        *proxyrulestest.GitHubStand
 	minting      *proxyrulestest.Service
 	grants       *rolledGrants
@@ -135,7 +143,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 	t.Helper()
 	pr := &profileRig{
 		st:     storetest.Open(t),
-		local:  secrets.NewLocal(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
+		local:  memory.New(profiledSource(profileSource, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))),
 		stand:  proxyrulestest.NewGitHubStand(proxyrulestest.GitHubOptions{Installations: profileInstallations, DistinctTokens: true}),
 		grants: &rolledGrants{},
 	}
@@ -160,7 +168,7 @@ func newProfileRig(t *testing.T, file string, o Options) *profileRig {
 func (pr *profileRig) machine(t *testing.T, file string) *requests.Machine {
 	t.Helper()
 	m := &requests.Machine{
-		Store: pr.st, Policy: policytest.ProfiledCurrent(t, pr.local, file), Secrets: policytest.Store(pr.local),
+		Store: pr.st, Policy: policytest.ProfiledCurrent(t, pr.local, file), Secrets: pr.local,
 		PendingTTL: 12 * time.Hour, Audience: profileAudience, Skew: time.Minute,
 		Replay:  (&enroll.Service{Store: pr.st}).Replay,
 		Minters: map[string]requests.Minter{policy.TypeGitHubApp: secrets.GitHubApp{Base: pr.minting.URL()}.Mint},
@@ -312,19 +320,20 @@ func TestTheProxyMintsTheProfilesScopeForTheTargetSlot(t *testing.T) {
 	}
 }
 
-// TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests: the profile's own allow is the whole of
-// where its token may go, under a kind that allows everything. A call the profile allows has the
-// placeholder in Authorization swapped for the minted token; a call of a method or a path outside
-// the profile's allow is refused at the proxy, by the profile's rule, and reaches no service; and
-// a header the kind does not name carries the placeholder on unchanged, so the token is in no
-// header but the ones the kind names.
+// TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests: the profile's proxy block is the whole of
+// where its token may go. A call the block allows has the placeholder in Authorization swapped
+// for the minted token; a call of a method or a path outside the block's allow list is refused at
+// the proxy and reaches no service; and a call carrying the placeholder in a header the block does
+// not name is refused too, since the placeholder would leave the proxy, so the token is in no
+// header but the ones the block names. That refusal's line names the grant, as the broker's own
+// read of the placeholder answers it (ProxyPlaceholderGrant).
 //
 // The named revert: drop the profile's allow on its way into its binding (policy's proxyRules), or
 // the decision's read of it (proxyrules.check), and the refused calls are carried with the token,
 // so this fails.
 func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 	pr := newProfileRig(t, readProfile(githubname.ValueToken, readOnly, `[{"method": "GET", "pathPrefix": "/repos/ada/"}]`), Options{})
-	_, released := pr.grant(t)
+	grantID, released := pr.grant(t)
 	placeholder := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
 
@@ -361,22 +370,18 @@ func TestTheProxySwapsAProfileTokenOnlyIntoAllowedRequests(t *testing.T) {
 		}
 	}
 
-	// The placeholder in a header the kind does not name: carried on as it is, with nothing
-	// swapped into it and the token nowhere in what the service reads.
+	// The placeholder in a header the block does not name: refused, nothing reaches the service,
+	// and the line names the grant the broker minted the placeholder for.
 	sent := len(pr.requests())
-	if answer, body := pr.get(client, "https://"+boundHost+profileRepository, "X-Api-Token", placeholder); answer.StatusCode != http.StatusUnauthorized {
-		t.Errorf("a GET carrying the placeholder in X-Api-Token = %d %s; want the stand-in's 401, since no token was swapped in", answer.StatusCode, body)
+	refusals := len(pr.logs.refusals())
+	if answer, body := pr.get(client, "https://"+boundHost+profileRepository, "X-Api-Token", placeholder); answer.StatusCode != http.StatusForbidden {
+		t.Errorf("a GET carrying the placeholder in X-Api-Token = %d %s; want 403 at the proxy, since no token was swapped in", answer.StatusCode, body)
 	}
-	unnamed := pr.upstream(sent)
-	if len(unnamed) != 1 || unnamed[0].Header.Get("X-Api-Token") != placeholder {
-		t.Fatalf("the service was sent %+v; want one request carrying the placeholder in X-Api-Token", unnamed)
+	if got := pr.upstream(sent); len(got) != 0 {
+		t.Fatalf("the service was sent %+v; want nothing: the placeholder would have left the proxy", got)
 	}
-	for name, values := range unnamed[0].Header {
-		for _, value := range values {
-			if strings.Contains(value, token) {
-				t.Errorf("the service read the token in %s: %q; want it in no header the kind does not name", name, value)
-			}
-		}
+	if lines := pr.logs.refusals()[refusals:]; len(lines) != 1 || lines[0].fields["code"] != codePlaceholderLeft || lines[0].fields["placeholder_grant"] != grantID {
+		t.Errorf("the refusal logged %+v; want one line, %s, naming grant %s", lines, codePlaceholderLeft, grantID)
 	}
 }
 
@@ -434,7 +439,7 @@ func TestAGitBasicAuthPlaceholderIsSwappedForAProfileToken(t *testing.T) {
 	held := placeholderOf(t, released, requests.SlotValue)
 	client := pr.client(released.ProxyPassword)
 
-	credential := "Basic " + base64.StdEncoding.EncodeToString([]byte("x-access-token:"+held))
+	credential := gitBasic(held)
 	// The stand-in serves no git route, and answers it 404: what this row reads is what the
 	// service was sent, which the proxy carried.
 	if answer, body := pr.get(client, "https://"+boundHost+"/ada/proofs.git/info/refs?service=git-upload-pack", "Authorization", credential); answer.StatusCode != http.StatusNotFound {

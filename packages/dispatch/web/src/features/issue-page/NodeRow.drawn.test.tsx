@@ -21,6 +21,7 @@ import { pageKindBullet, pageKindTag } from "../../theme/classes";
 import type { ReplyTarget } from "../conversation/composer-model";
 import { heldSends } from "../conversation/held-sends";
 import type { SentRequest } from "../conversation/send-request";
+import { decision, KEY } from "../decision-card/decision-fixture";
 import { actorLabelText } from "../refs/AgentName";
 import { MarkdownBody } from "../refs/MarkdownBody";
 import * as markdownEngine from "../refs/markdown-engine";
@@ -36,20 +37,12 @@ import { measureNearWords } from "./clamp-fixtures";
 import {
   artifact,
   DECISIONS_DOCUMENT,
-  decision,
   decisionsRead,
   issueDetails,
-  KEY,
   shaped,
 } from "./decisions-filter/decisions-fixtures";
-import {
-  FIRST_LINE_LIMIT,
-  type IssueTreeReads,
-  type NodeChip,
-  type ParentLine,
-  type TreeNode,
-  targetNaming,
-} from "./issue-tree";
+import { FIRST_LINE_LIMIT } from "./first-line";
+import type { IssueTreeReads, NodeChip, ParentLine, TreeNode } from "./issue-tree";
 import { KeepOpen, NodeOptions, NodeRow, useRowOnScreen } from "./NodeRow";
 import { NoTooltips } from "./NoTooltips";
 import * as nodeRowChip from "./node-row-chip";
@@ -70,7 +63,7 @@ import {
 import { publishedChips, publishedNames } from "./projection-fixture";
 import { RowText } from "./RowText";
 import { ProvidersSlot } from "./slots/providers";
-import { treeContext } from "./tree-drafts";
+import { targetNaming, treeContext } from "./target-naming";
 import { nodesInOrder } from "./tree-keys";
 import { treeDocumentIds, useIssueTree } from "./useIssueTree";
 import { overflowing, wordsScrollRules, wordsScrollSheet } from "./words-scroll-fixtures";
@@ -2866,7 +2859,7 @@ test("a press on an option of a closed row picks it and opens the row in one", a
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
         <NoTooltips>
-          <OutlineWriterProvider issueKey="CORE-1">
+          <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
             <RowOpenedByFocus drawn={asked} />
           </OutlineWriterProvider>
         </NoTooltips>
@@ -2966,7 +2959,9 @@ function focusedControls(
       <MemoryRouter>
         <NoTooltips>
           {withWriter ? (
-            <OutlineWriterProvider issueKey="CORE-1">{row}</OutlineWriterProvider>
+            <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
+              {row}
+            </OutlineWriterProvider>
           ) : (
             row
           )}
@@ -2992,8 +2987,10 @@ function focusedActs(drawn: TreeNode, withWriter: boolean, ownAnswer = false): s
 }
 
 // Part G's R7: the focused row draws Reply on a comment, a message and an ask in any state, and
-// Answer on an open question; a statement, a check and a decision draw none, since today's model
-// holds no reply to a block; and with no writer above it the row draws no act at all.
+// Answer on an open question; a statement of the issue's documents draws Reply too, for a comment
+// anchored to it (part L's R11, which reads it by its node id `<slug>#b-<block id>`); a check and
+// a decision draw none, since today's model holds no reply to them; and with no writer above it
+// the row draws no act at all.
 test("Reply is drawn on each node that takes one, Answer on an open question, and no action without a writer", () => {
   const by = { id: "bob", kind: "user" };
   const turn = (type: "ask" | "comment" | "message", id: string, state?: TreeNode["state"]) =>
@@ -3011,7 +3008,13 @@ test("Reply is drawn on each node that takes one, Answer on an open question, an
   expect(focusedActs(turn("ask", "ask-3", "open"), true)).toEqual(["answer", "reply"]);
   const block = (type: NodeType, id: string) =>
     node({ author: by, id, reference: `dispatch://CORE-1/spec#b-${id}`, type });
-  expect(focusedActs(block("requirement", "r1"), true)).toEqual([]);
+  const statement = node({
+    id: "spec#b-r1",
+    reference: "dispatch://CORE-1/spec#b-r1",
+    statement: true,
+    type: "requirement",
+  });
+  expect(focusedActs(statement, true)).toEqual(["reply"]);
   expect(focusedActs(block("check", "c1"), true)).toEqual([]);
   expect(focusedActs(block("decision", "d1"), true)).toEqual([]);
   expect(focusedActs(turn("ask", "ask-4", "open"), false)).toEqual([]);
@@ -3120,7 +3123,7 @@ test("while the line's send is out, Answer, an option, Edit and the issue's Repl
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <NoTooltips>
-            <OutlineWriterProvider issueKey="CORE-1">
+            <OutlineWriterProvider issueKey="CORE-1" openAsks={[]}>
               <Probe />
             </OutlineWriterProvider>
           </NoTooltips>

@@ -17,12 +17,14 @@
  */
 
 import { freeze } from "./page-structure";
+import * as partDashboard from "./page-words-dashboard";
 import * as partJ from "./page-words-j";
 import * as partL from "./page-words-l";
 import * as partM from "./page-words-m";
 import * as partN from "./page-words-n";
 import * as partS from "./page-words-s";
 import * as partT from "./page-words-t";
+import * as partThreads from "./page-words-threads";
 import * as partU from "./page-words-u";
 import * as partW from "./page-words-w";
 import * as partX from "./page-words-x";
@@ -116,8 +118,8 @@ export interface WordClash {
   readonly files: readonly [string, string];
 }
 
-/** The file of each part, in the order of the parts' letters. The join reads them in this
- *  order. */
+/** The file of each part, in the order of the parts' letters, then Dashboard's
+ *  (dispatch://INFRA-5702). The join reads them in this order. */
 export const WORD_FILES = [
   { file: "page-words-j.ts", module: partJ },
   { file: "page-words-l.ts", module: partL },
@@ -130,6 +132,8 @@ export const WORD_FILES = [
   { file: "page-words-x.ts", module: partX },
   { file: "page-words-y.ts", module: partY },
   { file: "page-words-z.ts", module: partZ },
+  { file: "page-words-dashboard.ts", module: partDashboard },
+  { file: "page-words-threads.ts", module: partThreads },
 ] as const satisfies readonly WordFile[];
 
 /** The type of the words that `File` adds to the table `Name`, or `unknown` if it adds none. */
@@ -242,11 +246,11 @@ export function joinWords<Name extends TableName, Main extends object>(
 /** The parts' own tables that the page draws on load, in file order. `UNASKED_SOURCES` of
  *  `page-words.ts` holds them. */
 export const PART_UNASKED_SOURCES: readonly unknown[] = freeze(
-  WORD_FILES.flatMap(({ module }) => module.default.unasked)
+  WORD_FILES.flatMap<unknown>(({ module }) => module.default.unasked)
 );
 
 /** The parts' own tables that the page draws only after an act of the reader, in file order.
  *  `ANSWER_SOURCES` of `page-words.ts` holds them. */
 export const PART_ANSWER_SOURCES: readonly unknown[] = freeze(
-  WORD_FILES.flatMap(({ module }) => module.default.answers)
+  WORD_FILES.flatMap<unknown>(({ module }) => module.default.answers)
 );

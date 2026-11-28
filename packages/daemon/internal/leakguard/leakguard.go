@@ -72,12 +72,23 @@ const (
 	Internal Visibility = "internal"
 )
 
-// Options are the guard's seams, each of them a field a test fills and a call site leaves alone.
-// The engine needs no seam: it is linked into this binary, and the rules it runs are the
-// deployment's, so a test names a fixture rule file in Env as a deployment names its own.
+// Options are what a guard is built with, and a field left empty is the ordinary case, a role's:
+// every call resolves the check for itself (Resolve) and reads the deployment's rule file
+// (RulesFileVar) in this process's own environment, and makes the private copy of a check under a
+// deployment's digest under this package's PrivateCopyBase or its fallback. A caller sets what it
+// holds of its own: `legion gh` an observer of the visibility answer (OnVisibility), the daemon
+// the environment it resolves the machine's check in (Env), and a caller that is no role may set,
+// on every call, the check it resolved for that call, the environment the guard's children start
+// from, which names the deployment's rule file where the deployment names one, and the directory
+// of the private copy (Check, Env and PrivateCopyBase). Visibility, Clock and Curl are seams a
+// test fills. The engine needs no seam: it is linked into this binary, and the rules it runs are
+// the deployment's, so a test names a fixture rule file in Env as a deployment names its own.
 type Options struct {
-	// Check is the shared public leak check's path. Empty is the ordinary case, where every call
-	// resolves the check for itself (Resolve); a test fills it with a stand-in of its own.
+	// Check is the shared public leak check's path, which stands in front of every place Resolve
+	// reads. Empty, every call resolves the check for itself (Resolve), as a role's `legion gh`
+	// does. A caller that resolves the check itself sets it on every call, to the check it
+	// resolved for that call, so its guard resolves none of its own; a test fills it with a
+	// stand-in.
 	Check string
 	// Visibility is the REST read of what GitHub reports a repository slug ("owner/name"). Nil is
 	// the ordinary case, gh's REST read with headers (Guard.ghVisibility). It replaces that first
@@ -92,10 +103,11 @@ type Options struct {
 	OnVisibility func(VisibilitySource)
 	// Env is the environment the guard's children start from: the shared check, the visibility
 	// reads, and the git commands a push's records are read with. Nil means this process's own
-	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote),
-	// which keeps only the names lsRemoteInherits allows. The guard adds to it the names that make
-	// a credential prompt fail closed (promptsNothing) and RunByRealGhVar blanked, and each child's
-	// own names on top of those. It is also where the guard reads RulesFileVar (Guard.rules).
+	// (os.Environ()). Every child keeps all of it but the read with no credential (Guard.lsRemote)
+	// and the read through curl (Guard.CurlGet), which keep only the entries lsRemoteInherits and
+	// TokenChildKeeps allow. The guard adds to it the names that make a credential prompt fail closed
+	// (promptsNothing) and RunByRealGhVar blanked, and each child's own names on top of those. It
+	// is also where the guard reads RulesFileVar (Guard.rules).
 	Env []string
 	// Curl is the curl the guard's reads through curl run (Guard.CurlGet). Empty is the ordinary
 	// case, curlProgram: the system's own curl at a fixed path, never the first curl on the
@@ -103,6 +115,14 @@ type Options struct {
 	// it with a stand-in of its own: no shipped binary sets it, and cmd/legion's test binary sets
 	// the value it passes from LEGION_CMD_TEST_CURL (its TestMain).
 	Curl string
+	// PrivateCopyBase is the directory a guard under a deployment's digest makes the copy of the
+	// check it runs under (Guard.sharedCheck, privateCopy), in place of this package's
+	// PrivateCopyBase and its fallback. Empty is the ordinary case, a role's: the role's own
+	// private directory where it is there, else /tmp. A caller that is no role sets it to a
+	// directory of its own that only its user reaches, as one whose container may hold the worker
+	// image's root-owned, empty PrivateCopyBase and bind nothing writable there must. The copy is
+	// made in it and nowhere else.
+	PrivateCopyBase string
 }
 
 // Guard runs the two checks. It holds no answer of an earlier call: every call site builds a
@@ -117,6 +137,11 @@ type Guard struct {
 	// curl is the curl the guard's reads through curl run (Guard.CurlGet): Options.Curl, or
 	// curlProgram where that is empty. This package's own tests set it directly.
 	curl string
+	// privateBase and privateFallback are the base and the fallback the private copy of a check
+	// under a deployment's digest is made under (privateCopy, copyBase): Options.PrivateCopyBase
+	// for both where it is set, and otherwise PrivateCopyBase and privateCopyFallback. This
+	// package's own tests set them directly.
+	privateBase, privateFallback string
 	// waitDelay, where it is not 0, stands in for procgroup.WaitDelay in every child of the guard,
 	// as exec's WaitDelay and as the wait readOutput gives a child's output after it exits
 	// (Guard.exitDelay). This package's own tests set it to an hour, so that the end after the
@@ -132,9 +157,12 @@ type Guard struct {
 // guard that resolved one at start would keep running a copy the current rules have moved past, so
 // every call resolves it again.
 func New(opts Options) *Guard {
-	g := &Guard{opts: opts, curl: curlProgram}
+	g := &Guard{opts: opts, curl: curlProgram, privateBase: PrivateCopyBase, privateFallback: privateCopyFallback}
 	if opts.Curl != "" {
 		g.curl = opts.Curl
+	}
+	if opts.PrivateCopyBase != "" {
+		g.privateBase, g.privateFallback = opts.PrivateCopyBase, opts.PrivateCopyBase
 	}
 	g.noAnswer = noAnswer(g.base())
 	return g
@@ -158,9 +186,11 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 
 // env is the environment a child of this guard starts from: base, the names that make a
 // credential prompt fail closed, RunByRealGhVar blanked, and extra on top, which wins over all
-// three because exec takes the last value of a name. inherit, where it is not nil, keeps only the
-// names of base it answers true for (child.inherit). The base is the caller's rather than read
-// here, so that a child costs one copy of the process environment and not two (Guard.run).
+// three because exec takes the last value of a name. inherit, where it is not nil, is made from
+// base once and keeps only the entries of base it answers true for, each split once into its name
+// and its value (child.inherit). The base is the caller's rather than read here, so that a child
+// costs one copy of the process environment and not two, and its predicate and its entries come
+// from that one copy (Guard.command).
 //
 // RunByRealGhVar is blanked because the guard, and not the real gh, is what runs its children. A
 // real gh's own push reaches the guard with that variable set: gh's git inherits it, and git's
@@ -170,13 +200,14 @@ const RunByRealGhVar = "LEGION_GH_RUN_BY_REAL_GH"
 // them would be refused, and so would the push. Blanking it stays bounded: `legion gh` runs each
 // read with a real gh it gives the variable again, so a real gh that leads back to `legion gh` is
 // still refused one start later.
-func (g *Guard) env(base []string, inherit func(name string) bool, extra ...string) []string {
+func (g *Guard) env(base []string, inherit func(base []string) func(name, value string) bool, extra ...string) []string {
 	out := make([]string, 0, len(base)+5+len(extra))
 	if inherit == nil {
 		out = append(out, base...)
 	} else {
+		keeps := inherit(base)
 		for _, entry := range base {
-			if name, _, _ := strings.Cut(entry, "="); inherit(name) {
+			if name, value, _ := strings.Cut(entry, "="); keeps(name, value) {
 				out = append(out, entry)
 			}
 		}

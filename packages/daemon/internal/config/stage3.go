@@ -84,9 +84,10 @@ func (g Gates) Steps() []record.DesignStep {
 }
 
 // Project is a Dispatch project prefix's configuration: the Slack channels whose @-mentions reach
-// its controller, and whether a merge that closes one of its issues opens a production check at
-// all. It names no repository: the daemon takes each issue's repository from Dispatch, which
-// resolves it from the issue, its ancestors or the project, and never from this file.
+// its controller, the workflows whose runs on a default branch reach it, and whether a merge that
+// closes one of its issues opens a production check at all. It names no repository to work in: the
+// daemon takes each issue's repository from Dispatch, which resolves it from the issue, its
+// ancestors or the project, and never from this file.
 type Project struct {
 	// SlackChannels are `slack_channels`, the Slack channel ids whose app mentions the project's
 	// controller subscribes to, in the file's order; nil when the file names none.
@@ -97,6 +98,12 @@ type Project struct {
 	// each name's shape and refuses two names of one repository; nothing compares them with
 	// anything at boot, since a project works in each repository both role Apps reach.
 	CommitIssueTrailerRepos []ghrepo.Repository
+	// WatchedWorkflows are `watched_workflows`, the workflows whose completed runs on their
+	// repository's default branch reach the project's controller, each with the trigger events
+	// whose runs count, entries and events in the file's order; nil when the file names none. The
+	// load checks each entry's shape and events and refuses one workflow named twice; nothing
+	// compares an entry with GitHub, so the owner and the repository are as the file spells them.
+	WatchedWorkflows []WatchedWorkflow
 	// Memory is `memory`, the project's per-tree memory setting; its zero value is off, which a
 	// file that names no block leaves.
 	Memory Memory
@@ -187,12 +194,24 @@ type GitHubApps struct {
 const missingDispatchTokenFile = "dispatch_token_file is required when dispatch_url is configured"
 
 var (
-	projectKeyPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]*$`)
 	// slackChannelPattern is a Slack channel id: C for a public channel, G for a private one, then
 	// capital letters and digits. It is one NATS subject token of the mention topic the controller
 	// subscribes to (notifications.slack.<team>.<channel>.mention), so nothing else is taken.
 	slackChannelPattern = regexp.MustCompile(`^[CG][A-Z0-9]+$`)
 )
+
+// CheckProjectKey refuses a `project` that is no Dispatch project key in the one shape the
+// contract takes for one (claim.IsProjectKey, claim.ProjectKeyPattern), naming the key. The
+// daemon's project is the key its state events, its Dispatch writes and its role topics are named
+// by, so a key the contract refuses would let the daemon migrate its store and mint its App tokens
+// and then fail at its first state event; the loader refuses it first (resolve), and so does the
+// boot's own first read of a configuration it was handed (internal/daemon's readBoot).
+func CheckProjectKey(project string) error {
+	if claim.IsProjectKey(project) {
+		return nil
+	}
+	return fmt.Errorf("project %q is no Dispatch project key: it must match %s, a capital letter and then one to nine capital letters or digits", project, claim.ProjectKeyPattern)
+}
 
 // readProjects is `projects`, and the warnings its projects raise (Config.Warnings), in file
 // order: a key a project still sets that the daemon no longer reads is warned about, never
@@ -208,11 +227,11 @@ func readProjects(value *yaml.Node, key string) (map[string]Project, []string, e
 	for index := 0; index+1 < len(value.Content); index += 2 {
 		keyNode, entryNode := value.Content[index], value.Content[index+1]
 		name := keyNode.Value
-		if keyNode.Kind != yaml.ScalarNode || !projectKeyPattern.MatchString(name) {
+		if keyNode.Kind != yaml.ScalarNode || !claim.IsProjectKey(name) {
 			if keyNode.Kind != yaml.ScalarNode || !keyShape(name) {
-				return nil, nil, fmt.Errorf("%s: a project's key must match ^[A-Z][A-Z0-9]*$", unknownKeyAt(keyNode, key))
+				return nil, nil, fmt.Errorf("%s: a project's key must match %s", unknownKeyAt(keyNode, key), claim.ProjectKeyPattern)
 			}
-			return nil, nil, fmt.Errorf(`%s key %q must match ^[A-Z][A-Z0-9]*$`, key, name)
+			return nil, nil, fmt.Errorf(`%s key %q must match %s`, key, name, claim.ProjectKeyPattern)
 		}
 		if _, exists := projects[name]; exists {
 			return nil, nil, fmt.Errorf("%s names %s twice", key, name)
@@ -278,6 +297,11 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 			return Project{}, nil, err
 		}
 	}
+	if workflows := fields["watched_workflows"]; workflows != nil {
+		if project.WatchedWorkflows, err = readWatchedWorkflows(workflows, key+".watched_workflows"); err != nil {
+			return Project{}, nil, err
+		}
+	}
 	if memory := fields["memory"]; memory != nil {
 		if project.Memory, err = readMemory(memory, key+".memory"); err != nil {
 			return Project{}, nil, err
@@ -327,9 +351,9 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 
 // readDefaultSteps is a project's `default_steps`: a list of steps, each entry one step in the
 // plan's grammar (plan.ParseSteps). The loader holds the list to the checks a plan of the one
-// task `default` with those steps passes (plan.Supported, then plan.Validate against Legion's own
-// roles), and refuses an empty list, so the steps a task with none runs are steps this release
-// carries out. A refusal names the key, then gives every reason of both checks.
+// task `default` with those steps passes against Legion's own roles (plan.Refusals), and refuses
+// an empty list, so the steps a task with none runs are steps this release carries out. A refusal
+// names the key, then gives every reason of both checks.
 func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 	words, err := readStrings(value, key)
 	if err != nil {
@@ -350,7 +374,7 @@ func readDefaultSteps(value *yaml.Node, key string) ([]plan.Step, error) {
 		steps = append(steps, parsed[0])
 	}
 	task := plan.Plan{Tasks: []plan.Task{{ID: plan.DefaultTask, Steps: steps}}}
-	refusals := append(plan.Supported(task), plan.Validate(task, plan.Deployment{Roles: plan.BuiltinRoles()})...)
+	refusals := plan.Refusals(task, plan.Deployment{Roles: plan.BuiltinRoles()})
 	if len(refusals) > 0 {
 		reasons := make([]string, len(refusals))
 		for i, refusal := range refusals {

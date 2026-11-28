@@ -1,6 +1,4 @@
-// The ten judge prompts of the spec-writing and spec-rewrite scenarios, the three of the worker
-// scenarios reviewer-text-findings and threads-closed (`acceptsPrompt`, `namesPrompt` and
-// `testingPrompt`, Verification v47's rule 8 and k3's `crossing` (b)), and a zod schema for the
+// The ten judge prompts of the spec-writing and spec-rewrite scenarios, and a zod schema for the
 // answer of each. judge.ts writes each prompt to prompt.txt in a directory that holds only that
 // prompt's inputs, starts a fresh `omp -p` there (rig.sh judge-omp) and validates the answer with
 // the schema. Each prompt names the one file the judge writes. These texts were written before
@@ -420,106 +418,19 @@ export const sharedRunPrompt: JudgePrompt<z.infer<typeof SharedRunOutput>> = {
     ].join("\n"),
 };
 
-/** The texts a worker run's judges read (score.ts's `workerTexts`). */
-const WORKER_TEXTS =
-  "- `texts.json`: each message, comment and recorded result that an agent of the run wrote, each with its `id`, its `kind` (`message`, `comment` or `result`) and its `body`.";
-/** A commit the scorer reads, never the judge: a SHA prefix of 7 characters or more names it. */
-const SHA_IS_SCORED =
-  "Do not decide whether a text names a commit by its SHA: a program decides that.";
-
-/** accepts.json in the run directory: one row for each text of texts.json (score.ts's
- * `workerCoverage`). */
-export const AcceptsOutput = z.object({
-  rows: z.array(z.object({ id: words, accepts: z.boolean(), quote: z.string().nullable() })),
-});
-export const acceptsPrompt: JudgePrompt<z.infer<typeof AcceptsOutput>> = {
-  name: "accepts",
-  file: "accepts.json",
-  profile: "bare",
-  schema: AcceptsOutput,
-  text: (dir) =>
-    [
-      "Agents worked on one pull request. One agent pushed a commit, and the agents wrote about it. You decide, for each text that an agent wrote, whether the text accepts that commit.",
-      "",
-      "Read only the files in this directory:",
-      WORKER_TEXTS,
-      "- `commit.txt`: the commit, by its SHA.",
-      "",
-      `A text accepts the commit when its writer says that the commit is right as it stands and that the writer takes it: for example, the writer checked the commit and agrees with it, or says it needs no change. A text that only names the commit, tells what the commit changed, asks about it, or says that it needs a change does not accept it. ${SHA_IS_SCORED}`,
-      "",
-      "Write one row for each text, by its id. For a text that accepts the commit, `quote` holds the words that accept it. Else `quote` is null.",
-      "",
-      ending(
-        dir,
-        "accepts.json",
-        '{"rows":[{"id":"<text id>","accepts":true|false,"quote":"<the words>"|null}]}'
-      ),
-    ].join("\n"),
-};
-
-/** The kinds of thing the names judge looks for in a text. */
-export const NAMED_KINDS = ["check", "file", "result"] as const;
-/** names.json in the run directory: one row for each text of texts.json and each thing of
- * given.json (score.ts's `workerCoverage`). */
-export const NamesOutput = z.object({
-  rows: z.array(
-    z.object({ id: words, given: words, names: z.boolean(), quote: z.string().nullable() })
-  ),
-});
-export const namesPrompt: JudgePrompt<z.infer<typeof NamesOutput>> = {
-  name: "names",
-  file: "names.json",
-  profile: "bare",
-  schema: NamesOutput,
-  text: (dir) =>
-    [
-      "Agents worked on one pull request and its issue. You decide, for each text that an agent wrote, whether it names each thing of a list: a check of the issue, a file, or a result that was recorded before the agents started.",
-      "",
-      "Read only the files in this directory:",
-      WORKER_TEXTS,
-      "- `given.json`: the things to look for, each with its `id`, its `kind` (`check`, `file` or `result`) and `what`, which says what the thing is.",
-      "",
-      `A text names a check when it refers to that check: by its id, or by the command that the check runs. A text names a file when it refers to that file: by its path, by its name, or by a review thread on it that \`what\` gives. A text names an earlier result when it refers to that result: by who recorded it, by its verdict and what it was of, or by when it was recorded. A text that uses the same words about some other thing does not name the thing. ${SHA_IS_SCORED}`,
-      "",
-      "Write one row for each text and each thing: `id` is the text's id, and `given` is the thing's id. Where the text names the thing, `quote` holds the words that name it. Else `quote` is null.",
-      "",
-      ending(
-        dir,
-        "names.json",
-        '{"rows":[{"id":"<text id>","given":"<thing id>","names":true|false,"quote":"<the words>"|null}]}'
-      ),
-    ].join("\n"),
-};
-
-/** testing.json in the run directory: one row for each text of texts.json, where there is a
- * commit whose earlier passes the run's agents decide at, as for accepts.json (score.ts's
- * `workerCoverage`). */
-export const TestingOutput = z.object({
-  rows: z.array(z.object({ id: words, testing: z.boolean(), quote: z.string().nullable() })),
-});
-export const testingPrompt: JudgePrompt<z.infer<typeof TestingOutput>> = {
-  name: "testing",
-  file: "testing.json",
-  profile: "bare",
-  schema: TestingOutput,
-  text: (dir) =>
-    [
-      "Agents worked on one pull request and its issue. One agent pushed a commit, and the agents wrote about it. You decide, for each text that an agent wrote, whether the text says that the issue goes back to testing.",
-      "",
-      "Read only the files in this directory:",
-      WORKER_TEXTS,
-      "",
-      "A text says that the issue goes back to testing when its writer states that the issue moves back to its testing phase, or that its testing step must run again before the work goes on. A text that says the issue need not go back to testing, asks whether it should, says that it was in testing before, or says this of some other issue does not say it.",
-      "",
-      "Write one row for each text, by its id. For a text that says the issue goes back to testing, `quote` holds the words that say it. Else `quote` is null.",
-      "",
-      ending(
-        dir,
-        "testing.json",
-        '{"rows":[{"id":"<text id>","testing":true|false,"quote":"<the words>"|null}]}'
-      ),
-    ].join("\n"),
-};
+/** The nine prompts `judge.ts run` asks for each run, in the order it writes their files. The
+ * tenth, `answer`, runs during the conversation (`judge.ts answer`). */
+export const RUN_PROMPTS = [
+  faultsPrompt,
+  decisionsPrompt,
+  findingsPrompt,
+  checkablePrompt,
+  questionsPrompt,
+  numbersPrompt,
+  preamblePrompt,
+  proposalPrompt,
+  sharedRunPrompt,
+] as const;
 
 /** checkable.json in the run directory: the judge's rows and the approved version it read (null
  * when the run ended with no approval, and then the judge did not run). */

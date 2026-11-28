@@ -70,8 +70,23 @@ const takeoverRecordWindow = time.Second
 // errTakeoverUnrecorded wraps the failure of a claim whose takeover record the stream did not
 // store - a full stream, a write that went unanswered within takeoverRecordWindow, a leader
 // election - so the claim wrote nothing (takeoverTries.beforeTry). The claim route answers it 503
-// with Retry-After: 1, and the client claims again.
+// with Retry-After: 1, and the client claims again. A record write nothing answered
+// (takeoverRecordUnanswered) has that 503's error open with busUnansweredPrefix.
 var errTakeoverUnrecorded = errors.New("the takeover record of this claim did not store, so the claim was not written")
+
+// takeoverRecordUnanswered reports whether err, a claim's errTakeoverUnrecorded, is a takeover
+// record write the bus did not answer. The bus answered a write that the stream refused because
+// it is full (bus.ErrStreamFull) and one the server denied (bus.ErrPublishDenied), and this
+// client refused the record's own bytes (bus.ErrRefused) before it sent them. Every other failure
+// of the write did not answer, whatever it names, as storeAnswer reads the claim's own store work.
+func takeoverRecordUnanswered(err error) bool {
+	var unrecorded takeoverUnrecordedError
+	if !errors.As(err, &unrecorded) {
+		return false
+	}
+	cause := unrecorded.err
+	return !errors.Is(cause, bus.ErrStreamFull) && !errors.Is(cause, bus.ErrPublishDenied) && !errors.Is(cause, bus.ErrRefused)
+}
 
 // takeoverUnrecordedError is errTakeoverUnrecorded for the claim of role whose try read previous
 // as the holder: what the claim route's warning names (warnTakeoverUnrecorded).
@@ -175,9 +190,9 @@ func takenFrameOf(msgID, role string) (key string, seq uint64, ok bool) {
 // key without the forward mark is dedupeKey: a key in the minted form
 // (contracts.MintedDedupeKeyPattern), a prefix and 32 hex digits of the SHA-256 of dedupeKey,
 // keptFrameMark and seq, so one frame's copies share it and no other message has it. The prefix
-// is publishDedupePrefix for a frame whose key has it - the listener's own publish route forwarded
+// is bus.PublishDedupePrefix for a frame whose key has it - the listener's own publish route forwarded
 // it - and takenFrameKeyPrefix for any other, so the listener's own messages are told from
-// Dispatch's outbox copies by the copy's key (isOutboxCopy) however many takeovers it went through.
+// Dispatch's outbox copies by the copy's key (bus.ClassifyKeptCopy) however many takeovers it went through.
 // A minted key names its event (contracts.DedupeKeyNamesTheUpstreamEvent), so every walk - this
 // release's, and the release before's, which reads a copy as any kept copy - forwards the copy
 // under that key (roleForward.msgID), an id no earlier forward of the same message took, and
@@ -188,8 +203,8 @@ func takenFrameOf(msgID, role string) (key string, seq uint64, ok bool) {
 func takenFrameDedupeKey(dedupeKey string, seq uint64) string {
 	sum := sha256.Sum256([]byte(dedupeKey + keptFrameMark + strconv.FormatUint(seq, 10)))
 	prefix := takenFrameKeyPrefix
-	if strings.HasPrefix(dedupeKey, publishDedupePrefix) {
-		prefix = publishDedupePrefix
+	if strings.HasPrefix(dedupeKey, bus.PublishDedupePrefix) {
+		prefix = bus.PublishDedupePrefix
 	}
 	return prefix + hex.EncodeToString(sum[:16])
 }
@@ -879,8 +894,11 @@ func takenFrame(data []byte, role, previous string, handover bool) (roleFrame, t
 // process under another publish (bus.ErrDuplicateInProcess) is published again until the answer
 // names that publish's copy, as the keep's own is (publishPastInProcess). A copy of a frame
 // Dispatch's outbox forwarded, which carries no role mark, is an outbox copy to the walk
-// (isOutboxCopy): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
-// with its role is the listener's own copy, which the sweep's wake report counts.
+// (bus.KeptCopyOutbox): it raises no wake and gets no dead letter. A copy of a send Dispatch's API marked
+// with its role is the listener's own copy, which the sweep's wake report counts, and so is a copy
+// of a forward of Dispatch's delivery of a post, whose source event id and key prefix it keeps, so
+// the walk tells Dispatch of its end as it tells of the copy it was forwarded from
+// (bus.KeptCopyDispatchDelivery).
 func keepTakenRoleFrame(ctx context.Context, cfg listenerDeliveryHandlerConfig, role string, item contracts.Envelope, seq uint64) error {
 	key := strings.TrimPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix)
 	kept := item
@@ -1053,6 +1071,13 @@ func keptMarkAt(ctx context.Context, cfg listenerDeliveryHandlerConfig, role str
 // tells is ended here. A claim read or a copy that failed has the frame given back to the server
 // with the delay its deliveries earn (relayNakDelayFor), neither sent nor acknowledged, so it is
 // copied or sent once they answer.
+//
+// The hand-over is at least once, not exactly once. The copy and the acknowledgement are two
+// steps, so a listener that stops between them, or an acknowledgement that fails, leaves the frame
+// to be delivered to this relay again. A second copy under the same message id (takenFrameMsgID)
+// is a duplicate the stream stores once, but a relay that by then reads a claim naming this session
+// sends the frame itself, beside the copy the walk forwards. The holder can then receive the event
+// twice, under the same event id.
 //
 // An edge listener takes no frame (cfg.edge): its grant publishes no kept role lane
 // (natsgrant.Edge), so a copy would never store and the frame would be given back at every

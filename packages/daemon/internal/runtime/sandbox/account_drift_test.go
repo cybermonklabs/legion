@@ -180,6 +180,7 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherServiceAccount(t *test
 // account. Holding the controller to pod.service_account here would read every controller pod the
 // key built as drifted and replace it at every launch.
 func TestALaunchHoldsTheControllersPodToTheControllersOwnServiceAccount(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		stored   func(*corev1.Pod) // what the stored pod is edited to run as before the restart
 		replaced bool
@@ -189,7 +190,7 @@ func TestALaunchHoldsTheControllersPodToTheControllersOwnServiceAccount(t *testi
 		"a pod on the namespace's default while the key names one": {nil, true},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			g := newRig(t, nil, withWaitsToTheDeadline())
 			spec := controllerSpec(t)
 			loc := g.spawn(spec)
 			if tc.stored != nil {
@@ -222,6 +223,7 @@ func TestALaunchHoldsTheControllersPodToTheControllersOwnServiceAccount(t *testi
 // configured one, and of nothing when it runs as the controller's account. An issue pod on
 // pod.service_account is on its own configured account and is warned of in neither case.
 func TestTheBootReconciliationHoldsTheControllersPodToTheControllersOwnServiceAccount(t *testing.T) {
+	t.Parallel()
 	for name, tc := range map[string]struct {
 		runs   string // the account the controller's stored pod runs as
 		warned bool
@@ -230,7 +232,7 @@ func TestTheBootReconciliationHoldsTheControllersPodToTheControllersOwnServiceAc
 		"the controller's pod on its own account":     {controllerAccount, false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			g := newRig(t, nil)
+			g := newRig(t, nil, withWaitsToTheDeadline())
 			issue, controller := g.spawn(workerSpec(t)), g.spawn(controllerSpec(t))
 			g.update(g.pod(issue.Sandbox.Name), onAccount(otherAccount))
 			g.update(g.pod(controller.Sandbox.Name), onAccount(tc.runs))
@@ -293,7 +295,8 @@ func TestTheBootReconciliationWarnsOfEachPodRunningAnotherLeakCheckManifest(t *t
 // manifest, the boot reconciliation gives such a pod the leak-check warning and no account
 // warning.
 func TestTheBootReconciliationWarnsOfTheLeakCheckOfAPodWhoseLabelsNameNoKind(t *testing.T) {
-	g := newRig(t, nil)
+	t.Parallel()
+	g := newRig(t, nil, withWaitsToTheDeadline())
 	loc := g.spawn(workerSpec(t))
 	// The Sandbox keeps its pod and its record, and loses the label that names its kind.
 	s := g.sandbox(loc.Sandbox.Name)

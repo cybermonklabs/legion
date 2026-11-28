@@ -48,6 +48,9 @@ export interface MarginComposer {
 interface CommentsTabProps {
   actionFailure: CommentActionFailure | undefined;
   answeredAsksPending: boolean;
+  /** The margin has not yet arrived on the document (`MarginSheetModel`'s `arriving`): the card
+   *  list is `aria-busy` until it has. The tabs above the list stay outside it. */
+  arriving: boolean;
   artifactSlug: string;
   asksPending: boolean;
   commentsError: boolean;
@@ -238,6 +241,7 @@ export function MarginAskCard({
 export function CommentsTab({
   actionFailure,
   answeredAsksPending,
+  arriving,
   artifactSlug,
   asksPending,
   commentsError,
@@ -308,7 +312,11 @@ export function CommentsTab({
   }
   return (
     <div className="space-y-3 pt-3">
-      <section aria-label="Margin review items" className="space-y-3">
+      <section
+        aria-busy={arriving || undefined}
+        aria-label="Margin review items"
+        className="space-y-3"
+      >
         {askRows}
         {onRetryAnsweredAsk === undefined ? null : (
           <QueryError
@@ -351,13 +359,18 @@ export function CommentsTab({
               threads={threads}
               viewerLogin={viewerLogin}
             />
-            <DecisionList
-              blockPlacements={blockPlacements}
-              decisions={decisions}
-              hoveredItemId={hoveredItemId}
-              onSelect={onSelectCard}
-              selectedItemId={selectedItemId}
-            />
+            {/* Decisions stand beside an issue's spec alone (`useMarginItems`). */}
+            {owner.kind === "issue" ? (
+              <DecisionList
+                blockPlacements={blockPlacements}
+                decisions={decisions}
+                hoveredItemId={hoveredItemId}
+                isClosed={isClosed}
+                issueKey={owner.key}
+                onSelect={onSelectCard}
+                selectedItemId={selectedItemId}
+              />
+            ) : null}
             {threads.length === 0 &&
             resolvedThreads.length === 0 &&
             historicalAsks.length === 0 &&

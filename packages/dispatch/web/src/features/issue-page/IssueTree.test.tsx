@@ -30,6 +30,7 @@ import * as Y from "yjs";
 import { correction } from "../../__tests__/correction-feed";
 import { displayTree } from "../../__tests__/display-trees";
 import { jump, realClock } from "../../__tests__/fake-clock";
+import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
@@ -43,10 +44,12 @@ import type {
   IDCandidate,
   IssueDecisions,
   IssueDetails,
+  MessageRead,
 } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
 import { bindRemoteMarks, createEditor, type EditorHandle } from "../doc/editor";
 import { compiledBlockSchema } from "../doc/schema";
+import { writePin } from "../issue/pin-write";
 import { MarginProvider } from "../margin/margin-context";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import {
@@ -57,6 +60,7 @@ import {
 import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
+import { writesOf } from "../writes/write-store";
 import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
@@ -65,8 +69,14 @@ import {
 } from "./document-admission";
 import { DocumentStage, DocumentStages } from "./document-stage";
 import { type FocusedNode, FocusedNodeProvider, useFocusedNode } from "./focused-node";
-import { IssueTree, LANDING_WAIT_MS, ZOOMED_TREE_QUERY } from "./IssueTree";
-import { CLEARANCE, FOOT_HEIGHT_PROPERTY, IDENTITY_HEIGHT_PROPERTY } from "./identity-block";
+import { IssueTree, ZOOMED_TREE_QUERY } from "./IssueTree";
+import {
+  CLEARANCE,
+  FOOT_BOX_ATTRIBUTE,
+  FOOT_BOX_TEST_ID,
+  FOOT_HEIGHT_PROPERTY,
+  IDENTITY_HEIGHT_PROPERTY,
+} from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
 import type { NodeChip, TreeNode } from "./issue-tree";
 import { DETAILS_ATTRIBUTE } from "./margin-slot";
@@ -81,6 +91,7 @@ import {
   useOutlineRequest,
 } from "./outline-request";
 import {
+  LANDING_WAIT_MS,
   type Landing,
   type OutlineWriter,
   OutlineWriterProvider,
@@ -492,25 +503,35 @@ function PageBody({ drawn, held }: { drawn: TreeNode; held: PageHold }): ReactNo
 
 /**
  * The tree under the providers the page's `slots/providers.tsx` draws around its body - the row
- * writer and the Contents list's requests - with `reader` signed in. It hands back the list's
- * ask and its Focus branch toggle, the writer's landing, a switch that takes the tree off the
- * page and draws it again (a view drawn in its place and turned off), and a redraw over another
- * tree (a read answering).
+ * writer and the Contents list's requests - with `reader` signed in, and the writer's reads of the
+ * issue's comments and messages answering `comments` and `messages`, none unless given. It hands
+ * back the list's ask and its Focus branch toggle, the writer's landing, a switch that takes the
+ * tree off the page and draws it again (a view drawn in its place and turned off), and a redraw
+ * over another tree (a read answering).
  */
-function renderPageTree(root: TreeNode, reader = "alice") {
+function renderPageTree(
+  root: TreeNode,
+  reader = "alice",
+  {
+    comments = [],
+    messages = [],
+  }: { readonly comments?: readonly Comment[]; readonly messages?: readonly MessageRead[] } = {}
+) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
   client.setQueryData(["whoami"], { kind: "user", login: reader });
-  // The writer's own reads, answered empty, so it asks the network for nothing.
-  for (const read of ["asks", "comments", "issue-messages"]) client.setQueryData([read, KEY], []);
+  // The writer's own reads, answered, so it asks the network for nothing.
+  client.setQueryData(["asks", KEY], []);
+  client.setQueryData(["comments", KEY], [...comments]);
+  client.setQueryData(["issue-messages", KEY], [...messages]);
   const held: PageHold = {};
   const draw = (drawn: TreeNode) => (
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <KeymapProvider>
           <MarginProvider>
-            <OutlineWriterProvider issueKey={KEY}>
+            <OutlineWriterProvider issueKey={KEY} openAsks={[]}>
               <OutlineRequestProvider>
                 <IssueScope />
                 <PageBody drawn={drawn} held={held} />
@@ -616,6 +637,21 @@ function cardInDetails(): HTMLElement {
       <button type="button">{thread}</button>
     </aside>
   ).getByRole("button", { name: thread });
+}
+
+/** The box at the page's foot (`IssueComposer.tsx`), drawn after the tree, as at 1440 px where
+ *  it stands between the outline and Details in the order Tab goes: its field and its Send. */
+function boxAtFoot(): { readonly field: HTMLElement; readonly send: HTMLElement } {
+  const drawn = render(
+    <section {...{ [FOOT_BOX_ATTRIBUTE]: "" }} data-testid={FOOT_BOX_TEST_ID}>
+      <textarea aria-label="Comment" />
+      <button type="button">Send</button>
+    </section>
+  );
+  return {
+    field: drawn.getByRole("textbox", { name: "Comment" }),
+    send: drawn.getByRole("button", { name: "Send" }),
+  };
 }
 
 /** Lets the next frame come, and React draw what it changed. */
@@ -1052,6 +1088,86 @@ test("Tab out of the outline lets go of the row at once: no body, no focused loo
   expect(first.querySelector("[data-row-acts]")).toBeNull();
 });
 
+// Decision 570: where Details stands beside the outline, the first Tab stop after a row is the
+// box at the page's foot, and Details comes after the box. The outline let go of the row's facts
+// as the focus went into the box, so Details drew the issue's by the time Tab reached it, and its
+// controls for the row - "What references this row" among them - could not be reached by Tab.
+// The facts stay while the focus is in the box, through each of its stops and on into Details.
+test("Tab from a row into the box at the page's foot, through it and on into Details keeps the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const card = cardInDetails();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  expect(view.focusedNode()?.id, "the panel holds no facts of the focused row").toBe("comment-1");
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === box.send, "Tab did not go on to the box's Send").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus moving inside the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  expect(document.activeElement === card, "Tab from the box did not go on to Details").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going on from the box at the page's foot into Details let go of the row's facts"
+  ).toBe("comment-1");
+});
+
+// The focus going on from the box at the page's foot to anywhere but Details or the outline is
+// the reader leaving the row, as the focus going there from the row is.
+test("the focus leaving the box at the page's foot for a control outside Details lets go of the row's facts", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(
+    node({
+      children: [
+        addressedComment("comment-1", "The first words."),
+        addressedComment("comment-2", "The second words."),
+      ],
+      id: KEY,
+      type: "issue",
+    })
+  );
+  const box = boxAtFoot();
+  const outside = controlOutside();
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+
+  await user.tab();
+  expect(document.activeElement === box.field, "Tab from the row did not go to the box").toBe(true);
+  expect(
+    view.focusedNode()?.id,
+    "the focus going from the row into the box at the page's foot let go of the row's facts"
+  ).toBe("comment-1");
+  await user.tab();
+  await user.tab();
+  expect(
+    document.activeElement === outside.control,
+    "Tab from the box did not go on to the control outside Details"
+  ).toBe(true);
+  expect(
+    view.focusedNode(),
+    "the focus leaving the box at the page's foot for a control outside Details kept the row's facts"
+  ).toBeUndefined();
+});
+
 // Escape anywhere on the page closes at once the body a press outside the outline keeps, with
 // the press still held; and the outline's own Escape leaves the outline from its row with
 // nothing open after the focus has been out to a control and back.
@@ -1228,6 +1344,61 @@ test("f steps through a row's chips, links and then the controls no key presses"
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: original });
     summary.mockRestore();
   }
+});
+
+// WCAG 2.1.1: an open question's options are drawn on its own row, out of the tab order as
+// every control inside a row is, and no key of the keymap presses one, so `f` steps to each
+// while the writer answers the question, and Enter on the one it stopped on picks it in the
+// writer's answer (`OutlineWriter.answer`).
+test("an open question's option is reached by f and picked by Enter", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        author: { id: "bob", kind: "user" },
+        id: "ask-1",
+        options: [{ label: "1280 px" }, { label: "1024 px" }],
+        question: true,
+        reference: buildDispatchReference({ id: "ask-1", key: KEY, kind: "ask" }),
+        state: "open",
+        text: "At which width does the identity block condense?",
+        type: "ask",
+        waiting: true,
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const tree = renderPageTree(root, "alice");
+  const { container } = tree.view;
+  // The page opens on the question that waits on the reader, who answers it.
+  await waitFor(() => expect(focusedRow(container)).toBe("ask-1"));
+  await user.keyboard("a");
+  await waitFor(() => expect(tree.writer()?.answer?.nodeId).toBe("ask-1"));
+  // Every stop of `f` is a link or a control of the row, and the last comes back to the first,
+  // so as many presses as the row draws of them reach every stop it has.
+  const stops = rowsFor(container, "ask-1")[0]?.querySelectorAll("a[href], button").length ?? 0;
+  let option: HTMLElement | null = null;
+  for (let press = 0; press < stops && option === null; press += 1) {
+    await user.keyboard("f");
+    option = document.activeElement?.closest<HTMLElement>("[data-pick-option]") ?? null;
+  }
+  if (option === null) throw new Error("f stepped over every option of the open question");
+  const label = option.dataset.pickOption;
+  if (label === undefined) throw new Error("the option f stopped on names no label");
+  await user.keyboard("{Enter}");
+  await waitFor(() =>
+    expect(tree.writer()?.answer).toEqual({
+      askId: "ask-1",
+      multiple: false,
+      nodeId: "ask-1",
+      selected: [label],
+    })
+  );
+  expect(
+    container.querySelector(`[data-pick-option="${label}"]`)?.getAttribute("aria-pressed")
+  ).toBe("true");
 });
 
 // Home on the first row moves the focus to no other row, and from a chip `f` stopped on, the row
@@ -4246,23 +4417,26 @@ test("Shift+Tab from the row's editor goes to the row past a control another blo
 test.each([
   ["isComposing", { isComposing: true }],
   ["keyCode 229", { isComposing: false, keyCode: 229 }],
-] as const)("a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were", async (_mark, modifiers) => {
-  setViewport(1440);
-  const user = userEvent.setup();
-  const { editable, view } = await caretInStatement(user);
-  controlOutside();
-  await act(async () => {
-    pressIn(editable, "Tab", modifiers);
-  });
-  await nextFrame();
-  expect(
-    document.activeElement === editable,
-    "a Tab pressed in a composition moved the focus out of the row's editor"
-  ).toBe(true);
-  expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
-    "artifact-spec"
-  );
-});
+] as const)(
+  "a Tab pressed in an input-method composition in the row's editor, marked by %s, leaves the editing and the focus as they were",
+  async (_mark, modifiers) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, view } = await caretInStatement(user);
+    controlOutside();
+    await act(async () => {
+      pressIn(editable, "Tab", modifiers);
+    });
+    await nextFrame();
+    expect(
+      document.activeElement === editable,
+      "a Tab pressed in a composition moved the focus out of the row's editor"
+    ).toBe(true);
+    expect(view.edited.at(-1), "a Tab pressed in a composition ended the editing").toBe(
+      "artifact-spec"
+    );
+  }
+);
 
 // What the node's own block draws is the node's: from the caret in a plan task's words, Tab stops
 // at the link the task's header draws, as the browser would, and the editing stays. Tab from that
@@ -7899,7 +8073,9 @@ test("Left on the row the tree is zoomed to, the whole tree drawn, says the tree
 // row out, or a read dropped it - is kept for when the row comes back, while the rows are drawn
 // from the issue. Left and `,` read that zoom rather than the tree drawn, so on a top-level row
 // they moved nothing and said nothing. They say the whole issue is drawn, as on a tree that was
-// never zoomed. The case drops the row with a read, which reaches both widths.
+// never zoomed. The case drops the row with a read, which reaches both widths; the read is no act
+// of the reader's, so the focus stays on the page's body (R13), and the reader comes back to the
+// tree with Tab.
 test("Left and , on a tree that no longer holds its zoom say the whole issue is drawn", async () => {
   for (const width of [1440, 390]) {
     setViewport(width);
@@ -7916,6 +8092,10 @@ test("Left and , on a tree that no longer holds its zoom say the whole issue is 
       })
     );
     await waitFor(() => expect(rowsFor(view.container, "comment-1").length).toBe(0));
+    expect(document.activeElement, "the read that dropped the zoom's row moved the focus").toBe(
+      document.body
+    );
+    await user.tab();
     await waitFor(() => expect(focusedRow(view.container)).toBe("comment-2"));
     for (const key of ["{ArrowLeft}", ","]) {
       await user.keyboard(key);
@@ -8549,7 +8729,215 @@ test("a landing's late fallback leaves the focus where the reader moved it", asy
   }
 });
 
-// `r` sets the line at the foot to reply to the focused row, and `a` sets it to answer the
+// A write from the line at the foot that answered a turn of a thread the panel's history holds -
+// here the Legion daemon's message, whose thread the history draws whole (`agents-only.ts`) - is
+// the history's to land (`HeldLanding.in`). The outline draws no row of that turn, and it leaves
+// the landing alone: it ends nothing and moves no focus, through a read that draws the tree again
+// too. A write under a row of the outline is still the outline's, which takes the reader to their
+// new row once a read draws it.
+test("a landing under a turn of the history is left to the history, and one under a row of the outline is still the outline's", async () => {
+  setViewport(1440);
+  const daemon: MessageRead = {
+    message: {
+      author: { id: "legion-daemon:CORE", kind: "session" },
+      body: "The planner's session was replaced; its claim moves to the new one.",
+      broadcast_id: null,
+      created_at: "2026-11-16T08:00:00Z",
+      deliveries: [],
+      ...messageCorrectionFields(),
+      id: "m-daemon",
+      in_reply_to: null,
+      issue_key: KEY,
+      reply_block: null,
+      target: null,
+    },
+    replies: [],
+  };
+  const thread = (replies: TreeNode[]) =>
+    node({
+      children: [
+        node({
+          children: replies,
+          held: replies.length,
+          id: "comment-1",
+          text: "A thread.",
+          type: "comment",
+        }),
+        node({ id: "comment-9", text: "After the thread.", type: "comment" }),
+      ],
+      id: KEY,
+      type: "issue",
+    });
+  const mine = node({
+    at: "2026-11-16T09:00:00Z",
+    author: { id: "alice", kind: "user" },
+    id: "comment-3",
+    text: "My reply.",
+    type: "comment",
+  });
+  const tree = renderPageTree(thread([]), "alice", { messages: [daemon] });
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await act(async () =>
+    tree.writer()?.land({ to: "newest", under: { id: "m-daemon", kind: "message" } })
+  );
+  tree.redraw(thread([]));
+  expect(
+    tree.writer()?.landing,
+    "the outline took a landing under a turn of the history"
+  ).toMatchObject({ in: "history", under: { id: "m-daemon" } });
+  expect(
+    focusedRow(container),
+    "a landing under a turn of the history moved the outline's focus"
+  ).toBe("comment-1");
+
+  await tree.land("comment-1");
+  expect(
+    tree.writer()?.landing?.in,
+    "a landing under a row of the outline is not the outline's"
+  ).toBe("outline");
+  tree.redraw(thread([mine]));
+  await waitFor(() =>
+    expect(focusedRow(container), "the outline did not take the reader to their new row").toBe(
+      "comment-3"
+    )
+  );
+  expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// Decision 573: a person's reply to an agents' comment tied to no text takes that thread out of
+// the history (`agents-only.ts`), so its landing is the outline's. The outline draws no row of the
+// comment until the read that brings the reply answers, which draws the comment and the reply
+// together. The tree looked for the comment once, as the landing was asked, and gave the landing
+// up where it drew no row of it. The writer marks the landing as one that takes the comment out of
+// the history (`HeldLanding.leavesHistory`), and the tree waits for that row as it waits for the
+// reply's, through a read that draws neither, and takes the reader to the reply under the comment
+// once a read draws both.
+test("a reply that takes an agents' comment thread out of the history lands on the reply's row under the comment, once a read draws both", async () => {
+  setViewport(1440);
+  const planner = { id: "planner", kind: "session" } as const;
+  const agent = {
+    anchor: null,
+    ask_id: null,
+    author: planner,
+    id: "comment-agent",
+    reply_to: null,
+  } as Comment;
+  const issue = (thread: TreeNode[]) =>
+    node({
+      children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), ...thread],
+      id: KEY,
+      type: "issue",
+    });
+  const mine = node({
+    at: "2026-11-16T09:00:00Z",
+    author: { id: "alice", kind: "user" },
+    id: "comment-mine",
+    text: "My reply.",
+    type: "comment",
+  });
+  const tree = renderPageTree(issue([]), "alice", { comments: [agent] });
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  await tree.land(agent.id);
+  // Another read draws the tree again, still with no row of the agent's comment.
+  tree.redraw(issue([]));
+  expect(
+    tree.writer()?.landing,
+    "the outline gave up the landing before a read drew the comment it answers"
+  ).toBeDefined();
+  expect(
+    tree.writer()?.landing?.in,
+    "a person's reply to an agents' comment thread is not the outline's to land"
+  ).toBe("outline");
+  expect(
+    tree.writer()?.landing?.leavesHistory,
+    "the writer did not mark the reply as taking the agent's comment out of the history"
+  ).toBe(true);
+
+  tree.redraw(
+    issue([
+      node({
+        author: planner,
+        children: [mine],
+        held: 1,
+        id: agent.id,
+        text: "Status: the plan is drafted and waits on its review.",
+        type: "comment",
+      }),
+    ])
+  );
+  await waitFor(() =>
+    expect(
+      focusedRow(container),
+      "the outline did not take the reader to their reply under the agent's comment"
+    ).toBe("comment-mine")
+  );
+  expect(rowsFor(container, agent.id), "the agent's comment is not drawn").toHaveLength(1);
+  expect(tree.writer()?.landing).toBeUndefined();
+});
+
+// A landing under a node the outline draws no row of ends at once with the focus where it was,
+// unless the writer marks it as a reply that takes that node out of the history (decision 573,
+// above), whose row comes with the read that brings the reply. A reply to a comment of a person's
+// is no such reply: the outline draws no row of the comment only while a filter's view holds
+// none. The tree waited for that row with none of the reader's nodes under it noted, so the row
+// drawn again as the filter was cleared took the reader to an earlier reply of theirs under it.
+test("a landing under a node the outline draws no row of, which the reply does not take out of the history, ends at once with the focus where it was", async () => {
+  setViewport(1440);
+  const bob = { id: "bob", kind: "user" } as const;
+  const alice = { id: "alice", kind: "user" } as const;
+  const theirs = { anchor: null, ask_id: null, author: bob, id: "comment-2", reply_to: null };
+  const earlier = { ...theirs, author: alice, id: "comment-3", reply_to: theirs.id };
+  const issue = (thread: TreeNode[]) =>
+    node({
+      children: [node({ id: "comment-1", text: "The first words.", type: "comment" }), ...thread],
+      id: KEY,
+      type: "issue",
+    });
+  const tree = renderPageTree(issue([]), "alice", { comments: [theirs, earlier] as Comment[] });
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+
+  // The reader replies to Bob's comment under a filter's view that draws no row of it.
+  await tree.land(theirs.id);
+  expect(
+    tree.writer()?.landing,
+    "the outline did not end a landing under a node it draws no row of"
+  ).toBeUndefined();
+  expect(focusedRow(container), "the landing moved the focus").toBe("comment-1");
+
+  // The filter is cleared: Bob's comment is drawn again, the reader's earlier reply under it.
+  tree.redraw(
+    issue([
+      node({
+        author: bob,
+        children: [
+          node({
+            at: "2026-11-15T09:00:00Z",
+            author: alice,
+            id: earlier.id,
+            text: "My earlier reply.",
+            type: "comment",
+          }),
+        ],
+        held: 1,
+        id: theirs.id,
+        text: "Bob's words.",
+        type: "comment",
+      }),
+    ])
+  );
+  await waitFor(() => expect(rowsFor(container, theirs.id)).toHaveLength(1));
+  expect(
+    focusedRow(container),
+    "the row drawn again took the reader to their earlier reply under it"
+  ).toBe("comment-1");
+});
+
+// `r` sets the line at the foot to reply to the focused row, and `a` the writer's answer to the
 // focused open question (`useTreeKeymap.ts`'s `tree-reply` and `tree-answer`). A comment takes
 // no answer, so `a` on one leaves the line as it was and says nothing at the row.
 test("r and a on the focused row set the page's writer", async () => {
@@ -9456,11 +9844,11 @@ test("an item's failed line stays drawn, with the focus on it and the same alert
   }
 });
 
-// A turn of a thread only agents wrote in is no node of the outline, on purpose (`agents-only.ts`):
+// A turn of a thread the history holds is no node of the outline, on purpose (`agents-only.ts`):
 // its address is no missing item. It lands on the turn's nearest drawn ancestor - the issue here,
-// which is no row, so the outline's tab stop - and says at that row that the thread is the agents'
-// alone. The item is not read as the old page reads one: it is named as a kind of its own.
-test("an address naming a turn only agents wrote in lands on its nearest drawn ancestor and says there the thread is the agents' alone", async () => {
+// which is no row, so the outline's tab stop - and says at that row that the thread is in the
+// history. The item is not read as the old page reads one: it is named as a kind of its own.
+test("an address naming a turn of a thread the history holds lands on its nearest drawn ancestor and says there the thread is in the history", async () => {
   setViewport(1440);
   const agent = { id: "session-1", kind: "session" } as const;
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
@@ -9472,7 +9860,7 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
     );
     const { container } = body.view;
     await waitFor(() =>
-      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+      expect(rowReport(container), "no row says the thread is in the history").toBe(
         KEY_REPORTS.agents_thread
       )
     );
@@ -9494,24 +9882,26 @@ test("an address naming a turn only agents wrote in lands on its nearest drawn a
 });
 
 // The class search of #4205's 6586a4be, on the class of the landing's line held while a document
-// is read: the landing on the nearest drawn ancestor of a turn only agents wrote in was dropped
-// while a document added to the issue had its blocks read, which holds the tree's reads out
-// again (`readsHeld`), since its following settles on no landing of the old page's. The tree was
-// drawn with no address to land on, and once the reads answered the landing's key came back as
-// a new landing's would: a zoom the reader had made after the landing was left, as a following
-// leaves a zoom its node is outside of. The landing stays while the reads are out, so the
-// reader's zoom stands, with the focus where they put it.
+// is read: the landing on the nearest drawn ancestor of a turn of a thread the history holds
+// (`agents-only.ts`) was dropped while a document added to the issue had its blocks read, which
+// holds the tree's reads out again (`readsHeld`), since its following settles on no landing of
+// the old page's. The tree was drawn with no address to land on, and once the reads answered the
+// landing's key came back as a new landing's would: a zoom the reader had made after the landing
+// was left, as a following leaves a zoom its node is outside of. The landing stays while the
+// reads are out, so the reader's zoom stands, with the focus where they put it.
 //
 // The ancestor is the issue, the outline's tab stop, as it is for every agents-only turn the
-// server stores (`agents-only.ts`'s `agentsOnlyIds`). A comment thread is agents-only only where
-// no turn of it is under a question (`underQuestion`) and none is a person's, and the tree draws
+// server stores (`agents-only.ts`'s `historyIds`). A comment thread is agents-only only where
+// no turn of it is under a question (`underQuestion`), none is a person's and its head is tied to
+// no text, and the tree draws
 // an ask only where it is a question (`tree-drafts.ts`'s `addAsks`): no agents-only comment hangs
 // under a drawn ask, and the walk up from one (`address-target.ts`'s `agentsOnlyAncestor`) meets
 // turns of its own thread, then an approval request, which is no node, or nothing, and ends at
-// the issue. A message thread is agents-only only where no turn of it is a person's, and the
-// server lists each root - `in_reply_to` null - with every message transitively replying to it
-// (`api/messages.go`'s `listIssueRootMessagesQuery` and `hydrateMessageThreads`): a message
-// answering a drawn message is a turn of that message's thread, which a person wrote in.
+// the issue. A message thread is agents-only only where the Legion daemon wrote its root, and
+// then every message of it is, and the server lists each root - `in_reply_to` null - with every
+// message transitively replying to it (`api/messages.go`'s `listIssueRootMessagesQuery` and
+// `hydrateMessageThreads`): a message answering a drawn message is a turn of that message's
+// thread, which the daemon did not begin.
 test("an agents-only turn's landing on the issue, kept while a document added to the issue has its blocks read, leaves the reader's zoom after it standing", async () => {
   setViewport(1440);
   const user = userEvent.setup();
@@ -9526,7 +9916,7 @@ test("an agents-only turn's landing on the issue, kept while a document added to
     );
     const { container } = body.view;
     await waitFor(() =>
-      expect(rowReport(container), "no row says the thread is the agents' alone").toBe(
+      expect(rowReport(container), "no row says the thread is in the history").toBe(
         KEY_REPORTS.agents_thread
       )
     );
@@ -10093,6 +10483,43 @@ test("a failed names read draws its line over the tree with every row drawn, and
   }
 });
 
+// A names line that stands again for a failure it already counted has said it, and is drawn
+// without speaking. The names read of the tree's set is refused; a comment goes, the names read of
+// the smaller set answers, and the line leaves. The comment comes back: the names read is back on
+// the first set, which holds no answer and the refusal the line counted, and runs again, so the
+// line stands again, its words and its Retry drawn with no live role.
+test("a names line that stands again for a failure it counted is drawn without speaking", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  names.mockRejectedValueOnce(serverDown());
+  const out = Promise.withResolvers<never>();
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await failedLines(container, 1, "names");
+    await act(async () => {
+      body.client.setQueryData(
+        ["comments", KEY],
+        TWO_THREADS.filter((comment) => comment.id !== "reply-b")
+      );
+    });
+    await failedLinesGone(container, "names");
+    names.mockReturnValueOnce(out.promise as never);
+    await act(async () => {
+      body.client.setQueryData(["comments", KEY], TWO_THREADS);
+    });
+    await failedLines(container, 1, "names");
+    expect(
+      body.view.getByText(STATE_LINES.names_unreadable),
+      "the names' line said again a failure it had counted"
+    ).not.toHaveAttribute("role");
+    expect(body.view.queryByRole("alert"), "a line standing again spoke").toBeNull();
+  } finally {
+    await act(async () => out.resolve({ targets: [] } as never));
+    names.mockRestore();
+  }
+});
+
 // A failed read of the outline's own was silent too: with the asks' read failed the reads settled,
 // no question's node was built, and the page opened on the first row as if nothing waited on the
 // reader, with nothing said. The read's line is drawn over the tree, the rows the other reads hold
@@ -10107,9 +10534,13 @@ test("a failed asks read draws its line over the tree and opens the page on its 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { inTree, line, overTree, retry } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10227,9 +10658,13 @@ test("a failed read's line stays drawn, busy, with the focus on its Retry while 
   asks.mockRejectedValueOnce(serverDown());
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line, retry } = await failedLines(container, 1, "asks");
     await waitFor(
@@ -10318,9 +10753,13 @@ test("a read whose refresh failed while it holds its answer draws no line, and a
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const messages = spyOn(api, "listIssueMessages").mockResolvedValue([] as never);
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     await waitFor(
       () =>
         expect(focusPlace(body.view.container), "the page did not open on the question").toBe(
@@ -10389,10 +10828,13 @@ test("a failed results read draws its line over the tree, and the page opens on 
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([WAITING_QUESTION] as never);
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = view;
     const { inTree, line, overTree } = await failedLines(container, 1, "results");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.results_unreadable);
@@ -10431,10 +10873,13 @@ test("with the asks and the results reads failed, the page opens on the asks' Re
   const asks = spyOn(api, "listIssueAsks").mockRejectedValue(serverDown());
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = view;
     await failedLines(container, 2, "asks and results");
     expect(
@@ -10476,9 +10921,13 @@ test("with the asks read failed, the page opens on a question that waits on the 
     open_asks: [{ ...WAITING_QUESTION, last_reply: null, options: [] }],
   };
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, issue, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      issue,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line } = await failedLines(container, 1, "asks");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.asks_unreadable);
@@ -10513,10 +10962,13 @@ test("a failed asks read that answers with a question that waits before its Retr
   const results = spyOn(api, "getIssueResults").mockRejectedValue(serverDown());
   const frames = framesByHand();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-      issueResultsQuery(KEY).queryKey,
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY], issueResultsQuery(KEY).queryKey]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and results");
     expect(
@@ -10566,9 +11018,13 @@ test("a failed comments read opens the page on its Retry where no question waits
   const asks = spyOn(api, "listIssueAsks").mockResolvedValue([elsewhere] as never);
   const comments = spyOn(api, "listComments").mockRejectedValue(serverDown());
   try {
-    const { view } = renderAddressedBody(`/issues/${KEY}`, undefined, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const { view } = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      undefined,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = view;
     const { line } = await failedLines(container, 1, "comments");
     expect(line.querySelector('[role="alert"]')?.textContent).toBe(STATE_LINES.comments_unreadable);
@@ -10612,9 +11068,13 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const out = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and names");
     await waitFor(
@@ -10686,9 +11146,13 @@ test("a failed names read's line stays drawn, with the focus on its Retry, while
   const asksOut = Promise.withResolvers<never>();
   const namesOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS, StageSlot, undefined, [
-      ["asks", KEY],
-    ]);
+    const body = renderAddressedBody(
+      `/issues/${KEY}/conversation`,
+      TWO_THREADS,
+      StageSlot,
+      undefined,
+      [["asks", KEY]]
+    );
     const { container } = body.view;
     await failedLines(container, 2, "asks and names");
     await waitFor(
@@ -10784,7 +11248,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     }) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -10877,7 +11341,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} asks.`)) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     expect(
@@ -10956,7 +11420,7 @@ test("a failed one more names read's line stays drawn, with the focus on its Ret
   const asks = spyOn(api, "listIssueAsks").mockRejectedValueOnce(serverDown());
   const asksOut = Promise.withResolvers<never>();
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails(), [
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails(), [
       issueAsksQuery(KEY).queryKey,
     ]);
     const { container } = body.view;
@@ -11042,7 +11506,7 @@ test("a names line both names reads stand failed by keeps its alert and the focu
     return Promise.resolve(stepNamed(`Hang the lanterns as ${cited} asks.`)) as never;
   });
   try {
-    const body = renderAddressedBody(`/issues/${KEY}`, [], StageSlot, issueDetails());
+    const body = renderAddressedBody(`/issues/${KEY}/conversation`, [], StageSlot, issueDetails());
     const { container } = body.view;
     await failedLines(container, 1, "one more names");
     await framesPass();
@@ -11357,12 +11821,18 @@ test("a comment the address landed on that leaves the tree leaves the outline dr
 });
 
 // A read of the comments that answers without the comment whose row holds the focus takes that
-// row out of the tree, and the browser dropped the focus to the page's body with it: the reader's
-// place in the outline was lost, and no row held the focus. The nearest row still drawn takes
-// it, as a key's move gives it - the tab stop and the row's body go with it: the row that now
-// stands where the dropped one stood, or the last row where the tree now ends before that place.
-// The issue holds three comments, each a thread of its own, so each is a row of the tree's top
-// level; `focus` is the key that takes the reader from the first row to `dropped`'s.
+// row out of the tree, and the browser drops the focus to the page's body with it. Who caused the
+// loss decides where the focus goes, since a place the page chose near the lost row would be the
+// page's choice and not the reader's. A read the reader did nothing toward - another session's
+// change - leaves the focus on the page's body and scrolls nothing, whatever key or press of
+// theirs that draws nothing came before it. A loss the reader caused - a fold or a key of theirs
+// that draws the tree otherwise, an address they followed, or a write of theirs that landed -
+// hands the focus to the nearest row still drawn, as a key's move gives it - the tab stop and the
+// row's body go with it: the row that now stands where the dropped one stood, or the last row
+// where the tree now ends before that place. The issue holds three comments, each a thread of
+// its own, so each is a row of the tree's top level; `focus` is the key that takes the reader
+// from the first row to `dropped`'s, and `then` what the reader does after it, before the read,
+// with the page's reads (`client`) at hand.
 const THREE_COMMENTS: readonly Comment[] = [
   readComment("first", 1),
   readComment("second", 2),
@@ -11370,7 +11840,8 @@ const THREE_COMMENTS: readonly Comment[] = [
 ];
 async function dropFocusedComment(
   focus: string,
-  dropped: string
+  dropped: string,
+  then?: (user: UserEvent, client: QueryClient) => Promise<void>
 ): Promise<{ readonly container: HTMLElement; readonly unmount: () => void }> {
   const user = userEvent.setup();
   const body = renderAddressedBody(`/issues/${KEY}`, THREE_COMMENTS);
@@ -11378,6 +11849,7 @@ async function dropFocusedComment(
   await waitFor(() => expect(focusedRow(container)).toBe("first"));
   await user.keyboard(focus);
   await waitFor(() => expect(focusedRow(container)).toBe(dropped));
+  await then?.(user, body.client);
 
   await act(async () => {
     body.client.setQueryData(
@@ -11402,45 +11874,326 @@ async function expectReadersPlace(container: HTMLElement, id: string): Promise<v
   );
 }
 
-test("a read that drops the focused comment's row leaves the focus on the row that now stands in its place", async () => {
+/** A read by another session that drops the focused comment's row, `when` the reader did what
+ *  `readerAct` does, if anything, leaves the focus on the page's body and scrolls nothing. */
+async function expectDropLeavesBody(
+  when: string,
+  readerAct?: (user: UserEvent, client: QueryClient) => Promise<void>
+): Promise<void> {
   setViewport(1440);
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  const scrolls = [
+    spyOn(window, "scrollBy").mockImplementation(() => {}),
+    spyOn(window, "scrollTo").mockImplementation(() => {}),
+    spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {}),
+  ];
   try {
-    const { container, unmount } = await dropFocusedComment("j", "second");
+    let scrolledTo = Number.NaN;
+    const { unmount } = await dropFocusedComment("j", "second", async (user, client) => {
+      await readerAct?.(user, client);
+      for (const spy of scrolls) spy.mockClear();
+      scrolledTo = window.scrollY;
+    });
+    // A frame a move of the focus asked for comes.
+    await nextFrame();
+    expect(
+      document.body,
+      `a read that dropped the focused row ${when} took the focus off the page's body`
+    ).toHaveFocus();
+    expect(window.scrollY, `a read that dropped the focused row ${when} scrolled the page`).toBe(
+      scrolledTo
+    );
+    expect(
+      scrolls.map((spy) => spy.mock.calls.length),
+      `a read that dropped the focused row ${when} scrolled the page or a box`
+    ).toEqual([0, 0, 0]);
+    unmount();
+  } finally {
+    names.mockRestore();
+    for (const spy of scrolls) spy.mockRestore();
+  }
+}
+
+// A key or a press of the reader's that draws nothing - Shift, or a touch that only goes down, as
+// a scroll's does on a phone - takes no row out, so the read after it is still another session's.
+test.each([
+  ["with no act of the reader's since", undefined],
+  [
+    "after a key of the reader's that draws nothing (Shift)",
+    (user: UserEvent) => user.keyboard("{Shift}"),
+  ],
+  [
+    "after a touch of the reader's that draws nothing (a pointerdown alone)",
+    async (user: UserEvent) => {
+      const row = rowsFor(document.body, "second")[0];
+      if (row === undefined) throw new Error("the focused comment's row is not drawn");
+      await user.pointer({ keys: "[TouchA>]", target: row });
+    },
+  ],
+] as const)(
+  "a read that drops the focused row %s leaves the focus on the page's body and scrolls nothing",
+  async (when, readerAct) => {
+    await expectDropLeavesBody(when, readerAct);
+  }
+);
+
+// The app holds one store of writes (`write-store.ts`), and a write of the reader's that draws
+// nothing of this tree lands in it too: here a pin of another issue, which writes the reader's
+// state of that issue alone. A read by another session that then drops the focused row is still
+// none of the reader's doing, so the focus stays on the page's body and nothing scrolls.
+test("a read that drops the focused row after a pin of another issue landed leaves the focus on the page's body and scrolls nothing", async () => {
+  const states = spyOn(api, "getMyState").mockResolvedValue({});
+  const pinned = spyOn(api, "putIssueState").mockResolvedValue({
+    dismissed: [],
+    last_read_seq: 0,
+    pinned: false,
+    seq: 1,
+  });
+  try {
+    await expectDropLeavesBody("after a pin of another issue landed", async (_user, client) => {
+      const landed = Promise.withResolvers<void>();
+      const heard = writesOf(client).onOutcome((outcome) => {
+        if (outcome.kind === "landed") landed.resolve();
+      });
+      try {
+        await act(async () => {
+          writePin(client, "OTHER-9", { id: "ask:other-1", op: "pin" });
+          await landed.promise;
+        });
+      } finally {
+        heard();
+      }
+      expect(pinned, "the pin of the other issue was not written").toHaveBeenCalled();
+    });
+  } finally {
+    states.mockRestore();
+    pinned.mockRestore();
+  }
+});
+
+// The press is the reader's own act on the tree: the fold control keeps the focus where it was
+// (`button[data-node-bullet]` prevents its `mousedown`'s default), on the reply, and the fold
+// takes the reply's row out with it. Each thread is drawn folded, nothing under it open or
+// unanswered, so the reader opens the last thread with Right first.
+test("a press on the fold control over the focused row, the tree's last, drops the focused row and hands the focus to the row before it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const body = renderAddressedBody(`/issues/${KEY}`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-a"));
+    await user.keyboard("{End}");
+    await waitFor(() => expect(focusedRow(container)).toBe("head-b"));
+    await user.keyboard("{ArrowRight}");
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toHaveLength(1));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+    const fold =
+      rowsFor(container, "head-b")[0]?.querySelector<HTMLElement>("button[data-node-bullet]") ??
+      null;
+    if (fold === null) throw new Error("the last thread draws no fold control");
+
+    await user.click(fold);
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
     expect(
       focusedRow(container),
-      "a read that dropped the focused comment's row left the focus on no row of the tree, or not on the next row"
-    ).toBe("third");
-    await expectReadersPlace(container, "third");
-    unmount();
+      "a press that folded away the focused row, the tree's last, left the focus on no row of the tree, or not on the row before it"
+    ).toBe("head-b");
+    await expectReadersPlace(container, "head-b");
+    body.view.unmount();
   } finally {
     names.mockRestore();
   }
 });
 
-test("a read that drops the focused comment's row, the tree's last, leaves the focus on the row before it", async () => {
+// The cycle key pressed in its last state, which draws every branch, goes back to its first,
+// which draws the reader's own folds: the reply that holds the focus, the tree's last row, is
+// folded away under its comment by a key of the reader's, and the last row now drawn takes the
+// focus. The browser row of the same half is `issue-page-l.e2e.ts`'s last.
+test("the cycle key that drops the focused row from the view hands the focus to the nearest row", async () => {
   setViewport(1440);
+  const user = userEvent.setup();
+  const view = renderTree(twoBranchesTree());
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("zz");
+  await waitFor(() => expect(rowsFor(view.container, "reply-2")).toHaveLength(1));
+  await user.keyboard("{End}");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("reply-2"));
+
+  await user.keyboard("z");
+  await waitFor(() => expect(rowsFor(view.container, "reply-2")).toEqual([]));
+  expect(
+    focusedRow(view.container),
+    "the cycle key that folded away the focused row left the focus on no row of the tree, or not on the last row"
+  ).toBe("comment-2");
+  view.unmount();
+});
+
+// An address the reader follows is theirs too: here the words filter turned off, its `?q=` left
+// out as `t c` and Back leave it out, and the reply it matched, which it drew under its thread
+// with every branch open, is folded away under that thread as the frontier draws the tree again.
+// The tree the rows come from is another one, as after a read, but at a new address, so the row
+// now in the reply's place takes the focus.
+test("an address followed that drops the focused row, the words filter turned off, hands the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
   const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
   try {
-    const { container, unmount } = await dropFocusedComment("{End}", "third");
+    const body = renderAddressedBody(`/issues/${KEY}?q=reply-b`, TWO_THREADS);
+    const { container } = body.view;
+    await waitFor(() => expect(focusedRow(container)).toBe("head-b"));
+    await user.keyboard("j");
+    await waitFor(() => expect(focusedRow(container)).toBe("reply-b"));
+
+    await body.follow(`/issues/${KEY}`);
+    await waitFor(() => expect(rowsFor(container, "reply-b")).toEqual([]));
     expect(
       focusedRow(container),
-      "a read that dropped the tree's last row, which held the focus, left the focus on no row of the tree, or not on the row before it"
-    ).toBe("second");
-    await expectReadersPlace(container, "second");
-    unmount();
+      "an address followed that dropped the focused row left the focus on no row of the tree, or not on the row now in its place"
+    ).toBe("head-b");
+    await expectReadersPlace(container, "head-b");
+    body.view.unmount();
   } finally {
     names.mockRestore();
   }
 });
 
-// A read that drops the row being edited takes the editor's focus out with it, and the nearest
-// row still drawn takes the focus, as for any row. The editing ends with it, as Escape ends it:
-// the page draws the document's editor nowhere, the panel holds the facts of the row the focus
-// went to, and the tree holds that row as any other. Left on, the editing waited for a row no
-// read draws, and the tree held every row the focus came to as the edited one: a Tab out of the
-// tree kept that row's body and its facts in Details.
-test("a read that drops the row being edited ends the editing, and a Tab out of the tree lets go of the row the focus went to", async () => {
+// A write of the reader's from the line at the foot lands on its row - here the line's landing
+// on a comment they edited (`to: "self"`) - and the read the write starts answers later, past
+// other reads that draw the tree again: a filter by words that the comment's new words no longer
+// match drops its row then. The drop is the reader's, though no key or press of theirs came
+// since the tree was last drawn, so the row now in its place takes the focus.
+test("a read that drops the focused row a write of the reader's landed on hands the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const comment = (id: string, text: string) =>
+    node({ author: { id: "alice", kind: "user" }, id, text, type: "comment" });
+  const first = comment("comment-1", "The first words.");
+  const edited = comment("comment-2", "The words the reader edits.");
+  const last = comment("comment-3", "The last words.");
+  const issue = (children: TreeNode[]) => node({ children, id: KEY, type: "issue" });
+  const tree = renderPageTree(issue([first, edited, last]));
+  const { container } = tree.view;
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-1"));
+  // The reader's last act before the write's landing: the Save of their edit.
+  await user.keyboard("{Shift}");
+
+  await tree.land("comment-2", "self");
+  await waitFor(() => expect(focusedRow(container)).toBe("comment-2"));
+  // Another read draws the tree again before the write's own answers.
+  await act(async () => tree.redraw(issue([first, edited, last])));
+  await act(async () => tree.redraw(issue([first, last])));
+  expect(rowsFor(container, "comment-2"), "the read did not drop the edited comment").toEqual([]);
+  expect(
+    focusedRow(container),
+    "a read that dropped the row a write of the reader's landed on left the focus on no row of the tree, or not on the next row"
+  ).toBe("comment-3");
+});
+
+// A write of the reader's that lands is theirs whatever read draws it: Keep on a decision that
+// waits for their review, under an answered question that the frontier alone unfolded for it,
+// settles the decision, and the question's branch folds shut over the decision's row as the
+// decisions' read draws it kept. The tree the rows come from is another one, as after any read,
+// but Keep noted the decision's node as its write landed (`own-act.ts`), so the question's row,
+// now in the decision's place, takes the focus. The note holds until a read draws that node
+// otherwise. The first row has no read between the Keep and the decisions' read. In the second,
+// a read by another session lands between them - a reply someone else wrote under the decision -
+// and draws the decision as it was, what it holds aside: the focus stays on the decision's row,
+// the note is kept, and the decisions' read that then folds the question's branch over the
+// decision is still the Keep's.
+test.each([
+  [
+    "with no read between",
+    false,
+    "Keep that dropped the decision's row left the focus on no row of the tree, or not on the row now in its place",
+  ],
+  [
+    "after another session's read",
+    true,
+    "Keep's own read, after another session's, left the focus on no row of the tree, or not on the row now in its place",
+  ],
+] as const)(
+  "Keep on a decision only the frontier unfolded drops its row %s and hands the focus to the row now in its place",
+  async (_when, readBetween, lost) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const kept = spyOn(api, "keepDecision").mockResolvedValue({
+      ...decision,
+      waiting_review: false,
+    } as never);
+    const reply = node({
+      author: { id: "bob", kind: "user" },
+      id: "comment-9",
+      text: "A reply of bob's under the decision.",
+      type: "comment",
+    });
+    const issue = (waiting: boolean, replies: TreeNode[] = []) =>
+      node({
+        children: [
+          node({
+            children: [
+              node({
+                children: replies,
+                held: replies.length,
+                id: "decisions#b-d1",
+                reference: decision.ref,
+                type: "decision",
+                waiting,
+              }),
+            ],
+            held: 1 + replies.length,
+            id: "ask-1",
+            text: "Which flag?",
+            type: "ask",
+          }),
+        ],
+        id: KEY,
+        type: "issue",
+      });
+    const view = renderTree(issue(true), {
+      artifacts: [decisionsDocument],
+      decisions: { decisions: [decision], document: null, open_questions: [] },
+    });
+    try {
+      await waitFor(() => expect(focusedRow(view.container)).toBe("ask-1"));
+      await user.keyboard("j");
+      await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+      await view.findByRole("button", { name: "Keep" });
+
+      await user.keyboard("{Shift>}K{/Shift}");
+      await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
+      if (readBetween) {
+        // Another session's read draws the tree again first, the decision as it was.
+        await act(async () => view.reread(issue(true, [reply])));
+        expect(
+          focusedRow(view.container),
+          "another session's read that drew the decision as it was took the focus off its row"
+        ).toBe("decisions#b-d1");
+      }
+      // The decisions' read draws the decision kept.
+      await act(async () => view.reread(issue(false, readBetween ? [reply] : [])));
+      expect(
+        rowsFor(view.container, "decisions#b-d1"),
+        "the question's branch did not fold over the kept decision"
+      ).toEqual([]);
+      expect(focusedRow(view.container), lost).toBe("ask-1");
+      await expectReadersPlace(view.container, "ask-1");
+      view.unmount();
+    } finally {
+      kept.mockRestore();
+    }
+  }
+);
+
+// A read that drops the row being edited, with no act of the reader's since the tree was last
+// drawn - a version a collaborator wrote - takes the editor's focus out with it, which the
+// browser drops to the page's body, and the focus stays there, as for any row. The editing ends
+// with it, as Escape ends it: the page draws the document's editor nowhere, and the panel holds
+// the facts of no row. Left on, the editing waited for a row no read draws, and the tree held
+// every row the focus came to as the edited one: a Tab out of the tree kept that row's body and
+// its facts in Details.
+test("a read that drops the focused row being edited ends the editing and leaves the focus on the page's body, and a Tab out of the tree lets go of the row the reader comes back to", async () => {
   setViewport(1440);
   const user = userEvent.setup();
   const last = node({ id: "comment-2", text: "The last words.", type: "comment" });
@@ -11450,27 +12203,32 @@ test("a read that drops the row being edited ends the editing, and a Tab out of 
   await act(async () => view.reread(node({ children: [first, last], id: KEY, type: "issue" })));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
   await waitFor(() =>
-    expect(
-      focusedRow(view.container),
-      "the focus did not go to the row now in the dropped row's place"
-    ).toBe("comment-2")
-  );
-  await waitFor(() =>
     expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
   );
   expect(
     document.querySelector(`[${EDITOR_BOX_ATTRIBUTE}]`),
     "the editor's box is still drawn"
   ).toBeNull();
+  // The frame the editing's end asks for comes.
+  await nextFrame();
   expect(
-    view.focusedNode()?.id,
-    "the panel does not hold the facts of the row the focus went to"
-  ).toBe("comment-2");
+    document.activeElement === document.body,
+    "a read that dropped the row being edited, with no act of the reader's since, took the focus off the page's body"
+  ).toBe(true);
+  expect(
+    view.focusedNode(),
+    "the panel still holds the facts of the row the read dropped"
+  ).toBeUndefined();
 
+  // The reader comes back to the tree with Tab, at its tab stop, and leaves it with Tab again.
+  await user.tab();
+  expect(focusedRow(view.container), "Tab did not come back to the tree's first row").toBe(
+    "comment-1"
+  );
   await user.tab();
   expect(document.activeElement, "Tab did not leave the outline").toBe(control);
-  const row = rowsFor(view.container, "comment-2")[0];
-  if (row === undefined) throw new Error("the last comment's row is not drawn");
+  const row = rowsFor(view.container, "comment-1")[0];
+  if (row === undefined) throw new Error("the first comment's row is not drawn");
   await waitFor(() =>
     expect(rowLetGo(row), "the row Tab left kept its body or its focused look").toBe(true)
   );
@@ -11524,6 +12282,557 @@ async function dropStatement(view: {
   await act(async () => view.reread(node({ children: [first, arrived], id: KEY, type: "issue" })));
   expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
 }
+
+/** Enter on the statement's row with the document's own editor drawing `blocks` (`LiveEditor`),
+ *  once the caret is in the statement: answers the tree, the editor's editable and view, and the
+ *  room. A `room` that already holds the document is drawn as it holds it, and `blocks` go
+ *  unread. */
+async function caretInLiveStatement(
+  user: UserEvent,
+  blocks: readonly LiveBlock[] = liveBlocks(),
+  room: LiveRoom = liveRoom()
+) {
+  const { editable, view } = await enterStatement(user, (onEditor) => (
+    <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />
+  ));
+  await waitFor(
+    () =>
+      expect(
+        document.activeElement === editable && caretBlock() === "r1",
+        "Enter did not put the caret in the statement"
+      ).toBe(true),
+    { timeout: 10_000 }
+  );
+  const editor = room.editor?.view;
+  if (editor === undefined) throw new Error("the row's editor was never made");
+  return { editable, editor, room, view };
+}
+
+/** The tree `enterStatement` drew, as a read answers it once a comment has arrived after the
+ *  statement: the statement drawn with `words`, and with `tree`, the server's reading of them,
+ *  where it is given; or no statement at all where `words` is undefined, as a read that drops
+ *  its row draws it. */
+function statementRead(words?: string, tree?: DisplayTree): TreeNode {
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  const statement =
+    words === undefined
+      ? []
+      : [
+          node({
+            id: "spec#b-r1",
+            text: words,
+            ...(tree === undefined ? {} : { tree }),
+            type: "requirement",
+          }),
+        ];
+  return node({ children: [first, ...statement, arrived], id: KEY, type: "issue" });
+}
+
+/** The words of `room`'s block at `block`, the statement's by default, edited by a collaborator:
+ *  `length` of them from `from` typed over with `words`, which y-prosemirror draws in the row's
+ *  editor. */
+function collaboratorEdits(
+  room: LiveRoom,
+  from: number,
+  length: number,
+  words: string,
+  block = 1
+): void {
+  act(() => {
+    room.server.transact(() => {
+      const edited = room.server.getXmlFragment("prosemirror").get(block);
+      const text = edited instanceof Y.XmlElement ? edited.get(0) : undefined;
+      if (!(text instanceof Y.XmlText)) throw new Error(`the room's block ${block} holds no words`);
+      text.delete(from, length);
+      text.insert(from, words);
+    });
+  });
+}
+
+/** Checks that the read that dropped the row being edited, which held the focus, ended the
+ *  editing and left the focus on the page's body: `when` names what came before the read. */
+async function expectEditingEndedOnBody(
+  view: { readonly edited: readonly (string | undefined)[] },
+  when: string
+): Promise<void> {
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  // The frame the editing's end asks for comes.
+  await nextFrame();
+  expect(
+    document.body,
+    `a read that dropped the row being edited ${when} took the focus off the page's body`
+  ).toHaveFocus();
+}
+
+// The reader's own edit of a row in its editor is collaborative: it never passes through the
+// page's store of writes, and comes back as the document's blocks read again. Under a filter by
+// words, an edit that takes those words out of the row drops it from the filter's view once that
+// read draws the tree. Here the filter's view is the tree the read draws without the statement,
+// after another read that drew the statement as it was. The drop is the reader's own doing, so
+// the row now in the statement's place takes the focus. A heading's edit is the reader's too:
+// Milkdown writes the heading's `id` from its new words in a transaction kept out of the undo
+// history before the editor's hold hears of the edit (`holdEditsToBlock`), and a decision's row
+// is such a heading.
+test.each([
+  ["a paragraph", paragraph("r1", "A statement of the spec.")],
+  ["a heading", heading("r1", 2, "A statement of the spec.")],
+] as const)(
+  "the reader's edit that takes the focused row, %s, out of their filter by words hands the focus to the row now in its place once a read drops the row",
+  async (_kind, statement) => {
+    setViewport(1440);
+    const user = userEvent.setup();
+    const { editable, editor, view } = await caretInLiveStatement(user, liveBlocks(statement));
+    const before = blocksOf(editor);
+    const words = wordsOf(editable, "r1");
+    // The filter's word, `statement`, typed over.
+    await select(words, 2, words, 11);
+    typeInEditor(editor, "rule");
+    expect(blocksOf(editor), "the reader's edit did not go in").toEqual(
+      withWords(before, "r1", "A rule of the spec.")
+    );
+
+    await dropStatement(view);
+    await waitFor(() =>
+      expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+    );
+    expect(
+      focusedRow(view.container),
+      "a read that dropped the row the reader's edit took out of their filter left the focus on no row of the tree, or not on the row now in its place"
+    ).toBe("comment-3");
+    await expectReadersPlace(view.container, "comment-3");
+  }
+);
+
+// A save of the reader's lands between two of their keys: the read that draws their first edit,
+// the row still in their filter by words, comes before the read that drops the row after their
+// second. The first read draws other words than the second edit left, so it keeps the note of
+// that edit, and the second read's drop hands the focus to the row now in the statement's place.
+test("the reader's two edits, a read of the first between them, then the read that drops the row hand the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  // The first edit keeps the filter's word, `statement`, and the second types over it.
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  // The caret stands before `statement` now, in words the editor drew anew, so the word is
+  // selected in the editor's own document.
+  act(() => {
+    const { doc, selection } = editor.state;
+    editor.dispatch(
+      editor.state.tr.setSelection(TextSelection.create(doc, selection.from, selection.from + 9))
+    );
+  });
+  typeInEditor(editor, "rule");
+  expect(blocksOf(editor), "the reader's edits did not go in").toEqual(
+    withWords(before, "r1", "A new rule of the spec.")
+  );
+
+  await act(async () => view.reread(statementRead("A new statement of the spec.")));
+  expect(
+    rowsFor(view.container, "spec#b-r1"),
+    "the read of the first edit dropped the row"
+  ).toHaveLength(1);
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await waitFor(() =>
+    expect(view.edited.at(-1), "the editing of the row the read dropped went on").toBeUndefined()
+  );
+  expect(
+    focusedRow(view.container),
+    "the read that dropped the row after a read of the reader's first edit left the focus on no row of the tree, or not on the row now in its place"
+  ).toBe("comment-3");
+  await expectReadersPlace(view.container, "comment-3");
+});
+
+// A collaborator's edit of the row being edited reaches its editor from the room, and is no edit
+// of the reader's (`holdEditsToBlock`): the read that then drops the row is another session's,
+// and the focus stays on the page's body.
+test("a collaborator's edit of the focused row being edited, then a read that drops the row, leaves the focus on the page's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  collaboratorEdits(room, 2, 9, "rule");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A rule of the spec.")
+  );
+
+  await dropStatement(view);
+  await expectEditingEndedOnBody(view, "after a collaborator's edit");
+});
+
+// Milkdown writes a heading's `id` from its words in a transaction of its own, kept out of the
+// undo history (`addToHistory: false`), after a change of a heading's words that moves its `id`:
+// here a collaborator's edit of the heading above the statement. That transaction is the editor's
+// and not the reader's, so it notes nothing (`holdEditsToBlock`), and the read that then drops the
+// row being edited is another session's: the focus stays on the page's body.
+test("the heading id the editor writes after a collaborator's edit notes nothing, and a read that then drops the row being edited leaves the focus on the page's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editor, room, view } = await caretInLiveStatement(user, [
+    heading("r0", 2, "The words above the statement."),
+    ...liveBlocks().slice(1),
+  ]);
+  const headingId = () => editor.state.doc.firstChild?.attrs.id;
+  const idBefore = headingId();
+  expect(typeof idBefore, "the editor wrote no id for the heading").toBe("string");
+  collaboratorEdits(room, 0, 0, "New: ", 0);
+  expect(headingId(), "the editor wrote no new id for the edited heading").not.toBe(idBefore);
+
+  await dropStatement(view);
+  await expectEditingEndedOnBody(view, "after the editor wrote a heading's id");
+});
+
+// The read that draws the reader's edit spends the edit's note: the edit's own read has come and
+// kept the row. Under a filter by words, the reader types one key in the statement, and the read
+// that draws that key keeps the row in the filter. A collaborator's edit then takes the filter's
+// word out of the statement, and the read that drops the row is another session's, so the focus
+// stays on the page's body.
+test("a collaborator's edit after the read that drew the reader's own key, then a read that drops the row being edited, leaves the focus on the page's body", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  // One key, at the end of the word before the full stop: the editor holds it as a run of its
+  // own, under the reader's authorship mark, which the words the read draws do not hold.
+  await select(wordsOf(editable, "r1"), "A statement of the spec".length);
+  typeInEditor(editor, "s");
+  expect(blocksOf(editor), "the reader's key did not go in").toEqual(
+    withWords(before, "r1", "A statement of the specs.")
+  );
+  await act(async () => view.reread(statementRead("A statement of the specs.")));
+  expect(
+    rowsFor(view.container, "spec#b-r1"),
+    "the read of the reader's key dropped the row"
+  ).toHaveLength(1);
+
+  // The filter's word, `statement`, typed over.
+  collaboratorEdits(room, 2, 9, "rule");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A rule of the specs.")
+  );
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(
+    view,
+    "after a collaborator's edit that followed the read of the reader's key"
+  );
+});
+
+/** Escape in the statement's editor: the editing ends, and the statement's row holds the focus
+ *  once the frame after Escape has come. */
+async function escapeToStatement(
+  user: UserEvent,
+  view: { readonly container: HTMLElement; readonly edited: readonly (string | undefined)[] }
+): Promise<void> {
+  await user.keyboard("{Escape}");
+  await waitFor(() => expect(view.edited.at(-1), "Escape did not end the editing").toBeUndefined());
+  await nextFrame();
+  expect(focusedRow(view.container), "Escape did not give the statement's row the focus").toBe(
+    "spec#b-r1"
+  );
+}
+
+/** Escape in the statement's editor, then three reads that draw the statement with `words`, which
+ *  leave the focus on its row, and another session's read that drops the row: checks the editing
+ *  ends with the focus on the page's body. `when` names what came before Escape. */
+async function escapeThreeReadsThenDrop(
+  user: UserEvent,
+  view: {
+    readonly container: HTMLElement;
+    readonly edited: readonly (string | undefined)[];
+    readonly reread: (next: TreeNode) => void;
+  },
+  words: string,
+  when: string
+): Promise<void> {
+  await escapeToStatement(user, view);
+  for (let read = 0; read < 3; read += 1) {
+    await act(async () => view.reread(statementRead(words)));
+  }
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0],
+    "a read that drew the statement as it is took the focus off its row"
+  ).toHaveFocus();
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(view, `after ${when}, Escape and three other reads`);
+}
+
+// An edit's note lasts no longer than the read that draws the words the edit left, and Escape
+// brings nothing back. Here that read comes while the reader still edits the statement, then
+// they press Escape, and three reads that draw the statement as it is come - a comment's, a read
+// mark's - before another session's read drops the row the focus is back on: the focus stays on
+// the page's body, as with no edit at all.
+test("the reader's edit, the read that draws it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, view } = await caretInLiveStatement(user);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  await act(async () => view.reread(statementRead("A new statement of the spec.")));
+  await escapeThreeReadsThenDrop(
+    user,
+    view,
+    "A new statement of the spec.",
+    "the reader's edit, its read"
+  );
+});
+
+// An edit's note ends at the first tree drawn after the reader leaves the row, though no tree has
+// drawn the words the edit left. Here a collaborator's letter, saved before the read of the
+// reader's edit, is drawn merged with it, so no read draws the reader's words alone. The reader
+// presses Escape, three reads that draw the statement as it is come, and then another session's
+// read drops the row the focus is back on: the focus stays on the page's body.
+test("the reader's edit, a collaborator's drawn with it, Escape and three other reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  // A letter at the end of the word before the full stop.
+  collaboratorEdits(room, "A new statement of the spec".length, 0, "s");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A new statement of the specs.")
+  );
+  await act(async () => view.reread(statementRead("A new statement of the specs.")));
+  await escapeThreeReadsThenDrop(
+    user,
+    view,
+    "A new statement of the specs.",
+    "the reader's edit, a collaborator's drawn with it"
+  );
+});
+
+// An edit's note ends at the first tree drawn after the reader leaves the row, though that tree
+// draws other words than the edit left (decision 409): it still reads the note for a drop, and
+// the tree after it does not. Here a collaborator's letter, saved before the read of the reader's
+// edit, is drawn merged with it, so no read draws the reader's words alone. The reader presses
+// Escape, and exactly one read comes, which draws the merged words and drops nothing. Another
+// session's read then drops the row the focus is back on, and the focus stays on the page's body.
+// A note that ended one tree later would count that drop as the reader's, and hand the focus to
+// the row now in the statement's place.
+test("the one read after Escape ends the edit's note though it draws a collaborator's edit merged with the reader's, so a read that then drops the focused row is another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  // A letter at the end of the word before the full stop.
+  collaboratorEdits(room, "A new statement of the spec".length, 0, "s");
+  expect(blocksOf(editor), "the collaborator's edit did not apply").toEqual(
+    withWords(before, "r1", "A new statement of the specs.")
+  );
+  await escapeToStatement(user, view);
+
+  await act(async () => view.reread(statementRead("A new statement of the specs.")));
+  expect(
+    rowsFor(view.container, "spec#b-r1")[0],
+    "the one read after Escape, which drew the merged words, took the focus off the statement's row"
+  ).toHaveFocus();
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's edit, a collaborator's, Escape and the one read that drew both"
+  );
+});
+
+// The one tree drawn after the reader leaves the row still reads the edit's note, as the read of
+// their last edit may come just after they leave, so a drop there is theirs. A collaborator's
+// change that drops the row in that one tree is counted so too, which decision 409 accepts: the
+// focus moves on to the row now in the statement's place, which loses the reader nothing. Here the
+// reader types, presses Escape, and the very next read, of a collaborator's edit that takes the
+// filter's word out, drops the row.
+test("the reader's edit, Escape and the very next read, a collaborator's that drops the focused row, hand the focus to the row now in its place", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, room, view } = await caretInLiveStatement(user);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "new ");
+  await escapeToStatement(user, view);
+
+  // The filter's word, `statement`, typed over.
+  collaboratorEdits(room, 6, 9, "rule");
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  expect(
+    rowsFor(view.container, "comment-3")[0],
+    "the read after Escape that dropped the row the reader edited left the focus on no row of the tree, or not on the row now in its place"
+  ).toHaveFocus();
+  await expectReadersPlace(view.container, "comment-3");
+});
+
+// An edit the reader takes back leaves the words as they were, so no tree ever draws the node
+// changed, and the reads after it draw the words the last edit left: the first of them spends
+// the edit's note. The reader types X, deletes it and presses Escape, two reads come, and then
+// another session's read drops the row: the focus stays on the page's body.
+test("the reader's key taken back, Escape and later reads leave a read that then drops the focused row another session's", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const { editable, editor, view } = await caretInLiveStatement(user);
+  const before = blocksOf(editor);
+  await select(wordsOf(editable, "r1"), 2);
+  typeInEditor(editor, "X");
+  // The letter deleted, as the editor reads back the browser's Backspace.
+  act(() => {
+    const { from } = editor.state.selection;
+    editor.dispatch(editor.state.tr.delete(from - 1, from));
+  });
+  expect(blocksOf(editor), "the reader's key was not taken back").toEqual(before);
+  await escapeToStatement(user, view);
+
+  for (let read = 0; read < 2; read += 1) {
+    await act(async () => view.reread(statementRead("A statement of the spec.")));
+  }
+  await act(async () => view.reread(statementRead()));
+  expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+  await expectEditingEndedOnBody(
+    view,
+    "after the reader's key taken back, Escape and two other reads"
+  );
+});
+
+// The words the reader's edit left and the words a read draws the statement with are read by one
+// rule (`own-act.ts`'s `editWords`), so they compare equal for a statement that holds a link and
+// a `dispatch://` reference: the editor holds both as the document stores them, and the read
+// carries the server's reading of the statement, both kept, beside its words with both left out.
+// The read that draws the reader's edit spends its note, and the read that drops the row after a
+// collaborator's edit is another session's.
+test("the read that draws the reader's edit of a statement holding a link and a reference spends the edit's note", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const room = liveRoom();
+    const stored = `A statement of the spec, see the guide and dispatch://${KEY}.`;
+    const held = room.server.getXmlFragment("prosemirror");
+    held.insert(0, liveBlocks(paragraph("r1", stored)).map(roomBlock));
+    const statement = held.get(1);
+    const words = statement instanceof Y.XmlElement ? statement.get(0) : undefined;
+    if (!(words instanceof Y.XmlText)) throw new Error("the room holds no statement's words");
+    words.format(stored.indexOf("the guide"), "the guide".length, {
+      link: { href: "https://example.com/guide" },
+    });
+    const { editable, editor, view } = await caretInLiveStatement(user, undefined, room);
+    expect(
+      editable.querySelector('[data-block-id="r1"] a')?.textContent,
+      "the editor drew no link in the statement"
+    ).toBe("the guide");
+
+    // The edit keeps the filter's word, `statement`.
+    await select(wordsOf(editable, "r1"), 2);
+    typeInEditor(editor, "new ");
+    await act(async () =>
+      view.reread(
+        statementRead(
+          "A new statement of the spec, see and",
+          readingOf(
+            `A new statement of the spec, see [the guide](https://example.com/guide) and dispatch://${KEY}.`
+          )
+        )
+      )
+    );
+    expect(
+      rowsFor(view.container, "spec#b-r1"),
+      "the read of the reader's edit dropped the row"
+    ).toHaveLength(1);
+
+    // The filter's word typed over, after the reader's `new `.
+    collaboratorEdits(room, 6, 9, "rule");
+    await act(async () => view.reread(statementRead()));
+    expect(rowsFor(view.container, "spec#b-r1"), "the read did not drop the statement").toEqual([]);
+    await expectEditingEndedOnBody(
+      view,
+      "after a collaborator's edit that followed the read of the reader's edit of words beside a link and a reference"
+    );
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// A decision's row edits the decision's `## ` heading, and a read draws the decision by the
+// reading of its whole section, which opens with that heading (`own-act.ts`'s `drawnWords`): the
+// read that draws the heading's new words spends the edit's note, though the section holds more
+// words under the heading. A collaborator's edit of the heading then takes the filter's word out,
+// and the read that drops the row is another session's.
+test("the read that draws the reader's edit of a decision's heading spends the edit's note", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const room = liveRoom();
+  // One list for every drawing of the editor, which the editor is made again for each new one of.
+  const blocks = [heading("d1", 2, "Keep it"), paragraph("d2", "Keep the model pure.")];
+  const first = node({ id: "comment-1", text: "The first words.", type: "comment" });
+  const arrived = node({ id: "comment-3", text: "A comment that arrived.", type: "comment" });
+  // The issue as a read draws it, the decision's heading reading `title`, or with no decision.
+  const read = (title?: string) => {
+    const section = `## ${title}\n\nKeep the model pure.`;
+    const decided =
+      title === undefined
+        ? []
+        : [
+            node({
+              id: "decisions#b-d1",
+              text: section,
+              tree: readingOf(section),
+              type: "decision",
+            }),
+          ];
+    return node({ children: [first, ...decided, arrived], id: KEY, type: "issue" });
+  };
+  const view = renderTree(read("Keep it"), {
+    artifacts: [decisionsDocument],
+    editor: (onEditor) => <LiveEditor blocks={blocks} onEditor={onEditor} room={room} />,
+  });
+  await waitFor(() => expect(focusedRow(view.container)).toBe("comment-1"));
+  await user.keyboard("j");
+  await waitFor(() => expect(focusedRow(view.container)).toBe("decisions#b-d1"));
+  await user.keyboard("{Enter}");
+  const editable = await waitFor(
+    () => {
+      const found = rowsFor(view.container, "decisions#b-d1")[0]?.querySelector<HTMLElement>(
+        '[contenteditable="true"]'
+      );
+      if (found === null || found === undefined)
+        throw new Error("the decision's row took no editor");
+      expect(found, "Enter did not put the caret in the decision's heading").toHaveFocus();
+      expect(caretBlock(), "Enter did not put the caret in the decision's heading").toBe("d1");
+      return found;
+    },
+    { timeout: 10_000 }
+  );
+  const editor = room.editor?.view;
+  if (editor === undefined) throw new Error("the decision's row took no editor");
+
+  // The edit keeps the filter's word, `Keep`.
+  await select(wordsOf(editable, "d1"), "Keep it".length);
+  typeInEditor(editor, " all");
+  expect(editor.state.doc.firstChild?.textContent, "the reader's edit did not go in").toBe(
+    "Keep it all"
+  );
+  await act(async () => view.reread(read("Keep it all")));
+  expect(
+    rowsFor(view.container, "decisions#b-d1"),
+    "the read of the reader's edit dropped the row"
+  ).toHaveLength(1);
+
+  // The filter's word typed over.
+  collaboratorEdits(room, 0, 4, "Hold", 0);
+  await act(async () => view.reread(read()));
+  expect(rowsFor(view.container, "decisions#b-d1"), "the read did not drop the decision").toEqual(
+    []
+  );
+  await expectEditingEndedOnBody(
+    view,
+    "after a collaborator's edit that followed the read of the reader's edit"
+  );
+});
 
 // A read that takes the row being edited out while a press on another row is held ends the
 // editing at once, as such a read does wherever the focus is (above), and not once the press is

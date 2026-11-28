@@ -245,6 +245,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s.
+//
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
 // answering without resetting its sockets - is unreachable too, and a send and a publish answer it
 // with the same named 503 inside the caller's attempt. nats.go cannot tell such a link is dead
@@ -283,7 +286,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			name:    "publish",
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
-			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.1", "source": "agent", "source_session": sender, "message": "is the bus there?"},
+			body:    map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": sender, "message": "is the bus there?"},
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
@@ -800,7 +803,9 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	}
 	// The error keeps its prefix - Dispatch classifies a delivery failure on the "no live
 	// session " one - the state the refusal was decided on stands beside it, and, this listener
-	// having no registration to name for a target that never registered, the error says so.
+	// having no registration to name for a target that never registered, the error says so. The
+	// body is spelt out rather than built from contracts.NoLiveSession, so a change to the
+	// constant, which changes the wire, fails here.
 	if got, want := strings.TrimSpace(answered.Body.String()), fmt.Sprintf(`{"error":"no live session %s; this listener does not know when it last registered","state":"gone"}`, target); got != want {
 		t.Fatalf("the 404 body is %s, want %s", got, want)
 	}
@@ -825,7 +830,7 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	if !strings.HasPrefix(refusal.Error, busUnansweredPrefix) {
 		t.Fatalf("the refusal reads %q, want it to begin %q", refusal.Error, busUnansweredPrefix)
 	}
-	if strings.Contains(refusal.Error, "no live session") {
+	if strings.Contains(refusal.Error, contracts.NoLiveSession) {
 		t.Fatalf("the refusal reads %q: an unanswered read must not be reported as the session being gone", refusal.Error)
 	}
 	if got := unanswered.Header().Get("Retry-After"); got != "1" {

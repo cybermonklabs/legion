@@ -36,9 +36,11 @@ docker buildx imagetools inspect ghcr.io/cybermonklabs/legion/envoy:<that commit
 | Need | Setting | Notes |
 | --- | --- | --- |
 | Postgres | `DATABASE_URL` | Required. Dispatch keeps everything here and applies its own migrations at start. Leave `pool_max_conns` out of the URL; Dispatch refuses it. Dispatch also refuses a URL holding an `@` after its user name and password, naming the variable alone: write each `@` in a password, a user name or a query value as `%40`, and a `/` in a password as `%2F`. A database name holding an `@` is refused however it is written. |
-| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
+| A shared agent token | `DISPATCH_AGENT_TOKEN` | Required to start. A fallback credential for agents; agents normally sign in through the secrets broker, as a person's sign-in on a box (`agent-secrets login`) or a Dispatch sign-in its person approves for chosen scopes (`dispatch login --device --scope`), and otherwise use personal tokens made in Settings. To change it without locking agents out, set the new value followed by the old one, separated by a space, until every agent has moved, then the new one alone. |
 | Google sign-in | `DISPATCH_SIGNIN_ISSUER`, `DISPATCH_SIGNIN_CLIENT_ID`, `DISPATCH_SIGNIN_CLIENT_SECRET`, and `DISPATCH_SIGNIN_GROUP` or `DISPATCH_SIGNIN_DOMAIN` | The OpenID Connect issuer people sign in through, Dispatch's client there and that client's secret, and exactly one of: the group a person must be in, through a Cognito sign-in pool; or the Google Workspace domain whose people may sign in, with Google itself as the issuer. Required for the default cookie sign-in. [Signing people in](#signing-people-in) covers both. |
-| The browser address | `DISPATCH_SERVER_URL` | The exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL. |
+| The browser address | `DISPATCH_SERVER_URL` | Dispatch's canonical address: the exact address people type, such as `https://dispatch.internal.example`. Dispatch's client at the issuer lists this address followed by `/auth/callback` as a callback URL, and does the same for each served address. Dispatch answers a request whose `Host` names none of its other addresses as this one. |
+| More addresses | `DISPATCH_SERVED_ORIGINS`, `DISPATCH_FORMER_ORIGINS` | The other addresses Dispatch serves, and the addresses it served before and serves no more, each a comma-separated list of origins ([More than one address](#more-than-one-address)). |
+| A proxy in front | `DISPATCH_TRUSTED_PROXY_RANGES` | The proxies whose `X-Forwarded-For` Dispatch trusts, as comma-separated CIDR ranges, none by default ([Behind a proxy](#behind-a-proxy)). |
 | The GitHub App | `DISPATCH_APP_CLIENT_ID`, `DISPATCH_APP_PEM_B64` | `DISPATCH_APP_PEM_B64` holds the App's private key as the PEM GitHub gives or the base64 of that PEM; a key that does not parse stops boot. Without the App the server starts, but the web app's GitHub reads answer `503` and architecture sources cannot be saved. |
 | A stable session key | `DISPATCH_SIGNING_KEY` | Signs sign-in cookies and seals the issuer's refresh tokens Dispatch stores. It holds one key, or several separated by spaces: the first signs and seals, and every one is accepted, which is how the key is changed without signing anyone out ([Changing the session key](#changing-the-session-key)). When unset, Dispatch creates one under `~/.local/share/dispatch`; keep that directory on a volume, or every restart signs everyone out. Give every server the same keys when you run more than one: a server whose keys another running server does not share refuses to start ([Running more than one copy](#running-more-than-one-copy)). |
 | An Envoy listener | `ENVOY_URL` | Where the Agents page finds live agent sessions. Defaults to `http://127.0.0.1:9020`. A user name, a password, an `@` after its host, a query or a fragment is refused, naming the setting alone, as for each model endpoint, `DISPATCH_AGENT_SECRETS_URL` and `DISPATCH_GITHUB_API_BASE`. |
@@ -70,7 +72,7 @@ People sign in through a Cognito sign-in pool or with Google directly by default
 names each person by their lowercase email. `DISPATCH_IDENTITY=iap` names people from the
 assertion Google Cloud's Identity-Aware Proxy signs instead
 ([Behind Identity-Aware Proxy](#behind-identity-aware-proxy)).
-`DISPATCH_IDENTITY=header:<Header-Name>` names people by a request header; it is for
+`DISPATCH_IDENTITY=header:X-Dispatch-User` names people by the `X-Dispatch-User` header; it is for
 tests and local harnesses only, needs `DISPATCH_IDENTITY_HEADER_TRUSTED=1`, and refuses every
 `DISPATCH_SIGNIN_*` setting. Serve Dispatch over HTTPS. `DISPATCH_INSECURE_COOKIE=1` is only for
 trying it over plain HTTP on your own machine.
@@ -104,7 +106,8 @@ start, naming what is wrong.
 
 The Google client to create, in the Google Cloud console of the organization whose Workspace it
 is, is a **web application** OAuth client with `<DISPATCH_SERVER_URL>/auth/callback` as an
-authorized redirect URI. Set its OAuth consent screen's user type to **Internal**, so that only the
+authorized redirect URI, and `<address>/auth/callback` for each served address ([More than one address](#more-than-one-address)).
+Set its OAuth consent screen's user type to **Internal**, so that only the
 organization's own accounts can complete the sign-in at Google. Google accepts an `https` redirect
 whose host ends in a public suffix, or plain `http` to a loopback address such as
 `http://127.0.0.1:8766/auth/callback` for a server on your own machine. Its client ID and secret
@@ -125,7 +128,7 @@ Dispatch does not need the issuer to start. It reads the issuer's settings in th
 retrying until the issuer answers, and until then a sign-in answers `503 SIGNIN_UNAVAILABLE` while
 agents, and people whose hour has not lapsed, are served. A sign-in started on one server completes
 on whichever server the issuer sends the browser back to, since what it needs travels in a signed
-cookie, as long as every server has the same `DISPATCH_SERVER_URL`.
+cookie, as long as every server has the same `DISPATCH_SERVER_URL` and `DISPATCH_SERVED_ORIGINS`.
 
 A person is their email address, so an address that passes from one account to another is one
 person to Dispatch. With Google directly, Dispatch also records the Google account (its `sub`,
@@ -162,6 +165,79 @@ return to domain mode unprotected: the same Google account signing in again find
 `sub` still on the row, so nothing ends sessions a pool-era cookie still held. Everyone then signs
 in again under the new issuer; a refresh token left from the old one would be refused at the
 first hourly confirmation, and is still redeemable at the old issuer until it is revoked there.
+
+## More than one address
+
+Dispatch serves a list of addresses.
+`DISPATCH_SERVER_URL` is the first one, the canonical address.
+`DISPATCH_SERVED_ORIGINS` lists the others, comma-separated, such as `https://a.example.test,https://b.example.test`.
+Each entry is an `http` or `https` address with no path, written as a browser writes it: a lowercase scheme and host, and no default port.
+Dispatch compares the `Origin` that a browser sends with an entry as written, so it refuses to start on any other spelling.
+
+Dispatch picks the address a request came to by the request's `Host` alone.
+It compares the host name without regard to case or a trailing dot, and the port as a number, where the scheme's default port (443 for `https`, 80 for `http`) is equal to no port.
+A forwarded header, such as `X-Forwarded-Host`, picks nothing.
+A request to a served address is answered as that address:
+
+- A write from a page there must come from that address.
+
+- Google sign-in starts there and ends at that address's `/auth/callback`, so the Google client lists the callback of the canonical address and the callback of each served address.
+
+- A signed agent request may name that address.
+
+- The session cookie is the canonical address's cookie, host-only on the served host, so a person signed in at one address is not signed in at another.
+
+A request to the same host at another port, or to a host that no setting names, is answered as the canonical address.
+
+`DISPATCH_FORMER_ORIGINS` lists, in the same way, the addresses Dispatch served before.
+A link to a Dispatch page written at a served or a former address is a reference to that page, in the server and in the web app, and the web app opens it at the address the reader is on.
+A former address takes no sign-in and no write made as a person.
+At a former address, at any port:
+
+- `/auth/start` and `/auth/callback` answer `404`.
+
+- Every write that carries a session cookie or an Identity-Aware Proxy assertion, and no `Authorization` header, answers `403` "invalid request origin", whatever its `Origin`.
+
+- A document socket (`GET /ws/doc/<id>`) opened with a session cookie or an Identity-Aware Proxy assertion answers the same `403`, because it carries edits as the person.
+
+- A signed agent request that names the address is refused.
+
+- A read, and an agent's write that carries an `Authorization` header, are answered as at the canonical address.
+
+So a former address passes no cookie check, no sign-in and no proof check.
+
+No two addresses of Dispatch share a host name: the canonical address, the served addresses and the former addresses, compared by name at any port.
+Dispatch refuses to start on two addresses with one host name, on an entry spelt otherwise, on either list without `DISPATCH_SERVER_URL`, and on either list with `DISPATCH_DEV_SIGNIN=1`.
+It also refuses a former address on the host name of a `DISPATCH_PROOF_ORIGINS` entry.
+The web app reads the list from `GET /auth/whoami`, which names the canonical address, each served address and each former address, in that order.
+The `dispatch` command reads the same list from `GET /api/v1/whoami`, so a link at any of them is the same reference.
+Each line of the access log names the `Host` of its request in `host`, so you see which addresses callers still use before you remove one.
+
+To move from one address to another, such as from a tailnet address to a load balancer's, serve both for a while and then the new one alone:
+
+1. Serve both addresses.
+   Set `DISPATCH_SERVER_URL` to the load balancer's address, which makes it the canonical address.
+   Set `DISPATCH_SERVED_ORIGINS` to the tailnet address, which keeps it served.
+   On `envoy-infra`'s `gcp:Dispatch`, set `publicOrigin` to the load balancer's address and keep the tailnet inputs: the tailnet name is then a served address.
+   List the callback of each address in the Google client first.
+
+2. Read the access log's `host` until no caller that matters uses the tailnet address.
+
+3. Serve the load balancer's address alone.
+   Move the tailnet address from `DISPATCH_SERVED_ORIGINS` to `DISPATCH_FORMER_ORIGINS`.
+   On `gcp:Dispatch`, unset the tailnet inputs and list the tailnet name in `formerOrigins` (`packages/envoy/infra/README.md`, "Moving from the tailnet address to a load balancer's address").
+
+A server closes its listener when its stop signal arrives, and then has 30 seconds to answer the requests it holds and stop.
+So a connection that a load balancer opens after the signal is refused.
+On `gcp:Dispatch`, two inputs set how the server's pod stops:
+
+- `preStopSeconds`, 5 by default, is how long the pod waits before the signal.
+  The server keeps answering during the wait, while the pod's removal from routing reaches every proxy and load balancer that sends to it.
+
+- `terminationGracePeriodSeconds`, 35 by default, is the pod's grace period.
+  It holds the wait and then the server's 30 seconds, so `gcp:Dispatch` refuses one under `preStopSeconds` plus 30.
+
+A load balancer that takes longer than 5 seconds to stop sending requests to a stopping pod needs a longer wait, and a grace period raised with it.
 
 ## Behind Identity-Aware Proxy
 
@@ -524,6 +600,67 @@ that names the owner, the earlier event and that event's last publish error. The
 earlier event's failed publish, which logs `dispatch outbox: publish event` at ERROR at each
 attempt and counts in `envoy_dispatch_outbox_publish_failures_total`.
 
+## GitHub rate reading
+
+Each server with the GitHub App's private key reads the App's rate counters: at start, every 10
+minutes, and in the last minute before each counter reset of any installation. A reading is due 45
+seconds before a reset, or at once when the reading before it ended inside that last minute. Each
+reading lists the App's installations, reads first the ones in a counter's last minute, and logs
+one `github_rate_reading` line for each of them to stderr. The line is JSON, though the rest of the
+log is text, so a log store such as Cloud Logging keeps its fields. A reading costs each
+installation one REST core call, and one more when the server lists the installation's
+repositories again: at its first reading, and after GitHub no longer has the repository it read
+before. It holds:
+
+- `program` (`dispatch`), `process` (the server's host name) and `project` (empty).
+- `app_id`, `app_slug`, `owner` and `installation_id`, which name the installation, and
+  `installations`, how many installations the list held. The App's id and slug come from the
+  fresh installation list, which names both for each installation, so a renamed App does not keep
+  its old slug until the server restarts. The server asks GitHub's `GET /app` only when the list
+  names neither, and a failure there fails no reading.
+- `permissions`: each permission the installation grants the App, with its access, as the
+  installation list named them. It is `{}` when the list named none, and it is on the line of a
+  reading that failed too. A permission the list names with a value that is not text is left out.
+- `before_reset`, true when the line was written in the last minute before a reset of one of this
+  installation's counters, including on a regular pass. A reading that failed there is a
+  `before_reset` line too, with its `error`: that minute was tried and read nothing. Once a line of
+  an installation is written in a counter's last minute, the server takes no other reading for
+  that reset, even when GitHub's next answer names the reset a second later. If that line failed,
+  the hour has no last-minute reading of that counter: the server does not ask GitHub again until
+  the reset.
+- For the REST core counter and the GraphQL counter: `core_used`, `core_limit` and `core_reset`,
+  and `graphql_used`, `graphql_limit` and `graphql_reset`, as GitHub answered them, with each reset
+  in RFC 3339 UTC.
+- `core_own` and `graphql_own`: the calls this server made on that counter since its last reset,
+  by the part of Dispatch that made them. Those are `architecture_import`, `delivery_reconcile`
+  and `ci_reconcile` (three of the loops above), `webhook_intake` (the delivery intakes), `api`
+  (the API and the GitHub proxy), `rate_reading` (the reading itself) and `other` (anything
+  else). `webhook_redelivery` appears only if the sweep calls GitHub with an installation's token;
+  today it calls with the App's own credential alone.
+
+A reading of an installation that has used its whole budget still carries the counters. Its reads
+are sent even while the server holds back its other reads of that installation, and GitHub names
+the counter in a refusal too: about 6 + 2N core calls an hour of each such installation from each
+server, N being the App's installations. A secondary limit is different: GitHub asks a client to
+send nothing while one holds, and may ban an integration that goes on. So once GitHub answers one
+of this server's calls with an installation's token with a secondary limit, the server sends that
+installation's reading nothing until the end GitHub asked for (its `Retry-After`, else a minute,
+at most an hour), and the line carries the hold as its `error`. A reading that fails carries
+`error` in place of the counters: for example, when GitHub refuses the installation's token, does
+not answer, or a counter resets before the server reads its own-call counts. An `error` holds at
+most 1,024 bytes: a longer one is cut at a whole character and ends with the length it was cut
+from. So a reading logs a line for each installation listed. A list that fails, or that holds no
+installation, logs one line with its `error` and no `permissions`. A reading that fails keeps the
+resets the server read before, so the reading before those resets is still taken.
+
+GitHub counts every caller of an installation together. Its used counts are REST requests or
+GraphQL points, while the server's own counts are answered calls. A GraphQL query can cost several
+points, and a refused REST call can cost nothing, so subtracting the own counts does not measure
+the use of the other servers or programs. A call that only the App's own credential makes, such as
+the webhook redelivery sweep's, is charged to no installation and is in no count. Neither is a
+call to GitHub's `GET /rate_limit` endpoint, nor an answer of `304 Not Modified`, which GitHub
+does not charge. A read of a repository that is named `rate_limit` is counted.
+
 ## Behind a proxy
 
 A page's live updates ride one WebSocket per tab, `GET /ws/live`. A browser keeps WebSockets apart
@@ -543,6 +680,23 @@ seconds, which ygo sends back to it. A page connected read-only gets an empty pr
 instead: a closed issue's document, and also a page on an open issue whose `schema_version` no
 longer matches the server's, such as a tab left open across an upgrade. A proxy whose idle timeout
 is longer than about 20 seconds therefore never closes either one.
+
+`DISPATCH_TRUSTED_PROXY_RANGES` lists the proxies whose `X-Forwarded-For` Dispatch trusts: comma-separated CIDR ranges, each written as its network, such as `10.129.0.0/23`.
+It is empty by default, so Dispatch trusts no proxy, and a range of length 0, such as `0.0.0.0/0`, refuses the start.
+So does an IPv4-mapped IPv6 range, such as `::ffff:10.129.0.0/119`, which no peer is ever inside, since Dispatch reads each peer's address as the IPv4 address it holds: write it as an IPv4 range.
+The setting decides the caller address of each request, which the access log names in `address` and the broker token check's per-address limit counts.
+From a listed proxy, the caller address is the entry second from the right of the one `X-Forwarded-For` line: the client address that a proxy such as Google's internal Application Load Balancer appends before the address of its forwarding rule.
+An IPv6 client is keyed by the /64 that holds its address, since one host or one site holds a whole /64.
+Dispatch never reads an entry to the left of it, because the caller wrote it.
+A request from a listed proxy whose header that proxy could not have written is answered `400` with the code `FORWARDED_FOR_INVALID`, before any credential is read.
+Such a header is not one line, holds fewer than two entries, or has a second entry from the right that is no IP address.
+So a proxy that appends the client alone cannot be listed.
+A request from any other peer keeps the rightmost `X-Forwarded-For` entry as its caller address, or the connection's own address when there is none.
+On `envoy-infra`'s `gcp:Dispatch`, `trustedProxyRanges` renders the setting.
+
+Dispatch keeps an idle client connection open for 650 seconds.
+An internal Application Load Balancer keeps an idle connection to a backend for 600 seconds, a value Google fixes, and asks for a backend idle timeout above it.
+A server that closed an idle connection first could close it at the instant the balancer sent a request on it, and that request would fail with a `502`.
 
 ## Running more than one copy
 
@@ -575,9 +729,9 @@ one. Three things have to be true first; Dispatch checks the first for you.
   database while it lasts.
 
 A second server also costs connections, and Postgres counts them per server. Each server opens up
-to 64 connections for requests, up to 27 for the work it runs once across the servers, the
-delivery intakes' holds and the keyword fill's hold,
-up to 8 for saving what people type in documents, up to 4 for loading
+to 64 connections for requests, up to 29 for the work it runs once across the servers, the
+intakes' holds and the keyword fill's hold, up to 8 for saving what people type in documents,
+up to 4 for loading
 documents, up to 2 for compacting documents, up to 2 for the background fill of documents'
 display trees, one for the health check, two for publishing
 notifications, up to 2 for reading where the event log is safe to stream from (the event horizon),
@@ -589,7 +743,7 @@ background work when the rows that work reads change included. The other servers
 database find each server by the name of that shared connection. The fifth sends the cursors of
 the server's document sessions and its questions and answers to the other servers about a
 document. It opens the first time the server has one to send. A document edit's own notification
-goes out in the transaction that writes the edit, and needs no connection of its own. That is 118
+goes out in the transaction that writes the edit, and needs no connection of its own. That is 120
 connections for one server at its ceiling, and twice that for two, past a default Postgres's
 limit of 100. Check the database's connection limit before you start the second server: a limit
 sized for one server, with whatever else uses that database counted in, is the thing that runs

@@ -3,6 +3,7 @@ import type { IssueCollaboratorPerson } from "./dispatch-api.generated";
 import { ActorSchema, ExternalLinkSchema } from "./dispatch-api-core";
 import { referenceChangesFields } from "./dispatch-api-refs";
 import { ISSUE_COMPONENTS_MODES, type ISSUE_ROUTE_STATUSES } from "./dispatch-tools";
+import { LEGION_ROLES } from "./legion-roles";
 
 /**
  * The issue: the row, what resolves on each read of it, and the payloads of every `issue.*` and
@@ -108,7 +109,19 @@ export const issueFields = {
   number: z.number().int(),
   title: z.string(),
   status: z.string(),
+  /** The issue's own priority, null where it sets none. */
   priority: IssuePrioritySchema.nullable(),
+  /** The priority the issue works at: its own `priority`, else that of the nearest issue above it
+   *  on its parent chain that has one, in any project and within 32 links, else null. Dispatch
+   *  orders, filters and counts issues by it, and a write that makes it P0 can need the `p0`
+   *  scope (`DISPATCH_SCOPES` says when). The server writes it on every issue read and on the
+   *  issue of every `issue.*` event, null included; it is absent from a Dispatch release that
+   *  sends no `resolved_priority`, whose readers take the issue's own `priority` instead. */
+  resolved_priority: IssuePrioritySchema.nullable().optional(),
+  /** The key of the issue `resolved_priority` comes from, of any project; null where the priority
+   *  is the issue's own or there is none. Absent from a Dispatch release that sends no
+   *  `resolved_priority`. */
+  priority_from: z.string().nullable().optional(),
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
@@ -205,9 +218,14 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
  *  before the fields existed, which a reader takes as "anything may have changed". */
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
-   *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new
-   *  issue holds a value in. */
+   *  reopen), `rank`, `priority`, `resolved_priority`, `priority_from`, `assignee`, `parent`,
+   *  `labels`, `route`, `repo`, `components`, `advances`, `blocked_by` and `external_links`; for
+   *  `issue.created`, every field the new issue holds a value in. `resolved_priority` and
+   *  `priority_from` move with the priority the issue takes and the issue it takes it from, which
+   *  a write of its own priority or of its parent can move, together or either alone. A write that
+   *  moves them on the issues under the written one, in any project, also appends one
+   *  `issue.updated` on each of those issues whose `changed` names only those of the two that
+   *  moved; such an event is quiet, and wakes no session. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),
@@ -239,7 +257,7 @@ export const WrittenIssueEventPayloadSchema = z
 export type IssueEventPayload = z.output<typeof WrittenIssueEventPayloadSchema>;
 
 /**
- * What a reader of the bus makes of an `issue.*` payload: the ten fields Dispatch clients read
+ * What a reader of the bus makes of an `issue.*` payload: the twelve fields Dispatch clients read
  * today, each optional because an event retained from before a field existed carries none, and
  * everything else dropped. A frame is untrusted, so a malformed display field must not discard a
  * valid event header, and `forced` is read loosely for the same reason.
@@ -249,6 +267,8 @@ export const IssueEventPayloadSchema = z.object({
   labels: issueFields.labels.optional(),
   status: issueFields.status.optional(),
   priority: issueFields.priority.optional(),
+  resolved_priority: issueFields.resolved_priority,
+  priority_from: issueFields.priority_from,
   rank: issueFields.rank.optional(),
   route: issueFields.route.optional(),
   changed: issueEventChangesFields.changed,
@@ -288,6 +308,37 @@ export const IssueReleasedEventPayloadSchema = z
   .readonly();
 
 export type IssueReleasedEventPayload = z.output<typeof IssueReleasedEventPayloadSchema>;
+
+/** One pair of an issue's role holders as Dispatch stores it (`IssueRoleHolderRecord` of the
+ *  route table, which `dispatch-api-owned.ts` holds this schema to): a Legion role, the session
+ *  that holds it, and the time Dispatch first stored the pair. */
+export const IssueRoleHolderRecordSchema = z
+  .strictObject({ role: z.enum(LEGION_ROLES), session: z.string(), recorded_at: z.iso.datetime() })
+  .readonly();
+
+export type IssueRoleHolderRecord = z.output<typeof IssueRoleHolderRecordSchema>;
+
+/**
+ * `issue.role_holders_changed`: the Legion daemon's publication of an issue's role holders
+ * (`PUT /api/v1/issues/{key}/role-holders`) changed the set. `holders` is the set it stored and
+ * `previous_holders` the set it replaced, each in workflow order; the event's actor is the
+ * daemon's session and its `created_at` the time of the write, so the issue's log says which
+ * session held each role at a past time. A publication that stores the set already stored appends
+ * none, and the log holds no change made before the release that writes the event. Quiet: it
+ * wakes nobody. Strict: the Go writer (`issueRoleHoldersChange` in
+ * `packages/envoy/internal/dispatch/api/issue_role_holders.go`) emits exactly these three fields.
+ */
+export const IssueRoleHoldersChangedEventPayloadSchema = z
+  .strictObject({
+    key: z.string(),
+    holders: z.array(IssueRoleHolderRecordSchema),
+    previous_holders: z.array(IssueRoleHolderRecordSchema),
+  })
+  .readonly();
+
+export type IssueRoleHoldersChangedEventPayload = z.output<
+  typeof IssueRoleHoldersChangedEventPayloadSchema
+>;
 
 /**
  * `issue.deployed`: the delivery timeline's word that the issue's pull request reached production,

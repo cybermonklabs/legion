@@ -3,6 +3,7 @@ import type { ColumnFiltersState, GroupingState, SortingState } from "@tanstack/
 import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { capSearchQuery } from "../../lib/query-param";
 import { compareTimestamps } from "../../lib/timestamps";
+import { issuePriority } from "../issue/issue-priority";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 import type { LayoutColumns } from "./issues-table-layout";
 
@@ -157,7 +158,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 140,
     min: 140,
     pinned: true,
-    filter: one((item) => String(item.issue.priority ?? ""), {
+    filter: one((item) => String(issuePriority(item.issue).level ?? ""), {
       order: ["0", "1", "2", "3", ""],
       show: priorityName,
     }),
@@ -189,8 +190,8 @@ export const COLUMNS: readonly ColumnSpec[] = [
   },
   {
     id: "status",
-    size: 128,
-    min: 132,
+    size: 148,
+    min: 148,
     filter: {
       kind: "picks",
       values: (item) => [item.issue.status],
@@ -421,7 +422,7 @@ export function mergeMembers(issues: readonly IssueSummary[], source: string): s
       while (parent !== null && parent !== source && !seen.has(parent)) {
         seen.add(parent);
         const intermediate = byKey.get(parent);
-        if (!intermediate || intermediate.status !== "done") return false;
+        if (intermediate?.status !== "done") return false;
         parent = intermediate.parent;
       }
       return parent === source;

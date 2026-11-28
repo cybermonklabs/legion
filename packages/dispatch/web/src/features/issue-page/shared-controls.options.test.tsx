@@ -69,6 +69,7 @@ import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import {
@@ -623,12 +624,15 @@ test("the header variant draws the person and the priority bars over the same se
       <PriorityEditor
         issueKey="CORE-1"
         variant="header"
-        write={{ ...idlePriorityWrite, shown: level }}
+        write={{ ...idlePriorityWrite, shown: issuePriority({ priority: level }) }}
       />,
       "inside"
     );
     const badge = draw(
-      <PriorityEditor issueKey="CORE-1" write={{ ...idlePriorityWrite, shown: level }} />,
+      <PriorityEditor
+        issueKey="CORE-1"
+        write={{ ...idlePriorityWrite, shown: issuePriority({ priority: level }) }}
+      />,
       "inside"
     );
     try {
@@ -1155,8 +1159,10 @@ function textNode(words: string): string {
 /** The claim's markup in each state as `ClaimChip` drew it before a claim in a row of Details
  *  became a sentence (`claimShape`): `main`'s pill outside `NoTooltips`, with `inRow` or without,
  *  and the header's pill inside it. Inside, each of the page's words is built from its list
- *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, and the holder's name
- *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name. */
+ *  (`PROPERTY_LABELS`, `CONTROL_LABELS`); outside, each is `main`'s string, the holder's name
+ *  sits in `TruncatedText` (dispatch://INFRA-5200), whose `title` is the whole name, and the pill
+ *  holds two groups, Holder and Since, in the shape that wraps (the Layout rule of
+ *  `web/src/AGENTS.md`). */
 const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, readonly string[]>>>> =
   {
     inside: {
@@ -1235,17 +1241,19 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
     },
     outside: {
       free: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1254,51 +1262,59 @@ const RECORDED_CLAIMS: Readonly<Record<Surface, Readonly<Record<ClaimState, read
         '", takeable now"',
       ],
       held: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       lapsed: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"not running"',
       ],
       unchecked: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
       ],
       waiting: [
-        '<span class="inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1">',
+        '<span class="inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap">',
         '<span class="shrink-0">',
         '"Claimed by"',
         '<span class="truncate ">',
         '<span class="min-w-0 [overflow-wrap:anywhere] min-w-0 truncate">',
-        '<span class="shrink-0">',
+        '<span class="inline-flex min-w-0 max-w-full flex-wrap items-center gap-1">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<time class="shrink-0">',
-        '<span class="shrink-0">',
+        '<time class="min-w-0 [overflow-wrap:anywhere]">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"·"',
-        '<span class="shrink-0">',
+        '<span class="min-w-0 [overflow-wrap:anywhere]">',
         '"unresponsive"',
         '<span class="">',
         '" since "',
@@ -1937,11 +1953,14 @@ test("outside NoTooltips an explicit component set makes no architecture read", 
   expect(await reads(true, "inside")).toBe(1);
 });
 
-// At its defaults each shared control draws `main`'s classes. Each string below is `main`'s class,
-// its theme's constants written out from `main`'s `theme/classes.ts`, for every class a shared
-// control builds from a template of its own, and `null` where `main` draws the element with no
-// class.
-test("the default shapes keep main's class strings", async () => {
+// At its defaults each shared control draws its recorded classes: `main`'s, or, where INFRA-5200's
+// layout fixes changed a control (each such entry says so), the class that fix draws. Each string
+// below is that class, its theme's constants written out from `theme/classes.ts`, for every class
+// a shared control builds from a template of its own, and `null` where the element has no class.
+// The reason box of Request changes and the answer box of an ask grow with their text
+// (`growingField`) on both sides of `NoTooltips`, so that a reason Dispatch wrote after it refused
+// an approval for the form of The Spec shows whole.
+test("the default shapes keep their recorded class strings", async () => {
   const want: Record<string, string | null> = {
     "approvalPillClassName approved":
       "inline-flex min-w-0 items-center rounded-full border px-2 py-1 text-center text-xs font-medium [overflow-wrap:anywhere] border-emerald-700 dark:border-emerald-400 text-emerald-700 dark:text-emerald-400",
@@ -1995,7 +2014,7 @@ test("the default shapes keep main's class strings", async () => {
     // the label around the box, then its own classes and the dialog's text size.
     "ApprovalChip request label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "ApprovalChip request reason box":
-      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 text-sm",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 text-sm field-sizing-content max-h-[50vh]",
     "ApprovalChip request refused": "text-sm text-rose-700 dark:text-rose-400",
     "ApprovalChip request Cancel":
       "rounded-lg border px-3 py-1.5 text-sm font-medium border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-300 not-refused:hover:border-sky-500 dark:not-refused:hover:border-sky-400",
@@ -2017,19 +2036,23 @@ test("the default shapes keep main's class strings", async () => {
     "PriorityControl badge, none":
       "inline-flex items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300",
 
+    // features/issue/ClaimChip.tsx outside `NoTooltips` as INFRA-5200 draws it: the pill in the
+    // shape that wraps, its Holder group holding its line, where the name ellipsizes, and its
+    // Since group, whose parts - the dots, the age, "not running", an unresponsive holder's
+    // words - move to the next line whole, so a board card or a table's cell cuts none of them.
     "ClaimChip, held":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 min-w-0 max-w-full gap-1",
+    "ClaimChip holder group": "inline-flex min-w-0 max-w-full items-center gap-1 whitespace-nowrap",
     "ClaimChip holder": "min-w-0 [overflow-wrap:anywhere] min-w-0 truncate",
-    "ClaimChip dot": "shrink-0",
-    "ClaimChip age": "shrink-0",
+    "ClaimChip since group": "inline-flex min-w-0 max-w-full flex-wrap items-center gap-1",
+    "ClaimChip dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip age": "min-w-0 [overflow-wrap:anywhere]",
     "ClaimChip, lapsed":
-      "inline-flex shrink-0 items-center rounded-full px-2 py-1 text-xs font-medium whitespace-nowrap bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
-    "ClaimChip not running": "shrink-0",
-    // `main`'s features/issue/ClaimChip.tsx: the dot before a lapsed claim's "not running", and
-    // an unresponsive holder's dot and words.
-    "ClaimChip lapsed dot": "shrink-0",
-    "ClaimChip unresponsive dot": "shrink-0",
-    "ClaimChip unresponsive": "shrink-0",
+      "inline-flex min-w-0 max-w-full flex-wrap items-center rounded-full px-2 py-1 text-xs font-medium [overflow-wrap:anywhere] bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 min-w-0 max-w-full gap-1",
+    "ClaimChip not running": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip lapsed dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive dot": "min-w-0 [overflow-wrap:anywhere]",
+    "ClaimChip unresponsive": "min-w-0 [overflow-wrap:anywhere]",
 
     // features/issue/RepoControl.tsx as today's issue header's Details draws it (INFRA-5200): the
     // line and the box's wrapper as wide as their row, the line wrapping so a refusal moves whole
@@ -2214,17 +2237,20 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-4 pt-5 pb-4 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-rose-500 dark:border-l-rose-400",
     "AskCard urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-rose-800 dark:text-rose-300",
-    "AskCard question":
-      "text-[15px] leading-relaxed font-medium text-slate-900 dark:text-slate-100",
-    "AskCard asker line":
-      "@container mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
-    // `main`'s features/inbox/AskCard.tsx: the group of the turn and the asker.
-    "AskCard turn and asker":
-      "flex min-w-0 items-center gap-x-1.5 whitespace-nowrap @max-sm:flex-wrap",
-    "AskCard turn": "shrink-0 font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
-    // `main`'s features/inbox/AskCard.tsx: the turn an agent holds.
-    "AskCard turn, an agent's":
-      "min-w-0 truncate font-semibold @max-sm:basis-full text-slate-700 dark:text-slate-300",
+    // The ask body's row (dispatch://INFRA-5702/spec#b-r-ask-body, root R34): the bullet, the
+    // kind with the asker and the time, and the turn on its own line under the words. The
+    // question's words and the first line's end are read by their type and colour where the card
+    // is drawn below: where the end stands follows the body's own width, which the browser row
+    // reads (`expectRow` in `e2e/ask-body-today.e2e.ts`).
+    "AskCard bullet": "block size-[7px] rounded-full bg-page-question",
+    "AskCard kind": "shrink-0 font-semibold text-page-question",
+    "AskCard turn line": "mt-1.5 flex min-w-0 text-xs whitespace-nowrap",
+    "AskCard turn": "shrink-0 font-semibold text-slate-700 dark:text-slate-300",
+    // The turn an agent holds.
+    "AskCard turn, an agent's": "min-w-0 truncate font-semibold text-slate-700 dark:text-slate-300",
+    // The card's line of its reference and its copy handles, under the ask body.
+    "AskCard handles line":
+      "mt-1.5 flex flex-wrap items-center gap-x-1.5 text-xs text-slate-500 dark:text-slate-400",
     "AskCard asker":
       "flex min-w-0 items-center gap-1 text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300",
     // `main`'s features/inbox/AskCard.tsx: the asker's `AgentName`, its class after `main`'s
@@ -2243,7 +2269,7 @@ test("the default shapes keep main's class strings", async () => {
     // the field's own classes and the card's weight.
     "AskCard answer label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard answer box":
-      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 font-normal",
+      "mt-1 block w-full rounded-lg border px-3 py-2 font-normal outline-none min-h-24 border-slate-300 bg-white focus:border-sky-600 dark:border-slate-700 dark:bg-slate-950 dark:focus:border-sky-400 text-slate-900 dark:text-slate-100 font-normal field-sizing-content max-h-[50vh]",
     "AskCard Answer":
       "min-h-11 rounded-lg px-3 py-2 text-sm font-semibold bg-sky-700 text-white not-refused:hover:bg-sky-800 refused:cursor-not-allowed refused:bg-slate-300 refused:text-slate-700 dark:refused:bg-slate-700 dark:refused:text-slate-300",
     "AskCard Ask back":
@@ -2256,11 +2282,10 @@ test("the default shapes keep main's class strings", async () => {
       "relative rounded-xl border-l-4 shadow-sm px-3 pt-4 pb-3 mt-3 border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 border-l-amber-500 dark:border-l-amber-400",
     "AskCard compact urgency notch":
       "absolute -top-2 left-3 rounded px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase bg-white dark:bg-slate-900 text-amber-800 dark:text-amber-300",
-    "AskCard approval requested":
-      "text-[10px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400",
+    // An approval request's mark, beside the kind at the right end of the first line.
+    "AskCard approval requested": "shrink-0 font-semibold",
     "AskCard approval document":
       "mt-1 text-sm text-sky-700 dark:text-sky-400 hover:text-sky-900 dark:hover:text-sky-300",
-    "AskCard own words": "min-h-11 text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard reason label": "block text-sm font-medium text-slate-700 dark:text-slate-300",
     "AskCard submit hint": "text-xs text-slate-500 dark:text-slate-400",
     // `main`'s features/inbox/UnsentText.tsx, as AskCard draws it: the unsent answer's box, its
@@ -2318,13 +2343,16 @@ test("the default shapes keep main's class strings", async () => {
         <AssigneeControl assignee={null} issueKey="CORE-2" />
       </div>
       <div data-case="P0">
-        <PriorityControl issueKey="CORE-1" priority={0} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 0 })} />
       </div>
       <div data-case="P1">
-        <PriorityEditor issueKey="CORE-2" write={{ ...idlePriorityWrite, shown: 1 }} />
+        <PriorityEditor
+          issueKey="CORE-2"
+          write={{ ...idlePriorityWrite, shown: issuePriority({ priority: 1 }) }}
+        />
       </div>
       <div data-case="no priority">
-        <PriorityControl issueKey="CORE-3" priority={null} />
+        <PriorityControl issueKey="CORE-3" priority={issuePriority({ priority: null })} />
       </div>
       <div data-case="held">
         <ClaimChip claim={sessionClaim(LIVE_SESSION)} />
@@ -2522,16 +2550,22 @@ test("the default shapes keep main's class strings", async () => {
       caseOf(view, "no priority").querySelector("span[aria-hidden='true']")
     );
 
+    // The chip's two groups are its children, Holder first and Since last.
     const held = within(caseOf(view, "held")).getByTestId("issue-claim");
     classAt("ClaimChip, held", held);
+    classAt("ClaimChip holder group", held.firstElementChild);
     classAt("ClaimChip holder", held.querySelector("[data-agent-name]"));
-    classAt("ClaimChip dot", held.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("ClaimChip age", held.querySelector(":scope > time"));
+    classAt("ClaimChip since group", held.lastElementChild);
+    classAt(
+      "ClaimChip dot",
+      held.lastElementChild?.querySelector(":scope > span[aria-hidden='true']")
+    );
+    classAt("ClaimChip age", held.lastElementChild?.querySelector(":scope > time"));
     const lapsed = within(caseOf(view, "lapsed")).getByTestId("issue-claim");
     classAt("ClaimChip, lapsed", lapsed);
     classAt(
       "ClaimChip lapsed dot",
-      lapsed.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      lapsed.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt(
       "ClaimChip not running",
@@ -2540,7 +2574,7 @@ test("the default shapes keep main's class strings", async () => {
     const unresponsive = within(caseOf(view, "unresponsive claim")).getByTestId("issue-claim");
     classAt(
       "ClaimChip unresponsive dot",
-      unresponsive.querySelectorAll(":scope > span[aria-hidden='true']")[1]
+      unresponsive.lastElementChild?.querySelectorAll(":scope > span[aria-hidden='true']")[1]
     );
     classAt("ClaimChip unresponsive", within(unresponsive).getByTestId("issue-claim-unresponsive"));
 
@@ -3119,14 +3153,38 @@ test("the default shapes keep main's class strings", async () => {
     const article = card.getByRole("article");
     classAt("AskCard card", article);
     classAt("AskCard urgency notch", article.querySelector(":scope > span[aria-hidden='true']"));
-    classAt("AskCard question", article.querySelector(".dispatch-markdown")?.parentElement);
+    // The question's words and the first line's end, which stand in one row, by their type and
+    // colour alone (the comment over `want` says why).
+    const markdown = article.querySelector(".dispatch-markdown");
+    if (markdown === null) throw new Error("the card drew no question");
+    const words = parentOf(markdown);
+    expect(classOf(words)).toEqual(
+      expect.arrayContaining([
+        "text-[15px]",
+        "leading-relaxed",
+        "font-medium",
+        "text-slate-900",
+        "dark:text-slate-100",
+      ])
+    );
+    classAt("AskCard bullet", article.querySelector("[data-ask-bullet] > i"));
+    const kind = card.getByText("question", { exact: true });
+    classAt("AskCard kind", kind);
+    const end = parentOf(kind);
+    expect(parentOf(end)).toBe(parentOf(words));
+    expect(classOf(end)).toEqual(
+      expect.arrayContaining(["text-xs", "leading-6", "text-slate-500", "dark:text-slate-400"])
+    );
     const turn = card.getByTestId("turn-ask-1");
     classAt("AskCard turn", turn);
-    classAt("AskCard asker line", turn.parentElement?.parentElement);
-    classAt("AskCard turn and asker", turn.parentElement);
+    classAt("AskCard turn line", turn.parentElement);
     const asker = card.getByRole("button", { expanded: false, name: /Implementer/ });
     classAt("AskCard asker", asker);
     classAt("AskCard asker's name", asker.closest("[data-agent-name]"));
+    classAt(
+      "AskCard handles line",
+      card.getByRole("button", { name: /^Copy reference / }).parentElement?.parentElement
+    );
     const handOn = card.getByRole("combobox", { name: "Hand this question to" });
     classAt("AskCard hand-on line", handOn.parentElement?.parentElement);
     classAt(
@@ -3211,8 +3269,8 @@ test("the default shapes keep main's class strings", async () => {
     undraw(unsentReply);
   }
 
-  // A compact approval request: its label, its document, the disclosure of the reader's own
-  // words, and the reason Request changes asks for.
+  // A compact approval request: its label, its document, and the reason Request changes asks
+  // for.
   const approval = openAsk({
     approval: {
       artifact_id: "artifact-1",
@@ -3248,10 +3306,6 @@ test("the default shapes keep main's class strings", async () => {
     );
     classAt("AskCard approval requested", card.getByText("Approval requested"));
     classAt("AskCard approval document", card.getByRole("link", { name: /spec\.md/ }).closest("p"));
-    classAt(
-      "AskCard own words",
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    );
     await user.click(await card.findByRole("radio", { name: /Request changes/ }));
     classAt("AskCard reason label", await card.findByText("Reason (required)"));
     classAt("AskCard submit hint", card.getByText(/^Add a reason to send/));
@@ -4392,12 +4446,12 @@ function expectDisabledAsOnMain(control: HTMLElement): void {
 
 // Approve is refused while its write is out, and inside `NoTooltips` until the read after it is
 // drawn as well: there the write returns its reads, and it stops pending only once they land.
-// Inside, Approve is `aria-disabled` in place of `disabled`, which drops the focus to the body in a
-// browser, so it keeps the focus, and a press sends no second approval, while the write is out and
-// while its read is. Once that read draws the approval approved, Approve leaves the page, and the
-// focus that fell with it goes to the chip that replaces it. Outside `NoTooltips` Approve is
-// `disabled` while the write alone is out, as on `main`: the focus falls to the body, and nothing
-// moves it.
+// On both sides Approve is `aria-disabled` in place of `disabled`, which drops the focus to the
+// body in a browser, so it keeps the focus and a press sends no second approval while the write is
+// out: a reader whose approval Dispatch refuses for the form of The Spec meets the refusal with the
+// focus where they pressed. Outside `NoTooltips` the write stops pending as it lands, before its
+// read. Once that read draws the approval approved, Approve leaves the page: inside, the focus that
+// fell with it goes to the chip that replaces it; outside, it falls to the body, as on `main`.
 test("inside NoTooltips Approve pressed by Enter keeps the focus until the approval is read, then hands it to the chip", async () => {
   const user = userEvent.setup();
   const approved = doc(SPEC_ID, "spec.md", { latest_version: 2, state: "approved", version: 2 });
@@ -4416,15 +4470,10 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       await settleReads();
-      if (surface === "inside") {
-        expectRefusedHoldingFocus(approve);
-        await user.keyboard("{Enter}");
-        await settleReads();
-        expect(createArtifactReview).toHaveBeenCalledTimes(1);
-      } else {
-        expectDisabledAsOnMain(approve);
-        expect(document.activeElement).toBe(document.body);
-      }
+      expectRefusedHoldingFocus(approve);
+      await user.keyboard("{Enter}");
+      await settleReads();
+      expect(createArtifactReview).toHaveBeenCalledTimes(1);
 
       // The approval lands, and the read after it is held.
       const answerReread = await landHeld(stubs.getArtifact, () =>
@@ -4438,9 +4487,10 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
         expect(createArtifactReview).toHaveBeenCalledTimes(1);
         expectRefusedHoldingFocus(approve);
       } else {
-        // The write stopped pending as it landed, before its read.
+        // The write stopped pending as it landed, before its read, and Approve kept the focus.
+        expect(approve.hasAttribute("aria-disabled")).toBe(false);
         expect(approve.hasAttribute("disabled")).toBe(false);
-        expect(document.activeElement).toBe(document.body);
+        expect(document.activeElement).toBe(approve);
       }
 
       answerReread(approved);
@@ -4458,11 +4508,9 @@ test("inside NoTooltips Approve pressed by Enter keeps the focus until the appro
   }
 });
 
-// A refused approval leaves Approve on the page. Inside `NoTooltips` Approve held the focus all
-// along, since it was never `disabled`, keeps it once the write fails, and takes the next press,
-// which sends the approval again. Outside `NoTooltips` its `disabled` dropped the focus to the
-// body while the write was out, nothing moves it back, and Approve takes a press again, as on
-// `main`.
+// A refused approval leaves Approve on the page. On both sides of `NoTooltips` Approve held the
+// focus all along, since it was never `disabled`, keeps it once the write fails, and takes the
+// next press, which sends the approval again.
 test("inside NoTooltips Approve keeps the focus when its write fails and takes the next press", async () => {
   const user = userEvent.setup();
   for (const surface of ["inside", "outside"] as const) {
@@ -4480,19 +4528,16 @@ test("inside NoTooltips Approve keeps the focus when its write fails and takes t
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(1));
       await settleReads();
-      if (surface === "inside") expectRefusedHoldingFocus(approve);
-      else expectDisabledAsOnMain(approve);
+      expectRefusedHoldingFocus(approve);
 
       written.reject(new Error("the connection dropped"));
-      const refusal = surface === "inside" ? "aria-disabled" : "disabled";
-      await waitFor(() => expect(approve.hasAttribute(refusal)).toBe(false));
+      await waitFor(() => expect(approve.hasAttribute("aria-disabled")).toBe(false));
       await settleReads();
       expect(approve.isConnected).toBe(true);
       expect(approve.hasAttribute("aria-disabled")).toBe(false);
       expect(approve.hasAttribute("disabled")).toBe(false);
-      expect(document.activeElement).toBe(surface === "inside" ? approve : document.body);
+      expect(document.activeElement).toBe(approve);
 
-      if (surface === "outside") approve.focus();
       await user.keyboard("{Enter}");
       await waitFor(() => expect(createArtifactReview).toHaveBeenCalledTimes(2));
     } finally {

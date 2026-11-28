@@ -33,6 +33,10 @@ const (
 	gateService   = "example-fleet"
 	gateProject   = "ACME"
 	gateNoneToken = ""
+	// gateSignIn and gateOtherSignIn are two Dispatch sign-ins of gatePerson, by the launcher
+	// credential each one's approval minted (ciphertoken.Caller.SignIn).
+	gateSignIn      = "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
+	gateOtherSignIn = "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d12"
 )
 
 // gateRig is a copiesRig whose /v1 routes are also served behind apiAuth with broker tokens
@@ -97,6 +101,17 @@ func (rig *gateRig) namedToken(sessionID, project, person string) string {
 	token := "access-token-of-" + sessionID + "-for-" + person + "-on-" + project
 	answer := sessionAnswer(sessionID, person, rig.caller.JKT())
 	answer.ProjectScope, answer.Projects = ciphertoken.ProjectScopeNamed, []string{project}
+	rig.broker.Says(token, answer)
+	return token
+}
+
+// consentedToken is the access token of sessionID traded from person's Dispatch sign-in signIn
+// (ciphertoken.ProjectScopeConsented), holding the scope person: each sign-in is a principal of
+// its own, so two tokens of one sign-in are one principal and tokens of two sign-ins are two.
+func (rig *gateRig) consentedToken(sessionID, person, signIn string) string {
+	token := "access-token-of-" + sessionID + "-for-" + person + "-signed-in-as-" + signIn
+	answer := sessionAnswer(sessionID, person, rig.caller.JKT())
+	answer.ProjectScope, answer.Scope, answer.SignIn = ciphertoken.ProjectScopeConsented, "person", signIn
 	rig.broker.Says(token, answer)
 	return token
 }
@@ -220,14 +235,15 @@ func gateClaimDrainHeld(role string) bool { return role == gateRole }
 // only when the credential the claim presents, the claimant's last registration and the replaced
 // session's last registration all name one principal (handoverRefusal), in the form that names the
 // credential's kind and scope (ciphertoken.Caller.Principal): a person's own token, a token an
-// operator's entry gave a person for a project, a service, an identity token, or none. A session's
-// own broker token proves only that the claimant is itself, so without this rule any session could
-// name a stopped session - a person's among them - and read its messages, and a worker agent on a
-// project entry that names a person could read that person's own session's. Each refused row
-// fails where the rule is not kept: the claimant receives the unread direct message, the role
-// message of the role the replaced session held reaches that role's kept lane, the role holds a
-// handover record, and the successor read names the claimant, which lets Dispatch take its reply
-// to the replaced session's deliveries.
+// operator's entry gave a person for a project, one Dispatch sign-in's token, a service, an
+// identity token, or none. A session's own broker token proves only that the claimant is itself,
+// so without this rule any session could name a stopped session - a person's among them - and
+// read its messages, a worker agent on a project entry that names a person could read that
+// person's own session's, and a tool its person signed in with no scope could read the session
+// of another tool that person signed in. Each refused row fails where the rule is not kept: the
+// claimant receives the unread direct message, the role message of the role the replaced session
+// held reaches that role's kept lane, the role holds a handover record, and the successor read
+// names the claimant, which lets Dispatch take its reply to the replaced session's deliveries.
 //
 // The row where neither session's credential proves a principal is the existing handover tests'
 // (TestASessionThatReplacesAnotherReceivesItsUnreadMessages,
@@ -269,6 +285,13 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 			principal:  "named:" + gateProject + ":" + gatePerson,
 		},
 		{
+			name:       "a allowed: both sessions are one Dispatch sign-in's",
+			replaced:   func(rig *gateRig, s string) string { return rig.consentedToken(s, gatePerson, gateSignIn) },
+			claimant:   func(rig *gateRig, s string) string { return rig.consentedToken(s, gatePerson, gateSignIn) },
+			handedOver: true,
+			principal:  "consented:" + gatePerson + ":" + gateSignIn,
+		},
+		{
 			name:     "b refused: a service's session names a person's session",
 			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			claimant: func(rig *gateRig, s string) string { return rig.serviceToken(s, gateService) },
@@ -282,6 +305,16 @@ func TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal(t *testing.T)
 			name:     "b refused: a project entry's session acting for a person names that person's own session",
 			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
 			claimant: func(rig *gateRig, s string) string { return rig.namedToken(s, gateProject, gatePerson) },
+		},
+		{
+			name:     "b refused: one Dispatch sign-in's session names another sign-in's of the same person",
+			replaced: func(rig *gateRig, s string) string { return rig.consentedToken(s, gatePerson, gateSignIn) },
+			claimant: func(rig *gateRig, s string) string { return rig.consentedToken(s, gatePerson, gateOtherSignIn) },
+		},
+		{
+			name:     "b refused: a Dispatch sign-in's session names its person's own session",
+			replaced: func(rig *gateRig, s string) string { return rig.personToken(s, gatePerson) },
+			claimant: func(rig *gateRig, s string) string { return rig.consentedToken(s, gatePerson, gateSignIn) },
 		},
 		{
 			name:     "c refused: the replaced session registered on a credential that proves no principal",
@@ -825,6 +858,40 @@ func TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503(t *testing
 				t.Errorf("the bucket's record names %q; want %q", record.Principal, row.stored)
 			}
 		})
+	}
+}
+
+// A first registration whose known-session record write the bucket refuses leaves no record, so it
+// is not answered 200 (R26 of dispatch://INFRA-3589): a 200 would tell the session it is
+// registered while a send to it, once its entry is gone, finds no record and is answered 404. The
+// bucket takes no write (its stream's largest message is one byte) before the session's first
+// registration, so its leader holds no record of the session after the refused write
+// (session.KnownSessions.RecordRegistrationWithin answers the plain error, neither
+// session.ErrRecordStands nor session.ErrPrincipalUnrecorded), and the route answers the store's
+// own refusal (writeStoreError): 413 for a record past the bucket's message size, with no
+// Retry-After, since a retry meets the same refusal. The control is the row of
+// TestARegistrationThatLeavesAnotherPrincipalRecordedIsAnswered503 where the session registers
+// again as the same service through such a bucket: its refused write leaves its own principal
+// recorded, and it is answered 200.
+func TestAFirstRegistrationWhoseRecordTheBucketRefusesIsAnsweredTheStoresRefusal(t *testing.T) {
+	const sessionID = "ses_gate_first_registration_refused"
+	rig := newGateRig(t)
+	js := rig.harness.client.JS()
+	info, err := js.StreamInfo("KV_" + bus.KnownSessionBucket)
+	if err != nil {
+		t.Fatalf("read the known-session stream: %v", err)
+	}
+	info.Config.MaxMsgSize = 1
+	if _, err := js.UpdateStream(&info.Config); err != nil {
+		t.Fatalf("make the known-session stream take no write: %v", err)
+	}
+	recorder := rig.registerTitled(t, rig.serviceToken(sessionID, gateService), sessionID, "a first registration")
+	if recorder.Code != http.StatusRequestEntityTooLarge || recorder.Header().Get("Retry-After") != "" {
+		t.Errorf("the first registration through a bucket that takes no write answered %d (Retry-After %q) %s; want the store's own refusal, 413 with no Retry-After",
+			recorder.Code, recorder.Header().Get("Retry-After"), recorder.Body.String())
+	}
+	if _, found, err := rig.deps.known.Read(t.Context(), sessionID); err != nil || found {
+		t.Errorf("read %s's record from the bucket's leader: found %t, %v; want no record and no error", sessionID, found, err)
 	}
 }
 

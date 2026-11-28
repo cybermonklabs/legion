@@ -227,15 +227,15 @@ func (c *Client) noteSeverable(nc *nats.Conn) {
 // handed nats.go on that connection reaches the server any more, and cannot wait for nats.go's
 // connection lock, which a write to a stalled socket holds until its write deadline (a minute,
 // nats.go's FlusherTimeout), nor for the client's own lock, which a caller holds while it waits for
-// nats.go's (Connected, Close). It reads the connection without either (severable). It resets every
-// socket of the connection (severableDialer), so a write holding nats.go's lock fails at once and
-// what the kernel holds unsent is discarded; it refuses the connection every later dial, so no
-// reconnect of it sends anything; and then it closes it, which the reset socket lets nats.go do at
-// once. A publish that was waiting for the lock then either fails or lands in a buffer nats.go never
-// writes again: the reset socket's writer fails, and the close drops the rest. The client replaces
-// the closed connection as after any close (onClosed), re-subscribing what it holds. A socket
-// through the SOCKS5 proxy is reset too; what the proxy had already read from it is beyond the
-// client's reach.
+// nats.go's (ResendRefusedCore, Close). It reads the connection without either (severable). It
+// resets every socket of the connection (severableDialer), so a write holding nats.go's lock fails
+// at once and what the kernel holds unsent is discarded; it refuses the connection every later
+// dial, so no reconnect of it sends anything; and then it closes it, which the reset socket lets
+// nats.go do at once. A publish that was waiting for the lock then either fails or lands in a
+// buffer nats.go never writes again: the reset socket's writer fails, and the close drops the
+// rest. The client replaces the closed connection as after any close (onClosed), re-subscribing
+// what it holds. A socket through the SOCKS5 proxy is reset too; what the proxy had already read
+// from it is beyond the client's reach.
 func (c *Client) Sever() {
 	current := c.severable.Load()
 	if current == nil {
@@ -243,6 +243,9 @@ func (c *Client) Sever() {
 	}
 	if current.dialer != nil {
 		current.dialer.sever()
+	}
+	if reset := severResetHook.Load(); reset != nil {
+		(*reset)()
 	}
 	current.conn.Close()
 }
@@ -277,6 +280,16 @@ func (c *Client) MarkUnconfirmed() (written func()) {
 // still to be taken, or one taken behind the PING, is not confirmed. It reads the connection without
 // the client's lock (severable).
 func (c *Client) ConfirmMarked(timeout time.Duration) bool {
+	return c.ConfirmMarkedBy(func(conn *nats.Conn) error { return conn.FlushTimeout(timeout) })
+}
+
+// ConfirmMarkedBy is ConfirmMarked with the caller's flush of the connection in place of
+// FlushTimeout, under the caller's own bound: a caller whose bound runs on a clock of its own (a
+// stop's, which a test moves) flushes with a context on that clock. flush must flush conn through nats.go
+// and return nil only once the server has answered that flush: a nil clears every mark the flush
+// confirms (severableDialer.confirmMarks), so a marked socket then closes normally rather than
+// being reset, and a nil with no round trip would confirm writes that never arrived.
+func (c *Client) ConfirmMarkedBy(flush func(*nats.Conn) error) bool {
 	current := c.severable.Load()
 	if current == nil {
 		return true
@@ -288,7 +301,7 @@ func (c *Client) ConfirmMarked(timeout time.Duration) bool {
 	if current.conn.IsClosed() {
 		return true
 	}
-	if current.conn.FlushTimeout(timeout) != nil {
+	if flush(current.conn) != nil {
 		return false
 	}
 	return current.dialer == nil || current.dialer.confirmMarks(before)

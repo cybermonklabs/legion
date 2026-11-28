@@ -1,5 +1,7 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, jest, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { EnvoyApiError } from "@legion/envoy-client/transport";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
@@ -7,13 +9,23 @@ import { claimFirstTurnBoundMs, DEFAULT_CLAIM_FIRST_TURN_BOUND_MS } from "./clai
 import { createLegionDaemonClient } from "./daemon-client";
 import {
   bootLegionClaim,
+  CLAIM_RECORD_FILE,
+  type ClaimStep,
   claimRoleAgainOnBusy,
   claimStandsWithoutHandover,
+  claimStepRecord,
   type LegionClaimHost,
+  roleClaimWords,
 } from "./legion-claim-core";
 import type { ClaimCapability } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+/** A contract the test's client states on every request. */
 const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -39,12 +51,10 @@ const registration = {
  * it is asked for, in order, beside the daemon's requests. The boot registers its first-turn
  * signal at the registration, before `claims/ready`, and this host keeps it rather than firing
  * it: a case fires it with `firstTurn()`, and a case that leaves it unfired is a session no turn
- * ever started. `endpoint` is the address the client is built over, which only a case reading
- * what the log says about it names. */
+ * ever started. */
 function claimHost(options: {
   readonly register?: () => Response;
   readonly ready?: () => Response;
-  readonly endpoint?: string;
   readonly overrides?: Partial<LegionClaimHost>;
 }) {
   const steps: string[] = [];
@@ -59,7 +69,7 @@ function claimHost(options: {
     return options.ready?.() ?? new Response(null, { status: 204 });
   }) as typeof fetch;
   const host: LegionClaimHost = {
-    daemon: createLegionDaemonClient(options.endpoint ?? "http://daemon.test", {
+    daemon: createLegionDaemonClient("http://daemon.test", {
       pluginContract: CONTRACT,
       fetch: stub,
     }),
@@ -179,6 +189,26 @@ test("a 5xx at claims/register is logged and rejects without stopping; a request
   expect(unreachable.lines).toEqual([]);
 });
 
+// The host stops while its boot's `claims/register` is on the wire, and the daemon refuses it (R24
+// of dispatch://INFRA-3589): the refusal writes nothing on the host's log, a 4xx as a 5xx. The
+// host's stop ends the agent itself.
+for (const status of [403, 503]) {
+  test(`a ${status} at claims/register after the host's signal aborted writes nothing on the host's log`, async () => {
+    const stopping = new AbortController();
+    const { host, lines } = claimHost({
+      register: () => {
+        stopping.abort();
+        return Response.json({ error: "Invalid boot token" }, { status });
+      },
+      overrides: { signal: stopping.signal },
+    });
+
+    await bootLegionClaim(host).catch(() => undefined);
+
+    expect(lines).toEqual([]);
+  });
+}
+
 // An outage (`@legion/contracts/http-status`: a 5xx, a 408 or a 429) is no answer about the
 // registration or the ready. The daemon writes no 408 and no 429, so a proxy between the session
 // and the daemon sends either; the stand-in answers each as the daemon client's caller sees it.
@@ -246,126 +276,9 @@ test("a claim the listener refuses is logged naming the claim token and what sto
     "stop",
   ]);
   expect(lines).toEqual([
-    `claim boot failed at claimRole after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
+    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: Envoy role ${claimToken} is held by live session ses_other`,
   ]);
 });
-
-// Catches: the one sentence that served every failure after the registration, naming neither
-// the step it died at nor the daemon it was talking to. Six runs of 2026-11-11 were stopped
-// through it with `ECONNREFUSED` and nothing in the line said whether the dial that was refused
-// was the daemon's `claims/ready` or Envoy's role claim, so not one of the six could be
-// attributed. The boot's own steps and the role claim that runs after it are the two ends of
-// that sentence: the row above is the second, and this is the first.
-test("a failure in the boot's own steps names that step and the daemon it dialled", async () => {
-  const { host, lines, steps } = claimHost({
-    ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
-  });
-
-  await bootLegionClaim(host);
-
-  expect(lines).toEqual([
-    `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
-  ]);
-  expect(steps.at(-1)).toBe("stop");
-});
-
-// Catches: the daemon's address written to the pane's stderr as it stands. A `daemon_url` may
-// carry userinfo — the daemon's own `baseURL` refuses a query and a fragment and nothing else
-// (`packages/daemon/internal/config/config.go`) — and this line reaches the pane's log and the
-// operator reading it, so a credential in that address would be read by everyone who reads
-// either. What the line names is the scheme, the host and the port alone; the daemon's own
-// masking of that setting (`internal/api/settings.go`'s `endpointOf`) keeps the path and writes
-// `xxxxx@`, and this line keeps neither.
-test("a host whose endpoint carries userinfo logs the masked address and not the credential", async () => {
-  // The userinfo is built rather than written: the shared public leak check reads a URL
-  // carrying a password as a credential, whatever the host, and refuses the push that adds it.
-  const password = ["pw", "example"].join("-");
-  const { host, lines } = claimHost({
-    endpoint: `http://legion:${password}@daemon.test:13370`,
-    ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
-  });
-
-  await bootLegionClaim(host);
-
-  expect(lines).toEqual([
-    `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at http://daemon.test:13370; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
-  ]);
-  expect(lines.join("\n")).not.toContain(password);
-});
-
-// And the two addresses the masking cannot read a host out of, each reported as `xxxxx`: one
-// `new URL` refuses (no scheme), and one it reads with an empty host (a scheme, then text with
-// no `//`), where `protocol//host` would print `legion://`. Catches: either branch dropped — the
-// first prints the address as it stands, credential and all, and the second prints a scheme
-// with no host, which names no daemon. The client dials the address it was made with, so the
-// host here reports an address of its own beside it, as one configured that way would.
-test("a host whose endpoint is no URL, or names no host, logs xxxxx and not the credential", async () => {
-  const password = ["pw", "example"].join("-");
-  for (const endpoint of [
-    `//legion:${password}@daemon.test:13370`,
-    `legion:${password}@daemon.test:13370`,
-  ]) {
-    const { host, lines } = claimHost({
-      ready: () => Response.json({ error: "Invalid session secret" }, { status: 403 }),
-    });
-
-    await bootLegionClaim({ ...host, daemon: { ...host.daemon, endpoint } });
-
-    expect([endpoint, lines]).toEqual([
-      endpoint,
-      [
-        `claim boot failed at claims/ready after claims/register registered ${claimToken} with the daemon at xxxxx; exiting so the daemon launches it again: POST /legion/v1/claims/ready failed with 403: Invalid session secret`,
-      ],
-    ]);
-  }
-});
-
-// One row per step of the boot that no other row fails in, since the sentence above names a
-// variable the boot moves from step to step: `claims/ready` is the row above and `claimRole` the
-// one above that, and a step whose own assignment is dropped is reported under the step before
-// it — the failure then names a call that answered. `afterRegister` is the initial value, so a
-// boot that names no step at all reports its first failure as that step and nothing says so.
-for (const { step, overrides } of [
-  {
-    step: "afterRegister",
-    overrides: {
-      afterRegister: async () => {
-        throw new Error("the host's own startup refused");
-      },
-    },
-  },
-  {
-    step: "setCapability",
-    overrides: {
-      setCapability: () => {
-        throw new Error("the host's own startup refused");
-      },
-    },
-  },
-  {
-    step: "onRoleRegained",
-    overrides: {
-      onRoleRegained: () => {
-        throw new Error("the host's own startup refused");
-      },
-    },
-  },
-] satisfies { step: string; overrides: Partial<LegionClaimHost> }[]) {
-  test(`a host whose ${step} throws is stopped, with ${step} named as the step`, async () => {
-    const { host, lines, steps } = claimHost({ overrides });
-
-    const booted = await bootLegionClaim(host);
-
-    expect(lines).toEqual([
-      `claim boot failed at ${step} after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: the host's own startup refused`,
-    ]);
-    expect(steps.at(-1)).toBe("stop");
-    expect(steps.some((taken) => taken.startsWith("claimRole"))).toBe(false);
-    // A boot that stopped in one of its own steps still settles its answer, as every other
-    // stopped boot does, so a caller waiting on the claim is not left waiting.
-    await booted.claimed;
-  });
-}
 
 /** The listener's 503 to a role claim whose takeover record did not store, as envoy-client's
  * `setRole` rejects with it after its own two tries. */
@@ -433,7 +346,7 @@ test("control: a claim the listener refuses with any other status still stops th
 
   expect(steps.slice(-2)).toEqual([`claimRole ${claimToken}`, "stop"]);
   expect(lines).toEqual([
-    `claim boot failed at claimRole after claims/register registered ${claimToken} with the daemon at http://daemon.test; exiting so the daemon launches it again: envoy: the role claim failed`,
+    `claim boot failed after claims/register registered ${claimToken}; exiting so the daemon launches it again: envoy: the role claim failed`,
   ]);
 });
 
@@ -472,7 +385,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
     async () => {
       if (++tries < 3) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (line) => lines.push(line), firstDelayMs: 1 }
   );
   expect(tries).toBe(3);
@@ -484,7 +397,7 @@ test("the daemon-launched controller's claim is made again on a 503 with the sam
       async () => {
         throw refused;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1 }
     )
   ).rejects.toBe(refused);
@@ -501,7 +414,7 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
         tries++;
         throw busy;
       },
-      "controller",
+      roleClaimWords("controller"),
       { log: (line) => lines.push(line), firstDelayMs: 1, maxAttempts: 3 }
     )
   ).rejects.toBe(busy);
@@ -513,10 +426,48 @@ test("a claim a person waits on gives up after its counted attempts, throwing th
     async () => {
       if (++unbounded < 6) throw claimAnswered503();
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: () => {}, firstDelayMs: 1 }
   );
   expect(unbounded).toBe(6);
+});
+
+// The same helper makes a subscription again on a 503: the controller's watched workflow topics
+// (`packages/pi-legion/src/controller-session.ts`), which an edge listener answers 503
+// `repositories_unknown` while it cannot read the project's repositories. Each wait's line names
+// what the listener answered and what is made again in the caller's own words, not a role claim's,
+// and the waits double as a role claim's do.
+test("a subscription made again on a 503 logs its own words and doubles its wait", async () => {
+  const topic =
+    "notifications.github.acme.widgets.default_branch.workflow.nightly_yaml.completed.schedule";
+  const lines: string[] = [];
+  const handed: unknown[] = [];
+  const busy = claimAnswered503();
+  let tries = 0;
+  await claimRoleAgainOnBusy(
+    async () => {
+      if (++tries < 4) throw busy;
+    },
+    { what: `subscription of ${topic}`, again: "subscribing it again" },
+    {
+      log: (line, error) => {
+        lines.push(line);
+        handed.push(error);
+      },
+      firstDelayMs: 1,
+    }
+  );
+
+  expect(tries).toBe(4);
+  expect(lines.map((line) => line.replace(/: .*$/, ""))).toEqual([
+    `subscription of ${topic} was answered 503 at attempt 1; subscribing it again in 1 ms`,
+    `subscription of ${topic} was answered 503 at attempt 2; subscribing it again in 2 ms`,
+    `subscription of ${topic} was answered 503 at attempt 3; subscribing it again in 4 ms`,
+  ]);
+  for (const line of lines) {
+    expect(line).toContain("the message bus refused the message because its stream is full");
+  }
+  expect(handed).toEqual([busy, busy, busy]);
 });
 
 /** The listener's 503 to a role claim with `body`, as envoy-client's `setRole` rejects with it. */
@@ -553,7 +504,7 @@ test("a claim 503 whose claim stands is told from one that wrote nothing, and ea
     async () => {
       if (++tries < 2) throw handover;
     },
-    "controller",
+    roleClaimWords("controller"),
     { log: (_line, error) => handed.push(error), firstDelayMs: 1 }
   );
   expect(handed).toEqual([handover]);
@@ -577,6 +528,100 @@ test("a 4xx at claims/ready is not retried: one ready, then the agent stops, wit
   await booted.claimed;
 });
 
+// The host stops while its boot's `claims/ready` is on the wire, and the daemon answers 503 (R24
+// of dispatch://INFRA-3589): the boot sends no ready again, says nothing, and stops nothing; the
+// host's stop ends the agent itself.
+test("a 5xx at claims/ready after the host's signal aborted is not retried, says nothing and stops nothing", async () => {
+  const stopping = new AbortController();
+  const { host, steps, lines } = claimHost({
+    ready: () => {
+      stopping.abort();
+      return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+    },
+    overrides: { signal: stopping.signal },
+  });
+  const booted = await bootLegionClaim(host);
+  await booted.claimed;
+
+  expect(steps.filter((step) => step.startsWith("claims/ready"))).toHaveLength(1);
+  expect(steps).not.toContain("stop");
+  expect(lines).toEqual([]);
+});
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers 503 (R24 of dispatch://INFRA-3589). The regain sends no ready again
+// and writes nothing on the host's log: the host's stop ends the agent itself. The control is the
+// same regain with no abort: its ready is sent again, and each failure is written. A regain never
+// stops the agent, so neither run asks for `stop`.
+test("a regain whose claims/ready fails after the host's signal aborted writes nothing on the host's log; the control with no abort writes each failure", async () => {
+  const failingRegain = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        if (readies === 1) return new Response(null, { status: 204 });
+        if (stops) stopping.abort();
+        return Response.json({ error: "the daemon is restarting" }, { status: 503 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    const booted = await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    // The stop ends the claim step. With no stop, the step waits for a first turn that no run
+    // starts.
+    if (stops) await booted.claimed;
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), lines };
+  };
+
+  const stopped = await failingRegain(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  // The boot's ready, then the regain's three attempts, a second apart.
+  const control = await failingRegain(false);
+  expect(control.readies).toHaveLength(4);
+  expect(control.lines).toHaveLength(4);
+  expect(control.lines.at(-1)).toStartWith(
+    `claims/ready after role ${claimToken} was reclaimed failed;`
+  );
+});
+
+// The heartbeat regains the role, and the host stops while the regain's `claims/ready` is on the
+// wire; the daemon answers it 204 (R24 of dispatch://INFRA-3589). That regain writes no line, and
+// the next regain, which starts after the stop, sends no ready. The control is the same two
+// regains with no stop: each sends its ready and writes its line.
+test("a regain whose claims/ready answers after the host's signal aborted writes nothing, and a regain after the abort sends no ready; the control with no abort writes both lines", async () => {
+  const twoRegains = async (stops: boolean) => {
+    const stopping = new AbortController();
+    let readies = 0;
+    const { host, steps, lines, regain } = claimHost({
+      ready: () => {
+        readies += 1;
+        // The boot's ready is the first; the first regain's ready is the second.
+        if (stops && readies === 2) stopping.abort();
+        return new Response(null, { status: 204 });
+      },
+      overrides: { signal: stopping.signal },
+    });
+    await bootLegionClaim(host);
+    await regain()?.(claimToken, "reclaimed");
+    await regain()?.(claimToken, "reregistered");
+    return { readies: steps.filter((step) => step.startsWith("claims/ready")), steps, lines };
+  };
+
+  const stopped = await twoRegains(true);
+  expect(stopped.readies).toHaveLength(2);
+  expect(stopped.lines).toEqual([]);
+
+  const control = await twoRegains(false);
+  expect(control.readies).toHaveLength(3);
+  expect(control.lines).toEqual([
+    `re-ran claims/ready after role ${claimToken} was reclaimed`,
+    `re-ran claims/ready after role ${claimToken} was reregistered`,
+  ]);
+});
+
 test("the name is taken at the host's first-turn callback and not before it", async () => {
   const { host, steps, firstTurn, regain } = claimHost({});
 
@@ -598,22 +643,75 @@ test("the name is taken at the host's first-turn callback and not before it", as
 });
 
 test("a boot that gets no first turn claims at the bound", async () => {
-  const waiting = claimHost({ overrides: { firstTurnBoundMs: 5 } });
-  const booted = await bootLegionClaim(waiting.host);
-  expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+  // The bound is the boot's own timer, so the row holds its clock: a millisecond short of the
+  // bound the name is not taken, and at the bound it is, and the boot's record holds the delay it
+  // armed and that the bound's timer began the claim.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const record: ClaimStep[] = [];
+    const waiting = claimHost({
+      overrides: { firstTurnBoundMs: 5, recordClaimStep: (step) => record.push(step) },
+    });
+    const booted = await bootLegionClaim(waiting.host);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
 
-  // Nothing fires the signal: this session was given no task and started no turn, and the bound
-  // is what takes its name anyway, so the lane the listener kept for it is handed over.
-  await booted.claimed;
-  expect(waiting.firstTurn()).toBeDefined();
-  expect(waiting.steps).toEqual([
-    `claims/register ${JSON.stringify(registration)}`,
-    "onFirstTurn",
-    "setCapability",
-    `claims/ready ${readyBody()}`,
-    "onRoleRegained",
-    `claimRole ${claimToken}`,
-  ]);
+    // Nothing fires the signal: this session was given no task and started no turn, and the bound
+    // is what takes its name anyway, so the lane the listener kept for it is handed over. The
+    // bound's timer asks for the name in the step it fires in.
+    jest.advanceTimersByTime(4);
+    expect(waiting.steps.some((step) => step.startsWith("claimRole"))).toBe(false);
+    jest.advanceTimersByTime(1);
+    expect(waiting.firstTurn()).toBeDefined();
+    expect(waiting.steps).toEqual([
+      `claims/register ${JSON.stringify(registration)}`,
+      "onFirstTurn",
+      "setCapability",
+      `claims/ready ${readyBody()}`,
+      "onRoleRegained",
+      `claimRole ${claimToken}`,
+    ]);
+    // The held clock has not moved but for the row's 5 ms, so the record's moments are exact.
+    expect(record).toEqual([
+      { armed: start, boundMs: 5 },
+      { claimedBy: "bound", at: start + 5 },
+    ]);
+    await booted.claimed;
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+// The record a test in another process is to read (`claimStepRecord`): one JSON line a step, in
+// the file `LEGION_CLAIM_RECORD_FILE` names, and no record at all where it names none. No host
+// builds it from its environment at this head: this row stands in for the pi-legion reader that
+// comes later, and builds the record from a literal environment.
+test("the claim record file holds the bound armed and the first turn that took the name", async () => {
+  expect(claimStepRecord({})).toBeUndefined();
+  expect(claimStepRecord({ [CLAIM_RECORD_FILE]: "" })).toBeUndefined();
+
+  const dir = await mkdtemp(path.join(tmpdir(), "legion-claim-record-"));
+  const file = path.join(dir, "claim-steps.jsonl");
+  // The steps are stamped on `Date.now()`, held here so each is read exactly.
+  jest.useFakeTimers();
+  try {
+    const start = Date.now();
+    const { host, firstTurn } = claimHost({
+      overrides: { recordClaimStep: claimStepRecord({ [CLAIM_RECORD_FILE]: file }) },
+    });
+    const booted = await bootLegionClaim(host);
+    firstTurn()?.();
+    await booted.claimed;
+
+    const lines = (await readFile(file, "utf8")).split("\n").filter(Boolean);
+    expect(lines.map((line): unknown => JSON.parse(line))).toEqual([
+      { armed: start, boundMs: 600_000 },
+      { claimedBy: "first-turn", at: start },
+    ]);
+  } finally {
+    jest.useRealTimers();
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test("a first turn that started before the boot registered its signal is not lost, and the name is taken once ready has answered", async () => {

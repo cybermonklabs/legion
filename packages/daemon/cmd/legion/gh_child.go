@@ -7,14 +7,15 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/legion/daemon/internal/ghroute"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // ghChildEnviron is the environment `legion gh` runs gh with, and the git this command runs to
-// route a call (gitLines), built in one place so the two never read a different repository: this
-// package's test hook (ghChildTestEnviron), then the names of environ that gh is allowed
-// (ghChildKeeps), then ghChildForced and set, then the git configuration gh's git gets
+// route a call (ghroute.ReadGitRemotes), built in one place so the two never read a different
+// repository: this package's test hook (ghChildTestEnviron), then the names of environ that gh is
+// allowed (ghChildKeeps), then ghChildForced and set, then the git configuration gh's git gets
 // (ghChildGitConfig), each later one winning, as exec takes the last value of a name. The hook
 // comes first so that a test of the allowlist reads it: a caller's name the allowlist wrongly kept
 // would win over the hook's own. It is an allowlist and never the caller's whole environment less
@@ -28,8 +29,9 @@ func ghChildEnviron(environ []string, set map[string]string) []string {
 	maps.Copy(forced, set)
 	out := make([]string, 0, len(forced)+len(ghChildTestEnviron)+32)
 	out = append(out, ghChildTestEnviron...)
+	keeps := ghChildKeeps(environ)
 	for _, pair := range environ {
-		if name, _, _ := strings.Cut(pair, "="); forced[name] == "" && ghChildKeeps(name) {
+		if name, value, _ := strings.Cut(pair, "="); forced[name] == "" && keeps(name, value) {
 			out = append(out, pair)
 		}
 	}
@@ -69,18 +71,20 @@ var ghChildForced = map[string]string{
 // legion binary holds no code that sets it, so no caller of it can.
 var ghChildTestEnviron []string
 
-// ghChildKeeps is whether gh keeps the name of its caller's environment: what a program carrying a
-// GitHub token keeps (leakguard.TokenChildKeeps: PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names
-// and the proxy variables), and these, each with what reads it (cli/cli v2.104.0 and v2.98.0,
-// go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv of their non-test
-// code):
+// ghChildKeeps is which entries of environ gh keeps, each read as its name and its value: what a
+// program carrying the GitHub token gh will send keeps (leakguard.TokenChildKeeps for
+// leakguard.TokenOf(environ): PATH, HOME, TMPDIR, TERM, TZ, LANG, the LC_ names and the proxy
+// variables, less the secrets broker's airlock proxy and ALL_PROXY where gh sends its directory's
+// token inside an `agent-secrets` command), and these names, each with what reads it (cli/cli
+// v2.104.0 and v2.98.0, go-gh v2.17.0 and v2.13.0; the measure is every os.Getenv and os.LookupEnv
+// of their non-test code):
 //
 //   - XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_CACHE_HOME, where gh keeps its state
 //     and cache (go-gh pkg/config/config.go:276-327);
 //   - GH_REPO, which gh takes a command's own repository from (cli/cli v2.104.0
 //     pkg/cmdutil/repo_override.go:77, pkg/cmd/pr/create/create.go:289, pkg/cmd/api/api.go:604)
-//     and ghTargetOf routes by, so gh must read the one this command was routed for;
-//   - GH_TOKEN and GITHUB_TOKEN, which ghTargetOf refuses for every call but the guard's own
+//     and ghroute.TargetOf routes by, so gh must read the one this command was routed for;
+//   - GH_TOKEN and GITHUB_TOKEN, which ghroute.TargetOf refuses for every call but the guard's own
 //     visibility read, which runs with the caller's token (ghVisibilityRead);
 //   - NO_COLOR, CLICOLOR, CLICOLOR_FORCE, COLORTERM, GLAMOUR_STYLE, GH_MDWIDTH and
 //     GH_SPINNER_DISABLED, how gh prints (go-gh pkg/term/env.go:162-173, cli
@@ -105,8 +109,9 @@ var ghChildTestEnviron []string
 // GH_TELEMETRY, DO_NOT_TRACK, GH_DEBUG, GH_FORCE_TTY, and CLAUDE_CONFIG_DIR and DOCKER_CONFIG, which
 // only `gh skills` and `gh attestation verify oci://` read and no Legion caller runs through
 // `legion gh`, among them.
-func ghChildKeeps(name string) bool {
-	return leakguard.TokenChildKeeps(name) || ghChildNames[name]
+func ghChildKeeps(environ []string) func(name, value string) bool {
+	tokenChild := leakguard.TokenChildKeeps(environ, leakguard.TokenOf(environ))
+	return func(name, value string) bool { return tokenChild(name, value) || ghChildNames[name] }
 }
 
 // ghNoEditor is the editor gh is handed (GH_EDITOR, which outranks gh's config `editor`, VISUAL,
@@ -154,7 +159,7 @@ var ghChildNames = map[string]bool{
 //     and fetch.recurseSubmodules true in its own configuration, submodule.<name>
 //     .fetchRecurseSubmodules true there, or in the .gitmodules of HEAD or of the fetched commit.
 //     An explicit recursion, which no configuration turns off, is refused by name: `gh pr
-//     checkout --recurse-submodules` (ghRefusedOptions) and a clone's git flags (ghCloneGitFlags).
+//     checkout --recurse-submodules` and a clone's git flags (ghroute.TargetOf).
 var ghForcedGitConfig = [][2]string{
 	{"http.sslVerify", "true"},
 	{"submodule.recurse", "false"},
@@ -223,7 +228,7 @@ func withGitHubUseHTTPPath(env []string) ([]string, error) {
 		if value, ok := strings.CutPrefix(pair, "GIT_CONFIG_COUNT="); ok {
 			n, err := strconv.Atoi(value)
 			if err != nil || n < 0 {
-				return nil, fmt.Errorf("GIT_CONFIG_COUNT holds %s, which is no count, so git's configuration cannot be extended; unset it", ghShown(value, "a value that is not printed"))
+				return nil, fmt.Errorf("GIT_CONFIG_COUNT holds %s, which is no count, so git's configuration cannot be extended; unset it", ghroute.Shown(value, "a value that is not printed"))
 			}
 			count = n
 		}

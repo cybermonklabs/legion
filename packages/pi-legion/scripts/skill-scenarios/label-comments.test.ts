@@ -1,20 +1,9 @@
-import { expect, setDefaultTimeout, test } from "bun:test";
-import {
-  chmodSync,
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  writeFileSync,
-} from "node:fs";
+import { expect, test } from "bun:test";
+import { chmodSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { isYes, main, QUESTIONS } from "./label-comments";
-
-// The gateway rows run the key command as a real process (label-comments.ts's runKeyCommand),
-// which a loaded pod slows past bun's 5 s default, so each row gets a minute, as rig.test.ts's do.
-setDefaultTimeout(60_000);
 
 const scratch = temporaryDirectory("label-comments", { real: true });
 
@@ -34,7 +23,9 @@ interface CommentFixture {
   readonly id: string;
   readonly author: object;
   readonly created_at: string;
-  readonly body: string;
+  /** Absent on a comment whose body Dispatch left out, as an answer at a cut leaves out the body
+   * of a comment edited or deleted since. */
+  readonly body?: string;
   readonly quote?: string;
   /** Set on a comment its author deleted, which Dispatch serves with an empty body. */
   readonly deleted_at?: string;
@@ -135,8 +126,12 @@ interface Sent {
 }
 
 /** One fake for both ends: Dispatch at dispatch.test and the model at its two hosts. `model`
- * answers a model request, given the comment text in its state and the try's number. */
-function world(model: (comment: string, attempt: number) => Response = answerWith) {
+ * answers a model request, given the comment text in its state and the try's number. `byIssue`
+ * is the comments Dispatch serves for each issue. */
+function world(
+  model: (comment: string, attempt: number) => Response = answerWith,
+  byIssue: Record<string, CommentFixture[]> = COMMENTS
+) {
   const sent: Sent[] = [];
   const attempts = new Map<string, number>();
   const fetch = async (input: string, init: RequestInit): Promise<Response> => {
@@ -145,7 +140,7 @@ function world(model: (comment: string, attempt: number) => Response = answerWit
     if (url.host === "dispatch.test") {
       if (url.pathname === "/api/v1/issues") return json(ISSUES);
       const match = /^\/api\/v1\/issues\/([^/]+)\/comments$/.exec(url.pathname);
-      const comments = match?.[1] === undefined ? undefined : COMMENTS[match[1]];
+      const comments = match?.[1] === undefined ? undefined : byIssue[match[1]];
       if (comments === undefined) return json({ error: "not found", code: "NOT_FOUND" }, 404);
       return json(
         comments.map((comment) => ({
@@ -388,6 +383,42 @@ test("a deleted comment reaches no model call and no row, and stdout counts it a
   );
 });
 
+// A token that carries a cut reads Dispatch as of that cut, which leaves out the body of a comment
+// edited or deleted since. There are no words of it to label, and a label of a marker would count
+// as a person's comment that raised none of the eleven complaints, so it reaches no model call and
+// no row, and stdout counts it apart.
+test("a comment whose body Dispatch left out reaches no model call and no row, and stdout counts it", async () => {
+  const out = path.join(dir("left-out"), "labels");
+  const comments = {
+    ...COMMENTS,
+    "ACME-3": [
+      ...(COMMENTS["ACME-3"] ?? []),
+      { id: "c9", author: person("bob@example.com"), created_at: "2026-10-21T10:00:00Z" },
+    ],
+  };
+  const { fetch, sent } = world(answerWith, comments);
+  const run = io(fetch);
+  expect(
+    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
+  ).toBe(0);
+  expect(run.stderr).toEqual([]);
+  const states = sent
+    .filter(({ url }) => url.host !== "dispatch.test")
+    .map(({ init }) => JSON.parse(String(init.body)).messages[0].content as string);
+  expect(states).toHaveLength(4);
+  expect(states.some((state) => state.includes("<comment>null</comment>"))).toBe(false);
+  const ids = readFileSync(path.join(out, "labels.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")
+    .map((line) => JSON.parse(line).comment_id);
+  expect(ids).toEqual(["c1", "c7", "c4", "c6"]);
+  expect(run.stdout).toEqual([
+    ...EXPECTED_SUMMARY.slice(0, 2),
+    "comments whose words Dispatch left out: 1 (Dispatch read as of a past time leaves out the body of a comment edited or deleted since, so there is nothing of it to label)",
+    ...EXPECTED_SUMMARY.slice(2),
+  ]);
+});
+
 test("the gateway route posts to <gateway>/v1/messages with the key the key command prints", async () => {
   const command = path.join(dir("gateway"), "key-command");
   writeFileSync(command, "#!/bin/sh\necho gateway-key\n");
@@ -456,7 +487,7 @@ test("a 408, a 429, a 5xx or a reply that skips a question is asked again", asyn
   ]);
 });
 
-test("a comment with no label fails the run and writes no file, and an earlier labels.jsonl is refused and keeps its bytes", async () => {
+test("a comment with no label fails the run, and an earlier labels.jsonl keeps its bytes", async () => {
   const failing = (answer: () => Response) =>
     world((comment) => (comment === "That is wrong." ? answer() : answerWith(comment))).fetch;
   const notWritten = (out: string) =>
@@ -474,37 +505,20 @@ test("a comment with no label fails the run and writes no file, and an earlier l
   const before = readFileSync(path.join(out, "labels.jsonl"));
   expect(before.length).toBeGreaterThan(0);
 
-  // A rerun is refused before any read, naming the file: the run once renamed its own over it.
-  const again = world();
-  const rerun = io(again.fetch);
+  // A rerun in which one model call never succeeds: every try answers 529.
+  const rerun = io(failing(() => new Response("overloaded", { status: 529 })));
   const code = await main(
     ["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()],
     rerun.io
   );
-  expect(code).toBe(2);
+  expect(code).toBe(1);
   expect(rerun.stdout).toEqual([]);
   expect(rerun.stderr).toEqual([
-    `label-comments: ${path.join(out, "labels.jsonl")} from an earlier run; this one removes and replaces none of it: move it aside to label again`,
+    "label-comments: no label for ACME-2 comment c4: the model answered 529, on each of 8 tries",
+    notWritten(out),
   ]);
-  expect(again.sent).toEqual([]);
   expect(readFileSync(path.join(out, "labels.jsonl")).equals(before)).toBe(true);
   expect(readdirSync(out)).toEqual(["labels.jsonl"]);
-
-  // A run in which one model call never succeeds (every try answers 529) leaves no file.
-  const failed = path.join(dir("rerun-fail"), "labels");
-  const overloaded = io(failing(() => new Response("overloaded", { status: 529 })));
-  expect(
-    await main(
-      ["--since", SINCE, "--until", UNTIL, "--out", failed, "--key-file", keyFile()],
-      overloaded.io
-    )
-  ).toBe(1);
-  expect(overloaded.stdout).toEqual([]);
-  expect(overloaded.stderr).toEqual([
-    "label-comments: no label for ACME-2 comment c4: the model answered 529, on each of 8 tries",
-    notWritten(failed),
-  ]);
-  expect(readdirSync(failed)).toEqual([]);
 
   // With no earlier file, a run that fails at once (a 400 is not tried again) leaves no file.
   const fresh = path.join(dir("fresh-fail"), "labels");
@@ -524,40 +538,6 @@ test("a comment with no label fails the run and writes no file, and an earlier l
     notWritten(fresh),
   ]);
   expect(readdirSync(fresh)).toEqual([]);
-});
-
-// A labels.jsonl that appears after the check, while the run reads, is not replaced: the rows are
-// linked as labels.jsonl, which a rename would have put over it.
-test("a labels.jsonl that appears while the run reads is kept, and the run fails naming it", async () => {
-  const out = path.join(dir("appeared"), "labels");
-  const file = path.join(out, "labels.jsonl");
-  const { fetch } = world();
-  const appearing: typeof fetch = async (input, init) => {
-    if (!existsSync(file)) writeFileSync(file, "appeared\n");
-    return await fetch(input, init);
-  };
-  const run = io(appearing);
-  expect(
-    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
-  ).toBe(1);
-  expect(run.stderr.join("\n")).toContain(file);
-  expect(readFileSync(file, "utf8")).toBe("appeared\n");
-  expect(readdirSync(out)).toEqual(["labels.jsonl"]);
-});
-
-// The temporary file is this run's own, so the removal at the end removes nothing else: a file of
-// the name another run of this pid would have used (here, this test process's) is kept.
-test("the run's temporary file is its own, and a file another run left beside it is kept", async () => {
-  const out = path.join(dir("own-temporary"), "labels");
-  mkdirSync(out, { recursive: true });
-  const other = path.join(out, `.labels.jsonl.${process.pid}.tmp`);
-  writeFileSync(other, "another run's rows\n");
-  const run = io(world().fetch);
-  expect(
-    await main(["--since", SINCE, "--until", UNTIL, "--out", out, "--key-file", keyFile()], run.io)
-  ).toBe(0);
-  expect(readFileSync(other, "utf8")).toBe("another run's rows\n");
-  expect(readdirSync(out).toSorted()).toEqual([path.basename(other), "labels.jsonl"]);
 });
 
 test("a model answer whose body fails after its headers is asked again", async () => {

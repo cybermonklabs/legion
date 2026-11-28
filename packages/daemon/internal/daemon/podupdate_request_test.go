@@ -121,6 +121,7 @@ var requestedRound = api.PodUpdateResponse{Round: podUpdateRound, Reasons: reque
 // claim records the round, so the route refuses the request 503 POD_UPDATE_NOT_RECORDED where
 // this test wants the round answered.
 func TestPodUpdateTheControllerAsksForOpensTheRoundAndItsAskReachesEachReadyRole(t *testing.T) {
+	t.Parallel()
 	asked := []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleArchitect),
@@ -184,6 +185,7 @@ func TestPodUpdateTheControllerAsksForOpensTheRoundAndItsAskReachesEachReadyRole
 // nothing to do (the `len(reasons) == 0 && open == ""` early return without its `open` half): no
 // sweep asks a role, and the wait for the first ask times out.
 func TestPodUpdateTheControllerAsksForIsCarriedToThePodsReplacementWithNoDrift(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
@@ -230,6 +232,7 @@ func charged(s *supervision) (time.Time, map[string]podUpdateOpening) {
 // flight): it answers opened true, with the controller's reasons, in each case, and charges the
 // opening it makes.
 func TestPodUpdateTheControllerAsksForOverAnOpenRoundOpensNoSecond(t *testing.T) {
+	t.Parallel()
 	t.Run("a drift's round the claims record", func(t *testing.T) {
 		rig := newPodUpdateRig(t,
 			podUpdateRole{role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
@@ -293,6 +296,7 @@ func TestPodUpdateTheControllerAsksForOverAnOpenRoundOpensNoSecond(t *testing.T)
 // first request opens the round over the second issue's pod while the first issue holds the one
 // slot.
 func TestPodUpdateTheControllerAsksForIsHeldByTheProjectsLimits(t *testing.T) {
+	t.Parallel()
 	drifted, asked := "LEGION-501", "LEGION-502"
 	rig := newLimitRig(t, drifted, asked)
 	rig.drifts(asked)
@@ -328,6 +332,7 @@ func TestPodUpdateTheControllerAsksForIsHeldByTheProjectsLimits(t *testing.T) {
 // posted over a pod named by no claim, over a pod no round can reach, over one of two pods, or over
 // the record of the round that is ending.
 func TestPodUpdateTheControllerAsksForIsRefusedWhereNoRoundCanOpen(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		roles  []podUpdateRole
@@ -398,6 +403,7 @@ const podUpdatePostedLine = "supervise: the project's controller asked for the r
 // the daemon's line alone names the claims with a session (namesOf(sessionClaims(told))), it
 // names no role where this test wants the implementer.
 func TestPodUpdateTheControllerAsksForOpensTheRoundOverThePodItsOnlyClaimsLaunchWaitsOn(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, podUpdateRole{role: claim.RoleImplementer, state: supervise.StateQueued})
 	refusals := rig.refuseLaunches()
 	refusals.refuse(claim.RoleImplementer, podUpdatePod)
@@ -437,6 +443,7 @@ func TestPodUpdateTheControllerAsksForOpensTheRoundOverThePodItsOnlyClaimsLaunch
 // implementer's record of the ended round is the round open over the pod the tester records, and
 // the request answers that round 200 where this test wants it refused.
 func TestPodUpdateTheControllerAsksForIsRefusedWhileARoundThisDaemonEndedIsStillRecorded(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
 	rig.drifts(podUpdateDrift)
@@ -515,6 +522,7 @@ func TestPodUpdateTheControllerAsksForIsRefusedWhileARoundThisDaemonEndedIsStill
 // claim it reads records, and the walk reads the round open over a pod its claims no longer
 // record, ends it again (endRoundWhosePodWent) and writes a second message on the issue.
 func TestPodUpdateTheControllerAsksForBetweenAWalksReadAndItsTurnWritesNoSecondLostWorkMessage(t *testing.T) {
+	t.Parallel()
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
 	rig.drifts(podUpdateDrift)
@@ -601,6 +609,7 @@ func (r *fleetRig) storedRound(issue string) map[claim.Role]string {
 // The negative control is the answer made at the post (no awaitPodRoundRecorded): the request
 // answers 200 opened true while no claim records the round.
 func TestPodUpdateTheControllerAsksForIsAnsweredOnlyOnceAClaimRecordsItsRound(t *testing.T) {
+	t.Parallel()
 	issue := "LEGION-503"
 	held := limitIssue(1, issue)
 	held.roles = []claim.Role{claim.RoleArchitect, claim.RoleImplementer}
@@ -651,6 +660,7 @@ func TestPodUpdateTheControllerAsksForIsAnsweredOnlyOnceAClaimRecordsItsRound(t 
 // daemon's memory, its record of the opening included, and a runtime that reads no drift — carries
 // it: its sweeps take the worker's answer and replace the pod, and the round ends.
 func TestPodUpdateTheControllerAsksForSurvivesARestartAndIsCarriedWithNoDrift(t *testing.T) {
+	t.Parallel()
 	issue := "LEGION-504"
 	rig := newFleetRig(t, limitIssue(1, issue))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
@@ -688,6 +698,7 @@ func TestPodUpdateTheControllerAsksForSurvivesARestartAndIsCarriedWithNoDrift(t 
 // select on ctx.Done(), with no bound): the request whose context never ends waits for the turn
 // past the bound, and no answer comes.
 func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkWhileItsRequestLivesAndAtMostItsBound(t *testing.T) {
+	t.Parallel()
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	route := newPodUpdateRoute(t, rig.s, rig.sup, quietLogger())
@@ -772,6 +783,9 @@ func TestPodUpdateTheControllerAsksForWaitsForASweepsWalkWhileItsRequestLivesAnd
 		t.Errorf("the refused requests left %d asks, want none: %+v", len(asks), asks)
 	}
 
+	// The last request opens a round, which must then be recorded under the default bound the
+	// package's parallel tests run under, not the short one of the busy refusal above.
+	rig.s.podRoundRecordBound = 0
 	<-walk
 	route.answered(podUpdateIssue, requestedRound)
 	for _, role := range roles {

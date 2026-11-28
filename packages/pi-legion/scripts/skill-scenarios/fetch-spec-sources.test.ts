@@ -194,6 +194,9 @@ const read = (file: string) => readFileSync(file, "utf8");
 
 test("an issue key and a project document each write their files; the document gets no old-spec.md", async () => {
   const out = path.join(dir("sources-run"), "sources");
+  // A stale file from an earlier fetch of the document does not survive the new fetch.
+  mkdirSync(path.join(out, "acme-brief-md"), { recursive: true });
+  writeFileSync(path.join(out, "acme-brief-md", "old-spec.md"), "stale\n");
   const { fetch, sent } = world();
   const run = io(fetch);
   const code = await main(["--out", out, "ACME-7", "dispatch://ACME/artifact/brief-md"], run.io);
@@ -324,8 +327,6 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
     `${path.join(out, "agent-texts.json")}: 2 texts by sessions (1 messages, 1 comments, 0 asks) read from 2 issues, 0 deleted posts left out`,
   ]);
 
-  // A directory of its own: the fetch above left agent-texts.json in `out`, which a fetch refuses.
-  const widerOut = path.join(dir("agent-texts-wider"), "texts");
   const wider = io(world().fetch);
   expect(
     await main(
@@ -336,12 +337,12 @@ test("--agent-texts writes every message, comment and ask by a session in the wi
         "--until",
         "2026-10-17T00:00:00Z",
         "--out",
-        widerOut,
+        out,
       ],
       wider.io
     )
   ).toBe(0);
-  const asks = JSON.parse(read(path.join(widerOut, "agent-texts.json"))).filter(
+  const asks = JSON.parse(read(path.join(out, "agent-texts.json"))).filter(
     (row: { kind: string }) => row.kind === "ask"
   );
   expect(asks).toEqual([
@@ -452,6 +453,89 @@ test("a deleted post is left out of messages.md and agent-texts.json and counted
   ]);
 });
 
+// A token that carries a cut reads Dispatch as of that cut, which leaves out the body of a post
+// edited or deleted since and the wording of an ask a restore changed with no event. These files
+// hold what people and agents wrote, so such a post or ask is in none of them, as a deleted post is
+// in none, and stdout counts it apart: a marker in its place would read as words someone wrote.
+test("a post or an ask whose words Dispatch left out is in no file, and stdout counts it", async () => {
+  /** `post` as an answer at a cut gives it with its body left out. */
+  const bodyLeftOut = ({ body: _body, ...post }: { body: string }) => post;
+  const {
+    question: _q,
+    options: _o,
+    multiple: _m,
+    ...unworded
+  } = ask({
+    id: "a3",
+    author: agent(),
+    kind: "question",
+    question: "Which cache?",
+    options: [{ label: "Redis" }],
+    state: "open",
+    created_at: "2026-10-16T13:30:00Z",
+    answer: null,
+  });
+  const routes: Record<string, unknown> = {
+    ...ROUTES,
+    "/api/v1/issues": [{ key: "ACME-7", title: "Make the widget faster", status: "done" }],
+    "/api/v1/issues/ACME-7/messages": [
+      {
+        message: message("m1", alice, "Please make the widget faster.", "2026-10-16T10:00:00Z"),
+        replies: [
+          bodyLeftOut(message("m2", agent(), "On it.", "2026-10-16T12:00:00Z")),
+          bodyLeftOut(message("m3", alice, "Thanks.", "2026-10-16T14:00:00Z")),
+        ],
+      },
+    ],
+    "/api/v1/issues/ACME-7/comments": [
+      bodyLeftOut(comment("c1", bob, "Why 5 s?", "2026-10-16T11:00:00Z", "The quote.")),
+      comment("c2", agent(), "Fixed.", "2026-10-16T13:00:00Z"),
+    ],
+    "/api/v1/issues/ACME-7/asks": [unworded],
+  };
+  const out = path.join(dir("left-out-run"), "sources");
+  const sources = io(world(routes).fetch);
+  expect(await main(["--out", out, "ACME-7"], sources.io)).toBe(0);
+  expect(sources.stderr).toEqual([]);
+  expect(read(path.join(out, "acme-7", "messages.md"))).toBe(
+    "<!-- message 2026-10-16T10:00:00Z -->\nPlease make the widget faster.\n"
+  );
+  expect(JSON.parse(read(path.join(out, "acme-7", "asks.json")))).toEqual([]);
+  expect(sources.stdout).toEqual([
+    `${path.join(out, "acme-7")}: title.txt, messages.md (1 entries, 0 deleted posts left out, 2 posts whose words Dispatch left out), asks.json (0 asks, 1 asks whose words Dispatch left out), old-spec.md`,
+  ]);
+
+  const texts = io(world(routes).fetch);
+  expect(
+    await main(
+      [
+        "--agent-texts",
+        "--since",
+        "2026-10-16T00:00:00Z",
+        "--until",
+        "2026-10-17T00:00:00Z",
+        "--out",
+        out,
+      ],
+      texts.io
+    )
+  ).toBe(0);
+  expect(texts.stderr).toEqual([]);
+  expect(JSON.parse(read(path.join(out, "agent-texts.json")))).toEqual([
+    {
+      issue: "ACME-7",
+      id: "c2",
+      kind: "comment",
+      body: "Fixed.",
+      origin_session_title: null,
+      created_at: "2026-10-16T13:00:00Z",
+    },
+  ]);
+  expect(texts.stdout).toEqual([
+    `${path.join(out, "agent-texts.json")}: 1 texts by sessions (0 messages, 1 comments, 0 asks) read from 1 issues, 0 deleted posts left out, 2 texts whose words Dispatch left out`,
+  ]);
+});
+
 test("an --out inside a checkout, or a reference of another shape, exits 2 and reads nothing", async () => {
   const checkout = dir("checkout");
   mkdirSync(path.join(checkout, ".git"));
@@ -468,71 +552,4 @@ test("an --out inside a checkout, or a reference of another shape, exits 2 and r
     "fetch-spec-sources: acme-7 is neither an issue key (ACME-1) nor a project document (dispatch://ACME/artifact/<slug>)",
   ]);
   expect(sent).toEqual([]);
-});
-
-// A source a batch's runs already read, or agent-texts.json an earlier fetch wrote, is refused
-// before any read, naming each, and kept byte for byte: the fetch once removed a source directory
-// and wrote it again from nothing.
-test("a source directory or agent-texts.json an earlier fetch left exits 2, reads nothing, and is kept", async () => {
-  const out = path.join(dir("sources-taken"), "sources");
-  mkdirSync(path.join(out, "acme-brief-md"), { recursive: true });
-  writeFileSync(path.join(out, "acme-brief-md", "messages.md"), "an earlier fetch's\n");
-  writeFileSync(path.join(out, "agent-texts.json"), "[]\n");
-  const { fetch, sent } = world();
-  const run = io(fetch);
-  expect(await main(["--out", out, "ACME-7", "dispatch://ACME/artifact/brief-md"], run.io)).toBe(2);
-  expect(run.stderr).toEqual([
-    `fetch-spec-sources: ${path.join(out, "acme-brief-md")} from an earlier fetch; this one removes and replaces none of it: move it aside to fetch again`,
-  ]);
-  const texts = io(fetch);
-  expect(
-    await main(
-      [
-        "--agent-texts",
-        "--since",
-        "2026-10-16T00:00:00Z",
-        "--until",
-        "2026-10-17T00:00:00Z",
-        "--out",
-        out,
-      ],
-      texts.io
-    )
-  ).toBe(2);
-  expect(texts.stderr).toEqual([
-    `fetch-spec-sources: ${path.join(out, "agent-texts.json")} from an earlier fetch; this one removes and replaces none of it: move it aside to fetch again`,
-  ]);
-  expect(sent).toEqual([]);
-  expect(readdirSync(out).toSorted()).toEqual(["acme-brief-md", "agent-texts.json"]);
-  expect(readdirSync(path.join(out, "acme-brief-md"))).toEqual(["messages.md"]);
-  expect(read(path.join(out, "acme-brief-md", "messages.md"))).toBe("an earlier fetch's\n");
-  expect(read(path.join(out, "agent-texts.json"))).toBe("[]\n");
-});
-
-// A source directory or agent-texts.json that appears while the fetch reads is not written over:
-// the fetch fails (exit 1), naming it, and it keeps what it held.
-test("a source directory or agent-texts.json that appears while the fetch reads is kept, and the fetch fails", async () => {
-  for (const [args, planted] of [
-    [["ACME-7"], "acme-7/title.txt"],
-    [
-      ["--agent-texts", "--since", "2026-10-16T00:00:00Z", "--until", "2026-10-17T00:00:00Z"],
-      "agent-texts.json",
-    ],
-  ] as const) {
-    const out = path.join(dir(`appeared-${path.basename(planted, ".json")}`), "sources");
-    const file = path.join(out, planted);
-    const { fetch } = world();
-    const appearing: typeof fetch = async (input, init) => {
-      mkdirSync(path.dirname(file), { recursive: true });
-      if (!existsSync(file)) writeFileSync(file, "not this fetch's\n");
-      return await fetch(input, init);
-    };
-    const run = io(appearing);
-    expect(await main([...args, "--out", out], run.io)).toBe(1);
-    expect(run.stderr.join("\n")).toContain(
-      path.dirname(planted) === "." ? file : path.dirname(file)
-    );
-    expect(read(file)).toBe("not this fetch's\n");
-    expect(readdirSync(path.dirname(file))).toEqual([path.basename(file)]);
-  }
 });

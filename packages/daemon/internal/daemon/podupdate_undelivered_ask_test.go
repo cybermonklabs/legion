@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store/migrations"
@@ -72,7 +71,7 @@ func TestPodUpdateAskTheEarlierReleaseQueuedAndMarkedIsDeliveredOnceAfterTheCuto
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateTaskedAt == nil {
 		t.Fatalf("the implementer holds no ask mark, want the earlier release's mark written at the enqueue")
 	}
-	if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+	if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 		Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod,
 		Text: supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound),
 	}); err != nil || !written {
@@ -218,8 +217,8 @@ func TestPodUpdateAskThatFoundNoHolderBeforeTheSweepMovedOnIsAskedAgain(t *testi
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 	rig.listener.setAbsent(rig.roleTopic(claim.RoleImplementer))
-	enqueue := rig.s.enqueue
-	rig.s.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
+	enqueue := rig.s.plan.enqueue
+	rig.s.plan.enqueue = func(ctx context.Context, issue string, payloads ...record.OutboxPayload) (bool, error) {
 		written, err := enqueue(ctx, issue, payloads...)
 		if err != nil || !written {
 			return written, err
@@ -290,7 +289,7 @@ func TestPodUpdateAskNoHolderOfAnOlderRowLeavesOneDeliveredAskOfTheRound(t *test
 			rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 			text := supervise.UpdateTask(podUpdateRound, podUpdateDrift, podUpdateBound)
 			for range 2 {
-				if written, err := rig.s.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
+				if written, err := rig.s.plan.enqueue(rig.ctx, podUpdateIssue, record.UpdateAsk{
 					Role: claim.RoleImplementer, Round: podUpdateRound, Pod: podUpdatePod, Text: text,
 				}); err != nil || !written {
 					t.Fatalf("queue a row of the round = %t, %v; want it written", written, err)
@@ -399,20 +398,21 @@ func TestPodUpdateAskWaitsWhileItsClaimsLockIsHeldAndIsDeliveredOnce(t *testing.
 }
 
 // stoppingPublisher delivers through the listener and then cancels the context its row runs
-// under, as a daemon stop does while a row is in its publish.
+// under, as a daemon stop does while a row is in its publish. Its role read is the wrapped
+// listener's, and cancels nothing.
 type stoppingPublisher struct {
-	inner  notify.Publisher
+	outboxNotices
 	cancel context.CancelFunc
 }
 
-func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) error {
-	err := p.inner.Publish(ctx, topic, message, payload, key)
+func (p stoppingPublisher) Publish(ctx context.Context, topic, message string, payload any, key string) (string, error) {
+	holder, err := p.outboxNotices.Publish(ctx, topic, message, payload, key)
 	p.cancel()
-	return err
+	return holder, err
 }
 
 func (p stoppingPublisher) PublishKept(ctx context.Context, topic, message string, payload any, key string) (bool, error) {
-	kept, err := p.inner.PublishKept(ctx, topic, message, payload, key)
+	kept, err := p.outboxNotices.PublishKept(ctx, topic, message, payload, key)
 	p.cancel()
 	return kept, err
 }
@@ -435,7 +435,7 @@ func TestPodUpdateAskDeliveredAsTheDaemonStopsIsStillMarked(t *testing.T) {
 
 	stopping, stop := context.WithCancel(rig.ctx)
 	defer stop()
-	rig.lane.notices = stoppingPublisher{inner: rig.listener, cancel: stop}
+	rig.lane.notices = stoppingPublisher{outboxNotices: rig.listener, cancel: stop}
 	if err := rig.lane.execute(stopping, row); err != nil {
 		t.Fatalf("the ask delivered as the daemon stopped = %v, want the row finished", err)
 	}

@@ -1,18 +1,11 @@
 import { afterEach, beforeAll, expect } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { endianness } from "node:os";
 import { join } from "node:path";
 import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
-import { ownGroup, untilRunning } from "./own-group";
+import { ownGroup, untilExecDone, untilRunning } from "./own-group";
 import { procRootOf } from "./proc-root";
 import { libRowBoundMs, rowWaitMarginMs, rowWaits, stateOf, untilGone } from "./row-waits";
 
@@ -69,8 +62,9 @@ beforeAll(() => {
 // reaped most of them by then, and a pid the kernel gave to another process since is left alone.
 // Each, and each harness shell, runs in a process group of its own (ownGroup): the sweeps stop what
 // they end, and a stopped member of the test runner's own group hangs the runner up where that group
-// is orphaned. A sweep row waits until what it spawned runs its program (untilRunning), and so leads
-// its own group, before it sweeps.
+// is orphaned. A sweep row waits until what it spawned runs its program, and so leads its own group,
+// before it sweeps: untilExecDone for a process the sweep finds by its mark, since inside its exec
+// its environment reads empty, and untilRunning for any other (lib/own-group.ts).
 // startOf is PID's start time, stat field 22, read past the last `) ` of the whole file, or
 // undefined once PID is gone.
 function startOf(pid: number): string | undefined {
@@ -107,41 +101,6 @@ function spawn(argv: string[], options: { cwd: string; env?: Record<string, stri
   started.push(child.pid);
   return child.pid;
 }
-// untilExecDone resolves once PID has finished its exec of PROGRAM as far as a walk of the marks
-// reads it: its exe link (/proc/<pid>/exe) names PROGRAM and its /proc/<pid>/environ reads
-// non-empty. Inside an exec Linux gives the process its new memory, and the exe link with it,
-// before it sets where that memory's arguments and environment end (create_elf_tables in
-// fs/binfmt_elf.c): first the arguments' end, then a placeholder end of the environment, which lets
-// /proc/<pid>/cmdline read in full (get_mm_cmdline in fs/proc/base.c reads once that end is not 0),
-// and only after it has counted each variable the environment's real end. Until then environ reads
-// empty and a walk of the marks names nothing, so a wait on the exe link or on the command line can
-// end inside the exec. Nothing signals the end of another process's exec, so it reads both every
-// 50 ms, as untilGone and untilRunning do, until the row's waits end (waits.end()), and reads once
-// more then; past that it rejects naming the pid, what its exe link read and how many bytes its
-// environ held.
-async function untilExecDone(pid: number, program: string): Promise<void> {
-  const want = realpathSync(hostTool(program) ?? program);
-  const end = waits.end();
-  let exe = "";
-  let environ = 0;
-  for (;;) {
-    try {
-      exe = readlinkSync(`/proc/${pid}/exe`);
-      environ = exe === want ? readFileSync(`/proc/${pid}/environ`).length : 0;
-    } catch {
-      exe = "";
-      environ = 0;
-    }
-    if (exe === want && environ > 0) return;
-    const now = performance.now();
-    if (now >= end) break;
-    await Bun.sleep(Math.min(50, end - now));
-  }
-  throw new Error(
-    `pid ${pid} did not finish its exec of ${want} by the end of the row's waits (${(libRowBoundMs - rowWaitMarginMs) / 1000} s after the row began): its exe link read ${exe || "nothing"} and its environ ${environ} bytes`
-  );
-}
-
 // harness runs BODY in a bash with lib/rig.sh and lib/arg-max-force.sh sourced for the run
 // directory WORK, marked as a run marks itself (LEGION_E2E_RUN), under the drivers' `set -Eeuo
 // pipefail` and an ERR trap that prints, and answers its exit code and output. WORK comes in through
@@ -184,7 +143,7 @@ const pids = (out: string) => out.split("\n").filter(Boolean);
 
 host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
-  () => {
+  async () => {
     const work = join(dir, "work");
     mkdirSync(join(work, "state", "home", ".config"), { recursive: true });
     writeFileSync(join(work, "transcript.log"), "");
@@ -195,15 +154,21 @@ host.test(
       cwd: dir,
       env: { XDG_CONFIG_HOME: join(work, "state", "home", ".config") },
     });
+    // The walk starts once each process it must name has finished its exec of sleep
+    // (untilExecDone): inside the exec its environment reads empty, and the walk names nothing.
+    await untilExecDone(marked, "sleep", waits.end());
+    await untilExecDone(pane, "sleep", waits.end());
     // A person's shell working in the run's directory, and a `tail -f` of its transcript: neither
     // carries the mark, and neither is the run's.
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: dir });
     const other = spawn(["sleep", "60"], { cwd: dir });
     // A marked process outside the row's proc root: a walk that read the host's /proc and not the
-    // root it was given names it, so the row fails rather than only slowing.
+    // root it was given names it, so the row fails rather than only slowing. It too is walked only
+    // once its exec is done, or a wrong-root walk inside that exec would not name it either.
     const root = rowRoot();
     const outside = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(outside, "sleep", waits.end());
     writeFileSync(calls, "");
     // The drivers call it under `set -E` with an ERR trap that prints, and in the bare word split a
     // stage's checks use, where a status of its own would reach that trap.
@@ -261,7 +226,7 @@ host.test(
     expect(forked.exitCode).toBe(0);
     const pid = Number(readFileSync(pidFile, "utf8").trim());
     started.push(pid);
-    await untilExecDone(pid, "sleep");
+    await untilExecDone(pid, "sleep", waits.end());
     // Its parent, the subshell, has ended, so nothing the test started is its parent any more.
     const parent = readFileSync(`/proc/${pid}/stat`, "utf8")
       .replace(/^[\s\S]*\) /, "")
@@ -285,7 +250,7 @@ const argMax = hostGate({
 });
 argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
-  () => {
+  async () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
     // argument fails with E2BIG, as `find /proc/[0-9]*/cwd` did unforced at about 80,000 processes,
     // while an exec of a few arguments still starts; the root's own synthetic entries, not the host's
@@ -294,6 +259,7 @@ argMax.test(
     const work = join(dir, "e2big");
     mkdirSync(work);
     const inside = spawn(["sleep", "60"], { cwd: work, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(inside, "sleep", waits.end());
     const r = harness(
       work,
       `arg_max_force environ 6144 "$work" ${JSON.stringify(String.raw`find "$proc_root"/[0-9]*/cwd -maxdepth 0 -printf '%h %l\0'`)}
@@ -522,48 +488,6 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-// A driver's exit handler runs after the driver's `exit N`, and a substitution forked while the EXIT
-// trap runs takes a bare `exit` for that N (bash 5.2.37): listening_holders read a failed find's
-// status as N. The find here is the one every walk of a busy machine runs, which exits 1 for an
-// entry of another user's process, and the trap runs after `exit 3`, which the walk read as a find
-// a signal ended. From such a trap the find's own status decides: the socket's holder is named as
-// outside one, and a find a signal ends is reported with its own 137.
-host.test(
-  "from an EXIT trap after `exit 3` listening_holders names the socket's holder as outside one, and reports a find a signal ends with that find's 137",
-  () => {
-    const work = join(dir, "holders-trap");
-    mkdirSync(work);
-    const busy = join(dir, "holders-trap-busy");
-    mkdirSync(busy);
-    writeFileSync(
-      join(busy, "find"),
-      `#!/bin/sh\n/usr/bin/find "$@"\necho "find: '$proc_root/1/fd': Permission denied" >&2\nexit 1\n`,
-      { mode: 0o755 }
-    );
-    const killed = join(dir, "holders-trap-killed");
-    mkdirSync(killed);
-    writeFileSync(join(killed, "find"), "#!/bin/sh\nkill -KILL $$\n", { mode: 0o755 });
-    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    try {
-      const root = rowRoot();
-      const call = `st=0; listening_holders ${listener.port} 2>"$work/lh.err" || st=$?; echo "listening_holders $st"; cat "$work/lh.err"`;
-      const outside = harness(work, call, busy, root);
-      expect(outside).toEqual({ code: 0, out: `${process.pid}\nlistening_holders 0\n`, err: "" });
-      expect(harness(work, `trap '${call}' EXIT\nexit 3`, busy, root)).toEqual({
-        ...outside,
-        code: 3,
-      });
-      expect(harness(work, `trap '${call}' EXIT\nexit 3`, killed, root)).toEqual({
-        code: 3,
-        out: `listening_holders 2\nlistening_holders: find exited 137 reading ${root}: find ended with status 137 and printed nothing\n`,
-        err: "",
-      });
-    } finally {
-      listener.stop(true);
-    }
-  }
-);
-
 host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
@@ -616,7 +540,7 @@ host.test(
     mkdirSync(work);
     writeFileSync(join(work, "transcript.log"), "");
     const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(marked, "sleep", waits.end());
+    await untilExecDone(marked, "sleep", waits.end());
     const pidFile = join(dir, "sweep-escaped.pid");
     Bun.spawnSync(
       ownGroup([
@@ -632,7 +556,7 @@ host.test(
     started.push(escaped);
     // A sweep made inside the escaped process's exec of sleep reads no mark in its environment and
     // leaves it running, as the double-forked row's walk names nothing then (untilExecDone).
-    await untilExecDone(escaped, "sleep");
+    await untilExecDone(escaped, "sleep", waits.end());
     const shell = spawn(["sleep", "60"], { cwd: work });
     const tail = spawn(["tail", "-f", join(work, "transcript.log")], { cwd: work });
     const r = harness(work, `stop_marked_processes "$work"; echo "status $?"`);
@@ -694,7 +618,7 @@ host.test(
     const work = join(dir, "reused");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep", waits.end());
+    await untilExecDone(pid, "sleep", waits.end());
     // Every signal the sweep sends goes through `kill`, here a function that records it and sends
     // it, so what reached the pid is read from the record rather than from a state that a signal
     // still in flight has not changed yet. A sweep given the pid's own start must then fill the
@@ -791,7 +715,7 @@ host.test(
     const work = join(dir, "reparented");
     mkdirSync(work);
     const pid = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    await untilRunning(pid, "sleep", waits.end());
+    await untilExecDone(pid, "sleep", waits.end());
     const r = harness(
       work,
       `eval "real_$(declare -f proc_parent)"

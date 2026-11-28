@@ -1,8 +1,16 @@
+import { dispatchOrigins } from "../../api/origins";
+import type { AgentText } from "../refs/AgentName";
 import { isPartyRoute } from "../refs/party-references";
-import { editedName } from "../refs/post-marks";
-import { type DispatchReferenceRoute, parseNodeReference, referenceHref } from "../refs/routes";
+import { deletedLineText, editedName } from "../refs/post-marks";
+import type { KnownReferences } from "../refs/reference-names";
+import {
+  buildDispatchReference,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
 import { readTextReferences, type TextReading } from "../refs/text-references";
-import { chipName } from "./issue-tree";
+import { chipName } from "./first-line";
 import { documentWord } from "./node-row-chip";
 
 /**
@@ -73,11 +81,13 @@ interface Reading {
 
 /** Each text's readings, the least recently asked text first, by the small id of the list of
  *  issue keys it was read against (`keyListId`), the least recently asked list first. The text
- *  itself is the key, so an entry holds no copy of it or of the keys. Nothing else a reading
- *  depends on changes while the page is open: the origin is the page's, and the references read
- *  ambiguous are left out after the reading (`rowReferences`), so a new set of them draws no
- *  stale link. */
+ *  itself is the key, so an entry holds no copy of it or of the keys. The readings were read
+ *  against `readOrigins`, the origins whoami named (`dispatchOrigins`), and are forgotten when
+ *  a newer answer names others. Nothing else a reading depends on changes while the page is
+ *  open: the references read ambiguous are left out after the reading (`rowReferences`), so a
+ *  new set of them draws no stale link. */
 const readings = new Map<string, Map<number, Reading>>();
+let readOrigins: readonly string[] | undefined;
 
 /** The id of each list of issue keys a caller has passed, by the list itself, and by its keys
  *  for a new list of the same keys. `0` is no list. */
@@ -95,6 +105,7 @@ const KEY_SETS_KEPT = 64;
  *  keep the id of a set the reset forgot, while a new array of the same keys took another. */
 export function resetRowReferenceReadings(): void {
   readings.clear();
+  readOrigins = undefined;
   listIds = new WeakMap();
   keySetIds.clear();
 }
@@ -123,6 +134,11 @@ function keyListId(issues: readonly string[] | undefined): number {
  * a draw of the outline after a view change on a production-size issue.
  */
 function readingOf(text: string, issues: readonly string[] | undefined): Reading {
+  const origins = dispatchOrigins();
+  if (origins !== readOrigins) {
+    readings.clear();
+    readOrigins = origins;
+  }
   const id = keyListId(issues);
   let byKeys = readings.get(text);
   if (byKeys === undefined) {
@@ -143,7 +159,7 @@ function readingOf(text: string, issues: readonly string[] | undefined): Reading
     return held;
   }
   const read: Reading = {
-    reading: readTextReferences(text, issues === undefined ? {} : { issues }),
+    reading: readTextReferences(text, issues === undefined ? { origins } : { issues, origins }),
   };
   if (byKeys.size >= KEY_LISTS_KEPT) {
     const oldest = byKeys.keys().next();
@@ -173,6 +189,18 @@ export function citedReferences(text: string): string[] {
   }
   for (const key of needs.keys) cited.add(`dispatch://${key}`);
   return [...cited];
+}
+
+/** Adds `reference` to the set `asked` the batched read is given, and beside an issue's whole
+ *  spec the issue's own address: a link titles the spec by the issue's title
+ *  (`issueOrDocumentTitle`), which the read answers only under that address. The tree asks the
+ *  read so (`useIssueTree.ts`'s `treeReferences`), and so does Dashboard (`useDashboardNames`). */
+export function addAskedReference(asked: Set<string>, reference: string): void {
+  asked.add(reference);
+  const route = parseNodeReference(reference);
+  if (route?.kind === "spec" && route.block === undefined) {
+    asked.add(buildDispatchReference({ key: route.key, kind: "issue" }));
+  }
 }
 
 /** An issue's own reference, which is the form the batched read answers a bare key under. */
@@ -231,11 +259,43 @@ export function rowReferences(
 }
 
 /**
+ * The name each reference of `found` is drawn by (`rowReferenceWords`), by the one rule a row
+ * and every plain line of the page name one by: a post the page read as deleted by its deleted
+ * line, its actor named by `label`, the page's rule for an author (`AgentText.author`), in place
+ * of the published name, which names the actor as no registry knows it; else the line the page's
+ * store projects beside the name (`KnownReferences.lines`), a block's first block of words and a
+ * whole document's word; else, for anything but a whole document, whose own name no chip draws,
+ * the name `named` gives it. A reference with no name is left out, so it reads as the words its
+ * author wrote. `issue` is the issue the words belong to, by which a whole document is told
+ * (`documentWord`). A row's `named` is the page's published name or a party's own read
+ * (`RowText.tsx`); a plain line's is the published name alone (`one-line.ts`).
+ */
+export function rowReferenceNames(
+  found: readonly Pick<RowReference, "reference" | "route">[],
+  { deleted, lines }: Pick<KnownReferences, "deleted" | "lines">,
+  named: (reference: string) => string | undefined,
+  issue: string | undefined,
+  label: AgentText["author"]
+): ReadonlyMap<string, string> {
+  const names = new Map<string, string>();
+  for (const one of found) {
+    const deletion = deleted.get(one.reference);
+    const name =
+      deletion !== undefined
+        ? deletedLineText(deletion, { label })
+        : (lines.get(one.reference) ??
+          (documentWord(one.route, issue) === undefined ? named(one.reference) : undefined));
+    if (name !== undefined) names.set(one.reference, name);
+  }
+  return names;
+}
+
+/**
  * What a row draws a reference as, from `names`, the name each reference has as a link reads it
- * (`RowText.tsx`'s names, by `useReferenceNames`): a whole document by the page's word for it,
+ * (`rowReferenceNames`): a whole document by the page's word for it,
  * which a chip draws in place of its name (decision 39) and which `names` holds for it instead -
  * the line the page's store projects beside its name (`KnownReferences.lines`, from
- * `tree-drafts.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
+ * `target-naming.ts`'s `documentWord`) - or, until it has, the word the same rule gives it by its
  * address and `issue`, the issue the row belongs to (`node-row-chip.ts`'s `documentWord`); an
  * issue by its key, then its title; a party by the name its own read gives it; anything else as
  * a chip in place, by its target's own words cut as a tie's chip cuts them (`chipName`), then

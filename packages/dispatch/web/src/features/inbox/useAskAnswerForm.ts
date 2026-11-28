@@ -1,7 +1,10 @@
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  type Dispatch,
   type FormEvent,
+  type ReactNode,
   type SetStateAction,
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -13,6 +16,7 @@ import {
   ApiError,
   api,
   apiErrorMessage,
+  isSpecFormRefusal,
   type WriteBounds,
   type WriteMethod,
 } from "../../api/client";
@@ -22,14 +26,30 @@ import type {
   AnswerAskInput,
   Ask,
   AskAnswer,
+  AskAnswerWithTrees,
+  AskEditWithTrees,
   AskRead,
   AskWithTrees,
   Comment,
   CreateCommentInput,
 } from "../../api/types";
-import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { useTooltips } from "../../components/tooltips";
+import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { appendToDraft, type DraftUpload, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { ASK_FORM_WORDS } from "../ask-body/ask-body-words";
+import {
+  type FormRefusalPress,
+  pressOn,
+  requestRefusalKey,
+  requestVersions,
+  setFormRefusal,
+  takeFormRefusalFocus,
+  takeFormRefusalReason,
+  useFormRefusal,
+  useRefusalSurface,
+} from "../doc/form-refusals";
 import { isViewer } from "../refs/actor";
-import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedWriteResult, stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { setAnswerDraft, useAnswerDraft } from "./answer-drafts";
 import {
@@ -58,6 +78,12 @@ interface UseAskAnswerFormOptions {
   onAnswered?: (id: string) => void;
   /** Opens the form for an answer the viewer may change, instead of its completion record. */
   initiallyChanging?: boolean;
+  /** Whether the form reads the ask's thread (`GET /api/v1/asks/{id}`), which the card's thread,
+   *  its recipients and its edit history draw, and which tells the form the ask changed or
+   *  closed under the reader. Default `true`, as every card reads it; a caller that draws no
+   *  thread and sends no such read turns it off, and the form then draws from the ask it is
+   *  handed and the answers it records. */
+  readThread?: boolean;
 }
 
 /** A failed answer, as the card shows it. */
@@ -67,10 +93,26 @@ interface AskAnswerFailure {
   retryable: boolean;
 }
 
-/** One press of the answer: the ask it is of (`AskPress`), what it sends, and its question as the
- *  label names it (`questionWords`). */
+/** The next step of a form refusal on the card, once it has picked Request changes and filled the
+ *  reason with what Dispatch wrote for the author. */
+const CARD_FORM_NEXT_STEP = "To send these findings to the author, choose Answer.";
+
+/**
+ * The answer field after a refusal of the form (plan decision 14): Dispatch's reason for the
+ * author, then one empty line and the note that the person typed, as it was. A field that holds no
+ * note takes the reason alone, and one that already starts with the reason keeps its text.
+ */
+function withRefusalReason(reason: string, note: string): string {
+  if (note.startsWith(reason)) return note;
+  return note.trim() === "" ? reason : `${reason}\n\n${note}`;
+}
+
+/** One press of the answer: the ask it is of (`AskPress`), what it sends, its question as the
+ *  label names it (`questionWords`), and where and for which version it was pressed, which a
+ *  refusal of the form gives its focus back to (`pressOn`). */
 interface AnswerPress extends AskPress {
   readonly input: AnswerAskInput;
+  readonly at: FormRefusalPress;
   readonly questionWords: string;
 }
 
@@ -80,6 +122,17 @@ function changesAnswer({ input }: AnswerPress): boolean {
   return input.expected_answer_at !== undefined;
 }
 
+/** The versions a press of an answer to `ask` judges: each document the request names, at the
+ *  version the request names (`requestVersions`). */
+function formRefusalVersionsOf(ask: Ask): string | undefined {
+  return ask.approval === undefined
+    ? undefined
+    : requestVersions(ask.approval.documents, {
+        artifact_id: ask.approval.artifact_id,
+        version: ask.approval.version,
+      });
+}
+
 /** One press of a question back: the ask it is of (`AskPress`), the text it posts, and its
  *  question as the label names it (`questionWords`). */
 interface ClarificationPress extends AskPress {
@@ -87,13 +140,89 @@ interface ClarificationPress extends AskPress {
   readonly text: string;
 }
 
+/** An ask's form, as `useAskAnswerForm` answers it: the state the ask body draws, and the read of
+ *  the ask's thread that its card draws the thread, the recipients and the edit history from.
+ *  Every state of the form lives as long as the form does, so a body drawn again for it - its
+ *  form after its record, or its record after its form - draws what the one before it drew. */
+export interface AskAnswerForm {
+  readonly answerFailure: AskAnswerFailure | null;
+  readonly answerFieldId: string;
+  readonly answerPlaceholder: string;
+  /** Every real answer, oldest first, from the thread read. */
+  readonly answers: AskAnswerWithTrees[];
+  readonly answerText: string;
+  readonly askChanged: boolean;
+  /** Whether Answer is refused for want of something to send, read from the form as a refusal
+   *  found it while the form refuses (`refusedWhileOut`). */
+  readonly cannotAnswer: boolean;
+  readonly canChangeAnswer: boolean;
+  readonly cancelChanging: () => void;
+  readonly changing: boolean;
+  /** Whether the choice a question-shaped answer offers is drawn, read as `cannotAnswer` is. */
+  readonly choiceShown: boolean;
+  readonly clarification: KeyedWriteResult<Comment, ClarificationPress, unknown>;
+  /** The settled ask whose record stands in place of the form, or null while the form is drawn. */
+  readonly completed: AskWithTrees | null;
+  /** Outside `NoTooltips`, whether a write of the form is out, which disables its controls. */
+  readonly disabledWhileOut: boolean;
+  /** The ask the form is drawn for: the thread read's once the question changed or the ask
+   *  closed under the reader, else the one its caller handed. */
+  readonly displayedAsk: AskWithTrees;
+  readonly edits: AskEditWithTrees[];
+  /** Dispatch's refusal of this form's Approve for the form of The Spec, kept for the ask. */
+  readonly formRefusal: ApiError | null;
+  readonly isApproval: boolean;
+  readonly mutation: KeyedWriteResult<Ask, AnswerPress, unknown>;
+  /** Ask back has nothing to send, read as `cannotAnswer` is. */
+  readonly nothingToAskBack: boolean;
+  readonly otherSelected: boolean;
+  /** Reads the names of the references the question's projection holds, for the labels of this
+   *  form's writes; the card mounts it wherever it draws. */
+  readonly questionReads: ReactNode;
+  /** Whether the answer box stood for a reason the option picked needs at the body's last
+   *  commit, so the box takes the focus as it comes to stand for one, and not again when a body
+   *  is drawn again for the form. */
+  readonly reasonFieldShownBefore: { current: boolean };
+  readonly reasonRequired: boolean;
+  /** Whether picking the option of this label makes the answer box stand for a reason. */
+  readonly requiresReason: (label: string) => boolean;
+  /** Inside `NoTooltips`, the refusal of every control of the form, as `true` for its
+   *  `aria-disabled`; undefined while the form refuses nothing or outside `NoTooltips`. */
+  readonly refusedWhileOut: true | undefined;
+  /** Whether the form refuses a press: a write of it is out, or, inside `NoTooltips`, the read of
+   *  the thread after its landing is not yet drawn. */
+  readonly refusing: boolean;
+  readonly selectRealOption: (label: string) => void;
+  readonly selected: string[];
+  readonly sendAnswer: (text: string) => void;
+  readonly sendClarification: () => void;
+  readonly setAnswerText: Dispatch<SetStateAction<string>>;
+  readonly setQuestionChoice: Dispatch<SetStateAction<boolean>>;
+  readonly startChanging: () => void;
+  readonly submit: (event: FormEvent<HTMLFormElement>) => void;
+  readonly submitGuard: SubmitGuard;
+  readonly submitHint: string | undefined;
+  /** Whether the press that the kept refusal answers gives its focus to this form, whose root is
+   *  the one given: true once, and only for this form or a form drawn in its place. */
+  readonly takeFormRefusalFocus: (root: Element | null) => boolean;
+  readonly toggleOther: () => void;
+  readonly threadQuery: UseQueryResult<AskRead, Error>;
+  readonly unsentAnswer: string;
+  /** The files pasted or dropped into the answer box, each uploaded and its text added to the
+   *  answer of the ask it was pasted under. */
+  readonly upload: DraftUpload<string>;
+}
+
 /**
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
- * it, so the next answer is to the new wording), or writing even its server state would leave the
- * document's live state past what the server can decode. An answer the reader stopped may have
- * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
- * may pass on a retry.
+ * it, so the next answer is to the new wording), writing even its server state would leave the
+ * document's live state past what the server can decode, or an approval of a document whose text
+ * breaks the form of The Spec. For that one the card shows Dispatch's own words, which name each
+ * text (`ApiError.refusal`), with its own next step: Dispatch's names Request changes, which the
+ * card has already picked, so the card's names the press that is left (`CARD_FORM_NEXT_STEP`).
+ * An answer the reader stopped may have been saved, and the card's Retry makes that very press
+ * again (`retryLast`). Any other failure may pass on a retry.
  */
 function answerFailure(answer: {
   readonly error: Error;
@@ -141,6 +270,9 @@ function answerFailure(answer: {
           ),
           retryable: false,
         };
+      case "SPEC_FORM":
+        // Dispatch sends `refusal` in every SPEC_FORM body (the OpenAPI document requires it).
+        return { message: `${error.refusal}\n${CARD_FORM_NEXT_STEP}`, retryable: false };
     }
   }
   return { message: "Could not save your answer.", retryable: true };
@@ -155,7 +287,8 @@ export function useAskAnswerForm({
   initialThreadUpdatedAt,
   initiallyChanging = false,
   onAnswered,
-}: UseAskAnswerFormOptions) {
+  readThread = true,
+}: UseAskAnswerFormOptions): AskAnswerForm {
   const queryClient = useQueryClient();
   const viewer = useQuery(whoAmIQuery()).data?.login;
   // Each AskCard instance owns its answer field label so cards with the same
@@ -181,6 +314,18 @@ export function useAskAnswerForm({
   const answerText = changing ? changeAnswer : draftAnswer;
   const setAnswerText = changing ? setChangeAnswer : setDraftAnswer;
   const replacing = useRef<AskAnswer | undefined>(undefined);
+  // A refusal of Approve for the form of The Spec belongs to the request, not to this card
+  // (`doc/form-refusals.ts`): its document's header and each card of the request read it under one
+  // key, and a host that draws the card again while the answer is out reads it back. It holds the
+  // press it answers, with this card and the versions, which each press carries (`AnswerPress.at`),
+  // so the focus goes back to this card and to no other place of the request. The key is the
+  // request's own, which the header of each document the request names reads too.
+  const formRefusalKey = requestRefusalKey(ask.id);
+  const refusalSurface = useRefusalSurface();
+  const takeRefusalFocus = useCallback(
+    (root: Element | null) => takeFormRefusalFocus(formRefusalKey, refusalSurface, root),
+    [formRefusalKey, refusalSurface]
+  );
   const initialChangeConsumed = useRef(false);
   const submitGuard = useSubmitGuard();
   // Shared by this card, its edit-version history, its collapsed disclosure, and its inline
@@ -205,6 +350,7 @@ export function useAskAnswerForm({
       threadBeforeSeed.fetchStatus !== "idle"
   );
   const threadQuery = useQuery<AskRead, Error>({
+    enabled: readThread,
     initialData: refreshInitialThread ? undefined : initialThread,
     initialDataUpdatedAt: refreshInitialThread ? undefined : initialThreadUpdatedAt,
     queryKey: ["ask-thread", ask.id],
@@ -290,11 +436,22 @@ export function useAskAnswerForm({
           setChanging(false);
         }
       }
+      if (isSpecFormRefusal(error)) {
+        // Dispatch refused the approval and wrote the reason a request for changes sends to the
+        // author: the card picks Request changes with that reason (below, from the kept
+        // refusal), and one more press sends it. The reason goes in the request's draft of the
+        // press's ask before the refusal shows, so Answer is ready for the focus that the press
+        // owes.
+        const reason = error.changesReason ?? "";
+        setAnswerTextOf(press.ask.id, (note) => withRefusalReason(reason, note));
+        setFormRefusal(requestRefusalKey(press.ask.id), { error, press: press.at });
+      }
     },
     onSettled: () => {
       submitGuard.release();
     },
     onSuccess: (updatedAsk, press) => {
+      setFormRefusal(requestRefusalKey(press.ask.id), undefined);
       const changed = changesAnswer(press);
       if (drawnFor(press)) {
         replacing.current = undefined;
@@ -364,6 +521,21 @@ export function useAskAnswerForm({
   const threadAsk = threadQuery.data?.ask;
   const displayedAsk =
     threadAsk !== undefined && (askChanged || threadAsk.state !== "open") ? threadAsk : ask;
+  const formRefusal = useFormRefusal(formRefusalKey, formRefusalVersionsOf(displayedAsk));
+  // The kept refusal picks Request changes, in this card and in a card drawn after it: React's
+  // pattern for state derived from a change, so the option is never unpicked for a frame.
+  const [pickedFor, setPickedFor] = useState<ApiError | undefined>(undefined);
+  if (formRefusal !== pickedFor) {
+    setPickedFor(formRefusal);
+    if (formRefusal !== undefined) setSelected(["Request changes"]);
+  }
+  // The kept refusal puts its reason before the note in the request's draft, once for each
+  // refusal, also when the press was in the document's header or in another card.
+  useEffect(() => {
+    if (formRefusal === undefined || !takeFormRefusalReason(formRefusalKey)) return;
+    const reason = formRefusal.changesReason ?? "";
+    setAnswerText((note) => withRefusalReason(reason, note));
+  }, [formRefusal, formRefusalKey, setAnswerText]);
   const recordedAsk = justAnswered ?? (displayedAsk.state === "open" ? null : displayedAsk);
   const canChangeAnswer =
     recordedAsk !== null &&
@@ -429,20 +601,23 @@ export function useAskAnswerForm({
   const canAnswer = canSubmitAnswer();
   const submitHint =
     reasonRequired && trimmedAnswer === ""
-      ? `Add a reason to send ${reasonRequiredFor}`
+      ? `${ASK_FORM_WORDS.reason_hint} ${reasonRequiredFor}`
       : undefined;
   const answerPlaceholder = reasonRequired
-    ? "Why?"
+    ? ASK_FORM_WORDS.placeholder.why
     : isApproval && selected.includes("Approve")
-      ? "Note (optional)"
+      ? ASK_FORM_WORDS.placeholder.note
       : selected.length > 0
-        ? "Add a note (optional)"
-        : "Answer in your own words, or ask a question back";
+        ? ASK_FORM_WORDS.placeholder.add_note
+        : ASK_FORM_WORDS.placeholder.own_words;
   const sendAnswer = (text: string) => {
     submitGuard.guard(() => {
+      // Each press is answered on its own: the refusal of the last one goes with it.
+      setFormRefusal(formRefusalKey, undefined);
       const answerSelection = isApproval || hasOptions ? selected : [];
       mutation.mutate({
         ask,
+        at: pressOn(refusalSurface, formRefusalVersionsOf(displayedAsk)),
         input: answerAskInput(displayedAsk, answerSelection, text, replacing.current),
         questionWords: question.line(),
       });
@@ -504,46 +679,131 @@ export function useAskAnswerForm({
   // it where they can read and copy it, since the box it was in has gone. Their own answer is not
   // this: it left as a draft the moment the server recorded it.
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
+  const reasonFieldShownBefore = useRef(false);
+  // A file's text joins the answer of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`, `setAnswerTextOf`); only text added to the field on screen puts its
+  // question choice away.
+  const upload = useDraftUpload((text: string, askId: string) => {
+    setAnswerTextOf(askId, (current) => appendToDraft(current, text));
+    if (askId === ask.id) setQuestionChoice(false);
+  });
+  const tooltips = useTooltips();
+  // Inside `NoTooltips` the form refuses itself from the press of an answer or a clarification
+  // until that write is done with: while it is out, and, once it lands, until a read of the ask's
+  // thread newer than the landing is drawn (`awaitingRead`). Until then the form on the page is
+  // stale: after an answer that landed with no body to show, its options are still picked, and
+  // Answer would send a second answer. A landing that starts no read of the thread ends the
+  // refusal as it lands (a first answer that comes back with its body, whose record replaces the
+  // form at once), and so does a read that fails, so the form never stays refused. Each control it
+  // refuses - the answer box, Answer (Save answer), Ask back, Ask back instead, Answer with it
+  // anyway, the Cancel of a change, and the options with Other - is `aria-disabled` in place of
+  // `disabled`: the box is `readOnly`, and the options are refused by their group. `disabled`
+  // drops the focus to the body in a browser; this way the control the reader pressed keeps it.
+  // A press of any of them does nothing then, and neither does Ctrl+Enter, a paste or a drop in
+  // the box, or the form's submit. Each is drawn from the form as it stood when the refusal began
+  // (`held`): the landing empties the box and closes the choice a question-shaped answer offers,
+  // and the control that would turn `disabled` or leave the page with that - Ask back, its text
+  // gone, or Ask back instead - stays on the page, refused. So the ask body's hand-off of the
+  // focus moves none while the form refuses, and nothing holding the focus leaves. The one move of
+  // the focus comes as the refusal ends: the form's hand-off, or Ask back instead's, as it leaves
+  // the page, or the body's as Ask back turns `disabled`; a focus the reader moved out of the form
+  // meanwhile stays where they put it. Any other reason a control cannot be pressed - nothing
+  // typed before the press, an upload still out - still disables it, on both sides. Outside
+  // `NoTooltips` each is `disabled` while the write is out and no longer, as on `main`.
+  const holdsFocus = !tooltips;
+  // The newest write of the form that has landed, by when it was sent: 0 while none has.
+  const landedWrite = Math.max(
+    mutation.isSuccess ? mutation.submittedAt : 0,
+    clarification.isSuccess ? clarification.submittedAt : 0
+  );
+  // The landing is recorded while rendering, React's pattern for state derived from a change: an
+  // effect would let one render between the landing and the record reach the screen, and a press
+  // then would be taken. `readAfter` is when the thread read on the page at the landing was made;
+  // the form waits for a newer one while the thread is being read. Outside `NoTooltips` nothing
+  // waits, so nothing is recorded and the form renders as on `main`.
+  const [landing, setLanding] = useState<{ readAfter: number | null; write: number }>({
+    readAfter: null,
+    write: landedWrite,
+  });
+  const landedNow = landedWrite > landing.write;
+  let readAfter = landedNow ? threadQuery.dataUpdatedAt : landing.readAfter;
+  const awaitingRead =
+    holdsFocus &&
+    readAfter !== null &&
+    threadQuery.isFetching &&
+    threadQuery.dataUpdatedAt <= readAfter;
+  if (!awaitingRead) readAfter = null;
+  if (holdsFocus && (landedNow || readAfter !== landing.readAfter)) {
+    setLanding({ readAfter, write: Math.max(landedWrite, landing.write) });
+  }
+  // The one flag every refusal of the form reads: outside `NoTooltips` it is `isSubmitting`.
+  const refusing = isSubmitting || awaitingRead;
+  const refusedWhileOut = (holdsFocus && refusing) || undefined;
+  const disabledWhileOut = !holdsFocus && isSubmitting;
+  // What a refused control is drawn from, recorded while rendering as the landing is, in the
+  // first render that refuses: the press, before the landing empties the box.
+  const formNow = {
+    cannotAnswer: !canAnswer,
+    choice: questionChoice,
+    nothingToAskBack: trimmedAnswer === "",
+  };
+  const [heldForm, setHeldForm] = useState<typeof formNow | null>(null);
+  const held = refusedWhileOut ? (heldForm ?? formNow) : null;
+  if (held !== heldForm) setHeldForm(held);
+  // What the refusing controls are drawn from: the press as the refusal found it while it
+  // refuses, else the form now.
+  const shown = held ?? formNow;
+  // A refusal for the form is the request's that the press was of (`onError` keeps it there), so
+  // the card shows it from what is kept for the request it shows, never from the write's last
+  // error: a host may draw the card for another request while the answer is out, and that
+  // request was not refused. Every other failure is the press's, with its Retry.
+  const pressFailure =
+    mutation.error !== null && !isSpecFormRefusal(mutation.error) ? answerFailure(mutation) : null;
 
   return {
-    answerFailure: mutation.error === null ? null : answerFailure(mutation),
+    answerFailure:
+      pressFailure ??
+      (formRefusal === undefined ? null : answerFailure({ error: formRefusal, method: undefined })),
     answerFieldId,
     answerPlaceholder,
     answers,
     answerText,
     askChanged,
-    canAnswer,
+    cannotAnswer: shown.cannotAnswer,
     canChangeAnswer,
     cancelChanging,
     changing,
+    choiceShown: shown.choice,
     clarification,
     completed,
+    disabledWhileOut,
     displayedAsk,
     edits,
+    formRefusal: formRefusal ?? null,
     isApproval,
-    isSubmitting,
     mutation,
+    nothingToAskBack: shown.nothingToAskBack,
     otherSelected,
-    questionChoice,
-    /** Reads the names of the references the question's projection holds, for the labels of
-     *  this form's writes; the card mounts it wherever it draws. */
     questionReads: question.reads,
+    reasonFieldShownBefore,
     reasonRequired,
     requiresReason,
+    refusedWhileOut,
+    refusing,
     selectRealOption,
     selected,
     sendAnswer,
     sendClarification,
     setAnswerText,
-    setAnswerTextOf,
     setQuestionChoice,
     startChanging,
     submitGuard,
     submit,
     submitHint,
+    takeFormRefusalFocus: takeRefusalFocus,
     toggleOther,
     threadQuery,
-    trimmedAnswer,
     unsentAnswer,
+    upload,
   };
 }

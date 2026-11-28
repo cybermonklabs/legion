@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/apifixture"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/redact"
@@ -237,6 +238,10 @@ var settingsExcluded = map[string]string{
 	"Kubernetes.PluginsFromBinary":       "derived: where the settled plugins pair came from, not a setting",
 	"Config.Warnings":                    "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `legion config check` prints",
 	"Project.CommitIssueTrailerRepos":    "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"Project.WatchedWorkflows":           "a deployment's own repositories and their workflows, named by a route that authenticates nobody (GET /legion/v1/state)",
+	"WatchedWorkflow.Repository":         "an entry of projects.<KEY>.watched_workflows, which the settings leave out whole (Project.WatchedWorkflows)",
+	"WatchedWorkflow.File":               "an entry of projects.<KEY>.watched_workflows, which the settings leave out whole (Project.WatchedWorkflows)",
+	"WatchedWorkflow.Events":             "an entry of projects.<KEY>.watched_workflows, which the settings leave out whole (Project.WatchedWorkflows)",
 	"Config.LeakCheck":                   "a deployment's own repository, the one its shared leak check is published from, named by a route that authenticates nobody (GET /legion/v1/state); every role is told the checker beside it by the runtime, and needs no route for it",
 	"Config.StallLimits":                 "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
 	"Config.PrivateNameRulesNamedBy":     "derived: which of private_name_rules_file and LEGION_PRIVATE_NAME_RULES_FILE named the rule file, which a refusal of the file at boot names; the settings carry the path under private_name_rules_file either way",
@@ -495,8 +500,8 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	if want := map[string]string{"tester": "omp"}; !maps.Equal(settings.WorkerBackends, want) {
 		t.Errorf("worker_backends = %q, want %q", settings.WorkerBackends, want)
 	}
-	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}}; !slices.Equal(settings.RepositoryRenames, want) {
-		t.Errorf("repository_renames = %+v, want the file's pair %+v", settings.RepositoryRenames, want)
+	if want := []RepositoryRenameSettings{{From: "acme/widgets-legacy", To: "acme/widgets"}, {From: "sjawhar/legion", To: "cybermonklabs/legion"}}; !slices.Equal(settings.RepositoryRenames, want) {
+		t.Errorf("repository_renames = %+v, want the file's pairs %+v", settings.RepositoryRenames, want)
 	}
 	if want := []string{"/bin/sh", "-c", "echo fixture-setup"}; !slices.Equal(settings.Runtime.Kubernetes.Setup, want) {
 		t.Errorf("runtime.kubernetes.setup = %q, want %q", settings.Runtime.Kubernetes.Setup, want)
@@ -586,7 +591,7 @@ func TestSettingsOfTheSandboxShowsEachMember(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			settings := SettingsOf(loadSettingsFile(t, settingsFixtureFile+tc.block))
+			settings := SettingsOf(apifixture.LoadSettings(t, settingsFixtureFile+tc.block))
 			if got := settings.Runtime.Kubernetes.Sandbox; !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("runtime.kubernetes.sandbox = %+v, want %+v", got, tc.want)
 			}
@@ -693,7 +698,7 @@ func TestSettingsOfAMinimalConfigurationResolvesTheDefaults(t *testing.T) {
 		t.Errorf("settings carry the DSN: %s", encoded)
 	}
 
-	set := SettingsOf(loadSettingsFile(t, minimalSettingsFile+"review_round_cap: 5\n"))
+	set := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"review_round_cap: 5\n"))
 	if set.ReviewRoundCap != 5 {
 		t.Errorf("review_round_cap = %d, want the file's 5", set.ReviewRoundCap)
 	}
@@ -723,7 +728,7 @@ func TestSettingsShowTheLaunchPrefixWithoutItsArguments(t *testing.T) {
 // file that names none carries no key at all, so the shapes the state golden pins do not move.
 func TestSettingsOfNamesThePrivateNameRuleFileByItsPathAlone(t *testing.T) {
 	const path = "/etc/legion/private-names.toml"
-	encoded, err := json.Marshal(SettingsOf(loadSettingsFile(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
+	encoded, err := json.Marshal(SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+"private_name_rules_file: "+path+"\n")))
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -750,7 +755,7 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	cfg := loadSettingsFile(t, body)
+	cfg := apifixture.LoadSettings(t, body)
 	if got := cfg.Projects["WIDGETS"].CommitIssueTrailerRepos; len(got) != 1 || got[0].String() != stamped {
 		t.Fatalf("the fixture's project carries %v, want %s: the assertions below would prove nothing", got, stamped)
 	}
@@ -769,6 +774,40 @@ func TestSettingsOfLeavesOutTheCommitIssueTrailerRepositories(t *testing.T) {
 	}
 	if bytes.Contains(encoded, []byte(stamped)) {
 		t.Errorf("settings carry the configured repository: %s", encoded)
+	}
+}
+
+// A project's watched_workflows reaches no `settings`, at any depth, as commit_issue_trailer_repos
+// does not: an entry names a deployment's own repository and its workflow, and the route that
+// carries the block authenticates nobody (settingsExcluded). The list reaches the controller in
+// its registration's answer and the controller secret's, which authenticate it.
+func TestSettingsOfLeavesOutTheWatchedWorkflows(t *testing.T) {
+	const repository, file = "acme/watched", "nightly-only.yaml"
+	body := strings.Replace(settingsFixtureFile, "  WIDGETS:\n", "  WIDGETS:\n    watched_workflows:\n      - "+repository+"/"+file+"@schedule,push\n", 1)
+	if body == settingsFixtureFile {
+		t.Fatal("the fixture's WIDGETS project was not given the key")
+	}
+	cfg := apifixture.LoadSettings(t, body)
+	if got := cfg.Projects["WIDGETS"].WatchedWorkflows; len(got) != 1 || got[0].Repository.String() != repository || got[0].File != file {
+		t.Fatalf("the fixture's project carries %v, want %s/%s: the assertions below would prove nothing", got, repository, file)
+	}
+	encoded, err := json.Marshal(SettingsOf(cfg))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var document any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, key := range everyKey(document, "settings") {
+		if strings.HasSuffix(key, ".watched_workflows") {
+			t.Errorf("settings carry the key %s: %s", key, encoded)
+		}
+	}
+	for _, named := range []string{repository, file} {
+		if bytes.Contains(encoded, []byte(named)) {
+			t.Errorf("settings carry the configured %s: %s", named, encoded)
+		}
 	}
 }
 
@@ -799,7 +838,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	want := []ExperimentSettings{
 		{Name: "plan-length", Mode: config.ExperimentRandom, Unit: config.ExperimentIssue, Variants: []VariantSettings{
 			{Name: "short", Weight: 3, ConfigFiles: []string{}},
@@ -853,7 +892,7 @@ func TestTheSettingsCarryThePlanOfAVariant(t *testing.T) {
 	if body == settingsFixtureFile {
 		t.Fatal("the fixture's WIDGETS project was not given the key")
 	}
-	settings := SettingsOf(loadSettingsFile(t, body))
+	settings := SettingsOf(apifixture.LoadSettings(t, body))
 	variants := settings.Projects["WIDGETS"].Experiments[0].Variants
 	if variants[0].Plan != "owner" || variants[1].Plan != "default" {
 		t.Fatalf("the arms' plans = %q and %q, want owner and default", variants[0].Plan, variants[1].Plan)
@@ -941,7 +980,7 @@ func TestSettingsOfTheHooksNamesEachHookAndNoWords(t *testing.T) {
 
 	const promptFile = "/etc/legion/hooks/back-to-implementing.md"
 	const inline = "Read the reviewer's thread before you write anything."
-	named := SettingsOf(loadSettingsFile(t, minimalSettingsFile+`hooks:
+	named := SettingsOf(apifixture.LoadSettings(t, minimalSettingsFile+`hooks:
   - name: back-to-implementing
     on: work_back
     moves: [reviewing-implementing, testing-implementing]

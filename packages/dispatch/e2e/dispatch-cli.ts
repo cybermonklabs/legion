@@ -33,6 +33,11 @@ export interface CliRun {
  * row hands it one of its own, which is how a row runs the command under a person's own personal
  * token, as an agent acting for its person runs it.
  *
+ * `options.session` is the session the command names itself as, `cliSession` unless a row hands
+ * it another: the server records it as each write's actor and reads the role it holds on an
+ * issue, which is how a row runs the command as the session an issue's role holders name
+ * (`putIssueRoleHolders`, e2e/api.ts).
+ *
  * `options.stdin` is the bytes the command reads on its standard input, as a pipe hands them to a
  * `--content-file -`, and then the end of that input; without it the command's standard input is
  * ignored.
@@ -40,7 +45,11 @@ export interface CliRun {
 export function runDispatch(
   args: readonly string[],
   home: string,
-  { token = e2eAgentToken, stdin }: { readonly token?: string; readonly stdin?: Uint8Array } = {}
+  {
+    token = e2eAgentToken,
+    session = cliSession,
+    stdin,
+  }: { readonly token?: string; readonly session?: string; readonly stdin?: Uint8Array } = {}
 ): Promise<CliRun> {
   const argv = [dispatchEntry, ...args];
   const options = {
@@ -50,7 +59,7 @@ export function runDispatch(
       HOME: home,
       DISPATCH_STATE_DIR: home,
       DISPATCH_HOST: "omp",
-      DISPATCH_SESSION_ID: cliSession,
+      DISPATCH_SESSION_ID: session,
       DISPATCH_URL: baseUrl,
       DISPATCH_TOKEN: token,
     },

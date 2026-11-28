@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { ROLE_TOPIC_PREFIX } from "@legion/contracts";
+import { BUS_UNANSWERED_PREFIX, ROLE_TOPIC_PREFIX } from "@legion/contracts";
 import { messageFor } from "@legion/envoy-client/errors";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import {
@@ -19,9 +19,10 @@ import {
   type RegistrationInput,
   type RegistrationState,
   type RoleClaimOutcome,
-  taskWasAbandoned,
 } from "./registration-state";
+import { createRoleTopicFollows, type RoleTopicFollows, readRoleTopics } from "./role-topics";
 import type { SessionInbound } from "./session-inbound";
+import { taskWasAbandoned } from "./task-queue";
 
 /** The deadline rejection the queue answers with, which the module names through its predicate:
  *  the error class itself is private to it. */
@@ -84,12 +85,25 @@ interface RoleClaimRecord {
   readonly clientInstanceID: string;
 }
 
-const apiError = (status: number): EnvoyApiError =>
+const apiError = (status: number, body: Record<string, unknown> = {}): EnvoyApiError =>
   new EnvoyApiError({
     method: "GET",
     url: "/v1/roles/alpha",
     status,
-    responseBody: JSON.stringify({ error: "no live holder" }),
+    responseBody: JSON.stringify({ error: "no live holder", ...body }),
+  });
+
+/** The listener's bus-outage error, answered with `status`: under 503 it is the answer the
+ *  listener gives when its message bus did not answer (here a filter update that met a NATS
+ *  reconnect, after the record was written), and under any other status it is not. */
+const busOutageAnswer = (status: number): EnvoyApiError =>
+  new EnvoyApiError({
+    method: "POST",
+    url: "/v1/interests/unsubscribe",
+    status,
+    responseBody: JSON.stringify({
+      error: `${BUS_UNANSWERED_PREFIX}: set the filter of ses_a's session consumer: bus: NATS is reconnecting`,
+    }),
   });
 
 /** What a test moves while a task is parked: the open session, the deadline, each listener call. */
@@ -135,7 +149,16 @@ interface Harness {
   readonly hold: (role: string, id: string) => Promise<RoleClaimOutcome | undefined>;
 }
 
-function createHarness(): Harness {
+/**
+ * The module over stand-ins of its dependencies. `roleTopics` is the deployment's role topics as
+ * the module reads them; by default no role has any, and the rows that drive them pass their own.
+ */
+function createHarness(
+  roleTopics: RoleTopicFollows = createRoleTopicFollows({
+    roleTopics: readRoleTopics(undefined),
+    follow: () => [],
+  })
+): Harness {
   const notices: { readonly message: string; readonly level: string }[] = [];
   const warnings: { readonly message: string; readonly context: unknown }[] = [];
   const closedSubjects: string[] = [];
@@ -205,6 +228,9 @@ function createHarness(): Harness {
   const state = createRegistrationState({
     client: () => client,
     sessionOpen: (id) => id === control.open,
+    // No row here stops the session: the extension's rows drive a stop
+    // (`extensions/stopping-registration.test.ts`).
+    stopping: () => false,
     deadlineMs: () => control.deadlineMs,
     notify: (message, level) => notices.push({ message, level }),
     log: { warn: (message, context) => warnings.push({ message, context }) },
@@ -216,6 +242,7 @@ function createHarness(): Harness {
       return control.subscribeTopic(topic, connect);
     },
     closeSubjects: (_sessionID, subjects) => closedSubjects.push(...subjects),
+    roleTopics,
   });
 
   return {
@@ -613,7 +640,10 @@ describe("the serial queues", () => {
     const running = state.passes.run(async (handle) => {
       handle.actFor("ses_a");
       await handle.readInterest("ses_a");
-      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], "envoy: nope");
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: nope",
+        busUnanswered: "envoy: nope",
+      });
       return true;
     });
     await read.promise;
@@ -628,19 +658,17 @@ describe("the serial queues", () => {
     control.open = "ses_a";
     const unregistered = await state.passes.run(async (handle) => {
       handle.actFor("ses_a");
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C1"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C1"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       control.unsubscribe = async () => {
         throw apiError(503);
       };
-      await handle.unregisterTopics(
-        "ses_a",
-        ["notifications.slack.channel.C2"],
-        "envoy: could not unregister a resumed controller's retired Slack topics"
-      );
+      await handle.unregisterTopics("ses_a", ["notifications.slack.channel.C2"], {
+        failed: "envoy: could not unregister a resumed controller's retired Slack topics",
+        busUnanswered: "envoy: the bus did not answer",
+      });
       return true;
     });
     expect(unregistered).toBe(true);
@@ -660,6 +688,72 @@ describe("the serial queues", () => {
     ]);
   });
 
+  // The listener answers a bus outage after it wrote the record, when only the filter update met
+  // a NATS reconnect, so the warning that says the topics stayed registered is for every other
+  // failure: another 503, the same words under a 500, and no answer at all.
+  test("an unregister the listener's message bus did not answer warns in the caller's words for that outage, and any other failure in its words for a failure", async () => {
+    const { state, control, warnings } = createHarness();
+    control.open = "ses_a";
+    const words = {
+      failed: "envoy: the topics were not unregistered",
+      busUnanswered: "envoy: the bus did not answer the unregister",
+    };
+    const unanswered = busOutageAnswer(503);
+    const starting = apiError(503);
+    const broken = busOutageAnswer(500);
+    const unreachable = new TypeError("fetch failed");
+    await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      for (const [topic, error] of [
+        ["notifications.slack.channel.C1", unanswered],
+        ["notifications.slack.channel.C2", starting],
+        ["notifications.slack.channel.C3", broken],
+        ["notifications.slack.channel.C4", unreachable],
+      ] as const) {
+        control.unsubscribe = async () => {
+          throw error;
+        };
+        await handle.unregisterTopics("ses_a", [topic], words);
+      }
+      return true;
+    });
+
+    expect(warnings).toEqual([
+      {
+        message: words.busUnanswered,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C1"],
+          error: messageFor(unanswered),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C2"],
+          error: messageFor(starting),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C3"],
+          error: messageFor(broken),
+        },
+      },
+      {
+        message: words.failed,
+        context: {
+          sessionID: "ses_a",
+          topics: ["notifications.slack.channel.C4"],
+          error: messageFor(unreachable),
+        },
+      },
+    ]);
+  });
+
   test("the handle's listener reads and subscribes answer a task that still decides", async () => {
     const { state, control, subscribedTopics } = createHarness();
     control.open = "ses_a";
@@ -668,15 +762,22 @@ describe("the serial queues", () => {
       handle.actFor("ses_a");
       return {
         opened: await handle.subscribe("notifications.dispatch.issue.A-1"),
-        interest: (await handle.readInterest("ses_a"))?.session_id,
+        interest: await handle.readInterest("ses_a"),
         holder: await handle.readRoleHolder("alpha"),
       };
     });
-    expect(read).toEqual({ opened: true, interest: "ses_a", holder: "ses_a" });
+    expect(read).toEqual({
+      opened: true,
+      interest: {
+        known: true,
+        row: { session_id: "ses_a", machine_id: "machine-1", dir: "/w", topics: [] },
+      },
+      holder: { known: true, holder: "ses_a" },
+    });
     expect(subscribedTopics).toEqual(["notifications.dispatch.issue.A-1"]);
   });
 
-  test("a failed listener read answers nothing rather than failing the task", async () => {
+  test("a failed listener read answers that it knows nothing rather than failing the task", async () => {
     const { state, control } = createHarness();
     control.open = "ses_a";
     control.getRole = async () => {
@@ -692,7 +793,58 @@ describe("the serial queues", () => {
         interest: await handle.readInterest("ses_a"),
       };
     });
-    expect(read).toEqual({ holder: undefined, interest: undefined });
+    expect(read).toEqual({ holder: { known: false }, interest: { known: false } });
+  });
+
+  // The listener's 404 for a session its registry holds no key for: a session the reap took after
+  // its grace, or a fork's parent this process left. That is a known answer, the session having no
+  // row, not a read that could not be made: reading it as the latter would leave every pass for
+  // that lineage undecided and re-reading it at each heartbeat.
+  test("the 404 of a session with no registry row is a known answer, and any other failure is not", async () => {
+    const { state, control } = createHarness();
+    control.open = "ses_a";
+    control.getInterest = async () => {
+      throw apiError(404);
+    };
+    const absent = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readInterest("ses_gone");
+    });
+    expect(absent).toEqual({ known: true, row: undefined });
+
+    control.getInterest = async () => {
+      throw apiError(503);
+    };
+    const unread = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readInterest("ses_gone");
+    });
+    expect(unread).toEqual({ known: false });
+  });
+
+  // The listener's 404 for a role no live session holds names a lapsed holder where it knows one
+  // (unresponsive, or gone and not reaped). That is a known answer naming that session: it was
+  // shown what the stream stored for the role, so a resumed session must not read it again.
+  test("the 404 of a lapsed holder is a known answer naming it, and one naming none answers nobody", async () => {
+    const { state, control } = createHarness();
+    control.open = "ses_a";
+    control.getRole = async () => {
+      throw apiError(404, { holder: "ses_lapsed" });
+    };
+    const lapsed = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readRoleHolder("alpha");
+    });
+    expect(lapsed).toEqual({ known: true, holder: "ses_lapsed" });
+
+    control.getRole = async () => {
+      throw apiError(404);
+    };
+    const nobody = await state.passes.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.readRoleHolder("alpha");
+    });
+    expect(nobody).toEqual({ known: true, holder: undefined });
   });
 });
 
@@ -794,6 +946,147 @@ describe("deregister", () => {
   });
 });
 
+describe("handBackAllHolds", () => {
+  // The stop's own lines for a hand-back that failed (`HandBackLedger.handBackAll`).
+  const STOP_NOT_HANDED_BACK = "envoy: the stop did not hand back a role this process held";
+  const STOP_HAND_BACK_UNANSWERED =
+    "envoy: the listener's message bus did not answer the stop's hand-back of a role this process held. The listener may already have freed the claim. The registry may already be without the role's topic.";
+  /** The stop's own writer, which the host hands the hand-back: the host's logger, with no
+   *  tell gate. */
+  const stopLog = () => {
+    const lines: { readonly message: string; readonly context: unknown }[] = [];
+    return {
+      lines,
+      log: { warn: (message: string, context?: unknown) => void lines.push({ message, context }) },
+    };
+  };
+
+  test("hands back the role held and every hold given up, each naming this process, and changes no state", async () => {
+    const harness = createHarness();
+    const { state, control, releases } = harness;
+    await harness.hold("alpha", "ses_a");
+    // A move to beta whose hand-back of alpha the listener refused: alpha under ses_a is
+    // abandoned.
+    control.unsubscribe = async () => {
+      throw new Error("listener failed");
+    };
+    await state.adoptClaimAfterSessionMoved(BETA, "ses_b", ALPHA, "ses_a");
+    // A claim the listener granted after its task's deadline: gamma under ses_c is pending.
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    control.unsubscribe = async () => {};
+    releases.length = 0;
+
+    await state.handBackAllHolds(stopLog().log);
+
+    expect(
+      releases.map(({ sessionID, topics, clientInstanceID }) => ({
+        sessionID,
+        topics,
+        clientInstanceID,
+      }))
+    ).toEqual(
+      expect.arrayContaining([
+        { sessionID: "ses_b", topics: [BETA], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_c", topics: [gamma], clientInstanceID: state.clientInstanceID },
+        { sessionID: "ses_a", topics: [ALPHA], clientInstanceID: state.clientInstanceID },
+      ])
+    );
+    expect(releases).toHaveLength(3);
+    // Nothing runs after a stop, so nothing is recorded either.
+    expect(state.heldRole()).toBe("beta");
+    expect(state.holdSessionID()).toBe("ses_b");
+  });
+
+  test("sends the releases side by side, and one the listener refuses is warned about and stops none of the others", async () => {
+    const harness = createHarness();
+    const { state, control, releases, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    const held = Promise.withResolvers<void>();
+    control.unsubscribe = async (input) => {
+      if (input.sessionID === "ses_a") throw new Error("listener failed");
+      await held.promise;
+    };
+
+    const stop = stopLog();
+    const handingBack = state.handBackAllHolds(stop.log);
+    // Both are on the wire while the second is still unanswered.
+    await Promise.resolve();
+    expect(releases.map((release) => release.sessionID).sort()).toEqual(["ses_a", "ses_b"]);
+    held.resolve();
+    await handingBack;
+
+    // The stop's own words, on the stop's own writer: none goes to the module's log, which the
+    // host's tell gate drops once the stop has begun.
+    expect(stop.lines).toEqual([
+      {
+        message: STOP_NOT_HANDED_BACK,
+        context: { topic: ALPHA, sessionID: "ses_a", error: "listener failed" },
+      },
+    ]);
+    expect(warnings).toEqual([]);
+  });
+
+  // Before it answers, the listener frees the claim and takes the role's topic out of the
+  // registry, and its bus can fail to answer after either, so that outage is not warned as a
+  // role not handed back. Every other failure is: another 503, the same words under a 500, and
+  // no answer at all.
+  test("a hand-back the listener's message bus did not answer is warned as that outage, and any other failure as a role not handed back", async () => {
+    const harness = createHarness();
+    const { state, control, warnings } = harness;
+    await harness.hold("alpha", "ses_a");
+    const gamma = `${ROLE_TOPIC_PREFIX}gamma`;
+    const delta = `${ROLE_TOPIC_PREFIX}delta`;
+    state.recordClaimAfterDeadline(BETA, "ses_b");
+    state.recordClaimAfterDeadline(gamma, "ses_c");
+    state.recordClaimAfterDeadline(delta, "ses_d");
+    const failures: Record<string, unknown> = {
+      ses_a: busOutageAnswer(503),
+      ses_b: apiError(503),
+      ses_c: busOutageAnswer(500),
+      ses_d: new TypeError("fetch failed"),
+    };
+    control.unsubscribe = async (input) => {
+      throw failures[input.sessionID];
+    };
+
+    const stop = stopLog();
+    await state.handBackAllHolds(stop.log);
+
+    // The hand-backs go side by side, so the warnings come in no set order.
+    const notHandedBack = STOP_NOT_HANDED_BACK;
+    expect(warnings).toEqual([]);
+    expect(stop.lines).toHaveLength(4);
+    expect(stop.lines).toEqual(
+      expect.arrayContaining([
+        {
+          message: STOP_HAND_BACK_UNANSWERED,
+          context: { topic: ALPHA, sessionID: "ses_a", error: messageFor(failures.ses_a) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: BETA, sessionID: "ses_b", error: messageFor(failures.ses_b) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: gamma, sessionID: "ses_c", error: messageFor(failures.ses_c) },
+        },
+        {
+          message: notHandedBack,
+          context: { topic: delta, sessionID: "ses_d", error: messageFor(failures.ses_d) },
+        },
+      ])
+    );
+  });
+
+  test("sends nothing for a process that holds no role and owes no hand-back", async () => {
+    const { state, releases } = createHarness();
+    await state.handBackAllHolds(stopLog().log);
+    expect(releases).toEqual([]);
+  });
+});
+
 describe("clearRefusal", () => {
   test("forgets the role the listener refused to that session", async () => {
     const { state, control } = createHarness();
@@ -860,17 +1153,138 @@ describe("endUnwantedRole", () => {
   });
 });
 
+// The deployment's role topics (`ENVOY_ROLE_TOPICS`), driven through each hook of the module: a
+// claim and a restored hold open them, a registration that carries them clears what is owed,
+// `isRoleBound` holds only what the role alone wants, and the role's end closes those.
+describe("the deployment's role topics", () => {
+  const ALERTS = "notifications.slack.*.C0ALERTS.message";
+  const OWN = "notifications.slack.*.C0OWN.message";
+
+  /** A harness whose `alpha` role names ALERTS and OWN, over a session that already follows
+   *  `already` itself. */
+  const harnessWith = (...already: string[]) => {
+    const followed = new Set(already);
+    const topics = createRoleTopicFollows({
+      roleTopics: readRoleTopics(JSON.stringify({ alpha: [ALERTS, OWN] })),
+      follow: (topic) => {
+        if (followed.has(topic)) return [];
+        followed.add(topic);
+        return [topic];
+      },
+    });
+    return { harness: createHarness(topics), topics };
+  };
+
+  test("a claim opens them, and only what the role alone wants is role-bound", async () => {
+    const { harness, topics } = harnessWith(OWN);
+    await harness.hold("alpha", "ses_a");
+    expect(topics.subjects()).toEqual([ALERTS, OWN]);
+    expect(harness.state.isRoleBound(ALERTS)).toBe(true);
+    // The session followed OWN itself before the claim, so the ledger keeps recording it.
+    expect(harness.state.isRoleBound(OWN)).toBe(false);
+    // No plugin owns them, so `envoy_role_set` may still move the role.
+    expect(harness.state.pluginRoleSubjects()).toEqual([]);
+  });
+
+  test("what a claim opened is owed until a registration carries it", async () => {
+    const { harness, topics } = harnessWith();
+    await harness.hold("alpha", "ses_a");
+    expect(topics.owed()).toBe(true);
+    await harness.state.refreshRegistration(registrationFor("ses_a"));
+    expect(topics.owed()).toBe(true);
+    await harness.state.refreshRegistration({
+      ...registrationFor("ses_a"),
+      topics: [...registrationFor("ses_a").topics, ALERTS, OWN],
+    });
+    expect(topics.owed()).toBe(false);
+  });
+
+  test("a hold restored after a hand-back opens them too", async () => {
+    const { harness, topics } = harnessWith();
+    harness.control.open = "ses_a";
+    harness.state.recordClaimAfterDeadline(ALPHA, "ses_a");
+    expect(topics.subjects()).toEqual([]);
+    const restored = await harness.state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.settleEndedHolds("alpha");
+    });
+    expect(restored).toBe(true);
+    expect(topics.subjects()).toEqual([ALERTS, OWN]);
+  });
+
+  test("the role's end closes only what the role alone wanted", async () => {
+    const { harness, topics } = harnessWith(OWN);
+    await harness.hold("alpha", "ses_a");
+    harness.state.endUnwantedRole("ses_b", null, ["ses_b"]);
+    expect(harness.closedSubjects).toEqual([ALERTS]);
+    expect(topics.subjects()).toEqual([]);
+    expect(topics.role()).toBeUndefined();
+    expect(harness.state.isRoleBound(ALERTS)).toBe(false);
+  });
+
+  test("a hold of another role closes the topics opened for a role no hold landed for", async () => {
+    const BUILDS = "notifications.slack.*.C0BUILDS.message";
+    const followed = new Set<string>();
+    const topics = createRoleTopicFollows({
+      roleTopics: readRoleTopics(JSON.stringify({ alpha: [ALERTS], beta: [BUILDS] })),
+      follow: (topic) => {
+        if (followed.has(topic)) return [];
+        followed.add(topic);
+        return [topic];
+      },
+    });
+    const harness = createHarness(topics);
+    // A resumed session opened alpha's topics before a claim that decided nothing.
+    topics.open("alpha", "ses_a");
+    await harness.hold("beta", "ses_a");
+    expect(harness.closedSubjects).toEqual([ALERTS]);
+    expect(topics.role()).toEqual({ role: "beta", sessionID: "ses_a" });
+    expect(topics.subjects()).toEqual([BUILDS]);
+  });
+
+  test("a refusal naming this session's own id latches none, and one naming another holder latches it", async () => {
+    const { harness, topics } = harnessWith();
+    harness.control.open = "ses_a";
+    // Opened before the claim, as a resumed session's are.
+    topics.open("alpha", "ses_a");
+
+    // The standing claim of another process under this same id: nothing ends, nothing closes.
+    harness.control.setRole = async () => ({ claimed: false, holder: "ses_a" });
+    await harness.state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.claimRole("alpha", { soft: true });
+    });
+    // Nothing ended and no refusal was latched, so the topics the resume opened stay open for
+    // the next pass's claim. The pass closes them by the role it decided, which `settleRole`
+    // hands back; an own-id refusal leaves that role unsettled, so the next pass claims again.
+    expect(harness.closedSubjects).toEqual([]);
+    expect(topics.subjects()).toEqual([ALERTS, OWN]);
+    expect(harness.state.refusalFor("ses_a")).toBeUndefined();
+
+    // Another session holds it: the refusal is latched and the role's end closes them here, so
+    // the pass's own rule has nothing left to close for this host.
+    harness.control.setRole = async () => ({ claimed: false, holder: "ses_newer" });
+    await harness.state.roleMoves.run(async (handle) => {
+      handle.actFor("ses_a");
+      return handle.claimRole("alpha", { soft: true });
+    });
+    expect(harness.state.refusalFor("ses_a")).toBe("alpha");
+    expect(harness.closedSubjects).toEqual([ALERTS, OWN]);
+    expect(topics.role()).toBeUndefined();
+  });
+});
+
 describe("markRoleBoundSubjects and unmarkRoleBoundSubjects", () => {
   test("mark the subjects a plugin takes while the role is held, and unmark the ones that never opened", () => {
     const { state } = createHarness();
     expect(state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha")).toEqual([CONTROLLER_NOTICE]);
     expect(state.isRoleBound(CONTROLLER_NOTICE)).toBe(true);
-    expect(state.roleBoundSubjects()).toEqual([CONTROLLER_NOTICE]);
+    expect(state.pluginRoleSubjects()).toEqual([CONTROLLER_NOTICE]);
     // One already marked is not marked twice, so a later failure unmarks nothing it did not add.
     expect(state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha")).toEqual([]);
     state.unmarkRoleBoundSubjects([CONTROLLER_NOTICE]);
     expect(state.isRoleBound(CONTROLLER_NOTICE)).toBe(false);
-    expect(state.roleBoundSubjects()).toEqual([]);
+    expect(state.pluginRoleSubjects()).toEqual([]);
   });
 
   test("the marked role is what a pass that claims it back reports closed, once", async () => {
@@ -1076,23 +1490,6 @@ describe("the readers", () => {
     expect(state.heldRole()).toBeUndefined();
     expect(state.holdsRoleTopic(ALPHA)).toBe(false);
     expect(state.holdSessionID()).toBeUndefined();
-  });
-
-  test("roleSnapshot says whether a topic serves the held role, and counts the ends before it", async () => {
-    const harness = createHarness();
-    const { state } = harness;
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 0 });
-    await harness.hold("alpha", "ses_a");
-    state.markRoleBoundSubjects([CONTROLLER_NOTICE], "alpha");
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: true, endsBefore: 0 });
-    // A wildcard expands to its own concrete base and itself, neither of them marked here.
-    expect(state.roleSnapshot("notifications.legion.ACME.>")).toEqual({
-      roleBound: false,
-      endsBefore: 0,
-    });
-    state.endUnwantedRole("ses_b", null, ["ses_b"]);
-    expect(state.roleEndCount()).toBe(1);
-    expect(state.roleSnapshot(CONTROLLER_NOTICE)).toEqual({ roleBound: false, endsBefore: 1 });
   });
 
   test("establishedFor, inboundOpenSession and roleSettledSession follow what a pass recorded", async () => {

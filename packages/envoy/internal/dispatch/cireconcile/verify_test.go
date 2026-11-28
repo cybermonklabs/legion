@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 )
 
@@ -90,29 +91,23 @@ func (h *harness) waitForRequest(after uint64) contracts.CIVerifyRequest {
 // waitForRequestOf is waitForRequest for the head at sha.
 func (h *harness) waitForRequestOf(sha string, after uint64) contracts.CIVerifyRequest {
 	h.t.Helper()
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+	return testwait.Until(h.t, "a verify request past the head's previous revision", func() (contracts.CIVerifyRequest, bool) {
 		for _, request := range h.requests() {
 			if request.Head.SHA == sha && request.Revision > after {
-				return request
+				return request, true
 			}
 		}
-	}
-	h.t.Fatalf("the listener wrote no verify request of the head at %s past revision %d", sha, after)
-	return contracts.CIVerifyRequest{}
+		return contracts.CIVerifyRequest{}, false
+	})
 }
 
 // waitForState polls the head's record until done holds of it.
 func (h *harness) waitForState(why string, done func(cistore.State) bool) cistore.State {
 	h.t.Helper()
-	var state cistore.State
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
-		var ok bool
-		if state, _, ok = h.record(); ok && done(state) {
-			return state
-		}
-	}
-	h.t.Fatalf("%s: the record is %+v", why, state)
-	return state
+	return testwait.Until(h.t, why, func() (cistore.State, bool) {
+		state, _, ok := h.record()
+		return state, ok && done(state)
+	})
 }
 
 // The listener could not write the creation of a queued run (it answered GitHub 503), and then
@@ -122,6 +117,7 @@ func (h *harness) waitForState(why string, done func(cistore.State) bool) cistor
 // queued run in GitHub's answer, writes it, and the head stays open. Once GitHub finishes the run
 // and its webhook lands, the head settles after a verify read of its own.
 func TestARefusedCreationWebhookIsFoundByTheVerifyReadAndTheHeadStaysOpen(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -165,6 +161,7 @@ func TestARefusedCreationWebhookIsFoundByTheVerifyReadAndTheHeadStaysOpen(t *tes
 // answers nothing: the record's VerifiedRev stays as it was, the request stays for a later read,
 // and the head is not published.
 func TestAVerifyReadThatFailsOrStopsPartWayWritesNoAnswer(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name, path string
 	}{
@@ -206,6 +203,7 @@ func TestAVerifyReadThatFailsOrStopsPartWayWritesNoAnswer(t *testing.T) {
 // all the same: it writes the request's revision as VerifiedRev, the head settles on what the
 // record holds, and the request is deleted.
 func TestAnEmptyCompleteVerifyReadAnswersTheRequest(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -231,6 +229,7 @@ func TestAnEmptyCompleteVerifyReadAnswersTheRequest(t *testing.T) {
 // With verify off, a head settles from its webhooks alone, as it did before verify, and the
 // listener writes no verify request.
 func TestWithVerifyOffAHeadSettlesFromItsWebhooksAndNoRequestIsWritten(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -250,6 +249,7 @@ func TestWithVerifyOffAHeadSettlesFromItsWebhooksAndNoRequestIsWritten(t *testin
 // driven here, one per head, so the verdict is the order of events and not the time the runner
 // took. The time from the pass's start to the publication is logged for each head.
 func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	pulls := []fakePull{head(21), head(22), head(23)}
@@ -261,7 +261,7 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 		h.post("check_run", webhookFor("check_run", run, pull.number), fmt.Sprintf("d%d", i))
 		h.waitForRequestOf(pull.sha, 0)
 		if i == 0 {
-			h.noSettlement(settlements, "before any verify pass")
+			h.noSettlementAt(settlements, "before any verify pass", gitHubOwner, gitHubName, fmt.Sprint(pull.number))
 		}
 		began := time.Now()
 		h.verifyPass()
@@ -276,6 +276,7 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 // verified_rev, the request stays, and nothing is published. A later answer -- here another
 // Dispatch process, whose writes land -- publishes.
 func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -315,6 +316,7 @@ const verifyGaveUp = "ci verify gave up an episode: no later read of the head me
 // listener's request stays), with no ERROR and no answer; and the first read after GitHub answers
 // again, at 31 minutes, writes the answer, and the head is published.
 func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoes(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -376,6 +378,7 @@ func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoe
 // unread each time. A new observation of the head starts a new episode, which is read afresh and
 // publishes.
 func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -454,6 +457,7 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 // end within maxPages (ten thousand runs, a hundred full pages), which writes no answer, logs one
 // ERROR and deletes the request.
 func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -481,6 +485,7 @@ func TestAVerifyListingThatDoesNotEndWithinMaxPagesIsGivenUpAtOnce(t *testing.T)
 
 // The failures that end an episode at once are the ones every later read meets again.
 func TestPermanentVerifyFailuresAreTheOnesNoLaterReadMends(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name      string
 		err       error
@@ -508,6 +513,7 @@ func TestPermanentVerifyFailuresAreTheOnesNoLaterReadMends(t *testing.T) {
 // completes, the read answers (the completed suite re-arms the record, so the listener claims and
 // asks once more) and the head is published.
 func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -548,6 +554,7 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 // A commit status listing GitHub refuses costs the verify answer the head's statuses alone, as it
 // costs the walk: the answer is written and the head is published.
 func TestARefusedStatusListingCostsTheVerifyAnswerItsStatusesAlone(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.github.setTokenPermissions(map[string]string{"checks": "read", "contents": "read", "metadata": "read", "pull_requests": "read", "statuses": "read"})
 	h.github.refuseStatuses(gitHubRepository, headSHA)
@@ -578,6 +585,7 @@ func TestARefusedStatusListingCostsTheVerifyAnswerItsStatusesAlone(t *testing.T)
 // one installation's budget, which a check-runs listing meets, ends no pass: the answer reports
 // that the pass goes on to the next request, whose installation may be another.
 func TestARateLimitOnAVerifyReadWritesNoAnswerAndCountsNoFailure(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
@@ -636,6 +644,7 @@ func (l *countingLeases) count() int {
 // ENVOY_CI_VERIFY off takes no lease connection for the loop; a pass that lists one answers it
 // under the loop's lease, and a lease it cannot take answers nothing.
 func TestTheVerifyLoopTakesItsLeaseOnlyWhenARequestWaits(t *testing.T) {
+	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()

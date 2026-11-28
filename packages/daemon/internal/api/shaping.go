@@ -4,8 +4,9 @@ package api
 // the caller's own plugin read? It holds the contract header a caller states, the reading of the
 // pod a caller that states none is in, the shape of every answer at every contract this daemon
 // serves, and the one writer each answer goes through. The table it reads is answers.go's, beside
-// it; server.go routes the requests and calls writeAnswer and writeAnswerFrom for every body it
-// answers, and reads lowestPluginContract for the number the state carries.
+// it. server.go routes the requests, and the handlers, in server.go and in the files beside it,
+// call writeAnswer and writeAnswerFrom for every body they answer. state_route.go reads
+// lowestPluginContract for the number the state carries.
 
 import (
 	"encoding/json"
@@ -249,8 +250,16 @@ func recordedContractAtOrBelow(n int) int {
 //
 // The two registration rows take off `replaces`, the one key the replaces entry
 // (contract_20261125170509_replaces.go) added to a role's registration answer and to the
-// controller's, below that entry's number (entryNumber(replacesContract)). They follow strip too,
-// and placedByPod places the caller of a registration that carries the key by its pod.
+// controller's, below that entry's number (entryNumber(replacesContract)), and the controller's
+// row takes off `watchedWorkflows`, which the watched-workflows entry
+// (contract_20261127193422_watched-workflows.go) added to its answer, below that entry's number
+// (entryNumber(watchedWorkflowsContract)). They follow strip too, and placedByPod places the
+// caller of a registration that carries either key by its pod.
+//
+// The agent actions' row takes off `phaseNotRestarted`, the one key the claim start entry
+// (contract_20261127094305_claim-start.go) added to the controller's agent actions' answer, below
+// that entry's number (entryNumber(claimStartContract)). It follows strip, and placedByPod places
+// the caller of an answer that carries the key by its pod.
 //
 // On the other side, a caller below fixAttemptsContract is served the two keys that contract
 // removed, each as a stand-in, the one row of the numbered entries' stand-ins (standIns). A
@@ -278,6 +287,12 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
 		return shapeIssue(issue, restore, strip, nil), took
+	case AnswerObservedState:
+		observed, isObserved := body.(State)
+		if !isObserved {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		return observedFor(observed, restore, strip), took
 	case AnswerReleaseRecords:
 		records, isRecords := body.(ReleaseRecordsResponse)
 		if !isRecords {
@@ -304,6 +319,18 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		default:
 			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
 		}
+	case AnswerPlanRegister:
+		// The running-step entry's row. Every numbered contract reads this answer whole, so it
+		// stands among the numbered entries' identity answers (frozenIdentityAnswers), and this
+		// case, which shapeAnswer reads first, takes `running` off a caller below the entry.
+		taken, isTaken := body.(PlanRegisterResponse)
+		if !isTaken {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(runningStepContract) {
+			return withoutRunningSteps(taken), took
+		}
+		return taken, took
 	case AnswerRegister:
 		registration, isRegistration := body.(claim.RegisterResponse)
 		if !isRegistration {
@@ -321,7 +348,19 @@ func shapeAnswer(id AnswerID, body any, restore, strip int) (any, tookOff) {
 		if strip < entryNumber(replacesContract) {
 			registration.Replaces = ""
 		}
+		if strip < entryNumber(watchedWorkflowsContract) {
+			registration.WatchedWorkflows = nil
+		}
 		return registration, took
+	case AnswerAgentAction:
+		action, isAction := body.(AgentActionResponse)
+		if !isAction {
+			panic(fmt.Sprintf("api: the %s answer was written a %T, which its row cannot shape", id, body))
+		}
+		if strip < entryNumber(claimStartContract) {
+			action.PhaseNotRestarted = ""
+		}
+		return action, took
 	case answerUnparsed:
 		// The identity too, and for a reason of its own: no plugin parses these bodies, so no
 		// contract describes a shape for them (writeUnparsedAnswer).
@@ -508,6 +547,24 @@ func shapeIssue(issue Issue, restore, strip int, took *tookOff) Issue {
 		}
 	}
 	return issue
+}
+
+// observedFor is the observed view's row of shapeAnswer (AnswerObservedState): the observed view
+// of state, the part of a whole state the observed read answers (StateSource.ObservedState), as a
+// caller at restore and strip reads it, whose wire shape is the contract's
+// LegionObservedStateResponse (packages/contracts/src/legion-api.ts). The state is shaped by the
+// very bands and value strips stateFor applies to the whole state and then read as the observed
+// view (observedOf), so at every contract each member of the view is the whole state's member at
+// that contract, and a band a later contract adds to a member the view carries reaches the view
+// with no line here. The whole state's mark (ContractView) is no member of the view and is left
+// out with the rest of the whole state's keys.
+//
+// A caller at this daemon's own contract takes no band and no value strip, and stateFor copies no
+// issue map for it. That is every read Dispatch makes, since it states no contract and asks from
+// no pod. The shaping records nothing in the log, where recordShaping writes the whole state's
+// lines alone.
+func observedFor(state State, restore, strip int) ObservedState {
+	return observedOf(stateFor(state, restore, strip, nil))
 }
 
 // narrowedTheState is the message of the line the daemon writes for each band it serves the
@@ -1101,8 +1158,8 @@ const pauseContract = 178
 //
 // It is a literal of its own and never DaemonAPIVersion: the number a later contract takes
 // moves that constant, and the contract this block arrived at stays where it is. It moves only
-// with its own change's number, and answers.go's SupportedContracts names the constant rather
-// than its number for that reason.
+// with dispatch://INFRA-4401's own number, and answers.go's SupportedContracts names the constant
+// rather than its number for that reason.
 const repositoriesLiveContract = 202
 
 // cachesSourceContract is the daemon contract dispatch://INFRA-4036 landed under (version.go's
@@ -1382,6 +1439,21 @@ func withoutAssignmentPlans(issue Issue) (Issue, bool) {
 		issue.Assignments[i].Plan = ""
 	}
 	return issue, true
+}
+
+// withoutRepositoryCorrection is the issue with no `repoBefore`, `repoCorrectedAt`,
+// `repoChangePending` or `repoChangeReason`, the four fields repositoryCorrectionContract added to
+// the state; nothing else of that contract is a key of this route. `repo` is left as it is: it
+// names the repository the issue works, which every contract since 31 carries. Each pair is
+// written from one value of the record, a correction (record.Issue.RepoCorrection) or a change
+// still to be made (record.Issue.RepoChange), and only where there is one, so the band reports a
+// move only for an issue that carries one of the four.
+func withoutRepositoryCorrection(issue Issue) (Issue, bool) {
+	moved := issue.RepoBefore != "" || issue.RepoCorrectedAt != nil ||
+		issue.RepoChangePending != "" || issue.RepoChangeReason != ""
+	issue.RepoBefore, issue.RepoCorrectedAt = "", nil
+	issue.RepoChangePending, issue.RepoChangeReason = "", ""
+	return issue, moved
 }
 
 // withoutCauseTimes is the issue with no claim view carrying `lastDeathAt` or
@@ -2040,6 +2112,21 @@ func withoutPause(state State) (State, bool) {
 	return state, moved
 }
 
+// withoutStateSeq is state with no `daemon.stateSeq`, no `daemon.stateId` and no
+// `daemon.stateRun`, the three keys stateSeqContract's entry added to this route; nothing else of
+// that entry is a key of the state. The sequence is left off rather than zeroed, because the
+// strict reader before the entry's number refuses it when it is 0 as surely as when it names a
+// sequence, and a 0 would tell a reader of this contract that the project has no state event.
+// The daemon's own source sets the sequence on every body it answers, 0 included, so the band
+// reports a move for every such body; a state built without any of the three carries nothing to
+// strip. The daemon block is a value of the state's own, so the state the source answered is left
+// as it was.
+func withoutStateSeq(state State) (State, bool) {
+	moved := state.Daemon.StateSeq != nil || state.Daemon.StateID != "" || state.Daemon.StateRun != ""
+	state.Daemon.StateSeq, state.Daemon.StateID, state.Daemon.StateRun = nil, "", ""
+	return state, moved
+}
+
 // withoutDispatchCredential is state with no `dispatchCredential`, the one key
 // dispatchCredentialContract added to the state; nothing else of that contract is a key of an
 // answer a plugin parses, since the settings block's `dispatch_token_broker` is a key no reader
@@ -2087,6 +2174,16 @@ func withoutResolvedPriority(issue Issue) (Issue, bool) {
 	return issue, moved
 }
 
+// withoutClaimLeft is the issue with no `claimLeft`, the one key claimLeftContract added to each
+// issue. It is a pointer with `omitempty`, so nil takes the key off, and the band reports a move
+// only for an issue that carries it. Issue is a value, so the state the source answered is left as
+// it was.
+func withoutClaimLeft(issue Issue) (Issue, bool) {
+	moved := issue.ClaimLeft != nil
+	issue.ClaimLeft = nil
+	return issue, moved
+}
+
 // withoutResumePauses is records with no resume carrying `pause`, the one key pauseContract added
 // to the release records. The key is `omitempty` and absent from a wake no pause held, so records
 // whose resumes carry none are returned as they are, with no copy made. Otherwise the resumes are
@@ -2103,6 +2200,24 @@ func withoutResumePauses(records ReleaseRecordsResponse) ReleaseRecordsResponse 
 	}
 	records.Resumes = resumes
 	return records
+}
+
+// withoutRunningSteps is taken with no task carrying `running`, the one key runningStepContract
+// added to register_plan's answer. The key is `omitempty` and absent from a task that does not
+// run, so an answer whose tasks carry none is returned as it is, with no copy made. Otherwise the
+// tasks are copied before one is written, so the body the route built is left as it was, and the
+// list stays non-nil, as register_plan writes it (RegisteredPlan).
+func withoutRunningSteps(taken PlanRegisterResponse) PlanRegisterResponse {
+	if !slices.ContainsFunc(taken.Plan.Tasks, func(task RegisteredTask) bool { return task.Running != nil }) {
+		return taken
+	}
+	tasks := make([]RegisteredTask, len(taken.Plan.Tasks))
+	for i, task := range taken.Plan.Tasks {
+		task.Running = nil
+		tasks[i] = task
+	}
+	taken.Plan.Tasks = tasks
+	return taken
 }
 
 // withoutClaimRoundReport is the issue with no claim view carrying `updateState` or `wake`, the
@@ -2234,6 +2349,14 @@ func stripTurnRecord(view ClaimView) ClaimView {
 // a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
 
+// AnswerObservedState names the observed view of the state route, the body of
+// `GET /legion/v1/state?view=observed` (ObservedState), which Dispatch reads. It is no row of
+// Answers, which is the plugin's table alone: no plugin parses the view, and pi-shared's census of
+// that table holds every row to a parse site of the plugin's client. It is shaped all the same,
+// unlike answerUnparsed (observedFor). The route writes it the State that the observed read
+// answers (StateSource.ObservedState), and observedFor shapes that State to the view.
+const AnswerObservedState AnswerID = "observed-state"
+
 // answerWritten is told the pattern of the route and the id of the answer of every body this
 // package writes (writeAnswerFrom). It is nil in a daemon and set by one test of this package,
 // which holds each pair to the table: an answer's Routes say which doors write it, and a door
@@ -2262,11 +2385,13 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 
 // placedByPod is whether the answer id, written as body, places a caller that states no contract
 // by the claims of its pod: true for the release records, for a refusal whose body is a
-// PauseFailure or a PlanRefusal, and for a registration, a role's or the controller's, that
-// carries `replaces`, and false for every other answer. Those answers' shapes moved at
-// pauseContract, at OwnerPlanContract and at the replaces entry, and their writers answer from no
+// PauseFailure or a PlanRefusal, for a registration, a role's or the controller's, that carries
+// `replaces`, for the controller's registration that carries `watchedWorkflows`, and for an agent
+// action's answer that carries `phaseNotRestarted`, and false for every other answer. Those
+// answers' shapes moved at pauseContract, at OwnerPlanContract, at the replaces entry, at the
+// claim start entry and at the watched-workflows entry, and their writers answer from no
 // snapshot of their own, so writeAnswer reads the claims for them (placingClaims). A registration
-// that replaces no session is the same body at every contract, so it reads none. Every other
+// that carries no such key is the same body at every contract, so it reads none. Every other
 // answer writeAnswer writes is the identity at every contract, and so is a plain refusal (a
 // claim.Refusal or a Failure), so a read of the claims for one of them would decide nothing. A
 // serving-down added to one of them reaches the caller of a pod only once this answers true for
@@ -2288,7 +2413,10 @@ func placedByPod(id AnswerID, body any) bool {
 		return isRegistration && registration.Replaces != ""
 	case AnswerRegisterController:
 		registration, isRegistration := body.(ControllerRegisterResponse)
-		return isRegistration && registration.Replaces != ""
+		return isRegistration && (registration.Replaces != "" || len(registration.WatchedWorkflows) > 0)
+	case AnswerAgentAction:
+		action, isAction := body.(AgentActionResponse)
+		return isAction && action.PhaseNotRestarted != ""
 	default:
 		return false
 	}

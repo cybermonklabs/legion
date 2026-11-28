@@ -37,6 +37,8 @@ function issue(key: string, overrides: Partial<IssueSummary> = {}): IssueSummary
     title: `Work ${key}`,
     status: "todo",
     priority: null,
+    resolved_priority: overrides.priority ?? null,
+    priority_from: null,
     rank: key,
     labels: [],
     parent: null,
@@ -243,6 +245,54 @@ test("opening a Labels facet does not pass its values through another column's f
   await user.click(trigger);
   expect(await screen.findByRole("combobox", { name: "Search Labels" })).toBeDefined();
   expect(screen.getByRole("option", { name: "frontend, 1 issue" })).toBeDefined();
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 2: a label with no break in it shortens inside its
+// own pill, with the whole label as its title, rather than running past the Labels cell.
+test("a long label shortens to an ellipsis inside its pill, with the whole label as its title", async () => {
+  const long = "dispatchlayoutruleaverylonglabelnobreak1";
+  table([issue("CORE-1", { labels: [long] })]);
+  const row = await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+  const words = within(row).getByText(long);
+  expect(words).toHaveAttribute("title", long);
+  expect(words.className).toContain("truncate");
+});
+
+// The Layout rule (`web/src/AGENTS.md`), point 3: a row's labels are a list as long as the
+// issue's data, so the cell shows ten and one "+N" that shows the rest in place. A row the search
+// hides and shows again is drawn from nothing, and the labels the reader opened are still open.
+test("a row shows ten of its labels and a +N, and its opened labels stay open when the row is drawn again", async () => {
+  const user = userEvent.setup();
+  const labels = Array.from({ length: 13 }, (_, index) => `label-${index + 1}`);
+  table([
+    issue("CORE-1", { labels, title: "Work with many labels" }),
+    issue("CORE-2", { title: "Sextant" }),
+  ]);
+  const labelsOf = async () => {
+    const row = await screen.findByRole("row", { name: "CORE-1 Work with many labels" });
+    const group = row.querySelector<HTMLElement>('[data-layout-group="labels"]');
+    if (group === null) throw new Error("the row's labels are not a group");
+    return group;
+  };
+  const drawn = (group: HTMLElement) =>
+    labels.filter((label) => within(group).queryByText(label) !== null);
+
+  expect(drawn(await labelsOf())).toEqual(labels.slice(0, 10));
+  await user.click(
+    within(await labelsOf()).getByRole("button", { name: "+3, show all 13 labels" })
+  );
+  expect(drawn(await labelsOf())).toEqual(labels);
+
+  const search = screen.getByRole("searchbox", { name: "Search issues" });
+  await user.type(search, "sextant");
+  // A query longer than the box ends in an ellipsis, so the whole query is the box's title.
+  expect(search).toHaveAttribute("title", "sextant");
+  await waitFor(() =>
+    expect(screen.queryByRole("row", { name: "CORE-1 Work with many labels" })).toBeNull()
+  );
+  await user.clear(search);
+  expect(drawn(await labelsOf())).toEqual(labels);
+  expect(within(await labelsOf()).getByRole("button", { name: "Show fewer labels" })).toBeDefined();
 });
 
 test("Created sorts RFC3339 fractional timestamps by instant, not by text", async () => {
@@ -1425,42 +1475,45 @@ test.each([
   // Created leaves rows of one timestamp as they came.
   ["the default Queue sort", "", ["CORE-2", "CORE-4", "CORE-1", "CORE-3"]],
   ["Created ascending", "?sort=created", ["CORE-1", "CORE-2", "CORE-3", "CORE-4"]],
-])("a grouping picked from the toolbar orders its headings under %s", async (_name, search, ungrouped) => {
-  const user = userEvent.setup();
-  table(
-    [
-      issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a", status: "needs_review" }),
-      issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b", status: "todo" }),
-      issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c", status: "in_progress" }),
-      issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d", status: "todo" }),
-    ],
-    search
-  );
-  await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
-  const groupBy = screen.getByRole("combobox", { name: "Group by" });
-  await user.selectOptions(groupBy, "priority");
-  await waitFor(() =>
-    expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
-  );
-  await user.selectOptions(groupBy, "status");
-  await waitFor(() =>
-    expect(
-      headings().map((text) =>
-        ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
-      )
-    ).toEqual(["Todo", "In progress", "Needs review"])
-  );
-  // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
-  await user.selectOptions(groupBy, "");
-  await waitFor(() => expect(headings()).toEqual([]));
-  await waitFor(() =>
-    expect(
-      [...document.querySelectorAll("[data-issue-row]")].map((row) =>
-        row.getAttribute("data-issue-row")
-      )
-    ).toEqual(ungrouped)
-  );
-});
+])(
+  "a grouping picked from the toolbar orders its headings under %s",
+  async (_name, search, ungrouped) => {
+    const user = userEvent.setup();
+    table(
+      [
+        issue("CORE-1", { labels: ["legion"], priority: 0, rank: "a", status: "needs_review" }),
+        issue("CORE-2", { labels: ["legion"], priority: 1, rank: "b", status: "todo" }),
+        issue("CORE-3", { labels: ["legion"], priority: 3, rank: "c", status: "in_progress" }),
+        issue("CORE-4", { labels: ["legion"], priority: 2, rank: "d", status: "todo" }),
+      ],
+      search
+    );
+    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" });
+    const groupBy = screen.getByRole("combobox", { name: "Group by" });
+    await user.selectOptions(groupBy, "priority");
+    await waitFor(() =>
+      expect(headings().map((text) => text.match(/P\d/)?.[0])).toEqual(["P0", "P1", "P2", "P3"])
+    );
+    await user.selectOptions(groupBy, "status");
+    await waitFor(() =>
+      expect(
+        headings().map((text) =>
+          ["Todo", "In progress", "Needs review"].find((name) => text.includes(name))
+        )
+      ).toEqual(["Todo", "In progress", "Needs review"])
+    );
+    // Ungrouped again, the rows follow the reader's sort alone: no grouping order survives it.
+    await user.selectOptions(groupBy, "");
+    await waitFor(() => expect(headings()).toEqual([]));
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll("[data-issue-row]")].map((row) =>
+          row.getAttribute("data-issue-row")
+        )
+      ).toEqual(ungrouped)
+    );
+  }
+);
 
 // Start all its queued issues next is Start next over an epic's queued children: it moves them
 // and says so, rather than leaving the reader to guess whether anything happened.
@@ -1665,7 +1718,7 @@ async function headerLayout(width: number): Promise<string[]> {
 
 /** The columns after the pinned ones, at the registry's widths, then the Start next column. */
 const UNPINNED_REST = [
-  "Status 132px -",
+  "Status 148px -",
   "Epic 220px -",
   "Assignee 180px -",
   "Created by 200px -",
@@ -1726,7 +1779,7 @@ test("a stored desktop width reaches the List's header", async () => {
   );
   const cells = await headerLayout(1400);
   expect(cells).toContain("Epic 300px -");
-  expect(cells).toContain("Status 132px -");
+  expect(cells).toContain("Status 148px -");
 });
 
 test("the Status filter counts Done once the closed issues are loaded", async () => {
@@ -1877,20 +1930,19 @@ test("a resumed merge whose discarded reason never landed posts it before closin
 
 // B1: a status the bundle does not know — a bookmark in another casing, a deploy window — is a
 // filter that matches nothing, not a page the reader loses.
-test.each([
-  "bogus",
-  "Done",
-  "in-progress",
-])("an unknown ?status=%s leaves the table standing, with the value in the filter", async (status) => {
-  const user = userEvent.setup();
-  table([issue("CORE-1"), issue("CORE-2")], `?status=${status}`);
-  expect(await screen.findByRole("table", { name: "Project issues table" })).toBeDefined();
-  expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
-  await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
-  expect(screen.getAllByRole("option", { name: new RegExp(`^${status}`) }).length).toBeGreaterThan(
-    0
-  );
-});
+test.each(["bogus", "Done", "in-progress"])(
+  "an unknown ?status=%s leaves the table standing, with the value in the filter",
+  async (status) => {
+    const user = userEvent.setup();
+    table([issue("CORE-1"), issue("CORE-2")], `?status=${status}`);
+    expect(await screen.findByRole("table", { name: "Project issues table" })).toBeDefined();
+    expect(screen.getByRole("searchbox", { name: "Search issues" })).toBeDefined();
+    await user.click(screen.getByRole("button", { name: /^Filter Status/ }));
+    expect(
+      screen.getAllByRole("option", { name: new RegExp(`^${status}`) }).length
+    ).toBeGreaterThan(0);
+  }
+);
 
 // B2: a closed `<select>` commits on an arrow key in Chrome on Linux. Neither of the table's
 // two destructive selects may write on one, so each stages a value for a button to commit.
@@ -2201,6 +2253,31 @@ function listedKeys(): string[] {
     .filter((row) => row.hasAttribute("data-issue-row"))
     .map((row) => row.getAttribute("data-issue-row") ?? "");
 }
+
+const priorityRows = [
+  issue("ACME-1", { priority: 0 }),
+  issue("ACME-3", { priority: 2 }),
+  issue("ACME-2", { parent: "ACME-1", resolved_priority: 0, priority_from: "ACME-1" }),
+];
+
+test("the List's Priority column shows the inherited level and links its source", async () => {
+  table(priorityRows);
+  const row = await screen.findByRole("row", { name: "ACME-2 Work ACME-2" });
+  const picker = within(row).getByRole("combobox", { name: "Priority of ACME-2" });
+  const cell = picker.closest("td");
+  expect(cell, "List Priority cell for ACME-2").toHaveTextContent("P0 · from ACME-1");
+  if (cell === null) throw new Error("List Priority cell missing");
+  expect(
+    within(cell).getByRole("link", { name: "ACME-1" }),
+    "List Priority source"
+  ).toHaveAttribute("href", "/issues/ACME-1");
+});
+
+test("the List sorts an inherited P0 with its own P0s, above P2", async () => {
+  table(priorityRows, "?sort=priority,key");
+  await screen.findByRole("row", { name: "ACME-2 Work ACME-2" });
+  expect(listedKeys(), "List sorted by Priority").toEqual(["ACME-1", "ACME-2", "ACME-3"]);
+});
 
 test("a scoped table lists the issues the server answers for the priority, over every project", async () => {
   const { listing } = table(
@@ -2745,38 +2822,45 @@ test.each(quietActions)("$action with no issue in work sends no dry run", async 
 test.each([
   ["the open listing", ""],
   ["every issue", "?nofilter=1"],
-])("Move to epic into an epic closed since it was picked asks to reopen it, over %s", async (_listing, search) => {
-  const user = userEvent.setup();
-  const sent = answerEpicWrites([epicIssue("CORE-9", "Platform", "done")]);
-  // The listing answers from this array, so the epic's close below reaches the table's next read.
-  const rows = [
-    issue("CORE-1", { status: "backlog" }),
-    issue("CORE-9", { labels: ["epic"], status: "backlog", title: "Platform" }),
-  ];
-  const { client } = table(rows, search);
-  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
-  const pick = screen.getByRole("combobox", { name: "Move to epic" });
-  await user.selectOptions(pick, "CORE-9");
-  // The epic closes while it is picked, and the select offers it no more.
-  rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
-  await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
-  await waitFor(() => expect(within(pick).queryByRole("option", { name: "Platform" })).toBeNull());
-  await user.click(screen.getByRole("button", { name: "Move" }));
-  const dialog = await screen.findByRole("dialog", { name: "Reopen CORE-9 too?" });
-  expect(dialog.textContent).toContain(
-    "The epic CORE-9 “Platform” is done. A done epic holds no open issue. Before the move, Dispatch makes these changes:"
-  );
-  expect(within(dialog).getByRole("list", { name: "Changes" }).textContent).toBe(
-    "CORE-9 “Platform” moves to In progress"
-  );
-  await user.click(within(dialog).getByRole("button", { name: "Reopen it too" }));
-  await noticeOnceDone("Moved CORE-1 “Work CORE-1” to the epic");
-  expect(sent).toEqual([
-    ["status-change", "CORE-9", intoWorkDryRun],
-    ["status-change", "CORE-9", intoWork],
-    ["PATCH", "CORE-1", { parent: "CORE-9" }],
-  ]);
-});
+])(
+  "Move to epic into an epic closed since it was picked asks to reopen it, over %s",
+  async (_listing, search) => {
+    const user = userEvent.setup();
+    const sent = answerEpicWrites([epicIssue("CORE-9", "Platform", "done")]);
+    // The listing answers from this array, so the epic's close below reaches the table's next read.
+    const rows = [
+      issue("CORE-1", { status: "backlog" }),
+      issue("CORE-9", { labels: ["epic"], status: "backlog", title: "Platform" }),
+    ];
+    const { client } = table(rows, search);
+    await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+    const pick = screen.getByRole("combobox", { name: "Move to epic" });
+    await user.selectOptions(pick, "CORE-9");
+    // The closed picker may end the epic's title in an ellipsis, so its whole title is the title.
+    expect(pick).toHaveAttribute("title", "Platform");
+    // The epic closes while it is picked, and the select offers it no more.
+    rows[1] = issue("CORE-9", { labels: ["epic"], status: "done", title: "Platform" });
+    await act(() => client.invalidateQueries({ queryKey: ["issues"] }));
+    await waitFor(() =>
+      expect(within(pick).queryByRole("option", { name: "Platform" })).toBeNull()
+    );
+    await user.click(screen.getByRole("button", { name: "Move" }));
+    const dialog = await screen.findByRole("dialog", { name: "Reopen CORE-9 too?" });
+    expect(dialog.textContent).toContain(
+      "The epic CORE-9 “Platform” is done. A done epic holds no open issue. Before the move, Dispatch makes these changes:"
+    );
+    expect(within(dialog).getByRole("list", { name: "Changes" }).textContent).toBe(
+      "CORE-9 “Platform” moves to In progress"
+    );
+    await user.click(within(dialog).getByRole("button", { name: "Reopen it too" }));
+    await noticeOnceDone("Moved CORE-1 “Work CORE-1” to the epic");
+    expect(sent).toEqual([
+      ["status-change", "CORE-9", intoWorkDryRun],
+      ["status-change", "CORE-9", intoWork],
+      ["PATCH", "CORE-1", { parent: "CORE-9" }],
+    ]);
+  }
+);
 
 // An action a reload cut off, finished later: the epic it moves issues under may have left work or
 // closed meanwhile. Finish asks the action's own question before it moves a not-in-work epic into
@@ -3327,29 +3411,25 @@ const finishingActions = [
   },
 ];
 
-test.each(
-  finishingActions
-)("Finish of a $action whose epic is not in work, its question cancelled, writes nothing and keeps the action", async ({
-  epic,
-  question,
-  record,
-  rows,
-}) => {
-  const user = userEvent.setup();
-  const sent = answerEpicWrites([epic]);
-  interruptedBy(record);
-  table(rows());
-  await pressFinish(user);
-  const dialog = await screen.findByRole("dialog", { name: question });
-  await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-  expect(screen.queryByRole("dialog")).toBeNull();
-  // The action stays to be finished, and the dry run is the one request Finish sent.
-  expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
-  expect(sent).toEqual([["status-change", epic.key, intoWorkDryRun]]);
-  expect(
-    within(screen.getByRole("region", { name: "Project issues" })).queryByRole("status")
-  ).toBeNull();
-});
+test.each(finishingActions)(
+  "Finish of a $action whose epic is not in work, its question cancelled, writes nothing and keeps the action",
+  async ({ epic, question, record, rows }) => {
+    const user = userEvent.setup();
+    const sent = answerEpicWrites([epic]);
+    interruptedBy(record);
+    table(rows());
+    await pressFinish(user);
+    const dialog = await screen.findByRole("dialog", { name: question });
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // The action stays to be finished, and the dry run is the one request Finish sent.
+    expect(await screen.findByRole("region", { name: "Interrupted table action" })).toBeDefined();
+    expect(sent).toEqual([["status-change", epic.key, intoWorkDryRun]]);
+    expect(
+      within(screen.getByRole("region", { name: "Project issues" })).queryByRole("status")
+    ).toBeNull();
+  }
+);
 
 // The table going away while Finish's question is open ends the Finish, as a Cancel does: nothing
 // more is written, and nothing is left waiting on a dialog nobody can see.
@@ -3495,9 +3575,9 @@ test("a layout's Title fills a desktop box with what the other shown columns and
   expect([narrow.fills, narrow.trailing]).toEqual(["title", 104]);
   const wide = renderHook(() => useTableLayout("fills-narrow", narrow));
   expect(wide.result.current.boxWidth).toBe(1000);
-  // Select 44, key 108 and status 132 shown, and the row's actions, in a box not yet measured,
-  // whose borders read as nothing: 1000 - 388.
-  expect(wide.result.current.responsive.sizing.title).toBe(612);
+  // Select 44, key 108 and status 148 shown, and the row's actions, in a box not yet measured,
+  // whose borders read as nothing: 1000 - 404.
+  expect(wide.result.current.responsive.sizing.title).toBe(596);
   wide.unmount();
   // With more shown than leave Title its minimum, it stays at that minimum.
   const full = renderHook(() =>

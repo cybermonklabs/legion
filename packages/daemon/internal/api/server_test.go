@@ -23,9 +23,10 @@ import (
 )
 
 type fakeSource struct {
-	state  State
-	claims []supervise.Claim
-	err    error
+	state    State
+	claims   []supervise.Claim
+	observed State
+	err      error
 }
 
 func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim, error) {
@@ -33,6 +34,13 @@ func (f fakeSource) State(_ context.Context, _ pgx.Tx) (State, []supervise.Claim
 		return State{}, nil, f.err
 	}
 	return f.state, f.claims, nil
+}
+
+func (f fakeSource) ObservedState(_ context.Context, _ pgx.Tx) (State, []supervise.Claim, error) {
+	if f.err != nil {
+		return State{}, nil, f.err
+	}
+	return f.observed, f.claims, nil
 }
 
 func serve(t *testing.T, src StateSource, method, target string) *httptest.ResponseRecorder {
@@ -66,6 +74,8 @@ func (f *fakeStateTransactions) BeginTx(_ context.Context, opts pgx.TxOptions) (
 type fakeTx struct {
 	committed  bool
 	rolledBack bool
+	// bounded is whether the route has run its statement bound on this transaction.
+	bounded bool
 	// commitErr is the commit's answer, nil for one that committed.
 	commitErr error
 }
@@ -91,8 +101,9 @@ func (*fakeTx) Prepare(context.Context, string, string) (*pgconn.StatementDescri
 // Exec takes the one statement a route runs of its own on this transaction — the state route's
 // bound on its own statements — and refuses every other: those belong to a state source, and the
 // sources here are fakes that run none.
-func (*fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+func (t *fakeTx) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
 	if strings.HasPrefix(sql, "set local statement_timeout = ") {
+		t.bounded = true
 		return pgconn.CommandTag{}, nil
 	}
 	return pgconn.CommandTag{}, errors.New("unexpected exec: " + sql)
@@ -318,8 +329,9 @@ func TestUnknownPathIsARefusedRoute(t *testing.T) {
 	}
 }
 
-// The daemon resolves no review thread for anyone: a role resolves a thread with plain gh. The
-// route a plugin built before DaemonAPIVersion's LEGION-631 entry would post to is no route at all.
+// The daemon resolves no review thread for anyone: the reviewer names the bot threads it accepted
+// to the implementer, who resolves them with plain gh as the pull request's author. The route a
+// plugin built before DaemonAPIVersion's LEGION-631 entry would post to is no route at all.
 func TestTheDeletedThreadsResolveRouteAnswersNoRoute(t *testing.T) {
 	recorder := serve(t, fakeSource{}, http.MethodPost, "/legion/v1/threads/resolve")
 

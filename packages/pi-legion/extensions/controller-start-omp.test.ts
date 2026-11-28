@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  githubDefaultBranchWorkflowSubject,
   LISTENER_CALL_ATTEMPTS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
@@ -12,6 +13,7 @@ import {
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import {
   type Block,
   type Cleanup,
@@ -31,6 +33,7 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import {
   completeLines,
@@ -38,6 +41,7 @@ import {
   type Writer,
   writtenLines,
 } from "@legion/test-fixtures/transcript-lines";
+import { settled, span, until } from "@legion/test-fixtures/wait";
 import {
   connect,
   type JetStreamManager,
@@ -168,32 +172,31 @@ const WAKE_ONE = "1 Envoy message above arrived with no turn to read it";
 const BUSY = "Working…";
 
 /**
- * How long after the spawn a wait may last: Oh My Pi's startup, which loads both extensions before
- * `/legion-controller-start` runs, took about 27 s of wall time (9 s of CPU) in a slow but normal
- * pod, so the waits that span it get this much from the spawn.
- */
-const STARTUP_DEADLINE_MS = 150_000;
-
-/** How long one wait for something the started session owes a case may last once startup is over. */
-const STEP_DEADLINE_MS = 30_000;
-
-/** A case's own timeout: its startup, each of its waits and the cleanup of its processes. */
-const CASE_TIMEOUT_MS = 600_000;
-
-/**
  * Wide enough that the start message, as the TUI renders the user message, fits on one row, so
  * the screen holds it verbatim.
  */
 const COLUMNS = 200;
 
+// Each case that starts Oh My Pi waits through its startup, which loads both extensions before
+// `/legion-controller-start` runs and took about 27 s of wall time (9 s of CPU) in a slow but
+// normal pod, so it needs more than Bun's 5000 ms default in every mode: `bun run test`'s workers
+// declare 300000 ms (`test-timeout-preload.ts`), but a run of this file alone takes no worker and
+// keeps 5000 ms. Each such case therefore takes a guard of its own, as the cases of
+// `legion-stall-watchdog-omp.test.ts` do: the case calls `useRowGuard` for the shared wait's
+// deadline and passes the same value as `test`'s third argument for Bun's row kill, and the
+// afterEach, whose cleanup kills a real Oh My Pi, passes it as its own hook timeout.
+const COLD_PANE_GUARD_MS = 300_000;
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
   readonly request: Request;
+  /** When the stand-in took the request, on this process's `performance.now()` clock. */
+  readonly takenAt: number;
   /** Answers it with one text block. */
   reply(text: string): void;
   /** Answers it with `blocks` (a tool call among them). */
@@ -258,16 +261,11 @@ interface ControllerSession {
   transcriptWhole(): Promise<void>;
   /** The transcript's message entries, in order. */
   messages(): Promise<MessageEntry[]>;
-  /**
-   * Polls `probe` until it returns a value, failing at the deadline (`withinMs` from now, when a
-   * case's own bound is the property under test) or when omp exits.
-   */
-  until<T>(
-    what: string,
-    probe: () => T | undefined | Promise<T | undefined>,
-    withinMs?: number
-  ): Promise<T>;
-  /** Resolves once the screen shows all of `texts` at once; fails on `what` at the deadline. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline,
+   * when omp exits, or on a refusal the stand-in recorded. */
+  until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
+  /** Resolves once the screen shows all of `texts` at once; fails on `what` at the row's
+   * deadline. */
   shows(what: string, ...texts: readonly string[]): Promise<void>;
 }
 
@@ -456,6 +454,7 @@ async function serveController(
       const answer = Promise.withResolvers<string>();
       turns.push({
         request: { path: url.pathname, body },
+        takenAt: performance.now(),
         reply: (text) => answer.resolve(messageStream([{ type: "text", text }], `msg_${index}`)),
         replyBlocks: (blocks) => answer.resolve(messageStream(blocks, `msg_${index}`)),
       });
@@ -603,7 +602,6 @@ async function startController(
   const startupHold = path.join(root, "startup-hold.ts");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
-  const spawnedAt = Date.now();
   const terminal = spawnInteractive(
     binary,
     {
@@ -636,37 +634,29 @@ async function startController(
     exitCode = code;
   });
 
-  const until = async <T>(
+  const waitFor = async <T>(
     what: string,
-    probe: () => T | undefined | Promise<T | undefined>,
-    withinMs?: number
+    probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // A wait gets its own step, and one that starts before Oh My Pi's startup could be over gets
-    // until the startup deadline: the first wait of every case spans that startup. A case's own
-    // bound replaces both.
-    const deadline =
-      withinMs === undefined
-        ? Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS)
-        : Date.now() + withinMs;
-    for (;;) {
+    // What the cases wait on (a request reaching the stand-in, the screen, the transcript) has no
+    // event the test can await, so it is polled through the shared wait, and its failure carries
+    // the screen.
+    const answered = await until(what, async () => {
       if (exitCode !== undefined) {
-        throw new Error(
-          `omp exited (${exitCode}) while waiting for ${what}; its screen:\n${terminal.screen()}`
-        );
+        throw new Error(`omp exited (${exitCode}) while waiting for ${what}`);
       }
       // On every poll, not only at the start: a refusal a stand-in callback recorded is the
       // case's answer, so the wait ends on it the moment it is there.
       const fault = hooks.fault?.();
       if (fault !== undefined) throw fault;
       const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) {
-        throw new Error(`timed out waiting for ${what}; the screen:\n${terminal.screen()}`);
-      }
-      // What the cases wait on (a request reaching the stand-in, the screen, the transcript) has
-      // no event the test can await, so it is polled, and a missing one fails at the deadline.
-      await Bun.sleep(25);
-    }
+      return value === undefined ? undefined : { value };
+    }).catch((error: unknown) => {
+      throw new Error(`${(error as Error).message}; the screen:\n${terminal.screen()}`, {
+        cause: error,
+      });
+    });
+    return answered.value;
   };
 
   // Which of the two states the transcript's writer is in, sampled before each read of the file
@@ -677,7 +667,7 @@ async function startController(
   // What a read that proves an absence waits for: with the transcript ending on a finished line,
   // an empty result is the absence of the record rather than of a line still being written.
   const transcriptWhole = async (): Promise<void> => {
-    await until("the transcript to end on a finished line", async () =>
+    await waitFor("the transcript to end on a finished line", async () =>
       endsWhole(await transcriptText(sessions)) ? true : undefined
     );
   };
@@ -687,16 +677,16 @@ async function startController(
     terminal,
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
     transcriptLines: () => transcriptLines(sessions, writer()),
     transcriptWhole,
     messages: () => transcriptMessages(sessions, writer()),
-    until,
+    until: waitFor,
     async shows(what, ...texts) {
-      await until(what, () => {
+      await waitFor(what, () => {
         const screen = terminal.screen();
         return texts.every((text) => screen.includes(text)) ? true : undefined;
       });
@@ -725,7 +715,8 @@ interface DaemonController {
   abort(): Promise<void>;
   /** The one transcript's lines, raw; none until Oh My Pi writes the file. */
   transcriptLines(): Promise<string[]>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
@@ -735,8 +726,8 @@ interface DaemonController {
  * project's Slack channels (none unless `launch` names them), and no
  * LEGION_CONTROLLER_START_MESSAGE, since the daemon delivers the start message itself once the
  * controller reports ready — against the controller's stand-in (`serveController`), which answers
- * the daemon's state while the daemon holds the controller's claim (internal/projection's
- * golden), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
+ * the daemon's state while the daemon holds the controller's claim (state-controller-claim.json,
+ * which internal/daemon's composition test writes), with `hooks`. `launch.heartbeatMs` is Envoy's registration heartbeat
  * (ENVOY_HEARTBEAT_MS, 90 s by default), which a case that watches a pass shortens.
  */
 async function startDaemonController(
@@ -751,7 +742,6 @@ async function startDaemonController(
 
   const responses = new Map<string, PromiseWithResolvers<Record<string, unknown>>>();
   const closed: { error?: unknown } = {};
-  const spawnedAt = Date.now();
   const rpc = spawnRpc(
     binary,
     {
@@ -785,23 +775,20 @@ async function startDaemonController(
     closed.error = error;
   });
 
-  const until = async <T>(
+  const waitFor = async <T>(
     what: string,
     probe: () => T | undefined | Promise<T | undefined>
   ): Promise<T> => {
-    // As in `startController`: the first wait spans Oh My Pi's startup.
-    const deadline = Math.max(Date.now() + STEP_DEADLINE_MS, spawnedAt + STARTUP_DEADLINE_MS);
-    for (;;) {
+    const answered = await until(what, async () => {
       if (closed.error !== undefined) throw closed.error;
       // As in `startController`: a refusal a stand-in callback recorded ends this wait at once.
       const fault = hooks.fault?.();
       if (fault !== undefined) throw fault;
-      const value = await probe();
-      if (value !== undefined) return value;
-      if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
       // As in `startController`: what the cases wait on has no event the test can await.
-      await Bun.sleep(25);
-    }
+      const value = await probe();
+      return value === undefined ? undefined : { value };
+    });
+    return answered.value;
   };
 
   // One RPC command, answered by its response frame; a refusal throws.
@@ -821,7 +808,7 @@ async function startDaemonController(
   return {
     turns,
     async nextTurn(what) {
-      const turn = await until(what, () => turns[taken]);
+      const turn = await waitFor(what, () => turns[taken]);
       taken += 1;
       return turn;
     },
@@ -837,7 +824,7 @@ async function startDaemonController(
     // As in `startController`, the writer's state is read before the file: the RPC stream closes
     // when Oh My Pi exits, so an error on `closed` is a transcript nothing appends to any more.
     transcriptLines: () => transcriptLines(sessions, closed.error === undefined ? "alive" : "gone"),
-    until,
+    until: waitFor,
   };
 }
 
@@ -901,12 +888,14 @@ interface StoredMessage {
  * listener's relay would send it: the session's deliver subject
  * (`notifications.envoy.deliver.<session>`), under the headers that name the subject the stream
  * stored it on. A card is the listener's forward of a role-lane message to the session's agent
- * subject; a notice is what the daemon's controller-notice executor posts on the controller topic
- * (packages/daemon/internal/daemon/outbox.go `controllerNotice`, the listener's
- * `messageEnvelope` in packages/envoy/cmd/listener/api.go), which only a session holding that
- * project's controller role registers, and so only its consumer carries; a mention is what
- * Envoy's Slack webhook publishes for an app mention in a channel, which only that controller's
- * launch names.
+ * subject; a notice is what a daemon of an earlier release posts on the controller topic, in the
+ * envelope the listener's publish route builds (`MessageEnvelope`,
+ * packages/envoy/internal/contracts/message_envelope.go), and only a session holding that
+ * project's controller role registers that topic, so only its consumer carries a notice (a current
+ * daemon's controller-notice executor, packages/daemon/internal/daemon/outbox.go
+ * `controllerNotice`, posts it on the controller's role topic instead); a mention is what Envoy's
+ * Slack webhook publishes for an app mention in a channel, which only that controller's launch
+ * names.
  */
 interface ControllerInbound {
   /**
@@ -922,13 +911,17 @@ interface ControllerInbound {
    * session takes in that order.
    */
   repeat(sid: string, card: Card): Promise<unknown>;
-  /** The controller topic of the project, which a notice goes on and a case derives from. */
+  /**
+   * The controller topic of the project, where a daemon of an earlier release posts its controller
+   * notices (a current daemon posts them on the controller's role topic): the topic this inbound
+   * relays a notice on and a case derives from.
+   */
   readonly noticeSubject: string;
   /**
-   * Relays one triage notice on the controller topic to session `sid` and returns its summary
-   * (`triage on <issue>`, the daemon's `noticeSummary`), whose issue key no other notice shares.
-   * The session receives it only while its registration carries that lane, which its controller
-   * role is what allows.
+   * Relays one triage notice on the controller topic to session `sid`, as a daemon of an earlier
+   * release posts it there, and returns its summary (`triage on <issue>`, the daemon's
+   * `noticeSummary`), whose issue key no other notice shares. The session receives it only while
+   * its registration carries that lane, which its controller role is what allows.
    */
   notice(sid: string): string;
   /**
@@ -944,6 +937,12 @@ interface ControllerInbound {
    * controller's registered topic (`slackMentionTopic`) covers.
    */
   storeMention(channel: string): StoredMessage;
+  /**
+   * One completed run of a workflow, stored and not relayed, on `subject`, the default-branch
+   * topic Envoy publishes such a run's copy on (`githubDefaultBranchWorkflowSubject`), which names
+   * the run's event last.
+   */
+  storeWorkflowRun(subject: string): StoredMessage;
 }
 
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
@@ -1032,6 +1031,20 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
         trace_id: randomUUID(),
       }
     );
+  const storeWorkflowRun = (subject: string): StoredMessage =>
+    store(subject, `workflow run RUN-${randomUUID().slice(0, 8)} completed: failure`, {
+      event_id: randomUUID(),
+      source: "github",
+      source_event_id: `github-${randomUUID()}`,
+      dedupe_key: `github:workflow_run:${randomUUID()}`,
+      issued_at: Date.now(),
+      payload: JSON.stringify({
+        conclusion: "failure",
+        event: subject.split(".").at(-1),
+        branch: "main",
+      }),
+      trace_id: randomUUID(),
+    });
   return {
     noticeSubject,
     card(sid, label) {
@@ -1083,6 +1096,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     fault: () => noticeFault,
     storeNotice,
     storeMention,
+    storeWorkflowRun,
   };
 }
 
@@ -1370,6 +1384,7 @@ test.skipIf(!natsJetStream)(
 test.skipIf(skip)(
   "the start turn runs after startup and the TUI shows it",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const session = await startController();
     const start = await session.nextTurn("the start turn's model request");
     await session.shows(
@@ -1381,12 +1396,13 @@ test.skipIf(skip)(
     await settledOn(session, "Start procedure done.");
     expect(session.turns.length).toBe(1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "the operator can type during the start turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const session = await startController();
     const start = await session.nextTurn("the start turn's model request");
     await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
@@ -1408,12 +1424,13 @@ test.skipIf(skip)(
     next.reply("Typed message answered.");
     await settledOn(session, "Typed message answered.");
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "Esc interrupts the start turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const session = await startController();
     await session.nextTurn("the start turn's model request");
     await session.shows("the busy row while the start turn's request is held", START_MESSAGE, BUSY);
@@ -1431,18 +1448,21 @@ test.skipIf(skip)(
     await session.until("the busy row to leave the screen", () =>
       session.terminal.screen().includes(BUSY) ? undefined : true
     );
-    // A real clock, deliberately: the proposition is that the interrupted session starts no
-    // further turn, and a host that does nothing emits no signal to await, so only a quiet
-    // window with no Messages request shows the absence.
-    await Bun.sleep(3_000);
+    // The proposition is that the interrupted session starts no further turn, and a host that
+    // does nothing emits no signal to await.
+    await span(
+      3_000,
+      "a turn the host does not start leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no Messages request shows the absence"
+    );
     expect(session.turns.length).toBe(1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "the start message starts the first turn, once",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const session = await startController();
     const start = await session.nextTurn("the start turn's model request");
     expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
@@ -1464,7 +1484,7 @@ test.skipIf(skip)(
     expect(userMessages[0]).toContain(START_MESSAGE_JSON);
     expect(userMessages.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // Main's pi-envoy delivers every card as a steer, which starts a turn of its own when the session
@@ -1483,6 +1503,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a card published as soon as the role is claimed comes after the start turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const inbound = await controllerInbound(setup().nats);
     let sid: string | undefined;
     let sent: SentCard | undefined;
@@ -1550,7 +1571,7 @@ test.skipIf(skip)(
     expect(userMessages[0]).toContain(START_MESSAGE_JSON);
     expect(userMessages.filter((entry) => entry.includes(START_MESSAGE_JSON))).toHaveLength(1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The claim runs from the start command, after startup, in the terminal the operator reads: a
@@ -1559,6 +1580,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the operator sees a claim refusal",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const session = await startController({
       register: () => Response.json({ error: "invalid controller capability" }, { status: 403 }),
     });
@@ -1568,13 +1590,15 @@ test.skipIf(skip)(
       "invalid controller capability",
       "/legion-claim-controller"
     );
-    // A real clock, deliberately: the proposition is that the refused claim sends no start
-    // message, and a send that never happens emits no signal to await, so only a quiet window
-    // with no Messages request shows the absence.
-    await Bun.sleep(3_000);
+    // The proposition is that the refused claim sends no start message, and a send that never
+    // happens emits no signal to await.
+    await span(
+      3_000,
+      "a start message the refused claim does not send leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no Messages request shows the absence"
+    );
     expect(session.turns).toHaveLength(0);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // A claim the listener answers 503 wrote nothing, and a person's claim makes it again after a
@@ -1587,6 +1611,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a person's controller claim the listener keeps answering 503 shows each wait and then fails on screen",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     let landed = false;
     const session = await startController({
       roleSetBusy: () => true,
@@ -1605,12 +1630,13 @@ test.skipIf(skip)(
     );
     expect(landed).toBe(false);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
   "control: a person's controller claim the listener answers 503 once and then takes claims the role",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     let claims = 0;
     const landed = Promise.withResolvers<void>();
     const session = await startController({
@@ -1621,10 +1647,10 @@ test.skipIf(skip)(
       "a wait of the busy claim on screen",
       "was answered 503 at attempt 1; claiming it again in"
     );
-    await landed.promise;
+    await settled("the role claim the listener takes after its 503s", landed.promise);
     expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // A `/new` replaces the controller session, and pi-legion's session_switch handler claims the new
@@ -1637,6 +1663,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the operator sees a refused re-claim after /new",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const fixture: unknown = JSON.parse(
       await readFile(
         path.resolve(
@@ -1671,7 +1698,7 @@ test.skipIf(skip)(
       "capability revoked"
     );
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // A `/new` typed while the start command's claim is in flight stops that claim at its
@@ -1685,6 +1712,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the operator sees the hand-over notice after a /new during the start claim",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const fixture: unknown = JSON.parse(
       await readFile(
         path.resolve(
@@ -1755,7 +1783,7 @@ test.skipIf(skip)(
     expect(replacedUsers).toEqual([]);
     expect(session.turns).toHaveLength(1);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The same refused re-claim, with a `task` subagent's view focused when the `/new` starts. Oh My
@@ -1775,6 +1803,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the operator sees a refused re-claim after /new from a focused subagent view",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const fixture: unknown = JSON.parse(
       await readFile(
         path.resolve(
@@ -1863,20 +1892,22 @@ test.skipIf(skip)(
       "capability revoked"
     );
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The start command's claim sends the start message, marking the start turn sent, then claims the
 // role and subscribes to the controller topic, so a card the listener forwards on the role's lane
-// and a daemon notice on the topic reach the session while the start turn runs. The stand-in holds
-// the registration that follows the topic's subscription, which the claim awaits, and the start
-// turn's model request, until both have reached the session: the card's frame and the repeat
-// behind it are taken by the session's one connection in the order they were published. The
-// start turn's first request carries the start message alone; the card and the notice wait for it
-// and each reaches the model in a request after it, behind the start message.
+// and a notice on the topic, as a daemon of an earlier release posts it, reach the session while
+// the start turn runs. The stand-in holds the registration that follows the topic's subscription,
+// which the claim awaits, and the start turn's model request, until both have reached the session:
+// the card's frame and the repeat behind it are taken by the session's one connection in the order
+// they were published. The start turn's first request carries the start message alone; the card
+// and the notice wait for it and each reaches the model in a request after it, behind the start
+// message.
 test.skipIf(skip)(
   "a card and a Legion notice that arrive while the start command's claim runs wait for the start turn, and each still gets a turn after it",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const noticeRegistration = newHold();
     // Opened before the session, so every wait below can read the notice's own refusal through
     // `fault` from its first poll.
@@ -1937,7 +1968,7 @@ test.skipIf(skip)(
     }
     expect(reached()).toBe(true);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The daemon's controller reports ready once it holds the role and the controller topic, and the
@@ -1955,6 +1986,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "the daemon-launched controller's start prompt is its first turn, and a startup card's wake runs after it",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const ready = newHold();
     let sid: string | undefined;
     const session = await startDaemonController({
@@ -1993,7 +2025,7 @@ test.skipIf(skip)(
     );
     expect(session.turns).toHaveLength(2);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // An interrupt of the start turn: RPC `abort`, as the terminal's Esc does (it ends the run with
@@ -2008,6 +2040,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "an RPC abort of the daemon-launched controller's start turn leaves its startup card folded, with no wake",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const ready = newHold();
     let sid: string | undefined;
     const session = await startDaemonController({
@@ -2061,7 +2094,7 @@ test.skipIf(skip)(
     );
     expect(session.turns).toHaveLength(2);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The operator's controller claims and sends its start message only from
@@ -2077,6 +2110,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a card that reaches the operator's controller while Oh My Pi starts, before /legion-controller-start runs, waits for the start turn",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const startupHold = newHold();
     let sid: string | undefined;
     const session = await startController({
@@ -2114,7 +2148,7 @@ test.skipIf(skip)(
     expect(delivered).toHaveLength(1);
     expect(delivered[0]).toContain('"wake":"startup"');
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The start-turn mark owes every startup card one wake after the start turn, since the start
@@ -2125,6 +2159,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a startup card that a turn after the start turn reads gets no second wake",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const startupHold = newHold();
     let sid: string | undefined;
     const session = await startController({
@@ -2154,24 +2189,32 @@ test.skipIf(skip)(
     expect(read).toContain(during.card.summary);
     next.reply("Read both cards.");
     await settledOn(session, "Read both cards.");
-    // A real clock, as in "the operator sees a claim refusal": a wake that is not sent emits no
-    // signal to await, so only a quiet window with no further Messages request shows its absence.
-    await Bun.sleep(3_000);
+    // As in "the operator sees a claim refusal": a wake that is not sent emits no signal to await.
+    await span(
+      3_000,
+      "a wake the session does not send leaves no state to read, and no later action marks a moment it would have come by: only a quiet window with no further Messages request shows its absence"
+    );
     expect(session.turns.slice(2).map(({ request }) => newestMessage(request.body))).toEqual([]);
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
 );
 
 // The operator's controller marks its start unsent at `session_start`, and while the mark holds,
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
 // launched without the start word on its command line. A card that reached the idle session must
-// still get a turn of its own, without waiting for the operator to type; the bound here is three
-// times pi-envoy's STARTUP_TURN_CAP_MS (30 s).
+// still get a turn of its own, without waiting for the operator to type: pi-envoy holds it only
+// until the unsent mark's cap (STARTUP_TURN_CAP_MS, 30 s from its first read of the mark) and then
+// sends its wake. Nobody types here, so a model request at all is that wake's turn. The wait for it
+// runs to the row's deadline, so a hold with no end fails there by name; the bound is that the
+// request comes within three times that cap (90 s) of the startup hold's release, read from when
+// the stand-in took it.
+const UNSENT_MARK_BOUND_MS = 3 * 30_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
     `a startup card held by an unsent start mark gets its turn when ${variant}`,
     async () => {
+      useRowGuard(COLD_PANE_GUARD_MS);
       const startupHold = newHold();
       const registration = newHold();
       let sid: string | undefined;
@@ -2198,29 +2241,27 @@ for (const variant of ["the start claim never answers", "the start command never
       await taken;
       await inbound.repeat(opened, card);
       startupHold.release();
+      const released = performance.now();
 
-      // A real clock: the bound is the property under test.
-      const first = await session.until(
-        "the startup card's model request, within 90 s",
-        () => session.turns[0],
-        90_000
-      );
+      const first = await session.until("the startup card's model request", () => session.turns[0]);
+      expect(first.takenAt - released).toBeLessThanOrEqual(UNSENT_MARK_BOUND_MS);
       expect(conversation(first.request)).toContain(card.summary);
       expect(newestMessage(first.request.body)).toContain(WAKE_ONE);
     },
-    CASE_TIMEOUT_MS
+    COLD_PANE_GUARD_MS
   );
 }
 
 // The real pair's proof of the controller's own lanes (INFRA-771): a session receives what its
 // own consumer carries and nothing else, and the controller role is what puts its project's
-// notice lane (`notifications.legion.<project>.controller`) and its Slack channels' mention
-// topics into that consumer's filter. The controller the daemon launches is the one whose launch
-// names channels (LEGION_SLACK_CHANNELS), so it is the one here, with a 2 s registration
-// heartbeat so that the case watches its passes. Three things, in one session's life:
-//   - a notice stored while the session's registration had lapsed — the listener able to give it
-//     no consumer, so nothing at all reached it — is read once when the registration is back,
-//     the relay's redelivery of that same stored frame included;
+// notice lane (`notifications.legion.<project>.controller`, where a daemon of an earlier release
+// posts its controller notices) and its Slack channels' mention topics into that consumer's
+// filter. The controller the daemon launches is the one whose launch names channels
+// (LEGION_SLACK_CHANNELS), so it is the one here, with a 2 s registration heartbeat so that the
+// case watches its passes. Three things, in one session's life:
+//   - a notice stored on the lane while the session's registration had lapsed, its role still
+//     held — the listener able to give it no consumer, so nothing at all reached it — is read once
+//     when the registration is back, the relay's redelivery of that same stored frame included;
 //   - a mention of the channel its launch names reaches it;
 //   - once the role ends (the heartbeat's re-assertion refused by a listener that names another
 //     live holder), the registration that follows carries neither topic, and the session's own
@@ -2237,6 +2278,7 @@ for (const variant of ["the start claim never answers", "the start command never
 test.skipIf(skip)(
   "the controller's notice lane and its channel's mentions reach the session through its consumer, and stop once its role ends",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const lane = legionControllerNoticeSubject(PROJECT);
     const mentions = slackMentionTopic(SLACK_CHANNEL);
     const inbound = await controllerInbound(setup().nats);
@@ -2375,5 +2417,165 @@ test.skipIf(skip)(
       expect(conversation(request)).not.toContain(afterMention.summary);
     }
   },
-  CASE_TIMEOUT_MS
+  COLD_PANE_GUARD_MS
+);
+
+// The real pair's proof of the controller's watched workflows. The daemon names the project's
+// watched workflows in the controller's registration (`watchedWorkflows`), here two entries, the
+// first `@schedule`, and the controller follows one default-branch topic for each event an entry
+// names once the rest of its claim is done, for as long as it holds its role. So a run's copy
+// stored on the first entry's `….completed.schedule` reaches the session through its own
+// consumer, and a copy of a run of that same workflow stored on `….completed.push`, an event the
+// entry does not name, is one the session follows no topic for: it drops that frame itself, as it
+// drops a frame of any topic it does not follow, and the frame relayed behind it is read. The
+// edge's answers about the second entry's topics leave the claim as it is: the topic of one event
+// it refuses for the session's projects (403 `repository_not_in_project`), which the session drops
+// and is told of, and the topic of the other it withholds once (503 `repositories_unknown`), which
+// the controller registers again after a wait and the edge then takes. The role, the notice lane
+// and the first entry's topic stay through both.
+test.skipIf(skip)(
+  "the controller's watched topics reach the session through its consumer, a run of an event its entry does not name does not, and a refused or withheld topic leaves its claim",
+  async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
+    const lane = legionControllerNoticeSubject(PROJECT);
+    const scheduled = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "schedule"
+    );
+    const unnamedEvent = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "push"
+    );
+    const refusedTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "push"
+    );
+    const withheldTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "workflow_dispatch"
+    );
+    const fixture: unknown = JSON.parse(
+      await readFile(
+        path.resolve(
+          import.meta.dir,
+          "../../contracts/fixtures/daemon-api/register-controller.json"
+        ),
+        "utf8"
+      )
+    );
+    const inbound = await controllerInbound(setup().nats);
+    /** The topics of every registration the stand-in accepted, in order. */
+    const accepted: string[][] = [];
+    /** Every topic a removal from the registry named (`/v1/interests/unsubscribe`). */
+    const unregistered: string[] = [];
+    let refused = 0;
+    let withheld = 0;
+    let sid: string | undefined;
+    const session = await startDaemonController({
+      register: () =>
+        Response.json({
+          ...(fixture as object),
+          watchedWorkflows: [
+            { owner: "acme", repo: "widgets", workflow: "nightly.yaml", events: ["schedule"] },
+            {
+              owner: "acme",
+              repo: "gadgets",
+              workflow: "deploy.yml",
+              events: ["push", "workflow_dispatch"],
+            },
+          ],
+        }),
+      onRoleClaim: (claimed) => {
+        sid = claimed;
+      },
+      onRegistration: (_claimed, topics) => {
+        if (topics.includes(refusedTopic)) {
+          refused += 1;
+          return Response.json(projectRefusal([refusedTopic]), { status: 403 });
+        }
+        // Every attempt of the first registration that carries the topic: the client sends a
+        // registration the listener answers 503 once more before it fails.
+        if (topics.includes(withheldTopic) && withheld < LISTENER_CALL_ATTEMPTS) {
+          withheld += 1;
+          return Response.json(
+            {
+              error: "the project's repositories could not be read",
+              reason: "repositories_unknown",
+            },
+            { status: 503 }
+          );
+        }
+        accepted.push([...topics]);
+        return undefined;
+      },
+      onUnsubscribe: (topics) => unregistered.push(...topics),
+    });
+    const claimed = await session.until("the controller role's claim", () => sid);
+    await session.until("the registration that takes the withheld topic after its wait", () =>
+      accepted.some((topics) => topics.includes(withheldTopic)) ? true : undefined
+    );
+    expect(refused).toBeGreaterThan(0);
+    expect(withheld).toBe(LISTENER_CALL_ATTEMPTS);
+
+    // The daemon's start prompt and the turn it runs: the session's startup phase ends there, so
+    // what arrives after it is an idle session's to read.
+    session.deliver(START_MESSAGE);
+    const start = await session.nextTurn("the start turn's model request");
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
+    start.reply("Start procedure done.");
+    let answered = 1;
+    /** Answers every model request in order until the session has settled with `done` true. */
+    const settled = async (what: string, done: () => boolean = () => true): Promise<void> => {
+      for (;;) {
+        const next = await session.until(`the next model request, or ${what}`, async () => {
+          if (session.turns.length > answered) return "request";
+          return done() && (await session.state()).isSettled ? "settled" : undefined;
+        });
+        if (next === "settled") return;
+        answered += 1;
+        (await session.nextTurn(`model request ${answered}`)).reply(`Reply ${answered}.`);
+      }
+    };
+    await settled("the session settled after the start turn");
+
+    // The copy on the topic of an event the entry does not name goes first, and the scheduled
+    // run's copy behind it: once the second is read, the first had its turn at the session.
+    const unnamed = inbound.storeWorkflowRun(unnamedEvent);
+    await unnamed.deliver(claimed);
+    const run = inbound.storeWorkflowRun(scheduled);
+    await run.deliver(claimed);
+    await settled("the session settled having read the scheduled run", () =>
+      session.turns.some(({ request }) => conversation(request).includes(run.summary))
+    );
+
+    /** Every transcript line that holds `text`: what a reader of the session sees of it. */
+    const written = async (text: string): Promise<string[]> =>
+      (await session.transcriptLines()).filter((line) => line.includes(text));
+    const runWritten = await written(run.summary);
+    expect(runWritten).toHaveLength(1);
+    expect(runWritten[0]).toContain('"custom_message"');
+    expect(await written(unnamed.summary)).toEqual([]);
+    for (const { request } of session.turns) {
+      expect(conversation(request)).not.toContain(unnamed.summary);
+    }
+
+    // The claim stands: nothing of the role was handed back, no accepted registration carries the
+    // refused topic, and the newest carries the lane and both topics the edge took.
+    expect(unregistered).not.toContain(lane);
+    expect(accepted.filter((topics) => topics.includes(refusedTopic))).toEqual([]);
+    expect(accepted.at(-1)).toEqual(expect.arrayContaining([lane, scheduled, withheldTopic]));
+  },
+  COLD_PANE_GUARD_MS
 );

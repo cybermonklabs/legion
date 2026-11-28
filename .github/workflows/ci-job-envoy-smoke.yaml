@@ -47,12 +47,26 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # go-envoy-smoke holds what this job's three go commands compile: the smoke test in the root
+      # workspace, and envoy-infra's host live tests and plugin in the infra module's go.work, whose
+      # dependencies (the Pulumi SDKs among them) took 182 s of the live step to compile from
+      # nothing. .github/workflows/ci-caches.yaml fills it again on every push to main.
+      # why: .github/ci-notes/ci-caches.md#the-envoy-smoke-family
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: go-envoy-smoke-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+          restore-keys: ${{ format('go-envoy-smoke-{0}-{1}-', runner.os, runner.arch) }}
       # Every image the build or the test starts (testnats.HubImage and the smoke image's base
       # images) is pulled first, for the reason .github/actions/pull-test-images gives. Every
       # FROM of docker/Dockerfile names a digest and no ARG, so the substitution below expands

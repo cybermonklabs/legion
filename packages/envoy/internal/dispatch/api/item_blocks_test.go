@@ -16,6 +16,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -215,7 +216,7 @@ func TestAnOlderEditedCommentsFirstItemBlockIndexHasNoMakingTime(t *testing.T) {
 		}
 	}
 	owed := oweBlockGrammar(t, database, "comment", comment.ID)
-	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.ReindexOwed(context.Background(), database.Pool, owed, testOrigins); err != nil || !indexed {
 		t.Fatalf("reindex the comment = %v (%v), want it indexed", indexed, err)
 	}
 	requireCommentBlocks(t, database, comment.ID, "first indexing", "b1@1 b2@1", 1)
@@ -263,7 +264,7 @@ func TestReindexingAnEditedMessageStampsItsBlocksAtTheEdit(t *testing.T) {
 	}
 
 	owed := oweBlockGrammar(t, database, "message", message.ID)
-	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, "https://dispatch.example"); err != nil || !indexed {
+	if indexed, err := refs.ReindexOwed(ctx, database.Pool, owed, testOrigins); err != nil || !indexed {
 		t.Fatalf("reindex the message = %v (%v), want it indexed", indexed, err)
 	}
 
@@ -523,7 +524,7 @@ func itemBlockRefs(t *testing.T, database *store.Store, kind, itemID string) []s
 func TestEveryMessageWriteIndexesItsBlocks(t *testing.T) {
 	t.Parallel()
 	listener, _ := newBroadcastListener(t, broadcastSessions)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	handler, database := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 	issue := createInteractionIssue(t, handler, "TEST", "Message blocks", "before")
 	cited := "dispatch://" + issue.Key
 

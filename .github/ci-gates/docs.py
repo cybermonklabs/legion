@@ -31,7 +31,6 @@ GATE = gate("docs", "docs", runs=[
     (".github/scripts/check-private-names.sh", at("private-names", "Check the built site has no private name, internal host, tailnet host, or term of the deployment's own list", DOCS_SITE)),
     (".github/scripts/repo-paths.sh", "`docs/site/repo-paths.ts#script` and `docs/site/repo-paths.ts#execFileSync` runs it for the site's own URL, base and edit links "
                                       f"(astro.config.mjs), read by {at_docs('Build the docs site')}"),
-    (f"{ENVOY}/internal/dispatch/api/routes_table.go", "docs/site/generators/dispatch-api.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (f"{ENVOY}/cmd/dispatch/settings.go", "docs/site/generators/dispatch-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (f"{DAEMON}/internal/config/keytable.go", "docs/site/generators/legion-config.ts's page sources it, checked by generators/lib/markdown.ts's writePage"),
     (BUILD_BINARIES, f"`docs/site/scripts/generate.ts#scripts/build-binaries.sh` runs it ({at_docs('Build the docs site')})"),
@@ -52,6 +51,14 @@ GATE = gate("docs", "docs", runs=[
         ("internal/cipher/approval", "`packages/envoy/cmd/cipher-refgen/routes.go#resolve` and `packages/envoy/cmd/cipher-refgen/routes.go#pageAnswerers`: resolve's g.in of the pageAnswerers directory parses it through `packages/envoy/cmd/cipher-refgen/bodies.go#func (g *graph) pkg`"),
         ("internal/cipher/proxy", "`packages/envoy/cmd/cipher-refgen/recorder.go#airlockDir` and `packages/envoy/cmd/cipher-refgen/recorder.go#checkRefusalWrites`"),
     ) for path in files_but_tests(f"{ENVOY}/{directory}")],
+    # The store registry and each store's own package: broker-refgen reads the registry's files
+    # for the stores this build holds (`packages/envoy/cmd/cipher-refgen/config.go#storeIDs`) and
+    # parses each store's package for the BROKER_* variables it alone documents
+    # (`packages/envoy/cmd/cipher-refgen/config.go#storeDir`), so a store added, removed or
+    # renamed moves the configuration page.
+    *[(path, "broker-refgen parses it (`packages/envoy/cmd/cipher-refgen/config.go#storeIDs` and "
+             "`packages/envoy/cmd/cipher-refgen/config.go#storeDir`)")
+      for path in files_but_tests(f"{ENVOY}/internal/cipher/secretstore", tree=True)],
 ) + setup_go(DOCS_JOB, f"{DAEMON}/go.mod", DOCS_SITE)
   + dispatch_api_types(at_docs("Typecheck the docs site"))
   + reads((SERVICE_SETTINGS, at_docs(SERVICE_SETTINGS_STEP) + " runs it"))

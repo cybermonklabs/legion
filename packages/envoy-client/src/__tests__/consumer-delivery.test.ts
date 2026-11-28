@@ -18,10 +18,9 @@ import {
 import { INBOUND_CARD_MAX_BYTES, renderInbound } from "../delivery";
 import { createDeliveryLedger, type DeliveryLedger, type LedgerSnapshot } from "../delivery-ledger";
 import type { DeliveryAnswer } from "../transport";
+import { AGENT, SESSION } from "./consumer-session";
 import { objectChainPastTheEncoder } from "./deep-json";
 
-const SESSION = "ses_a";
-const AGENT = "notifications.agent.ses_a";
 const ISSUE_TOPIC = "notifications.dispatch.issue.INFRA-1.>";
 const ISSUE = "notifications.dispatch.issue.INFRA-1.comment";
 const STREAM = "stream-1";
@@ -896,6 +895,63 @@ describe("frames already written", () => {
 
     expect(seqs(handed)).toEqual([1]);
     expect(repliesTo(replies, "_INBOX.2")).toEqual(["received", "done"]);
+  });
+
+  // The listener publishes a run of a repository's default branch twice: its default-branch copy
+  // first, on a topic that names the run's event, then its workflow envelope, with one event id
+  // and one dedupe key between them (GithubEnvelopes in packages/envoy/internal/contracts). The two
+  // are two stored messages, so the listener relays a session that follows both topics two frames
+  // of two stream sequences; the session's ledger, which keys a written frame by its event id and
+  // its dedupe key, is what writes the run once, on the copy's topic. The second frame is answered
+  // done and reaches no host.
+  test("a default-branch copy and its workflow envelope reach the host once, as the copy", async () => {
+    const clock = { now: T0 };
+    const ledger = deliveryLedger(clock);
+    const { delivery, handed, replies, state, settled } = setup({ clock, ledger });
+    state.deliver = async (frame) => {
+      await ledger.recordDelivered(JSON.parse(frame.data));
+      frame.done();
+    };
+    delivery.setFollowed(["notifications.github.example-org.example-repo.>"]);
+    const copy =
+      "notifications.github.example-org.example-repo.default_branch.workflow.nightly_yaml.completed.schedule";
+    const workflow =
+      "notifications.github.example-org.example-repo.workflow.nightly_yaml.completed";
+    const stored = (topic: string) =>
+      JSON.stringify({
+        event_id: "evt-run-500",
+        source: "github",
+        source_event_id: "delivery-run-500",
+        topic,
+        dedupe_key: "github.delivery-run-500",
+        issued_at: T0,
+        payload_summary: "workflow Nightly main run 500 completed/failure",
+        payload: JSON.stringify({
+          kind: "workflow",
+          action: "completed",
+          repo: "example-org/example-repo",
+          workflow: "Nightly",
+          path: ".github/workflows/nightly.yaml",
+          event: "schedule",
+          head_branch: "main",
+          conclusion: "failure",
+          run_id: "500",
+        }),
+        trace_id: "trace-run-500",
+      });
+
+    delivery.receive(
+      relay({ seq: 41, subject: copy, payload: stored(copy), reply: "_INBOX.copy" })
+    );
+    await settled();
+    delivery.receive(
+      relay({ seq: 42, subject: workflow, payload: stored(workflow), reply: "_INBOX.workflow" })
+    );
+    await settled();
+
+    expect(handed.map((frame) => [frame.streamSeq, frame.subject])).toEqual([[41, copy]]);
+    expect(repliesTo(replies, "_INBOX.copy")).toEqual(["received", "done"]);
+    expect(repliesTo(replies, "_INBOX.workflow")).toEqual(["received", "done"]);
   });
 });
 

@@ -44,7 +44,7 @@
 // issue's phase (workflow's Engine.backward, BACKWARD_REFUSED).
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real claim supervision and its worker
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes. Facts
 // enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the

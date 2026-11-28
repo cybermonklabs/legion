@@ -1,6 +1,5 @@
-// The Oh My Pi session transcript shapes score.ts, seed.ts, health.ts and boot-refusal.ts read, so
-// a run's own JSONL has one parser and one notion of what a tool result says, never two that can
-// drift.
+// The Oh My Pi session transcript shapes score.ts and seed.ts both read, so a run's own JSONL has
+// one parser and one notion of what a tool result says, never two that can drift.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
@@ -24,6 +23,8 @@ export const SessionEntry = z.looseObject({
       toolName: z.string().optional(),
       toolCallId: z.string().optional(),
       isError: z.boolean().optional(),
+      stopReason: z.string().optional(),
+      errorMessage: z.string().optional(),
       details: z.unknown().optional(),
       content: z
         .array(
@@ -47,15 +48,17 @@ export function sessionId(entries: SessionEntry[]): string | undefined {
   return typeof id === "string" ? id : undefined;
 }
 
-/** The file of the transcript in session directory `dir`, or undefined when it holds none. */
-function fileIn(dir: string): string | undefined {
+/** The file of the run's own session transcript, or undefined when it never got a model turn. */
+function sessionFile(runDir: string): string | undefined {
+  const dir = path.join(runDir, "sessions");
   const file = existsSync(dir)
     ? readdirSync(dir).find((name) => name.endsWith(".jsonl"))
     : undefined;
   return file === undefined ? undefined : path.join(dir, file);
 }
-/** A transcript file, parsed whole. A line that does not parse is the rig's fault. */
-function parsedSession(full: string): SessionEntry[] {
+/** A transcript file, parsed whole. A line that does not parse is the rig's fault. Every reader of
+ * a transcript file parses it through this. */
+export function parsedSession(full: string): SessionEntry[] {
   return readFileSync(full, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "")
@@ -66,38 +69,12 @@ function parsedSession(full: string): SessionEntry[] {
       return result.data;
     });
 }
-/** Every entry of the transcript `file` that parses, in order, and none for a file that is not
- * there. A line that is no JSON or no entry is passed over, as a transcript an agent was stopped
- * in the middle of writing ends. */
-export function transcriptEntries(file: string): SessionEntry[] {
-  if (!existsSync(file)) return [];
-  return readFileSync(file, "utf8")
-    .split("\n")
-    .flatMap((line) => {
-      let entry: unknown;
-      try {
-        entry = JSON.parse(line);
-      } catch {
-        return [];
-      }
-      const parsed = SessionEntry.safeParse(entry);
-      return parsed.success ? [parsed.data] : [];
-    });
-}
 
-/** The transcript in session directory `dir`, parsed whole, or empty when it holds none: the
- * session directory of one agent of a run that boots more than one (rig.sh's worker_boot gives
- * the first agent the run's own and each later one <run>/sessions/<role>). A line that does not
- * parse is the rig's fault. */
-export function sessionIn(dir: string): SessionEntry[] {
-  const full = fileIn(dir);
-  return full === undefined ? [] : parsedSession(full);
-}
-
-/** The run's own session transcript, which is the first agent's, or empty when it never got a
- * model turn. */
+/** The run's own session transcript, parsed whole, or empty when it never got a model turn. A line
+ * that does not parse is the rig's fault. */
 export function session(runDir: string): SessionEntry[] {
-  return sessionIn(path.join(runDir, "sessions"));
+  const full = sessionFile(runDir);
+  return full === undefined ? [] : parsedSession(full);
 }
 
 /** Each subagent the run's session started, by its name, with its transcript parsed whole. Oh My Pi
@@ -105,7 +82,7 @@ export function session(runDir: string): SessionEntry[] {
  * session's own, whatever started it: a `task` tool call, or `tool.task(…)` or the `agent(…)`
  * helper inside an eval cell. A subagent's own subagents, one directory deeper, are left out. */
 export function subagentSessions(runDir: string): { name: string; entries: SessionEntry[] }[] {
-  const full = fileIn(path.join(runDir, "sessions"));
+  const full = sessionFile(runDir);
   if (full === undefined) return [];
   const dir = full.replace(/\.jsonl$/, "");
   if (!existsSync(dir)) return [];

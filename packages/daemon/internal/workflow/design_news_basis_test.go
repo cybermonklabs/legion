@@ -46,6 +46,7 @@ func firstBasisGates() map[record.DesignStep]record.DesignGate {
 // basis. The control is the same news over the person's approval of version 5 (newsGates), which
 // reads as it always has.
 func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
+	t.Parallel()
 	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
 	const noPerson = "No person approved version 5 of its spec document (artifact-spec)."
 	holder := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: newsTree, Phase: phase.Implementing,
@@ -79,12 +80,35 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	}
 }
 
+// The root architect's summary of versions open on an ancestor's approval starts with a header
+// of its own. It names the tree, as the header for a person's approval does.
+func TestTheSummaryOfVersionsOpenOnABasisHasAHeaderOfItsOwnNamingTheTree(t *testing.T) {
+	t.Parallel()
+	basis := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: basisGates(),
+		Items: []NewsChange{specChanges(4)}})
+	person := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
+		Items: []NewsChange{specChanges(4)}})
+	basisHeader := firstLine(basis)
+	personHeader := firstLine(person)
+
+	if !strings.Contains(basisHeader, " "+newsTree) {
+		t.Errorf("the summary's header of versions open on a basis = %q, want it to name the tree %s", basisHeader, newsTree)
+	}
+	if basisHeader == personHeader {
+		t.Errorf("the summary's header of versions open on a basis = %q, want it to differ from the person's approval header %q", basisHeader, personHeader)
+	}
+	if !strings.Contains(personHeader, " "+newsTree) {
+		t.Errorf("the person's approval header = %q, want it to name the tree %s", personHeader, newsTree)
+	}
+}
+
 // A first version that stands approved on an ancestor's approval is no person's approval either.
 // The holder whose phase took no version before it, the summary's entry of that version and the
 // summary's line of the member owed it each call it the first approved version, never the first
 // version a person approved, and the holder's item and the summary's entry then name the basis it
 // stands on.
 func TestNewsOfAFirstVersionOpenOnABasisSaysNoPersonApprovedIt(t *testing.T) {
+	t.Parallel()
 	const basis = "The spec step stands open on an ancestor's approval: a person approved version 7 of"
 	news := firstApprovalHolderNews()
 	news.Gates = firstBasisGates()

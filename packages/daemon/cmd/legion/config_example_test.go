@@ -198,6 +198,35 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented watched_workflows, uncommented, passes the same check, whose stdout is
+// the shipped example's with the one line naming the project's two workflows, each with the
+// events it resolved to: the entry that names none watches schedule runs alone. The list is a
+// block list, one entry a line, as the example writes it, since an entry's events hold a comma.
+// It needs no volume, no mount and no controller setting.
+func TestShippedLegionYAMLExamplesWatchedWorkflowsPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   watched_workflows:",
+		)
+		example = uncommentFoldedLines(t, example, "\n    watched_workflows:\n", "  #     - ")
+		// The example's two forms of the project entry are alternatives, as the memory test says:
+		// the active empty one is commented out so the uncommented one is the project's whole entry.
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	steps := defaultStepsTodayLine("WIDGETS")
+	want := strings.Replace(shippedExampleCheckOK, steps, steps+watchedWorkflowsCheckLine("WIDGETS",
+		"acme/widgets/release.yml@schedule", "acme/widgets/nightly.yaml@schedule,workflow_dispatch"), 1)
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("legion config check on the example with watched_workflows = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // The example's commented leak_check block, uncommented with a digest in place of its placeholder,
 // passes the same check and settles on the repository and the manifest digest it names. It needs
 // no volume and no mount: the block names a repository and a digest, not files.
@@ -224,13 +253,14 @@ func TestShippedLegionYAMLExamplesLeakCheckPassesCheckConfig(t *testing.T) {
 // The example's first commented hook is the hook a file that names no `hooks:` key runs, its
 // words included, so an operator reads the shipped default in the file it edits. Uncommented, it
 // loads as exactly that hook: a default changed in one place and not the other would have the
-// example teach a hook no daemon runs. The example's second hook names a `prompt_file`, a path
-// only an operator has, whose words the check reads, so it is covered no more than the memory
-// block's `instructions` is.
+// example teach a hook no daemon runs. The lines of its folded `prompt` are uncommented by their
+// form, not their words, so the two copies are held to each other and no third copy is held here.
+// The example's second hook names a `prompt_file`, a path only an operator has, whose words the
+// check reads, so it is covered no more than the memory block's `instructions` is.
 func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (checkShippedExample).
 	config := checkShippedExample(t, func(example string) string {
-		return uncommentExample(t, example,
+		example = uncommentExample(t, example,
 			"# hooks:",
 			"#   - name: work-back",
 			"#     on: work_back",
@@ -238,11 +268,8 @@ func TestShippedLegionYAMLExamplesFirstHookIsTheShippedDefault(t *testing.T) {
 			"#     every: 5",
 			"#     roles: [implementer, tester, reviewer]",
 			"#     prompt: >-",
-			"#       We read no progress on this issue: its work has gone back the number of times recorded",
-			"#       below. Report to the architect what is in your way, in your own words. The architect",
-			"#       takes a step back, reads what each of you says, and decides the path. Carry on with the",
-			"#       work while you wait, and say so if you read it as on track.",
 		)
+		return uncommentFoldedLines(t, example, "\n    prompt: >-\n", "#       ")
 	})
 	cfg, err := configpkg.LoadForValidation(config, nil)
 	if err != nil {
@@ -451,6 +478,33 @@ func uncommentExample(t *testing.T, example string, lines ...string) string {
 		example = example[:at+1] + uncommented + example[at+1+len(line):]
 	}
 	return example
+}
+
+// uncommentFoldedLines is the example with the commented lines that follow the line `after` ends
+// with uncommented, each one `# ` removed, for as long as a line starts with prefix: the body of a
+// folded scalar, read by its indent rather than its words. A key with no such line is the test's
+// own mistake.
+func uncommentFoldedLines(t *testing.T, example, after, prefix string) string {
+	t.Helper()
+	at := strings.Index(example, after)
+	if at < 0 {
+		t.Fatalf("the example has no %q", after)
+	}
+	head, rest := example[:at+len(after)], example[at+len(after):]
+	folded := 0
+	for strings.HasPrefix(rest, prefix) {
+		end := strings.IndexByte(rest, '\n') + 1
+		if end == 0 {
+			end = len(rest)
+		}
+		head += strings.Replace(rest[:end], "# ", "", 1)
+		rest = rest[end:]
+		folded++
+	}
+	if folded == 0 {
+		t.Fatalf("no line starting %q follows %q in the example", prefix, after)
+	}
+	return head + rest
 }
 
 // stageShippedExample writes the shipped example as edit leaves it beside the files it names,

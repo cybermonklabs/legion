@@ -45,6 +45,7 @@ beforeEach(() => {
   // A listed request names what the broker can still do; this Dispatch has none, so it offers
   // the machine-code page to nobody.
   getCredentialCapabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
 });
@@ -212,8 +213,10 @@ test("with no broker, a gap in the event feed asks the list again once, and a fo
         pending: [
           {
             approve_url: "https://secrets.example.com/approve/record-1",
+            dispatch_scopes: null,
             identifiers: ["DEMO_API_KEY"],
             kind: "agent_secret",
+            reason: "",
             record_id: "record-1",
             requested_at: new Date().toISOString(),
             session: { enrollment: null, request: null },

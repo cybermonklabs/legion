@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
+	"github.com/sjawhar/envoy/internal/cipher/ciphertest/podclient"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -30,11 +31,11 @@ const (
 	signInOffSharedValue   = "shared-read-token-value"
 )
 
-// signInOffSecrets writes the fake secrets file both brokers below serve and answers its path.
+// signInOffSecrets writes the memory secrets file both brokers below serve and answers its path.
 func signInOffSecrets(t *testing.T) string {
 	t.Helper()
 	secret := func(slug, owner, tier, value string) string {
-		return `{"name": "` + testSecretsPrefix + slug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
+		return `{"name": "` + testSecretsPrefix + slug + `", "tags": {"owner": "` + owner + `", "tier": "` + tier + `"}, "value": "` + value + `"}`
 	}
 	content := `{"secrets": [` + strings.Join([]string{
 		secret("owner-deploy-key", signInOffOwner, "human", "owner-deploy-key-value"),
@@ -42,7 +43,7 @@ func signInOffSecrets(t *testing.T) string {
 		secret("launcher-token", approvalLauncherService, "agent", signInOffServiceValue),
 		secret("shared-read-token", "shared", "agent", signInOffSharedValue),
 	}, ", ") + `]}`
-	path := filepath.Join(t.TempDir(), "fake-secrets.json")
+	path := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +96,7 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	public.route(t, on)
 	pods := f.pods(t, base)
 	pod := pods.Enroll(pods.LogIn(approvalLauncherService, approvalLauncherAccount), "pod-a", approvalPodAccount)
-	var left ciphertest.RequestReply
+	var left podclient.RequestReply
 	t.Run("control: with the switch unset a request waits on the owner's page", func(t *testing.T) {
 		if len(recordsWith(on.Boot, "approval sign-in on", nil)) != 1 || len(recordsWith(on.Boot, "approval sign-in off", nil)) != 0 {
 			t.Fatalf("the control's boot log does not say the approval sign-in is on:\n%s", on.Boot)
@@ -158,7 +159,7 @@ func TestTheBinaryWithSignInOffServesNoApprovalPageAndRefusesWhatAPersonWouldApp
 	})
 
 	t.Run("the request the sign-in-on run left pending is denied by the sweep", func(t *testing.T) {
-		reply := testwait.UntilPolling(t, 100*time.Millisecond, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (ciphertest.RequestReply, bool) {
+		reply := testwait.UntilPolling(t, 100*time.Millisecond, "the sweep of the sign-in-off broker to end the request the first run left pending", func() (podclient.RequestReply, bool) {
 			reply := pods.State(pod, left.RequestID)
 			return reply, reply.State != "pending"
 		})

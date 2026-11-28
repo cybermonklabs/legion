@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  Dispatch appends one issue event, `issue.role_holders_changed`, each time the Legion daemon's
+  `PUT /api/v1/issues/{key}/role-holders` changes an issue's role holders: its payload is `{key,
+  holders, previous_holders}`, the set stored and the set replaced, each pair `{role, session,
+  recorded_at}` in workflow order, its actor the daemon's session and its `created_at` the time of
+  the write. `GET /api/v1/issues/{key}/events` serves it, so the issue's log says which session
+  held each role at a past time; a publication of the set already stored appends nothing, and the
+  event is quiet. The history starts at this release: a change made before it has no event.
+time: 2026-11-25T23:10:41Z
+custom:
+    Issue: pr5585

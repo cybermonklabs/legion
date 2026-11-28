@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -19,6 +19,8 @@ import {
   badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
+import { inheritedPriorityWords, type PriorityView } from "./issue-priority";
+import { PrioritySource } from "./PrioritySource";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 const priorityOptions: readonly { label: string; value: IssuePriority | null }[] = [
@@ -32,6 +34,7 @@ const priorityOptions: readonly { label: string; value: IssuePriority | null }[]
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
  * an Inbox row - where this control is the only thing that writes that issue's priority.
+ * `priority` is the issue's as the surface reads it (`issuePriority`).
  */
 export function PriorityControl({
   disabled,
@@ -40,7 +43,7 @@ export function PriorityControl({
 }: {
   disabled?: boolean;
   issueKey: string;
-  priority: IssuePriority | null;
+  priority: PriorityView;
 }): ReactNode {
   const write = useIssuePriority(issueKey, priority);
   return <PriorityEditor disabled={disabled} issueKey={issueKey} write={write} />;
@@ -65,6 +68,16 @@ export function PriorityControl({
  * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
  * from its press.
  *
+ * It draws the priority the issue works at, and where the issue inherits it, the issue it comes
+ * from beside the badge: "P0 · from ACME-1" (`PrioritySource`), whose key is a link laid over the
+ * select, so a press on it follows the link and a press anywhere else opens the picker. The
+ * select picks the issue's own priority, so for an inherited one it reads Unset, and a pick of a
+ * level makes that level the issue's own. The badge is hidden from a screen reader, so for an
+ * inherited priority a hidden line describes the select ("P0, from ACME-1", `aria-describedby`)
+ * and the reader hears the priority the issue works at, not only Unset. While a pick of none
+ * waits for Dispatch's answer, the control keeps the priority it drew and reads busy
+ * (`aria-busy`, and a quieter look), since only the answer says what the issue inherits then.
+ *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
  * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
  * quiet grey while it has none. The select over it is the same either way.
@@ -81,7 +94,8 @@ export function PriorityEditor({
   write: IssuePriorityWrite;
 }): ReactNode {
   const page = usePageWords();
-  const priority = write.shown;
+  const { from, level: priority, own } = write.shown;
+  const waitsForAnswer = write.pending && own === null;
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
@@ -95,13 +109,23 @@ export function PriorityEditor({
         : pageLabelChip;
   const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // The select's value is the issue's own priority, so an inherited one needs words of its own.
+  // An own priority or none draws no hidden line, and its select keeps no description.
+  const sourceId = useId();
+  const inheritedWords =
+    from === null || priority === null
+      ? null
+      : inheritedPriorityWords(priority, from, page?.CONTROL_LABELS.priority_from);
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its wrapper narrows to the line rather than keep its width. The header variant is the
-  // new page's shape alone, so it wraps on every surface.
+  // new page's shape alone, so it wraps on every surface. The source sits between the badge and
+  // the select, so "P0 · from ACME-1" reads whole, and above the select, so its link takes the
+  // press on it while the words around it let a press through to the select.
   return (
     <>
       <span
-        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+        aria-busy={waitsForAnswer || undefined}
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled || waitsForAnswer ? "opacity-50" : ""}`}
       >
         {variant === "header" ? (
           <span
@@ -123,7 +147,12 @@ export function PriorityEditor({
             {label}
           </span>
         )}
+        <PrioritySource
+          className={`pointer-events-none relative z-10 ml-1 min-w-0 [overflow-wrap:anywhere] [&_a]:pointer-events-auto ${variant === "header" ? "text-sm leading-5" : "text-xs"}`}
+          from={from}
+        />
         <select
+          aria-describedby={inheritedWords === null ? undefined : sourceId}
           aria-label={`Priority of ${issueKey}`}
           className={badgeSelectOverlay}
           disabled={disabled}
@@ -134,7 +163,7 @@ export function PriorityEditor({
             const { value } = event.target;
             write.submit(value === "" ? null : (Number(value) as IssuePriority));
           }}
-          value={priority ?? ""}
+          value={own ?? ""}
         >
           {priorityOptions.map((option) => (
             <option key={option.label} value={option.value ?? ""}>
@@ -142,6 +171,11 @@ export function PriorityEditor({
             </option>
           ))}
         </select>
+        {inheritedWords === null ? null : (
+          <span className="sr-only" id={sourceId}>
+            {inheritedWords}
+          </span>
+        )}
       </span>
       {write.failed ? (
         <QueryError

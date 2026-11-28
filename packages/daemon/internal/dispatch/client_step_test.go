@@ -1,6 +1,3 @@
-// The client's writes of a step record, of a retro's rating, of the variant of a record's issue
-// and of a plan (PutStep, PutStepRating, PutStepExperiment, PutPlan) against Dispatch's step,
-// rating, experiment and plan routes, as the daemon's outbox sends them.
 package dispatch
 
 import (
@@ -100,11 +97,11 @@ func TestPutStepExperimentWritesTheVariantOnItsOwnRoute(t *testing.T) {
 
 // The plan of one run of an issue is a PUT on the plan's own id under its issue, as the daemon's
 // session of the issue's project, the one session Dispatch's route takes a plan from. The body
-// names the run, the source and every task with its steps in order; a plan of the source default
-// names no document and no version, which Dispatch refuses on such a plan, so the body leaves both
-// out, and a plan of the source owner names both, under the names Dispatch's route reads. The
-// daemon writes no owner's plan yet (the workflow's defaultPlan is its one plan), so that case
-// holds the body of each field such a plan carries.
+// names the run, the source and every task with its steps in order and its needs, [] for a task
+// that needs none; a plan of the source default names no document and no version, which Dispatch
+// refuses on such a plan, so the body leaves both out, and a plan of the source owner names both,
+// under the names Dispatch's route reads. A task whose needs are nil, a row the release before
+// wrote, writes no needs member, which Dispatch reads as needs not recorded.
 func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 	const id = "5d6e7f80-91a2-5b3c-8d4e-5f6a7b8c9d0e"
 	for _, tc := range []struct {
@@ -116,6 +113,14 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "the default plan",
 			plan: PlanWrite{Generation: 2, Source: "default",
+				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}},
+			present: map[string]string{"generation": "2", "source": `"default"`,
+				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"],"needs":[]}]`},
+			absent: []string{"id", "artifact_id", "version"},
+		},
+		{
+			name: "a row of the release before, with no needs recorded",
+			plan: PlanWrite{Generation: 2, Source: "default",
 				Tasks: []PlanTask{{ID: "default", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}},
 			present: map[string]string{"generation": "2", "source": `"default"`,
 				"tasks": `[{"id":"default","steps":["planner","implementer","tester","reviewer","acceptance:owner"]}]`},
@@ -124,9 +129,9 @@ func TestPutPlanWritesThePlanUnderTheDaemonSession(t *testing.T) {
 		{
 			name: "an owner's plan",
 			plan: PlanWrite{Generation: 3, Source: "owner", PlanDocument: &PlanDocument{ArtifactID: "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", Version: 4},
-				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}}}},
+				Tasks: []PlanTask{{ID: "ui", Steps: []string{"tester", "implementer:ui"}, Needs: &[]string{}}}},
 			present: map[string]string{"generation": "3", "source": `"owner"`, "artifact_id": `"6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"`,
-				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"]}]`},
+				"version": "4", "tasks": `[{"id":"ui","steps":["tester","implementer:ui"],"needs":[]}]`},
 			absent: []string{"id"},
 		},
 	} {
@@ -173,8 +178,6 @@ func TestPutStepWritesAnEndUnderTheNamesTheRouteReads(t *testing.T) {
 	}
 }
 
-// putStep writes the record id of LEG-1 through the client to Dispatch's step route as a test plays
-// it. It returns the body that route read.
 func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessage {
 	t.Helper()
 	return putRecord(t, "/api/v1/issues/LEG-1/steps/"+id, id, func(client *HTTPClient) error {
@@ -182,10 +185,6 @@ func putStep(t *testing.T, id string, write StepWrite) map[string]json.RawMessag
 	})
 }
 
-// putRecord is Dispatch's stand-in for one write of a record of LEG-1: it takes the PUT call makes
-// on path under the daemon's bearer, answers it with the record id, and returns the body it read.
-// A call to any other route, or with any other method, stops the test, so a client that writes a
-// record to the wrong route fails by name rather than by the body it left behind.
 func putRecord(t *testing.T, path, id string, call func(client *HTTPClient) error) map[string]json.RawMessage {
 	t.Helper()
 	var body map[string]json.RawMessage

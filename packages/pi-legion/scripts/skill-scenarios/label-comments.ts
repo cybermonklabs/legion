@@ -12,6 +12,9 @@
  * `updated_since` is sent, because a comment need not move the `updated_at` of its issue. A
  * comment of that set its author deleted is left out, and stdout counts it: Dispatch serves a
  * deleted comment with no body, so the judge would label an empty comment and not the words the
+ * person wrote. A comment whose body Dispatch left out is left out too, and stdout counts it
+ * apart: a token that carries a cut reads Dispatch as of that cut, which leaves out the body of a
+ * comment edited or deleted since, and a label of a marker in its place would label no words the
  * person wrote.
  *
  * Each comment gets one model call to claude-sonnet-5-5. The call is the call of the judge that
@@ -32,15 +35,12 @@
  *
  * It writes <out>/labels.jsonl: one row for each comment, oldest first. Stdout gets the counts.
  * Stdout names no person and quotes no comment, so a pull request can carry it as printed. The
- * file is written only when every comment has a label: the rows go to a temporary file of this
- * run's own in <out>, which is linked as labels.jsonl and then removed, so labels.jsonl appears
- * whole or not at all. A comment that gets no label fails the run (exit 1) and stderr names it.
- * Exit 2 is a refusal before any read: a bad argument, an --out inside a git or jj checkout, no
- * Dispatch, or a labels.jsonl an earlier run left in <out>, which is named and never removed or
- * replaced.
+ * file is written only when every comment has a label: the rows go to a temporary file in <out>,
+ * which is renamed to labels.jsonl, so a failed run leaves an earlier labels.jsonl as it was. A
+ * comment that gets no label fails the run (exit 1) and stderr names it. Exit 2 is a refusal
+ * before any read: a bad argument, an --out inside a git or jj checkout, or no Dispatch.
  */
-import { randomUUID } from "node:crypto";
-import { linkSync, lstatSync, mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import type { Comment } from "@legion/contracts";
 import { outage } from "@legion/contracts/http-status";
@@ -394,8 +394,9 @@ function isoWeek(createdAt: string): string {
 }
 
 /** The stdout lines: counts only. No person is named and no comment is quoted. `deleted` is how
- * many comments of the set were left out because their author deleted them. */
-export function summary(rows: readonly LabelRow[], deleted: number): string[] {
+ * many comments of the set were left out because their author deleted them, and `leftOut` how
+ * many because Dispatch left their body out, a line printed only where there is one. */
+export function summary(rows: readonly LabelRow[], deleted: number, leftOut: number): string[] {
   const share = (count: number) =>
     rows.length === 0 ? "" : ` (${((count / rows.length) * 100).toFixed(1)}%)`;
   const yes = (key: QuestionKey, of: readonly LabelRow[] = rows) =>
@@ -409,6 +410,11 @@ export function summary(rows: readonly LabelRow[], deleted: number): string[] {
   return [
     `comments: ${rows.length}`,
     `deleted comments left out: ${deleted} (Dispatch serves a deleted comment with no body, so there is nothing of it to label)`,
+    ...(leftOut === 0
+      ? []
+      : [
+          `comments whose words Dispatch left out: ${leftOut} (Dispatch read as of a past time leaves out the body of a comment edited or deleted since, so there is nothing of it to label)`,
+        ]),
     `first created_at: ${rows[0]?.created_at ?? "none"}`,
     `last created_at: ${rows.at(-1)?.created_at ?? "none"}`,
     `writing complaints (about_doc_writing yes): ${writing} of ${rows.length}${share(writing)}`,
@@ -512,13 +518,8 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
 
   const out = path.resolve(args.out);
   const file = path.join(out, "labels.jsonl");
-  if (lstatSync(file, { throwIfNoEntry: false }) !== undefined)
-    return refuse(
-      `${file} from an earlier run; this one removes and replaces none of it: move it aside to label again`
-    );
-  // In the same directory as labels.jsonl, so the link names the whole file in one step, and named
-  // by this run alone, so the removal below removes this run's file and no other.
-  const partial = path.join(out, `.labels.jsonl.${process.pid}.${randomUUID()}.tmp`);
+  // In the same directory as labels.jsonl, so the rename replaces it in one step.
+  const partial = path.join(out, `.labels.jsonl.${process.pid}.tmp`);
   try {
     // Made before any read, so a directory that cannot be made stops the run before the model calls.
     mkdirSync(out, { recursive: true });
@@ -530,8 +531,12 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       .flat()
       .filter(({ comment }) => comment.author.kind === "user")
       .filter(({ comment }) => inWindow(window, comment.created_at));
-    const set = people
-      .filter(({ comment }) => comment.deleted_at == null)
+    const standing = people.filter(({ comment }) => comment.deleted_at == null);
+    const set = standing
+      .filter(({ comment }) => {
+        const body: string | undefined = comment.body;
+        return body !== undefined;
+      })
       .toSorted((a, b) => byCreatedAt(a.comment, b.comment));
 
     const outcomes = await mapLimit(set, CONCURRENCY, async (item) => {
@@ -568,16 +573,15 @@ export async function main(argv: readonly string[], io: CliIo): Promise<number> 
       return 1;
     }
     writeFileSync(partial, rows.map((row) => `${JSON.stringify(row)}\n`).join(""));
-    // A link refuses a labels.jsonl that appeared since the check above, where a rename would
-    // replace it.
-    linkSync(partial, file);
-    for (const line of summary(rows, people.length - set.length)) io.out(line);
+    renameSync(partial, file);
+    const leftOut = standing.length - set.length;
+    for (const line of summary(rows, people.length - standing.length, leftOut)) io.out(line);
     return 0;
   } catch (error) {
     io.err(`label-comments: ${messageFor(error)}`);
     return 1;
   } finally {
-    // This run's own temporary file, linked as labels.jsonl or left by a write or link that failed.
+    // Gone after a rename. Left only by a write or rename that failed.
     rmSync(partial, { force: true });
   }
 }

@@ -44,6 +44,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -90,15 +91,17 @@ func sharedAgentTokens(t testing.TB, setting string) *auth.SharedAgentTokens {
 }
 
 // withDocumentService is input with a document service of the test's own, for a test that needs
-// none of its own making: one over the input's store, event broker, identity and server URL,
-// shut down once the test ends, after every cleanup registered later (a server's wait among
-// them). An input with no broker gets one, which the API and the service then share.
+// none of its own making: one over the input's store, event broker and identity, reading links at
+// the origins NewDeps reads them at (text.ServerOrigins of the input's ServerURL, ServedOrigins and
+// FormerOrigins), shut down once the test ends, after every cleanup registered later (a server's
+// wait among them). An input with no broker gets one, which the API and the service then share.
 func withDocumentService(t testing.TB, input DepsInput) DepsInput {
 	t.Helper()
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
-	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, ServerURL: input.ServerURL})
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
+	documents := docs.New(docs.Deps{Store: input.Store, Events: input.Events, Identity: input.Identity, Origins: origins})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
 			t.Errorf("shut the document service down: %v", err)
@@ -125,7 +128,15 @@ type testServerOptions struct {
 	// empty is the deployment that configured neither.
 	newIssueLabel   string
 	newIssueSession string
-	testHooks       bool
+	// specRoots names the roots of The Spec (DISPATCH_SPEC_ROOTS), issue keys separated by commas;
+	// empty is the deployment that names none, whose form gate covers no document.
+	specRoots string
+	testHooks bool
+	// servedOrigins and formerOrigins are DepsInput.ServedOrigins and DepsInput.FormerOrigins: the
+	// other addresses the server serves beside testServerURL, and those it served before. Nil and
+	// nil is the deployment at one address.
+	servedOrigins []string
+	formerOrigins []string
 	// store is the database the server runs on; nil opens one of its own (storetest.Open). A
 	// test that counts a read's round trips passes a traced store (storetest.Traced).
 	store *store.Store
@@ -169,6 +180,10 @@ type testServerOptions struct {
 	// persistence is an optional document-store seam for API handlers that need the document
 	// service to observe a persistence boundary condition.
 	persistence func(*store.Store) docs.VersionedStore
+	// documentSocket gives the document service the header identity, so a browser peer
+	// (connectBrowserPeer) can open a document's socket as alice, as a person's editor does; false
+	// is every test that edits no document through its socket.
+	documentSocket bool
 	// agentStream is the live agent conversation relay; nil is the deployment with no NATS,
 	// where an agent view is refused STREAM_UNAVAILABLE.
 	agentStream agentstream.Source
@@ -245,6 +260,10 @@ type testServerOptions struct {
 	// answered gives that lookup a bound no run reaches, so a loaded machine cannot turn the
 	// answer into an unanswered lookup.
 	mentionLookupBound func(target string) time.Duration
+	// afterIssueLoad is the hold writeIssue runs once it has read the issue it writes under that
+	// issue's owner lock (server.afterIssueLoad); nil holds nothing, as every server the
+	// deployment builds does.
+	afterIssueLoad func(ctx context.Context, key string)
 	// relatedBound is the related-item check's meaning allowance and its wait for the
 	// cross-project leg, with the check's own allowance past them (server.withRelatedBound);
 	// zero keeps production's. A case whose verdict is what the check's meaning stage found
@@ -285,12 +304,17 @@ const testTakeoverWindow = 750 * time.Millisecond
 // writes names, and what a DPoP proof's 'htu' is checked against (broker_token_test.go).
 const testServerURL = "https://dispatch.example"
 
+// testOrigins is testServerURL as the one origin dashboard links are read at: what a server built
+// with that ServerURL and neither list reads them with (Deps.Origins), for a test that builds a
+// reader of links without a server.
+var testOrigins = text.NewOrigins(testServerURL)
+
 // testSigningKey is the one-key set the package's session cookies are signed with.
 var testSigningKey = auth.SingleSigningKey("signing-key")
 
 // headerIdentity is the test header identity that records each named person in the database.
 func headerIdentity(database *store.Store) identity.HeaderIdentity {
-	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
+	return identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
 // seedPeople records emails as people who have signed in: the assignee picker's options.
@@ -373,7 +397,15 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.brokerTokens != nil {
 		brokerTokens = options.brokerTokens(database)
 	}
-	documentService := docs.New(docs.Deps{Store: database, Persistence: documentPersistence, Events: broker, ServerURL: testServerURL, Settle: settle})
+	origins := text.ServerOrigins(testServerURL, options.servedOrigins, options.formerOrigins)
+	var socketIdentity identity.Identity
+	if options.documentSocket {
+		socketIdentity = headerIdentity(database)
+	}
+	documentService := docs.New(docs.Deps{
+		Store: database, Persistence: documentPersistence, Events: broker, Settle: settle, Identity: socketIdentity,
+		Origins: origins,
+	})
 	t.Cleanup(func() {
 		if err := documentService.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)
@@ -401,7 +433,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		AgentTokens:      sharedAgentTokens(t, "agent-token"),
 		NewIssueLabel:    options.newIssueLabel,
 		NewIssueSession:  options.newIssueSession,
+		SpecForm:         specFormOn(t, options.specRoots, origins, documentService),
 		ServerURL:        testServerURL,
+		ServedOrigins:    options.servedOrigins,
+		FormerOrigins:    options.formerOrigins,
 		Docs:             documentService,
 		Events:           broker,
 		Renames:          options.renames,
@@ -455,6 +490,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	served.duplicateBound = options.duplicateBound
 	served.inboxStatementBound = options.inboxStatementBound
 	served.mentionLookupBound = options.mentionLookupBound
+	served.afterIssueLoad = options.afterIssueLoad
 	served.withRelatedBound(options.relatedBound)
 	// waitBackground, as production's shutdown calls it: every keyed handler and every delivery a
 	// handler detached from its request, then the sockets, the hub, the relay and the test hooks'
@@ -1041,6 +1077,10 @@ func TestEventNotifyRules(t *testing.T) {
 		{name: "user thread state", event: model.Event{Type: "user_thread_state.updated", Actor: user}, want: false},
 		{name: "user decision kept", event: model.Event{Type: "decision.kept", Actor: user}, want: false},
 		{name: "user priority write", event: model.Event{Type: "priority.updated", Actor: user, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, want: false},
+		// J3 of dispatch://INFRA-5793: an issue.updated whose changed names only the resolved
+		// priority fields is what a write to another issue appends on an issue whose resolved
+		// priority it moved. It wakes nobody, whoever wrote, since nobody asked that issue anything.
+		{name: "user resolved priority of another write", event: model.Event{Type: "issue.updated", Actor: user, Payload: model.IssueEventPayload{Changed: []string{"resolved_priority"}}}, want: false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := broker.Notify(test.event); got != test.want {
@@ -1266,25 +1306,23 @@ func TestExternalIssueLinkedInAnotherProjectIsRefused(t *testing.T) {
 	}
 }
 
-// dispatch_issue's external says what POST /api/v1/issues does with the reference it names: a
-// reference already imported into the call's project answers its issue and creates nothing, and
-// one imported into another project is refused 400 EXTERNAL_PROJECT_MISMATCH. The words are the
-// tool's generated copy (contracts.DispatchTools), the text the catalogue serves, and each promise
-// is held to the route here, so a change of either the words or the route fails this test.
-func TestDispatchIssuesExternalWordsAreWhatItsRouteAnswers(t *testing.T) {
+// dispatch_issue's external names the code POST /api/v1/issues refuses an import with when the
+// reference is already imported into another project, 400 EXTERNAL_PROJECT_MISMATCH, and the
+// route answers that code; a reference already imported into the call's project answers its
+// issue. The description is the tool's generated copy (contracts.DispatchTools), the text the
+// catalogue serves, so a change of the code in either the description or the route fails here.
+func TestDispatchIssuesExternalNamesTheCodeItsRouteAnswers(t *testing.T) {
 	t.Parallel()
-	var words string
+	var description string
 	for _, tool := range contracts.DispatchTools {
 		for _, argument := range tool.Arguments {
 			if tool.Name == "dispatch_issue" && argument.Name == "external" {
-				words = argument.Description
+				description = argument.Description
 			}
 		}
 	}
-	for _, promise := range []string{"owner/repo#n", "answers its issue and creates nothing", "400 EXTERNAL_PROJECT_MISMATCH"} {
-		if !strings.Contains(words, promise) {
-			t.Fatalf("dispatch_issue's external says %q, want it to say %q", words, promise)
-		}
+	if !strings.Contains(description, "400 EXTERNAL_PROJECT_MISMATCH") {
+		t.Fatalf("dispatch_issue's external reads %q, want it to name 400 EXTERNAL_PROJECT_MISMATCH", description)
 	}
 	handler := newTestHandler(t)
 	for _, project := range []map[string]string{{"key": "CORE", "name": "Core"}, {"key": "OTHER", "name": "Other"}} {
@@ -2204,6 +2242,47 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	}
 	if references != 1 {
 		t.Fatalf("created document references = %d, want 1", references)
+	}
+}
+
+// A link to a tab of an issue that is a view of the issue (the dashboard's pages file: the
+// Activity tab, `dispatch://<KEY>/activity`) is an edge to the issue, as a link to the issue is.
+func TestADocumentsLinkToATabOfAnIssueIsAnEdgeToTheIssue(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
+		"key": "TEST", "name": "Test project",
+	}, "alice"); response.Code != http.StatusCreated {
+		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+		"project": "TEST", "title": "Tab references",
+	}, "alice")
+	issue := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created)
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
+	}
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]string{
+		"name": "notes.md",
+	}, "notes.md", "text/markdown", []byte("See dispatch://"+issue.Key+"/activity."), "alice")
+	artifact := decodeBody[struct {
+		Artifact struct {
+			ID string `json:"id"`
+		} `json:"artifact"`
+	}](t, uploaded)
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	var references int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from refs
+		where from_kind = 'artifact' and from_id = $1 and to_kind = 'issue' and to_id = $2
+	`, artifact.Artifact.ID, issue.Key).Scan(&references); err != nil {
+		t.Fatalf("count the document's edges to its issue: %v", err)
+	}
+	if references != 1 {
+		t.Fatalf("the document's edges to %s = %d, want 1", issue.Key, references)
 	}
 }
 
