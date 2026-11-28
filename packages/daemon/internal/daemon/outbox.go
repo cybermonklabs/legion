@@ -169,7 +169,8 @@ type outbox struct {
 	// files (workspace.Remove).
 	remove func(context.Context, workspace.Workspace, sync.Locker) error
 	// checkedOut is whether a workspace on the daemon's host finished its checkout
-	// (workspace.CheckedOut): a launch provisions one that did not (ensureWorkspace).
+	// (workspace.CheckedOut): a launch provisions one that did not, and one that did but still
+	// carries a checkout marker (unprovisioned, ensureWorkspace).
 	checkedOut func(context.Context, workspace.Workspace) (bool, error)
 	// provisions orders the workspace provisions and removals (provisionLocks): up to
 	// provisionConcurrency checkouts at once, one at a time per issue, and one command at a time
