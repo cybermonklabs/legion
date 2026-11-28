@@ -243,12 +243,12 @@ const POST_WRITES: ReadonlySet<string> = new Set(POST_WRITE_TYPES);
 export const HISTORY_EXCLUDED_TYPES = POST_WRITE_TYPES.join(",");
 
 /** The event types of a row the outline draws, which the history leaves out. Every other event
- *  of a comment or a message - a delivery, a resolution, a reopening, an anchor refresh - is left
- *  out where the outline draws that comment or message, and is a line where it is a turn of a
- *  thread the history holds, since no node draws it (`ofOutlineRow`). An ask's are left out for
- *  a question alone: an approval request is no row of the outline - the identity block draws its
- *  step (`ApprovalSteps.tsx`) - so its asking, hand-back and answer are the history's, as are the
- *  followers added to it and removed. */
+ *  of a comment or a message - a delivery, a resolution, a reopening, an anchor refresh, a
+ *  session following or leaving its thread - is left out where the outline draws that comment or
+ *  message, and is a line where it is a turn of a thread the history holds, since no node draws
+ *  it (`ofOutlineRow`). An ask's are left out for a question alone: an approval request is no row
+ *  of the outline - the identity block draws its step (`ApprovalSteps.tsx`) - so its asking,
+ *  hand-back and answer are the history's, as are the followers added to it and removed. */
 const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "ask.anchor_refreshed": true,
   "ask.answered": true,
@@ -271,6 +271,8 @@ const OUTLINE_EVENTS: Readonly<Record<string, true>> = {
   "result.retracted": true,
   "suggestion.accepted": true,
   "suggestion.rejected": true,
+  "thread.follower_added": true,
+  "thread.follower_removed": true,
 };
 
 type Dated = Exclude<HistoryEntry, { kind: "unread" }>;
@@ -762,10 +764,13 @@ function messageTurn(message: MessageRead["message"]): HistoryTurn {
 }
 
 /** The comment or message an event of `OUTLINE_EVENTS` is about, where it is one of a comment's
- *  or a message's: a delivery, a resolution, a reopening or an anchor refresh. */
+ *  or a message's: a delivery, a resolution, a reopening, an anchor refresh, or a follow or a
+ *  leave of a thread, which names the thread's root comment. */
 function turnOf(event: DispatchEvent): string | undefined {
   switch (event.type) {
     case "comment.delivery":
+    case "thread.follower_added":
+    case "thread.follower_removed":
       return event.payload.comment_id;
     case "message.delivery":
       return event.payload.message_id;

@@ -6,7 +6,11 @@ import type {
   AskEventPayload,
   AskFollowerEventPayload,
 } from "./dispatch-api-asks";
-import type { CommentDeliveryEventPayload, CommentEventPayload } from "./dispatch-api-comments";
+import type {
+  CommentDeliveryEventPayload,
+  CommentEventPayload,
+  ThreadFollowerEventPayload,
+} from "./dispatch-api-comments";
 import type {
   ArchitectureSourceUpdatedEventPayload,
   ArchitectureSyncedEventPayload,
@@ -381,6 +385,16 @@ export type DispatchEvent =
   | (DispatchEventBase & {
       readonly type: "ask.follower_removed";
       readonly payload: AskFollowerEventPayload;
+    })
+  /** A session joined a comment thread, or left it: `comment_id` names the thread's root
+   *  comment. An ask's thread is followed through its ask, never through these. */
+  | (DispatchEventBase & {
+      readonly type: "thread.follower_added";
+      readonly payload: ThreadFollowerEventPayload;
+    })
+  | (DispatchEventBase & {
+      readonly type: "thread.follower_removed";
+      readonly payload: ThreadFollowerEventPayload;
     });
 
 export type EventType = DispatchEvent["type"];
@@ -450,6 +464,8 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "subscription.removed": true,
   "suggestion.accepted": true,
   "suggestion.rejected": true,
+  "thread.follower_added": true,
+  "thread.follower_removed": true,
   "user_agent_state.updated": true,
   "user_state.updated": true,
   "user_thread_state.updated": true,

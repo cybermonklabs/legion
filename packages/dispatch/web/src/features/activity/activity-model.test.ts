@@ -240,3 +240,41 @@ test("a recorded handoff names its phase and version", () => {
     })
   ).toEqual(["recorded the implement handoff, version 2"]);
 });
+
+// A session's own follow or leave of a comment thread reads as its act; one another writer made
+// names the session it added or removed, for `AgentName` to name by its title.
+test("a thread follower change says who followed or left the thread", () => {
+  const follower = (
+    type: "thread.follower_added" | "thread.follower_removed",
+    actor: { id: string; kind: "session" | "user" }
+  ): DispatchEvent => ({
+    actor,
+    created_at: "2026-11-28T00:00:00Z",
+    id: 3,
+    issue_key: "CORE-1",
+    notify: true,
+    payload: { by: actor, comment_id: "comment-1", session_id: "session-1" },
+    seq: 3,
+    type,
+  });
+  const itself = { id: "session-1", kind: "session" } as const;
+  const person = { id: "alice", kind: "user" } as const;
+  const agent = { sessionId: "session-1", storedTitle: undefined };
+
+  expect(activityDescription(follower("thread.follower_added", itself))).toEqual([
+    "followed a thread",
+  ]);
+  expect(activityDescription(follower("thread.follower_removed", itself))).toEqual([
+    "left a thread",
+  ]);
+  expect(activityDescription(follower("thread.follower_added", person))).toEqual([
+    "added ",
+    agent,
+    " to a thread's followers",
+  ]);
+  expect(activityDescription(follower("thread.follower_removed", person))).toEqual([
+    "removed ",
+    agent,
+    " from a thread's followers",
+  ]);
+});

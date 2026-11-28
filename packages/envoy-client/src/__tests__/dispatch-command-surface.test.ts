@@ -467,6 +467,21 @@ const refusals: readonly RefusalCase[] = [
     args: { ask: commentRef, action: "follow" },
   },
   {
+    tool: "dispatch_follow",
+    call: "comment that is not a comment reference",
+    args: { comment: askRef, action: "unfollow" },
+  },
+  {
+    tool: "dispatch_follow",
+    call: "both an ask and a comment",
+    args: { ask: UUID, comment: OTHER_UUID, action: "follow" },
+  },
+  {
+    tool: "dispatch_follow",
+    call: "neither an ask nor a comment",
+    args: { action: "unfollow" },
+  },
+  {
     tool: "dispatch_resolve_comment",
     call: "comment that is not a comment reference",
     args: { comment: askRef },

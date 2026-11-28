@@ -432,8 +432,9 @@ export async function resolveAskCommand(context: CommandContext): Promise<Dispat
   };
 }
 
-/** `dispatch follow`: have an ask's answer and replies reach this session, or stop them. */
-export async function followCommand(context: CommandContext): Promise<DispatchToolResult> {
+/** `dispatch follow --ask`: have an ask's answer and replies reach this session, or stop them.
+ *  `followCommand` (conversation.ts) sends a call that names a comment thread elsewhere. */
+export async function followAskCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input } = context;
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch follow");

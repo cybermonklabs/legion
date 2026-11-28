@@ -7204,6 +7204,9 @@ describe("executeDispatchTool", () => {
       writes.length = 0;
       expect(await problemsOf("dispatch_resolve_comment", { comment })).toEqual([offComment]);
       expect(await problemsOf("dispatch_follow", { ask, action: "follow" })).toEqual([offAsk]);
+      expect(await problemsOf("dispatch_follow", { comment, action: "unfollow" })).toEqual([
+        offComment,
+      ]);
       expect(
         await problemsOf("dispatch_resolve_ask", { ask, kind: "resolved", reason: "Done." })
       ).toEqual([offAsk]);
@@ -15284,11 +15287,14 @@ describe("executeDispatchTool", () => {
     }
   );
 
-  test("dispatch_follow needs the host session id", async () => {
+  test.each([
+    { ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", action: "follow" },
+    { comment: "cccccccc-0000-4000-8000-000000000042", action: "unfollow" },
+  ])("dispatch_follow needs the host session id (%o)", async (args) => {
     await expect(
       executeDispatchTool({
         tool: "dispatch_follow",
-        args: { ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7", action: "follow" },
+        args,
         cwd: "/workspace",
         host: "omp",
         config,
@@ -15299,6 +15305,116 @@ describe("executeDispatchTool", () => {
         }) as unknown as typeof fetch,
       })
     ).rejects.toThrow("host session id is required for dispatch follow");
+  });
+
+  test.each([
+    // A bare id goes straight to the thread's route: Dispatch reads its thread from it.
+    ["follow", "PUT", "bare id", false],
+    // A comment named by a reference is read first, to hold it to the issue the reference names.
+    ["unfollow", "DELETE", "reference", true],
+  ] as const)(
+    "dispatch_follow --comment %s sends %s to the thread's followers route, naming the calling session in the path and the body (%s)",
+    async (action, method, _named, throughReference) => {
+      const commentUuid = "cccccccc-0000-4000-8000-000000000042";
+      const requests: Array<{ method: string; pathname: string; body: unknown }> = [];
+      const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+        const pathname = new URL(String(url)).pathname;
+        requests.push({
+          method: init?.method ?? "GET",
+          pathname,
+          body: init?.body === undefined ? undefined : JSON.parse(String(init.body)),
+        });
+        if (pathname === `/api/v1/comments/${commentUuid}`) {
+          return response({ comment: { id: commentUuid, issue_key: "DSP-42" }, replies: [] });
+        }
+        if (pathname === `/api/v1/comments/${commentUuid}/followers/session-7`) {
+          return new Response(null, { status: 204 });
+        }
+        throw new Error(`unexpected request: ${pathname}`);
+      };
+
+      const result = await executeDispatchTool({
+        tool: "dispatch_follow",
+        args: {
+          comment: throughReference ? `dispatch://DSP-42/comment/${commentUuid}` : commentUuid,
+          action,
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-7",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+      expect(requests.map((request) => `${request.method} ${request.pathname}`)).toEqual([
+        ...(throughReference ? [`GET /api/v1/comments/${commentUuid}`] : []),
+        `${method} /api/v1/comments/${commentUuid}/followers/session-7`,
+      ]);
+      expect(requests.at(-1)?.body).toEqual({
+        actor: expect.objectContaining({ kind: "session", id: "session-7" }),
+      });
+      expect(result.details).toEqual({ comment: commentUuid });
+      expect(followedAsk(result.details)).toBeNull();
+      expect(result.text).toBe(
+        action === "follow"
+          ? `Following the thread of comment ${commentUuid}: its replies reach this session directly.`
+          : `Left the thread of comment ${commentUuid}: its replies no longer reach this session; a reply that mentions it still does.`
+      );
+    }
+  );
+
+  test("dispatch_follow names one ask or one comment thread: both, or neither, is refused before any request", async () => {
+    let requests = 0;
+    const fetchImpl = (() => {
+      requests += 1;
+      throw new Error("network must not be called");
+    }) as unknown as typeof fetch;
+    const problemsOf = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_follow",
+        args,
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-7",
+        config,
+        env: {},
+        exec: repoExec("owner/repo"),
+        fetchImpl,
+      }).then(
+        () => {
+          throw new Error("dispatch_follow was not refused");
+        },
+        (error: unknown) => {
+          if (!(error instanceof ToolInputError)) throw error;
+          return error.problems;
+        }
+      );
+    const rule =
+      "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.";
+    expect(
+      await problemsOf({
+        ask: "5a660655-04ad-4ce0-8a9b-93dd03c412b7",
+        comment: "cccccccc-0000-4000-8000-000000000042",
+        action: "unfollow",
+      })
+    ).toEqual([rule]);
+    expect(await problemsOf({ action: "unfollow" })).toEqual([rule]);
+    // The comment is checked as dispatch resolve-comment checks its own: an ask reference, or a
+    // bare value that is no id, names no comment.
+    expect(
+      await problemsOf({
+        comment: "dispatch://DSP-42/ask/5a660655-04ad-4ce0-8a9b-93dd03c412b7",
+        action: "unfollow",
+      })
+    ).toEqual([
+      "comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
+    ]);
+    expect(await problemsOf({ comment: "thread", action: "unfollow" })).toEqual([
+      "comment must be a bare comment id - a whole uuid, or a prefix of at least 8 hex characters - or a dispatch://.../comment/<id> reference",
+    ]);
+    expect(requests).toBe(0);
   });
 
   test("rejects a comment reply that names both reply_to and reply_to_ask", async () => {

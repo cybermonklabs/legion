@@ -2672,6 +2672,16 @@ type AskFollowerEventPayload struct {
 	By        Actor  `json:"by"`
 }
 
+// ThreadFollowerEventPayload is the payload of thread.follower_added and thread.follower_removed:
+// which session joined or left which comment thread, named by its root comment, and who did it.
+// The types are not comment.* ones: every reader of a comment.* event reads a comment's own
+// fields from it (its id and body), and this names a thread and a session.
+type ThreadFollowerEventPayload struct {
+	CommentID string `json:"comment_id"`
+	SessionID string `json:"session_id"`
+	By        Actor  `json:"by"`
+}
+
 // AskLastReply is the newest comment in an ask's thread, carried on inbox rows and on the issue
 // detail's open asks so a human can see who spoke last. Its Turn decides an ordinary ask's
 // WaitingOn; a moved approval request and one handed back after this reply override it.

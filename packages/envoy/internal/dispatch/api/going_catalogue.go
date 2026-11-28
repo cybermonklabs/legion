@@ -164,6 +164,19 @@ var goingToolRoutes = map[string][]goingToolRoute{
 			Path:      map[string]string{"id": "ask", "session_id": goingCallerSession},
 			Relations: []string{"followed_by"},
 		},
+		// A follow names an ask or a comment, never both (the tool's own check refuses that
+		// before a call), so the rows of the one it names are the ones whose placeholders fill.
+		// A comment thread's follow records the session's choice on the thread and makes no
+		// edge of the graph.
+		{
+			Method: http.MethodDelete, Pattern: "/api/v1/comments/{id}/followers/{session_id}",
+			Path:         map[string]string{"id": "comment", "session_id": goingCallerSession},
+			WhenArgument: "action", WhenValue: "unfollow",
+		},
+		{
+			Method: http.MethodPut, Pattern: "/api/v1/comments/{id}/followers/{session_id}",
+			Path: map[string]string{"id": "comment", "session_id": goingCallerSession},
+		},
 	},
 	"dispatch_comment": {
 		{

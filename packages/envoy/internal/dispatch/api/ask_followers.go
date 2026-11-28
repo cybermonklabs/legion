@@ -93,62 +93,9 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 		writeError(w, "FOLLOWER_INPUT", http.StatusBadRequest, "follower session id is required")
 		return
 	}
-	actor, human, err := s.optionalActor(r)
-	if err != nil {
-		s.writeAuthenticationError(w, err)
+	actor, ok := s.followerActor(w, r, sessionID)
+	if !ok {
 		return
-	}
-	// A person at a browser writes as themselves: the credential optionalActor resolved is the
-	// request's, not the record's, and the bearer paths below take their actor from
-	// bearerSessionActor and actingPerson, which record none either.
-	actor = actor.Recorded()
-	if !human {
-		var input actorInput
-		// A credential that holds no `person` scope acts only as a session, which the body has
-		// to name, so the body is required of it exactly as it always was. A person's own
-		// credential may send none: it acts as the person, and the body only names the agent
-		// beside them.
-		person := s.callerHoldsScope(r, model.ScopePerson)
-		if person {
-			if !s.decodeOptionalJSON(w, r, &input) {
-				return
-			}
-		} else if err := decodeJSON(r, &input); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		// The session this credential acts as, where it acts as one, is bearerSessionActor's
-		// own answer: the session a broker-issued token proved, else the one the body names, as
-		// that call records it. A credential that acts as the addressed session follows it as it
-		// always did, recorded as that session, since that is its own act and no person's;
-		// nothing of what a session reads back changes.
-		asTheSession, sessionErr := bearerSessionActor(r, actor, input.Actor)
-		switch {
-		case sessionErr == nil && asTheSession.ID == sessionID:
-			actor = asTheSession
-		case person:
-			// Putting another session on an ask is the person's act, so it is recorded as the
-			// person with the agent beside them. actingPerson cannot refuse the scope here,
-			// which the line above has just read; it still refuses a `?session=` naming a
-			// session other than the one a broker-issued token proved.
-			acting, ok := s.actingPerson(w, r)
-			if !ok {
-				return
-			}
-			if actor, ok = actSessionFromBody(w, acting, input.Actor); !ok {
-				return
-			}
-		default:
-			// The body still has to name a session, so a bearer that names none is told that
-			// first, as it always was (400 ACTOR_KIND).
-			if sessionErr != nil {
-				s.writeHandlerError(w, sessionErr)
-				return
-			}
-			writeError(w, "FOLLOWER_FORBIDDEN", http.StatusForbidden,
-				"a session may follow or unfollow only itself; acting for another session needs the person scope")
-			return
-		}
 	}
 
 	tx, err := s.begin(r.Context())
@@ -205,4 +152,67 @@ func (s *server) changeAskFollower(w http.ResponseWriter, r *http.Request, follo
 	}
 	s.publish(r.Context(), event)
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// followerActor is who follows or unfollows sessionID, an ask's follower or a comment thread's
+// (thread_followers.go), and ok is false once it has written the refusal. A credential acting as
+// sessionID itself acts as that session; acting on any other session is the person's act, which
+// needs the `person` scope; every other credential is refused 403 FOLLOWER_FORBIDDEN.
+func (s *server) followerActor(w http.ResponseWriter, r *http.Request, sessionID string) (model.Actor, bool) {
+	actor, human, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return model.Actor{}, false
+	}
+	// A person at a browser writes as themselves: the credential optionalActor resolved is the
+	// request's, not the record's, and the bearer paths below take their actor from
+	// bearerSessionActor and actingPerson, which record none either.
+	actor = actor.Recorded()
+	if human {
+		return actor, true
+	}
+	var input actorInput
+	// A credential that holds no `person` scope acts only as a session, which the body has
+	// to name, so the body is required of it exactly as it always was. A person's own
+	// credential may send none: it acts as the person, and the body only names the agent
+	// beside them.
+	person := s.callerHoldsScope(r, model.ScopePerson)
+	if person {
+		if !s.decodeOptionalJSON(w, r, &input) {
+			return model.Actor{}, false
+		}
+	} else if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, err)
+		return model.Actor{}, false
+	}
+	// The session this credential acts as, where it acts as one, is bearerSessionActor's
+	// own answer: the session a broker-issued token proved, else the one the body names, as
+	// that call records it. A credential that acts as the addressed session follows it as it
+	// always did, recorded as that session, since that is its own act and no person's;
+	// nothing of what a session reads back changes.
+	asTheSession, sessionErr := bearerSessionActor(r, actor, input.Actor)
+	switch {
+	case sessionErr == nil && asTheSession.ID == sessionID:
+		return asTheSession, true
+	case person:
+		// Putting another session on an ask or a thread is the person's act, so it is recorded
+		// as the person with the agent beside them. actingPerson cannot refuse the scope here,
+		// which the line above has just read; it still refuses a `?session=` naming a
+		// session other than the one a broker-issued token proved.
+		acting, ok := s.actingPerson(w, r)
+		if !ok {
+			return model.Actor{}, false
+		}
+		return actSessionFromBody(w, acting, input.Actor)
+	default:
+		// The body still has to name a session, so a bearer that names none is told that
+		// first, as it always was (400 ACTOR_KIND).
+		if sessionErr != nil {
+			s.writeHandlerError(w, sessionErr)
+			return model.Actor{}, false
+		}
+		writeError(w, "FOLLOWER_FORBIDDEN", http.StatusForbidden,
+			"a session may follow or unfollow only itself; acting for another session needs the person scope")
+		return model.Actor{}, false
+	}
 }

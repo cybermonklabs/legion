@@ -1310,6 +1310,27 @@ const rules: Record<string, Rule> = {
       "documentPage",
     ],
   },
+  // A session following or leaving a comment thread moves no read the dashboard draws: no read
+  // lists a thread's followers, so it is a line in its issue's log.
+  "a thread follower change on an issue refreshes its detail, its log and its project list alone": {
+    event: event("thread.follower_removed", {
+      by: { id: "planner", kind: "session" },
+      comment_id: "comment-1",
+      session_id: "planner",
+    }),
+    refreshes: ["detail", "log", "projectList"],
+    spares: [
+      "comment",
+      "unrelatedDetail",
+      "projects",
+      "inbox",
+      "pinned",
+      "otherProjectList",
+      "steps",
+      "collaborators",
+      "referencesTab",
+    ],
+  },
   // The Inbox's thread rows, by the event that moves each of them.
   "an issue-less message.created naming the viewer refreshes the Inbox's Agent rows": {
     event: event(
@@ -2132,6 +2153,14 @@ const eventsByType: Record<EventType, DispatchEvent> = {
   "subscription.removed": event("subscription.removed", { session_id: "s1" }),
   "suggestion.accepted": event("suggestion.accepted", { anchor: null, id: "comment-1" }),
   "suggestion.rejected": event("suggestion.rejected", { anchor: null, id: "comment-1" }),
+  "thread.follower_added": event("thread.follower_added", {
+    comment_id: "comment-1",
+    session_id: "s1",
+  }),
+  "thread.follower_removed": event("thread.follower_removed", {
+    comment_id: "comment-1",
+    session_id: "s1",
+  }),
   "user_agent_state.updated": event(
     "user_agent_state.updated",
     { login: "alice" },

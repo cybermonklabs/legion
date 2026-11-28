@@ -451,7 +451,10 @@ func loadFollowers(ctx context.Context, db queryer, ids []string, found *lookups
 // loadRootCommentAuthors reads, for every comment in ids, its thread root's author: the walk up its
 // reply_to chain to the comment humans reply under. comments.reply_to has no acyclicity
 // constraint, so the walk unions on the visited row and stops at maxCommentThreadDepth: a cycle
-// then finds no reply_to-is-null row and reports no root rather than spinning.
+// then finds no reply_to-is-null row and reports no root rather than spinning. A root whose author
+// is a session that left the thread reports no author, as commentRecipientsQuery leaves that
+// session out of the thread's replies: its leave stands while no comment of it in the thread,
+// read down from the root to the same depth, is later than the leave.
 func loadRootCommentAuthors(ctx context.Context, db queryer, ids []string, found *lookups) error {
 	if len(ids) == 0 {
 		return nil
@@ -466,8 +469,25 @@ func loadRootCommentAuthors(ctx context.Context, db queryer, ids []string, found
 			where h.depth < $2
 		)
 		select start::text, author
-		from chain
+		from chain h
 		where reply_to is null
+		  and not exists (
+			select 1 from comment_thread_follows f
+			where f.comment_id = h.id and not f.follows
+			  and h.author->>'kind' = 'session' and f.session_id = h.author->>'id'
+			  and not exists (
+				with recursive below as (
+					select h.id, 0 as depth
+					union
+					select c.id, b.depth + 1
+					from below b join comments c on c.reply_to = b.id
+					where b.depth < $2
+				)
+				select 1 from below b join comments c on c.id = b.id
+				where c.author->>'kind' = 'session' and c.author->>'id' = f.session_id
+				  and c.created_at > f.since
+			  )
+		  )
 		order by start, depth
 	`, ids, maxCommentThreadDepth)
 	if err != nil {

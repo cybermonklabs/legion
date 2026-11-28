@@ -1047,6 +1047,61 @@ describe("renderInbound dispatch events", () => {
     ).toMatchObject({ skip: true, content: "" });
   });
 
+  test("renders thread.follower_added and thread.follower_removed as short notices for the named session only, each with the command that undoes it", () => {
+    const human = { kind: "user", id: "alice" };
+    const thread = "5a660655-04ad-4ce0-8a9b-93dd03c412b7";
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_added",
+          { comment_id: thread, session_id: reader, by: human },
+          human
+        ),
+        reader
+      )
+    ).toMatchObject({
+      skip: false,
+      content: `Now following the thread of comment ${thread} on DSP-1 (added by alice): its replies reach you directly; dispatch follow --comment ${thread} --action unfollow to stop.`,
+    });
+    // Another session that removes this one names itself as the one who did it.
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_removed",
+          { comment_id: thread, session_id: reader, by: actor },
+          actor
+        ),
+        reader
+      )
+    ).toMatchObject({
+      skip: false,
+      content: `No longer following the thread of comment ${thread} on DSP-1 (removed by session-1): its replies reach you only when one mentions you; dispatch follow --comment ${thread} --action follow to rejoin.`,
+    });
+    // Every other session the event reaches, such as a subscriber of the issue, sees nothing.
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_added",
+          { comment_id: thread, session_id: "ses_someone_else", by: human },
+          human
+        ),
+        reader
+      )
+    ).toMatchObject({ skip: true, content: "" });
+    // The session's own leave is its own write: nothing comes back to it.
+    const self = { kind: "session", id: reader };
+    expect(
+      renderInbound(
+        dispatchEvent(
+          "thread.follower_removed",
+          { comment_id: thread, session_id: reader, by: self },
+          self
+        ),
+        reader
+      )
+    ).toMatchObject({ skip: true, content: "" });
+  });
+
   test("renders a comment.created reply to an ask as 're: <ask ref>' with the question head under dispatch", () => {
     const askID = "ask-1";
     const raw = JSON.stringify(

@@ -283,6 +283,22 @@ function describe(
             { sessionId: event.payload.session_id, storedTitle: undefined },
             " from an ask's followers",
           ];
+    case "thread.follower_added":
+      return event.actor.kind === "session" && event.actor.id === event.payload.session_id
+        ? "followed a thread"
+        : [
+            "added ",
+            { sessionId: event.payload.session_id, storedTitle: undefined },
+            " to a thread's followers",
+          ];
+    case "thread.follower_removed":
+      return event.actor.kind === "session" && event.actor.id === event.payload.session_id
+        ? "left a thread"
+        : [
+            "removed ",
+            { sessionId: event.payload.session_id, storedTitle: undefined },
+            " from a thread's followers",
+          ];
     case "block.repaired":
       return `repaired server-owned state on block ${event.payload.block_id}`;
     case "block.invalid":

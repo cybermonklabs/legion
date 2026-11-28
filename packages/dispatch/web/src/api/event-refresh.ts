@@ -1393,6 +1393,11 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     targets.push({ queryKey: ["handoffs", key] });
     return targets;
   }
+  if (event.type === "thread.follower_added" || event.type === "thread.follower_removed") {
+    // A session following or leaving a comment thread: a line in the issue's log and nothing
+    // more, since no read of the dashboard lists a thread's followers.
+    return targets;
+  }
   if (event.type === "subscription.removed") {
     targets.push({ queryKey: ["subscribers", key] });
     return targets;

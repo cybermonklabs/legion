@@ -15,7 +15,7 @@ import {
 } from "../dispatch-owner";
 import { ToolInputError } from "../tool-input-errors";
 import { legionRunsPostedIssue, renderAdvice } from "./advice";
-import { movedApprovalLine, resolveReplyToAsk } from "./asks";
+import { followAskCommand, movedApprovalLine, resolveReplyToAsk } from "./asks";
 import {
   type CommandContext,
   type DispatchToolResult,
@@ -165,6 +165,38 @@ export async function resolveCommentCommand(context: CommandContext): Promise<Di
   });
   const { label, details } = await commentOwnerResult(client, comment, document);
   return { text: `Resolved comment ${comment.id} on ${label}.`, details };
+}
+
+/**
+ * `dispatch follow`: with `ask`, `followAskCommand`; with `comment`, have the replies of the
+ * thread that comment is in reach this session, or stop them. Any comment of the thread names
+ * it, and Dispatch records the choice on the thread's root. After a leave, a reply that mentions
+ * the session still reaches it, and the session's next comment in the thread rejoins it. The
+ * contract refused a call that names both or neither, and `argumentProblems` a comment value
+ * that is no comment id or comment reference.
+ */
+export async function followCommand(context: CommandContext): Promise<DispatchToolResult> {
+  const { args, client, actor, input } = context;
+  const reference = optionalString(args, "comment");
+  if (reference === undefined) return followAskCommand(context);
+  const sessionId = input.sessionId?.trim();
+  if (!sessionId) throw new Error("host session id is required for dispatch follow");
+  const { id } = await resolveCommentArgument(input.tool, reference, client);
+  const missing = (error: unknown): never => {
+    throw refuseMissingPost(error, { kind: "comment", id });
+  };
+  if (stringArg(args, "action") === "unfollow") {
+    await client.unfollowCommentThread(id, sessionId, actor).catch(missing);
+    return {
+      text: `Left the thread of comment ${id}: its replies no longer reach this session; a reply that mentions it still does.`,
+      details: { comment: id },
+    };
+  }
+  await client.followCommentThread(id, sessionId, actor).catch(missing);
+  return {
+    text: `Following the thread of comment ${id}: its replies reach this session directly.`,
+    details: { comment: id },
+  };
 }
 
 /** `dispatch edit-comment`: the author replaces the body of their own comment. */

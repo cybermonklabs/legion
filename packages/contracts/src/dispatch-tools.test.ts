@@ -1960,13 +1960,40 @@ describe("dispatchToolSpecs", () => {
     }
   );
 
-  test("dispatch_follow takes a full ask id and follow or unfollow, nothing else", () => {
+  test("dispatch_follow takes one ask or one comment and follow or unfollow, nothing else", () => {
     const schema = schemaFor("dispatch_follow");
     expect(schema.safeParse({ ask: "ask-1", action: "unfollow" }).success).toBe(true);
+    expect(schema.safeParse({ comment: "comment-1", action: "unfollow" }).success).toBe(true);
     expect(schema.safeParse({ ask: "ask-1", action: "mute" }).success).toBe(false);
     expect(schema.safeParse({ ask: "ask-1" }).success).toBe(false);
     expect(schema.safeParse({ ask: "ask-1", action: "follow", issue: "DSP-1" }).success).toBe(
       false
+    );
+    // Both, or neither, is one refusal that names the two.
+    for (const call of [
+      { ask: "ask-1", comment: "comment-1", action: "follow" },
+      { action: "unfollow" },
+    ]) {
+      const parsed = schema.safeParse(call);
+      expect(parsed.success, JSON.stringify(call)).toBe(false);
+      expect(parsed.error?.issues.map((issue) => issue.message)).toEqual([
+        "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.",
+      ]);
+    }
+  });
+
+  test("dispatch_follow says how a session leaves a comment thread and what still reaches it", () => {
+    const follow = specFor("dispatch_follow");
+    expect(follow.description).toContain("Follow or unfollow an ask or a comment thread.");
+    expect(follow.description).toContain(
+      "its later replies, their edits and deletes, and the thread's resolution and reopening reach that session directly"
+    );
+    expect(follow.description).toContain(
+      "a reply there that mentions the session still reaches it, and the session's next comment in the thread rejoins it"
+    );
+    expect(follow.description).toContain("409 ASK_THREAD");
+    expect(specFor("dispatch_answers").description).toContain(
+      "dispatch follow --comment <id> --action unfollow leaves a comment thread"
     );
   });
 

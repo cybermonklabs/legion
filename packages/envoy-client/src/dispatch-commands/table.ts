@@ -1,12 +1,6 @@
 import type { dispatchToolSpecs } from "@legion/contracts";
 import { apiCommand } from "./api";
-import {
-  askCommand,
-  editAskCommand,
-  followCommand,
-  openAsksCommand,
-  resolveAskCommand,
-} from "./asks";
+import { askCommand, editAskCommand, openAsksCommand, resolveAskCommand } from "./asks";
 import type {
   CommandContext,
   DispatchToolResult,
@@ -21,6 +15,7 @@ import {
   deleteMessageCommand,
   editCommentCommand,
   editMessageCommand,
+  followCommand,
   messageCommand,
   resolveCommentCommand,
   sendToAgentCommand,

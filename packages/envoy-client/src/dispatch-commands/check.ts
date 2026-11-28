@@ -131,6 +131,29 @@ const ownerRequiredProblem = "issue is required; supply issue or set LEGION_ISSU
  */
 const ownerStandInIssue = "OWNER-1";
 /**
+ * The refusal of a `comment` argument that names no comment, or undefined. A bare value that is
+ * no id leaves something in the request's path that is not an id: a blank one and the dot
+ * segments the URL parse removes each reach /api/v1/comments/ or /api/v1/, which every build
+ * answers with its router's no-route 404, whatever its age, and that 404 is this release's own
+ * tell for a server without the correction routes (dispatch://INFRA-1523). No reading of that
+ * answer separates the two, so the id is refused here, before anything is sent, for dispatch
+ * resolve-comment and dispatch follow as much as for the two corrections, since all four read
+ * this argument the same way. The rule is the server's own: a whole uuid, or a prefix of at
+ * least eight hex characters.
+ */
+function commentArgumentProblem(comment: string | undefined): string | undefined {
+  if (comment === undefined) return undefined;
+  if (!comment.startsWith("dispatch://")) {
+    return normalizeUUID(comment) === undefined && !isIdPrefix(comment)
+      ? commentIdProblem
+      : undefined;
+  }
+  return parseDispatchRef(comment)?.kind === "comment"
+    ? undefined
+    : (itemRefProblem(comment) ?? commentIdProblem);
+}
+
+/**
  * Cross-field checks the schema cannot express, run as predicates over the (possibly
  * unparsed) arguments so every problem is reported in the same refusal.
  */
@@ -144,34 +167,19 @@ function argumentProblems(tool: string, args: ToolArguments): string[] {
       if (ask?.startsWith("dispatch://") && parseDispatchRef(ask)?.kind !== "ask") {
         problems.push(itemRefProblem(ask) ?? askIdProblem);
       }
+      // dispatch_follow names a comment thread by any comment of it instead of an ask.
+      const comment =
+        tool === "dispatch_follow"
+          ? commentArgumentProblem(optionalString(args, "comment"))
+          : undefined;
+      if (comment !== undefined) problems.push(comment);
       break;
     }
     case "dispatch_resolve_comment":
     case "dispatch_edit_comment":
     case "dispatch_delete_comment": {
-      const comment = optionalString(args, "comment");
-      // A bare value that is no id leaves something in the request's path that is not an id:
-      // a blank one and the dot segments the URL parse removes each reach
-      // /api/v1/comments/ or /api/v1/, which every build answers with its router's no-route
-      // 404, whatever its age, and that 404 is this release's own tell for a server without
-      // the correction routes (dispatch://INFRA-1523). No reading of that answer separates the
-      // two, so the id is refused here, before anything is sent, for dispatch resolve-comment
-      // as much as for the two corrections, since all three read this argument the same way.
-      // The rule is the server's own: a whole uuid, or a prefix of at least eight hex
-      // characters.
-      if (
-        comment !== undefined &&
-        !comment.startsWith("dispatch://") &&
-        normalizeUUID(comment) === undefined &&
-        !isIdPrefix(comment)
-      ) {
-        problems.push(commentIdProblem);
-      } else if (
-        comment?.startsWith("dispatch://") &&
-        parseDispatchRef(comment)?.kind !== "comment"
-      ) {
-        problems.push(itemRefProblem(comment) ?? commentIdProblem);
-      }
+      const comment = commentArgumentProblem(optionalString(args, "comment"));
+      if (comment !== undefined) problems.push(comment);
       break;
     }
     case "dispatch_edit_message":

@@ -899,12 +899,17 @@ const BODY_BLOCK_RULE =
   "message: ask the question in the issue's own document, as a decision block there, or open an " +
   "ask with `dispatch ask`.";
 
-/** How dispatch_resolve_comment, dispatch_edit_comment and dispatch_delete_comment each name the
- *  comment they act on, written once so the three say it the same way. */
+/** How dispatch_resolve_comment, dispatch_edit_comment, dispatch_delete_comment and
+ *  dispatch_follow each name the comment they act on, written once so the four say it the same
+ *  way. */
 const COMMENT_ARGUMENT =
   "Comment id (uuid), or a dispatch://KEY/comment/<id> or " +
   "dispatch://PROJECT/artifact/<slug>/comment/<id> reference; a reference accepts an " +
   "8+ character id prefix that is unique on its owner.";
+
+/** dispatch_follow's rule: it acts on one ask or one comment thread. */
+const FOLLOW_TARGET_RULE =
+  "Name exactly one of ask and comment: ask for an ask, comment for a comment thread.";
 
 /** How dispatch_edit_message and dispatch_delete_message each name the message they act on. Both
  *  act on an issue message alone, which is the one kind a dispatch:// reference addresses. */
@@ -1935,18 +1940,34 @@ export const dispatchToolSpecs = [
     name: "dispatch_follow",
     example: { ask: "01234567-0000-4000-8000-000000000001", action: "follow" },
     description:
-      "Follow or unfollow an ask. Every session that opens or replies to an ask follows it: its answer, " +
-      "edits, resolution, and replies reach that session directly. Unfollow to stop; follow to rejoin or " +
-      "to hear an ask you never wrote to. Whole-issue subscription is separate: envoy_subscribe " +
+      "Follow or unfollow an ask or a comment thread. Every session that opens or replies to an ask follows it: its answer, " +
+      "edits, resolution, and replies reach that session directly. Every session that writes a comment in a thread " +
+      "follows that thread: its later replies, their edits and deletes, and the thread's resolution and reopening " +
+      "reach that session directly. Unfollow to stop; after a thread's unfollow, a reply there that mentions the " +
+      "session still reaches it, and the session's next comment in the thread rejoins it. Follow to rejoin, or to " +
+      "hear an ask or a thread you never wrote in. A comment in an ask's thread is refused with 409 ASK_THREAD: " +
+      `follow that ask instead, naming it with ask. ${FOLLOW_TARGET_RULE} Whole-issue subscription is separate: envoy_subscribe ` +
       "notifications.dispatch.issue.<KEY>.>",
     arguments: (z) => ({
       ask: z
         .string()
         .describe(
           "Ask id (uuid); an 8+ hex prefix unique among this session's own open asks works too."
-        ),
+        )
+        .optional(),
+      comment: z
+        .string()
+        .describe(`Any comment of the thread, its first or a reply. ${COMMENT_ARGUMENT}`)
+        .optional(),
       action: z.enum(["follow", "unfollow"]).describe("follow | unfollow"),
     }),
+    validation: {
+      check: (value) => {
+        const input = value as { readonly ask?: unknown; readonly comment?: unknown };
+        return (input.ask === undefined) !== (input.comment === undefined);
+      },
+      message: FOLLOW_TARGET_RULE,
+    },
     strict: true,
   },
   {
@@ -3365,6 +3386,7 @@ export const dispatchToolSpecs = [
       "mentions of it, messages to it and replies to its messages. Each item names its time, its writer, what it is, its " +
       "dispatch:// reference and its issue or document, an answer's question and choices, and the words, never cut. " +
       "Run it when the list of people's answers on a model request says it left older items out. " +
+      "dispatch follow --comment <id> --action unfollow leaves a comment thread: its later replies stop reaching this session, except one that mentions it. " +
       "It reads this session's id from CLAUDE_CODE_SESSION_ID under Claude Code and DISPATCH_SESSION_ID elsewhere, so a subagent reads its parent's.",
     arguments: (z) => ({
       as_of: asOfArgument(

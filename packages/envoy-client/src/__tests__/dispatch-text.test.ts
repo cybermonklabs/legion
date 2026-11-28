@@ -167,6 +167,17 @@ describe("no text an agent reads names a native Dispatch tool", () => {
         session_id: reader,
         by: { kind: "user", id: "alice" },
       }),
+      // A human adding this session to a comment thread's followers, and removing it.
+      dispatchFrame("thread.follower_added", {
+        comment_id: "comment-1",
+        session_id: reader,
+        by: { kind: "user", id: "alice" },
+      }),
+      dispatchFrame("thread.follower_removed", {
+        comment_id: "comment-1",
+        session_id: reader,
+        by: { kind: "user", id: "alice" },
+      }),
     ];
     for (const frame of frames) {
       const rendered = renderInbound(frame, reader);

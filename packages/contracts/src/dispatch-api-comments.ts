@@ -6,6 +6,7 @@ import {
   anchorFields,
   anchorPositionFields,
   InboundActorSchema,
+  InboundBySchema,
 } from "./dispatch-api-core";
 import {
   ASK_TURNS,
@@ -23,7 +24,7 @@ import {
 
 /**
  * The comment: the row, who it mentions, how each mention was delivered, and the payloads of
- * every `comment.*` and `suggestion.*` event.
+ * every `comment.*`, `suggestion.*` and `thread.*` event.
  */
 
 export const commentMentionFields = {
@@ -275,3 +276,28 @@ export const CommentDeliveryEventPayloadSchema = z
   .readonly();
 
 export type CommentDeliveryEventPayload = z.output<typeof CommentDeliveryEventPayloadSchema>;
+
+// ThreadFollowerEventPayload is the wire payload of thread.follower_added and
+// thread.follower_removed: which session joined or left which comment thread, and who did it.
+// comment_id is the thread's root comment, whichever comment of the thread the request named.
+// Each event also reaches the named session's own topic directly, unless that session is the
+// actor.
+export const threadFollowerEventPayloadFields = {
+  comment_id: z.string(),
+  session_id: z.string(),
+  by: ActorSchema,
+};
+
+export const WrittenThreadFollowerEventPayloadSchema = z
+  .strictObject(threadFollowerEventPayloadFields)
+  .readonly();
+
+export type ThreadFollowerEventPayload = z.output<typeof WrittenThreadFollowerEventPayloadSchema>;
+
+/** What a reader of the bus makes of a `thread.follower_added` or `thread.follower_removed`
+ *  payload: every field optional, and the writer read as a frame may carry it. */
+export const ThreadFollowerEventPayloadSchema = z.object({
+  comment_id: threadFollowerEventPayloadFields.comment_id.optional(),
+  session_id: threadFollowerEventPayloadFields.session_id.optional(),
+  by: InboundBySchema.optional(),
+});
