@@ -29,9 +29,11 @@ import (
 // The intakes run by the row's tuning, which holds production's values (tuningFor, newIntakeTuning),
 // and on a fake clock the row sets on it and moves (intakeTuning.clock, which startIntakes gives
 // both intakes): the job intake reads a run's jobs once its burst goes quiet, jobQuiet on that clock
-// after the event, and the row moves the clock there once the read is armed. StartIntakes runs
-// them by production's tuning (newIntakeTuning), whose real clock
-// TestProductionsIntakeTuningIsTheShippedTimersAndNoHook pins.
+// after the event, and the row moves the clock there once the read is armed. So this row does not
+// hold the tuning StartIntakes passes: TestStartIntakesCreatesTheDeliveryDurableByProductionsTuning
+// runs StartIntakes itself and holds that the durable it creates carries production's ack wait and
+// max_ack_pending, and TestProductionsIntakeTuningIsTheShippedTimersAndNoHook pins production's
+// tuning (newIntakeTuning), its real clock among it.
 func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -160,6 +162,59 @@ func TestBothIntakesKeepTheirSubscriptions(t *testing.T) {
 			t.Errorf("the %s client is open after stop", names[i])
 		}
 	}
+}
+
+// TestStartIntakesCreatesTheDeliveryDurableByProductionsTuning: StartIntakes runs both intakes by
+// production's tuning (newIntakeTuning), so the delivery durable its intake creates carries
+// production's ack wait, intakeMaxAckPending message timeouts (intakeMessageTimeout) plus
+// intakeAckLanding, and production's max_ack_pending, intakeMaxAckPending. The other rows run the
+// intakes through startIntakes, by a tuning of their own, so a StartIntakes that handed its intakes
+// another tuning would pass them, and fails here. StartIntakes' intakes run on the real clock, and
+// the row waits for no timer of theirs: it waits for the durable to be push-bound, reads it, then
+// ends ctx and waits for the intakes' stop to return.
+func TestStartIntakesCreatesTheDeliveryDurableByProductionsTuning(t *testing.T) {
+	t.Parallel()
+	pool, ctx := deliveryTestPool(t)
+	seedDeliverySettings(t, ctx, pool)
+	natsURL := testnats.URL(t)
+	publisher := intakeTestClient(t)
+	runCtx, cancel := context.WithCancel(ctx)
+	stop, err := StartIntakes(runCtx, func(name string) (*bus.Client, error) {
+		return bus.Connect([]string{natsURL}, bus.WithName(name))
+	}, pool, deliveryTestIntakeLeases(t, pool), newFakeGitHub(t).newTestClient(), events.NewBroker(), nil, nil, unrenamed())
+	if err != nil {
+		cancel()
+		t.Fatalf("start the intakes: %v", err)
+	}
+	// The test ends only once both intakes have stopped, so nothing they started outlives the
+	// test's own cleanups.
+	t.Cleanup(func() {
+		cancel()
+		testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
+	})
+
+	var delivery *natsgo.ConsumerInfo
+	var state string
+	waitFor(t, func() bool {
+		info, err := publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
+		if err != nil {
+			state = err.Error()
+			return false
+		}
+		delivery, state = info, fmt.Sprintf("push_bound=%t", info.PushBound)
+		return info.PushBound
+	}, func() string {
+		return "the delivery durable StartIntakes' intake creates is not push-bound: " + state
+	})
+	if got, want := delivery.Config.AckWait, time.Duration(intakeMaxAckPending)*intakeMessageTimeout+intakeAckLanding; got != want {
+		t.Errorf("the delivery durable StartIntakes created waits %s for an acknowledgement, want %s: production's tuning", got, want)
+	}
+	if got := delivery.Config.MaxAckPending; got != intakeMaxAckPending {
+		t.Errorf("the delivery durable StartIntakes created has max_ack_pending %d, want %d: production's tuning", got, intakeMaxAckPending)
+	}
+
+	cancel()
+	testwait.Returns(t, "the intakes' stop to return once ctx ended", stop)
 }
 
 // TestAMessageInItsHandlerAtShutdownIsAcknowledged: a merged pull request whose GitHub fetch is

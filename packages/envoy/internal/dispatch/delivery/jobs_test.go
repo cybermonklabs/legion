@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"runtime"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -465,6 +467,32 @@ func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
 	return &c.fired
 }
 
+// slotWaitContext is a JobIntake's Run context (JobIntake.ctx) for a row that must know when each
+// read has reached its wait for a read slot: entered counts them. fire waits for its slot in a
+// select on the slot and on that context's end, and Go evaluates each case's channel as a select
+// begins, so fire calls the context's Done once as it enters that wait, whether a slot is free or
+// not (JobIntake.fire). Only a Done called from fire counts: the context package calls it too, for
+// the read's deadline it derives from the context (clock.WithTimeout's propagateCancel). It never
+// ends, as context.Background, whose nil Done it answers.
+type slotWaitContext struct {
+	context.Context
+	entered atomic.Int32
+}
+
+func newSlotWaitContext() *slotWaitContext {
+	return &slotWaitContext{Context: context.Background()}
+}
+
+func (c *slotWaitContext) Done() <-chan struct{} {
+	caller := make([]uintptr, 1)
+	if runtime.Callers(2, caller) == 1 {
+		if frame, _ := runtime.CallersFrames(caller).Next(); strings.HasSuffix(frame.Function, ".(*JobIntake).fire") {
+			c.entered.Add(1)
+		}
+	}
+	return nil
+}
+
 // TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce: when many tracked runs' bursts end
 // together, as on the first start after an outage drains its backlog, the job intake asks GitHub for
 // at most reconcilePartialConcurrency runs' jobs at a time, and reads every run once. Unbounded, it
@@ -472,6 +500,12 @@ func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
 // App. The held listings do not watch the request's context, so the client holds its calls to the
 // test's give-up (newHoldingClient): at its own bound it would give each held listing up and ask
 // again, and GitHub would see more listings at once than there are slots.
+//
+// A read past the slots is a run that went on from its slot wait with no slot. The row waits until
+// every run's read has entered that wait (slotWaitContext), every slot is taken and each slot
+// holder's read is at GitHub, then holds a span for such a read to reach GitHub before it reads the
+// most seen at once. The negative control is a read that skips the slots when every one is taken:
+// its listing reaches GitHub beside the slot holders' and the count reads more than the slots.
 func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -504,6 +538,8 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 
 	clock := newConcurrentJobClock()
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, github, clock, nil)
+	waits := newSlotWaitContext()
+	jobs.ctx = waits
 	for id := int64(600); id < 600+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
@@ -514,19 +550,22 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
 	})
 	// Every run's burst has ended and every run past the slots waits for one: the intake holds no
-	// pending burst, which fire drops before it takes a slot, every slot is taken, and each slot
-	// holder's read is at GitHub, where the row holds it, and has counted itself in the most seen at
-	// once (a handler raises inFlight before most). No read starts until a slot is let go, which only
-	// the row's release lets happen, so the most reads seen at once is final here. A read past the
-	// slots ends the wait too, so the count below names it.
-	testwait.Until(t, "every run's burst to have ended, every read slot to be taken and each slot holder's read to be at GitHub", func() (string, bool) {
+	// pending burst, which fire drops before it takes a slot, every run's read has entered its wait
+	// for a slot, every slot is taken, and each slot holder's read is at GitHub, where the row holds
+	// it, and has counted itself in the most seen at once (a handler raises inFlight before most). No
+	// slot is let go until the row's release. A read past the slots ends the wait too, so the count
+	// below names it.
+	testwait.Until(t, "every run's burst to have ended, every run's read to be in its slot wait, every read slot to be taken and each slot holder's read to be at GitHub", func() (string, bool) {
 		jobs.mu.Lock()
 		pending := len(jobs.pending)
 		jobs.mu.Unlock()
-		slots, flying, seen := len(jobs.reads), int(inFlight.Load()), int(most.Load())
-		return fmt.Sprintf("%d runs' bursts pending, %d of %d read slots taken, %d reads in flight, at most %d seen at once", pending, slots, cap(jobs.reads), flying, seen),
-			pending == 0 && slots == cap(jobs.reads) && flying >= slots && seen >= flying
+		entered, slots, flying, seen := int(waits.entered.Load()), len(jobs.reads), int(inFlight.Load()), int(most.Load())
+		return fmt.Sprintf("%d runs' bursts pending, %d of %d runs' reads entered their slot wait, %d of %d read slots taken, %d reads in flight, at most %d seen at once", pending, entered, runs, slots, cap(jobs.reads), flying, seen),
+			pending == 0 && entered == runs && slots == cap(jobs.reads) && flying >= slots && seen >= flying
 	})
+	// A read that went on from its slot wait with no slot shows nothing until its request reaches
+	// GitHub, so the span gives such a read the time to arrive, as #4445's row did.
+	testwait.Span(t, 500*time.Millisecond, "a run waiting for a slot is a goroutine parked on the slot channel, and one that went on from that wait with no slot is a goroutine on its way to GitHub: neither the intake's state (its pending runs are gone as each fires, and its slot channel counts the slots taken, not its waiters) nor the fake GitHub, which sees only reads that arrived, tells the two apart; only the process's goroutine dump does, which the package keeps to serial rows (deliveryTestParallelism), and the code does network I/O, so no synctest bubble reaches it")
 	if got := most.Load(); got != reconcilePartialConcurrency {
 		t.Fatalf("%d of %d runs' jobs read at once, want at most %d", got, runs, reconcilePartialConcurrency)
 	}
@@ -544,11 +583,14 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 // TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot: a run whose burst ends while every read slot
 // is taken waits for one, and its read's deadline (intakeMessageTimeout, on the intake's clock)
 // starts only once it holds the slot. Here every slot is held by a read whose listing waits on a
-// gate, one more run waits for a slot, and the clock moves past the deadlines the slot holders
-// armed. A deadline started before the wait would have expired with theirs: the waiting run's read
-// would log that it could not read its run's jobs and store none. Its deadline is armed once it
-// holds a slot instead, a whole intakeMessageTimeout past the moment it took it, and its read stores
-// the run's jobs.
+// gate, one more run waits for a slot, and once every run's read, the waiting run's among them, has
+// entered its wait for a slot (slotWaitContext), the clock moves past the deadlines the slot holders
+// armed. A deadline started before the wait is armed by then: the clock holds it beside the slot
+// holders', which the row reads before the move and fails on, and the move would expire it with
+// theirs, so the waiting run's read would log that it could not read its run's jobs and store none.
+// Its deadline is armed once it holds a slot instead, a whole intakeMessageTimeout past the moment
+// it took it, and its read stores the run's jobs. The negative control is the read that arms its
+// deadline before it takes its slot, which fails at the read of the clock's deadlines.
 func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	t.Parallel()
 	logs := captureIntakeLogs(t)
@@ -596,6 +638,8 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 
 	clock := newConcurrentJobClock()
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newHoldingClient(), clock, nil)
+	waits := newSlotWaitContext()
+	jobs.ctx = waits
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
@@ -612,6 +656,16 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	testwait.Eventually(t, "every slot holder's listing to reach GitHub", func() bool {
 		return len(reachedGitHub()) == reconcilePartialConcurrency
 	})
+	// Every run's read enters its wait for a slot before the clock moves, the waiting run's among
+	// them (slotWaitContext): a deadline a read arms before that wait is armed by then, so the clock
+	// holds it beside the slot holders', and the move below passes it.
+	testwait.Until(t, "every run's read, the waiting run's among them, to have entered its wait for a read slot", func() (string, bool) {
+		entered := waits.entered.Load()
+		return fmt.Sprintf("%d of %d runs' reads entered their slot wait", entered, runs), entered == runs
+	})
+	if armed := clock.Armed(); len(armed) != reconcilePartialConcurrency {
+		t.Fatalf("with every read slot held and one run waiting for a slot, the clock holds the deadlines %v, want only the %d slot holders': the waiting run armed its read's deadline before it held a slot", armed, reconcilePartialConcurrency)
+	}
 	var waiter int64
 	atGitHub := reachedGitHub()
 	for id := int64(700); id < 700+runs; id++ {

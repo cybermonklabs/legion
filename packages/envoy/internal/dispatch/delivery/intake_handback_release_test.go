@@ -305,29 +305,42 @@ func passStopOn(t *testing.T, stopClock, holdClock *clocktest.Fake, stopped <-ch
 // the hold's row expires intakeHoldTTL past a statement's now() between a moment of the database's
 // clock read before the move and the read, which the expiry keepHoldRowLive set a day ahead is not.
 // The row has moved the hold clock no further than a flush's bound before (passStop), so no renewal
-// has run. A hold whose renewals stopped arms none, and the wait for it gives up naming it. It then
-// keeps the row live again (keepHoldRowLive), as the renewals after it would, since nothing moves
-// the clock to them.
+// has run. A hold whose renewals stopped arms none, and the wait for it gives up naming it.
+//
+// duty's renewal reads no expiry: `update duty_holds set expires_at = now() + make_interval(secs =>
+// $3) where name = $1 and holder = $2` (duty's renewHold) lands on a row of this holder's that has
+// lapsed as well as on a live one, and makes it live again. So a renewal that landed is a renewal
+// before the row's expiry only when its now() came before the expiry the row had as the move began,
+// read with the database's clock before the move: the row fails when it came at or after it, a
+// lapsed row revived, which a standby could have taken in between. It then keeps the row live again
+// (keepHoldRowLive), as the renewals after it would, since nothing moves the clock to them.
 func (r heldHandBack) renewHoldOnItsClock(t *testing.T) {
 	t.Helper()
-	var since time.Time
-	if err := r.pool.QueryRow(t.Context(), "select clock_timestamp()").Scan(&since); err != nil {
-		t.Fatalf("read the database's clock: %v", err)
+	var since, expiry time.Time
+	if err := r.pool.QueryRow(t.Context(), "select clock_timestamp(), expires_at from duty_holds where name = $1 and holder = $2",
+		intakeHoldName(bus.DispatchDeliveryDurable), r.holder.intake.holder).Scan(&since, &expiry); err != nil {
+		t.Fatalf("read the database's clock and the expiry of the delivery durable's hold: %v", err)
 	}
 	renewal := r.take.Add(intakeHoldRenew)
 	r.holdClock.AwaitArmedAt(t, "the hold's first renewal, intakeHoldRenew past the take", renewal)
 	r.holdClock.Set(renewal)
+	var expires time.Time
+	var beforeExpiry bool
 	testwait.Until(t, "the hold's renewal the move brought to land while the holder's hand-back is pending", func() (string, bool) {
-		var expires time.Time
 		var renewed bool
 		if err := r.pool.QueryRow(t.Context(), `
-			select expires_at, expires_at - make_interval(secs => $2) between $3 and clock_timestamp()
+			select expires_at, expires_at - make_interval(secs => $2) between $3 and clock_timestamp(),
+				expires_at - make_interval(secs => $2) < $5
 			from duty_holds where name = $1 and holder = $4
-		`, intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), since, r.holder.intake.holder).Scan(&expires, &renewed); err != nil {
+		`, intakeHoldName(bus.DispatchDeliveryDurable), intakeHoldTTL.Seconds(), since, r.holder.intake.holder, expiry).Scan(&expires, &renewed, &beforeExpiry); err != nil {
 			t.Fatalf("read the delivery durable's hold: %v", err)
 		}
 		return fmt.Sprintf("the hold expires at %s; the move began after %s", expires.Format(time.RFC3339Nano), since.Format(time.RFC3339Nano)), renewed
 	})
+	if !beforeExpiry {
+		t.Fatalf("the hold's renewal landed at %s on the database's clock, not before the expiry %s the row had as the move began: it revived a lapsed row rather than renewing a live one",
+			expires.Add(-intakeHoldTTL).Format(time.RFC3339Nano), expiry.Format(time.RFC3339Nano))
+	}
 	keepHoldRowLive(t, r.pool, r.holder.intake.holder)
 }
 

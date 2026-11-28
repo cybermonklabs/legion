@@ -166,8 +166,10 @@ func TestAMessageInFlightWhenTheDurableIsGivenUpReachesTheProcessThatKeepsIt(t *
 			processes.keeperFetches.Load(), processes.holderFetches.Load(), deliveryDurableBound(processes.keeperClient))
 	})
 	// Once the keeper has acknowledged everything the stream holds, nothing is outstanding to be
-	// handed to either process again, so the counts of handlings below are final.
+	// handed to either process again, and once the holder can start no handling of its own
+	// (requireHolderHandlesNothingMore), the counts of handlings below are final.
 	awaitAcknowledged(t, processes.keeperClient)
+	requireHolderHandlesNothingMore(t, processes.pool, processes.holder, processes.keeper, processes.keeperClient)
 	if keeperHandled := processes.keeperFetches.Load(); keeperHandled != 1 {
 		t.Errorf("the process that keeps the durable fetched the pull request %d time(s), want 1: the message the other had in flight is handled once there",
 			keeperHandled)
@@ -365,8 +367,10 @@ func handlerFinishedDuringTheOutage(t *testing.T, replaceConnection bool) {
 			keeperFetches.Load(), deliveryAckPending(keeperClient), holderFetches.Load())
 	})
 	// Once the keeper has acknowledged everything the stream holds, nothing is outstanding to be
-	// handed to either process again, so the counts of handlings below are final.
+	// handed to either process again, and once the holder can start no handling of its own
+	// (requireHolderHandlesNothingMore), the counts of handlings below are final.
 	awaitAcknowledged(t, keeperClient)
+	requireHolderHandlesNothingMore(t, pool, holder, keeper, keeperClient)
 
 	if holderHandled := holderFetches.Load(); holderHandled != 1 {
 		t.Errorf("the process cut off fetched the pull request %d time(s), want the one handling it finished during the outage", holderHandled)
@@ -758,6 +762,32 @@ func intakeHoldsSubscription(intake *Intake) bool {
 	intake.mu.Lock()
 	defer intake.mu.Unlock()
 	return intake.delivering != nil && intake.delivering.sub.IsValid()
+}
+
+// requireHolderHandlesNothingMore waits until no handling by holder, the process that lost the
+// durable, can start any more, and fails the row naming what it read should that never come. A
+// handling starts only with a message the server hands the holder's own subscription, so the
+// holder holds none live (intakeHoldsSubscription), and a new one comes only from a take-over of
+// the holder's, which needs the hold: the hold's row names keeper, which holds the durable's live
+// subscription, and the holder tries for the hold only where the row moves its hold clock
+// (heldDurable.holdClock), a fake the row moved for the last time to lose the hold. The durable's
+// ack wait is the row's, past the run (ackWaitPastTheRun), so nothing is redelivered inside it
+// either. A count of the holder's handlings read after it is final.
+func requireHolderHandlesNothingMore(t *testing.T, pool *store.Pool, holder, keeper *Intake, keeperClient *bus.Client) {
+	t.Helper()
+	testwait.Until(t, "the process that lost the durable to hold no subscription, with the keeper holding the durable's hold and its subscription", func() (string, bool) {
+		var named string
+		if err := pool.QueryRow(t.Context(), "select coalesce((select holder::text from duty_holds where name = $1), '')",
+			intakeHoldName(bus.DispatchDeliveryDurable)).Scan(&named); err != nil {
+			t.Fatalf("read the delivery durable's hold: %v", err)
+		}
+		holderSubscribed, keeperSubscribed := intakeHoldsSubscription(holder), intakeHoldsSubscription(keeper)
+		return fmt.Sprintf("the holder's subscription is live = %t, the keeper's = %t, and the hold's row names %q, the keeper being %s", holderSubscribed, keeperSubscribed, named, keeper.holder),
+			!holderSubscribed && keeperSubscribed && named == keeper.holder.String()
+	})
+	if got, want := deliveryConsumerInfo(t, keeperClient).Config.AckWait, tuningFor(t).ackWait(); got != want {
+		t.Fatalf("the delivery durable waits %s for an acknowledgement, want the row's %s, past the run: a redelivery inside the run could hand the message on again", got, want)
+	}
 }
 
 // deliveryDurableBound reports whether the server has a subscriber on the delivery durable, and

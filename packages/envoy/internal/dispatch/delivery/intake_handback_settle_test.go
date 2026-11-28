@@ -52,9 +52,13 @@ import (
 // shared wait (testwait), whose bound guards against one that never comes. The stop's calls wait
 // for NATS with no bound of the row's (callWait), so a loaded machine cannot have the stop withhold
 // the hand-back, and the standby tries for the hold only where the row moves its hold clock
-// (holdTries). The negative controls: the code before the seal, where the hand-back was counted
-// after beforeHandBackPublish, and a stop that does not seal, each fail the second subtest with the
-// standby's consumer delivering the message twice.
+// (holdTries). The holder's hold runs on a fake only the row moves, as the other hand-back rows'
+// holders' do (startHolderAndStandby): it renews nothing, so the row keeps the hold's row live on the
+// database's clock as the renewals would (keepHoldRowLive), and a release that waits for a flush to
+// confirm the hand-back flushes again only where the row moves that clock a tick on (moveTicks,
+// finalizeHandBacks), until the hold's row is gone (holdReleased). The negative controls: the code
+// before the seal, where the hand-back was counted after beforeHandBackPublish, and a stop that does
+// not seal, each fail the second subtest with the standby's consumer delivering the message twice.
 func TestACallbacksHandBackAsTheStopEndsLandsBeforeTheStandbyTakesOver(t *testing.T) {
 	// Serial until the hang a reviewer saw once in requireHandBackBeforeCreation is explained
 	// (build-cluster Job legion-ci-handback-hang-4zwgk reproduces it at main).
@@ -90,9 +94,12 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 			<-letKeyingGo
 			return intakeKey(msg)
 		}, func(*intakeDelivery, intakeMessage) {})
+	holdClock := fakeIntakeClock()
+	durable.holdClock = holdClock
 	if !durable.takeHold(ctx) {
 		t.Fatal("control: the holder did not take the delivery durable's hold")
 	}
+	keepHoldRowLive(t, pool, durable.holder)
 	if _, err := durable.subscribe(wanted.DeliverSubject); err != nil {
 		t.Fatalf("subscribe the holder at %s: %v", wanted.DeliverSubject, err)
 	}
@@ -106,8 +113,18 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 	durable.recorded, durable.subject = token, wanted.DeliverSubject
 	delivery := durable.delivering
 	// Registered before the hand-back's release, so that release runs first: a finalizer waits for
-	// the hand-back to land.
-	t.Cleanup(durable.waitFinalizers)
+	// the hand-back to land, and then flushes once each intakeFlushWait tick of the hold's clock,
+	// which this moves until the finalizer has returned.
+	t.Cleanup(func() {
+		finalized := make(chan struct{})
+		go func() {
+			defer close(finalized)
+			durable.waitFinalizers()
+		}()
+		moveTicks(t, holdClock, intakeFlushWait, func() bool { return closedChannel(finalized) }, func() string {
+			return fmt.Sprintf("the holder's finalizer has not returned; its hold clock stands at %s, with %v armed", holdClock.Now(), holdClock.Armed())
+		})
+	})
 	t.Cleanup(func() { durable.stop(cancelled()) })
 
 	tries := newHoldTries()
@@ -193,6 +210,11 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 		return
 	}
 	releasePublish()
+	// The holder releases its hold once the hand-back has landed and a flush has confirmed it: in its
+	// stop, or in the finalizer the stop left, whose flushes tick on the hold's clock.
+	moveTicks(t, holdClock, intakeFlushWait, func() bool { return holdReleased(t, pool) }, func() string {
+		return fmt.Sprintf("the holder has not released its hold once its hand-back was let go; its hold clock stands at %s, with %v armed", holdClock.Now(), holdClock.Armed())
+	})
 	tries.untilDelivering(t, "the standby to take over the hold the holder released once the hand-back landed")
 	waitFor(t, func() bool { return standby.fetches(number) >= 1 }, func() string {
 		return fmt.Sprintf("the standby did not start the message the holder left: %s; events %q", consumerState(client), recorded.since(from))
@@ -220,16 +242,23 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 //     its hold, and the hand-back reaches the server before the standby creates the durable.
 //   - a hand-back pending when the hold's renewals fail: the row refuses the holder's every database
 //     statement (cuttableLeases), moves the hold's clock to the loss deadline and past the wait the
-//     loss watcher arms for a flush's answer there, until the holder logs the sever
-//     (loseHoldUntilSevered), and only then lapses the hold's row on the database's clock
-//     (lapseHoldRow), so the standby takes the durable over. Once the standby has created it, the row
-//     lets the link move. It then waits until the hand-back's publish has returned, flushes the
-//     holder's connection unless it has closed, so the server has handled whatever that connection
-//     sent, and takes a barrier of its watch (durableEvents.barrier), so the watch has recorded it.
-//     No -NAK reached the server after the creation; a hand-back dropped with the severed
-//     connection never reaches it, which is allowed (requireNoHandBackAfterCreation). The standby
-//     acknowledges the message as soon as it is delivered, so a late -NAK usually finds it
-//     acknowledged and changes no count; the order is what shows it.
+//     loss watcher arms for a flush's answer there, until the sever has reset the holder's sockets
+//     (loseHoldUntilSevered, with bus.AfterSeverResetForTest), and requires the holder logged the
+//     sever's line. The reset is the one fact of the sever the row can read: the row holds nats.go's
+//     connection lock itself (HandshakeHold.HoldWriteLock), so the close that follows the reset waits
+//     for that lock and no state of the connection can be read, and the line comes before the sever
+//     begins (heldDurable.severHandBacks), so a row that went on at the line could lapse the hold's
+//     row, have the standby recreate the durable and let the link move before the reset, and the
+//     hand-back would go out on a socket nothing had reset yet. Only once the reset has come does the
+//     row lapse the hold's row on the database's clock (lapseHoldRow), so the standby takes the
+//     durable over. Once the standby has created it, the row lets the link move. It then waits until
+//     the hand-back's publish has returned, flushes the holder's connection unless it has closed, so
+//     the server has handled whatever that connection sent, and takes a barrier of its watch
+//     (durableEvents.barrier), so the watch has recorded it. No -NAK reached the server after the
+//     creation; a hand-back dropped with the severed connection never reaches it, which is allowed
+//     (requireNoHandBackAfterCreation). The standby acknowledges the message as soon as it is
+//     delivered, so a late -NAK usually finds it acknowledged and changes no count; the order is what
+//     shows it.
 //
 // Each ends by requiring that the standby's consumer delivered each message the holder left once.
 // No step waits on a time: the stop's deadline, the hold's renewal and loss deadline, the loss
@@ -237,9 +266,14 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 // by the row's own statement, and the standby tries for the hold only where the row moves its own
 // fake; every wait is testwait's, which only guards against an event that never comes. The negative
 // control is the finalizer before the sever, which returned at the lost hold and left the hand-back
-// pending: the second subtest fails there, since no sever comes and the wait for its line gives up.
+// pending: the second subtest fails there, since no sever comes and the wait for its reset gives up.
+// A sever whose line is logged well before its reset (a sleep between the two) fails the row as it
+// was, which went on at the line, with a -NAK after the creation, and passes this one.
 func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *testing.T) {
-	t.Parallel()
+	// Not parallel: the second subtest reads the process's sever hook (bus.AfterSeverResetForTest),
+	// which every Sever in the test binary calls, so the row runs in the serial phase, where no
+	// other test runs to sever while it reads the hook. Its two subtests run beside each other: the
+	// first severs nothing, its hold being released with its hand-back confirmed.
 	for _, tc := range []struct {
 		name string
 		lose bool
@@ -265,12 +299,25 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 				requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 				return
 			}
+			// The hook marks the first sever from here on, which no other test makes (the row is
+			// serial) and the first subtest does not make: the holder's.
+			reset := make(chan struct{})
+			var resetOnce sync.Once
+			t.Cleanup(bus.AfterSeverResetForTest(func() { resetOnce.Do(func() { close(reset) }) }))
 			row.holder.leases.cut.Store(true)
 			loseHoldUntilSevered(t, row.holdClock, row.holder.intake,
-				"the lost hold's sever of the connection that carries the pending hand-back (a finalizer that returns at the loss severs nothing)",
+				"the lost hold's sever to reset the sockets of the connection that carries the pending hand-back (a finalizer that returns at the loss severs nothing)",
 				func() (string, bool) {
-					return fmt.Sprintf("the holder logged %q", loggedMessages(logs())), loggedMessage(logs(), intakeHandBacksSevered)
+					select {
+					case <-reset:
+						return "a sever has reset the holder's sockets", true
+					default:
+						return fmt.Sprintf("no sever has reset the holder's sockets; the holder logged %q", loggedMessages(logs())), false
+					}
 				})
+			if !loggedMessage(logs(), intakeHandBacksSevered) {
+				t.Fatalf("a sever reset the holder's sockets, and the holder did not log the sever's line %q: it logged %q", intakeHandBacksSevered, loggedMessages(logs()))
+			}
 			lapseHoldRow(t, row.pool, row.holder.intake.holder)
 			row.standby.untilDelivering(t, "the standby to take over the hold the holder lost")
 			waitFor(t, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
