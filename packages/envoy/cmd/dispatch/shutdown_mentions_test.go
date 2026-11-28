@@ -295,46 +295,115 @@ func backDatePendingAttempts(t *testing.T, database *store.Store) {
 	}
 }
 
-// A process killed with mention sends in flight - SIGKILL, an out-of-memory kill, a lost node -
-// leaves their attempts pending under its claim. The next process on the database sends the
-// comment queued behind them at once, and each of them on the first delivery sweep after the
-// killed process's claim has lapsed, within a minute and a sweep interval of that process taking
-// it. Each resend repeats an idempotency key the listener has seen, so it is answered as a
-// duplicate and not handed over again: every recipient is handed each comment exactly once. Both
-// processes take one DISPATCH_SIGNING_KEY, as every process of a deployment does: the killed
-// process's registry row is still live when the next starts, and a key the next minted in its own
-// data dir would hold its start up to a live window, until that row lapsed (processes.Register).
+// sigkillMentionSweepInterval is the maintenance loop's period (DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL)
+// in both processes of the SIGKILL row below, the value the multiprocess rows run at
+// (quickMaintenanceSweep, which only the multiprocess build declares), in place of the minute a
+// deployment runs it at.
+const sigkillMentionSweepInterval = 2 * time.Second
+
+// sigkillMentionSweepMargin is how long past one sigkillMentionSweepInterval the SIGKILL row lets
+// its last resend land, in sweepMargin's form: one pass the leased loop may skip, plus the pass's
+// sends and the poll that sees them settled.
+const sigkillMentionSweepMargin = sigkillMentionSweepInterval + 15*time.Second
+
+// A process killed by SIGKILL, an out-of-memory kill, or a lost node leaves its in-flight and
+// queued mention attempts pending under its claim. The test runs in parallel from the start, with
+// a two-second sweep in both processes. It first backdates only creation times. A completed sweep
+// of the next process must send nothing while the claim still holds. The test then backdates the
+// claim instead of waiting a minute for it to lapse. The last resend must arrive within 19 seconds
+// of that backdating. Each resend uses the original idempotency key, so the listener drops the
+// duplicate and hands each recipient each comment exactly once.
 //
-// The claim is the real minute. The test pauses at t.Parallel once the next process runs
-// (dispatchSlots.parallelHoldingItsProcesses), so the minute passes while the serial tests run; the bound is read
-// off when the listener took the last resend, which a pause does not move.
+// Both processes use the same DISPATCH_SIGNING_KEY, as they do in a deployment. The killed
+// process's registry row is still live when the next process starts. If the next process minted
+// its own key in its data directory, it would have to wait for that row to lapse (processes.Register).
 func TestSIGKILLWithMentionSendsInFlightHandsEachRecipientTheCommentOnceTheClaimLapses(t *testing.T) {
+	t.Parallel()
+	dispatchSlots.reserve(t, 1)
 	listener := newHandoverListener(t)
 	database := storetest.Open(t)
-	options := dispatchOptions{SigningKey: "sigkill-mention-sends-key", Env: map[string]string{"ENVOY_URL": listener.url}}
+	options := dispatchOptions{
+		SigningKey: "sigkill-mention-sends-key",
+		Env: map[string]string{
+			"ENVOY_URL": listener.url,
+			"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL": sigkillMentionSweepInterval.String(),
+		},
+	}
 	killed := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	killed.waitHealthy(t)
 	key, _ := killed.createIssue(t)
 	inFlight := killed.mention(t, key, "In flight when the process was killed.", "session:s1", "session:s2", "session:s3")
-	listener.awaitSends(t, killed, 3)
+	testwait.Until(t, "the three in-flight sends to reach the listener", func() (withOutput[int], bool) {
+		select {
+		case <-killed.Exited:
+			t.Fatalf("the first Dispatch exited (%s) before the in-flight sends arrived:\n%s",
+				killed.Cmd.ProcessState, killed.Output.String())
+		default:
+		}
+		arrived := len(listener.arrived)
+		return readWith(arrived, killed.Output), arrived >= 3
+	})
 	queued := killed.mention(t, key, "Queued behind it.", "session:s1")
 
 	if err := killed.Cmd.Process.Kill(); err != nil {
 		t.Fatalf("SIGKILL Dispatch: %v", err)
 	}
 	<-killed.Exited
-	killedAt := time.Now()
 	listener.letAnswer()
 	next := startDispatchProcessWith(t, database.Pool.Config().ConnString(), options)
 	next.waitHealthy(t)
-	dispatchSlots.parallelHoldingItsProcesses(t)
 
-	waitForSent(t, database, next, []string{inFlight, queued}, 4,
-		killedAt.Add(model.DeliveryClaimLapse+deliverySweepInterval+sweepMargin))
-	lastResend := listener.lastSend().Sub(killedAt)
-	t.Logf("the last resend reached the listener %v after the kill", lastResend)
-	if bound := model.DeliveryClaimLapse + deliverySweepInterval + sweepMargin; lastResend > bound {
-		t.Errorf("the last resend reached the listener %v after the kill, want within %v", lastResend, bound)
+	ctx := testwait.Context(t)
+	if _, err := database.Pool.Exec(ctx, `
+		update comment_deliveries set created_at = created_at - interval '2 minutes' where state = 'pending'
+	`); err != nil {
+		t.Fatalf("backdate the pending mention attempts' creation times: %v", err)
+	}
+	t0 := time.Now()
+	testwait.Until(t, "a completed delivery sweep due at or after the creation-time update", func() (fmt.Stringer, bool) {
+		select {
+		case <-next.Exited:
+			t.Fatalf("the next Dispatch exited (%s) before the delivery sweep completed:\n%s",
+				next.Cmd.ProcessState, next.Output.String())
+		default:
+		}
+		for line := range strings.Lines(next.Output.String()) {
+			if strings.Contains(line, `msg="dispatch: delivery sweep failed"`) {
+				t.Fatalf("delivery sweep failed before the qualifying pass: %s", line)
+			}
+			_, attrs, ran := strings.Cut(line, `msg="dispatch duty: leased pass ran" lease=suggestion-outcomes due=`)
+			if !ran {
+				continue
+			}
+			stamp, _, _ := strings.Cut(attrs, " ")
+			due, err := time.Parse(time.RFC3339Nano, stamp)
+			// The clock comparison only selects the pass. The listener's sends decide the verdict.
+			if err == nil && !due.Before(t0) {
+				return next.Output, true
+			}
+		}
+		return next.Output, false
+	})
+	wantBeforeLapse := map[receipt]int{{inFlight, "s1"}: 1, {inFlight, "s2"}: 1, {inFlight, "s3"}: 1}
+	if got := listener.sendCounts(); !maps.Equal(got, wantBeforeLapse) {
+		t.Fatalf("sends before the claim lapsed = %v, want only the killed process's sends %v and no resend or queued send", got, wantBeforeLapse)
+	}
+
+	backDatePendingAttempts(t, database)
+	agedAt := time.Now()
+	testwait.Until(t, "all four mention attempts to be marked sent", func() (withOutput[int], bool) {
+		var settled int
+		if err := database.Pool.QueryRow(ctx, `
+			select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
+		`, []string{inFlight, queued}).Scan(&settled); err != nil {
+			t.Fatalf("read the attempts: %v\n%s", err, next.Output.String())
+		}
+		return readWith(settled, next.Output), settled == 4
+	})
+	lastResend := listener.lastSend().Sub(agedAt)
+	t.Logf("the last resend reached the listener %v after backdating the pending attempts", lastResend)
+	if bound := sigkillMentionSweepInterval + sigkillMentionSweepMargin; lastResend > bound {
+		t.Errorf("the last resend reached the listener %v after backdating the pending attempts, want within %v", lastResend, bound)
 	}
 
 	want := map[receipt]int{
