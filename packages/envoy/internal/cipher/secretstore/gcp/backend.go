@@ -37,8 +37,8 @@ var RereadBudget = ratelimit.Limit{Every: time.Second, Burst: 10}
 // Backend is the GCP store's registry entry.
 type Backend struct{}
 
-func (Backend) Name() string { return Name }
-func (Backend) ID() string   { return "gcp" }
+func (Backend) Name() string                  { return Name }
+func (Backend) ID() string                    { return "gcp" }
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return RereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }

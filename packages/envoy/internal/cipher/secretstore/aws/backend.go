@@ -17,8 +17,8 @@ import (
 // Backend is the AWS store's registry entry.
 type Backend struct{}
 
-func (Backend) Name() string { return Name }
-func (Backend) ID() string   { return "aws" }
+func (Backend) Name() string                  { return Name }
+func (Backend) ID() string                    { return "aws" }
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return secretstore.DefaultRereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }
