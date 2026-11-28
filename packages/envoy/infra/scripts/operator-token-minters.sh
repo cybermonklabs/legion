@@ -55,14 +55,6 @@
 #                     role the render does not hold (other than the
 #                     built-in cluster-admin, which gives every right, and view, which gives none)
 #                     or to an aggregated ClusterRole is UNKNOWN: its rights are not in the render.
-#   code: IAM         Each --iam-preview file (`pulumi preview --json --show-sames` of a program that
-#                     declares IAM) is read for its organization, folder, project, service account,
-#                     secret and bucket bindings, judged as the live IAM steps judge them, with each
-#                     role's permissions from the preview's own custom roles or `gcloud iam roles
-#                     describe`. A binding the preview does not know all of (a value computed at
-#                     apply) and a resource type there that can grant on those resources but that
-#                     this check does not read are UNKNOWN. A group the code names is judged by its
-#                     members in the live steps, which expand it.
 #   live: clusters    `gcloud container clusters list` of --project, which must hold --cluster. The
 #                     operator's cluster is --cluster in --location, or, without --location, the
 #                     list's one cluster of that name; a name the list holds more than once with no
@@ -70,7 +62,28 @@
 #                     as another. A list gcloud says is incomplete (a zone that did not respond) is
 #                     UNKNOWN: a cluster there is neither read nor counted. With --pool-project
 #                     naming another project, that project's own clusters are listed too, and read
-#                     as other clusters of the pool; a refused or incomplete list is UNKNOWN.
+#                     as other clusters of the pool; a refused or incomplete list is UNKNOWN. Right
+#                     after it, with --broker-workload and the operator's cluster found, the run
+#                     reads that ServiceAccount's metadata.uid on the operator's cluster through
+#                     this run's own kubeconfig (`kubectl get serviceaccounts -n <namespace>
+#                     --field-selector metadata.name=<name> -o json`, which needs list on
+#                     ServiceAccounts, as the RBAC step's list does): the answer must be that one
+#                     ServiceAccount, its uid a lower-case UUID, as Kubernetes makes every UID. With
+#                     the pool project's number (`gcloud projects describe`) it makes the broker's
+#                     member by UID (below, "live: minters"). The read prints no line of its own:
+#                     the broker check's PASS names the member by UID it allows, or why that member
+#                     is not known, and each check that would compare a member by UID with a UID or
+#                     a number not read is UNKNOWN, naming why.
+#   code: IAM         Each --iam-preview file (`pulumi preview --json --show-sames` of a program that
+#                     declares IAM) is read for its organization, folder, project, service account,
+#                     secret and bucket bindings, judged as the live IAM steps judge them, with each
+#                     role's permissions from the preview's own custom roles or `gcloud iam roles
+#                     describe`. A binding the preview does not know all of (a value computed at
+#                     apply) and a resource type there that can grant on those resources but that
+#                     this check does not read are UNKNOWN. A group the code names is judged by its
+#                     members in the live steps, which expand it. It runs after live: clusters, so a
+#                     member by UID it reads on --broker-account is judged against the UID read
+#                     there, as the live steps judge it.
 #   live: GKE IAM     GKE authorizes a Google identity's Kubernetes call through IAM beside RBAC, so
 #                     Policy Analyzer's holders of the container.* permission of each right, on the
 #                     project, and of resourcemanager.projects.setIamPolicy and iam.roles.update
@@ -91,15 +104,33 @@
 #                     The broker needs roles/iam.serviceAccountTokenCreator on that account to mint
 #                     the secret ENVOY_OPERATOR's token, so --broker-account allows that one binding,
 #                     on that account and in that role alone, and then the broker account's own
-#                     minters are checked the same way, its Workload Identity member
-#                     (--broker-workload) the witness and the one non-person allowed.
+#                     minters are checked the same way, the broker's ServiceAccount
+#                     (--broker-workload) the one non-person allowed, by its Workload Identity
+#                     member by name, serviceAccount:<pool>.svc.id.goog[<namespace>/<name>], or by
+#                     its member by UID, principal://iam.googleapis.com/projects/<pool project
+#                     number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/
+#                     kubernetes.serviceaccount.uid/<its metadata.uid on --cluster>, either one the
+#                     witness (the name member alone while the UID or the number is not read). A
+#                     member by UID that differs from the broker's in a part the run read (the
+#                     pool, the number or the UID) names another object and is a finding; one equal
+#                     in every part read, while the UID or the number is not read, cannot be told
+#                     from it and is UNKNOWN, never allowed. On every other check a member by UID
+#                     that holds a permission itself, the broker's too, is judged as any member is:
+#                     with --broker-workload naming the operator's own pair, whose name member is
+#                     the gsa check's witness and allowed there, that pair's member by UID stays a
+#                     finding on the gsa check.
 #   impersonation     Every IAM step analyses with --analyze-service-account-impersonation: who can
 #                     mint a holder's token, sign as it or act as it holds what the holder holds, so
 #                     the outermost principal of each such chain, through any number of service
 #                     accounts, is judged as a holder, its finding written as the chain
 #                     (serviceAccount:a -> impersonates serviceAccount:b (<role>) -> <b's role>).
 #                     The design's own links are no finding: a Workload Identity member acting as
-#                     the account it is bound to, and the broker minting --gsa's token.
+#                     the account it is bound to (the operator's member by name as --gsa, and the
+#                     broker's by name or by UID as --broker-account), and the broker minting
+#                     --gsa's token. A member by UID acting as --broker-account is told from the
+#                     broker's as the broker check tells it: one that may be the broker's but whose
+#                     UID or pool project number is not read is UNKNOWN, and one of another UID,
+#                     pool or number is judged as any impersonator is.
 #   live: RBAC        On the operator's cluster, one SubjectAccessReview per principal and right,
 #                     the principals being every ServiceAccount outside the system namespaces
 #                     (kube-system, gke-*, gmp-*), as on every other cluster of the pool, with the
@@ -224,10 +255,23 @@
 #     a credited      fence's residual and which no RBAC finding names, the same holders, each an
 #     grant's         ALLOWANCE naming the chain to the account and the residual where the step above
 #     account         would find it. Each Workload Identity member of the operator's pool either step
-#                     lists is followed on every cluster read, a chain to a found account's member a
-#                     finding and one to a residual account's an ALLOWANCE; a chain can name another
-#                     Google account, so both steps run until a pass names none, the found accounts
-#                     settling before any residual one is read.
+#                     lists is followed to who can become the ServiceAccount it names, a chain to a
+#                     found account's member a finding and one to a residual account's an
+#                     ALLOWANCE: a member by name on every cluster read, each of which can hold its
+#                     namespace and name, and a member by UID of the pool and of the pool project's
+#                     number only on the cluster whose listed ServiceAccount (the RBAC and Workload
+#                     Identity steps' lists) holds that UID, since a UID names one object. A member
+#                     by UID whose UID no listed ServiceAccount holds, or any member by UID of the
+#                     pool while the pool project's number is not read, is UNKNOWN on the account's
+#                     step, naming the member, and nothing is followed from it; a member by UID of
+#                     another pool or number is not followed, as another pool's member by name is
+#                     not. A chain can name another Google account, so both steps run until a pass
+#                     names none, the found accounts settling before any residual one is read.
+#   live: IAM on      For each folder and organization above --project, the pool project and each
+#     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
+#                     holders of its setIamPolicy, and of the organization's iam.roles.update: each
+#                     can grant itself any role below it. An answer that does not hold the project
+#                     itself, as a real one always does, is UNKNOWN.
 #   live: fleet       Policy Analyzer's holders on the pool project of gkehub.memberships.create and
 #     registration    update, of gkehub.namespaces, rbacrolebindings and membershipbindings create
 #                     and update, of the scopes' create, update and setIamPolicy, and of the
@@ -235,11 +279,6 @@
 #                     registered to the pool's fleet shares the pool's Workload Identity, so its
 #                     ServiceAccount envoy-operator/envoy-operator is the operator's member there,
 #                     and a scope's namespace and RBAC role binding reach every member bound to it.
-#   live: IAM on      For each folder and organization above --project, the pool project and each
-#     ancestors       fleet member's project (`gcloud projects get-ancestors`), Policy Analyzer's
-#                     holders of its setIamPolicy, and of the organization's iam.roles.update: each
-#                     can grant itself any role below it. An answer that does not hold the project
-#                     itself, as a real one always does, is UNKNOWN.
 #   live: hold        Who can write the writer hold's tables beside the broker's routes, each holder a
 #     writers         finding: the holders of cloudsql.users.create or update on --sql-instance, of
 #                     get on the Secret --db-secret (a SubjectAccessReview for each principal of the
@@ -460,10 +499,10 @@
 # The controls run against scratch targets: --namespace envoy-operator-control --gsa
 # envoy-operator-control@<project>.iam.gserviceaccount.com --secret ENVOY_OPERATOR_CONTROL.
 # operator-token-minters.test.sh runs every plant and control against a fake kubectl, gcloud, curl
-# and agent-secrets. This file holds the run's flags, its exit and its report; each step is a part
-# in operator-token-minters/ beside it, sourced in the order above, and their large jq programs
-# are .jq files there. Needs bash 4.4, jq, and for the live steps gcloud, kubectl, curl and
-# agent-secrets.
+# and agent-secrets. This file holds the run's flags, its exit and its report; each step, and the
+# broker's UID read after live: clusters, is a part in operator-token-minters/ beside it, sourced
+# in the order above, and their large jq programs are .jq files there. Needs bash 4.4, jq, and for
+# the live steps gcloud, kubectl, curl and agent-secrets.
 set -euo pipefail
 
 usage() {
@@ -500,7 +539,8 @@ usage: operator-token-minters.sh [flags]
                              must hold a ServiceAccount
   --broker-account EMAIL     the secrets broker's Google service account, which mints the
                              operator's token for the secret ENVOY_OPERATOR
-  --broker-workload NS/NAME  the broker's Kubernetes ServiceAccount, bound to --broker-account
+  --broker-workload NS/NAME  the broker's Kubernetes ServiceAccount, bound to --broker-account by
+                             name, or by its UID on --cluster
   --sql-instance NAME        the Cloud SQL instance of the broker's database, in --project
   --db-secret NS/NAME        the Secret holding the broker's database login
   --broker-state gs://BUCKET[/PATH]  where the broker program's Pulumi state is kept
@@ -703,8 +743,8 @@ LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/operator-token-minters"
 # Every part and jq file must be readable before any is sourced: a missing one would stop the run
 # before output.sh defines its report, or leave a step that needs it unread.
 missing=""
-for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-code-iam.sh \
-  step-clusters.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
+for part in output.sh rights.sh principals.sh checks.sh step-permission-names.sh step-code-rbac.sh step-clusters.sh \
+  broker-uid.sh step-code-iam.sh reviews.sh admission-backends.sh broker-fence.sh step-rbac.sh iam-analysis.sh step-gke-iam.sh \
   step-workload-identity.sh step-live-iam.sh step-admin-tag.sh analysis.jq become-rights.jq broker-fence.jq broker-fence.json \
   code-iam.jq code-rbac.jq custom.jq custom-rights.jq fleet.jq guard-rights.jq binding-rights.jq rec.jq review-answer.jq \
   review-request.jq webhook-backends.jq; do
@@ -739,10 +779,12 @@ fi
 . "$LIB/step-permission-names.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-rbac.sh
 . "$LIB/step-code-rbac.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh
-. "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-clusters.sh
 . "$LIB/step-clusters.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/broker-uid.sh
+. "$LIB/broker-uid.sh"
+# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-code-iam.sh
+. "$LIB/step-code-iam.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/iam-analysis.sh
 . "$LIB/iam-analysis.sh"
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/step-gke-iam.sh

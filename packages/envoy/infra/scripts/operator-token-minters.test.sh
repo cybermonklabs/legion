@@ -11,11 +11,15 @@
 #   - kubectl answers a SubjectAccessReview as the RBAC authorizer does, from the world's grants
 #     (each a subject, a verb, an API group, a resource and subresource, a namespace or none for
 #     cluster-wide, and a resource name or none), with the built-in cluster-admin binding of the
-#     group system:masters allowed everything; it lists ServiceAccounts, a namespace's pods and the
-#     cluster's admission policies and their bindings, and reads a namespace;
+#     group system:masters allowed everything; it lists ServiceAccounts, every namespace's or one
+#     namespace's of one name (--field-selector metadata.name=), each with the uid its world entry
+#     holds (sa_uid) or uid-<namespace>-<name>, and refuses the second in a world marked
+#     refuse-serviceaccount-read; it lists a namespace's pods and the cluster's admission policies
+#     and their bindings, and reads a namespace;
 #   - gcloud describes roles from the world's role table (roles/container.admin's list is the
 #     real role's, read with `gcloud iam roles describe roles/container.admin` on 2026-11-20, cut
-#     to the permissions the check names and a few beside them), lists the project's clusters (and
+#     to the permissions the check names and a few beside them), describes a project (the world's
+#     own refused in a world marked refuse-project-describe), lists the project's clusters (and
 #     says on stderr, as gcloud 593.0.0 does, which zones did not respond), writes a kubeconfig for
 #     a GKE cluster's get-credentials and for a fleet membership's, prints an access token, and
 #     answers Policy Analyzer as the API does: a binding on the resource itself or on its project is
@@ -94,6 +98,7 @@ readonly broker=secrets-broker@example-project.iam.gserviceaccount.com
 readonly worker_gsa=worker@example-project.iam.gserviceaccount.com
 readonly ci_gsa=ci-runner@example-project.iam.gserviceaccount.com
 readonly grade_ci=grade-ci@example-grade.iam.gserviceaccount.com
+readonly grade_ci_res="//iam.googleapis.com/projects/example-grade/serviceAccounts/$grade_ci"
 readonly grade_res="//cloudresourcemanager.googleapis.com/projects/example-grade"
 readonly applier=applier@example-project.iam.gserviceaccount.com
 readonly applier_res="//iam.googleapis.com/projects/example-project/serviceAccounts/applier@example-project.iam.gserviceaccount.com"
@@ -112,6 +117,15 @@ readonly broker_res="//iam.googleapis.com/projects/$project/serviceAccounts/$bro
 readonly sql_res="//sqladmin.googleapis.com/projects/$project/instances/example-instance"
 readonly signing_res="//secretmanager.googleapis.com/projects/$number/secrets/hold-signing-example"
 readonly bucket_res="//storage.googleapis.com/projects/_/buckets/example-state"
+# Example Kubernetes UIDs, each a lower-case UUID as Kubernetes makes every metadata.uid (sa_uid
+# plants one on a ServiceAccount): the broker's, another ServiceAccount's, ci/runner's on two
+# clusters, agent-sessions/runner-w's, and one that no ServiceAccount of any world holds.
+readonly broker_uid=3f6c2a9e-8b1d-4e7a-9c5f-0d2b4a6e8c10
+readonly other_uid=7a1e5c3b-2d4f-4a6b-8e9d-1c3f5a7b9d20
+readonly ci_uid=5d2e8f1a-6b3c-4d7e-9f0a-1b2c3d4e5f60
+readonly ci_uid2=8c4a2e6f-1d3b-4f5a-a7c9-2e4f6a8c0b12
+readonly runner_uid=2b7d9f1c-3e5a-4c6b-8d0f-a1c3e5f7b9d2
+readonly unlisted_uid=9e8d7c6b-5a4f-4e3d-b2c1-0f9e8d7c6b5a
 
 # The fakes, written into $fake_bin.
 # shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-fakes.sh
@@ -155,6 +169,21 @@ role() { edit "$world/roles.json" '. + {($r): $ARGS.positional}' --arg r "$1" --
 add_sa() {
   edit "$world/clusters/$1/serviceaccounts.json" '. + [{namespace: $ns, name: $n}]' --arg ns "$2" --arg n "$3"
   grep -qxF -- "$2" "$world/clusters/$1/namespaces" || echo "$2" >>"$world/clusters/$1/namespaces"
+}
+# sa_uid CLUSTER NAMESPACE NAME UID: the ServiceAccount NAMESPACE/NAME of a cluster's world holds
+# the metadata.uid UID (the fake answers uid-<namespace>-<name>, no UUID, for one that holds none);
+# fails the row when the world holds no such ServiceAccount, so a plant that missed cannot pass.
+sa_uid() {
+  jq -e --arg ns "$2" --arg n "$3" 'any(.[]; .namespace == $ns and .name == $n)' "$world/clusters/$1/serviceaccounts.json" >/dev/null ||
+    fail "sa_uid: cluster $1 holds no ServiceAccount $2/$3"
+  edit "$world/clusters/$1/serviceaccounts.json" 'map(if .namespace == $ns and .name == $n then .uid = $u else . end)' \
+    --arg ns "$2" --arg n "$3" --arg u "$4"
+}
+# uid_member UID [POOL [NUMBER]]: the Workload Identity member that names a ServiceAccount by its UID,
+# of the workload pool POOL (this project's, $project.svc.id.goog, when empty or not given) of the
+# project number NUMBER (this project's when not given).
+uid_member() {
+  printf '%s\n' "principal://iam.googleapis.com/projects/${3:-$number}/locations/global/workloadIdentityPools/${2:-$project.svc.id.goog}/kubernetes.serviceaccount.uid/$1"
 }
 # add_cluster NAME LOCATION: a second cluster, whose system namespaces' controllers may make
 # namespaces and ServiceAccounts, as a cluster's own controllers may.
@@ -201,9 +230,10 @@ refuse_live() {
   : >"$world/refuse-analyze"
 }
 # The broker's pod fence's world (broker-fence.sh), which test-rows-fence.sh's rows and the report
-# fixture's (z) run in: comment-delivery's Google account, the broker's Workload Identity member,
-# and the contract the check under test carries.
+# fixture's (z) run in: comment-delivery's Google account and its resource, the broker's Workload
+# Identity member, and the contract the check under test carries.
 readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.com
+readonly comment_delivery_res="//iam.googleapis.com/projects/$project/serviceAccounts/$comment_delivery"
 readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
 fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
 readonly fence_contract
@@ -464,6 +494,32 @@ base_world() {
   rm -rf "$world"
   cp -a "$base" "$world"
 }
+# uid_world: the base world with the broker's ServiceAccount secrets-broker/secrets-broker holding the
+# UID broker_uid on the operator's cluster, so a run reads it (the rows on the broker's member by UID).
+uid_world() {
+  base_world
+  sa_uid operator-cluster secrets-broker secrets-broker "$broker_uid"
+}
+# uid_unknown STEP SENTENCE MEMBER REASON: the UNKNOWN line STEP prints for a holder MEMBER that may
+# name the broker's ServiceAccount by its UID, where SENTENCE is the right its finding would name
+# and REASON why the run cannot compare MEMBER with that ServiceAccount's member by UID.
+uid_unknown() {
+  printf '%s\n' "UNKNOWN $1: $2, and whether $3 names the broker's ServiceAccount secrets-broker/secrets-broker by its UID cannot be told: $4"
+}
+# uid_refused: that REASON in a world marked refuse-serviceaccount-read on the operator's cluster.
+readonly uid_refused="the UID of secrets-broker/secrets-broker is not read: the API server refused the list of ServiceAccounts named secrets-broker in secrets-broker (it needs list on serviceaccounts, container.serviceAccounts.list on GKE): Error from server (Forbidden): serviceaccounts is forbidden: User \"reader@example-project.iam.gserviceaccount.com\" cannot list resource \"serviceaccounts\" in API group \"\" at the cluster scope: requires one of [\"container.serviceAccounts.list\"] permission(s)."
+# preview_step NAME TYPE INPUTS: one more resource the IAM preview shows unchanged, of TYPE, its urn
+# urn:pulumi:example::iam::TYPE::NAME and its inputs the JSON object INPUTS.
+preview_step() {
+  edit "$world/preview.json" '.steps += [{op: "same", urn: "urn:pulumi:example::iam::\($t)::\($n)", provider: "example-provider",
+    newState: {urn: "urn:pulumi:example::iam::\($t)::\($n)", custom: true, type: $t, inputs: $i}}]' --arg n "$1" --arg t "$2" --argjson i "$3"
+}
+# broker_member_step NAME MEMBER: a preview step NAME (gcp:serviceaccount/iAMMember:IAMMember) giving
+# MEMBER roles/iam.workloadIdentityUser on the broker's account.
+broker_member_step() {
+  preview_step "$1" gcp:serviceaccount/iAMMember:IAMMember \
+    "$(jq -nc --arg sa "projects/$project/serviceAccounts/$broker" --arg m "$2" '{serviceAccountId: $sa, role: "roles/iam.workloadIdentityUser", member: $m}')"
+}
 
 # --- Running the check. ---
 
@@ -528,6 +584,18 @@ count_prefix() { grep -c "^$1" <<<"$output" || true; }
 want_status() { [ "$status" -eq "$1" ] || fail "$2: exit $status, want $1"; }
 want_line() { has_line "$1" || fail "$2: no line '$1'"; }
 want_text() { has_prefix "$1" || fail "$2: no line holding '$1'"; }
+# want_lines WHAT KINDS LINE...: the run's lines whose first word is one of KINDS (`FINDING UNKNOWN`)
+# are exactly the LINEs, in any order, so a row holds the whole set and not only that a line is
+# there; fails naming each LINE the run did not print and each line of KINDS it printed beside them.
+want_lines() {
+  local what="$1" kinds="$2" got want missing beside
+  shift 2
+  got="$(awk -v kinds=" $kinds " 'index(kinds, " " $1 " ") > 0' <<<"$output" | LC_ALL=C sort)"
+  want="$(if [ "$#" -gt 0 ]; then printf '%s\n' "$@" | LC_ALL=C sort; fi)"
+  missing="$(LC_ALL=C comm -13 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | sed '/^$/d')"
+  beside="$(LC_ALL=C comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | sed '/^$/d')"
+  [ -z "$missing$beside" ] || fail "$what: its $kinds lines are not the ones wanted; missing: ${missing//$'\n'/ | }; beside them: ${beside//$'\n'/ | }"
+}
 # want_step_unknown STEP TEXT WHAT: the step STEP (as its lines name it: `RBAC on operator-cluster`)
 # read UNKNOWN holding TEXT, the run reached its end with no finding (its last line says so, which a
 # run that stopped mid-way does not), exit 2, and the step did not pass. The rows that break a read

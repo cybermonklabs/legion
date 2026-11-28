@@ -44,14 +44,16 @@ fi
 # made on, the permissions it grants, comma-separated, and `expanded` for a group whose members the
 # analysis lists), and a `chain` per impersonator of a service account holder, through any number
 # of service accounts (the outermost impersonator, its role and where that is granted, the holder's
-# permissions, `expanded`, `designed` for a link the design makes, the holder's role and where it
-# is granted, the holder, and the chain written out). Returns 1 with ANALYZE_ERROR, also for an
-# impersonation analysis not fully explored or naming no service account: an impersonator it did
-# not list would read as none.
+# permissions, `expanded`, `designed` for a link the design makes or `broker-uid` for a member by UID
+# impersonating --broker-account, the holder's role and where it is granted, the holder, and the
+# chain written out). Returns 1 with ANALYZE_ERROR, also for an impersonation analysis not fully
+# explored or naming no service account: an impersonator it did not list would read as none.
 #
 # The designed links are a Workload Identity member acting as the account it is bound to (the
 # operator's member as --gsa, the broker's as --broker-account) and the broker minting --gsa's
 # token: its outermost principal is the account it acts as, already judged, so it is no finding.
+# A member by UID acting as --broker-account is designed when it is the broker's member by UID,
+# which live_iam asks broker_uid_verdict.
 analyze() {
   ANALYZE_ERROR=""
   if ! gcloud asset analyze-iam-policy "$3" --full-resource-name="$1" --permissions="$2" \
@@ -60,7 +62,8 @@ analyze() {
     ANALYZE_ERROR="Policy Analyzer refused the analysis (it needs cloudasset.assets.analyzeIamPolicy on $4): $(first_line "$WORK/analysis.err")"
     return 1
   fi
-  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" -L "$LIB" -f "$LIB/analysis.jq" \
+  if ! jq -r --arg wi "$WI_MEMBER" --arg gsa "$GSA" --arg bwi "$BROKER_WI_MEMBER" --arg broker "$BROKER" --arg uid_form "$UID_MEMBER_FORM" \
+    -L "$LIB" -f "$LIB/analysis.jq" \
     "$WORK/analysis.json" >"$WORK/analysis.rec" 2>"$WORK/analysis.err"; then
     ANALYZE_ERROR="the analysis is not the JSON Policy Analyzer answers: $(first_line "$WORK/analysis.err")"
     return 1
@@ -112,30 +115,44 @@ live_iam() {
   # The holders, each once, and whether the witness is among them, in one read of the records (an
   # awk that reads them whole: never `cut | grep -q` under pipefail, where grep stops at its first
   # match and a long answer's next write fails the pipeline with SIGPIPE, reading a witness that is
-  # there as one that is not).
-  local witness_listed
-  read -r holders witness_listed < <(WITNESS="$witness_member" awk -F"$US" '$1 == "row" { if (!seen[$2]++) n++; if ($2 == ENVIRON["WITNESS"]) listed = 1 }
+  # there as one that is not). The witness is one member or, for the broker check once its member by
+  # UID is read (broker-uid.sh), the name member and that one joined by $US, either of them listed
+  # being the witness; no line prints the separator.
+  local witness_listed right
+  read -r holders witness_listed < <(WITNESS="$witness_member" awk -F"$US" 'BEGIN { k = split(ENVIRON["WITNESS"], w); for (i = 1; i <= k; i++) want[w[i]] = 1 }
+    $1 == "row" { if (!seen[$2]++) n++; if ($2 in want) listed = 1 }
     END { print n + 0, listed + 0 }' "$WORK/analysis.rec")
   if [ -n "$witness_member" ] && [ "$witness_listed" != 1 ]; then
-    unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete"
+    case "$witness_member" in
+      *"$US"*) unknown "$step" "the analysis lists neither ${witness_member%%"$US"*} nor ${witness_member#*"$US"}, one of which holds a permission on it by design, so it cannot be read as complete" ;;
+      *) unknown "$step" "the analysis does not list $witness_member, which holds a permission on it by design, so it cannot be read as complete" ;;
+    esac
   fi
-  # A chain record's holder role and holder are in its written-out chain, the sentence's part.
+  # A chain record's holder role and holder are in its written-out chain, the sentence's part. Each
+  # holder's verdict is one of the four iam_verdict sets, and only a finding reaches iam_holder.
   while IFS="$US" read -r -u 3 what identity role attached perms how designed _ hattached _ text; do
     if [ "$what" = chain ]; then
       # The outermost impersonator, judged as a holder of what the holder holds; a designed link's
-      # principal is the account it acts as, already judged.
+      # principal is the account it acts as, already judged. A member by UID acting as
+      # --broker-account (broker-uid) is designed when it is the broker's member by UID, UNKNOWN
+      # when that cannot be told (broker_uid_verdict), and else judged as any impersonator is.
       chains=$((chains + 1))
       [ "$designed" != designed ] || continue
+      if [ "$designed" != broker-uid ] || ! broker_uid_verdict "$identity"; then
+        iam_verdict "$check" "$identity" "$role" "$attached" "$how"
+      fi
+      right="on $resource: $text, granted at $hattached"
+    else
       iam_verdict "$check" "$identity" "$role" "$attached" "$how"
-      [ "$VERDICT" != finding ] ||
-        iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource: $text, granted at $hattached$NOTE" \
-          "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
-      continue
+      right="on $resource through $role, granted at $attached"
     fi
-    iam_verdict "$check" "$identity" "$role" "$attached" "$how"
-    [ "$VERDICT" != finding ] ||
-      iam_holder "$check" "$identity" "$(held_text "$check" "$perms") on $resource through $role, granted at $attached$NOTE" \
-        "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+    case "$VERDICT" in
+      ok | skip) ;;
+      finding)
+        iam_holder "$check" "$identity" "$(held_text "$check" "$perms") $right$NOTE" "$role" "$resource" "$(held_list "$check" "$perms")" "$attached"
+        ;;
+      unknown) unknown "$step" "$(held_text "$check" "$perms") $right$NOTE" ;;
+    esac
   done 3<"$WORK/analysis.rec"
   if unchanged; then
     allowances="$(allowed)"

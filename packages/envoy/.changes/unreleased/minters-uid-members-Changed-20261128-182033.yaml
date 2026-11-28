@@ -1,0 +1,27 @@
+kind: Changed
+body: |-
+  `infra/scripts/operator-token-minters.sh` allows the secrets broker's ServiceAccount
+  (`--broker-workload`) on `--broker-account` by its Workload Identity member by UID,
+  `principal://iam.googleapis.com/projects/<pool project number>/locations/global/workloadIdentityPools/<pool>.svc.id.goog/kubernetes.serviceaccount.uid/<uid>`,
+  as it allows that ServiceAccount's member by name: the broker check passes on either member and
+  takes either one as its witness, either one acting as `--broker-account` is a link of the design
+  on every check, and `code: IAM` judges a declared member by UID the same way. The UID is that
+  ServiceAccount's `metadata.uid` on `--cluster`, read with the run's own kubeconfig right after
+  `live: clusters` (a list of the namespace's ServiceAccounts of that name, which needs list on
+  ServiceAccounts), and the number is the pool project's; the broker check's PASS names the member
+  by UID it allows. A member by UID that differs from the broker's in a part the run read (the UID,
+  the pool or the number) stays a finding, beside a valid witness too, and every other check judges
+  a member by UID that holds a permission as any member, so on `--gsa`'s minters the broker's
+  member by UID is a finding. When the run cannot read the UID or the pool project's number, a
+  member by UID equal to the broker's in every part read is UNKNOWN on each check that compares
+  it, never allowed, and with neither member listed the broker check is UNKNOWN, as before. The
+  follow of the minters of an RBAC finding's account and of a credited grant's account now follows
+  a ServiceAccount of the pool named by its UID, on the one cluster whose listed ServiceAccount
+  holds that UID, and prints there the lines its member by name gives, where a member by name is
+  followed on every cluster read; a member by UID that no listed ServiceAccount holds, or any
+  member by UID of the pool while its project's number is not read, is UNKNOWN on that account's
+  step and nothing is followed from it, and a member by UID of another pool or number is not
+  followed, as another pool's member by name is not.
+time: 2026-11-28T18:20:33Z
+custom:
+    Issue: minters-uid-members

@@ -51,6 +51,32 @@ BROKER_PROJECT="$ACCOUNT_PROJECT"
 WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$NAMESPACE/$KSA]"
 BROKER_WI_MEMBER=""
 [ -z "$BROKER_WORKLOAD" ] || BROKER_WI_MEMBER="serviceAccount:$POOL_PROJECT.svc.id.goog[$BROKER_WORKLOAD]"
+# The pool also gives a ServiceAccount a member by its UID, its metadata.uid, which names that one
+# object and not its namespace and name on every cluster: UID_MEMBER_FORM, with the project number,
+# the pool and the UID captured.
+UID_MEMBER_FORM='^principal://iam\.googleapis\.com/projects/([^/]+)/locations/global/workloadIdentityPools/([^/]+)/kubernetes\.serviceaccount\.uid/([^/]+)$'
+# broker_uid MEMBER: whether MEMBER names the --broker-workload ServiceAccount by its UID, against
+# what broker-uid.sh read before any verdict asks (BROKER_UID, on the operator's cluster, and
+# POOL_NUMBER, the pool project's number). Sets BROKER_UID_MATCH to none (MEMBER is no member by
+# UID), no (no --broker-workload, or a part the run read differs: the pool is not
+# $POOL_PROJECT.svc.id.goog, or the UID or the number is another, so MEMBER names another object), yes
+# (the UID and the number read, and every part equal) or unread (every part read equal, and the UID
+# or the number not read, as BROKER_UID_UNREAD says). The broker check's verdict (iam_verdict) and a
+# chain's link from a member by UID to --broker-account (live_iam) both ask it, through
+# broker_uid_verdict (checks.sh), so the rule is written here alone.
+broker_uid() {
+  BROKER_UID_MATCH=none
+  [[ "$1" =~ $UID_MEMBER_FORM ]] || return 0
+  BROKER_UID_MATCH=no
+  [ -n "$BROKER_WORKLOAD" ] && [ "${BASH_REMATCH[2]}" = "$POOL_PROJECT.svc.id.goog" ] || return 0
+  [ -z "$BROKER_UID" ] || [ "${BASH_REMATCH[3]}" = "$BROKER_UID" ] || return 0
+  [ -z "$POOL_NUMBER" ] || [ "${BASH_REMATCH[1]}" = "$POOL_NUMBER" ] || return 0
+  if [ -n "$BROKER_UID" ] && [ -n "$POOL_NUMBER" ]; then
+    BROKER_UID_MATCH=yes
+  else
+    BROKER_UID_MATCH=unread
+  fi
+}
 
 # k8s_subject KIND NAMESPACE NAME: sets SUBJECT, the principal's name in a finding, and SUBJECT_OK,
 # whether it is allowed (the header's "Group and User subjects"). Allowed: a person (a User that is

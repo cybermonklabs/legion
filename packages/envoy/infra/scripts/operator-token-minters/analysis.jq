@@ -1,7 +1,9 @@
 # operator-token-minters/analysis.jq: analyze's records (iam-analysis.sh) from Policy Analyzer's answer,
 # with impersonation: a `row` per binding and identity, a `chain` per impersonator of a service
 # account holder through any number of service accounts, and one `error` for an answer that cannot
-# be read as complete. $wi, $gsa, $bwi and $broker name the designed links, as analyze says.
+# be read as complete. $wi, $gsa, $bwi and $broker name the designed links, as analyze says; a chain
+# whose outermost link is a member by UID ($uid_form, principals.sh's UID_MEMBER_FORM) acting as
+# $broker is `broker-uid`, which live_iam judges with broker_uid_verdict, deciding nothing here.
 include "rec";
       def sa_email: if test("^serviceAccount:[^@\\[]+@") then sub("^serviceAccount:"; "") else empty end;
       if (.mainAnalysis | type) != "object" then ["error", "the answer holds no mainAnalysis"] | rec
@@ -38,7 +40,9 @@ include "rec";
                 (if any($expanded[]; . == $id) then "expanded" else "" end)] | rec),
               (($id | sa_email) as $email | chains($email; [$id]) as $c | ($c | last) as $o
                | ["chain", $o.id, $o.role, $o.attached, $perms, (if $o.expanded then "expanded" else "" end),
-                  (if designed($o) then "designed" else "" end), ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $id,
+                  (if designed($o) then "designed"
+                   elif $broker != "" and $o.target == $broker and ($o.id | test($uid_form)) then "broker-uid"
+                   else "" end), ($r.iamBinding.role // ""), ($r.attachedResourceFullName // ""), $id,
                   ($o.id + ([$c | reverse[] | " -> impersonates serviceAccount:\(.target) (\(.role))"] | join(""))
                    + " -> " + ($r.iamBinding.role // ""))] | rec)
           end

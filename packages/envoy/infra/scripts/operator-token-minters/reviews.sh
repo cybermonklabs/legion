@@ -414,7 +414,9 @@ follow_becomes() {
 # cluster just read (its principals, its discovery's custom resources, its bindings and roles with
 # whether live_named read them, and its credited fence), for follow_members, which the IAM steps run
 # on each pass of their fixed point (step-live-iam.sh), for the Workload Identity members of each
-# Google account a finding names and of each whose credited grant reaches the residual.
+# Google account a finding names and of each whose credited grant reaches the residual. RESOURCE is
+# the cluster as its findings name it (cluster:<name> for the operator's, the cluster's principal
+# for each other), which the UID map (uid_map) and a member by UID's scoped key name it by too.
 REMEMBERED=()
 remember_cluster() {
   local n="${#REMEMBERED[@]}" file
@@ -424,12 +426,26 @@ remember_cluster() {
   done
   REMEMBERED+=("$1$US$2$US$3$US$4$US${ROLES_OK:-false}$US${5:-}")
 }
-# follow_members FOUND RESIDUAL: on every cluster remember_cluster kept, who can become a
-# ServiceAccount of FOUND or of RESIDUAL (each a JSON object of namespace:name to the right its
-# caller names it by, as follow_becomes writes a label after "which can": `act as <email> through
-# Workload Identity`) holds what that right gives: an account FOUND names has a finding, and who can
-# become it is followed as a found one; one RESIDUAL names reaches the broker's pod fence's residual
-# alone, and is followed as RESIDUAL_SAS are.
+# uid_map LIST RESOURCE: appends to the UID map, $WORK/uids.tsv, one line per ServiceAccount of LIST
+# (an answer is_list held) that carries a metadata.uid: the uid, RESOURCE (the cluster's, as
+# remember_cluster's fourth argument names it), the namespace and the name, separated by tabs.
+# step-rbac.sh (the operator's cluster) and read_other_cluster (each other cluster of the pool)
+# write it before the cluster's reviews, so a cluster whose reviews fail is in it too, though
+# nothing is followed there, as it has no REMEMBERED entry. pool_member (step-live-iam.sh) reads it.
+: >"$WORK/uids.tsv"
+uid_map() {
+  jq -r --arg r "$2" '.items[] | .metadata | select((.uid | type) == "string" and .uid != "")
+    | [.uid, $r, (.namespace // ""), (.name // "")] | @tsv' "$1" >>"$WORK/uids.tsv"
+}
+# follow_members FOUND RESIDUAL: on the clusters remember_cluster kept, who can become a
+# ServiceAccount of FOUND or of RESIDUAL (each a JSON object of a member key, pool_member's, to the
+# right its caller names it by, as follow_becomes writes a label after "which can": `act as <email>
+# through Workload Identity`) holds what that right gives: an account FOUND names has a finding, and
+# who can become it is followed as a found one; one RESIDUAL names reaches the broker's pod fence's
+# residual alone, and is followed as RESIDUAL_SAS are. An unscoped key <namespace>:<name>, a name
+# member's, is followed on every remembered cluster; a scoped key <resource>|<namespace>:<name>, a
+# member by UID's, only on the remembered cluster whose resource is <resource>, the one whose
+# ServiceAccount holds that UID.
 follow_members() {
   local n kube step suffix resource fence member label file
   for ((n = 0; n < ${#REMEMBERED[@]}; n++)); do
@@ -437,10 +453,16 @@ follow_members() {
     cp "$WORK/remembered-$n.principals" "$WORK/principals.rec"
     for file in api-resources bindings.json roles.json; do cp "$WORK/remembered-$n.$file" "$WORK/$file"; done
     FOUND_SAS=() RESIDUAL_SAS=()
-    while IFS=$'\t' read -r member label; do found_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$1")
-    while IFS=$'\t' read -r member label; do residual_sa "system:serviceaccount:$member" "$label"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' <<<"$2")
+    while IFS=$'\t' read -r member label; do found_sa "system:serviceaccount:$member" "$label"; done < <(member_keys "$1" "$resource")
+    while IFS=$'\t' read -r member label; do residual_sa "system:serviceaccount:$member" "$label"; done < <(member_keys "$2" "$resource")
     follow_becomes "$kube" "$step" "$suffix" "$resource" "$fence"
   done
+}
+# member_keys MEMBERS RESOURCE: each key of the JSON object MEMBERS that follow_members follows on the
+# cluster RESOURCE, as its <namespace>:<name>, and the right it names it by, a tab-separated line each.
+member_keys() {
+  jq -r --arg r "$2" 'to_entries[] | (.key | split("|")) as $k
+    | if ($k | length) == 1 then [$k[0], .value] elif $k[0] == $r then [$k[1], .value] else empty end | @tsv' <<<"$1"
 }
 # custom_rights KUBECONFIG STYLE: sets CUSTOM_RIGHTS, the JSON array, as rights_json writes rights,
 # of create, update and patch on each custom resource the API server's discovery lists as namespaced

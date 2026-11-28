@@ -89,6 +89,8 @@ else
   [ -z "$FENCE_CREDITED" ] || rights="$(with_rights "$rights" "$FENCE_WRITE_RIGHTS")"
   jq -r "$JQ_REC"'.items[] | [.metadata.namespace, .metadata.name, (.metadata.annotations["iam.gke.io/gcp-service-account"] // "")] | rec' \
     "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
+  # The cluster's ServiceAccounts by UID, for a member by UID that the minters' follow meets.
+  uid_map "$WORK/serviceaccounts.json" "cluster:$CLUSTER"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   declare -A seen_accounts=() pattern_matched=()
   accounts=0 agents=0

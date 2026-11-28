@@ -48,6 +48,8 @@ read_other_cluster() {
     unknown "$cstep" "the API server's list of ServiceAccounts could not be read: $(first_line "$WORK/serviceaccounts.err")"
     return
   fi
+  # The cluster's ServiceAccounts by UID, for a member by UID that the minters' follow meets.
+  uid_map "$WORK/serviceaccounts.json" "$principal"
   jq -r "$JQ_REC"'.items[] | [.metadata.namespace, .metadata.name] | rec' "$WORK/serviceaccounts.json" >"$WORK/serviceaccounts.rec"
   printf '%s\n%s\n' "$WITNESS_RECORD" "$ANONYMOUS_RECORD" >"$WORK/principals.rec"
   while IFS="$US" read -r -u 3 ns name; do
