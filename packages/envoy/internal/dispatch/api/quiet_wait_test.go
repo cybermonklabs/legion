@@ -343,11 +343,11 @@ func quietWaitSettlementNotAsked(t *testing.T) {
 // quietWaitSettlementArmed: a settlement armed to run before the test's deadline is work the
 // measurement would meet, so a wait not asked to wait for settlements still waits while one is
 // armed - as the close a closed issue's request is measured after arms one (readyIssueReopen).
-// The timer is armed a minute out, which no run of this package's deadline is near, and the row
-// settles the document at once (SettleIssueDocuments, which takes the armed timer) rather than
-// wait the minute out.
+// The timer is armed armedSettleDelay out, due before the wait gives up under any -timeout, and
+// the row settles the document at once (SettleIssueDocuments, which takes the armed timer) rather
+// than wait the delay out.
 func quietWaitSettlementArmed(t *testing.T) {
-	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Minute})
+	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: armedSettleDelay(t)})
 	issue := createInteractionIssue(t, handler, "QWA", "An armed settlement", "A spec.\n")
 	run := startQuietWait(t, database, false, func() error {
 		owed, err := settlementOwed(database, issue.PrimaryArtifactID)
@@ -369,28 +369,48 @@ func quietWaitSettlementArmed(t *testing.T) {
 
 // quietWaitSettlementDueBeforeTheDeadline: an armed settlement counts by when it is due - the
 // moment its timer was armed plus its delay (docs' settlesBeforeForTest) - not by now plus its
-// delay. The timer is armed a minute out. Once a read of the wait has found it armed, the row
-// reads the wait again under a deadline a minute after that read: the settlement is due before
-// that deadline, while now plus a minute is past it, and the read finds it busy. The row then
-// settles the document at once (SettleIssueDocuments), as quietWaitSettlementArmed does.
+// delay. The timer is armed armedSettleDelay out. Once a read has found it armed, the row reads
+// again under a deadline that delay after that read: the settlement is due before that deadline,
+// while now plus the delay is past it, and the read finds it busy. Each read is of the document
+// service's part of the wait (IdleForTest, which quietBusy asks last), so no other work the
+// server runs answers in its place. The row then settles the document at once
+// (SettleIssueDocuments), as quietWaitSettlementArmed does.
 func quietWaitSettlementDueBeforeTheDeadline(t *testing.T) {
-	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: time.Minute})
+	delay := armedSettleDelay(t)
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{settle: delay})
 	issue := createInteractionIssue(t, handler, "QWD", "A settlement due before the deadline", "A spec.\n")
-	name := database.Pool.Config().ConnConfig.Database
-	armed := readBusy("a settlement of document " + issue.PrimaryArtifactID + " is armed")
-	ignore := func(quietRead) {}
-	testwait.Until(t, "a read of the quiet wait to find the spec's settlement armed", func() (string, bool) {
-		busy := quietBusy(t, testwait.Context(t), database, name, false, ignore)
-		return busy, armed(quietRead{busy: busy})
-	})
-	ctx, cancel := context.WithDeadline(testwait.Context(t), time.Now().Add(time.Minute))
-	defer cancel()
-	if busy := quietBusy(t, ctx, database, name, false, ignore); !armed(quietRead{busy: busy}) {
-		t.Fatalf("a read under a deadline a minute after the spec's settlement was found armed found %q busy, want that settlement, due before the deadline", busy)
+	documents := deps.Docs.(*docs.Service)
+	armed := "a settlement of document " + issue.PrimaryArtifactID + " is armed"
+	read := func(ctx context.Context) string {
+		if err := documents.IdleForTest(ctx); err != nil {
+			return err.Error()
+		}
+		return ""
 	}
-	if err := deps.Docs.(*docs.Service).SettleIssueDocuments(context.Background(), issue.Key); err != nil {
+	testwait.Until(t, "the document service to find the spec's settlement armed", func() (string, bool) {
+		busy := read(testwait.Context(t))
+		return busy, strings.Contains(busy, armed)
+	})
+	ctx, cancel := context.WithDeadline(testwait.Context(t), time.Now().Add(delay))
+	defer cancel()
+	if busy := read(ctx); !strings.Contains(busy, armed) {
+		t.Fatalf("a read under a deadline %s after the spec's settlement was found armed found %q, want that settlement, due before the deadline", delay, busy)
+	}
+	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
 		t.Fatalf("settle the spec now: %v", err)
 	}
+}
+
+// armedSettleDelay is the settle delay of a row that holds a settlement armed to show the wait
+// waiting for it: a minute, or half of what is left before the wait gives up (testwait.GiveUpAt)
+// when that is sooner, so the settlement is due before that moment under any -timeout. Under
+// -timeout 0 a minute is inside the 10 minutes docs' settlesBeforeForTest reads ahead.
+func armedSettleDelay(t *testing.T) time.Duration {
+	delay := time.Minute
+	if end, bounded := testwait.GiveUpAt(t); bounded {
+		delay = min(delay, time.Until(end)/2)
+	}
+	return delay
 }
 
 // quietWaitSettlementArmedPastTheDeadline: a settlement due an hour after the wait gives up
