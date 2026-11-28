@@ -2972,8 +2972,10 @@ The file's workflow-level `env:` sets GOFLAGS to
 command that takes the flag: `go test` and `go run` take `-exec` and run each binary through the
 wrapper, and `go vet`, `go list`, `go build` and `go env` ignore it (go-cpu.test.sh's W12 holds
 this of go test, go run, go vet and go list). So that one line reaches every go test of the five
-jobs, those that `database-skips.sh`, `backend-count.sh` and `database-skips.test.sh` run included,
-and no go test line changes: the pins of `.github/ci-gates/envoy-go.py` and the hashes
+jobs, among them those the skip counter runs (`packages/envoy/scripts/database-skips.sh`), those
+the store-form count runs (`packages/envoy/scripts/backend-count.sh`) and those the skip counter's
+own test runs (`packages/envoy/scripts/database-skips.test.sh`), and no go test line changes: the
+pins of `.github/ci-gates/envoy-go.py` and the hashes
 `.github/scripts/audited_scripts.py` keeps of the audited scripts stay as they are. The wrapper runs
 the binary unchanged and exits as it did, then writes one JSON row for it into
 `$RUNNER_TEMP/go-test-events/cpu/`; its header says what it passes on and what a row holds.
@@ -2982,8 +2984,8 @@ the job's `-exec=` entry first in each of them, and points GO_CPU_DIR at the job
 
 The CI filter engine refuses an env name outside `ENV_ALLOWED` around a go command it reduces or a
 step an exact entry pins, GOFLAGS among them, since most of its values change what go compiles or
-which tests run. It takes this one value (`GO_CPU_GOFLAGS` in
-`.github/scripts/ci_filter_coverage.py`): with `-exec` go compiles the same files, and the wrapper
+which tests run. It takes this one value
+(`.github/scripts/ci_filter_coverage.py#GO_CPU_GOFLAGS`): with `-exec` go compiles the same files, and the wrapper
 hands the test binary its arguments unchanged, so the same tests run, which
 `.github/scripts/go-cpu.test.sh` holds the wrapper to. It takes the value only whole, only in a
 workflow's or a job's `env:`, and only in a workflow file that holds the steps of a job whose gate
