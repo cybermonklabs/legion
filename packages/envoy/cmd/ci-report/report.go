@@ -8,9 +8,10 @@ import (
 
 // Planned is what the reporter does for one check whose test part names the job: the check's id,
 // its test's selector, the outcome, what the test wrote, and why the outcome is what it is when
-// that is not plain. Outcome is the test's own pass, fail, skip or could_not_run when the report
-// holds one run of the test; absent when it holds none, or when the check's runner writes no go
-// test report; two_tests when it holds two or more runs of the test.
+// that is not plain. Outcome is the test's own pass, fail, skip or could_not_run, or cached for a
+// test of a package that go test replayed from its test cache, when the report holds one run of
+// the test (specgraph.TestOutcome); absent when it holds none, or when the check's runner writes no
+// go test report; two_tests when it holds two or more runs of the test.
 type Planned struct {
 	Check, Test, Outcome, Observed, Why string
 }
@@ -65,6 +66,8 @@ func planReports(tree specgraph.Tree, job string, ran []specgraph.TestOutcome) [
 				p.Why = "the test skipped at this commit"
 			case "could_not_run":
 				p.Why = "the report gives the test no one end: go test stopped it at its time limit, its process or the job ended inside it, or the report gives it two ends"
+			case "cached":
+				p.Why = "go test replayed the test's package from its test cache: the test did not run at this commit"
 			}
 		}
 		planned = append(planned, p)

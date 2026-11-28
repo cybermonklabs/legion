@@ -102,7 +102,9 @@ mkdir -p "$(dirname "$3")" && exec cp "$built" "$3"
 // github-actions identity; under GITHUB_ACTIONS=true it first prints ::add-mask:: with the
 // placeholder on standard output; and it executes the command with the placeholder in
 // DISPATCH_RESULTS_TOKEN and in the airlock's proxy URL, and with no AGENT_SECRETS_* variable but
-// the broker's URL and the helper's (sessionIdentityVars of cmd/cipher). Any other command exits 2.
+// the broker's URL and the helper's (sessionIdentityVars of cmd/cipher). Like cmd/cipher's
+// buildChildEnv, it passes GitHub's ACTIONS_ID_TOKEN_REQUEST_* on to the command, so the reporter
+// is the one that keeps them from the dispatch command. Any other command exits 2.
 const fakeAgentSecrets = `#!/bin/sh
 printf '%s\0' "$@" > "$CI_REPORT_STUB_DIR/agent-secrets.args"
 printf '%s' "${AGENT_SECRETS_MACHINE_IDENTITY-unset}" > "$CI_REPORT_STUB_DIR/agent-secrets.identity"
@@ -149,8 +151,8 @@ type actionRun struct {
 	// log is what the step report printed on standard output, the job's log; jsonl the file
 	// $RUNNER_TEMP/dispatch-results.jsonl it wrote; stderr what both steps printed there.
 	log, jsonl, stderr string
-	// runnerTemp is the run's $RUNNER_TEMP.
-	runnerTemp string
+	// runnerTemp is the run's $RUNNER_TEMP, and commit the checkout's commit.
+	runnerTemp, commit string
 	// goCalls are go's arguments, a call each; grantArgs and grantIdentity agent-secrets'
 	// arguments and its AGENT_SECRETS_MACHINE_IDENTITY, nil and "" when it did not run.
 	goCalls       [][]string
@@ -213,10 +215,7 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 	}
 
 	binary := cmdtest.Build(t, "ci-report")
-	reportPath, err := filepath.Abs(filepath.Join("testdata", "report.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	p := newProbe(t)
 	fakes := t.TempDir()
 	for name, content := range map[string]string{"go": fakeGo, "bun": fakeBun, "agent-secrets": fakeAgentSecrets} {
 		writeFile(t, filepath.Join(fakes, name), content)
@@ -226,26 +225,27 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 	}
 	// The job's environment: this process's, less every variable of Dispatch, of agent-secrets and
 	// of GitHub's OIDC token, which this machine's own settings could give, and with what a
-	// calling job sets: GitHub's GITHUB_ACTIONS and the three settings the action's description
-	// asks the calling step for. go and bun are the fakes; agent-secrets is reached by the path
-	// the step build wrote.
+	// calling job sets: GitHub's GITHUB_ACTIONS, the three settings the action's description asks
+	// the calling step for, and the OIDC token request of a job with `id-token: write`
+	// (oidcEnv). go and bun are the fakes; agent-secrets is reached by the path the step build
+	// wrote.
 	jobEnv := slices.DeleteFunc(os.Environ(), func(variable string) bool {
 		name, _, _ := strings.Cut(variable, "=")
 		return strings.HasPrefix(name, "DISPATCH_") || strings.HasPrefix(name, "AGENT_SECRETS_") ||
 			strings.HasPrefix(name, "ACTIONS_ID_TOKEN_") || name == "GITHUB_ACTIONS"
 	})
-	jobEnv = append(jobEnv, "GITHUB_ACTIONS=true", "DISPATCH_URL=https://dispatch.example.test",
+	jobEnv = slices.Concat(jobEnv, oidcEnv, []string{"GITHUB_ACTIONS=true", "DISPATCH_URL=https://dispatch.example.test",
 		"AGENT_SECRETS_URL=https://broker.example.test", "AGENT_SECRETS_MACHINE_AUDIENCE=https://broker.example.test",
-		"PATH="+fakes+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"CI_REPORT_BINARY="+binary, "CI_REPORT_AGENT_SECRETS="+filepath.Join(fakes, "agent-secrets"))
+		"PATH=" + fakes + string(os.PathListSeparator) + os.Getenv("PATH"),
+		"CI_REPORT_BINARY=" + binary, "CI_REPORT_AGENT_SECRETS=" + filepath.Join(fakes, "agent-secrets")})
 
 	// runAction runs both steps in a new checkout with the inputs given, github.job being
 	// go-checks, and the stub in mode.
 	runAction := func(t *testing.T, mode string, inputs map[string]string) actionRun {
 		t.Helper()
-		dir, _ := checkout(t, filepath.Join("testdata", "spec"))
+		dir, commit := checkout(t, filepath.Join("testdata", "spec"))
 		stub := newStub(t)
-		run := actionRun{runnerTemp: t.TempDir()}
+		run := actionRun{runnerTemp: t.TempDir(), commit: commit}
 		env := append(slices.Clone(jobEnv), "RUNNER_TEMP="+run.runnerTemp, "CI_REPORT_STUB="+stub.path)
 		env = append(env, stub.env(mode)...)
 		var stderr strings.Builder
@@ -307,24 +307,38 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 		return filepath.Join(run.runnerTemp, "dispatch-results", "bin", name)
 	}
 	wantGrant := func(run actionRun, job string) []string {
-		return []string{"result-grant", "--", bin(run, "ci-report"), "--dir", ".dispatch/spec", "--job", job, "--report", reportPath,
+		return []string{"result-grant", "--", bin(run, "ci-report"), "--dir", ".dispatch/spec", "--job", job, "--report", p.report,
 			"--project", "ACME", "--dispatch-cli", "bun packages/envoy-client/bin/dispatch.ts"}
 	}
-	// heldThePlaceholder fails the test unless each call held the result grant's placeholder, no
-	// identity of the run's own and no other Dispatch credential.
+	// heldThePlaceholder fails the test unless each call held the result grant's placeholder, which
+	// the reporter hands on from its own environment, no other Dispatch credential, and no
+	// variable of GitHub's OIDC token request, which the fake agent-secrets passes on as cmd/cipher
+	// does and the reporter keeps from the command. Whether the command got the run's
+	// AGENT_SECRETS_MACHINE_IDENTITY is cmd/cipher's to show: the fake takes it away itself, so a
+	// check of it here would read the fake.
 	heldThePlaceholder := func(t *testing.T, calls []call) {
 		t.Helper()
 		for _, c := range calls {
-			if c.token != placeholder || c.identity != "unset" || len(c.bearers) != 0 {
-				t.Errorf("a call of %q held DISPATCH_RESULTS_TOKEN %q, AGENT_SECRETS_MACHINE_IDENTITY %q and the variables %q; want the placeholder %q, no identity and none",
-					c.args, c.token, c.identity, c.bearers, placeholder)
+			if c.token != placeholder || len(c.bearers) != 0 || len(c.oidc) != 0 {
+				t.Errorf("a call of %q held DISPATCH_RESULTS_TOKEN %q, the variables %q and %q; want the placeholder %q and none",
+					c.args, c.token, c.bearers, c.oidc, placeholder)
 			}
 		}
+	}
+	// fromTheFile fails the test unless the step wrote exactly want, the reporter's lines, to its
+	// file, and the stub got the probe's calls, at the run's commit.
+	fromTheFile := func(t *testing.T, run actionRun, want []line) {
+		t.Helper()
+		expectLines(t, run.jsonl, want)
+		if !slices.EqualFunc(run.calls, p.wantCalls(t, run.commit), equalCall) {
+			t.Errorf("the stub got %d calls %+v\nwant the probe's %d", len(run.calls), run.calls, len(p.wantCalls(t, run.commit)))
+		}
+		heldThePlaceholder(t, run.calls)
 	}
 
 	t.Run("the step builds both commands, reports the job's checks under the result grant and keeps each line", func(t *testing.T) {
 		t.Parallel()
-		run := runAction(t, "store", map[string]string{"report": reportPath, "project": "ACME"})
+		run := runAction(t, "store", map[string]string{"report": p.report, "project": "ACME"})
 		wantGo := [][]string{
 			{"build", "-o", bin(run, "agent-secrets"), "./packages/envoy/cmd/cipher"},
 			{"build", "-o", bin(run, "ci-report"), "./packages/envoy/cmd/ci-report"},
@@ -338,12 +352,9 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 		if want := wantGrant(run, job); !slices.Equal(run.grantArgs, want) || run.grantIdentity != "github-actions" {
 			t.Errorf("agent-secrets got %q with AGENT_SECRETS_MACHINE_IDENTITY %q, want %q with github-actions", run.grantArgs, run.grantIdentity, want)
 		}
-		if len(run.calls) != 3 {
-			t.Errorf("the stub got %d calls, want one for each of the 3 tests of go-checks that ran", len(run.calls))
-		}
-		heldThePlaceholder(t, run.calls)
-		if got := parseLines(t, run.jsonl); len(got) != 8 || strings.Contains(run.jsonl, placeholder) {
-			t.Errorf("dispatch-results.jsonl holds %d lines, want the 8 lines of go-checks and no placeholder:\n%s", len(got), run.jsonl)
+		fromTheFile(t, run, p.stored())
+		if strings.Contains(run.jsonl, placeholder) {
+			t.Errorf("dispatch-results.jsonl holds the placeholder:\n%s", run.jsonl)
 		}
 		if want := "::add-mask::" + placeholder + "\n" + run.jsonl; run.log != want {
 			t.Errorf("the log is\n%s\nwant agent-secrets' mask line, then the lines of the file:\n%s", run.log, want)
@@ -352,53 +363,38 @@ func TestTheActionRunsTheReporter(t *testing.T) {
 
 	t.Run("the job input names the job whose checks the step reports", func(t *testing.T) {
 		t.Parallel()
-		run := runAction(t, "store", map[string]string{"report": reportPath, "project": "ACME", "job": "web-checks"})
+		run := runAction(t, "store", map[string]string{"report": p.report, "project": "ACME", "job": "web-checks"})
 		if want := wantGrant(run, "web-checks"); !slices.Equal(run.grantArgs, want) {
 			t.Errorf("agent-secrets got %q, want %q", run.grantArgs, want)
 		}
-		if got := parseLines(t, run.jsonl); len(got) != 1 || got[0].Check != "a-read-of-one-claim-ends-in-time" || len(run.calls) != 1 {
-			t.Errorf("the step wrote %+v with %d calls, want the one check of web-checks and one call", got, len(run.calls))
+		const check = "a-read-of-one-claim-ends-in-time"
+		expectLines(t, run.jsonl, []line{{Check: check, Test: "example.com/acme/probe/slow TestTheQuickReadEnds", Outcome: "pass", Exit: new(0), ResultID: "row-" + check}})
+		wantCalls := []call{{
+			args:  []string{"result", "--project", "ACME", "--check", check, "--verdict", "pass", "--commit", run.commit, "--observed-file", "-"},
+			stdin: p.output(t, "slow", "TestTheQuickReadEnds"),
+		}}
+		if !slices.EqualFunc(run.calls, wantCalls, equalCall) {
+			t.Errorf("the stub got %+v\nwant %+v", run.calls, wantCalls)
 		}
 		heldThePlaceholder(t, run.calls)
 	})
 
 	t.Run("a write the airlock refused fails the step and keeps the lines", func(t *testing.T) {
 		t.Parallel()
-		run := runAction(t, "refuse", map[string]string{"report": reportPath, "project": "ACME"})
+		run := runAction(t, "refuse", map[string]string{"report": p.report, "project": "ACME"})
 		if run.reportCode != 1 {
 			t.Errorf("step report exits %d, want 1", run.reportCode)
 		}
-		heldThePlaceholder(t, run.calls)
-		failed := 0
-		for _, l := range parseLines(t, run.jsonl) {
-			if l.Exit != nil && *l.Exit == 1 && l.Why == airlockRefusal {
-				failed++
-			}
-		}
-		if failed != 3 {
-			t.Errorf("dispatch-results.jsonl holds %d lines with the airlock's refusal, want 3:\n%s", failed, run.jsonl)
-		}
+		fromTheFile(t, run, p.answered(1, airlockRefusal))
 	})
 
 	t.Run("a write after the grant's end fails the step, and its line names the end", func(t *testing.T) {
 		t.Parallel()
-		run := runAction(t, "ends-after-first", map[string]string{"report": reportPath, "project": "ACME"})
+		run := runAction(t, "ends-after-first", map[string]string{"report": p.report, "project": "ACME"})
 		if run.reportCode != 1 {
 			t.Errorf("step report exits %d, want 1", run.reportCode)
 		}
-		heldThePlaceholder(t, run.calls)
-		stored, ended := 0, 0
-		for _, l := range parseLines(t, run.jsonl) {
-			switch {
-			case l.Exit != nil && *l.Exit == 0 && l.ResultID == "row-"+l.Check:
-				stored++
-			case l.Exit != nil && *l.Exit == 1 && strings.HasPrefix(l.Why, "GRANT_NOT_LIVE: ") && strings.HasSuffix(l.Why, tunnelRefused407Line):
-				ended++
-			}
-		}
-		if stored != 1 || ended != 2 {
-			t.Errorf("dispatch-results.jsonl holds %d stored lines and %d that name the grant's end, want 1 and 2:\n%s", stored, ended, run.jsonl)
-		}
+		fromTheFile(t, run, p.endsAfterFirst())
 	})
 }
 

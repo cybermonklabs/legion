@@ -1,6 +1,7 @@
 package main
 
 import (
+	"maps"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -8,18 +9,15 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 )
 
-// verdictOf is the --verdict of the stub's call for check, or "" when no call names it.
-func verdictOf(calls []call, check string) string {
+// verdicts is each check the stub's calls name, with the --verdict of each call that names it, in
+// call order: a check called twice holds two.
+func verdicts(calls []call) map[string][]string {
+	byCheck := map[string][]string{}
 	for _, c := range calls {
-		at := slices.Index(c.args, "--check")
-		if at >= 0 && at+1 < len(c.args) && c.args[at+1] == check {
-			v := slices.Index(c.args, "--verdict")
-			if v >= 0 && v+1 < len(c.args) {
-				return c.args[v+1]
-			}
-		}
+		check, verdict := c.args[slices.Index(c.args, "--check")+1], c.args[slices.Index(c.args, "--verdict")+1]
+		byCheck[check] = append(byCheck[check], verdict)
 	}
-	return ""
+	return byCheck
 }
 
 // A test's own pass or fail decides its result, even when its output quotes the words that go test
@@ -31,6 +29,7 @@ func verdictOf(calls []call, check string) string {
 // in ./slow/, run with -timeout 3s, TestSlow is killed at its time limit.
 // testdata/timeout-words/make-report.sh makes it again from the packages of
 // testdata/timeout-words/cases, and refuses a report that names a path of the machine that ran it.
+// Each check gets one call, and no other check gets one.
 func TestATestThatQuotesTheTimeoutWordsKeepsItsOwnOutcome(t *testing.T) {
 	binary := cmdtest.Build(t, "ci-report")
 	dir, commit := checkout(t, filepath.Join("testdata", "timeout-words-spec"))
@@ -41,15 +40,11 @@ func TestATestThatQuotesTheTimeoutWordsKeepsItsOwnOutcome(t *testing.T) {
 	s := newStub(t)
 	got := runReporter(t, binary, dir, s.env("store"),
 		"--dir", ".dispatch/spec", "--job", "go-checks", "--report", report, "--project", "ACME", "--dispatch-cli", s.path)
-	calls := s.calls(t)
-	verdicts := map[string]string{}
-	for _, check := range []string{"passes-saying-timeout", "fails-saying-timeout", "slow-test"} {
-		verdicts[check] = verdictOf(calls, check)
+	if got.code != 0 {
+		t.Errorf("exit %d, want 0; stderr:\n%s", got.code, got.stderr)
 	}
-	want := map[string]string{"passes-saying-timeout": "pass", "fails-saying-timeout": "fail", "slow-test": "could_not_run"}
-	for check, verdict := range want {
-		if verdicts[check] != verdict {
-			t.Errorf("check %s at %s: verdict %q, want %q (exit %d)\nstdout:\n%s", check, commit, verdicts[check], verdict, got.code, got.stdout)
-		}
+	want := map[string][]string{"passes-saying-timeout": {"pass"}, "fails-saying-timeout": {"fail"}, "slow-test": {"could_not_run"}}
+	if called := verdicts(s.calls(t)); !maps.EqualFunc(called, want, slices.Equal) {
+		t.Errorf("at %s the calls give the checks the verdicts %v, want one call each: %v\nstdout:\n%s", commit, called, want, got.stdout)
 	}
 }

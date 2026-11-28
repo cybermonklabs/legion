@@ -25,8 +25,9 @@
 // would read as a flag. The reporter cuts nothing: the dispatch command is the one cut, which
 // keeps the start and the end of a text longer than a result keeps, with a note between them, and
 // sends a NUL as U+FFFD. <dispatch-cli> is split at white space, with no quoting, and is
-// "dispatch" when the flag is left out. A skip, a test the report does not hold and a test that
-// ran twice get no call. Each run writes its results again: a second run of the step at one
+// "dispatch" when the flag is left out. A skip, a test the report does not hold, a test of a
+// package that go test replayed from its test cache and a test that ran twice get no call. Each
+// run writes its results again: a second run of the step at one
 // commit stores a second result of each check, and Dispatch keeps each and decides the state from
 // all of them. At one commit, a pass and a failure of one check make its state unknown, and a
 // later pass does not end the report of the failure (R7).
@@ -50,18 +51,26 @@
 // for the placeholder of a result grant and gives it to the reporter's environment, and so to
 // each dispatch command it runs, in DISPATCH_RESULTS_TOKEN, with the settings of the broker's
 // airlock proxy; the airlock puts the run's results token in its place. The reporter reads no
-// broker setting and makes no exchange: it hands its environment to the command as it is. The
+// broker setting and makes no exchange: it hands its environment to the command as it is, less
+// ACTIONS_ID_TOKEN_REQUEST_URL and ACTIONS_ID_TOKEN_REQUEST_TOKEN (oidcRequest), which
+// result-grant passes on and the command does not read. The
 // grant lasts at most 15 minutes from the step's start, and the airlock refuses each write after
 // its end with GRANT_NOT_LIVE, 407 at the CONNECT, which the command prints as
 // "AIRLOCK_TUNNEL_REFUSED: ... (407 ...)", with the tunnel's status and not the airlock's code; so
 // does a broker of another results entry than the one that made the grant. The why of such a
 // call, and of a write whose outcome GRANT_NOT_LIVE left unknown, starts with "GRANT_NOT_LIVE: "
-// and names the grant's end (grantRefused, grantEnded, grantEndedWhileOut). The command itself
+// and names the grant's end (grantRefused, grantEnded, grantEndedWhileOut). A write whose outcome
+// a refused tunnel left unknown, {"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"}, carries no
+// status, so its why names the tunnel's refusal and both statuses it can be
+// (tunnelRefusedWhileOut), and does not start with GRANT_NOT_LIVE. The command itself
 // asks again within its one bound of 60 s for an airlock that answers 5xx and for Dispatch's
-// check of the run's token, so the step adds no retry of its own.
+// check of the run's token, so the step adds no retry of its own. A call still running after
+// callBound, a little over that bound, is ended, and its why says so: a command that hangs cannot
+// hold the step until the job's time limit, with no line for its check or any later one.
 //
-// The line holds no raw line break, as encoding/json escapes each control character,
-// and the "[" of each "##[" in it is written as \u005b, which a JSON reader reads back as "[", so
+// The line holds no raw line break, as encoding/json escapes each control character of C0, and
+// writeLine escapes each other control character and each format character as runnerlog.Printable
+// does; the "[" of each "##[" in it is written as \u005b, which a JSON reader reads back as "[", so
 // the line starts no workflow command of a runner's log. Every other line goes to standard error
 // through runnerlog.Say with the prefix
 // "ci-report: ", ending with "<n> checks of <dir> at <sha> name job <job>; <n> results written,
@@ -77,6 +86,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -88,6 +98,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf16"
 
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
@@ -178,11 +191,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	planned := planReports(tree, *job, ran)
+	calls := caller{cli: cli, project: *project, commit: commit, env: callEnv(os.Environ()), bound: callBound, waitDelay: callWaitDelay}
 	written, failed := 0, 0
 	for _, p := range planned {
 		l := checkLine{Check: p.Check, Test: p.Test, Outcome: p.Outcome, Why: p.Why}
 		if recorded(p.Outcome) {
-			code, id, why, stored := record(cli, *project, commit, p)
+			code, id, why, stored := calls.record(p)
 			l.Exit, l.ResultID = &code, id
 			if why != "" {
 				l.Why = why
@@ -305,7 +319,44 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 	return ran, nil
 }
 
-// record runs the dispatch command cli once for the check of p, and answers its exit status, the
+// callBound is how long one call of the dispatch command may run: a little over the command's own
+// one bound of 60 s, within which it ends every call it makes, answered or not. A call still
+// running then is ended, so a command that hangs holds the step no longer than this, and every
+// later check still gets its call and its line.
+const callBound = 75 * time.Second
+
+// callWaitDelay is how long the reporter waits for the command's output to close once the command
+// has exited or was ended at callBound: a process it started can hold the output open
+// (exec.Cmd.WaitDelay).
+const callWaitDelay = 5 * time.Second
+
+// oidcRequest names the variables of GitHub's OIDC token request, which `agent-secrets
+// result-grant` passes on to the reporter (buildChildEnv in packages/envoy/cmd/cipher). The
+// dispatch command writes with DISPATCH_URL and DISPATCH_RESULTS_TOKEN and reads neither of these
+// (packages/envoy-client/src/dispatch-config.ts), so the reporter gives the command its
+// environment without them, and the command cannot ask GitHub for the job's token.
+var oidcRequest = []string{"ACTIONS_ID_TOKEN_REQUEST_URL", "ACTIONS_ID_TOKEN_REQUEST_TOKEN"}
+
+// callEnv is environ, the reporter's environment, without the variables oidcRequest names.
+func callEnv(environ []string) []string {
+	return slices.DeleteFunc(slices.Clone(environ), func(variable string) bool {
+		name, _, _ := strings.Cut(variable, "=")
+		return slices.Contains(oidcRequest, name)
+	})
+}
+
+// caller runs the dispatch command cli once for each check, for project at commit, with env as its
+// environment, ending a call that runs past bound and waiting at most waitDelay for its output to
+// close after that or after the command exits.
+type caller struct {
+	cli             []string
+	project, commit string
+	env             []string
+	bound           time.Duration
+	waitDelay       time.Duration
+}
+
+// record runs the dispatch command once for the check of p, and answers its exit status, the
 // id of the stored result, what its line says of the call, and whether the call stored the
 // result. A refused call stored nothing, and its words are what it wrote on both streams: the
 // command prints a refusal of Dispatch or of the airlock proxy on standard output (`refuse` in
@@ -313,19 +364,34 @@ func loadReport(path string) ([]specgraph.TestOutcome, error) {
 // A write whose outcome is unknown, {"write_outcome_unknown":"<code>"}, is a failed call that
 // names the code, whatever the exit status: it may be stored, and a second run of the step is
 // safe, since Dispatch keeps each result. A call whose result grant was not live says so first
-// (grantRefused, grantEnded, grantEndedWhileOut). Of a call that stored its result it reads only
-// the stored row's id, and it never prints the rest. A write that landed with its answer lost,
+// (grantRefused, grantEnded, grantEndedWhileOut), and a write whose outcome a refused tunnel left
+// unknown names both statuses of that refusal (tunnelRefusedWhileOut). A call that runs past
+// c.bound is ended with exit -1, and it is a failed call whose outcome is unknown, since the write
+// may have gone out. Of a call that stored its result it reads only the stored row's id, and it
+// never prints the rest. A write that landed with its answer lost,
 // {"landed_without_answer":"<code>"} with exit 0, stored the result, and its id is unknown.
-func record(cli []string, project, commit string, p Planned) (code int, id, why string, stored bool) {
-	args := append(slices.Clone(cli[1:]), "result", "--project", project, "--check", p.Check, "--verdict", p.Outcome,
-		"--commit", commit, "--observed-file", "-")
-	cmd := exec.Command(cli[0], args...)
+func (c caller) record(p Planned) (code int, id, why string, stored bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), c.bound)
+	defer cancel()
+	args := append(slices.Clone(c.cli[1:]), "result", "--project", c.project, "--check", p.Check, "--verdict", p.Outcome,
+		"--commit", c.commit, "--observed-file", "-")
+	cmd := exec.CommandContext(ctx, c.cli[0], args...)
+	cmd.Env, cmd.WaitDelay = c.env, c.waitDelay
 	cmd.Stdin = strings.NewReader(p.Observed)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()
+	// words is what the command printed on both streams, its warnings first.
+	words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
+	if err != nil && ctx.Err() != nil {
+		why = fmt.Sprintf("the dispatch command did not end within %s, so the step ended it: the write may have gone out, and no answer said whether Dispatch stored it; a second run of the step is safe, since Dispatch keeps each result", c.bound)
+		if words != "" {
+			why += ". The dispatch command printed: " + words
+		}
+		return -1, "", why, false
+	}
 	var exitError *exec.ExitError
-	if err != nil && !errors.As(err, &exitError) {
+	if err != nil && !errors.As(err, &exitError) && !errors.Is(err, exec.ErrWaitDelay) {
 		return -1, "", err.Error(), false
 	}
 	code = cmd.ProcessState.ExitCode()
@@ -341,12 +407,14 @@ func record(cli []string, project, commit string, p Planned) (code int, id, why 
 	case decoded && line.Unknown != "":
 		// The write went out and no answer of Dispatch's said whether it stored the result (a 2xx
 		// that names no key back among them): it may be stored, and it is never read as stored.
-		if line.Unknown == grantNotLive {
+		switch line.Unknown {
+		case grantNotLive:
 			return code, "", grantEndedWhileOut, false
+		case tunnelRefused:
+			return code, "", tunnelRefusedWhileOut, false
 		}
 		return code, "", fmt.Sprintf("the write went out and no answer said whether Dispatch stored it (%s): a second run of the step is safe, since Dispatch keeps each result", line.Unknown), false
 	case code != 0:
-		words := strings.TrimSpace(strings.TrimSpace(stderr.String()) + "\n" + strings.TrimSpace(stdout.String()))
 		if words == "" {
 			words = fmt.Sprintf("the dispatch command ended with %s and printed nothing", cmd.ProcessState)
 		}
@@ -376,13 +444,27 @@ const grantEnded = grantNotLive + ": the airlock refused the write because the s
 // it for Dispatch.
 const grantEndedWhileOut = grantNotLive + ": the step's result grant ended while the write was out, at most 15 minutes after the step started, so no answer said whether Dispatch stored it: a second run of the step is safe, since Dispatch keeps each result"
 
+// tunnelRefused is the dispatch command's code for a tunnel the airlock proxy refused at the
+// CONNECT (AirlockTunnelRefusedError in packages/envoy-client/src/dispatch-http.ts), whatever the
+// tunnel's status.
+const tunnelRefused = "AIRLOCK_TUNNEL_REFUSED"
+
+// tunnelRefusedWhileOut is the why of a write whose outcome a refused tunnel left unknown,
+// {"write_outcome_unknown":"AIRLOCK_TUNNEL_REFUSED"}: an attempt went out and its tunnel broke,
+// and the airlock refused the CONNECT of a later one. The command names the last failure by its
+// code alone (outcomeCode in packages/envoy-client/src/dispatch-commands/job-result.ts), so the
+// line holds no status: a 407 there is grantNotLive, which ends the write at once, and a 503 an
+// airlock that could not read the grant, which the command asks again until its bound ends. So
+// the why names both, and does not say that the grant ended.
+const tunnelRefusedWhileOut = tunnelRefused + ": the airlock refused the tunnel of a later attempt of the write after an earlier attempt went out, so no answer said whether Dispatch stored it: a second run of the step is safe, since Dispatch keeps each result. The dispatch command prints no status for the refusal: a 407 there is the step's result grant not live (GRANT_NOT_LIVE), ended at most 15 minutes after the step started, and a 503 an airlock that could not read the grant"
+
 // tunnelRefused407 is the line the dispatch command prints when the airlock proxy refused its
 // tunnel with 407, its answer at the CONNECT to a placeholder whose result grant is not live
 // (AirlockTunnelRefusedError in packages/envoy-client/src/dispatch-http.ts). The line holds the
 // tunnel's status and not the airlock's code, and for a placeholder the airlock reads, 407 at the
 // CONNECT is grantNotLive alone: the airlock's other 407s are of a proxy request with no
 // placeholder, which agent-secrets result-grant always gives, and of a secret's grant.
-var tunnelRefused407 = regexp.MustCompile(`^AIRLOCK_TUNNEL_REFUSED: [^\n]*\(407[ )]`)
+var tunnelRefused407 = regexp.MustCompile(`^` + tunnelRefused + `: [^\n]*\(407[ )]`)
 
 // grantRefused reports whether stdout, what a failed call printed, is the airlock's refusal of a
 // placeholder whose result grant is not live, before the write left it: the 407 at the CONNECT
@@ -392,9 +474,13 @@ func grantRefused(stdout string) bool {
 	return tunnelRefused407.MatchString(stdout) || strings.HasPrefix(stdout, grantNotLive+": ")
 }
 
-// writeLine writes l to w as one JSON line. encoding/json writes each control character of a
+// writeLine writes l to w as one JSON line. encoding/json writes each control character of C0 in a
 // value as an escape, so no line break reaches the log, and the line starts with "{", so it starts
 // no workflow command; the "[" of each "##[", which can only be in a value, is written as \u005b.
+// encoding/json writes DEL, the C1 controls and the format characters (Cf: the bidi controls, the
+// zero-width joiner, the byte order mark) as they are, so writeLine writes each of those as a \u
+// escape too, as runnerlog.Printable writes them in every other line of the command: a reader of
+// the log sees them, and a JSON reader reads the line back the same.
 func writeLine(w io.Writer, l checkLine) error {
 	var encoded bytes.Buffer
 	encoder := json.NewEncoder(&encoded)
@@ -402,6 +488,27 @@ func writeLine(w io.Writer, l checkLine) error {
 	if err := encoder.Encode(l); err != nil {
 		return err
 	}
-	_, err := io.WriteString(w, strings.ReplaceAll(encoded.String(), "##[", `##\u005b`))
+	text := encoded.String()
+	if strings.ContainsFunc(text, unseen) {
+		var b strings.Builder
+		for _, r := range text {
+			if !unseen(r) {
+				b.WriteRune(r)
+				continue
+			}
+			for _, unit := range utf16.Encode([]rune{r}) {
+				fmt.Fprintf(&b, `\u%04x`, unit)
+			}
+		}
+		text = b.String()
+	}
+	_, err := io.WriteString(w, strings.ReplaceAll(text, "##[", `##\u005b`))
 	return err
+}
+
+// unseen reports whether writeLine writes r as a \u escape: a control character (Cc) or a format
+// character (Cf), but the line feed that ends the line. encoding/json already writes the rest of
+// C0 as escapes, and writes no invalid UTF-8, so in its line these runes are DEL, C1 and Cf.
+func unseen(r rune) bool {
+	return r != '\n' && unicode.In(r, unicode.Cc, unicode.Cf)
 }

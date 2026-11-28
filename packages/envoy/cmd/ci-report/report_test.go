@@ -10,16 +10,19 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/specgraph"
 )
 
-// The reports in testdata are what go test -json wrote, not text written by hand.
+// The reports in testdata are what go test -json wrote, not text written by hand, and
+// testdata/probe/make-reports.sh makes report.jsonl, killed.jsonl and cached.jsonl again from the
+// packages of testdata/probe/cases.
 // testdata/report.jsonl is `go test -json -count=1 -trimpath -timeout 5s ./...` over a module,
 // example.com/acme/probe, of four packages: claims, where one test passes, one fails and one
 // skips; slow, where one test passes and one sleeps for 30 s, so go test stops it at the 5 s time
 // limit; broken, whose test file does not build; and twice, which defines one test name in
 // package twice and in package twice_test. testdata/killed.jsonl is go test of the sleeping test
-// alone, with a time limit of 10 minutes, killed with SIGKILL after 4 s, as the end of a job
-// kills it: the report stops after the test's run event. testdata/spec holds one check for each
-// of those tests, one check of a test the report does not hold, one check of runner bun, and one
-// check of another job.
+// alone, with a time limit of 10 minutes, killed with SIGKILL once it logged its first line, as
+// the end of a job kills it: the report stops after that line. testdata/cached.jsonl is the second
+// of two runs of slow's passing test, which go test replayed from its test cache. testdata/spec
+// holds one check for each of those tests, one check of a test the report does not hold, one
+// check of runner bun, and one check of another job.
 
 // job is the job that the checks of testdata/spec name, all but a-read-of-one-claim-ends-in-time.
 const job = "go-checks"
@@ -143,6 +146,26 @@ func TestATestTheJobsEndKilledCouldNotRun(t *testing.T) {
 	}
 	if !recorded(want[0].Outcome) {
 		t.Errorf("a check whose test could not run is not recorded, want a result")
+	}
+}
+
+// TestATestOfAPackageReplayedFromTheCacheIsNotRecorded plans the check of web-checks over the
+// report whose package go test replayed from its test cache: the test did not run at the commit,
+// so the outcome is cached, the why says so, and the check gets no result.
+func TestATestOfAPackageReplayedFromTheCacheIsNotRecorded(t *testing.T) {
+	t.Parallel()
+	ran := readReport(t, "cached.jsonl")
+	got := planReports(specTree(t), "web-checks", ran)
+	want := []Planned{{
+		Check: "a-read-of-one-claim-ends-in-time", Test: "example.com/acme/probe/slow TestTheQuickReadEnds",
+		Outcome: "cached", Observed: "=== RUN   TestTheQuickReadEnds\n    slow_test.go:9: the read ended in 1 ms\n--- PASS: TestTheQuickReadEnds (0.00s)\n",
+		Why: "go test replayed the test's package from its test cache: the test did not run at this commit",
+	}}
+	if !slices.Equal(got, want) {
+		t.Errorf("planReports gives %+v\nwant %+v", got, want)
+	}
+	if recorded(want[0].Outcome) {
+		t.Errorf("a check whose test go test replayed from its cache is recorded, want no result")
 	}
 }
 

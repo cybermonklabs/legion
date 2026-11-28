@@ -1,0 +1,9 @@
+{"Time":"2026-11-28T02:33:43.741596574Z","Action":"start","Package":"example.com/acme/probe/slow"}
+{"Time":"2026-11-28T02:33:43.741748387Z","Action":"run","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds"}
+{"Time":"2026-11-28T02:33:43.741751512Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"=== RUN   TestTheQuickReadEnds\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:43.741761665Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"    slow_test.go:9: the read ended in 1 ms\n"}
+{"Time":"2026-11-28T02:33:43.741770799Z","Action":"output","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Output":"--- PASS: TestTheQuickReadEnds (0.00s)\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:43.741772647Z","Action":"pass","Package":"example.com/acme/probe/slow","Test":"TestTheQuickReadEnds","Elapsed":0}
+{"Time":"2026-11-28T02:33:43.741776914Z","Action":"output","Package":"example.com/acme/probe/slow","Output":"PASS\n","OutputType":"frame"}
+{"Time":"2026-11-28T02:33:43.741778597Z","Action":"output","Package":"example.com/acme/probe/slow","Output":"ok  \texample.com/acme/probe/slow\t(cached)\n"}
+{"Time":"2026-11-28T02:33:43.741782145Z","Action":"pass","Package":"example.com/acme/probe/slow","Elapsed":0}
