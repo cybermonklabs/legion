@@ -36,10 +36,10 @@ const (
 	RelayNotParked
 )
 
-// WaitsForSlot says whether root is a root a person handed to Legion that waits in the line for
-// its first start, with no architect running for it yet: in Legion's work, an issue whose run
-// starts as a root's on Dispatch's chain as the copy shows it now (Chains.StartsAsRoot), the one
-// queued-root rule (QueuedRoot) read with its own design gate, and holding no slot of its own.
+// WaitsForSlot says whether root is a run handed to Legion that waits in the line for its first
+// start, with no architect running for it yet: in Legion's work, an issue whose run starts as a
+// root's on Dispatch's chain as the copy shows it now (Chains.StartsAsRoot), the one queued-root
+// rule (QueuedRoot) read with that chain and its own design gate, and holding no slot of its own.
 // steps are the design-gate steps the deployment gates.
 //
 // It is that rule and no other reading of it. "Status todo and no slot" used to say the same
@@ -52,7 +52,8 @@ const (
 // opened is a queued root by its record and holds the slot its architect is writing the design
 // in, and that architect hears a decision itself.
 //
-// The chain is root's own (ReadChainsOf): StartsAsRoot is a question of root alone.
+// The chain is root's own (ReadChainsOf): StartsAsRoot and its handover (HandedToLegion) are
+// questions of root's chain alone.
 func WaitsForSlot(ctx context.Context, tx pgx.Tx, store Store, root Issue, steps []DesignStep) (bool, error) {
 	if !InLegionsWork(root) {
 		return false, nil
@@ -74,7 +75,7 @@ func WaitsForSlotOn(ctx context.Context, tx pgx.Tx, store Store, chains *Chains,
 	if err != nil {
 		return false, err
 	}
-	if !QueuedRoot(root, TreeGate{Steps: steps, Rows: rows}) {
+	if !QueuedRoot(chains, root, TreeGate{Steps: steps, Rows: rows}) {
 		return false, nil
 	}
 	slots, err := store.Slots(ctx, tx)

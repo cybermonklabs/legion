@@ -42,21 +42,24 @@ type lineJudgement struct {
 }
 
 // readPass is what every pass reads its records through: the pass's shared reads (readShared),
-// then the mark of every root they find as holding its own gate, then the transaction's count of
-// the rows a judgement reads (record.Store.JudgedWrites), taken after the mark, so the pass's end
-// can tell whether that read still stands (finalJudgement) without the pass's own root mark
-// (MarkHoldsGate) making the judgement look stale.
+// then the mark of every issue in Legion's work they find a root as holding its own gate, then the
+// transaction's count of the rows a judgement reads (record.Store.JudgedWrites), taken after the
+// mark, so the pass's end can tell whether that read still stands (finalJudgement) without the
+// pass's own root mark (MarkHoldsGate) making the judgement look stale.
 func (a *Admission) readPass(ctx context.Context, tx pgx.Tx) (passRead, error) {
 	issues, slots, facts, err := a.readShared(ctx, tx)
 	if err != nil {
 		return passRead{}, err
 	}
-	// Every recorded issue the pass finds a root holds its own gate from now on, and keeps it once
-	// it gets a parent in Legion's work (R15 of dispatch://INFRA-3320, record.Chains.HoldsOwnGate):
-	// one statement marks every root the read finds unmarked, and none is sent when there is none.
+	// Every recorded issue in Legion's work that the pass finds a root holds its own gate from now
+	// on, and keeps it once it gets a parent in Legion's work (R15 of dispatch://INFRA-3320,
+	// record.Chains.HoldsOwnGate). An issue out of Legion's work is marked nothing, though nothing
+	// above it may be in work either: the mark outlives the stop, so a member stopped with its root
+	// would come back beneath that root holding a gate it never held as a root. One statement marks
+	// every root the read finds unmarked, and none is sent when there is none.
 	var roots []string
 	for _, issue := range issues {
-		if !issue.HoldsGate && facts.Chains.IsRoot(issue.Key) {
+		if !issue.HoldsGate && record.InLegionsWork(issue) && facts.Chains.IsRoot(issue.Key) {
 			roots = append(roots, issue.Key)
 		}
 	}

@@ -389,9 +389,9 @@ func returnToWorkTask(issue record.Issue, at Standing) string {
 }
 
 // queuedRoot says whether issue's run starts as a root's (record.Chains.StartsAsRoot) and has still
-// to make its first start (record.QueuedRoot over its own design gate), the waiting line's queued
-// root (record.LineFacts.Queued): the line's promotion is what starts such a root and its
-// architect.
+// to make its first start (record.QueuedRoot over its chain and its own design gate), the waiting
+// line's queued root (record.LineFacts.Queued): the line's promotion is what starts such a root and
+// its architect.
 func (e *Engine) queuedRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Admitted {
 		return false, nil
@@ -404,7 +404,7 @@ func (e *Engine) queuedRoot(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if err != nil {
 		return false, err
 	}
-	return record.QueuedRoot(issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}), nil
+	return record.QueuedRoot(chains, issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}), nil
 }
 
 // reviveClaims starts again, each in its own session, every claim of issue that has run but the

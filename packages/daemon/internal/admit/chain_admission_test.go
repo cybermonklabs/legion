@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -247,16 +248,26 @@ func TestTheThreeHoldsOfAnIssueUnderAParent(t *testing.T) {
 // designed for the new run and which the ladder reads before accepted_ancestor for every issue at
 // admitted. Once the hold ends — the parent back in work, the root resumed, the root closed, the
 // parent's row read — the todo it stands at queues it, and its promotion starts its architect.
+//
+// While the run stands under a parent at work, the label on it changes nothing (R19: "a label on
+// it changes nothing"): without it the run is held alike and starts alike once the hold ends.
+// Where the end leaves nothing above it in Legion's work — its root closed, or the parent the copy
+// now shows one the daemon does not record — it is a root, which starts only on a person's
+// handover (the label and todo), so without the label it starts nothing and the held list names it
+// label_off.
 func TestARunThatStartsAsARootMeetsTheHoldsOfAnIssueUnderAParent(t *testing.T) {
-	gateHolder := func(key, parent string) record.Issue {
+	gateHolder := func(key, parent string, labelled bool) record.Issue {
 		issue := chainRecord(key, parent, phase.Admitted, "in_progress")
-		issue.Generation, issue.HoldsGate, issue.HandedOver = 2, true, true
+		issue.Generation, issue.HoldsGate, issue.HandedOver = 2, true, labelled
 		return issue
 	}
-	for _, tc := range []struct {
+	cases := []struct {
 		name, key, parent, holder string
 		word                      record.HeldReason
-		seed, end                 func(t *testing.T, pool *pgxpool.Pool)
+		// rootOnceItEnds says the end of the hold leaves nothing above the issue in Legion's
+		// work.
+		rootOnceItEnds bool
+		seed, end      func(t *testing.T, pool *pgxpool.Pool)
 	}{
 		{
 			name: "under a parent on the backlog below a root at work", key: "LEGION-112", parent: "LEGION-111", holder: "LEGION-110",
@@ -283,7 +294,7 @@ func TestARunThatStartsAsARootMeetsTheHoldsOfAnIssueUnderAParent(t *testing.T) {
 		},
 		{
 			name: "under a root in merging", key: "LEGION-131", parent: "LEGION-130", holder: "LEGION-131",
-			word: record.HeldDesignGate,
+			word: record.HeldDesignGate, rootOnceItEnds: true,
 			seed: func(t *testing.T, pool *pgxpool.Pool) {
 				putIssue(t, pool, chainRecord("LEGION-130", "", phase.Merging, "retro"))
 				seedApprovedGate(t, pool, "LEGION-130", 1, 1)
@@ -294,7 +305,7 @@ func TestARunThatStartsAsARootMeetsTheHoldsOfAnIssueUnderAParent(t *testing.T) {
 		},
 		{
 			name: "under a parent the copy holds no row of", key: "LEGION-141", parent: "LEGION-140", holder: "LEGION-140",
-			word: record.HeldChainUnknown,
+			word: record.HeldChainUnknown, rootOnceItEnds: true,
 			seed: func(*testing.T, *pgxpool.Pool) {},
 			end: func(t *testing.T, pool *pgxpool.Pool) {
 				inTx(t, pool, func(tx pgx.Tx) {
@@ -302,29 +313,79 @@ func TestARunThatStartsAsARootMeetsTheHoldsOfAnIssueUnderAParent(t *testing.T) {
 				})
 			},
 		},
-	} {
+	}
+	for _, labelled := range []bool{true, false} {
+		for _, tc := range cases {
+			name := tc.name + ", with the label"
+			if !labelled {
+				name = tc.name + ", without the label"
+			}
+			t.Run(name, func(t *testing.T) {
+				pool := migratedPool(t)
+				admission := quiet(t, 4)
+				tc.seed(t, pool)
+				putIssue(t, pool, gateHolder(tc.key, tc.parent, labelled))
+
+				apply(t, pool, admission, "persons-todo", intake.DispatchIssue{Key: tc.key, ResolvedRepo: "acme/widgets", Seq: 10,
+					Type: "issue.updated", Status: "todo", Title: tc.key, Parent: tc.parent, Rank: tc.key, HandedOver: labelled}, admission.engine)
+
+				if starts := architectStarts(t, pool, tc.key); starts != 0 {
+					t.Fatalf("a person's todo on %s started %d architects of it, want none while it is held %s", tc.key, starts, tc.word)
+				}
+				assertNotStarted(t, pool, tc.key)
+				_, held := passJudgement(t, pool, admission)
+				assertHeldBy(t, held, tc.key, tc.word, tc.holder)
+
+				tc.end(t, pool)
+				tick(t, pool, admission, "the-hold-ends")
+
+				if !labelled && tc.rootOnceItEnds {
+					if starts := architectStarts(t, pool, tc.key); starts != 0 {
+						t.Fatalf("once its hold ended %s, a root without the label, started %d architects, want none before a person's handover", tc.key, starts)
+					}
+					assertNotStarted(t, pool, tc.key)
+					_, held := passJudgement(t, pool, admission)
+					assertHeldBy(t, held, tc.key, record.HeldLabelOff)
+					return
+				}
+				if starts := architectStarts(t, pool, tc.key); starts != 1 || !holdsSlot(t, pool, tc.key) {
+					t.Fatalf("once its hold ended %s started %d architects (slot %v), want its promotion's one at the todo it stands at",
+						tc.key, starts, holdsSlot(t, pool, tc.key))
+				}
+			})
+		}
+	}
+}
+
+// rerun_child on a gate holder under a parent at work — an issue that ran as a root before it got
+// that parent — that a stop left at backlog in its phase opens its new run at the todo the call
+// writes (R20 of dispatch://INFRA-3320), and that run starts as a root's
+// (record.Chains.StartsAsRoot): the line queues it, and its promotion starts its own architect at
+// the new generation, on a slot of its own, to design its gate again. It stands under a parent at
+// work, so it starts so with the label and without it (R19: "a label on it changes nothing").
+func TestRerunChildStartsTheArchitectOfAGateHolderUnderAParentAtWork(t *testing.T) {
+	const parent, child = "LEGION-150", "LEGION-151"
+	for _, tc := range []struct {
+		name     string
+		labelled bool
+	}{{"with the label", true}, {"without the label", false}} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
 			admission := quiet(t, 4)
-			tc.seed(t, pool)
-			putIssue(t, pool, gateHolder(tc.key, tc.parent))
+			seedRunning(t, pool, parent, "")
+			stopped := chainRecord(child, parent, phase.Implementing, "backlog")
+			stopped.HoldsGate, stopped.HandedOver, stopped.TakenBack, stopped.LastDispatchSeq = true, tc.labelled, true, 1
+			putIssue(t, pool, stopped)
 
-			apply(t, pool, admission, "persons-todo", intake.DispatchIssue{Key: tc.key, ResolvedRepo: "acme/widgets", Seq: 10,
-				Type: "issue.updated", Status: "todo", Title: tc.key, Parent: tc.parent, Rank: tc.key, HandedOver: true}, admission.engine)
+			applyAsTheDaemon(t, pool, admission, "api", "rerun-child", intake.StatusCall{Op: intake.RerunChildCall,
+				Architect: architectToken(t, parent), Issues: []intake.StatusCallIssue{{Key: child, Status: "todo"}}}, admission.engine)
 
-			if starts := architectStarts(t, pool, tc.key); starts != 0 {
-				t.Fatalf("a person's todo on %s started %d architects of it, want none while it is held %s", tc.key, starts, tc.word)
+			if got := issue(t, pool, child); got.Generation != 2 || got.Phase != phase.Admitted {
+				t.Fatalf("%s after rerun_child = generation %d in %s, want its new run, generation 2 at admitted", child, got.Generation, got.Phase)
 			}
-			assertNotStarted(t, pool, tc.key)
-			_, held := passJudgement(t, pool, admission)
-			assertHeldBy(t, held, tc.key, tc.word, tc.holder)
-
-			tc.end(t, pool)
-			tick(t, pool, admission, "the-hold-ends")
-
-			if starts := architectStarts(t, pool, tc.key); starts != 1 || !holdsSlot(t, pool, tc.key) {
-				t.Fatalf("once its hold ended %s started %d architects (slot %v), want its promotion's one at the todo it stands at",
-					tc.key, starts, holdsSlot(t, pool, tc.key))
+			if starts := roleStarts(t, pool, child, claim.RoleArchitect); len(starts) != 1 || starts[0].Generation != 2 || !holdsSlot(t, pool, child) {
+				t.Fatalf("architect starts of %s = %+v (slot %t), want its promotion's one at generation 2 on a slot of its own",
+					child, starts, holdsSlot(t, pool, child))
 			}
 		})
 	}

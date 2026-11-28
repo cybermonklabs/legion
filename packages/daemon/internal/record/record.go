@@ -318,9 +318,9 @@ type Issue struct {
 	// Chains.HoldsOwnGate reads it beside Chains.IsRoot, the other half. No gate row is this fact:
 	// a root's rows exist only once its architect registers a step, and a hand-over of an earlier
 	// release copied a root's rows onto its members. The daemon sets it when it first records an
-	// issue as a root and when a decision pass finds a recorded issue a root (Store.MarkHoldsGate),
-	// and never clears it: PutIssue writes it set-only, so a write carrying false keeps a true the
-	// row holds.
+	// issue as a root and when a decision pass finds a recorded issue in Legion's work a root
+	// (Store.MarkHoldsGate), and never clears it: PutIssue writes it set-only, so a write carrying
+	// false keeps a true the row holds.
 	HoldsGate bool
 	// RetainedUntil is when a linger the release before converted ends for this issue (decision
 	// 17 of dispatch://INFRA-4730): the first boot's conversion copies a root's linger deadline
@@ -2589,8 +2589,8 @@ type Store interface {
 	MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root string, at time.Time) error
 	// MarkHoldsGate marks each of keys that the daemon records as holding its own gate
 	// (Issue.HoldsGate), in one statement however many keys: what a decision pass writes for every
-	// recorded issue it finds a root (Chains.IsRoot). The mark is never cleared, so a key already
-	// marked, a key with no record and no keys at all write nothing.
+	// recorded issue in Legion's work it finds a root (Chains.IsRoot). The mark is never cleared,
+	// so a key already marked, a key with no record and no keys at all write nothing.
 	MarkHoldsGate(ctx context.Context, tx pgx.Tx, keys []string) error
 	// UnfilledIssues is every record of the Dispatch project key project written before the record
 	// carried its repository, by key; FillIssueRepository fills one such record, once.

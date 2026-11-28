@@ -315,10 +315,14 @@ func (e *Engine) uncountedRunOpen(ctx context.Context, tx pgx.Tx, issue record.I
 }
 
 // generationStarted says whether the run issue stands in has started. It has not while the issue
-// waits for the promotion that starts it (record.AwaitsPromotion): a root a person handed to Legion
-// that waits in the line, whose first start is that promotion's. Every other issue that stands in a
-// step started its run there.
+// waits for the promotion that starts it (record.AwaitsPromotion, over its chain and its own design
+// gate): a run handed to Legion that waits in the line, whose first start is that promotion's.
+// Every other issue that stands in a step started its run there.
 func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	chains, err := record.ReadChainsOf(ctx, tx, e.store, issue.Project, []string{issue.Key})
+	if err != nil {
+		return false, err
+	}
 	gates, err := e.store.GatesOf(ctx, tx, issue.Key)
 	if err != nil {
 		return false, err
@@ -328,7 +332,7 @@ func (e *Engine) generationStarted(ctx context.Context, tx pgx.Tx, issue record.
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == issue.Key })
-	return !record.AwaitsPromotion(issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return !record.AwaitsPromotion(chains, issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
 }
 
 // mergeCanLand says whether the merge of member, out of Legion's work while it awaits its landing,

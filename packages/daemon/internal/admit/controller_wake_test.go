@@ -58,7 +58,10 @@ func unlabelledTodo(key string) intake.DispatchIssue {
 // nothing for it (skill://legion-controller, "Free slots"). It wakes a registered controller
 // while a slot stands free, and never while every slot is taken or held for a waiting root. The
 // wake is due todoWakeDelay after the event, and until then every later event finds it pending,
-// so an edit burst is one wake even though the outbox publishes whatever is due at once.
+// so an edit burst is one wake even though the outbox publishes whatever is due at once. An issue
+// with an issue above it in Legion's work is handed to Legion without the label (R19 of
+// dispatch://INFRA-3320, record.HandedToLegion), so one held under a parent out of work wakes
+// nothing and is recorded by nothing, whatever its label.
 func TestATodoIssueNotHandedToLegionWakesTheControllerWhileASlotIsFree(t *testing.T) {
 	todo := func(issue string) []effect {
 		return []effect{{kind: record.OutboxKindControllerNotice, issue: issue, payload: record.ControllerNotice{Kind: record.TodoNotice}}}
@@ -96,6 +99,20 @@ func TestATodoIssueNotHandedToLegionWakesTheControllerWhileASlotIsFree(t *testin
 		seedWaiting(t, pool, "LEGION-WAITING", "B")
 		apply(t, pool, admission, "todo-1", unlabelledTodo("LEGION-1"), engineStub{})
 		assertControllerNotices(t, pool, nil)
+	})
+	t.Run("an issue held under a parent out of work below a root at work", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := newAdmission(t, 3, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		registerController(t, pool)
+		seedRunning(t, pool, "LEGION-10", "")
+		putIssue(t, pool, chainRecord("LEGION-11", "LEGION-10", phase.Admitted, "backlog"))
+		held := unlabelledTodo("LEGION-12")
+		held.Parent = "LEGION-11"
+		apply(t, pool, admission, "todo-1", held, engineStub{})
+		assertControllerNotices(t, pool, nil)
+		if got := maybeIssue(t, pool, "LEGION-12"); got != nil {
+			t.Fatalf("the todo issue held under LEGION-11 was recorded: %#v", got)
+		}
 	})
 }
 

@@ -760,16 +760,16 @@ func (f LineFacts) ShutGates(key string) []string {
 func (f LineFacts) GatesOpen(key string) bool { return len(f.ShutGates(key)) == 0 }
 
 // Queued says whether issue waits in the line for its first start as a root (QueuedRoot): its own
-// record and design gate say its first start has still to come, its run starts as a root's on the
-// pass's chains (Chains.StartsAsRoot), a root's or a new run of an issue that holds its own gate,
-// and nothing holds it where it stands (HeldWhereItStands). A run that starts as a root's can stand
-// under a parent, a gate holder past its first run, and it meets the holds of an issue under a
-// parent before it starts as every such issue does; the promotion starts only what the line
-// holds, so it starts no such run while a hold stands, and the same todo queues it once the hold
-// ends. The record is read first, so an issue whose record already says no costs no walk of its
-// chain.
+// record and design gate say its first start has still to come and the chain says it is handed to
+// Legion (HandedToLegion), its run starts as a root's on the pass's chains (Chains.StartsAsRoot), a
+// root's or a new run of an issue that holds its own gate, and nothing holds it where it stands
+// (HeldWhereItStands). A run that starts as a root's can stand under a parent, a gate holder past
+// its first run, and it meets the holds of an issue under a parent before it starts as every such
+// issue does; the promotion starts only what the line holds, so it starts no such run while a hold
+// stands, and the same todo queues it once the hold ends. The record is read first, so an issue
+// whose record already says no costs no walk of its chain.
 func (f LineFacts) Queued(issue Issue) bool {
-	return QueuedRoot(issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key) && !f.HeldWhereItStands(issue)
+	return QueuedRoot(f.Chains, issue, f.Gates[issue.Key]) && f.Chains.StartsAsRoot(issue.Key) && !f.HeldWhereItStands(issue)
 }
 
 // HeldWhereItStands says whether issue's chain holds it where it stands, so that the line starts
@@ -1386,7 +1386,7 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		// root. It is the one statement of that reasoning: the doc above, QueuedRoot, ran and
 		// AwaitsPromotion, which reads it, each point here rather than repeating it.
 		_, holds := slotted[issue.Key]
-		if !AwaitsPromotion(issue, facts.Gates[issue.Key], holds) {
+		if !AwaitsPromotion(chains, issue, facts.Gates[issue.Key], holds) {
 			hold(issue)
 			continue
 		}
@@ -1426,10 +1426,10 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 			continue
 		}
 		// A root nothing has handed to Legion waits for a person's handover (the label, R19 of
-		// dispatch://INFRA-3320): one still at todo, which the daemon never started, takes no
-		// slot here. One the daemon started goes on, since taking the label off an issue at work
-		// stops nothing.
-		if !issue.HandedOver && issue.Status == "todo" && chains.IsRoot(issue.Key) {
+		// dispatch://INFRA-3320, HandedToLegion): one still at todo, which the daemon never started,
+		// takes no slot here. One the daemon started goes on, since taking the label off an issue at
+		// work stops nothing.
+		if issue.Status == "todo" && !HandedToLegion(chains, issue.Key, issue.HandedOver) {
 			hold(issue)
 			continue
 		}
@@ -1547,25 +1547,40 @@ func WaitingIssues(line []LineEntry) []Issue {
 	return issues
 }
 
-// QueuedRoot says whether issue, a root, is one a person handed to Legion that waits in the line
-// for its first start: one that never ran, one handed back after it finished and one a hand-over of the release before made, each standing
-// in todo, not waiting on a person (whose answer resumes it where it stands) and with a record
-// that does not already say this generation runs (ran). Whether the issue is a root is the
-// chain's question (Chains.IsRoot), which the caller holding a pass's facts asks with it
-// (LineFacts.Queued); a caller that holds a root's record and no chains, such as a start that
-// waits for its root's tree to run again, asks it of that root. It is the one statement of the
-// rule's record half, read by the line itself, by the set of running roots (TreeRuns) and by the
-// relay of a person's decision (WaitsForSlot), so that no two of them disagree about a root that
-// has still to start.
+// HandedToLegion says whether the issue key is handed to Legion, over chains, a read that walked
+// its chain, where labelled says whether Dispatch last showed it carrying the legion label
+// (Issue.HandedOver, or the observation's own): a root by a person's handover, that label, and an
+// issue with an issue above it in Legion's work without it, since a label on it changes nothing
+// (R19 of dispatch://INFRA-3320). It is the one statement of that rule, and every decision that
+// asks whether an issue is handed to Legion asks it here: the queued-run rule (QueuedRoot), the
+// hold of a root at todo that nothing handed over (Waiting), the held list's label_off
+// (HeldReasonOf), whether an issue that waits on a person may resume (workflow's Unresumable), and
+// admission's look at an unrecorded todo issue (admit's applyFact and applyListed). The label is
+// read first, so a labelled issue costs no walk of its chain.
+func HandedToLegion(chains *Chains, key string, labelled bool) bool {
+	return labelled || len(chains.Above(key)) > 0
+}
+
+// QueuedRoot says whether issue, an issue whose run starts as a root's, is one handed to Legion
+// that waits in the line for its first start: one that never ran, one handed back after it
+// finished and one a hand-over of the release before made, each standing in todo, not waiting on a
+// person (whose answer resumes it where it stands), with a record that does not already say this
+// generation runs (ran) and handed to Legion on chains (HandedToLegion): a root by the label, an
+// issue with an issue above it in Legion's work by that todo alone. Whether its run starts as a
+// root's is the chain's question too (Chains.StartsAsRoot), which the caller holding a pass's
+// facts asks with it (LineFacts.Queued). It is the one statement of the rule's record half and its
+// handover, read by the line itself, by the set of running roots (TreeRuns) and by the relay of a
+// person's decision (WaitsForSlot), so that no two of them disagree about a run that has still to
+// start. The record is read first, so a record that already says no costs no walk of the chain.
 //
 // The slot does not answer it: a root a hand-over of the release before carried in, in a phase
 // that keeps a slot, may carry the row it held there while its own first start has still to come,
 // which Waiting's queued-root loop states at the skip it guards.
-func QueuedRoot(issue Issue, gate TreeGate) bool {
-	if !issue.HandedOver || ran(issue, gate) {
+func QueuedRoot(chains *Chains, issue Issue, gate TreeGate) bool {
+	if ran(issue, gate) || issue.AwaitingPerson() || issue.Status != "todo" {
 		return false
 	}
-	return !issue.AwaitingPerson() && issue.Status == "todo"
+	return HandedToLegion(chains, issue.Key, issue.HandedOver)
 }
 
 // ran says whether this root's own record shows the generation it carries already running under
@@ -1598,20 +1613,20 @@ func CarriedIn(issue Issue) bool {
 }
 
 // AwaitsPromotion says whether root waits for the promotion that starts it: it is a queued root
-// (QueuedRoot, over gate, its own design gate) and holds no slot row (holds). A root holding a row
-// has been started already; Waiting's queued-root loop, which reads this, states why. Until that
-// promotion nothing of the root runs: a carried phase starts there, so the boot and the settle
-// open and record no run of it (workflow's generationStarted).
-func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
-	return QueuedRoot(root, gate) && !holds
+// (QueuedRoot, over chains and gate, its own design gate) and holds no slot row (holds). A root
+// holding a row has been started already; Waiting's queued-root loop, which reads this, states why.
+// Until that promotion nothing of the root runs: a carried phase starts there, so the boot and the
+// settle open and record no run of it (workflow's generationStarted).
+func AwaitsPromotion(chains *Chains, root Issue, gate TreeGate, holds bool) bool {
+	return QueuedRoot(chains, root, gate) && !holds
 }
 
 // TreeRuns says whether root, a gate root, runs (R4 of dispatch://INFRA-3320 as R15 reads it): it
 // is in Legion's work and does not wait in the line for a slot it does not hold, holds being
-// whether it holds a slot row: for its first start (QueuedRoot, over gate, its own design gate),
-// or for the slot its work needs again, among the work that came back after a stop (R20,
-// waitsWithoutSlot). Whether root is a gate root is the chain's question (Chains.GateRoot), which
-// RunningRoots asks of every root of a pass and TreeRunning of one.
+// whether it holds a slot row: for its first start (QueuedRoot, over chains and gate, its own
+// design gate), or for the slot its work needs again, among the work that came back after a stop
+// (R20, waitsWithoutSlot). Whether root is a gate root is the chain's question (Chains.GateRoot),
+// which RunningRoots asks of every root of a pass and workflow's gateRootRuns of one.
 //
 // It is the one statement of "the tree runs", and the readers that must agree all call it: the
 // claims nothing will wake (workflow.Stranded), the question whether a session's status write
@@ -1622,8 +1637,8 @@ func AwaitsPromotion(root Issue, gate TreeGate, holds bool) bool {
 // of it is not stranded, a status write on it is a person's move, and its quiet is no stall. The
 // readers that decide what a started root, or an issue under it, owes once its slot comes ask
 // TreeStarted instead.
-func TreeRuns(root Issue, gate TreeGate, holds bool) bool {
-	return TreeStarted(root, gate) && !waitsWithoutSlot(root, holds)
+func TreeRuns(chains *Chains, root Issue, gate TreeGate, holds bool) bool {
+	return TreeStarted(chains, root, gate) && !waitsWithoutSlot(root, holds)
 }
 
 // waitsWithoutSlot says whether issue waits in the line for a slot it does not hold, holds being
@@ -1639,20 +1654,20 @@ func waitsWithoutSlot(issue Issue, holds bool) bool {
 }
 
 // TreeStarted says whether root, a gate root, has made its first start and is in Legion's work: it
-// does not wait in the line for its first start (QueuedRoot, over gate, its own design gate). It
-// states R9 of dispatch://INFRA-3320, "No phase of a parent starts while an open child stands under
-// it", over every issue whose phases started, a start written and not delivered among them, and
-// R20's "The daemon acts on each issue's own status". It is not TreeRuns (R4: "does not wait in the
-// line for a slot it does not hold"): a root that waits for the slot of its own returned work runs
-// nothing by R4, while it is still a parent whose start is written and not delivered (R9), the
-// issues under it work on with slots of their own (R20), and a start its phase worker owes is
-// written marked for that slot, which it waits for in the line. Its readers decide for such a
-// root or the issues under it: the admission pass's children waits and the repair's issues past
-// their review (admit's childrenWaits, readSlotHolders), and the boot's resume of a suspended
-// phase worker (workflow's booted), which puts back a start a stop or a crash lost, marked for
-// the slot where the issue holds none.
-func TreeStarted(root Issue, gate TreeGate) bool {
-	return InLegionsWork(root) && !QueuedRoot(root, gate)
+// does not wait in the line for its first start (QueuedRoot, over chains and gate, its own design
+// gate). It states R9 of dispatch://INFRA-3320, "No phase of a parent starts while an open child
+// stands under it", over every issue whose phases started, a start written and not delivered among
+// them, and R20's "The daemon acts on each issue's own status". It is not TreeRuns (R4: "does not
+// wait in the line for a slot it does not hold"): a root that waits for the slot of its own
+// returned work runs nothing by R4, while it is still a parent whose start is written and not
+// delivered (R9), the issues under it work on with slots of their own (R20), and a start its phase
+// worker owes is written marked for that slot, which it waits for in the line. Its readers decide
+// for such a root or the issues under it: the admission pass's children waits and the repair's
+// issues past their review (admit's childrenWaits, readSlotHolders), and the boot's resume of a
+// suspended phase worker (workflow's booted), which puts back a start a stop or a crash lost,
+// marked for the slot where the issue holds none.
+func TreeStarted(chains *Chains, root Issue, gate TreeGate) bool {
+	return InLegionsWork(root) && !QueuedRoot(chains, root, gate)
 }
 
 // OperatorHolds says whether the operator opened the lifetime of the issue itself (an operator
@@ -1690,7 +1705,7 @@ func RunningRoots(issues []Issue, slots []Slot, facts LineFacts) map[string]stru
 	running := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
 		_, holds := slotted[issue.Key]
-		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeRuns(issue, facts.Gates[issue.Key], holds) {
+		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeRuns(facts.Chains, issue, facts.Gates[issue.Key], holds) {
 			running[issue.Key] = struct{}{}
 		}
 	}
@@ -1703,7 +1718,7 @@ func RunningRoots(issues []Issue, slots []Slot, facts LineFacts) map[string]stru
 func StartedRoots(issues []Issue, facts LineFacts) map[string]struct{} {
 	started := make(map[string]struct{}, len(issues))
 	for _, issue := range issues {
-		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeStarted(issue, facts.Gates[issue.Key]) {
+		if facts.Chains.GateRoot(issue.Key) == issue.Key && TreeStarted(facts.Chains, issue, facts.Gates[issue.Key]) {
 			started[issue.Key] = struct{}{}
 		}
 	}

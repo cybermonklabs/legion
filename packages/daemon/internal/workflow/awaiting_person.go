@@ -15,24 +15,26 @@ import (
 // Unresumable is the one rule for whether a root that waits on a person, holding the admission
 // slot it took when the daemon started it, may run again in its own architect session: it
 // returns why it may not, or "" when it may.
-// Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
-// held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
-// session and a session of its tree are legitimate holders. The daemon's own session is the
-// session of project, the daemon's own Dispatch project (dispatch.DaemonSession). A session of its
-// tree is one a claim of an issue whose gate root the root is on the Dispatch chain
-// (record.Chains.GateTree) names now, or one such a claim left behind (record.Store.SessionOf),
-// the read the claim release executor judges a holder by: the daemon queued a left session's claim
-// release when it left the session, so the root keeps its row until that release takes the claim,
-// rather than being removed for a claim of its own tree's.
+// Its hand-over gone (record.HandedToLegion: a root's label taken off, which an issue with an
+// issue above it in Legion's work never needed), or its leaving the workflow, ends that, and so
+// does a Dispatch claim held by a person or by a session outside its tree, which owns the issue
+// instead; the daemon's own session and a session of its tree are legitimate holders. The daemon's
+// own session is the session of project, the daemon's own Dispatch project
+// (dispatch.DaemonSession). A session of its tree is one a claim of an issue whose gate root the
+// root is on the Dispatch chain (record.Chains.GateTree) names now, or one such a claim left
+// behind (record.Store.SessionOf), the read the claim release executor judges a holder by: the
+// daemon queued a left session's claim release when it left the session, so the root keeps its
+// row until that release takes the claim, rather than being removed for a claim of its own
+// tree's.
 // The claim is the one the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim).
 // ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
 // waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
 // answered one, that it answers no for. chains is the caller's reading of the Dispatch chains with
 // issue named, the whole project's (record.ReadChains), whose tree of issue it reads
-// (record.Chains.GateTree).
+// (record.Chains.GateTree) and the issues above issue in Legion's work.
 func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project string, chains *record.Chains, issue record.Issue) (string, error) {
 	switch {
-	case !issue.HandedOver:
+	case !record.HandedToLegion(chains, issue.Key, issue.HandedOver):
 		return "the legion label was removed", nil
 	case !record.InWorkflow(issue):
 		return "it left the workflow", nil

@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -20,6 +21,23 @@ import (
 func srMove(key, status string, seq int64) intake.DispatchIssue {
 	return intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: seq, Type: "issue.updated", Status: status,
 		Title: key, Rank: key, HandedOver: true}
+}
+
+// srMoveUnder is srMove of key standing under parent ("" for none), carrying the legion label
+// where labelled says so.
+func srMoveUnder(key, parent, status string, seq int64, labelled bool) intake.DispatchIssue {
+	move := srMove(key, status, seq)
+	move.Parent, move.HandedOver = parent, labelled
+	return move
+}
+
+// mergedGateHolder is the record of key under parent ("" for a root), done at generation 1 after
+// its run stood in its phases, holding its own gate and carrying the legion label where labelled
+// says so: under a parent, an issue that ran as a root before it got that parent.
+func mergedGateHolder(key, parent string, labelled bool) record.Issue {
+	issue := chainRecord(key, parent, phase.Done, "done")
+	issue.HandedOver, issue.LastDispatchSeq, issue.HoldsGate, issue.TakenBack = labelled, 1, true, true
+	return issue
 }
 
 // An issue Dispatch shows out of Legion's work stops where it stands and, moved back into work,
@@ -140,6 +158,63 @@ func TestAnIssueBackInWorkResumesItsPhaseAtANewEntry(t *testing.T) {
 	})
 }
 
+// A root stopped with the issues under it and brought back with them marks none of them as holding
+// a gate of its own (R15 of dispatch://INFRA-3320): none ran as a root, and a pass marks no issue out
+// of Legion's work (readPass), though nothing above it is in work while the root is stopped. R24
+// makes include_children the only stop of a root with a child at work, and Dispatch writes its
+// backlog deepest first and its todo highest first, each an event that runs a pass. Back in work in
+// the phase it stood in, each member's gate root is the root again, and the merge of the root's
+// child waits for the root's design gate, which stands open, not for a gate of its own that no
+// architect designed (classify.MergeHold, over the rows the daemon's merger reads: those of the
+// issue's tree on the Dispatch chain, record.Chains.StateTree).
+func TestAStopAndReturnOfARootMarksNoIssueUnderItAsHoldingItsOwnGate(t *testing.T) {
+	rig := seedOwnerTree(t, nil)
+	seedApprovedGate(t, rig.pool, ownerRoot, 1, 1)
+	members := []string{ownerChild, ownerGrandchild, ownerSibling, ownerNephew}
+	stood := make(map[string]phase.Phase, len(members))
+	for _, key := range members {
+		stood[key] = issue(t, rig.pool, key).Phase
+	}
+	for _, key := range []string{ownerGrandchild, ownerNephew, ownerChild, ownerSibling, ownerRoot} {
+		rig.write(key, "backlog", "")
+	}
+	for _, key := range []string{ownerRoot, ownerChild, ownerSibling, ownerGrandchild, ownerNephew} {
+		rig.write(key, "todo", "")
+	}
+
+	for _, key := range members {
+		back := issue(t, rig.pool, key)
+		if !record.InLegionsWork(back) || back.Phase != stood[key] {
+			t.Fatalf("%s after the return = phase %s, status %s, want it back at work in %s, where it stood: the case's premise",
+				key, back.Phase, back.Status, stood[key])
+		}
+		if back.HoldsGate {
+			t.Errorf("%s after the stop and return of %s holds its own gate, want no mark: it never ran as a root", key, ownerRoot)
+		}
+	}
+	child := issue(t, rig.pool, ownerChild)
+	inTx(t, rig.pool, func(tx pgx.Tx) {
+		ctx, records := context.Background(), record.NewStore()
+		chains, err := record.ReadChainsOf(ctx, tx, records, testProject, []string{ownerChild, ownerGrandchild})
+		if err != nil {
+			t.Fatalf("read the chains of %s and %s: %v", ownerChild, ownerGrandchild, err)
+		}
+		for _, key := range []string{ownerChild, ownerGrandchild} {
+			if chains.HoldsOwnGate(key) || chains.GateRoot(key) != ownerRoot {
+				t.Errorf("%s holds its own gate %t under gate root %q, want no gate of its own under %s", key, chains.HoldsOwnGate(key), chains.GateRoot(key), ownerRoot)
+			}
+		}
+		root := chains.StateTree(ownerChild)
+		rows, err := records.GatesOf(ctx, tx, root)
+		if err != nil {
+			t.Fatalf("read the gate of %s: %v", root, err)
+		}
+		if step, _, held := classify.MergeHold(rig.engine.GatedSteps(), rows, root == ownerChild && chains.HoldsOwnGate(ownerChild), child); held {
+			t.Errorf("the merge of %s is held on step %q of %s's gate, want it held on no step: %s's gate stands open", ownerChild, step, root, ownerRoot)
+		}
+	})
+}
+
 // A merged issue the daemon closed opens a new run when a person reopens it into work (decision 8
 // of dispatch://INFRA-4730, gap F16): its generation goes up by one from the first phase, and the
 // facts of the run that ended are cleared. A move of an issue the daemon closed from another status
@@ -192,45 +267,89 @@ func TestAMergeClosedIssueReopenedOpensANewRun(t *testing.T) {
 	})
 }
 
+// A merged gate holder under a parent at work that a person reopens straight to todo opens its new
+// run (decision 8 of dispatch://INFRA-4730), which starts as a root's does
+// (record.Chains.StartsAsRoot): the todo queues it, and its promotion starts its own architect at
+// the new generation to design its gate again. It stands under a parent at work, so it starts so
+// with the label and without it (R19 of dispatch://INFRA-3320: "a label on it changes nothing").
+func TestAMergeClosedGateHolderUnderAParentReopenedToTodoStartsItsArchitect(t *testing.T) {
+	const parent, key = "LEGION-550", "LEGION-551"
+	for _, tc := range []struct {
+		name     string
+		labelled bool
+	}{{"with the label", true}, {"without the label", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			admission := quiet(t, 2)
+			seedRunning(t, pool, parent, "")
+			putIssue(t, pool, mergedGateHolder(key, parent, tc.labelled))
+			pwPullRequest(t, pool, key, record.PullRequestMerged)
+
+			apply(t, pool, admission, "reopened", srMoveUnder(key, parent, "todo", 2, tc.labelled), admission.engine)
+
+			if got := issue(t, pool, key); got.Generation != 2 || got.Phase != phase.Admitted {
+				t.Fatalf("the reopened %s = generation %d in %s, want its new run, generation 2 at admitted", key, got.Generation, got.Phase)
+			}
+			if starts := roleStarts(t, pool, key, claim.RoleArchitect); len(starts) != 1 || starts[0].Generation != 2 || !holdsSlot(t, pool, key) {
+				t.Fatalf("architect starts of %s = %+v (slot %t), want its promotion's one at generation 2 on a slot of its own",
+					key, starts, holdsSlot(t, pool, key))
+			}
+		})
+	}
+}
+
 // A root whose merge closed it, reopened by a person straight to in_progress rather than to todo,
 // opens its new run (R20 of dispatch://INFRA-3320) and waits for a person's todo, since a root's
 // run starts only on the handover a todo makes (R19): the state lists it in admission.held as
 // awaiting_todo, held by no issue and in neither active nor waiting (R21), and no architect of it
 // starts. The person's todo then queues the run, and its promotion starts the root's architect at
-// the new generation with the new run's task, and the root stands in active.
+// the new generation with the new run's task, and the root stands in active. A gate holder under a
+// parent at work does the same without the label: under a parent at work the todo alone hands it
+// over (R19: "a label on it changes nothing").
 func TestAMergeClosedRootReopenedPastTodoWaitsForAPersonsTodo(t *testing.T) {
-	const key = "LEGION-540"
-	pool := migratedPool(t)
-	admission := quiet(t, 2)
-	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject,
-		Title: key, Tree: key, Phase: phase.Done, Generation: 1, Status: "done", DispatchStatus: "done", Rank: key, HandedOver: true,
-		LastDispatchSeq: 1, HoldsGate: true, TakenBack: true})
-	pwPullRequest(t, pool, key, record.PullRequestMerged)
+	for _, tc := range []struct {
+		name, key, parent string
+		labelled          bool
+	}{
+		{name: "a root", key: "LEGION-540", labelled: true},
+		{name: "a gate holder under a parent at work, without the label", key: "LEGION-542", parent: "LEGION-541"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			key := tc.key
+			pool := migratedPool(t)
+			admission := quiet(t, 2)
+			if tc.parent != "" {
+				seedRunning(t, pool, tc.parent, "")
+			}
+			putIssue(t, pool, mergedGateHolder(key, tc.parent, tc.labelled))
+			pwPullRequest(t, pool, key, record.PullRequestMerged)
 
-	apply(t, pool, admission, "reopened", srMove(key, "in_progress", 2), admission.engine)
+			apply(t, pool, admission, "reopened", srMoveUnder(key, tc.parent, "in_progress", 2, tc.labelled), admission.engine)
 
-	if got := issue(t, pool, key); got.Generation != 2 || got.Phase != phase.Admitted || got.Status != "in_progress" {
-		t.Fatalf("the reopened root = %#v, want a new run at generation 2, admitted at in_progress", got)
-	}
-	if starts := architectStarts(t, pool, key); starts != 0 {
-		t.Fatalf("the reopen started %d architects of %s, want none before a person's todo", starts, key)
-	}
-	state := pnState(t, pool, admission)
-	pnInNeitherList(t, state, key)
-	if row, listed := pnHeldRow(state, key); !listed || row.Reason != record.HeldAwaitingTodo || row.HeldBy != nil {
-		t.Fatalf("admission.held names %s as %+v (listed %t), want awaiting_todo held by no issue", key, row, listed)
-	}
+			if got := issue(t, pool, key); got.Generation != 2 || got.Phase != phase.Admitted || got.Status != "in_progress" {
+				t.Fatalf("the reopened %s = %#v, want a new run at generation 2, admitted at in_progress", key, got)
+			}
+			if starts := architectStarts(t, pool, key); starts != 0 {
+				t.Fatalf("the reopen started %d architects of %s, want none before a person's todo", starts, key)
+			}
+			state := pnState(t, pool, admission)
+			pnInNeitherList(t, state, key)
+			if row, listed := pnHeldRow(state, key); !listed || row.Reason != record.HeldAwaitingTodo || row.HeldBy != nil {
+				t.Fatalf("admission.held names %s as %+v (listed %t), want awaiting_todo held by no issue", key, row, listed)
+			}
 
-	apply(t, pool, admission, "person-todo", srMove(key, "todo", 3), admission.engine)
+			apply(t, pool, admission, "person-todo", srMoveUnder(key, tc.parent, "todo", 3, tc.labelled), admission.engine)
 
-	starts := roleStarts(t, pool, key, claim.RoleArchitect)
-	if want := architectStart(t, pool, admission, key, ""); len(starts) != 1 || starts[0].Generation != 2 || starts[0].Task != want {
-		t.Fatalf("architect starts of %s = %+v, want one at generation 2 whose task is the new run's %q", key, starts, want)
-	}
-	state = pnState(t, pool, admission)
-	if row, listed := pnHeldRow(state, key); listed || !slices.Contains(state.Admission.Active, key) {
-		t.Fatalf("after the todo admission.active = %v and %s's held row = %+v (listed %t), want it in active and in no held row",
-			state.Admission.Active, key, row, listed)
+			starts := roleStarts(t, pool, key, claim.RoleArchitect)
+			if want := architectStart(t, pool, admission, key, ""); len(starts) != 1 || starts[0].Generation != 2 || starts[0].Task != want {
+				t.Fatalf("architect starts of %s = %+v, want one at generation 2 whose task is the new run's %q", key, starts, want)
+			}
+			state = pnState(t, pool, admission)
+			if row, listed := pnHeldRow(state, key); listed || !slices.Contains(state.Admission.Active, key) {
+				t.Fatalf("after the todo admission.active = %v and %s's held row = %+v (listed %t), want it in active and in no held row",
+					state.Admission.Active, key, row, listed)
+			}
+		})
 	}
 }
 

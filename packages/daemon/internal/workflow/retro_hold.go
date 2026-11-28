@@ -254,7 +254,7 @@ func (e *Engine) StartHeldRetro(ctx context.Context, tx pgx.Tx, parent record.Is
 	if !recorded {
 		return false, nil
 	}
-	if running, err := e.gateRootRuns(ctx, tx, root, gateRoot); err != nil || !running {
+	if running, err := e.gateRootRuns(ctx, tx, chains, root, gateRoot); err != nil || !running {
 		return false, err
 	}
 	w, err := e.walk(ctx, tx, parent)

@@ -271,7 +271,7 @@ func HeldReasonOf(issue Issue, holds bool, facts LineFacts) (HeldReason, []strin
 	above := chains.Above(issue.Key)
 	accepted := acceptedAncestorHolding(chains, issue)
 	switch {
-	case len(above) == 0 && !issue.HandedOver:
+	case !HandedToLegion(chains, issue.Key, issue.HandedOver):
 		return HeldLabelOff, nil
 	case len(above) > 0 && above[0] != chain.Links[0] && accepted == "":
 		// The issue that holds it is the nearest one above it in Legion's work, past the parent

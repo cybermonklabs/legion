@@ -844,17 +844,18 @@ func (e *Engine) judgeSessionWrite(ctx context.Context, tx pgx.Tx, chains writeC
 		// its slot runs nothing: where no tree runs, an outside session's write is a person's move,
 		// which is the whole of the question.
 		waiting := gateRoot == issue.Key && issue.AwaitingPerson()
-		if runs, err := e.gateRootRuns(ctx, tx, issue, gateRoot); err != nil || !runs && !waiting {
+		if runs, err := e.gateRootRuns(ctx, tx, chains.Chains, issue, gateRoot); err != nil || !runs && !waiting {
 			return writeTaken, false, err
 		}
 	}
 	return writeSetBack, agent, nil
 }
 
-// gateRootRuns says whether issue, whose gate root on the caller's chains is gateRoot, is a gate
-// root whose tree runs now (record.TreeRuns): in Legion's work, its own gate root, and holding
-// the slot its standing needs. It reads issue's design gate and the slot rows, and no chain.
-func (e *Engine) gateRootRuns(ctx context.Context, tx pgx.Tx, issue record.Issue, gateRoot string) (bool, error) {
+// gateRootRuns says whether issue, whose gate root on chains is gateRoot, is a gate root whose tree
+// runs now (record.TreeRuns): in Legion's work, its own gate root, and holding the slot its
+// standing needs. It reads issue's design gate and the slot rows, and asks chains whether a todo
+// on it is a handover (record.HandedToLegion).
+func (e *Engine) gateRootRuns(ctx context.Context, tx pgx.Tx, chains *record.Chains, issue record.Issue, gateRoot string) (bool, error) {
 	if !record.InLegionsWork(issue) || gateRoot != issue.Key {
 		return false, nil
 	}
@@ -867,7 +868,7 @@ func (e *Engine) gateRootRuns(ctx context.Context, tx pgx.Tx, issue record.Issue
 		return false, err
 	}
 	holds := slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == issue.Key })
-	return record.TreeRuns(issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
+	return record.TreeRuns(chains, issue, record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, holds), nil
 }
 
 // tellSetBack tells the architect of issue's tree that the daemon set back write, unless the
@@ -3502,9 +3503,9 @@ func (e *Engine) StartFirstPhase(ctx context.Context, tx pgx.Tx, issue record.Is
 // one it holds to: a start that fails and backs off holds back none of the rows behind it.
 //
 // An issue that holds its own gate is marked so on the copy the transition moves (Issue.HoldsGate,
-// set-only, as the admission pass's MarkHoldsGate writes it for every root it reads), which is
-// what the move's notice reads (noticeFor): the phase-finished of the gate's opening goes to that
-// issue's own architect, and the move of any other issue tells nobody.
+// set-only, as the admission pass's MarkHoldsGate writes it for every root in Legion's work it
+// reads), which is what the move's notice reads (noticeFor): the phase-finished of the gate's
+// opening goes to that issue's own architect, and the move of any other issue tells nobody.
 func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue, holdsGate bool) error {
 	if err := e.planFirstStep(ctx, tx, issue); err != nil {
 		return err

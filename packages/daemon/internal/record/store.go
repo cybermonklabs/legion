@@ -589,10 +589,10 @@ func (s *Postgres) MarkTreeStalledTold(ctx context.Context, tx pgx.Tx, root stri
 }
 
 // MarkHoldsGate marks each of keys that the daemon records as holding its own gate, in one
-// statement whatever their number: the pass's one write for every recorded issue it finds a root
-// (Chains.IsRoot). PutIssue writes the mark set-only as well, so nothing clears it, and the
-// statement touches no row already marked. A key with no record matches no row and writes
-// nothing, and no keys write nothing.
+// statement whatever their number: the pass's one write for every recorded issue in Legion's work
+// it finds a root (Chains.IsRoot). PutIssue writes the mark set-only as well, so nothing clears
+// it, and the statement touches no row already marked. A key with no record matches no row and
+// writes nothing, and no keys write nothing.
 func (s *Postgres) MarkHoldsGate(ctx context.Context, tx pgx.Tx, keys []string) error {
 	if len(keys) == 0 {
 		return nil

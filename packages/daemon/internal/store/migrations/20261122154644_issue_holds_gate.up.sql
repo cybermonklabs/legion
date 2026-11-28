@@ -7,9 +7,9 @@
 -- Legion's work, which keeps that gate. The chain gives the first half on each read
 -- (record.Chains.IsRoot); the second half is history the chain no longer shows, so it is this
 -- mark (record.Issue.HoldsGate, read by record.Chains.HoldsOwnGate). The daemon sets it when it
--- first records an issue as a root and when a decision pass finds a recorded issue a root, and
--- never clears it: record.Store.PutIssue writes it set-only, and record.Store.MarkHoldsGate is the
--- pass's one batched update.
+-- first records an issue as a root and when a decision pass finds a recorded issue in Legion's
+-- work a root, and never clears it: record.Store.PutIssue writes it set-only, and
+-- record.Store.MarkHoldsGate is the pass's one batched update.
 --
 -- Why not the gate's rows. A gate row exists only once the issue's architect registers a step,
 -- so a root whose architect has not registered yet would hold no gate by them, and a hand-over
@@ -18,7 +18,8 @@
 -- The backfill. Every record whose key is its stored tree is a root of the release before, or a
 -- root a hand-over made, and each of those held its own gate, so each is marked. Every other
 -- record is a member of a tree and is left unmarked: it holds its own gate only if the chain
--- makes it a root, which the first decision pass after the deploy reads and marks.
+-- makes it a root, which a decision pass after the deploy reads, and marks once it is in Legion's
+-- work.
 --
 -- Migrations here are forward-only and this one has no down file. A daemon of the release before
 -- names the column nowhere — it neither selects it nor inserts it, and an insert of its takes the

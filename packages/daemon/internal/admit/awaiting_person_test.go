@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // awaitingArchitect is the architect claim token of a root of the test project.
@@ -421,6 +422,73 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 			}
 			if notices := controllerNotices(t, pool); len(notices) != 0 {
 				t.Fatalf("controller notices = %#v, want none: the root out of the workflow is read from the state", notices)
+			}
+		})
+	}
+}
+
+// Taking the legion label off an issue that waits on a person ends its wait only where the label
+// was its hand-over (record.HandedToLegion, R19 of dispatch://INFRA-3320). A root, with nothing
+// above it in Legion's work, may not resume because the legion label was removed
+// (workflow.Unresumable), and leaves the workflow. A gate holder under a parent at work never
+// needed the label, so it may resume, and it keeps waiting where it stands.
+func TestTakingTheLabelOffAnIssueWaitingOnAPersonEndsOnlyARootsWait(t *testing.T) {
+	for _, tc := range []struct {
+		name, key, parent string
+		// why is Unresumable's answer once the label is off, "" for an issue that may resume.
+		why string
+	}{
+		{name: "a root", key: "LEGION-620", why: "the legion label was removed"},
+		{name: "a gate holder under a parent at work", key: "LEGION-631", parent: "LEGION-630"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			if tc.parent != "" {
+				seedRunning(t, pool, tc.parent, "")
+			}
+			seedSlottedInPhase(t, pool, testProject, tc.key, "U", phase.Admitted, func(issue *record.Issue) {
+				if tc.parent != "" {
+					issue.Parent, issue.HoldsGate = new(tc.parent), true
+				}
+			})
+			seedArchitectClaim(t, pool, tc.key, true)
+			seedHandBack(t, pool, tc.key, "ask-q", 5)
+			admission := newAdmission(t, 2, nil)
+			tick(t, pool, admission, "tick-1")
+			waiting := issue(t, pool, tc.key)
+			if waiting.Phase != phase.AwaitingPerson {
+				t.Fatalf("%s = phase %s, want it waiting on the person: the case's premise", tc.key, waiting.Phase)
+			}
+
+			unlabelled := waiting
+			unlabelled.HandedOver = false
+			var why string
+			inTx(t, pool, func(tx pgx.Tx) {
+				ctx, records := context.Background(), record.NewStore()
+				chains, err := record.ReadChains(ctx, tx, records, testProject, []string{tc.key})
+				if err != nil {
+					t.Fatalf("read the chains of %s: %v", tc.key, err)
+				}
+				if why, err = workflow.Unresumable(ctx, records, tx, testProject, chains, unlabelled); err != nil {
+					t.Fatalf("ask whether %s may resume: %v", tc.key, err)
+				}
+			})
+			if why != tc.why {
+				t.Errorf("without its label %s may not resume because %q, want %q", tc.key, why, tc.why)
+			}
+
+			apply(t, pool, admission, "label-off", intake.DispatchIssue{Key: tc.key, ResolvedRepo: "acme/widgets", Seq: 10,
+				Type: "issue.updated", Status: waiting.Status, Title: waiting.Title, Parent: tc.parent, Rank: waiting.Rank,
+				Labels: []string{}}, admission.engine)
+			tick(t, pool, admission, "tick-2")
+
+			got := issue(t, pool, tc.key)
+			want := phase.AwaitingPerson
+			if tc.why != "" {
+				want = phase.Done
+			}
+			if got.HandedOver || got.Phase != want {
+				t.Fatalf("%s after its label was taken off = phase %s (labelled %t), want phase %s without the label", tc.key, got.Phase, got.HandedOver, want)
 			}
 		})
 	}

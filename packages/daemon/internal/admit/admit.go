@@ -483,7 +483,6 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		_, released, err := a.promoteWritten(ctx, tx)
 		return released, err
 	}
-	handed := observation.HandedOver
 	// A root in triage handed to Legion is queued by the daemon when a person set the label
 	// (observation.LabelSetter, read from the issue's event log when the fact was prepared): a
 	// person's label is the handover, so the daemon writes its todo through the outbox
@@ -507,8 +506,13 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 			return nil, err
 		}
 	}
-	// An unrecorded todo issue without the label is someone else's work in a project Legion may
-	// share with humans and other agents: Legion records nothing of it until it is handed over.
+	// An unrecorded todo issue nobody handed to Legion — one with no issue above it in Legion's
+	// work and without the label (record.HandedToLegion) — is someone else's work in a project
+	// Legion may share with humans and other agents: Legion records nothing of it until it is
+	// handed over. An issue with an issue above it in Legion's work needs no label (R19 of
+	// dispatch://INFRA-3320): the workflow records one under a parent in work
+	// (recordChildUnderParentAtWork), and one it leaves unrecorded here, whatever its label, wakes
+	// no controller, and putNewRoot records nothing of it.
 	// Neither exit records anything, but each still refreshes a held key's own pending summary:
 	// an event moving the key out of todo, or taking its label off, is real information about
 	// what Dispatch shows now, and leaving the held summary as Reconcile's stale boot listing
@@ -538,7 +542,7 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		_, released, err := a.promoteWritten(ctx, tx)
 		return released, err
 	}
-	if !handed {
+	if !record.HandedToLegion(chains, observation.Key, observation.HandedOver) {
 		a.log.Debug("admission: not handed to Legion", "issue", observation.Key, "label", dispatch.LegionLabel)
 		a.refreshHeldSummary(observation)
 		// Promotion comes before the slot is judged: a root this look admits takes a slot that
@@ -1376,7 +1380,6 @@ const (
 // applyListed is applySummary's work once the summary is found no older than the issue facts the
 // daemon applied and not held: stored is admission's record of the issue, nil for none.
 func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.DispatchIssue, stored *record.Issue) error {
-	handed := summary.HandedOver
 	if stored == nil {
 		// An unrecorded root the listing shows in triage with the label is queued as its event
 		// would be (applyFact) when a person set the label, which the listing's preparation read
@@ -1420,7 +1423,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 			a.noteUnknownChain(ctx, summary.Key)
 			return nil
 		}
-		if !handed {
+		if !record.HandedToLegion(chains, summary.Key, summary.HandedOver) {
 			a.log.Debug("admission: not handed to Legion", "issue", summary.Key, "label", dispatch.LegionLabel)
 			return nil
 		}
@@ -1484,7 +1487,7 @@ func (a *Admission) applyListed(ctx context.Context, tx pgx.Tx, summary intake.D
 	}
 	o := observed{
 		Title: summary.Title, Parent: summary.Parent, Rank: summary.Rank, Priority: priority, Resolved: resolved,
-		Status: status, Shown: summary.Status, HandedOver: handed, Seq: seq,
+		Status: status, Shown: summary.Status, HandedOver: summary.HandedOver, Seq: seq,
 	}
 	// A todo echo of an issue the record shows running is the boot listing catching a status the
 	// daemon itself wrote and Dispatch had not shown yet. Its status is taken only while the issue
@@ -3135,7 +3138,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 			continue
 		}
 		root, rooted := byKey[facts.Chains.GateRoot(issue.Key)]
-		if !rooted || !record.TreeStarted(root, facts.Gates[root.Key]) {
+		if !rooted || !record.TreeStarted(facts.Chains, root, facts.Gates[root.Key]) {
 			continue
 		}
 		take(issue, time.Time{})
@@ -3150,7 +3153,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 		// The root holds no row while it waits on another issue, and that wait is no wait for a
 		// slot (record.TreeRuns reads it as none), so this asks R4's rule as it stands.
 		architect, selected := a.rootArchitectOf(project, issue, facts.Chains)
-		if !selected || !record.TreeRuns(issue, facts.Gates[issue.Key], false) {
+		if !selected || !record.TreeRuns(facts.Chains, issue, facts.Gates[issue.Key], false) {
 			continue
 		}
 		seen[issue.Key] = struct{}{}
