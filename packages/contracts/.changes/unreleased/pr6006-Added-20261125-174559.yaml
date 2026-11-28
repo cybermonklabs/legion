@@ -5,4 +5,4 @@ body: |-
   the command and the Steps tab. `STEP_ANSWERS_MAX` is 16, the most models one step record lists.
 time: 2026-11-25T17:45:59Z
 custom:
-    Issue: pr5533
+    Issue: pr6006
