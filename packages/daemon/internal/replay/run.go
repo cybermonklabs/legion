@@ -420,7 +420,7 @@ func Run(ctx context.Context, cfg RunConfig) (RunResult, error) {
 	d.conflicts, d.merges, d.loops, d.stretchFrom = conflicts, in.merges, recordedLoops(script), map[string]time.Time{}
 	d.waiting, d.reopens, d.starting, d.stretchDraws, d.lastDraw = map[string]waitingConflict{}, map[string][]int{}, map[string][]int{},
 		map[stretchDraw]int{}, map[string]stretchDraw{}
-	d.noWork, d.drawSource = map[string]bool{}, rand.NewPCG(0, 0)
+	d.noWork, d.phaseOpened, d.drawSource = map[string]bool{}, map[string]*piece{}, rand.NewPCG(0, 0)
 	d.draws, d.numbers = rand.New(d.drawSource), newPullRequestNumbers(trace)
 	d.setupGit()
 	if err := d.setupSignals(); err != nil {

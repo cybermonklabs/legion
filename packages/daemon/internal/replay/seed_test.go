@@ -584,19 +584,23 @@ func unslottedAcceptingWindow(t *testing.T) Window {
 	return b.build()
 }
 
-// An issue that stands in accepting at the window's start with no slot owes no start that waits
-// for one, whatever slot the rule keeps there: the architect is the role of accepting, and an
-// architect's turn starts on no slot of its issue's (workerPhase), so a slot the line gave it would
-// hold a worker the record never ran. The test seeds unslottedAcceptingWindow at 10:00 under
-// legion-v19.57.3, which keeps a slot in accepting: ACME-2 owes no start, and the start state names
-// it, since the record holds its slot with no line, which the trace infers for no architect's
-// phase (assumption 34), and the line then holds it by no word. Replayed under that rule, the
-// passes give no slot out and launch no architect of ACME-2.
+// An issue that stands in accepting at the window's start owes no start that waits for a slot,
+// whatever slot the rule keeps there: the architect is the role of accepting, and an architect's
+// turn starts on no slot of its issue's (workerPhase), so a slot the line gave it would hold a
+// worker the record never ran. The test seeds unslottedAcceptingWindow at 10:00 under
+// legion-v19.57.3: ACME-2 owes no start, and it holds the slot the record holds with no line,
+// because legion-v19.57.3 keeps a slot in accepting (assumption 34), so the start state names no
+// issue. Replayed under that rule, the passes give no slot out and launch no architect of ACME-2.
+// It then seeds acceptingMoveBackWindow without that slot at 10:00 under legion-v19.57.3, where
+// ACME-2 stands in accepting with no slot, given back by a line at its move into accepting: it owes
+// no start either, and the start state names it alone, since the line holds it by no word
+// (record.HeldUnclassified). Under a rule that keeps no slot in accepting, record.HeldReasonOf
+// names such an issue at_work, so unclassified needs a rule that keeps a slot there while the
+// issue holds none.
 func TestAnIssueInAcceptingWithNoSlotOwesNoStartThatWaitsForOne(t *testing.T) {
 	t.Parallel()
-	window := unslottedAcceptingWindow(t)
-	trace := placedTrace(t, window)
-	report := seedTrace(t, seedStore(t), trace, window.From, func(tx pgx.Tx) {
+	st := seedStore(t)
+	noOwedStart := func(tx pgx.Tx) {
 		owed, err := record.NewStore().OwedStarts(context.Background(), tx, builtProject)
 		if err != nil {
 			t.Fatalf("read the seeded owed starts: %v", err)
@@ -608,9 +612,19 @@ func TestAnIssueInAcceptingWithNoSlotOwesNoStartThatWaitsForOne(t *testing.T) {
 		if len(starts) != 0 {
 			t.Errorf("the seeded owed starts are %q, want none: ACME-2 stands in accepting, whose architect starts on no slot", starts)
 		}
-	})
+	}
+	window := unslottedAcceptingWindow(t)
+	trace := placedTrace(t, window)
+	report := seedTrace(t, st, trace, window.From, noOwedStart)
+	if len(report.Unplaced) != 0 {
+		t.Errorf("the seed names %+v; want no issue: ACME-2 holds the slot the record holds with no line, which legion-v19.57.3 keeps in accepting",
+			report.Unplaced)
+	}
+
+	noSlot := acceptingMoveBackWindow(t, false)
+	report = seedTrace(t, st, placedTrace(t, noSlot), noSlot.From, noOwedStart)
 	if len(report.Unplaced) != 1 || report.Unplaced[0].Issue != "ACME-2" || !strings.Contains(report.Unplaced[0].Reason, string(record.HeldUnclassified)) {
-		t.Errorf("the seed names %+v; want ACME-2 alone, held by no word in accepting with the slot the record holds with no line", report.Unplaced)
+		t.Errorf("the seed names %+v; want ACME-2 alone, held by no word in accepting with no slot under a rule that keeps one there", report.Unplaced)
 	}
 
 	out := t.TempDir()
@@ -627,5 +641,121 @@ func TestAnIssueInAcceptingWithNoSlotOwesNoStartThatWaitsForOne(t *testing.T) {
 		return line.Claim == architect && (line.Msg == "supervise: launched" || line.Msg == "supervise: a turn started")
 	}); len(launched) != 0 {
 		t.Errorf("ACME-2's architect is launched or starts a turn at %s, want never", describeTimes(launched))
+	}
+}
+
+// An issue that stands in accepting at the window's start, holding a slot the record holds with no
+// line, holds it in the start state where the window's rule keeps a slot in accepting
+// (record.SlotRule.PhaseKeepsSlot, assumption 34): its worker started in its run of phases after
+// its last slot went back, which is the record's sight of the slot, and the daemon that ran the rule
+// kept the slot there. The test seeds unslottedAcceptingWindow at 10:00 as recorded under
+// legion-v19.57.3, which keeps a slot in accepting, where ACME-2 holds the slot from its first
+// phase's start at 08:30, and as recorded under main, which keeps none there, where it holds none.
+// The first fails where the start state infers a slot only in a phase that a worker other than the
+// architect works, for which ACME-2 holds none; the second where it infers one in a phase its rule
+// keeps no slot in.
+func TestAnUnnamedHolderInAcceptingHoldsItsSlotWhereItsRuleKeepsOne(t *testing.T) {
+	t.Parallel()
+	st := seedStore(t)
+	for _, c := range []struct {
+		rule string
+		want []string
+	}{
+		{"legion-v19.57.3", []string{"ACME-1@08:05", "ACME-2@08:30"}},
+		{record.MainRule.Name, []string{"ACME-1@08:05"}},
+	} {
+		window := unslottedAcceptingWindow(t)
+		window.Parts[0].Rule = c.rule
+		seedTrace(t, st, placedTrace(t, window), window.From, func(tx pgx.Tx) {
+			slots := seededSlots(t, tx)
+			slices.Sort(slots)
+			if !slices.Equal(slots, c.want) {
+				t.Errorf("recorded under %s, the start state holds the slots %q, want %q", c.rule, slots, c.want)
+			}
+		})
+	}
+}
+
+// acceptingMoveBackWindow is the record of unslottedAcceptingWindow with the move back its tree
+// root's architect makes of ACME-2 out of accepting: at 10:45 a turn of ACME-1's architect begins,
+// at 10:46 that architect moves ACME-2 back to implementing, and ACME-2's implementer begins a
+// turn at 10:46:30. With unnamed, ACME-2 holds the slot the record holds with no line, as in
+// unslottedAcceptingWindow, and its implementer works on it. Without, ACME-2 takes its slot by a
+// line at 08:30 and the record gives it back by a line as ACME-2 moves into accepting at 09:30, so
+// ACME-2 stands in accepting from its entry on with no slot, and its work coming back takes a slot
+// at 10:46.
+func acceptingMoveBackWindow(t *testing.T, unnamed bool) Window {
+	b := newWindowBuilder(t, clock(10, 0), clock(12, 0))
+	b.window.Parts[0].Rule = "legion-v19.57.3"
+	b.reaches(2 * time.Hour)
+	b.capped(3)
+	b.boot(clock(8, 0))
+	promotedRoot(b, clock(8, 5), "ACME-1", "a1")
+	b.rootDesigned(clock(8, 20), "ACME-1")
+	b.file(clock(8, 25), "ACME-2", filing{Title: "Ship the ACME-2 change", Parent: "ACME-1", Tree: "ACME-1", Status: "todo", Rank: "a2"})
+	if unnamed {
+		b.heldWithNoLine("ACME-2")
+	} else {
+		b.slotTaken(clock(8, 30), "ACME-2")
+	}
+	b.moved(clock(8, 30), "ACME-2", phase.Admitted, phase.Planning, workflow.TriggerGateOpened)
+	b.info(clock(8, 30), "workflow: this child names no issue it waits on any longer, so it starts", "issue", "ACME-2", "tree", "ACME-1")
+	b.launched(clock(8, 30), "ACME-2", claim.RoleArchitect, false)
+	b.turnStarts(clock(8, 30), "ACME-2", claim.RolePlanner)
+	b.through("ACME-2", phase.Planning, builtMove{clock(8, 45), phase.Implementing, workflow.TriggerPlannerCompleted},
+		builtMove{clock(9, 0), phase.Testing, workflow.TriggerImplementationReady},
+		builtMove{clock(9, 15), phase.Reviewing, workflow.TriggerTesterPassed})
+	b.turnEnds(clock(9, 30), "ACME-2", claim.RoleReviewer)
+	b.moved(clock(9, 30), "ACME-2", phase.Reviewing, phase.Accepting, workflow.TriggerReviewApproved)
+	if !unnamed {
+		b.slotReleased(clock(9, 30), "ACME-2")
+	}
+	b.turnStarts(clock(10, 45), "ACME-1", claim.RoleArchitect)
+	b.moved(clock(10, 46), "ACME-2", phase.Accepting, phase.Implementing, workflow.TriggerBackward)
+	if !unnamed {
+		b.workCameBack(clock(10, 46), "ACME-2", phase.Implementing)
+	}
+	b.turnStarts(clock(10, 46).Add(30*time.Second), "ACME-2", claim.RoleImplementer)
+	b.turnEnds(clock(10, 47), "ACME-1", claim.RoleArchitect)
+	return b.build()
+}
+
+// A child that stands in accepting at the window's start takes its tree root's architect's
+// recorded move back out of accepting at its recorded moment, whatever slot it holds: the architect
+// works the issue's acceptance on no slot of the issue's (assumption 34), so the work of accepting
+// starts at the move into it (traceBuilder.workerStart), and the move back that ends that work
+// enters at its end, as a request of the architect that owns the tree (driver.architectRequest).
+// The test replays acceptingMoveBackWindow under legion-v19.57.3, with ACME-2 holding the slot the
+// record holds with no line, and with ACME-2 holding none: each time ACME-2 moves back to
+// implementing at 10:46, and, holding none, it takes the slot its work coming back takes then. It
+// fails where a child in accepting that holds no slot by the trace and whose own architect takes
+// no turn there has no work segment, for which ACME-2 stands in accepting to the window's end.
+func TestAChildInAcceptingTakesItsRootArchitectsMoveBackWhateverSlotItHolds(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name    string
+		unnamed bool
+	}{
+		{"a slot the record holds with no line", true},
+		{"no slot", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			_, log := replayWindowOn(t, acceptingMoveBackWindow(t, c.unnamed), "legion-v19.57.3", MainBranch, 1)
+			back := []fixtureMove{{From: phase.Accepting, To: phase.Implementing, Trigger: workflow.TriggerBackward}}
+			if moves := replayedMoves(log)["ACME-2"]; !slices.Equal(moves, back) {
+				t.Errorf("ACME-2 moved %s, want %s", describeMoves(moves), describeMoves(back))
+			}
+			moved := linesAt(log, func(line replayLine) bool { return line.Msg == phaseChangedLine && line.Issue == "ACME-2" })
+			if want := []time.Time{clock(10, 46)}; !slices.EqualFunc(moved, want, time.Time.Equal) {
+				t.Errorf("ACME-2 moved at %s, want at %s", describeTimes(moved), describeTimes(want))
+			}
+			if c.unnamed {
+				return
+			}
+			if given, want := slotsGivenTo(log, "ACME-2"), []string{"ACME-2 at 10:46"}; !slices.Equal(given, want) {
+				t.Errorf("the replay gave ACME-2 the slots %v, want %v", given, want)
+			}
+		})
 	}
 }

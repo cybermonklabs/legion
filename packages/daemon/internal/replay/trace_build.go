@@ -723,7 +723,12 @@ func buildTrace(w Window) (Trace, error) {
 
 // readTrace is buildTrace of w with what it read on the way, which a run's script reads again
 // (newWindowInputs): the lines of the kinds the window holds and every Dispatch event, each in
-// the one time order the trace read them in, the events by time and then id.
+// the one time order the trace read them in, the events by time and then id. One issue's events
+// keep Dispatch's own order, the order of their sequence, which its events file holds them in and
+// the daemon reads Dispatch's stream in, whatever their stamps: Dispatch can stamp two writes of
+// one issue made at once in the other order than it numbers them, so an event stamped before the
+// one Dispatch wrote before it on its issue is read at that one's moment, and after it, since
+// Dispatch numbers its ids in the order it numbers each issue's sequence.
 func readTrace(w Window) (Trace, []LogLine, []readEvent, error) {
 	rules := make([]record.SlotRule, len(w.Parts))
 	for i, part := range w.Parts {
@@ -772,11 +777,14 @@ func readTrace(w Window) (Trace, []LogLine, []readEvent, error) {
 
 	var events []readEvent
 	for _, key := range slices.Sorted(maps.Keys(w.Events)) {
+		var last time.Time
 		for i, raw := range w.Events[key] {
 			event, err := ParseDispatchEvent(raw)
 			if err != nil {
 				return Trace{}, nil, nil, fmt.Errorf("replay: event %d of %s: %w", i+1, key, err)
 			}
+			event.At = maxTime(event.At, last)
+			last = event.At
 			events = append(events, readEvent{event: event, raw: raw})
 		}
 	}
@@ -1937,10 +1945,12 @@ func (b *traceBuilder) inferSlots() {
 	}
 }
 
-// inferStartSlots gives each issue that stands at the window's start in a worker's phase its rule
-// keeps a slot in, and that holds none there by the slot lines, the slot it held from its last
-// entry into that run of phases (assumption 34): its last slot went back before the start, or no
-// line names one, and it took one again by a way the window holds no slot line of. The issue
+// inferStartSlots gives each issue that stands at the window's start in a phase its rule keeps a
+// slot in (record.SlotRule.PhaseKeepsSlot), and that holds none there by the slot lines, the slot it
+// held from its last entry into that run of phases (assumption 34): its last slot went back before
+// the start, or no line names one, and it took one again by a way the window holds no slot line of.
+// A phase the architect works is one: accepting keeps the issue's slot under a rule that keeps one
+// there, though its architect starts on none, as it kept the slot of the run before it. The issue
 // holds no slot span that stands at the start; no wait of it stands at the start that gives the
 // slot back under the rule (a link or its children where the rule gives the slot back for them, a
 // person or a hold where it keeps none awaiting a person or held); its visit to merging, where it
@@ -1963,7 +1973,7 @@ func (b *traceBuilder) inferStartSlots() {
 	for _, key := range slices.Sorted(maps.Keys(b.t.Issues)) {
 		iss := b.t.Issues[key]
 		at := slices.IndexFunc(iss.Visits, func(visit Visit) bool { return standsAt(visit.Enter, visit.Exit, from) })
-		if at < 0 || !workerPhase(iss.Visits[at].Phase) || !b.t.ruleAt(iss.Visits[at].Enter).PhaseKeepsSlot(iss.Visits[at].Phase) ||
+		if at < 0 || !b.t.ruleAt(iss.Visits[at].Enter).PhaseKeepsSlot(iss.Visits[at].Phase) ||
 			slotStandsAt(iss, from) || waitGivesBackAt(iss, from, rule) {
 			continue
 		}
@@ -2450,6 +2460,21 @@ func (iss *IssueTrace) entryAt(at time.Time) *Entry {
 	return nil
 }
 
+// leftBefore says whether the record holds iss out of the workflow just before at: it left the
+// workflow before at (Leaves) and entered it again at no moment since (Entries). The trace reads
+// the events of a moment before its lines, so an entry at the moment of a leave came before it.
+func (iss *IssueTrace) leftBefore(at time.Time) bool {
+	var left time.Time
+	for _, leave := range iss.Leaves {
+		if leave.At.Before(at) {
+			left = maxTime(left, leave.At)
+		}
+	}
+	return !left.IsZero() && !slices.ContainsFunc(iss.Entries, func(entry Entry) bool {
+		return entry.At.After(left) && entry.At.Before(at)
+	})
+}
+
 // nextWaitStart is the start of iss's next wait of wait's kind after it, zero for none: a wait the
 // daemon entered again had ended before it.
 func (iss *IssueTrace) nextWaitStart(wait *Wait) time.Time {
@@ -2783,8 +2808,12 @@ func (b *traceBuilder) memberLeftAt(iss *IssueTrace, at time.Time) bool {
 
 // workerStart is when visit's worker started: where the issue holds a slot as it enters, the phase
 // change; where it takes one in the visit, that slot; in a phase whose rule keeps no slot, the
-// phase change; otherwise the first turn in the visit of the role that works its phase. Zero where
-// none of them is.
+// phase change; otherwise the first turn in the visit of the role that works its phase; and, where
+// none is, in accepting the phase change. Zero where none of them is. Accepting's work is the
+// architect's that owns the issue, which works the acceptance on no slot of the issue's (assumption
+// 34) and opens on the move into accepting (openingOf): a child's is its tree root's architect's,
+// whose turns are the root's own, so a child that stands in accepting with no slot and no turn of
+// its own architect has its work from that move, which ends at the architect's move out.
 func (b *traceBuilder) workerStart(iss *IssueTrace, visit *Visit) time.Time {
 	if iss.holdsSlotAt(visit.Enter) {
 		return visit.Enter
@@ -2802,6 +2831,9 @@ func (b *traceBuilder) workerStart(iss *IssueTrace, visit *Visit) time.Time {
 		if turn.Claim.Role == role && !turn.Start.Before(visit.Enter) && (visit.Exit.IsZero() || turn.Start.Before(visit.Exit)) {
 			return turn.Start
 		}
+	}
+	if visit.Phase == phase.Accepting {
+		return visit.Enter
 	}
 	return time.Time{}
 }

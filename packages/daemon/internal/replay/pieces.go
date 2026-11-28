@@ -51,7 +51,10 @@ func (d *driver) openSeeded() {
 // row (opensOnPhase): accepting's, whose role is the architect that owns the issue, and a
 // workerless visit's. The move into merging of an issue whose conflict waits for merging opens
 // none: the merger's merge forward runs first, and the piece opens when it lands (mergedForward).
+// The piece it opens is the work of the visit the move begins (driver.phaseOpened), which every
+// move of key ends.
 func (d *driver) openOnPhase(key string, to phase.Phase) {
+	delete(d.phaseOpened, key)
 	if _, waits := d.waiting[key]; waits && to == phase.Merging {
 		return
 	}
@@ -61,6 +64,7 @@ func (d *driver) openOnPhase(key string, to phase.Phase) {
 		}
 		if p.opens == opensOnPhase && p.phase == to {
 			d.openPiece(p, d.clock.Instant(), false)
+			d.phaseOpened[key] = p
 		}
 		return
 	}
@@ -68,8 +72,11 @@ func (d *driver) openOnPhase(key string, to phase.Phase) {
 
 // startPiece opens, for a start of role on key that the stub took, serving the phase served, the
 // next piece of key's work that role's start opens: the first piece not yet run that is role's in
-// served; a piece before it the replay passes over (passOver), counted. It answers the piece it
-// opened, nil for none.
+// served; a piece before it the replay passes over (passOver), counted. It answers the piece the
+// start serves, nil for none: the piece it opened, or, where the move into served opened the work
+// of the visit key stands in (phaseOpened), as a workerless visit's opens, that work, and no piece
+// of a later visit, which opens when key comes to that visit. A piece of the same visit, the rest
+// of its work after a hold, opens as the retry's start opens it.
 func (d *driver) startPiece(key string, role claim.Role, served phase.Phase, retry bool) *piece {
 	for _, p := range d.script.pieces[key] {
 		if p.state != pieceWaiting {
@@ -77,6 +84,9 @@ func (d *driver) startPiece(key string, role claim.Role, served phase.Phase, ret
 		}
 		if p.role != role || p.phase != served || p.opens == opensOnPhase || p.opens == opensAtSeed || (p.opens == opensOnRetry) != retry {
 			continue
+		}
+		if opened := d.phaseOpened[key]; opened != nil && opened.phase == served && opened.role == role && opened.visit != p.visit {
+			return opened
 		}
 		for _, before := range d.script.pieces[key][:p.index] {
 			if before.state == pieceWaiting {
