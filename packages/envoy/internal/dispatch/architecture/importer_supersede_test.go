@@ -2,10 +2,6 @@ package architecture
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -135,11 +131,10 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 	_, database := newImporterFixture(t, fake)
 
 	limits := ratelimit.New(database.Pool)
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	pemText, err := fixtureKeyPEM()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, server.URL, githubapp.WithLimits(limits))

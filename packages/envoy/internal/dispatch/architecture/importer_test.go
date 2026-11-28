@@ -354,15 +354,26 @@ func TestMain(m *testing.M) {
 	os.Exit(storetest.MainEager(m))
 }
 
+// fixtureKeyPEM is the PEM of the one App key every client this package's tests build signs with,
+// generated once per test binary on first use: generating a 2048-bit key costs 70-200 ms, more on
+// a loaded runner, and no test here needs a key of its own. A client only reads the key, and
+// rsa.PrivateKey signs safely from many goroutines, so parallel tests share it.
+var fixtureKeyPEM = sync.OnceValues(func() (string, error) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", err
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})), nil
+})
+
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it.
 func newGitHubClient(t *testing.T, handler http.Handler) *githubapp.Client {
 	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	pemText, err := fixtureKeyPEM()
 	if err != nil {
 		t.Fatalf("generate fixture key: %v", err)
 	}
-	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
 	base := githubtest.Server(t, githubtest.Spec{Handle: handler.ServeHTTP})
 	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.test", PEM: pemText}, base)
 	if err != nil {
