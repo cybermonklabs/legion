@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -63,7 +64,7 @@ func newQuoteHandler(t *testing.T) (http.Handler, *store.Store, *quoteListener) 
 		}
 	}))
 	t.Cleanup(server.Close)
-	handler, database := newTargetedMessageHandler(t, server.URL)
+	handler, database := newTargetedMessageHandlerOn(t, server.URL, clocktest.Held())
 	return handler, database, listener
 }
 

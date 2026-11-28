@@ -69,6 +69,8 @@
 #                                                  <dir> (read-only but for <dir>/<output> and
 #                                                  <dir>/sessions), output to <dir>/out.txt, the
 #                                                  model and thinking level to <dir>/judge-model.txt
+#   rig.sh judge-image                             pulls the judges' container image unless Docker
+#                                                  holds it: the pull judge-omp makes when it must
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start> [<case>]`, which
 # needs that batch's services: <index> is the run's place in the batch, <start> the batch's start
@@ -283,18 +285,19 @@
 #                                 one provider block is the model stand-in (install_standin_route),
 #                                 which model-standin.ts serves for each run of a scored scenario,
 #                                 and its built-from's model line names it
-# `judge` and `judge-omp` also need Docker: each judge runs in a container (cmd_judge_omp).
+# `judge`, `judge-omp` and `judge-image` also need Docker: each judge runs in a container
+# (cmd_judge_omp).
 # Optional:
 #   SKILL_SCENARIOS_WORK      work directory, outside any checkout, and with no `.omp` in it or in
 #                             any directory above it (default ${TMPDIR:-/tmp}/skill-scenarios)
 #   SKILL_SCENARIOS_PARALLEL  concurrent runs in a batch (default 5)
 #   SKILL_SCENARIOS_TIMEOUT   seconds one run, or one turn of a spec run, may take (default 1500)
-#   SKILL_SCENARIOS_DOCKER_TIMEOUT  seconds one Docker call of judge-omp may wait on the daemon
-#                             (default 300): the image's inspect, each pull, and the judge's
-#                             container around its omp, whose run is bounded at this plus
-#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge at once with a
-#                             refusal that names the call, with no further call and no further pull
-#                             (cmd_judge_omp)
+#   SKILL_SCENARIOS_DOCKER_TIMEOUT  seconds one Docker call of judge-omp or judge-image may wait on
+#                             the daemon (default 300): the image's inspect, each pull, and the
+#                             judge's container around its omp, whose run is bounded at this plus
+#                             SKILL_SCENARIOS_TIMEOUT; a call past it ends the judge, or the pull,
+#                             at once with a refusal that names the call, with no further call and
+#                             no further pull (cmd_judge_omp, cmd_judge_image)
 #   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
 #                             swap (default 8G): an agent past it is killed alone (launch)
 #   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
@@ -2137,6 +2140,52 @@ judge_keys() {
   [ -z "${key_file:-}" ] || printf '%s\n' "$key_file"
 }
 
+# cmd_judge_image pulls judge_image unless Docker already holds it, quietly. cmd_judge_omp runs the
+# same pull (judge_image_present) before its container, so a first judge's pull progress never
+# lands in its out.txt and a failed pull names itself; a caller that starts many judges can run it
+# first, so that no judge's own time holds the pull, as rig.test.ts's judge-omp tests do in a
+# beforeAll. Each of its Docker calls has the bound SKILL_SCENARIOS_DOCKER_TIMEOUT, as a judge's
+# inspect and pulls do (judge_docker).
+cmd_judge_image() {
+  [ $# = 0 ] || fail "usage: rig.sh judge-image"
+  local docker_timeout=${SKILL_SCENARIOS_DOCKER_TIMEOUT:-300} docker_late=''
+  [[ $docker_timeout =~ ^[1-9][0-9]*$ ]] ||
+    fail "judge-image: SKILL_SCENARIOS_DOCKER_TIMEOUT is '$docker_timeout', not a whole number of seconds"
+  command -v docker >/dev/null || fail "judge-image: docker is not on PATH; each judge runs in a container"
+  judge_image_present judge-image
+}
+
+# judge_image_present NAME pulls judge_image unless Docker already holds it, quietly, each Docker
+# call within its caller's docker_timeout (judge_docker), and refuses as NAME. The registry answers
+# one request of a batch badly now and then (a token it refuses to mint, a manifest GET it drops)
+# and serves the next, so a failed pull is asked again, three times in all a couple of seconds
+# apart, before the rig refuses. Only the last attempt's own words are kept, and only for the
+# refusal: an attempt the next one makes good says nothing. A pull the daemon does not answer within
+# its bound is not asked again: it refuses at once, naming the call, as an inspect the daemon does
+# not answer does, which is no missing image.
+judge_image_present() {
+  local name=$1 inspected=0
+  judge_docker "$docker_timeout" image inspect "$judge_image" >/dev/null 2>&1 || inspected=$?
+  [ -z "$docker_late" ] ||
+    fail "$name: docker image inspect $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
+  [ "$inspected" != 0 ] || return 0
+  local pull=1 pull_error='' attempt
+  for attempt in 1 2 3; do
+    # The command substitution's subshell keeps judge_docker's docker_late to itself, so it says
+    # how the pull ended in its status: 0 pulled, 1 failed, 2 ended by its bound.
+    pull=0
+    pull_error=$(judge_docker "$docker_timeout" pull --quiet "$judge_image" 2>&1 >/dev/null || {
+      [ -z "$docker_late" ] || exit 2
+      exit 1
+    }) || pull=$?
+    [ "$pull" != 0 ] || break
+    [ "$pull" != 2 ] ||
+      fail "$name: docker pull $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
+    [ "$attempt" -eq 3 ] || sleep 2
+  done
+  [ "$pull" = 0 ] || fail "$name: docker could not pull $judge_image in 3 attempts: $pull_error"
+}
+
 # cmd_judge_omp KIND DIR OUTPUT runs one fresh judge session in DIR on DIR/prompt.txt: no plugins,
 # the KIND profile's skills alone (ste: asd-ste100; bare: none), the judge's pinned model and
 # thinking level, its transcript under DIR/sessions, its output to DIR/out.txt with a last line
@@ -2230,35 +2279,7 @@ cmd_judge_omp() {
   [ -x "$omp" ] || fail "judge-omp: $omp is not an executable omp"
   local extra=() word
   for word in ${SKILL_SCENARIOS_JUDGE_ENV:-}; do extra+=(-e "$word"); done
-  # Pulled here, quietly, so a first run's pull progress never lands in the judge's out.txt, and a
-  # failed pull names itself. The registry answers one request of a batch badly now and then (a
-  # token it refuses to mint, a manifest GET it drops) and serves the next, so a failed pull is
-  # asked again, three times in all a couple of seconds apart, before the rig refuses. Only the last
-  # attempt's own words are kept, and only for the refusal: an attempt the next one makes good says
-  # nothing. A pull the daemon does not answer within its bound is not asked again: it refuses the
-  # judge at once, naming the call, as an inspect the daemon does not answer does, which is no
-  # missing image.
-  local inspected=0
-  judge_docker "$docker_timeout" image inspect "$judge_image" >/dev/null 2>&1 || inspected=$?
-  [ -z "$docker_late" ] ||
-    fail "judge-omp: docker image inspect $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
-  if [ "$inspected" != 0 ]; then
-    local pull=1 pull_error='' attempt
-    for attempt in 1 2 3; do
-      # The command substitution's subshell keeps judge_docker's docker_late to itself, so it says
-      # how the pull ended in its status: 0 pulled, 1 failed, 2 ended by its bound.
-      pull=0
-      pull_error=$(judge_docker "$docker_timeout" pull --quiet "$judge_image" 2>&1 >/dev/null || {
-        [ -z "$docker_late" ] || exit 2
-        exit 1
-      }) || pull=$?
-      [ "$pull" != 0 ] || break
-      [ "$pull" != 2 ] ||
-        fail "judge-omp: docker pull $judge_image did not end within its bound of $docker_timeout s (SKILL_SCENARIOS_DOCKER_TIMEOUT)"
-      [ "$attempt" -eq 3 ] || sleep 2
-    done
-    [ "$pull" = 0 ] || fail "judge-omp: docker could not pull $judge_image in 3 attempts: $pull_error"
-  fi
+  judge_image_present judge-omp
   # shellcheck disable=SC2016 # the container's own bash expands the script's words
   judge_docker "$((docker_timeout + omp_timeout))" run --rm --init --cpus 2 --memory 4g --user "$(id -u):$(id -g)" --read-only \
     --tmpfs /tmp:exec,mode=1777 --tmpfs "$h:exec,uid=$(id -u),gid=$(id -g)" \
@@ -4166,5 +4187,6 @@ unpatch-holds) shift && cmd_unpatch_holds "$@" ;;
 plans-capture) shift && cmd_plans_capture "$@" ;;
 judge) shift && cmd_judge "$@" ;;
 judge-omp) shift && cmd_judge_omp "$@" ;;
+judge-image) shift && cmd_judge_image "$@" ;;
 *) sed -n '2,/^set -euo/p' "${BASH_SOURCE[0]}" | sed '$d' | sed 's/^# \{0,1\}//' && exit 2 ;;
 esac; exit

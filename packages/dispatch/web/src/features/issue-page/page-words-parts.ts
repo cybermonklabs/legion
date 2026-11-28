@@ -24,6 +24,7 @@ import * as partM from "./page-words-m";
 import * as partN from "./page-words-n";
 import * as partS from "./page-words-s";
 import * as partT from "./page-words-t";
+import * as partThreads from "./page-words-threads";
 import * as partU from "./page-words-u";
 import * as partW from "./page-words-w";
 import * as partX from "./page-words-x";
@@ -132,6 +133,7 @@ export const WORD_FILES = [
   { file: "page-words-y.ts", module: partY },
   { file: "page-words-z.ts", module: partZ },
   { file: "page-words-dashboard.ts", module: partDashboard },
+  { file: "page-words-threads.ts", module: partThreads },
 ] as const satisfies readonly WordFile[];
 
 /** The type of the words that `File` adds to the table `Name`, or `unknown` if it adds none. */

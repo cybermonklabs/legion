@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus/censustest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
@@ -1051,7 +1052,7 @@ func newProjectionRun(t *testing.T) *projectionRun {
 	// are read on the connection each of them ran on, the ones a helper ran outside the
 	// transaction it was handed among them.
 	handler, database, _ := newTestServer(t, testServerOptions{
-		envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
+		envoyURL: listener.URL, clock: clocktest.Held(), store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
 	})
 	issue := createInteractionIssue(t, handler, "PROJ", "A projection of its node",
 		"# Spec\n\nA passage the anchor names.\n")

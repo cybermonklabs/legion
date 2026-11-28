@@ -750,13 +750,28 @@ func (f *exchangeFixture) devBoxToken(t *testing.T, key *ecdsa.PrivateKey, perso
 // devBoxTokenOf is devBoxToken for a login whose approval minted the launcher credential named.
 func (f *exchangeFixture) devBoxTokenOf(t *testing.T, key *ecdsa.PrivateKey, person, credential string) string {
 	t.Helper()
+	return f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential})
+}
+
+// devBoxTokenWith is devBoxToken for a login whose approval gave its session extra, as
+// machine.Service.decideDevice writes it.
+func (f *exchangeFixture) devBoxTokenWith(t *testing.T, key *ecdsa.PrivateKey, extra map[string]any) string {
+	t.Helper()
 	deviceCode, userCode := f.authorize(t, key)
-	if err := f.provider.ApproveDevice(context.Background(), userCode, true,
-		map[string]any{"operator": person, "credential_id": credential}); err != nil {
+	if err := f.provider.ApproveDevice(context.Background(), userCode, true, extra); err != nil {
 		t.Fatalf("ApproveDevice: %v", err)
 	}
 	status, body := f.poll(t, deviceCode, key)
 	return accessTokenOf(t, status, body)
+}
+
+// signInToken is a Dispatch sign-in's access token: a device login of key for person whose
+// approval minted a credential holding scopes and wrote them on its session, as
+// machine.Service.ApplyDecision and decideDevice do.
+func (f *exchangeFixture) signInToken(t *testing.T, key *ecdsa.PrivateKey, person string, scopes []string) string {
+	t.Helper()
+	credential := f.newSignInCredential(t, scopes)
+	return f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential, oauthwire.ExtraDispatchScopes: scopes})
 }
 
 // TestADevBoxSessionExchangesItsMachineToken: the machine access token's subject type never
@@ -781,6 +796,55 @@ func TestADevBoxSessionExchangesItsMachineToken(t *testing.T) {
 	if answer.Thumbprint != thumbprint(t, key) {
 		t.Errorf("Introspect answered thumbprint %q, want the machine's own key %q", answer.Thumbprint, thumbprint(t, key))
 	}
+}
+
+// TestADispatchSignInIsTradedOnlyWhereTheBrokerServesOne: a Dispatch sign-in's access token, whose
+// session names the scopes its person approved, trades for a consented token on a broker that
+// serves Dispatch sign-ins, and is refused 400 invalid_scope DISPATCH_SIGNIN_OFF, minting nothing,
+// on one that does not. Control: a machine login's token trades on the broker that serves none.
+//
+// The named revert: drop the sign-in gate from the trade, and the second broker mints the token.
+func TestADispatchSignInIsTradedOnlyWhereTheBrokerServesOne(t *testing.T) {
+	served := newExchangeFixture(t, func(c *oauth.Config) { c.DispatchSignIn = true })
+	key := newKey(t)
+	traded := served.exchanged(t, exchangeForm(served.signInToken(t, key, person, []string{oauthwire.ScopePerson}), oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if got := served.introspected(t, traded); got.ProjectScope != oauthwire.ProjectScopeConsented || got.Scope != oauthwire.ScopePerson {
+		t.Fatalf("a sign-in's trade where sign-ins are served introspects as %q %q, want %q %q", got.ProjectScope, got.Scope, oauthwire.ProjectScopeConsented, oauthwire.ScopePerson)
+	}
+
+	off := newExchangeFixture(t, func(*oauth.Config) {})
+	key = newKey(t)
+	signIn := off.signInToken(t, key, person, []string{oauthwire.ScopePerson})
+	tokens := off.count(t, "oauth_access_tokens")
+	status, body := off.exchange(t, exchangeForm(signIn, oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if description, _ := body["error_description"].(string); status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil ||
+		description != "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off" {
+		t.Fatalf("a sign-in's trade where none is served = %d %v, want 400 invalid_scope DISPATCH_SIGNIN_OFF and no token", status, body)
+	}
+	if n := off.count(t, "oauth_access_tokens"); n != tokens {
+		t.Fatalf("the refused trade left %d access tokens beside the %d before it, want none more", n, tokens)
+	}
+	machineKey := newKey(t)
+	off.exchanged(t, exchangeForm(off.devBoxToken(t, machineKey, person), oauthwire.SubjectTokenTypeAccessToken, "ada-devbox"), machineKey)
+}
+
+// TestASignInSessionNamingNoListOfScopesIsTheBrokersOwnError: a login's session whose
+// dispatch_scopes is not a list of words is no session the broker writes, so its token's trade is
+// the broker's fault, 500 server_error, and mints nothing, rather than a token read as a machine
+// login's. Control: the same session with a list trades.
+//
+// The named revert: read an unreadable dispatch_scopes as none, and the trade mints a person token.
+func TestASignInSessionNamingNoListOfScopesIsTheBrokersOwnError(t *testing.T) {
+	f := newExchangeFixture(t, func(c *oauth.Config) { c.DispatchSignIn = true })
+	key := newKey(t)
+	credential := f.newSignInCredential(t, []string{oauthwire.ScopePerson})
+	token := f.devBoxTokenWith(t, key, map[string]any{"operator": person, "credential_id": credential, oauthwire.ExtraDispatchScopes: oauthwire.ScopePerson})
+	status, body := f.exchange(t, exchangeForm(token, oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), key)
+	if status != http.StatusInternalServerError || body["error"] != "server_error" || body["access_token"] != nil {
+		t.Fatalf("a trade of a session whose dispatch_scopes is a string = %d %v, want 500 server_error and no token", status, body)
+	}
+	listKey := newKey(t)
+	f.exchanged(t, exchangeForm(f.signInToken(t, listKey, person, []string{oauthwire.ScopePerson}), oauthwire.SubjectTokenTypeAccessToken, "ada-signin"), listKey)
 }
 
 // TestADevBoxTradeNamingAWildcardSessionIsRefused: a machine login's trade that names the session

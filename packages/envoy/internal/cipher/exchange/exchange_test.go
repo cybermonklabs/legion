@@ -1274,7 +1274,7 @@ func TestAnExactWorkflowTokenCarriesNoCI(t *testing.T) {
 
 func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T) {
 	set := listed(t)
-	claims, err := set.Machine(credentialID, person, "ada-devbox", nil, exchange.ApproverUnrestricted)
+	claims, err := set.Machine(credentialID, person, "ada-devbox", nil, exchange.ApproverUnrestricted, nil)
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
@@ -1283,7 +1283,7 @@ func TestMachineActsForTheApproverAndWritesEveryProjectThePersonMay(t *testing.T
 		t.Fatalf("Machine = %+v, want %+v: a machine credential that asked for no project names none and says which absence that is", claims, want)
 	}
 	// Another machine of the same person is the same principal: the name belongs to the person.
-	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox", nil, exchange.ApproverUnrestricted)
+	other, err := set.Machine("77777777-8888-9999-aaaa-bbbbbbbbbbbb", person, "ada-devbox", nil, exchange.ApproverUnrestricted, nil)
 	if err != nil || !reflect.DeepEqual(other, want) {
 		t.Fatalf("Machine(another credential of %s) = %+v, %v; want %+v", person, other, err, want)
 	}
@@ -1324,7 +1324,7 @@ func TestEveryDecisionCarriesItsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Google: %v", err)
 	}
-	machine, err := set.Machine(credentialID, person, "ada-devbox", []string{"PRIV", "PUB"}, exchange.ApproverUnrestricted)
+	machine, err := set.Machine(credentialID, person, "ada-devbox", []string{"PRIV", "PUB"}, exchange.ApproverUnrestricted, nil)
 	if err != nil {
 		t.Fatalf("Machine: %v", err)
 	}
@@ -1420,7 +1420,7 @@ func TestMachineRefusesWhatItCannotDecide(t *testing.T) {
 		{name: "a request naming a session holding a wildcard", credential: credentialID, approver: person, session: "ada-*", want: exchange.ErrSessionInvalid, names: person},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			claims, err := set.Machine(c.credential, c.approver, c.session, nil, exchange.ApproverUnrestricted)
+			claims, err := set.Machine(c.credential, c.approver, c.session, nil, exchange.ApproverUnrestricted, nil)
 			if !errors.Is(err, c.want) {
 				t.Fatalf("Machine(%s) = %+v, %v; want %v", c.name, claims, err, c.want)
 			}

@@ -37,9 +37,11 @@ const ledgerSecretPage = "https://secrets.internal.example/approve/record-ledger
 const pendingSecret: FakePendingRequest = {
   approve_url: ledgerSecretPage,
   approver: "alice",
+  dispatch_scopes: null,
   expires_at: pendingUntil,
   identifiers: ["LEDGER_API_KEY"],
   kind: "agent_secret",
+  reason: "",
   record_id: "record-ledger",
   requested_at: new Date().toISOString(),
   session: { enrollment: null, request: null },
@@ -53,8 +55,10 @@ const expiredSecret = expiredCredentialRequest(
   {
     approve_url: retiredSecretPage,
     approver: "alice",
+    dispatch_scopes: null,
     identifiers: ["RETIRED_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "record-retired",
     requested_at: askedAt,
     session: { enrollment: null, request: null },
@@ -66,9 +70,11 @@ const expiredSecret = expiredCredentialRequest(
  *  this deployment serves that page, so the expired row's missing link is the row's own. */
 const pendingMachine: FakePendingRequest = {
   approver: "alice",
+  dispatch_scopes: null,
   expires_at: pendingUntil,
   identifiers: ["worker-8.example.com"],
   kind: "launcher_credential",
+  reason: "",
   record_id: "record-machine-pending",
   requested_at: new Date().toISOString(),
   session: { enrollment: null, request: null },
@@ -82,8 +88,10 @@ const expiredMachineRecordID = "record-machine-expired";
 const expiredMachine = expiredCredentialRequest(
   {
     approver: "alice",
+    dispatch_scopes: null,
     identifiers: ["worker-9.example.com"],
     kind: "launcher_credential",
+    reason: "",
     record_id: expiredMachineRecordID,
     requested_at: askedAt,
     session: { enrollment: null, request: null },
@@ -95,6 +103,7 @@ const expiredLogin = expiredMachineLogin(
   expiredMachineCode,
   {
     approver: "alice",
+    dispatch_scopes: null,
     enrollment: null,
     identifiers: ["worker-9.example.com"],
     kind: "launcher_credential",

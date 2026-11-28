@@ -153,22 +153,29 @@ Answer with the required object and nothing else: verdict, one of grant and deny
 
 // finalSchema is the shape the last reply must be exactly one object of. agentloop reads the
 // reply back against it, so a reply outside the two words is a malformed answer rather than a
-// verdict this package has to second-guess.
+// verdict this package has to second-guess. agentloop sends each object's keys in the order they
+// are written here, and the model writes its reply in that order, so the reason comes before the
+// verdict and the model says why before it decides. Each object is written with its keys sorted:
+// the order the judge's requests carried on anthropic-messages, azure-anthropic and
+// openai-responses while the SDK sorted every schema it sent. On openai-chat, where the SDK sent
+// the declared order, the reply moves from verdict, reason to reason, verdict. required is a list,
+// which nothing reordered, so it keeps verdict first; Ask reads the reply by key, so the order
+// changes nothing it reads.
 var finalSchema = json.RawMessage(`{
-	"type": "object",
+	"additionalProperties": false,
 	"properties": {
-		"verdict": {
-			"type": "string",
-			"enum": ["grant", "deny"],
-			"description": "grant to release the keys for this request, deny to refuse it for good; nobody else is asked"
-		},
 		"reason": {
-			"type": "string",
-			"description": "a sentence or two saying why; for a deny, what the request lacked, which its agent reads"
+			"description": "a sentence or two saying why; for a deny, what the request lacked, which its agent reads",
+			"type": "string"
+		},
+		"verdict": {
+			"description": "grant to release the keys for this request, deny to refuse it for good; nobody else is asked",
+			"enum": ["grant", "deny"],
+			"type": "string"
 		}
 	},
 	"required": ["verdict", "reason"],
-	"additionalProperties": false
+	"type": "object"
 }`)
 
 // Ask makes one model call, for the one key data holds (Runner.askEachKey makes one for each key a

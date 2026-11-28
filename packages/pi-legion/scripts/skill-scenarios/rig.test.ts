@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { fileLimit, spawnWithin, type Wait } from "@legion/test-fixtures/row-clock";
@@ -33,6 +34,8 @@ import { RIG_WORLD } from "./rig-world";
 import { modelProblem, transcriptModels } from "./scored-runs";
 import { RunRow } from "./scored-runs-contracts";
 import {
+  JUDGE_IMAGE,
+  JUDGE_IMAGE_ENVIRONMENT,
   JUDGE_OMP,
   JUDGE_OMP_ENVIRONMENT,
   RIG_STEP,
@@ -136,8 +139,10 @@ const miseData =
  * neither its installs nor its global config, so it fails. make_omp_home keeps the operator's two
  * directories for the processes it starts for the same reason, and base_env passes MISE_DATA_DIR
  * to every agent. A caller that names neither variable gets neither: the developer's own home
- * decides nothing here. */
+ * decides nothing here. A Bun process started under that HOME keeps no transpiler cache there
+ * (`bunCacheOff`). */
 const childEnv = {
+  ...bunCacheOff,
   PATH: callerPath,
   HOME: operatorHome,
   ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
@@ -1439,6 +1444,29 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
   const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
+  // The judges' image, pulled once for the file, by rig.sh's own pull and its three tries
+  // (`rig.sh judge-image`), so that a failed pull names itself here and no row waits for it. The
+  // first row paid for it alone: 119,329.07 ms in job 134109871047 of #4267's pull-request run
+  // 44097039395 (2026-11-17T15:00:12Z), the slowest; over the 1,341 green pi-legion jobs of main's
+  // merge-group and push runs, 2026-10-29T12:58Z to 2026-11-17T16:22Z, it took at most 15,772.79
+  // ms (job 126587011431, push run 41833651040), and no other judge-omp row took more than
+  // 3,342.44 ms (job 126217454413, push run 41722033995). So this hook has a guard of its own: each
+  // Docker call of the pull has JUDGE_IMAGE_CALL's bound, at least twice the slowest pull CI read,
+  // which a row's own Docker bound (JUDGE_DOCKER_CALL) would refuse, and the hook waits for the
+  // pull's whole bound (JUDGE_IMAGE). Its one line of output is the pull's time, so each CI log
+  // records one more reading. A host that skips the rows skips the pull.
+  beforeAll(() => {
+    if (skip) return;
+    const start = performance.now();
+    const result = childSpawn(
+      JUDGE_IMAGE,
+      ["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"],
+      { ...JUDGE_IMAGE_ENVIRONMENT, SKILL_SCENARIOS_WORK: work }
+    );
+    console.log(`judge-omp: rig.sh judge-image took ${(performance.now() - start).toFixed(2)} ms`);
+    expect(judged(result)).toEqual(judgedCleanly);
+  }, rowLimit(JUDGE_IMAGE));
+
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
   dockerTest(
@@ -1864,8 +1892,9 @@ describe("require_superpowers", () => {
   });
 });
 
-// launch with a stand-in tmux that records its session's name and starts the pane's command a
-// moment later, as a real tmux server does, a stand-in systemd-run that records the scope it was
+// launch with a stand-in tmux that records its session's name and starts the pane's command only
+// once launch has looked at the pane's output for the first time, as a real tmux server starts it
+// after `new-session` has returned, a stand-in systemd-run that records the scope it was
 // asked for and runs the command after `--`, a stand-in bwrap that records its arguments and runs
 // the command after `--`, a stand-in mise that prints the omp command line it was given, and a
 // stand-in bun that names its binary. The run's directory and the label's profile sit in a work
@@ -1873,7 +1902,10 @@ describe("require_superpowers", () => {
 // git and jj in the operator's home first, then mise's shims (jq's is a link to mise, as mise
 // makes them), then two mise installs, jq's and jj's, under the pane's MISE_DATA_DIR, then the
 // system. The run's HOME links to a native module cache, and its models.yml reads its key with
-// `!cat`, as the provider route writes it; the label's key-file command names a key file.
+// `!cat`, as the provider route writes it; the label's key-file command names a key file. The
+// tmux gate is a FIFO: the pane's command waits to read it, and the stand-in `sleep`, launch's
+// pause after each look, opens it at its first call; the script opens it at the end where launch
+// never paused. A launch that refuses does so before `new-session`, so no pane waits on the gate.
 describe("launch", () => {
   type Dirs = { run: string; profile: string; bin: string; tools: string };
   function launchRun(
@@ -1959,8 +1991,9 @@ describe("launch", () => {
     );
     before?.({ run, profile, bin, tools });
     const standIns = `
-tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+tmux() { case $1 in new-session) printf '%s\\n' "$4" >"$R/session"; (read -r _ <"$R/pane-gate" && bash -c "\${@: -1}") & ;; esac; }
+open_gate() { if [ -p "$R/pane-gate" ]; then echo looked >"$R/pane-gate"; rm -f "$R/pane-gate"; fi; }
+sleep() { open_gate; command sleep 0.05; }`;
     const functions = [
       "fail",
       "pinned_omp",
@@ -1974,7 +2007,7 @@ sleep() { command sleep 0.05; }`;
       "launch",
     ];
     const result = bash(
-      `${functions.map(fn).join("\n")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin profile=skills\nlaunch${args}\ncp "$R/out.txt" "$R/seen"`,
+      `${functions.map(fn).join("\n")}\n${standIns}\nR=$1 P=$2 work=$3 maps=$3/maps tag=t pin=omp@pin profile=skills\nmkfifo "$R/pane-gate"\nlaunch${args}\ncp "$R/out.txt" "$R/seen"\nopen_gate`,
       [run, profile, work],
       { PATH: `${bin}:${callerPath}`, ...env }
     );
