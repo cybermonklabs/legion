@@ -12,11 +12,13 @@ var _ = declareRow(func(s *server) routeRow {
 		Method: http.MethodPost, Pattern: "/projects/{key}/architecture-syncs", Auth: authAny, Versions: onlyV2,
 		Description: "Import a project's architecture sources now {repos?}: repos names the sources to import, each " +
 			"owner/name (400 SOURCE_INPUT for one that is not), and absent or [] imports every source of the project. " +
-			"Each source is imported whatever another's import did, and each failure - an access failure, a " +
-			"credential or branch problem, included - is on its own row's last_error, the previous projection kept " +
-			"up. 404 SOURCE_NOT_FOUND answers three cases: a named source the project has no source from, naming it, " +
-			"before any is imported; a named source removed while the sync runs, naming it, once the sources before " +
-			"it are imported; and absent or [] on a project with none. An import stores the source's sync " +
+			"Each source is imported whatever another's import recorded on its row, and each failure - an access " +
+			"failure, a credential or branch problem, included - is on its own row's last_error, the previous " +
+			"projection kept up; with repos named, a failure that could not be recorded on its row is a 500 and the " +
+			"sources after it are not imported. 404 SOURCE_NOT_FOUND answers four cases: a named source the project " +
+			"has no source from, naming it, before any is imported; a named source removed while the sync runs, naming " +
+			"it, once the sources before it are imported; absent or [] on a project with none; and absent or [] on a " +
+			"project whose every source is removed while the sync runs. An import stores the source's sync " +
 			"bookkeeping and, on a change, its " +
 			"components, and appends architecture.synced or architecture.sync_failed only when the source's state " +
 			"changes. Answers 200 {items, total, limit, offset}, every source imported in the order they were added: " +

@@ -9,12 +9,14 @@ body: |-
   naming the key and every key the route declares; every `POST`, `PATCH`, `PUT` and `DELETE` takes
   an `Idempotency-Key`, and a `PUT` whose body equals the object's present state answers `200` and
   writes nothing; a path that names a missing object answers `404` with that object's code; and an
-  unknown path answers `404 NO_ROUTE`. The delivery routes are the exception:
+  unknown path answers `404 NO_ROUTE`. The delivery and Legion routes are the exception:
   `GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`,
-  `GET /api/v2/delivery/timeline` and `GET` and `PUT /api/v2/settings/delivery` keep the shape and
-  the rules of their `/api/v1` routes, so they refuse no undeclared query key, and a `PUT` of the
-  delivery settings is not keyed by an `Idempotency-Key`. `GET /api/v2` lists every route with
-  what a client reads to call it, and `envoy-dispatch routes --version 2` prints the same list.
+  `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`,
+  `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
+  `DELETE /api/v2/projects/{key}/legion/daemon` keep the shape and the rules of their `/api/v1`
+  routes, so they refuse no undeclared query key, and their `PUT` and `DELETE` are not keyed by an
+  `Idempotency-Key`. `GET /api/v2` lists every route with what a client reads to call it, and
+  `envoy-dispatch routes --version 2` prints the same list.
   `envoy-dispatch openapi` writes the committed `/api/v2` OpenAPI document beside the `/api/v1`
   one, and `--check` checks both. `--version 1` or `--version 2` takes one document alone, and
   `--out <path>` needs it: it writes that document to the path, or with `--check` names the file

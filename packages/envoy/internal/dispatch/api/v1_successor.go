@@ -13,11 +13,12 @@ package api
 // to - and row 178 one route per project its list holds (handlerResolvedSuccessors). Each of
 // their handlers records the value with successorValue once it has resolved it, into the holder
 // the wrapper put on the request, and the wrapper fills the Link from it. A keyed write keeps
-// those values with its stored answer, and a replay of that answer, which runs no handler, records
-// them again (withSuccessorValues), so it links what the first answer linked. Where no holder is
-// there, a recording is nothing, so a handler records whichever route it answers and its answer
-// does not change. The Deprecation and Sunset headers and the end of /api/v1 are the router's,
-// which holds every path under /api/v1 to them, a route's or not (routes/router.go).
+// those values with its stored answer (withSuccessorValues), and a replay of that answer, which
+// runs no handler, records them again (recordStoredSuccessorValues), so it links what the first
+// answer linked. Where no holder is there, a recording is nothing, so a handler records whichever
+// route it answers and its answer does not change. The Deprecation and Sunset headers and the end
+// of /api/v1 are the router's, which holds every path under /api/v1 to them, a route's or not
+// (routes/router.go).
 
 import (
 	"bufio"
@@ -351,7 +352,9 @@ func (w *successorWriter) Write(body []byte) (int, error) {
 // ReadFrom, Flush and Hijack are forwarded as typedWriter forwards them (response_compression.go),
 // so the wrapper costs a handler none of net/http's own interfaces: the v1 event stream
 // (GET /api/v1/going/requests/{id}/stream) flushes, and a file's bytes are copied with ReadFrom.
-// Each sets the Link first, since each can be the moment the answer's head goes out.
+// ReadFrom and Flush each set the Link first, since each can be the moment the answer's head goes
+// out; Hijack sets none, since past the upgrade the connection's bytes are the handler's frames,
+// not an answer.
 func (w *successorWriter) ReadFrom(body io.Reader) (int64, error) {
 	w.setLink(http.StatusOK)
 	if from, ok := w.ResponseWriter.(io.ReaderFrom); ok {

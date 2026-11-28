@@ -21,8 +21,9 @@ package api
 // value is in the table"): the `approve` scope of an answer to an approval ask (recordAnswer),
 // the author-or-person rule of an ask's reword (rewordAsk), and the holder's `force` of a claim.
 //
-// A write to the rows of one session the path names is held to that session by
-// withinSessionScope (the row's SessionPath). Where the path names a session only for one kind
+// A write to the rows of one session the path names, on a row that declares no OAuth scopes, is
+// held to that session by withinSessionScope (the row's SessionPath); a row that declares any
+// passes whatever session the credential proved. Where the path names a session only for one kind
 // of object, or the body names several, the body's type names them (sessionAddressing), and this
 // gate holds each to the session the caller's credential proved whatever OAuth scopes the row
 // declares (refusesSessionOtherThanProved). Two rows declare such a body: PATCH
@@ -78,10 +79,11 @@ func addressesSessions(body requestBody) bool {
 	return slices.ContainsFunc(bodyTypes(body), func(typ reflect.Type) bool { return typ.Implements(sessionAddressingType) })
 }
 
-// gateV2Authorities refuses a request to a decoded route (a /api/v2 route, or the /api/v1 path of a
-// row served in both versions: apiRoute.decoded) whose credential lacks a scope one of its
-// values needs (the row's Authorities), and a write whose body names a session the credential may
-// not write into (sessionAddressing). register wraps it after the decoder has read the query and
+// gateV2Authorities refuses a request to a decoded route (apiRoute.decoded: a /api/v2 route but a
+// row of the INFRA-979 tree and a test hook, or the /api/v1 path of a row served in both versions
+// outside that tree) whose credential lacks a scope one of its values needs (the row's
+// Authorities), and a write whose body names a session the credential may not write into
+// (sessionAddressing). register wraps it after the decoder has read the query and
 // the body, and outside the keyed layer, so a refused write claims no idempotency key: the person
 // who ticks the scope back is not answered the stored refusal under the same key. A missing scope
 // is 403 OAUTH_SCOPE_REQUIRED naming the scope, under the challenge refuseMissingScope gives it; a
@@ -194,9 +196,11 @@ func (rule authorityRule) String() string {
 
 // authorityFaults names every rule of the decoder's route that could never hold, or that names
 // what the route does not read, so a misspelt rule fails the server's start rather than leaving a
-// value unguarded: a rule with no scope; a query rule on a key the route's query does not declare,
-// or on a value its enum does not list; a body rule on a route with no JSON body, on a member no
-// arm and no type declares, or naming a state or kind no arm of the union is.
+// value unguarded: a rule with no member or key, or no scope; a rule holding a key's absence on
+// anything but a query key with no Value; a query rule on a key the route's query does not
+// declare, or on a value its enum does not list; a rule on a part other than the body or the
+// query; a body rule on a route with no JSON body, on a member no arm and no type declares, or
+// naming a state or kind no arm of the union is.
 func (d *v2Decoder) authorityFaults() []string {
 	var faults []string
 	body := d.route.Body

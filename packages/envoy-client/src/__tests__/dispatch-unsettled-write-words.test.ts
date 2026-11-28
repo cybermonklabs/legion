@@ -437,10 +437,10 @@ describe("the words a dispatch write that may have landed prints", () => {
   // A body that breaks off after the status and headers came: the request reached whatever
   // answered, and whether the write ran was the body's to say, so a write that loses it may or
   // may not have taken effect, as a keyed write that loses it does (`body-broken`,
-  // write-outcome.ts); a GET's loss is thrown as it came. Each read of a body has a row for a
-  // write and one for a GET: the 2xx `#route` reads as bytes, the 5xx `#send` reads for
-  // Dispatch's own refusal (a GET's non-2xx goes to `#response` from `#route`), and the answer
-  // `#response` reads as text for a PUT.
+  // write-outcome.ts); a GET's loss is thrown as it came. Each row reads one body: a write's
+  // (POST, PUT) is read whole in `#sendOnce`, before `#send`, `#route` or `#response` sees it,
+  // whatever its status; a GET's 2xx is read as bytes by `#route`, and a GET's non-2xx, and the
+  // ask's read, as text by `#response`.
   const cutSuccess: Reply = { status: 201, cut: '{"id":"5a66' };
   const cutFailure: Reply = { status: 500, cut: '{"code":"INTERNAL","er' };
   const lostBody = (text: string, request: string, status: number): void => {
@@ -457,7 +457,7 @@ describe("the words a dispatch write that may have landed prints", () => {
     expect(text).not.toContain("may or may not");
   };
 
-  test("dispatch api's POST answered 201 whose body breaks off may or may not have taken effect (#route's read of a 2xx)", async () => {
+  test("dispatch api's POST answered 201 whose body breaks off may or may not have taken effect (#sendOnce's read of a write's 2xx)", async () => {
     const dispatch = await dispatchOn(false, () => cutSuccess);
 
     const text = await api(dispatch.url, "POST");
@@ -475,7 +475,7 @@ describe("the words a dispatch write that may have landed prints", () => {
     thrownAsItCame(text);
   });
 
-  test("dispatch api's POST answered 500 whose body breaks off may or may not have taken effect (#send's read of a 5xx)", async () => {
+  test("dispatch api's POST answered 500 whose body breaks off may or may not have taken effect (#sendOnce's read of a write's 5xx)", async () => {
     const dispatch = await dispatchOn(false, () => cutFailure);
 
     const text = await api(dispatch.url, "POST");
@@ -493,7 +493,7 @@ describe("the words a dispatch write that may have landed prints", () => {
     thrownAsItCame(text);
   });
 
-  test("an unkeyed PUT answered 200 whose body breaks off may or may not have taken effect (#response's read)", async () => {
+  test("an unkeyed PUT answered 200 whose body breaks off may or may not have taken effect (#sendOnce's read of a write's answer)", async () => {
     const dispatch = await dispatchOn(true, (request) =>
       request === ASK_READ ? askRead : { status: 200, cut: '{"followers":["sess' }
     );

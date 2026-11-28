@@ -11,7 +11,8 @@ var _ = declareRow(func(s *server) routeRow {
 		Method: http.MethodGet, Pattern: "/me/threads", Auth: authAny, Versions: onlyV2,
 		Description: "The caller's Inbox threads (the person scope), of the kinds kind=<kind>,<kind> names: reply (the " +
 			"default) lists the threads they wrote in - an ask, a comment thread, an issue message thread - that somebody " +
-			"else has written in, less an open ask on an open issue that waits on them, which GET /api/v2/asks?waiting_on=me " +
+			"else has written in (under state=dismissed, also a thread they dismissed that nobody else has written in), " +
+			"less an open ask on an open issue or a project document that waits on them, which GET /api/v2/asks?waiting_on=me " +
 			"lists; agent lists their one-off messages to an agent session (a BTW, a broadcast's copy, or a Send or Aside the " +
 			"session did not take as a turn of its live conversation) holding a reply from that session; reply,agent lists " +
 			"both in one order. state is unread (the default), the rows somebody else has written in since they read them, " +

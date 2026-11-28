@@ -661,7 +661,8 @@ func (r *router) staticHandler(w http.ResponseWriter, req *http.Request) {
 		// does not exist is visible beside the callers of the routes that do. A path under
 		// /api/v2 answers that version's no-route code and points at its own index; every other
 		// root answers as /api/v1 always has, and one under /api/v1 carries that version's
-		// Deprecation, Sunset and Link to /api/v2, which endAPIV1 set before the mux ran.
+		// Deprecation and Link to /api/v2, and Sunset while an end is set and ahead, which
+		// endAPIV1 set before the mux ran.
 		accesslog.HandlerFunc(unmatchedRoute, func(w http.ResponseWriter, req *http.Request) {
 			code, status, hint := apicode.NotFound.V1Name(), apicode.NotFound.V1Status(), "GET /api/v1 lists every route"
 			if isReservedPath(normalized, apiV2Roots) {
@@ -1062,12 +1063,14 @@ const (
 	// codeSigninStartFailed is a sign-in /auth/start could not open: no random state or nonce,
 	// or a state cookie that could not be signed.
 	codeSigninStartFailed = "SIGNIN_START_FAILED"
-	// codeAuthParamsInvalid is an /auth/callback whose code or state the issuer did not send.
+	// codeAuthParamsInvalid is an /auth/callback that carries the issuer's error, lacks a code or
+	// a state, or carries a code longer than oidc.MaxCallbackCode.
 	codeAuthParamsInvalid = "AUTH_PARAMS_INVALID"
 	// codeAuthStateInvalid is an /auth/callback with no state cookie, or one that does not
 	// verify, has lapsed, or names another sign-in's state.
 	codeAuthStateInvalid = "AUTH_STATE_INVALID"
-	// codeSigninFailed is a code exchange the issuer refused or did not answer.
+	// codeSigninFailed is a code exchange the issuer refused or answered with no usable token;
+	// one it did not answer is SIGNIN_UNAVAILABLE.
 	codeSigninFailed = "SIGNIN_FAILED"
 	// codeSigninRecordFailed is a sign-in whose person could not be recorded or read back.
 	codeSigninRecordFailed = "SIGNIN_RECORD_FAILED"
@@ -1177,7 +1180,8 @@ func (r *router) endAPIV1(mux *http.ServeMux, next http.Handler) http.Handler {
 // endedRoute is the access-log route of a request the end of /api/v1 answers: the path pattern of
 // the route mux matches it to, which is the route its line would have named had the route run, or
 // unmatchedRoute where only the catch-all matches - a path no route answers, a method its route
-// does not serve - or none does, an unclean path mux would have redirected.
+// does not serve. An unclean path is named by the route its cleaned path matches, the pattern
+// mux.Handler answers for the redirect it would make.
 func endedRoute(mux *http.ServeMux, req *http.Request) string {
 	_, pattern := mux.Handler(req)
 	if _, path, withMethod := strings.Cut(pattern, " "); withMethod {

@@ -66,8 +66,9 @@ const artifactIncludeText = "include=text adds to each document its canonical ma
 	"reads all of them from one tree, so another session's write cannot split the blocks' ranges from the markdown " +
 	"they index. A file or an image carries neither."
 
-// artifactSlugText is what the descriptions of an issue's and a project's artifact lists say of
-// slug=, which answers for the /api/v1 read by slug (J7).
+// artifactSlugText is what the description of an issue's artifact list says of slug=, which
+// answers for the /api/v1 read by slug (J7); a project's list, which holds several owners, says
+// its own.
 const artifactSlugText = "slug=<slug or file name> keeps the artifacts at that slug and the documents of that exact " +
 	"file name, as dispatch://<owner>/artifact/<slug> names one: one row, or more where one document's file name is " +
 	"another's slug or documents share a file name."

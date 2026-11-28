@@ -178,7 +178,9 @@ function nextSteps(
  * Whether Dispatch itself answered `status`; a gateway's answer of that status says nothing it
  * decided. A write Dispatch answered with its own 5xx is no refusal but a
  * `DispatchWriteUnsettledError` (the write may have committed first), so a caller that reads such
- * a 5xx asks this of that error's `last`.
+ * a 5xx asks this of that error's `last`; but for Dispatch's 503 BROKER_UNAVAILABLE, which checked
+ * no token and ran nothing (`tokenNotChecked`), and a keyed write's 5xx text refusal while no
+ * attempt of it may have landed, each thrown as the refusal it is.
  */
 export function dispatchAnswered(error: unknown, status: number): error is DispatchServiceError {
   return error instanceof DispatchServiceError && error.fromDispatch && error.status === status;
@@ -269,7 +271,10 @@ export function refuseMissingPost(
  * own answer after which the request may have reached it (`mayHaveReachedServer`: a 5xx, which it
  * can send after it committed, or a 408) the client throws as a `DispatchWriteUnsettledError`, as
  * it does a transport failure and a deadline after an attempt may have reached Dispatch; that
- * error, and a timeout or a transport error thrown as it came, says nothing either way.
+ * error, and a timeout or a transport error thrown as it came, says nothing either way. The 5xx
+ * refusals the client throws as they came - Dispatch's 503 BROKER_UNAVAILABLE (`tokenNotChecked`),
+ * and a keyed write's 5xx text refusal while nothing of it may have landed - this reads by their
+ * status as possibly landed too, though nothing ran.
  */
 export function writeMayHaveLanded(error: unknown): boolean {
   if (error instanceof DispatchGatewayError) return error.mayHaveReachedDispatch;

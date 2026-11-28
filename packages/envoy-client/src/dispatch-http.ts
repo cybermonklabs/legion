@@ -718,9 +718,10 @@ const ISSUE_EVENTS_PAGE_MAX = 200;
 export const DISPATCH_TOOL_DEADLINE_MS = 60_000;
 
 /**
- * The `User-Agent` of a client made with no program named (a test, an operator script): this
- * package and its version. Each Legion entry point names itself instead (`DispatchClient`'s
- * `userAgent`), as `<program>/<release>`, so Dispatch's access log can tell its callers apart.
+ * The `User-Agent` of a client made with no program named (a test, an operator script):
+ * `dispatch-client/` and this package's version. Each Legion entry point names itself instead
+ * (`DispatchClient`'s `userAgent`), as `<program>/<release>`, so Dispatch's access log can tell
+ * its callers apart.
  */
 export const DISPATCH_CLIENT_USER_AGENT = `dispatch-client/${envoyClientVersion}`;
 

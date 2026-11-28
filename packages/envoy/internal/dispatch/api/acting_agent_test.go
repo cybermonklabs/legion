@@ -663,10 +663,10 @@ func TestAnsweringAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 // An approval request its person answered with a credential that holds approve is answered as it
 // stands, writing nothing, to that credential sending the same answer again on PUT
 // /api/v2/asks/{id}/state (the no-op rule, putChangesNothing), and to no credential that may not
-// approve: a token of the same person narrowed to person, and a broker-issued token acting for
-// that person, which never holds approve (brokerTokenActor), are each refused 403
-// OAUTH_SCOPE_REQUIRED naming approve, with its challenge, as every answer of theirs to that ask
-// is, rather than told its approval stands.
+// approve: a token of the same person narrowed to person, and a person-scoped broker-issued token
+// acting for that person, which holds person and never approve (brokerPersonScopes), are each
+// refused 403 OAUTH_SCOPE_REQUIRED naming approve, with its challenge, as every answer of theirs to
+// that ask is, rather than told its approval stands.
 func TestTheV2NoOpAnswerOfAnApprovalAskNeedsTheApproveScope(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	handler, database := rig.handler, rig.database

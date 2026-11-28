@@ -12,7 +12,9 @@ var _ = declareRow(func(s *server) routeRow {
 		Method: http.MethodPut, Pattern: "/credential-requests/{id}/state", Auth: authAny, Versions: onlyV2,
 		Description: "Decide a machine login as the caller {state, code?}, or dismiss an expired credential " +
 			"request {state}. state approved or denied decides a machine login, and code is the login's " +
-			"confirmation code as the person typed it, which the secrets broker checks on both. The broker " +
+			"confirmation code as the person typed it, which the secrets broker checks on both. The broker is " +
+			"sent code alone, never the scopes POST /api/v1/credential-requests/{id}/approve relays for a Dispatch " +
+			"sign-in, so it refuses a sign-in's approval here 400 SCOPES_REQUIRED. The broker " +
 			"decides whether the caller is its approver, refuses a secret request with 403 DECIDE_ON_BROKER_PAGE " +
 			"naming its page on the broker in approve_url, and refuses a code that is missing or not the login's " +
 			"own. A service's machine login is denied by anyone signed in but a caller Dispatch calls a restricted " +

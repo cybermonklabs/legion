@@ -31,7 +31,8 @@ import (
 const issueUpdatedNow = "greatest(updated_at, clock_timestamp())"
 
 // updateIssueInput is the body of PATCH /api/v1/issues/{key}, and the members of PATCH
-// /api/v2/issues/{key}'s body beside its design gates (patchIssueV2Input).
+// /api/v2/issues/{key}'s body other than its design gates and its status-change options
+// (patchIssueV2Input).
 type updateIssueInput struct {
 	Title         *string               `json:"title"`
 	Status        *string               `json:"status"`
@@ -71,8 +72,9 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	s.patchIssueAs(w, r, input, nil)
 }
 
-// patchIssueAs serves both versions of the issue PATCH through writeIssue. Only /api/v2
-// takes design_gates alongside the other issue fields.
+// patchIssueAs serves the plain issue PATCH of both versions through writeIssue; the status-change
+// form of PATCH /api/v2/issues/{key} goes to changeIssueStatusFrom. Only /api/v2 takes
+// design_gates alongside the other issue fields.
 func (s *server) patchIssueAs(w http.ResponseWriter, r *http.Request, input updateIssueInput, gates []issueDesignGate) {
 	writer, err := s.requestWriter(r, input.Actor)
 	if err != nil {

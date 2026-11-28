@@ -102,10 +102,11 @@ func v1CodeMismatches(codes []apicode.Code, listed map[string]bool) []string {
 	return mismatches
 }
 
-// /api/v1 answers every code and status it answered at c8a44f97 and no other (R3): every constant
-// that renders under /api/v1 renders a pair c8a44f97 wrote, or a later merge on main added, or one
-// of the named exceptions, and every such pair is still some constant's. A v2-only code renders
-// nothing under /api/v1, so a new code cannot reach a v1 client.
+// /api/v1 answers every code and status it answered at c8a44f97 and no other but the named
+// exceptions (R3): every constant that renders under /api/v1 renders a pair c8a44f97 wrote, or a
+// later merge on main added, or one of the named exceptions, and every such pair is still some
+// constant's. A v2-only code renders nothing under /api/v1, so a new code reaches a v1 client only
+// as a named exception (v1CodeExceptions).
 func TestV1CodesAreTheCodesOfC8a44f97(t *testing.T) {
 	listed := readV1Codes(t)
 	for _, mismatch := range v1CodeMismatches(apicode.All(), listed) {
@@ -177,9 +178,9 @@ func refusalLiteralProblems(fset *token.FileSet, file *ast.File, writers map[str
 // answer 500), and none builds an errorBody but writeVersionedError, the one writer writeError and
 // writeErrorAt write through, and testHookFailure, the test hooks' writer. That is all it reads: a
 // refusal written with a body of its own through WriteJSON, its code named through refusalPair
-// (writeV2DecodeError, writeHandlerError's lost edit, writeClaimError, the issue state's and the
-// marks' STATE_STALE), and the routes package's writeCodeError, which takes its code as a string,
-// make no literal it reads.
+// (by every caller of refusalPair, writeV2DecodeError, writeHandlerError and writeClaimError among
+// them) or through the code's own name (the router's API_V1_ENDED), and the routes package's
+// writeCodeError, which takes its code as a string, make no literal it reads.
 func TestNoSourceMakesACodeOrAnErrorBodyOutsideItsWriters(t *testing.T) {
 	writers := map[string]int{}
 	for _, dir := range []string{".", filepath.Join("..", "routes")} {

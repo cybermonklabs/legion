@@ -1,22 +1,23 @@
 package api
 
 // v2_projects.go is the projects, architecture, repositories, priorities and deployment settings
-// of /api/v2 (R1 of dispatch://INFRA-4071/spec): the projects and the patch of
-// one, which takes the default assignee, the gated steps and the default repository three PUTs of
-// /api/v1 wrote (the route map's J16); a project's architecture, its sources and the one sync
-// route the three syncs of /api/v1 become (J15); the finished issues with their plans and
-// ratings, a row #4488 added; the related-item search; the near-copy gate's records, in the
-// envelope (two rows #4103 added, which no row of the route map names); the read-only repository
-// mappings the last release left and the App's installation on one repository; the priorities and
-// the acts of one (J29); the three deployment settings (J19); and the counts of the related-item
-// checks (J30). Every route runs the work its /api/v1 route runs (createProjectFrom,
-// writeProjectDefaultAssignee, writeProjectGatedSteps, writeProjectDefaultRepository,
-// getArchitectureTree, querySources, putArchitectureSourceFrom, deleteArchitectureSourceAs,
-// syncProjectSources, projectFinishedIssues, answerRelated, readNearCopyCheck, getAppInstallation,
-// readPriorities, createPriorityFrom, patchPriorityFrom, deletePriorityAs, priorityActsOf,
-// getNewIssueSettings, getCredentialCapabilities, getGoingCapability, relatedChecksReportOf), each
-// path object checked first and answered with its own 404 (R7); the app-installation read's
-// {owner}/{repo} keeps the answer /api/v1 gives it (R7).
+// of /api/v2 (R1 of dispatch://INFRA-4071/spec): the projects and the patch of one, which takes
+// the default assignee, the gated steps, the default repository and the proven-sessions setting
+// that four PUTs and a DELETE of /api/v1 wrote (the route map's J16, and #4725's setting); a
+// project's architecture, its sources and the one sync route the three syncs of /api/v1 become
+// (J15); the finished issues with their plans and ratings, a row #4488 added; the related-item
+// search; the near-copy gate's records, in the envelope (two rows #4103 added, which no row of the
+// route map names); the read-only repository mappings the last release left and the App's
+// installation on one repository; the priorities and the acts of one (J29); the three deployment
+// settings (J19); and the counts of the related-item checks (J30). Every route runs the work its
+// /api/v1 route runs (createProjectFrom, writeProjectDefaultAssignee, writeProjectGatedSteps,
+// writeProjectDefaultRepository, writeProjectProvenSessions, getArchitectureTree, querySources,
+// putArchitectureSourceFrom, deleteArchitectureSourceAs, syncProjectSources,
+// projectFinishedIssues, answerRelated, readNearCopyCheck, getAppInstallation, readPriorities,
+// createPriorityFrom, patchPriorityFrom, deletePriorityAs, priorityActsOf, getNewIssueSettings,
+// getCredentialCapabilities, getGoingCapability, relatedChecksReportOf), each path object checked
+// first and answered with its own 404 (R7); the app-installation read's {owner}/{repo} keeps the
+// answer /api/v1 gives it (R7).
 
 import (
 	"encoding/json"

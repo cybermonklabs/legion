@@ -17,10 +17,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"and GET /api/v2/messages/{id}/corrections reads the mark in its place. Each block is removed with its " +
 			"excerpt cleared, and every send still pending is failed, 'ended by the post's delete', which says nothing " +
 			"of whether its frame had already reached the session. A send its own sender moves while the delete is " +
-			"being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the same delete " +
-			"again. A message of a closed issue is deleted too. A message of a conversation with no issue is 409 " +
-			"NOT_AN_ISSUE_MESSAGE, and a second delete is 409 POST_DELETED. Answers the message as the delete leaves " +
-			"it and appends message.deleted. 404 MESSAGE_NOT_FOUND.",
+			"being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send the delete again " +
+			"under a new Idempotency-Key, since the key keeps this 409. A message of a closed issue is deleted too. A " +
+			"message of a conversation with no issue is 409 NOT_AN_ISSUE_MESSAGE, and a second delete is 409 " +
+			"POST_DELETED. Answers the message as the delete leaves it and appends message.deleted. 404 MESSAGE_NOT_FOUND.",
 		Handler:  s.deleteMessageV2,
 		Resource: "messages", Kind: kindItem, Key: "{id}",
 		Body:  requestBody{Kind: bodyJSON, Type: actorInput{}, Optional: true},

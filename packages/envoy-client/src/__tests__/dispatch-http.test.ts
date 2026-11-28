@@ -2410,7 +2410,7 @@ describe("the User-Agent", () => {
     ).toEqual(["Bearer secret", "Bearer secret", "Bearer secret"]);
   });
 
-  test("a client made with no program named sends envoy-client's own name and version", async () => {
+  test("a client made with no program named sends dispatch-client and envoy-client's version", async () => {
     const { fetchImpl, requests } = fakeFetch([jsonResponse([])]);
     const client = new DispatchClient(
       "http://dispatch.test",

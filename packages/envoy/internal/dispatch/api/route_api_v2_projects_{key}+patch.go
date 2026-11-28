@@ -10,7 +10,9 @@ var _ = declareRow(func(s *server) routeRow {
 	return routeRow{
 		Method: http.MethodPatch, Pattern: "/projects/{key}", Auth: authAny, Versions: onlyV2,
 		Description: "Change a project {default_assignee?, gated_steps?, default_repository?, proven_sessions?}, a " +
-			"bearer naming its session in actor. default_assignee moves " + projectDefaultAssigneeText + " to another " +
+			"bearer naming its session in actor; a patch naming default_assignee or proven_sessions false is written " +
+			"as the person the credential acts for instead, with the session that credential proved or the session " +
+			"query parameter names, and its actor is ignored. default_assignee moves " + projectDefaultAssigneeText + " to another " +
 			"person, the email of a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise), and appends " +
 			"settings.project_default_assignee.updated naming both people; a body naming default_assignee at all, null " +
 			"included, needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and since a project always names a " +
@@ -32,8 +34,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"the check, so proven_sessions false needs the person scope (403 OAUTH_SCOPE_REQUIRED otherwise), and its " +
 			"event names the person. A list, a default repository or a setting the project already holds changes " +
 			"nothing and appends no event; another appends project.updated. A body that names none of the four " +
-			"fields, a blank default_assignee, a step that is none of the three or is named twice, and a " +
-			"default_repository that is not a repository GitHub could hold are 400 INVALID_PROJECT. Every field is " +
+			"fields with a value (a null default_assignee, gated_steps or proven_sessions names nothing; a null " +
+			"default_repository clears it), a blank default_assignee, a step that is none of the three or is named " +
+			"twice, and a default_repository that is not a repository GitHub could hold are 400 INVALID_PROJECT. Every field is " +
 			"written in one transaction. Answers the project as GET /api/v2/projects lists it, with default_assignee " +
 			"where the patch named it. 404 PROJECT_NOT_FOUND for a project that does not exist.",
 		Handler:  s.patchProjectV2,

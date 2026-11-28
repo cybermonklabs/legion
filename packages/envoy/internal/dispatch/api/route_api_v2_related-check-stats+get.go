@@ -21,8 +21,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"with no check), and how many took over 300 ms. other_project_offers is how many ask creates of the window " +
 			"offered at least one answered question of another project, a count of writes and not of items, read from " +
 			"write_suggestions over the same window and filters, and zero for a source kind no such row carries; the two " +
-			"records are written at different moments and only the check's own row is retried, so a count at a window's " +
-			"edge can name one fewer write than the window's total.",
+			"records are written at different moments and only the check's own row is retried, so near a window's " +
+			"edge the count can name a write more or fewer than the window's checks show, and a write whose offer rows " +
+			"could not be recorded is not counted.",
 		Handler:  s.getRelatedCheckStatsV2,
 		Resource: "related-check-stats", Kind: kindReport,
 		TimeFields: []string{"created_at"}, CrossProject: true,

@@ -17,9 +17,9 @@ import (
 
 func init() { addTourSteps("logs", logsTourSteps) }
 
-// logsTourSteps are the route tour's steps of the five logs: each read whole and each read from a
-// position, but a document's log (/artifacts/{id}/events), which the tour reads from a position
-// alone.
+// logsTourSteps are the route tour's steps of five of the seven logs, the threads' steps holding
+// the two corrections logs': each read whole and each read from a position, but a document's log
+// (/artifacts/{id}/events), which the tour reads from a position alone.
 func logsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	issueEvents := func(query url.Values) func(*testing.T, *routeTour) tourRequest {

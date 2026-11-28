@@ -73,7 +73,8 @@ Each item below names a variable, then its purpose.
   Once it has passed, a check in front of every route answers every path under `/api/v1`, an unknown path and a test hook's included, `410 {"code":"API_V1_ENDED","error":"/api/v1 ended at <end>; GET /api/v2 lists every route","hint":"GET /api/v2"}` with `Link: </api/v2>; rel="successor-version"`.
   The check reads the clock on each request, so the end takes effect at that instant on every process, with no restart.
   Set it only once no client a deployment runs still calls `/api/v1`:
-  at the first `legion-envoy` release that carries pull request #4274, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the secrets broker all still do, and each names itself in its `User-Agent`, which the access log records (Access log, below).
+  at the first `legion-envoy` release that carries pull request #4274, the web app, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the secrets broker all still do, and each but the web app names itself in its `User-Agent`, which the access log records (Access log, below).
+  The web app sets no `User-Agent` of its own, so its requests carry its browser's and the access log does not name it.
 
 - `DISPATCH_TEST_HOOKS`
 
@@ -4762,7 +4763,7 @@ The dashboard mints one per press and the `dispatch` CLI one per command's write
 a failed fetch, an attempt silent too long, a 5xx, a 408, a 429 and a `409 KEY_IN_FLIGHT`.
 No route requires the header: a write without one runs as it always did, unkeyed, so a script or the Legion daemon's outbox keeps working.
 On `/api/v1` a `PUT` and a `DELETE` take no key, being idempotent already, so no `/api/v1` answer changes;
-on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`), which keep their `/api/v1` shape, keep `/api/v1`'s rule.
+on `/api/v2` they are keyed like every other write, so a repeated `PUT` or `DELETE` is answered as its first was, and the nine routes of the INFRA-979 tree (`/api/v2/delivery/…`, `/api/v2/settings/delivery`, `/api/v2/projects/{key}/legion/…`), which keep their `/api/v1` shape, keep `/api/v1`'s rule: the `PUT` of `/api/v2/settings/delivery` and the `PUT` and `DELETE` of `/api/v2/projects/{key}/legion/daemon` take no key.
 A `/api/v2` `PUT` whose whole body equals the object's present state and fields, sent by the caller the object records as having set them (anyone, for an object that records no setter: a follower, an architecture source; for a credential request, a caller the broker would let decide it, `record.MayDecide`), answers `200` with the object and writes nothing (`putChangesNothing`), and it is held first to every scope and authority the write it stands in for needs, so a caller the write would not let write is refused as the write refuses it;
 every `/api/v2` `PUT` answers `200` with the object, the follower `PUT` included, which `/api/v1` answers `204`.
 The fingerprint holds the route's pattern, so one key sent to a `/api/v1` route and then to its `/api/v2` route is two requests under one key, `422 KEY_REUSED`.
@@ -4981,8 +4982,8 @@ the docs site's HTTP API reference is generated from both, one page per version,
 and `packages/contracts/schemas/dispatch-openapi-v2.json` for `/api/v2`, from each `/api/v2` row's declared query, body and answer types.
 `--check` writes nothing: it compares both committed documents with a fresh render, printing a unified diff for each that differs and exiting 1.
 `--version 1` or `--version 2` takes that version's document alone, and `--out <path>`, which needs `--version`, writes it to that file instead (`-` for standard output), or with `--check` compares that file.
-The `/api/v2` document lists each operation's refusal codes with their statuses (`x-refusal-codes`), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`.
-The nine delivery and Legion rows of the INFRA-979 tree are the exception: they keep their `/api/v1` shape, so their operations list no refusal codes, a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
+The `/api/v2` document lists, for the operation of each `/api/v2` row, the refusal codes it can answer with their statuses (`x-refusal-codes`), and every code `/api/v2` can answer, once, under `components.x-refusal-codes`; the operations of the test hooks (`/api/v2/_test/…`) list none.
+The nine delivery and Legion rows of the INFRA-979 tree are the exception (`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and `DELETE /api/v2/projects/{key}/legion/daemon`): they keep their `/api/v1` shape, so their operations list no refusal codes, a query key they do not declare is not refused, and their `PUT` and `DELETE` take no `Idempotency-Key`.
 The clients' TypeScript types are rendered from the committed documents (`@legion/contracts` from the `/api/v1` one, `@legion/contracts/dispatch-api-v2` from the `/api/v2` one), so a route added to the table reaches them with no type hand-written for it.
 Each route is a file of its own in `internal/dispatch/api`, `route_<path>+<method>.go` (`internal/dispatch/routefile` names it): each `/api/v1` route holds one `declareRoute(routeDecl{...})` that states every fact of the route (`routeDecl` in `routes_table.go`), the `/api/v2` route that answers it among them (`Successor`), and each `/api/v2` route holds one `declareRow(func(s *server) routeRow { ... })`, whose named columns state every fact of it (`routes_versions.go`).
 A `/api/v1` route a merge on main added after `/api/v2`'s freeze names no `Successor` until its `/api/v2` route lands, and `internal/dispatch/api/testdata/v1-awaiting-v2-routes.txt` lists each such route, exactly (`TestAwaitingV2RoutesMatchTheAwaitingList`): today `GET` and `POST /api/v1/projects/{key}/results`.
@@ -5028,14 +5029,15 @@ Each item below names a rule, then what a caller meets.
 
   An unknown path under `/api/v2` is a JSON 404 `{"code":"NO_ROUTE","error":"no route for GET /api/v2/issue","hint":"GET /api/v2 lists every route"}`.
 
-Every `/api/v1` answer, an unknown `/api/v1` path's included, carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
+Every `/api/v1` answer, an unknown `/api/v1` path's included, but dev sign-in's host refusal (below), carries `Deprecation: @<unix seconds>` (RFC 9745), dated by the constant `apiV1DeprecatedAt`, the day the change that added `/api/v2` was finished, which can be some days before the release that carries it;
 and `Link: </api/v2/…>; rel="successor-version"`, the `/api/v2` route that answers for it, filled from the request's own path values and carrying that route's query where the `/api/v1` route became a filter of it (`GET /api/v1/issues/{key}/artifacts/{slug}` links `/api/v2/issues/{key}/artifacts?slug={slug}`).
 Where the `/api/v2` path needs a value the `/api/v1` request does not carry, an artifact's id or an issue's key, the handler records the one it resolved;
-an answer that holds none, a request refused before its handler resolves one or a keyed write's replay, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`.
+an answer that holds none, a request refused before its handler resolves one, links `</api/v2>` with `title="<METHOD> /api/v2/<pattern>"`, and a keyed write's replay of the answer its key kept links what the first answer linked.
 `GET /api/v1/settings/architecture-sources`, every project's sources, carries one `Link` value per project its answer holds, `</api/v2/projects/{key}/architecture-sources>`, and `</api/v2/projects>` when it holds none.
 A route that awaits its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`) links `</api/v2>` on every answer, a refusal included, beside the same `Deprecation`.
 While `DISPATCH_API_V1_END` is ahead each `/api/v1` answer carries `Sunset` too, and once it has passed every `/api/v1` path answers `410 API_V1_ENDED`.
 No `/api/v2` answer carries any of the three.
+With `DISPATCH_DEV_SIGNIN=1` a request whose `Host` is not the dashboard origin is refused `421 HOST_MISMATCH` (`requireHost`) before the router sets any of the three or answers the `410`, so that refusal, on a `/api/v1` path too, carries none of them.
 An unknown path under `/api`, `/v1`, `/auth`, `/ws`, or `/healthz`, outside `/api/v2`, is a JSON 404 `{"code":"NOT_FOUND","error":"no route for GET
 /v1/issues","hint":"GET /api/v1 lists every route"}`, and no unknown path under those roots, `/api/v2`'s included, is answered the dashboard shell.
 Every server process publishes its dashboard build's assets into the database at boot (Running more than one process, above), so a missing local file under `/assets/` is read whole from the database under the same key (`assets/<file>`) before Dispatch answers, through a cache of at most 64 MiB the process's requests share;
@@ -5046,8 +5048,8 @@ The dashboard's pages (`index.html` and the shell served for a browser route) ca
 
 In this list, header identity means only the test/local harness mode described above.
 Production Dispatch uses cookie identity through the sign-in pool.
-The `/api/v1` routes in it are as `/api/v1` serves them, which the `dispatch` command, the plugins, the daemon and the broker still call:
-`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it.
+The `/api/v1` routes in it are as `/api/v1` serves them, which the web app, the `dispatch` command, the plugins, the daemon and the broker still call (the web app sets no `User-Agent` of its own, so the access log shows its browser's and does not name it):
+`GET /api/v2` and the docs site's reference describe each `/api/v2` route, and an `/api/v1` answer's `Link` header names the one that answers for it, or `GET /api/v2` for a route awaiting its `/api/v2` route (`testdata/v1-awaiting-v2-routes.txt`).
 
 Each item below names a path with its method and identity, then its purpose.
 

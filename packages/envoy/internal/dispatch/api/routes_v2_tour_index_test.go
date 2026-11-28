@@ -68,8 +68,9 @@ func TestTheV2RouteIndexReadsItsPageThroughTheDecoder(t *testing.T) {
 	}
 }
 
-// A list whose row names no bounds is read at limit 1 to 200, default 50 (decodeLimit), so the
-// route index and the document state those bounds for it as for a list that names its own: every
+// A list whose row names no bounds is read at limit 1 to 200, default 50 (decodeLimit), or 1 to
+// 20, default 20, where its include names a member that renders each row (holdIncludedPage), so the
+// route index and the document state 50 and 200 for it as for a list that names its own: every
 // route whose query takes a limit carries its bounds in its index entry and in its operation's
 // x-list, the two alike, and GET /api/v2/asks, which names none, carries 50 and 200.
 func TestTheV2IndexAndDocumentStateTheBoundsOfEveryList(t *testing.T) {

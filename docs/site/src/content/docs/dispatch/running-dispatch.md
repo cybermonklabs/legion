@@ -845,10 +845,13 @@ release works against either while the release rolls.
 Dispatch serves two versions of its API side by side. `/api/v2`, from the first `legion-envoy`
 release that carries pull request #4274, is the one to call: every list answers
 `{items, total, limit, offset}`, every refusal is `{code, error}`, a query key a route does not
-declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`. The nine
-INFRA-979 delivery and Legion rows are the exception: they keep their `/api/v1` shape, so the
-OpenAPI document lists no refusal codes for them, a query key they do not declare is not refused,
-and their `PUT` and `DELETE` take no `Idempotency-Key`.
+declare is refused `400 QUERY_KEY_UNKNOWN`, and every write takes an `Idempotency-Key`. Nine
+delivery and Legion routes are the exception: `GET /api/v2/delivery/measures`,
+`GET /api/v2/delivery/pipeline`, `GET /api/v2/delivery/timeline`, `GET` and
+`PUT /api/v2/settings/delivery`, `GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
+`DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the OpenAPI document
+lists no refusal codes for them, a query key they do not declare is not refused, and their `PUT`
+and `DELETE` take no `Idempotency-Key`.
 `GET /api/v2` lists every route with its method, who may call it, what it serves and a
 description, with no credential, and the [HTTP API reference](/legion/dispatch/reference/api/) is
 the same list.
@@ -859,13 +862,14 @@ answers they had, and from that release on each answer carries a `Deprecation` h
 `Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it, or
 `GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
 route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release). At that
-release the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the
-Secrets Broker still call `/api/v1`. Each names itself and its release in its `User-Agent`
-(`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`, `pi-legion/<version>`,
-`claude-envoy/<version>`, `claude-envoy-hooks/<version>`, `legion-daemon/<release>`,
-`envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`,
+release the web app, the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion
+daemon and the Secrets Broker still call `/api/v1`. Each but the web app names itself and its
+release in its `User-Agent` (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`,
+`pi-legion/<version>`, `claude-envoy/<version>`, `claude-envoy-hooks/<version>`,
+`legion-daemon/<release>`, `envoy-broker-judge/<commit>`, `envoy-broker-project-access/<commit>`,
 `envoy-broker-project-repositories/<commit>`), so the `user_agent` of Dispatch's access log shows
-which of them still call it.
+which of them still call it. The web app sets no `User-Agent` of its own: its requests carry its
+browser's, so the access log does not name it.
 
 `/api/v1` ends at the instant `DISPATCH_API_V1_END` names, an RFC 3339 time with its offset, such
 as `2027-01-01T00:00:00Z`; `envoy-infra`'s `gcp:Dispatch` component sets it from its `apiV1End`

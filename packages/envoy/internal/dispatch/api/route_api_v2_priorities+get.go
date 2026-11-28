@@ -23,7 +23,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"repeatable, narrows the work counted and both faults to those projects and never the priorities "+
 			"themselves. limit 0 to 200 (default 50) and offset; {items, total, limit, offset}, total every live "+
 			"priority. limit=0 answers no priority and, without include=fault_issues, the two fault counts alone, with "+
-			"no by_project and no by_priority, which is what the navigation rail reads.", priorityFaultRows),
+			"no by_project and no by_priority: the counts the navigation rail reads through GET "+
+			"/api/v1/priorities?summary=true.", priorityFaultRows),
 		Handler:  s.listPrioritiesV2,
 		Resource: "priorities", Kind: kindCollection, Key: "{id}",
 		CrossProject: true,

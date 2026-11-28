@@ -637,8 +637,9 @@ func TestGetDeliveryTimelineFacetsComponentsOfEverySource(t *testing.T) {
 
 // TestGetDeliveryRunListsEveryJob proves GET /api/v1/delivery/runs/{id} answers one deploy
 // repository run with every job it ran, by start (a job that never started last), and refuses a
-// run id that is not a positive integer or names no run: a run the repository has none of is 404
-// NOT_FOUND on /api/v1 and 404 DEPLOY_RUN_NOT_FOUND at GET /api/v2/deploy-runs/{id}.
+// run id that is not a positive integer or names no run: a run of the deploy repository Dispatch
+// holds no record of is 404 NOT_FOUND on /api/v1 and 404 DEPLOY_RUN_NOT_FOUND at
+// GET /api/v2/deploy-runs/{id}.
 func TestGetDeliveryRunListsEveryJob(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

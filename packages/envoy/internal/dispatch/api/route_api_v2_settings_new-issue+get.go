@@ -13,7 +13,7 @@ var _ = declareRow(func(s *server) routeRow {
 			"label that new issue carries and the session it is routed to and its first message goes to, as this " +
 			"deployment configured them (DISPATCH_NEW_ISSUE_LABEL, DISPATCH_NEW_ISSUE_SESSION). Each is \"\" where it " +
 			"configured none: no label on the issue, and no conversation started on it. The bar writes the issue itself, " +
-			"through POST /api/v2/issues and the issue's own artifact, patch and message routes.",
+			"through POST /api/v1/issues and the issue's own /api/v1 artifact, patch and message routes.",
 		Handler:  s.getNewIssueSettings,
 		Resource: "new-issue", Kind: kindSingleton,
 		Shape:    routeShape{Status: http.StatusOK, Response: newIssueSettings{}},

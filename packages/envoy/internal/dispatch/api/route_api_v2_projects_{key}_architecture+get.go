@@ -11,8 +11,9 @@ var _ = declareRow(func(s *server) routeRow {
 		Method: http.MethodGet, Pattern: "/projects/{key}/architecture", Auth: authAny, Versions: onlyV2,
 		Description: "A project's component tree with the work attached: {sources, totals, components, unassigned, " +
 			"not_architectural, retired_links}, its sources' sync bookkeeping, each component with its source repository, " +
-			"per-component counts and issue rows, and the issues no component counts - unassigned, declared not " +
-			"architectural, or linked only to retired components. With Dispatch-Trees: 1 each component's prose carries " +
+			"per-component counts and issue rows, the issues outside the model - unassigned or declared not " +
+			"architectural - and in retired_links every issue whose links name a retired component, even one a live " +
+			"component it links to still counts. With Dispatch-Trees: 1 each component's prose carries " +
 			"its display tree. A read-only token may call it. 404 SOURCE_NOT_FOUND for a project with no architecture " +
 			"source, 404 PROJECT_NOT_FOUND for a project that does not exist.",
 		Handler:  s.getArchitectureTreeV2,

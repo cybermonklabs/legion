@@ -467,10 +467,13 @@ On `/api/v2` every list answers `{items, total, limit, offset}` and every refusa
 its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` declares for the route
 (`x-refusal-codes`). A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`,
 naming the key and every key the route declares, so a misspelt filter is never read as no filter,
-and every write takes an `Idempotency-Key`. The nine INFRA-979 delivery and Legion rows are the
-exception: they keep their `/api/v1` shape, so the document declares no refusal codes for them, a
-query key they do not declare is not refused, and their `PUT` and `DELETE` take no
-`Idempotency-Key`.
+and every write takes an `Idempotency-Key`. Nine delivery and Legion routes are the exception:
+`GET /api/v2/delivery/measures`, `GET /api/v2/delivery/pipeline`,
+`GET /api/v2/delivery/timeline`, `GET` and `PUT /api/v2/settings/delivery`,
+`GET /api/v2/projects/{key}/legion/board`, and `GET`, `PUT` and
+`DELETE /api/v2/projects/{key}/legion/daemon` keep their `/api/v1` shape, so the document declares
+no refusal codes for them, a query key they do not declare is not refused, and their `PUT` and
+`DELETE` take no `Idempotency-Key`.
 
 `/api/v1` is deprecated. Its routes keep their answers, each answer carries a `Link` header
 (`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2` for a

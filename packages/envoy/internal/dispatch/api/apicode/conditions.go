@@ -569,6 +569,7 @@ var (
 	BrokerCodeRequired             = Condition{"CODE_REQUIRED relayed from the secrets broker"}
 	BrokerCredentialIDInput        = Condition{"CREDENTIAL_ID_INPUT relayed from the secrets broker"}
 	BrokerDecideOnBrokerPage       = Condition{"DECIDE_ON_BROKER_PAGE relayed from the secrets broker"}
+	BrokerDispatchSigninOff        = Condition{"DISPATCH_SIGNIN_OFF relayed from the secrets broker"}
 	BrokerGrantIDInput             = Condition{"GRANT_ID_INPUT relayed from the secrets broker"}
 	BrokerGrantMoving              = Condition{"GRANT_MOVING relayed from the secrets broker"}
 	BrokerInternal                 = Condition{"INTERNAL relayed from the secrets broker"}
@@ -590,6 +591,10 @@ var (
 	BrokerRecordTerminal           = Condition{"RECORD_TERMINAL relayed from the secrets broker"}
 	BrokerRequestEnded             = Condition{"REQUEST_ENDED relayed from the secrets broker"}
 	BrokerRequestTooLarge          = Condition{"REQUEST_TOO_LARGE relayed from the secrets broker"}
+	BrokerScopeNotAsked            = Condition{"SCOPE_NOT_ASKED relayed from the secrets broker"}
+	BrokerScopeNotConsentable      = Condition{"SCOPE_NOT_CONSENTABLE relayed from the secrets broker"}
+	BrokerScopesOnDenial           = Condition{"SCOPES_ON_DENIAL relayed from the secrets broker"}
+	BrokerScopesRequired           = Condition{"SCOPES_REQUIRED relayed from the secrets broker"}
 	BrokerServiceLogsInWithToken   = Condition{"SERVICE_LOGS_IN_WITH_TOKEN relayed from the secrets broker"}
 	BrokerSigninIDInput            = Condition{"SIGNIN_ID_INPUT relayed from the secrets broker"}
 	BrokerStateInput               = Condition{"STATE_INPUT relayed from the secrets broker"}

@@ -15,8 +15,9 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: fmt.Sprintf("Write one priority's title, description or owner, and move its order {title?, "+
 			"description?, owner?, rank?, expected?}, a bearer naming its session in actor: each field named is "+
 			"written and each left out is left alone. rank is {before, after}, the priority this one lands above and "+
-			"the one it lands below; a rank naming neither, a neighbour that is this priority, and one no live "+
-			"priority carries are each 400 RANK_INPUT. A title with nothing in it or over %[1]d characters and a body "+
+			"the one it lands below; a rank naming neither, a neighbour that is this priority, one no live "+
+			"priority carries, and a before and an after where after does not stand above before in the order are "+
+			"each 400 RANK_INPUT. A title with nothing in it or over %[1]d characters and a body "+
 			"naming nothing to write are 400 PRIORITY_INPUT. expected is {title?, description?}, the value the "+
 			"writer's edit of each started from, for the title and the description this same write writes; owner "+
 			"and rank take none. An expected naming an attribute the write does not write is 400 PRIORITY_INPUT. One "+

@@ -1,7 +1,8 @@
 package api
 
-// decode_v2.go is the one reader of a /api/v2 route's request (R4 of dispatch://INFRA-4071/spec),
-// and of the /api/v1 path of a row served in both versions (apiRoute.decoded, R2). A route's row
+// decode_v2.go is the one reader of the request of every route apiRoute.decoded names (R4 of
+// dispatch://INFRA-4071/spec): every /api/v2 route but a row of the INFRA-979 tree and a test
+// hook, and the /api/v1 path of a row served in both versions outside that tree (R2). A route's row
 // declares the types its query and its body are read into
 // (routeRow.Query, routeRow.Body), and decodeV2Request reads them from those types alone: a query
 // key the type does not declare is refused 400 QUERY_KEY_UNKNOWN before any lookup or write, and a
@@ -162,7 +163,8 @@ type uploadFile struct {
 // v2Request is what the decoder read of one request to a route it reads (apiRoute.decoded).
 // register's decoding layers put it on the request's context, the query layer first and each
 // later layer a copy with its own part added, and the handler and the layers behind them read it
-// through v2Query, v2Body, v2BodyArm, v2Upload and requestSession.
+// through v2Query, v2Body, v2BodyArm, v2BodyBytes, v2Upload and requestSession, and the authority
+// gate, the approve-only state gate and logOrder through decodedV2.
 type v2Request struct {
 	// query is the row's Query type decoded, a value of that type; nil for a row that declares
 	// none.
@@ -183,7 +185,8 @@ type v2Request struct {
 	// raw is a JSON body's bytes as the request sent them: what a handler reads that the decoded
 	// value cannot say, such as whether a replace named its with (replaceFieldsRefusal).
 	raw []byte
-	// file is an upload's file part; nil for an upload sent as JSON and for every other body.
+	// file is an upload's file part; nil for an upload sent as JSON, for a multipart upload with
+	// no file part, and for every other body.
 	file *uploadFile
 }
 
@@ -241,8 +244,8 @@ func v2BodyArm(r *http.Request) any {
 }
 
 // v2BodyBytes is the JSON body of a request to a route the decoder reads, as the request sent its
-// bytes: nil for an optional body sent empty and for an upload. It panics, as v2BodyArm does, on a
-// route whose body the decoder has not read.
+// bytes: nil for an optional body sent empty and for a multipart upload. It panics, as v2BodyArm
+// does, on a route whose body the decoder has not read.
 func v2BodyBytes(r *http.Request) []byte {
 	decoded, ok := decodedV2(r)
 	if !ok || !decoded.bodyRead {
@@ -252,7 +255,8 @@ func v2BodyBytes(r *http.Request) []byte {
 }
 
 // v2Upload is the file part of an upload to a route the decoder reads, and nil for an upload sent
-// as the JSON object its row's Body.Type describes. Its declared fields are v2Body's.
+// as the JSON object its row's Body.Type describes, or a multipart upload with no file part. Its
+// declared fields are v2Body's.
 func v2Upload(r *http.Request) *uploadFile {
 	decoded, ok := decodedV2(r)
 	if !ok || !decoded.bodyRead {
@@ -564,7 +568,7 @@ func compileQueryField(field reflect.StructField, tag string) (queryField, error
 	case key == "" || key == "-":
 		return queryField{}, errors.New("its query tag names no key")
 	case key == "session":
-		return queryField{}, errors.New("session is declared once for every /api/v2 route, beside the row's own keys; a row's query does not declare it")
+		return queryField{}, errors.New("session is declared once for every /api/v2 route the decoder reads, and the /api/v1 path of a row it reads, beside the row's own keys; a row's query does not declare it")
 	case option != "" && option != "comma":
 		return queryField{}, fmt.Errorf("its query tag's option %q is none the decoder reads (comma)", option)
 	}

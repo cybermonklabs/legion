@@ -23,8 +23,10 @@ var _ = declareRow(func(s *server) routeRow {
 			"answers 201 the reply and appends message.answered. Once the attempt is answered, follow_up=true posts other " +
 			"text as the session's follow-up, threaded under its first reply (201); with follow_up=false (the default), or " +
 			"with text the session already posted there, nothing is posted and the stored message answers 200 marked " +
-			"duplicate. An error marks the attempt failed and answers 200 the attempt. 404 MESSAGE_NOT_FOUND for an id no " +
-			"message has, or an attempt it does not have. " + replyQuoteDescription("in_reply_to_block", "INVALID_MESSAGE"),
+			"duplicate. An error on an attempt not yet answered marks it failed and answers 200 the attempt; an error on " +
+			"an answered attempt posts nothing and answers 200 the stored reply marked duplicate. 404 MESSAGE_NOT_FOUND " +
+			"for an id no message has, or an attempt of 1 or more it does not have; an attempt below 1 is 403 " +
+			"REPLY_FORBIDDEN. " + replyQuoteDescription("in_reply_to_block", "INVALID_MESSAGE"),
 		Handler:  s.replyMessageV2,
 		Resource: "replies", Kind: kindCollection, Key: "{id}",
 		Query: messageRepliesV2Query{},

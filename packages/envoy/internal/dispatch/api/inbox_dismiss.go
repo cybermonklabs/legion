@@ -694,9 +694,9 @@ func (s *server) dismissInboxThreads(
 // dismissInboxThreadsIn is the dismissal's work in tx, up to the events it appends: it reads the
 // rows it changes, takes their owners and the roots of the Agent threads it marks, and writes the
 // marks, answering how many threads it changed and the events, not yet appended, that announce
-// them. Its caller appends them in the lock order's last step and commits (commitInboxMarks):
-// dismissInboxThreads in a transaction of its own, and a write of several of the caller's marks
-// under /api/v2 in the one transaction of all of them.
+// them. Its caller appends them in the lock order's last step and commits: dismissInboxThreads in
+// a transaction of its own (commitInboxMarks), and writeMarksIn, a write of several of the
+// caller's marks under /api/v2, in the one transaction of all of them.
 func (s *server) dismissInboxThreadsIn(
 	ctx context.Context, tx pgx.Tx, actor model.Actor, plan inboxDismissPlan, rows inboxDismissRows, scope inboxReadScope,
 ) (int, []model.Event, error) {

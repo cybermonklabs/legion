@@ -548,9 +548,10 @@ func (s *server) recordDecline(w http.ResponseWriter, r *http.Request, actor mod
 	return ask, true
 }
 
-// closeAsk applies transition to the open ask id names, for actor, in a transaction of its own
-// (closeAskTx), and commits it; readBack reads on that transaction what the route answers of the
-// ask once the write phase has written the transition and before the commit (askReadBack.commit).
+// closeAsk applies transition to the ask id names (an open ask, or an answered one whose answer
+// the transition changes), for actor, in a transaction of its own (closeAskTx), and commits it;
+// readBack reads on that transaction what the route answers of the ask once the write phase has
+// written the transition and before the commit (askReadBack.commit).
 func (s *server) closeAsk(ctx context.Context, id string, actor model.Actor, transition askTransition, readBack askReadBack) (model.Ask, error) {
 	tx, err := s.begin(ctx)
 	if err != nil {

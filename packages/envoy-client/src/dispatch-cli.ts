@@ -116,11 +116,11 @@ const USER_AGENT_TOKEN = /^[\x21-\x7e]+$/;
 /**
  * The `User-Agent` of the `dispatch` command whose module is at `moduleUrl` (its
  * `import.meta.url`): `dispatch/<version> (<package>)` of the host plugin that ships it, read from
- * the `package.json` beside the plugin's `dist/dispatch.js`, where both hosts' builds write the
- * bundle (`scripts/build-dispatch-cli.sh`, and claude-envoy's `scripts/build.ts`). Any other
- * module, `bin/dispatch.ts` run from a checkout, or a bundle whose manifest gives no name and
- * version, is `DISPATCH_COMMAND_SOURCE_USER_AGENT`. It never throws: no call is refused for how it
- * names itself.
+ * the `package.json` at the plugin's root, the directory above the `dist/` both hosts' builds write
+ * the bundle into as `dist/dispatch.js` (`scripts/build-dispatch-cli.sh`, and claude-envoy's
+ * `scripts/build.ts`). Any other module, `bin/dispatch.ts` run from a checkout, or a bundle whose
+ * manifest gives no name and version, is `DISPATCH_COMMAND_SOURCE_USER_AGENT`. It never throws: no
+ * call is refused for how it names itself.
  */
 export function dispatchCommandUserAgent(moduleUrl: string): string {
   try {

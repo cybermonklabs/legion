@@ -44,8 +44,9 @@ var shapeBooleanSpellings = []string{"true", "false", "yes", "no", "on", "off", 
 
 // shapeR13Rows are the two rows R1.3 of the parent's spec names as the exemptions from rule 2: the
 // cross-project issue list, which lists the rows /projects/{key}/issues lists for several
-// projects, and the issue create, whose project comes from its body because an import by an
-// external reference takes its project from the repository's mapping.
+// projects, and the issue create, whose project comes from its body: every create names its
+// project there, an import by an external reference included, since Dispatch finds no project
+// from a repository (createIssueFrom).
 var shapeR13Rows = map[string]bool{http.MethodGet + " /issues": true, http.MethodPost + " /issues": true}
 
 // shapeRule is one rule of the parent's R1 the table test decides.

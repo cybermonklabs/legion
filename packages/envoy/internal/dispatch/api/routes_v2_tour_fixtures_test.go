@@ -26,11 +26,11 @@ import (
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
-// routeTour is the server the route tour (TestV2RouteTour) and the tests of the /api/v2 routes'
-// authorities and retries (TestV2DeclaredAuthority, TestV2Retries) drive, on a database of its own,
-// with every service Dispatch calls faked as the package's other tests fake it. A step's setup
-// makes what its request names through it (project, issue, ask, comment), and tells a fake what to
-// answer where its route calls one.
+// routeTour is the server the route tour (TestV2RouteTour) drives, and that every other /api/v2
+// test needing its fakes drives too (TestV2DeclaredAuthority, TestV2Retries and TestV2LogPositions
+// among them), on a database of its own, with every service Dispatch calls faked as the package's
+// other tests fake it. A step's setup makes what its request names through it (project, issue,
+// ask, comment), and tells a fake what to answer where its route calls one.
 type routeTour struct {
 	handler  http.Handler
 	database *store.Store
@@ -94,8 +94,9 @@ func newRouteTour(t *testing.T) *routeTour {
 
 // requireMounted is the route /api/v2 serves at method and pattern (version-free), and fails t for
 // one it does not walk: a route the server does not mount, a row of the INFRA-979 tree, or a test
-// hook. Every test of the tour looks its routes up here, so a renamed route fails the test that
-// names it.
+// hook. The route tour and every test that sends through a route it looks up here fail for a
+// renamed route by its name; a test that sends to a literal /api/v2 path meets the route's 404
+// instead.
 func (tour *routeTour) requireMounted(t *testing.T, method, pattern string) apiRoute {
 	t.Helper()
 	name := method + " /api/v2" + pattern

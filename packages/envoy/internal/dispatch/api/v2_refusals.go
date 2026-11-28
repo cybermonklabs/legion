@@ -109,9 +109,10 @@ var (
 // part, after more, the route's own: markdown that is no Proof document or names a block it may
 // not, an ask block that does not read or an open one it changes, a check block breaking a rule
 // of a check CI proves, and a document past its size bound. POST /api/v2/issues, which seeds its
-// spec straight into the store, and the rebuild, which lists two of documentRefusals' four
-// itself, declare them through this helper and not documentContentRefusals; the edit route
-// declares its own, since it answers a markdown refusal as INVALID_OP.
+// spec straight into the store, the rebuild, which lists two of documentRefusals' four itself,
+// and the two markdown round trips, which write no document, declare them through this helper
+// and not documentContentRefusals; the edit route declares its own, since it answers a markdown
+// refusal as INVALID_OP.
 func markdownWriteRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append(more, markdownRefusedRefusal, askBlockRefusedRefusal, ciCheckRuleBrokenRefusal, documentPastSizeBoundRefusal)
 }

@@ -718,9 +718,9 @@ func nextUTCMidnight(t time.Time) time.Time {
 
 // getDeliveryRun answers GET /api/v1/delivery/runs/{id} and GET /api/v2/deploy-runs/{id}: one run
 // of the deploy repository with every job it ran, in ListRunJobs' order (by when each started, a
-// job that never started last, then by name), for the drill-down's job lists. A run the
-// repository has none of is 404 NOT_FOUND on /api/v1 and DEPLOY_RUN_NOT_FOUND on /api/v2
-// (apicode.DeployRunNotFound).
+// job that never started last, then by name), for the drill-down's job lists. A run of the
+// deploy repository Dispatch holds no record of is 404 NOT_FOUND on /api/v1 and
+// DEPLOY_RUN_NOT_FOUND on /api/v2 (apicode.DeployRunNotFound).
 func (s *server) getDeliveryRun(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return

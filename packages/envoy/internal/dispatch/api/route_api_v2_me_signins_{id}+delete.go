@@ -13,7 +13,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"access token already minted under it ends, while their sign-ins on other machines keep working. " +
 			"Answers 200 {tokens_ended}, how many of the caller's live access tokens ended with it, 0 for a sign-in " +
 			"revoked already. Needs the person and approve scopes; a credential scoped to one project is refused. " +
-			"404 SIGNIN_NOT_FOUND for an id that is no sign-in of the caller's, anyone else's among them, and " +
+			"400 SIGNIN_ID_INPUT for an id that is no UUID, 404 SIGNIN_NOT_FOUND for a UUID that is no sign-in of the " +
+			"caller's, anyone else's among them, and " +
 			brokerRelayText + ".",
 		Handler:  s.revokeSignInV2,
 		Resource: "signins", Kind: kindItem, Key: "{id}",

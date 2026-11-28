@@ -140,9 +140,10 @@ func (s *server) resolveIDPrefixes(route apiRoute, handler http.HandlerFunc) htt
 		// item reserved for another author is no candidate (refs.ResolvePrefix), and whether
 		// a direct message's first line is listed among the candidates: a person reads any,
 		// and a bearer the conversations the session it names in ?session= is in, the claim
-		// the message routes already read. A /api/v2 route's session is the one its decoder
-		// read (requestSession, R4); every other route's is read off the raw query, as it
-		// always was.
+		// the message routes already read. A route the decoder reads names the session it
+		// decoded (requestSession, R4); every other route reads it off the raw query, as it
+		// always did: a route of the v1 table, a test hook at either version, or a row of the
+		// INFRA-979 tree.
 		who := actor.Recorded()
 		viewer := refs.Viewer{Human: human, Session: requestSession(r), ServerURL: s.deps.ServerURL}
 		if id != "" {
@@ -185,9 +186,10 @@ type prefixNotFound struct {
 // resolvePathValue rewrites the path value `name`, written as the prefix of an id of kind, to
 // the whole id it names within scope for who, and reports whether the request may go on: false
 // once it has written the answer itself. notFound is what this route answers for an id of that
-// kind it does not hold: its 404, or none for the route that answers no 404 for one, whose value
-// is then left as written for the handler to answer for. It is the one caller of wholeID that has
-// a route code, so it is the one that writes a 404.
+// kind it does not hold: its 404, or none, either for the route that answers no 404 for one
+// (NoNotFound) or for a value that can start no uuid (itemNotFound), the value then left as
+// written for the handler to answer for. It is the one caller of wholeID that has a route code,
+// so it is the one that writes a 404.
 func (s *server) resolvePathValue(
 	w http.ResponseWriter,
 	r *http.Request,

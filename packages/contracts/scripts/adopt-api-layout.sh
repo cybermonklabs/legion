@@ -14,16 +14,16 @@
 # (packages/contracts/schemas/dispatch-openapi.json for /api/v1, dispatch-openapi-v2.json for
 # /api/v2), and the module scripts/gen-api.ts renders from each
 # (packages/contracts/src/dispatch-api.generated.ts, dispatch-api-v2.generated.ts). Each other
-# conflict stays yours: it lists them when it ends. Run it again after you resolve a Go file it
-# names.
+# conflict stays yours: it lists them when it ends. Run it again after you resolve a file of
+# packages/envoy it names.
 #
 #   1. It refuses to run before main's root .gitignore names
 #      packages/contracts/src/dispatch-api.generated.ts, where it would only delete the modules from
 #      the branch. It reads that line itself: a local or global exclude is not main's layout.
 #   2. The documents are emitted from the Go route table, so a conflict in either is resolved by
 #      emitting both again from the merged Go (`go run ./cmd/dispatch openapi`, which writes each
-#      where the repository commits it), never by hand. That waits until no Go file of
-#      packages/envoy is still in conflict, since the documents are emitted from them.
+#      where the repository commits it), never by hand. That waits until no file of packages/envoy
+#      is still in conflict, since the documents are emitted from its Go and the files that reads.
 #   3. The generated types are rendered again from the documents the tree now holds.
 #   4. Each module leaves the commit (`git rm --cached`, `jj file untrack`) and stays on disk,
 #      ignored: main holds neither in a commit and every `bun install` renders both. A branch that

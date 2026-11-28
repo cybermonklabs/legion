@@ -10,7 +10,7 @@ import (
 // policyRow is one row of a hand-made table: name is "<method> <pattern>", and next is the
 // /api/v2 route an /api/v1 row names as its successor. A /api/v2 row is the mount of a routeRow,
 // which the decoder reads (apiRoute.decoded), as every /api/v2 row of the table is but the
-// INFRA-979 tree's.
+// INFRA-979 tree's and the test hooks'.
 func policyRow(name string, version apiVersion, next successor, body requestBody) apiRoute {
 	method, pattern, _ := strings.Cut(name, " ")
 	return apiRoute{routeRow: routeRow{Method: method, Pattern: pattern, Body: body}, Version: version, Successor: next, columns: version == apiV2}

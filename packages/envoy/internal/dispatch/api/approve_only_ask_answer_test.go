@@ -16,8 +16,9 @@ type approveOnlyAsks struct {
 	question, approval string
 }
 
-// openApproveOnlyAsks opens an issue under version's project, a question on it and an approval
-// request of its document, each as the person's session.
+// openApproveOnlyAsks opens an issue under version's project as alice at her browser, and a
+// question on it and an approval request of its document as the shared agent token's session
+// (sessionActor).
 func openApproveOnlyAsks(t *testing.T, rig *approveOnlyRig, version approveOnlyVersion) approveOnlyAsks {
 	t.Helper()
 	issue := createInteractionIssue(t, rig.handler, version.project, "Asks under the approve-only token", "A document to approve.\n")
@@ -65,7 +66,7 @@ func (version approveOnlyVersion) answering(t *testing.T, rig *approveOnlyRig, t
 	return rig.caller.presenting(t, http.MethodPut, version.prefix+"/asks/"+ask+"/state", token, body)
 }
 
-// readAskAsPerson is the ask as the person's own session reads it.
+// readAskAsPerson is the ask as the shared agent token's session reads it.
 func readAskAsPerson(t *testing.T, rig *approveOnlyRig, ask string) *httptest.ResponseRecorder {
 	t.Helper()
 	return sessionRequest(t, rig.handler, http.MethodGet, "/api/v1/asks/"+ask, nil)

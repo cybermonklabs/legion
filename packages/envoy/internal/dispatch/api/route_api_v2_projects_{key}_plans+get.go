@@ -14,7 +14,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"(400 INVALID_QUERY when from is not before to): each {issue, title, closed_at, plan, ratings, " +
 			"started_at, ended_at, duration_seconds, failed_steps, experiment, variant}. plan is the plan of the " +
 			"issue's newest run as the Legion daemon wrote it {id, issue, generation, source, artifact_id, version, " +
-			"tasks: [{id, steps}]}, null for an issue with none; ratings is the rating of each of its retros, in the " +
+			"tasks: [{id, steps, needs}]}, needs null where the write recorded none, and the plan null for an issue " +
+			"with none; ratings is the rating of each of its retros, in the " +
 			"order they ran, {rating, reason, step_id, ended_at}; started_at is the earliest start of its step " +
 			"records, ended_at the latest end and duration_seconds the whole seconds between them, each null where " +
 			"no record holds one, and duration_seconds null too where that end is before that start, a time " +

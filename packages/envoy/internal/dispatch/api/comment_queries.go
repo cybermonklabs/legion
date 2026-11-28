@@ -199,8 +199,8 @@ func (s *server) loadOwnerComments(ctx context.Context, q queryer, who model.Act
 }
 
 // readOwnerComments is every comment of owner, oldest first, its rows alone: a /api/v2 list
-// hydrates the page it answers (hydrateCommentSideTables reads each comment by itself), and none
-// of the rows before or after it.
+// hydrates the page it answers (hydrateCommentSideTables reads the side tables of only the
+// comments it is given), and none of the rows before or after it.
 func readOwnerComments(ctx context.Context, q queryer, owner owner, artifactFilter string) ([]model.Comment, error) {
 	var ownerColumn, ownerValue string
 	switch {

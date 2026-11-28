@@ -22,7 +22,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"hold, or a longer list); keywords_only true skips meaning search. Answers the create's advice.suggestions "+
 			"shape: outcome found, none or not_made (a blank text is not_made, the reason in missing), search, "+
 			"search_note, search_query and related, with up to 3 open issues before any item of another kind and "+
-			"everything a done issue owns last. include=other_projects adds other_projects beside related: at most 2 "+
+			"everything a done issue owns last. include=other_projects adds other_projects beside related where the "+
+			"check searched by meaning (never with keywords_only true, nor where it fell back to keywords): at most 2 "+
 			"answered question asks of other projects, each with its ask state, its answer and the project it stands in, "+
 			"ranked by meaning alone and offered with no claim that they answer the question. 404 PROJECT_NOT_FOUND for "+
 			"a project that does not exist. It answers for both forms of /api/v1/projects/{key}/related, so the Link of "+

@@ -389,8 +389,9 @@ func (tour *routeTour) threadVersion(t *testing.T, root string) int64 {
 	return version
 }
 
-// TestV2MarksAnswerWhatEachKindStores holds the marks of the route map's section (e) to what each
-// kind stores: a mark nobody wrote reads as its target's default; a mark written through PATCH
+// TestV2MarksAnswerWhatEachKindStores holds five of the six mark kinds of the route map's section
+// (e) to what each stores (a message mark's dismissal is the tour's step "message dismissed as the
+// page drew it"): a mark nobody wrote reads as its target's default; a mark written through PATCH
 // /api/v2/me/marks/{kind}/{id} answers, and reads back through GET of the same mark, its kind's own
 // fields as written (an issue's pinned items, a document's read version, an agent's pin, an ask's
 // snooze and its un-snooze, a thread's dismissal and its restore); an issue mark whose seq is not

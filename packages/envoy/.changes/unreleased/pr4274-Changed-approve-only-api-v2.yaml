@@ -31,7 +31,11 @@ body: |-
   `PUT /api/v2/credential-requests/{id}/state` declares the two codes the secrets broker answers on
   a credential request's approve and deny since its recorded approver accounts, `400
   APPROVER_ACCOUNT_INPUT` and `403 APPROVER_REPLACED`, which `/api/v2` used to answer `502
-  AGENT_SECRETS_REFUSAL_UNDECLARED`. `POST /api/v2/issues` and `POST /api/v2/going-requests` declare
+  AGENT_SECRETS_REFUSAL_UNDECLARED`, and the five it answers there since it signs people in to
+  Dispatch, `400 DISPATCH_SIGNIN_OFF`, `SCOPE_NOT_CONSENTABLE`, `SCOPES_REQUIRED`, `SCOPE_NOT_ASKED`
+  and `SCOPES_ON_DENIAL`. That route relays a machine login's code alone, never the scopes
+  `/api/v1` relays on a Dispatch sign-in's approval, so the broker refuses a sign-in's approval
+  there `400 SCOPES_REQUIRED`. `POST /api/v2/issues` and `POST /api/v2/going-requests` declare
   the `404` a credential that names one project gets for a private project it does not name, or a
   project that does not exist: `NOT_FOUND` and `PROJECT_NOT_FOUND`. The description of
   `PATCH /api/v2/issues/{key}` states that such a credential leaves each issue of a private project

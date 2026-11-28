@@ -23,8 +23,9 @@ var _ = declareRow(func(s *server) routeRow {
 			"on each member whose kind is block: the block's whole text as the tree a reader is shown, links and references "+
 			"kept and nothing cut, a typed block's being of what stands between its opening line and its closing one, read "+
 			"by the block's kind as GET /api/v1/reference-targets reads it. No ref is 400 INVALID_REFERENCE, as is a "+
-			"reference the grammar cannot read, naming it; one that reads but names nothing is answered gone, never "+
-			"refused. An item id or a "+
+			"reference the grammar cannot read, naming it, and so is a reference to a party (a person, an agent's "+
+			"session or a role), which the grammar reads but the reference graph holds no node for; any other "+
+			"reference that reads but names nothing is answered gone, never refused. An item id or a "+
 			"block id written short (8 characters or more, never a whole uuid) is resolved in the scope the reference "+
 			"names, as GET /api/v2/references resolves its to=, and ref still echoes it as written: a prefix that nothing "+
 			"carries is answered gone, and a prefix that two or more items carry answers that member gone with ambiguous: "+

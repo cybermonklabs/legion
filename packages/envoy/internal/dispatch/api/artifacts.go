@@ -1588,12 +1588,14 @@ const maxIntegerColumn = math.MaxInt32
 // where its routes read them apart from /api/v1's handlers, each with the refusal its row
 // declares: an owner's log's after and before (ownerEventsReadOf, 400 POSITION_INVALID), the
 // accept's attempt in its path (deliveryAttemptV2, 404 DELIVERY_NOT_FOUND), a document mark's
-// read_version and an issue mark's last_read_seq (planMarkWrite, 400 INVALID_STATE), and the
-// change set's version_from and version_to, which its query's max tag holds (artifactChangesV2Query,
-// 400 INVALID_QUERY). The plan review's body needs no check of its own, since it refuses every
-// version above the plan's latest, which is within the bound (createArtifactPlanReview). A
-// reference's `@v<n>` pin is held to the same bound by its own checks in refs (BlockTextAt,
-// blockPrefixCandidates), which answer a version past it as one the document does not have.
+// read_version and an issue mark's last_read_seq (planMarkWrite, 400 INVALID_STATE), a version's
+// {number} in its path, held to the artifact's own versions (getArtifactVersionV2, 404
+// VERSION_NOT_FOUND), and the change set's version_from and version_to, which its query's max tag
+// holds (artifactChangesV2Query, 400 INVALID_QUERY). The plan review's body needs no check of its
+// own, since it refuses every version above the plan's latest, which is within the bound
+// (createArtifactPlanReview). A reference's `@v<n>` pin is held to the same bound by its own
+// checks in refs (BlockTextAt, blockPrefixCandidates), which answer a version past it as one the
+// document does not have.
 func fitsIntegerColumn[N int | int64](number N) bool {
 	return number <= maxIntegerColumn
 }

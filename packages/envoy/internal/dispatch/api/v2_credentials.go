@@ -1,10 +1,10 @@
 package api
 
 // v2_credentials.go is the credential pages' routes of /api/v2 (R1 of dispatch://INFRA-4071/spec):
-// the credential requests waiting on the caller and the state route their
-// approve and deny become, the machine-login lookup, the grants and the machine logins the caller
+// the credential requests waiting on the caller and the state route their approve, deny and
+// dismiss become, the machine-login lookup, the grants and the machine logins the caller
 // may revoke, and the caller's own sign-ins, each a relay to the secrets broker as its /api/v1
-// route is (credential_requests.go). Five things change. A broker list, which the broker does
+// route is (credential_requests.go). Nine things change. A broker list, which the broker does
 // not page, is sliced by Dispatch into the envelope. A revoke is a DELETE (the route map's J5),
 // answering 204, or 200 {tokens_ended} for a sign-in. A refusal the broker answers is named as
 // every /api/v2 refusal is, under the code the route declares for it, with the broker's message
@@ -14,10 +14,17 @@ package api
 // address Dispatch calls from before any token is verified, at 503, since none of them is the
 // caller's fault, and a code the route does not declare as 502 AGENT_SECRETS_REFUSAL_UNDECLARED
 // (relayBrokerRefusalV2, R7). An id the broker holds no record of answers the broker's own 404
-// under one code of its object (R7). And a deny of a service's machine login that the code's
-// lookup read already denied answers the broker's 409 RECORD_TERMINAL as the no-op of R8, 200
-// with the login as the lookup read it (putCredentialRequestStateV2). Every other answer of the
-// broker is relayed verbatim, as /api/v1 relays it.
+// under one code of its object (R7). A decision whose code reads its record already in the state
+// sent, from a caller the broker would let decide it, is the no-op of R8: 200 with that record,
+// and nothing relayed. A deny of a service's machine login that the code's lookup read already
+// denied is relayed, and the broker's 409 RECORD_TERMINAL is answered as that no-op, 200 with the
+// login as the lookup read it (putCredentialRequestStateV2). Any other decision that names a code
+// is answered with the record its code reads once the broker decided, not the broker's decision
+// answer. A decision relays the code alone, where /api/v1 relays a Dispatch sign-in's scopes on an
+// approval too (decisionFor), so the broker refuses a sign-in's approval here 400 SCOPES_REQUIRED.
+// And the requests waiting on the caller are 404 FEATURE_OFF on a Dispatch with no broker, where
+// /api/v1 answers null (listCredentialRequestsV2). Every other answer of the broker is relayed
+// verbatim, as /api/v1 relays it.
 
 import (
 	"cmp"
@@ -59,6 +66,7 @@ var (
 	brokerCodeRequiredRefusal             = apicode.Refusal{Condition: apicode.BrokerCodeRequired, Code: apicode.CodeRequired}
 	brokerCredentialIDInputRefusal        = apicode.Refusal{Condition: apicode.BrokerCredentialIDInput, Code: apicode.CredentialIDInput}
 	brokerDecideOnBrokerPageRefusal       = apicode.Refusal{Condition: apicode.BrokerDecideOnBrokerPage, Code: apicode.DecideOnBrokerPage}
+	brokerDispatchSigninOffRefusal        = apicode.Refusal{Condition: apicode.BrokerDispatchSigninOff, Code: apicode.DispatchSigninOff}
 	brokerGrantIDInputRefusal             = apicode.Refusal{Condition: apicode.BrokerGrantIDInput, Code: apicode.GrantIDInput}
 	brokerGrantMovingRefusal              = apicode.Refusal{Condition: apicode.BrokerGrantMoving, Code: apicode.GrantMoving}
 	brokerInternalRefusal                 = apicode.Refusal{Condition: apicode.BrokerInternal, Code: apicode.InternalError}
@@ -79,6 +87,10 @@ var (
 	brokerRecordTerminalRefusal           = apicode.Refusal{Condition: apicode.BrokerRecordTerminal, Code: apicode.RecordTerminal}
 	brokerRequestEndedRefusal             = apicode.Refusal{Condition: apicode.BrokerRequestEnded, Code: apicode.RequestEnded}
 	brokerRequestTooLargeRefusal          = apicode.Refusal{Condition: apicode.BrokerRequestTooLarge, Code: apicode.RequestTooLarge}
+	brokerScopeNotAskedRefusal            = apicode.Refusal{Condition: apicode.BrokerScopeNotAsked, Code: apicode.ScopeNotAsked}
+	brokerScopeNotConsentableRefusal      = apicode.Refusal{Condition: apicode.BrokerScopeNotConsentable, Code: apicode.ScopeNotConsentable}
+	brokerScopesOnDenialRefusal           = apicode.Refusal{Condition: apicode.BrokerScopesOnDenial, Code: apicode.ScopesOnDenial}
+	brokerScopesRequiredRefusal           = apicode.Refusal{Condition: apicode.BrokerScopesRequired, Code: apicode.ScopesRequired}
 	brokerServiceLogsInWithTokenRefusal   = apicode.Refusal{Condition: apicode.BrokerServiceLogsInWithToken, Code: apicode.ServiceLogsInWithToken}
 	brokerSigninIDInputRefusal            = apicode.Refusal{Condition: apicode.BrokerSigninIDInput, Code: apicode.SigninIDInput}
 	brokerStateInputRefusal               = apicode.Refusal{Condition: apicode.BrokerStateInput, Code: apicode.StateInput}
@@ -184,10 +196,12 @@ var (
 		Refusals: []apicode.Refusal{
 			brokerApproverAccountInputRefusal, brokerApproverIsGroupRefusal, brokerApproverReplacedRefusal, brokerApproverRequiredRefusal,
 			brokerCodeMismatchRefusal, brokerCodeRequiredRefusal,
-			brokerDecideOnBrokerPageRefusal, brokerInternalRefusal, brokerInvalidDecisionRefusal, brokerJudgeDecidesRefusal,
-			brokerKeyBindsReadTokenRefusal, brokerKeyHoldsLiveCredentialRefusal, brokerMemberKindUncheckableRefusal,
-			brokerNotApproverRefusal, brokerProjectAccessUnavailableRefusal, brokerRecordIDInputRefusal,
-			brokerRecordTerminalRefusal, brokerRequestTooLargeRefusal, brokerServiceLogsInWithTokenRefusal,
+			brokerDecideOnBrokerPageRefusal, brokerDispatchSigninOffRefusal, brokerInternalRefusal, brokerInvalidDecisionRefusal,
+			brokerJudgeDecidesRefusal, brokerKeyBindsReadTokenRefusal, brokerKeyHoldsLiveCredentialRefusal,
+			brokerMemberKindUncheckableRefusal, brokerNotApproverRefusal, brokerProjectAccessUnavailableRefusal,
+			brokerRecordIDInputRefusal, brokerRecordTerminalRefusal, brokerRequestTooLargeRefusal, brokerScopeNotAskedRefusal,
+			brokerScopeNotConsentableRefusal, brokerScopesOnDenialRefusal, brokerScopesRequiredRefusal,
+			brokerServiceLogsInWithTokenRefusal,
 		},
 		Missing: credentialRequestMissingRefusal,
 	}
@@ -307,7 +321,9 @@ type brokerListV2Query struct {
 
 // credentialRequestStateV2Input is PUT /api/v2/credential-requests/{id}/state's body of a decision,
 // either arm: the state the caller decides the request into and the machine login's typed code,
-// the one member of the browser's body Dispatch relays, as decisionFor relays it under /api/v1.
+// the one member of the browser's body this route relays. decisionFor under /api/v1 relays it and,
+// on an approval, a Dispatch sign-in's scopes, which this route does not take, so the broker
+// refuses a sign-in's approval here 400 SCOPES_REQUIRED.
 type credentialRequestStateV2Input struct {
 	State string  `json:"state" enum:"approved,denied"`
 	Code  *string `json:"code"`
@@ -546,10 +562,10 @@ func (s *server) putCredentialRequestStateV2(w http.ResponseWriter, r *http.Requ
 // dismissal once and answers every later one with that dismissal's values, writing nothing, so a
 // request already dismissed is answered 200 as it stands. The broker's 404 of an id it holds no
 // request of, or of a private project's request the caller may not see, is the route's
-// CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal - 403 NOT_APPROVER, 503
-// PROJECT_ACCESS_UNAVAILABLE, 503 MEMBER_KIND_UNCHECKABLE (#4848), 409 RECORD_PENDING, 409
-// RECORD_TERMINAL - is answered under the broker's own code, as every refusal of
-// brokerDismissalCall is.
+// CREDENTIAL_REQUEST_NOT_FOUND, and every other refusal brokerDismissalCall declares (403
+// NOT_APPROVER, 503 PROJECT_ACCESS_UNAVAILABLE, 503 MEMBER_KIND_UNCHECKABLE (#4848), 409
+// RECORD_PENDING and 409 RECORD_TERMINAL among them) is answered under the broker's own code, as
+// relayBrokerRefusalV2 answers every refusal a call declares.
 func dismissCredentialRequestV2(w http.ResponseWriter, r *http.Request, client *cipher.Client, login string) {
 	dismissed, err := client.Dismiss(r.Context(), r.PathValue("id"), login)
 	if err != nil {

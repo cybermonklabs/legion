@@ -322,7 +322,8 @@ var goingToolRoutes = map[string][]goingToolRoute{
 // route picked by the state, so they are two rows told apart by the tool's own `kind`. The three
 // document-edit rows of /api/v1 are one, the document's own by id, since /api/v2 edits a document
 // by its id alone; a call naming a document by slug resolves it first, as a v1 call to the
-// document's own row does.
+// document's own row does. And dispatch_issue_update's four rows, the three status-change rows
+// and the PATCH, are one, PATCH /api/v2/issues/{key}, whose body takes the status-change options.
 var goingToolRoutesV2 = map[string][]goingToolRoute{
 	"dispatch_issue": {{
 		Method: http.MethodPost, Pattern: "/api/v2/issues", Path: map[string]string{},
@@ -618,8 +619,9 @@ func BuildGoingCatalogue() (GoingCatalogue, error) {
 // buildGoingCatalogue is one entry per dispatch tool that writes, at the rows of version's own
 // table (goingToolTables), and an error naming every row the catalogue cannot hold: a row that
 // is no row of this table at that version, a row the table does not class as a write, a
-// placeholder no argument of the tool fills, a fixed body member that is also an argument of the
-// tool, a relation in neither edge family, and a tool name no tool spec has. register refuses to
+// placeholder no argument of the tool fills, a binding to no placeholder, a row picked by an
+// argument the tool does not take (WhenArgument), a fixed body member that is also an argument of
+// the tool, a relation in neither edge family, and a tool name no tool spec has. register refuses to
 // mount a table it answers an error for, so a catalogue entry can only ever name an action the
 // server serves.
 func buildGoingCatalogue(routes []apiRoute, version apiVersion) (GoingCatalogue, error) {

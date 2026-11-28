@@ -15,7 +15,7 @@ var _ = declareRow(func(s *server) routeRow {
 		Description: fmt.Sprintf("Write one priority {id?, title, description?, owner?}, a bearer naming its session "+
 			"in actor: title is required, and a title with nothing in it or over %[1]d characters is 400 "+
 			"PRIORITY_INPUT. A body that names no id takes the title written as a slug (lowercase ASCII letters and "+
-			"digits, each other run of characters one hyphen), and a slug over %[2]d characters is cut to its longest "+
+			"digits, each other run of characters between them one hyphen, none at either end), and a slug over %[2]d characters is cut to its longest "+
 			"start of at most %[2]d characters that ends at the end of a word, or to its first %[2]d characters when its "+
 			"first word is longer, so a long title is written whole under a cut id. A title with no ASCII letter or "+
 			"digit, or one the cut leaves as none or any, takes the id priority- and the first 12 lower-case hex "+

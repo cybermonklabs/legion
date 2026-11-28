@@ -3,10 +3,12 @@ package api
 // v2_asks.go is the asks of /api/v2 (R1 of dispatch://INFRA-4071/spec): one list of asks across
 // projects, GET /api/v2/asks, which answers for GET /api/v1/asks/open, GET /api/v1/inbox and GET
 // /api/v1/references/questions (the route map's J24); one ask, its reword and hand-on, its
-// followers and its state; an issue's asks and the create of one. Every read and every write of an
-// ask answers the one ask row, askV2 (J4, J24), and every write runs the work its /api/v1 route
-// runs (openAsk, rewordAsk, handAskOn, recordAnswer, recordResolution, recordDecline,
-// writeAskFollower), each path object checked first and answered with its own 404 (R7).
+// followers and its state; an issue's asks and the create of one. Every read of an ask answers the
+// one ask row, askV2 (J4, J24); every write but a follower's answers its core, askWriteV2, without
+// what include= adds; a follow answers the follower and an unfollow 204; and every write runs the
+// work its /api/v1 route runs (openAsk, rewordAsk, handAskOn, recordAnswer, recordResolution,
+// recordDecline, writeAskFollower), each path object checked first and answered with its own 404
+// (R7).
 
 import (
 	"cmp"
@@ -58,8 +60,9 @@ var (
 )
 
 // askOpenRefusals are the refusals of the ask a document's or an issue's ask list opens (openAsk),
-// with more, the route's own, after them: its kind, its question, options and urgency, a value past
-// its bound, and its anchor and what the document service answers it (anchorRefusals).
+// with more, the route's own, after them: a query key the route does not declare, its kind, its
+// question, options and urgency, a value past its bound, a document that is a file or an image,
+// and its anchor and what the document service answers it (anchorRefusals).
 func askOpenRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append(anchorRefusals([]apicode.Refusal{
 		undeclaredKeyRefusal, valuePastBoundRefusal, anchorInvalidRefusal, artifactNotDocumentRefusal,
@@ -78,8 +81,9 @@ var (
 // askRowText is what every description of a route answering asks says of the row it answers.
 const askRowText = "Each ask is one row: the ask's own fields at top level, opened_event_id, ref (its dispatch:// address, " +
 	"\"\" for an ask no address names), issue {key, title, assignee} or document {project, slug, name}, the issue's priority " +
-	"and last_reply; include=thread adds its thread (replies, rewordings, answers, followers, claimant, route, route_status, " +
-	"route_holder) and include=mark (the person scope) the caller's mark on it, {kind, id, snoozed_until}."
+	"and last_reply; include=thread adds its thread (replies, edits (its rewordings), answers, followers, claimant, route, " +
+	"route_status, route_holder, route_status_reason) and include=mark (the person scope) the caller's mark on it, {kind, " +
+	"id, snoozed_until}."
 
 func v2AskIDs() *idRoute { return &idRoute{Kind: "ask", NotFound: apicode.AskNotFound} }
 

@@ -34,7 +34,8 @@ func approveOnlyAnswer(jkt string) ciphertoken.Introspection {
 // approveOnlyVersion is one version the approve-only token's tests drive: its path prefix, and the
 // key of the project that version's issue is created under, so the two versions of a test never
 // share an issue. The approve list names /api/v1 routes, and the token may call the /api/v2 route
-// each has as its successor, so every proof of what the token does runs on both.
+// each has as its successor, so a proof of what the token does runs on both, but for the behaviour
+// only /api/v2 has (an answer's no-op and the states of a by-state route).
 type approveOnlyVersion struct {
 	prefix, project string
 }
@@ -168,10 +169,9 @@ func TestAnApproveOnlyTokenApprovesAsItsPersonAndNothingElse(t *testing.T) {
 // successors the table gives them, which the table's build stamps on its rows once
 // (applyApprovePolicy), and this test names them from the rows that need approve, so the two lists
 // drifting apart fails it. The list holds 11 /api/v1 routes and 9 /api/v2 routes. The three
-// /api/v2 routes that take several operations by state are listed with
-// the states the token may send them: the others (a credential request's dismissal, an ask's
-// resolve and decline) stay closed to it as they are on /api/v1, held by the state check
-// (gateApproveOnlyStates).
+// /api/v2 routes that take their body by state are listed with the states the token may send
+// them: the others (a credential request's dismissal, an ask's resolve, retraction and decline)
+// stay closed to it as they are on /api/v1, held by the state check (gateApproveOnlyStates).
 func TestTheApproveListIsTheApproveRowsLessTheTokenMintsAndTheAnswer(t *testing.T) {
 	t.Parallel()
 	rig := newBrokerTokenRig(t)

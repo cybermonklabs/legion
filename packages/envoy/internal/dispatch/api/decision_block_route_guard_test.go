@@ -102,7 +102,8 @@ var decisionBlockGuardSees = []string{
 // route takes (mountedRequests): its shape's request, or each arm of a state or kind union, whose
 // shape leaves the request out. Every route has a shape, since register refuses a table holding
 // one with none (shapelessRoutes). A route is in scope when register keys it (keyedMethod: a POST
-// or a PATCH, and on /api/v2 a PUT or a DELETE too) and a type it takes carries a `body` string,
+// or a PATCH, and a PUT or a DELETE too on a /api/v2 route the rules of /api/v2 bind, which no row
+// of the INFRA-979 tree and no test hook is) and a type it takes carries a `body` string,
 // the field every stored comment, message, broadcast and handoff body is written into. A row in
 // scope either runs the shared check — somewhere in what its handler runs inside package api, a
 // call of blockBoundError over a call of itemblocks.Check, which is the one place
