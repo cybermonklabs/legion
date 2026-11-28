@@ -23,6 +23,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // fakeGitHub is an httptest stand-in for the GitHub App and REST APIs a reconcile pass calls,
@@ -48,6 +49,10 @@ type fakeGitHub struct {
 	// on (githubapp.LimitRecordTimeout; limitClock): a fake of its own, which no test here moves,
 	// so that write's bound never falls while a test holds it.
 	recordClock *clocktest.Fake
+	// held names each request the stand-in holds back (hold, holdQuery) as it is held: what a
+	// test waits on (testwait.Next) before it ends the pass's bound or cancels the pass's caller,
+	// so the pass ends while it waits on GitHub and never before it has asked.
+	held testwait.Stream[string]
 
 	mu        sync.Mutex
 	installID int64
@@ -83,26 +88,22 @@ type fakeGitHub struct {
 	// failOnce answers that many more requests to one path with GitHub's 502, which is no rate
 	// limit and no answer about anything: GitHub's own trouble (failNext).
 	failOnce map[string]int
-	// stalls is how long one path's answer is held back before it is given, which is how a test
-	// makes GitHub slower than the pass's own bound (stall).
-	stalls map[string]time.Duration
-	// stalled is called as the stand-in begins holding an answer back (stall, stallQuery), which
-	// is the moment a test that ends the pass's bound itself ends it (boundEndsAtTheStall). Nil
-	// calls nothing, and the answer waits out its stall or its caller's end.
-	stalled func()
+	// holds is the paths whose answers are held back, each with the channel release closes to let
+	// the requests held there go: how a test makes GitHub slower than the pass has left (hold).
+	holds map[string]chan struct{}
 	// answerCodes is the status one path is answered with in place of its route's answer, which
 	// is how a test makes GitHub give up on or refuse that one read (answerStatus).
 	answerCodes map[string]int
 	// The state the GraphQL stand-in holds beside the REST one (graphql_test.go): the queries
 	// it was asked, the heads whose Checks fields it refuses, the heads whose node or head
 	// commit it answers null, the pages of one repository it refuses whole, the rate limits it
-	// answers the next queries with, and how long one page's answer is held back.
+	// answers the next queries with, and the pages whose answers it holds back (holdQuery).
 	queries       []fakeQuery
 	refusedChecks map[string]struct{}
 	nulled        map[string]nulledHead
 	refusedPages  map[string]map[int]struct{}
 	graphQLLimits []graphQLLimit
-	graphQLStalls map[string]time.Duration
+	heldQueries   map[string]chan struct{}
 	// queryTakes is how long every query's answer takes on the passes' clock, which is what a
 	// test of the pass's GraphQL pacing measures the pass against, and inFlight and mostInFlight
 	// how many queries the stand-in was answering at once, which for a pass that queries
@@ -176,12 +177,12 @@ func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 		etags:            map[string]string{},
 		limitOnce:        map[string]int{},
 		failOnce:         map[string]int{},
-		stalls:           map[string]time.Duration{},
+		holds:            map[string]chan struct{}{},
 		answerCodes:      map[string]int{},
 		refusedChecks:    map[string]struct{}{},
 		nulled:           map[string]nulledHead{},
 		refusedPages:     map[string]map[int]struct{}{},
-		graphQLStalls:    map[string]time.Duration{},
+		heldQueries:      map[string]chan struct{}{},
 		cursorsGiven:     map[string]queryAfter{},
 	}
 	f.mux.HandleFunc(graphQLRoute, f.answerQuery)
@@ -211,7 +212,9 @@ func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 		f.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		f.encode(w, map[string]any{
-			"token":       token,
+			"token": token,
+			// The token's expiry is a stamp on the real clock that no verdict reads, which
+			// INFRA-3149's architect allowed (dispatch://INFRA-3149/comment/3464cf0b-d808-46dd-9c83-35f6649c5a5b).
 			"expires_at":  time.Now().Add(time.Hour).Format(time.RFC3339Nano),
 			"permissions": permissions,
 		})
@@ -340,20 +343,16 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	if limited {
 		f.reset = reset
 	}
-	stall := f.stalls[r.URL.Path]
-	stalled := f.stalled
+	released, held := f.holds[r.URL.Path]
 	status := f.answerCodes[r.URL.Path]
 	f.mu.Unlock()
-	if stall > 0 {
-		if stalled != nil {
-			stalled()
-		}
-		// GitHub is slower to answer this than the pass has left. The caller giving up on the
-		// request closes its context here, so the answer is abandoned at once rather than held
-		// until the wait is over, which would keep the server's own Close waiting at the end of
-		// the test.
+	if held {
+		// GitHub is slower to answer this than the pass has left. The answer waits until the test
+		// releases the path, or until the caller gives up on the request, which closes its context
+		// here: the pass's bound falling, or its caller cancelling it.
+		f.held.Add(r.URL.Path)
 		select {
-		case <-time.After(stall):
+		case <-released:
 		case <-r.Context().Done():
 			return
 		}
@@ -454,9 +453,9 @@ var appKeyPEM = sync.OnceValues(func() (string, error) {
 // obeying and recording the shared rate limits as every Dispatch process's client does. It reads
 // a limit's wait against the passes' clock and bounds the limit's write on recordClock
 // (limitClock), and its calls end at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp),
-// not at githubapp's own RequestTimeout: so a call the stand-in holds (stall, stallQuery) ends
-// where the pass's bound or a caller's deadline falls, where the caller cancels it, or where the
-// stall's own wait ends.
+// not at githubapp's own RequestTimeout: so a call the stand-in holds (hold, holdQuery) ends where
+// the test releases it, where the pass's bound or a caller's deadline falls, or where the caller
+// cancels it.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	text, err := appKeyPEM()
@@ -578,16 +577,26 @@ func (f *fakeGitHub) failNext(path string) {
 	f.failOnce[path]++
 }
 
-// stall holds back every answer to path by wait, as GitHub answering a poller slowly does. A
-// wait of zero answers it as fast as every other path again.
-func (f *fakeGitHub) stall(path string, wait time.Duration) {
+// hold holds back every answer to path until the test releases it (release) or the request is
+// given up, as GitHub answering a poller more slowly than the pass has left does, and names each
+// such request on held as it is held. A path already held stays held as it was.
+func (f *fakeGitHub) hold(path string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if wait <= 0 {
-		delete(f.stalls, path)
-		return
+	if _, held := f.holds[path]; !held {
+		f.holds[path] = make(chan struct{})
 	}
-	f.stalls[path] = wait
+}
+
+// release answers path as fast as every other path again, and lets each request held there go
+// on to the answer its route gives.
+func (f *fakeGitHub) release(path string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if released, held := f.holds[path]; held {
+		close(released)
+		delete(f.holds, path)
+	}
 }
 
 // lastReset is the moment the stand-in's last rate-limited REST answer said the limit resets at.
@@ -595,14 +604,6 @@ func (f *fakeGitHub) lastReset() time.Time {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.reset
-}
-
-// atStall makes the stand-in call stalled as it begins holding an answer back (stall,
-// stallQuery), before it waits.
-func (f *fakeGitHub) atStall(stalled func()) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.stalled = stalled
 }
 
 // answerStatus answers every request to path with status and GitHub's short message for it,

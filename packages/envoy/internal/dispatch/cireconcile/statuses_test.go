@@ -354,7 +354,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 		h.github.setTokenPermissions(tokenWithoutStatuses)
 		h.github.forgetRequests()
 		h.github.forgetQueries()
-		h.replica().Pass(h.ctx)
+		h.passOf(h.replica())
 
 		if queries := h.github.queriesAsked(); len(queries) != 1 || queries[0].text != todaysHeadsQuery {
 			t.Fatalf("the pass of before asked %d queries, want the query of before", len(queries))
@@ -384,7 +384,7 @@ func TestReconcileKeepsAHeadsChecksWhenItsStatusesAreRefused(t *testing.T) {
 		}
 		h.github.setTokenPermissions(tokenWithoutStatuses)
 		h.github.forgetRequests()
-		h.replica().Pass(h.ctx)
+		h.passOf(h.replica())
 		if today := h.github.byRoute(); !maps.Equal(refused, today) {
 			t.Fatalf("the pass whose status field GitHub refused sent %v, want what the pass of before sends: %v", refused, today)
 		}

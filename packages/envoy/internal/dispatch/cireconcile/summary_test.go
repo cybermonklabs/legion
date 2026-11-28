@@ -137,15 +137,11 @@ func (h *harness) judgeSubject(why, owner, repo, number string) (judged, keys []
 		if err := json.Unmarshal(entry.Value(), &durable); err != nil {
 			return judged, keys, false, fmt.Errorf("%s: decode CI record %s: %w", why, key, err)
 		}
-		want, err := json.Marshal(durable)
+		decided, err := decidedOn(note, completed, durable)
 		if err != nil {
 			return judged, keys, false, err
 		}
-		got, err := json.Marshal(note.state)
-		if err != nil {
-			return judged, keys, false, err
-		}
-		if !bytes.Equal(got, want) || completed < note.pass {
+		if !decided {
 			decisive = false
 			continue
 		}
@@ -162,6 +158,22 @@ func (h *harness) judgeSubject(why, owner, repo, number string) (judged, keys []
 		}
 	}
 	return judged, keys, decisive, nil
+}
+
+// decidedOn reports whether note, the summary loop's last decision on a key, was made on durable,
+// the record as the bucket holds it now, by a pass that has completed (completed is the witness's
+// count of them): a decision on an earlier state of the record, or one whose pass is still
+// running, says nothing of what the loop does with durable.
+func decidedOn(note scheduledRecord, completed uint64, durable cistore.State) (bool, error) {
+	want, err := json.Marshal(durable)
+	if err != nil {
+		return false, err
+	}
+	got, err := json.Marshal(note.state)
+	if err != nil {
+		return false, err
+	}
+	return bytes.Equal(got, want) && completed >= note.pass, nil
 }
 
 func (h *harness) queuedSettlementError(sub *nats.Subscription, why string) error {

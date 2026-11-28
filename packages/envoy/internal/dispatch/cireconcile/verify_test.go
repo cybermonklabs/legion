@@ -352,7 +352,7 @@ func TestAFailedWriteOfTheReadLeavesNoAnswerUntilALaterOneLands(t *testing.T) {
 		t.Fatalf("the request at revision %d is gone after the write of the read failed", request.Revision)
 	}
 
-	h.replica().Verify(h.ctx)
+	h.verifyPassOf(h.replica())
 	if settled := h.settlement(settlements, "after a later answer landed"); settled.Passed.Count != 1 {
 		t.Fatalf("settlement = %+v, want ci-ok passed", settled)
 	}

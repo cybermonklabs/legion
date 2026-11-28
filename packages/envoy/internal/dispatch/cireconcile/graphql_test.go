@@ -52,7 +52,7 @@ type fakeQuery struct {
 // alone: GitHub's cursor is a keyset cursor, the key of the last node of the answer it came in
 // (cursor.after), so the page after it is the heads above that number and a pull request merged
 // below the page moves no page of the query. The ordinal decides no window at all -- it is the
-// label the stand-in's own verbs key a page by, which refusePage and stallQuery name a page
+// label the stand-in's own verbs key a page by, which refusePage and holdQuery name a page
 // with and which the query log reports (harness.pagesAsked) -- so a test may still say "the
 // second page of this repository" about a listing no position is read by.
 type queryAfter struct {
@@ -172,8 +172,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if len(f.graphQLLimits) > 0 {
 		limit, f.graphQLLimits = &f.graphQLLimits[0], f.graphQLLimits[1:]
 	}
-	stall := f.graphQLStalls[queryKey(repository, at.page)]
-	stalled := f.stalled
+	released, held := f.heldQueries[queryKey(repository, at.page)]
 	takes := f.queryTakes
 	pulls := append([]fakePull(nil), f.pulls[repository]...)
 	refusedPage := false
@@ -186,20 +185,21 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		f.answerQueryLimit(w, *limit)
 		return
 	}
-	if stall > 0 && stalled != nil {
-		stalled()
+	if held {
+		// GitHub is slower to answer this page than the pass has left: the answer waits until the
+		// test releases the page, or until the caller gives up on the request, the pass's bound
+		// falling or its caller cancelling it.
+		f.held.Add(fmt.Sprintf("the query for page %d of %s", at.page, repository))
+		select {
+		case <-released:
+		case <-r.Context().Done():
+			return
+		}
 	}
 	if takes > 0 {
 		// GitHub's own time over the query passes on the passes' clock while the pass waits for
 		// the answer.
 		f.clock.Advance(takes)
-	}
-	if stall > 0 {
-		select {
-		case <-time.After(stall):
-		case <-r.Context().Done():
-			return
-		}
 	}
 	if verbatim != "" {
 		// GitHub's own answer, captured from the real API and given back byte for byte.
@@ -511,7 +511,7 @@ func nullable(value any) any {
 	return text
 }
 
-// queryKey names one page of one repository, which is what a stall is held under.
+// queryKey names one page of one repository, which is what a held query is held under.
 func queryKey(repository string, page int) string {
 	return repository + "#" + strconv.Itoa(page)
 }
@@ -597,16 +597,26 @@ func (f *fakeGitHub) rateLimitQuery(limit graphQLLimit) {
 	f.graphQLLimits = append(f.graphQLLimits, limit)
 }
 
-// stallQuery holds back the answer to one page of one repository, as stall does for a REST
-// path: a wait of zero answers it as fast as every other page again.
-func (f *fakeGitHub) stallQuery(repository string, page int, wait time.Duration) {
+// holdQuery holds back the answer to one page of one repository until the test releases it
+// (releaseQuery) or the request is given up, as hold does for a REST path, and names each such
+// query on held as it is held. A page already held stays held as it was.
+func (f *fakeGitHub) holdQuery(repository string, page int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if wait <= 0 {
-		delete(f.graphQLStalls, queryKey(repository, page))
-		return
+	if _, held := f.heldQueries[queryKey(repository, page)]; !held {
+		f.heldQueries[queryKey(repository, page)] = make(chan struct{})
 	}
-	f.graphQLStalls[queryKey(repository, page)] = wait
+}
+
+// releaseQuery answers that page as fast as every other page again, and lets each query held
+// there go on to its answer.
+func (f *fakeGitHub) releaseQuery(repository string, page int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if released, held := f.heldQueries[queryKey(repository, page)]; held {
+		close(released)
+		delete(f.heldQueries, queryKey(repository, page))
+	}
 }
 
 // everyQueryTakes makes every query's answer take this long on the passes' clock, which the
