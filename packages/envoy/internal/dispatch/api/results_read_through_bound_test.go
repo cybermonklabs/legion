@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -406,5 +407,64 @@ func TestAPullRequestOfMoreThanAPageOfCommitsIsCreditedByItsMessagesReadOnce(t *
 	}
 	if pages != 2 || stored != 150 {
 		t.Fatalf("the read asked %d pages of #94's commits and stored %d messages, want 2 pages and the 150 messages", pages, stored)
+	}
+}
+
+// One results read starts no question to GitHub once its read-through has run its budget
+// (server.readThroughBudget; delivery.ReadThroughTimeout in production), so a read of many
+// commits ends within the budget and one question's own bound. The issue's 41 results stand at 41
+// commits no stored head names, three questions of delivery.CommitPullsBatch, and GitHub takes
+// three seconds to answer each against a budget of five: the first question ends at about three,
+// the second starts inside the budget and ends at about six, and the third is never asked. Its
+// commit is given back, read as not known for read_failed rather than placed from the stored rows,
+// and the next read asks about it alone. A read with no bound asks all three questions, one after
+// another, however long each takes.
+func TestAResultsReadStartsNoQuestionToGitHubOnceItsBudgetIsSpent(t *testing.T) {
+	t.Parallel()
+	handler, _, served, fake := readThroughGitHub(t, "acme/widgets")
+	served.readThroughBudget = 5 * time.Second
+	issue := issueInRepository(t, handler, "RESBG", "acme/widgets", "A read past its budget")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	ids := map[string]string{}
+	var every []string
+	for at := range 2*delivery.CommitPullsBatch + 1 {
+		commit := fmt.Sprintf("%040x", at+1)
+		every = append(every, commit)
+		recorded := decodeBody[recordedResult](t, recordResult(t, handler, issue.Key, resultBody("k1", "fail", commit, nil)))
+		ids[recorded.Result.ID] = commit
+	}
+	fake.holdsCommitQueries(func([]string) { time.Sleep(3 * time.Second) })
+
+	began := time.Now()
+	first := checkOf(t, readResults(t, handler, issue.Key), "k1")
+	took := time.Since(began)
+	queries := fake.commitsNamedByQueries(0)
+	asked := namedCommits(queries)
+	var unasked []string
+	for _, sha := range every {
+		if !slices.Contains(asked, sha) {
+			unasked = append(unasked, sha)
+		}
+	}
+	slices.Sort(unasked)
+	t.Logf("the first read took %s and sent %d questions naming %d commits", took.Round(time.Millisecond), len(queries), len(asked))
+	if len(queries) != 2 || len(unasked) != 1 {
+		t.Fatalf("the first read sent %d questions and left %d commits unasked, want 2 questions and the last batch's one commit "+
+			"unasked: the third question would start past the budget", len(queries), len(unasked))
+	}
+	for _, result := range first.Results {
+		if !slices.Contains(unasked, ids[result.ID]) {
+			continue
+		}
+		if result.CommitStands == nil || result.CommitStands.Answer != model.CommitUnknown || result.CommitStands.Reason != model.ReasonReadFailed {
+			t.Fatalf("the result at %s, which no question asked about, stands at %+v, want unknown/read_failed", ids[result.ID], result.CommitStands)
+		}
+	}
+
+	fake.holdsCommitQueries(nil)
+	between := len(fake.commitsNamedByQueries(0))
+	readResults(t, handler, issue.Key)
+	if again := namedCommits(fake.commitsNamedByQueries(between)); !slices.Equal(again, unasked) {
+		t.Fatalf("the next read asked about %v, want the commit the first read left unasked, %v: its claim was given back", again, unasked)
 	}
 }

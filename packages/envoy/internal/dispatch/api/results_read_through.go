@@ -2,9 +2,9 @@ package api
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"strconv"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -62,19 +62,34 @@ import (
 // is no evidence either way, so a result there that the rows leave at another commit is not known
 // for model.ReasonReadFailed (commitStands). That holds for each commit GitHub failed, each
 // commit the read stopped before, and each one Dispatch's own database could not claim or store
-// the answer of. A commit GitHub failed keeps its claim, so the failure is marked on the claim
-// every process shares (delivery.CommitPullReads.FailAcrossProcesses), and every read the claim
-// refuses for the rest of its span reads the commit as a read that failed too
-// (FailedAcrossProcesses): the read that would answer it is not made again inside the span.
+// the answer of.
+//
+// A claim stands on GitHub's answer only once this read has stored that answer and marked the
+// claim answered (delivery.CommitPullReads.AnswerAcrossProcesses, or the settle). A read the
+// claim refuses, in any process, reads the commit from the stored rows only where the claim says
+// so (HeldAcrossProcesses). A claim that is not answered is a read under way, a read GitHub
+// failed, or a read whose process stopped, and none of those has stored anything about the
+// commit, so a result there is not known. A commit this process's memory refused on a moment no
+// claim holds any more — another process gave the claim back, which that process's give-back
+// cannot reach here — is claimed again at once (ReclaimAcrossProcesses), and a read-only caller
+// asks GitHub about it.
 //
 // A read-only caller's read makes the same read and stores nothing, takes no claim, settles and
-// marks nothing (delivery.Attributor.AnswerCommitsPulls), and reads the marks as a writer's does.
+// marks nothing (delivery.Attributor.AnswerCommitsPulls), and reads the claims as a writer's does.
 func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, results []model.CheckResult) {
 	if c.server.deps.GitHub == nil {
 		return
 	}
 	now := c.server.resultsNow()
 	failed := func(sha string) { c.readFailed[[2]string{repo, sha}] = true }
+	if ctx.Err() != nil {
+		// The read's budget for its read-through is spent (learn): it claims nothing more and
+		// asks nothing, and each commit here is not known, as one no question asked is.
+		for _, result := range results {
+			failed(result.CommitSHA)
+		}
+		return
+	}
 	var asking, refused []string
 	// One commit is asked about once, however many results of however many checks stand at it: a
 	// writer's second claim of a commit is refused by the claim its first took, and a read-only
@@ -116,22 +131,12 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 			refused = append(refused, result.CommitSHA)
 		}
 	}
-	// A claim held by a read GitHub failed is that failure for the rest of its span, in every
-	// process: the read that would answer the commit is not made again inside it.
-	marked, err := c.server.commitPulls.FailedAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, refused, now)
-	if err != nil {
-		slog.Info("dispatch: whether the claims of the reads of results' commits are of failed reads was not read, so the read reads each as a read that failed",
-			"repo", repo, "commits", len(refused), "error", err)
-	}
-	for _, sha := range refused {
-		if err != nil || marked[sha] {
-			failed(sha)
-		}
-	}
+	asking = c.readRefusedClaims(ctx, repo, refused, asking, now)
 	if len(asking) == 0 {
 		return
 	}
 	var read delivery.CommitsPullsAnswer
+	var err error
 	if c.readOnly {
 		read, err = c.server.deps.Attributor.AnswerCommitsPulls(
 			ctx, c.server.deps.Store.Pool, c.server.deps.GitHub, &c.answers, repo, asking, now)
@@ -148,46 +153,113 @@ func (c *comparisonReader) readThroughHeads(ctx context.Context, repo string, re
 	// as the read itself runs (delivery's readThroughCommitsPulls): a caller that hangs up after
 	// the read must not leave a claim standing that no answer of GitHub's is behind.
 	settling := context.WithoutCancel(ctx)
+	var answered []string
 	for _, sha := range asking {
-		learned, answered := read.Reads[sha]
+		learned, stored := read.Reads[sha]
 		switch {
-		case read.Failed[sha]:
-			// GitHub failed this commit, its query or its own REST read, so it keeps its claim, as
-			// the read of one commit GitHub failed keeps it, and the claim carries the failure.
-			failed(sha)
-			if c.readOnly {
-				continue
-			}
-			if err := c.server.commitPulls.FailAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
-				// No claim may stand without the mark: a read it refused would read the stored rows
-				// alone. So the claim is given back, and the next read asks GitHub again.
-				slog.Info("dispatch: the claim of a read GitHub failed was not marked failed, so it is given back",
-					"repo", repo, "commit", sha, "error", err)
-				if err := c.server.commitPulls.ReleaseAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
-					slog.Info("dispatch: the claim of a read GitHub failed was not given back either, so a read inside its span reads the stored rows alone",
-						"repo", repo, "commit", sha, "error", err)
-				}
-			}
-		case !answered && (!read.Asked[sha] || errors.Is(err, delivery.ErrReadThroughNotStored)):
-			// No answer of GitHub's stands behind this commit's claim: the read stopped before it,
-			// in an earlier batch or earlier in its own query's answer, or its answer was not
-			// stored, or not in full. So this read reads it as a read that failed, and gives the
-			// claim back: the next read asks again at once rather than CommitPullReadStaleAfter
-			// later.
-			failed(sha)
-			if c.readOnly {
-				continue
-			}
-			if err := c.server.commitPulls.ReleaseAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
-				slog.Info("dispatch: the claim of a read that stored nothing was not given back, so the next read waits it out",
-					"repo", repo, "commit", sha, "error", err)
-			}
-		case answered && learned.Written > 0 && !learned.AtHead && !c.readOnly:
+		case stored && c.readOnly:
+		case stored && learned.Written > 0 && !learned.AtHead:
 			if err := c.server.commitPulls.SettleAcrossProcesses(settling, c.server.deps.Store.Pool, repo, sha, now); err != nil {
-				slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so a later read asks GitHub again",
+				// The claim is not marked answered, so a read it refuses would read the commit as
+				// not known for the rest of its span: it is given back, and the next read asks again.
+				slog.Info("dispatch: the settle of a read of a result's commit was not recorded, so its claim is given back",
 					"repo", repo, "commit", sha, "error", err)
+				c.giveBack(settling, repo, sha, now)
+			}
+		case stored:
+			answered = append(answered, sha)
+		case read.Failed[sha]:
+			// GitHub failed this commit, its query, its alias in the query or its own REST read, so
+			// it keeps its claim, as the read of one commit GitHub failed keeps it. The claim is
+			// not answered, so every read it refuses, in any process, reads the commit as not known
+			// for the rest of its span, and none asks GitHub again inside it.
+			failed(sha)
+		default:
+			// No answer of GitHub's stands behind this commit's claim and no failure of GitHub's
+			// either: the read stopped before it, in an earlier batch or earlier in its own query's
+			// answer, or its answer was not stored, or not in full. So this read reads it as a read
+			// that failed, and gives the claim back: the next read asks again at once rather than
+			// CommitPullReadStaleAfter later.
+			failed(sha)
+			if !c.readOnly {
+				c.giveBack(settling, repo, sha, now)
 			}
 		}
+	}
+	if err := c.server.commitPulls.AnswerAcrossProcesses(settling, c.server.deps.Store.Pool, repo, answered, now); err != nil {
+		// A claim not marked answered reads as not known in every read it refuses: the claims are
+		// given back, and the next read asks GitHub again and finds the rows this read stored.
+		slog.Info("dispatch: the claims of reads GitHub answered were not marked answered, so they are given back",
+			"repo", repo, "commits", len(answered), "error", err)
+		for _, sha := range answered {
+			c.giveBack(settling, repo, sha, now)
+		}
+	}
+}
+
+// readRefusedClaims reads the claim every process shares of each commit a claim refused
+// (delivery.CommitPullReads.HeldAcrossProcesses) and answers asking with the commits to ask
+// GitHub about after all. A commit whose claim is answered reads from the stored rows, which hold
+// GitHub's answer. A commit whose claim is not answered is not known (readFailed): the read behind
+// the claim is under way, failed at GitHub, or stopped with its process. A commit with no claim
+// held past now was refused on a moment this process's memory took from a claim that is gone —
+// another process gave it back — or holds longer than the database does: a writer claims it again
+// (ReclaimAcrossProcesses) and asks about it where that is granted, and a read-only caller asks
+// about it. A claim another read took between the two statements is read once more, and a commit
+// that still has no answered claim then is not known: the read ends there rather than chase it.
+func (c *comparisonReader) readRefusedClaims(ctx context.Context, repo string, refused, asking []string, now time.Time) []string {
+	failed := func(sha string) { c.readFailed[[2]string{repo, sha}] = true }
+	held, err := c.server.commitPulls.HeldAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, refused, now)
+	if err != nil {
+		slog.Info("dispatch: the claims that refused reads of results' commits were not read, so the read reads each as a read that failed",
+			"repo", repo, "commits", len(refused), "error", err)
+		for _, sha := range refused {
+			failed(sha)
+		}
+		return asking
+	}
+	var taken []string
+	for _, sha := range refused {
+		answered, found := held[sha]
+		switch {
+		case found && !answered:
+			failed(sha)
+		case found:
+		case c.readOnly:
+			asking = append(asking, sha)
+		default:
+			claimed, err := c.server.commitPulls.ReclaimAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now)
+			switch {
+			case err != nil:
+				slog.Info("dispatch: the claim of a read of a result's commit was not taken again, so the read asks GitHub nothing and reads the commit as a read that failed",
+					"repo", repo, "commit", sha, "error", err)
+				failed(sha)
+			case claimed:
+				asking = append(asking, sha)
+			default:
+				taken = append(taken, sha)
+			}
+		}
+	}
+	if len(taken) == 0 {
+		return asking
+	}
+	held, err = c.server.commitPulls.HeldAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, taken, now)
+	for _, sha := range taken {
+		if err != nil || !held[sha] {
+			failed(sha)
+		}
+	}
+	return asking
+}
+
+// giveBack gives back the claim this read took of repo's commit sha at now, and logs a give-back
+// that failed: the claim then stands not answered, so every read it refuses reads the commit as not
+// known until its moment passes.
+func (c *comparisonReader) giveBack(ctx context.Context, repo, sha string, now time.Time) {
+	if err := c.server.commitPulls.ReleaseAcrossProcesses(ctx, c.server.deps.Store.Pool, repo, sha, now); err != nil {
+		slog.Info("dispatch: the claim of a read of a result's commit was not given back, so a read it refuses reads the commit as not known until its moment passes",
+			"repo", repo, "commit", sha, "error", err)
 	}
 }
 

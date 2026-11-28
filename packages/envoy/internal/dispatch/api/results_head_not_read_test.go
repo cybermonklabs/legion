@@ -416,8 +416,8 @@ func TestASubjectWhoseHeadIsOwedAReadLeavesThePassNotKnown(t *testing.T) {
 // stores NKWN-1, as the sync or an older release stores it. The pass is unknown with
 // issue_not_known, and its possible_head names #85 at headCommit. The check compares with
 // nothing for issue_not_known, lists #85 in issues_not_known and names no head not read.
-// pass_stands is unknown. The read is held off by a claim of headCommit
-// (server.commitPulls.Claim), so it asks GitHub nothing there and the stored rows answer alone.
+// pass_stands is unknown. The read is held off by a claim of headCommit that a read answered a
+// moment ago (holdReadOff), so it asks GitHub nothing there and the stored rows answer alone.
 // Controls in the same test: with the message "Dispatch: NKWN-1" read, the pass stands at #85
 // and pass_stands is yes. Then the pass is at newHeadCommit, and a known merged #84 of NKWN-1 is
 // at a third commit. That pass is at another commit, and pass_stands is no. A guard reads the
@@ -460,9 +460,7 @@ func TestAPassAtTheHeadOfAPullRequestWhoseAnswerIsNotKnownDoesNotSayNo(t *testin
 					"state":"closed","merged":true,"merged_at":"2026-11-18T01:00:00Z","updated_at":"2026-11-18T01:00:00Z",
 					"head":{"ref":"work/no-key","sha":%q,"repo":{"full_name":%q}},"base":{"ref":"main"}}]`, repo, headCommit, repo)
 			})
-			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
-				t.Fatal("SETUP: a claim of headCommit was refused; the record claims nothing")
-			}
+			holdReadOff(t, served, "acme/widgets", headCommit)
 			spent := fake.asks("acme/widgets")
 			read := readResults(t, handler, issue)
 			asked := fake.asks("acme/widgets") - spent

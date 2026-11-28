@@ -24,9 +24,13 @@ import (
 // every process shares (commit_pull_reads, ClaimAcrossProcesses). A writer's read claims a commit
 // here; a read-only caller's read takes no claim and only reads the writer's, in this process's
 // memory and in the database (RefusesAcrossProcesses), since it stores nothing and keeps nothing
-// after its request. A claim whose read GitHub failed carries that failure for its span
-// (FailAcrossProcesses, FailedAcrossProcesses), so a read the claim refuses reads the commit as a
-// read that failed, never as one that answered.
+// after its request. A claim stands on GitHub's answer only once its read has stored that answer
+// (AnswerAcrossProcesses, SettleAcrossProcesses). Until then — while its read is under way, after
+// GitHub failed it, or after its process stopped — a read the claim refuses reads the commit as a
+// read that did not answer, never as what the stored rows alone say (HeldAcrossProcesses). A
+// moment this process's memory holds is no such claim: it may be another process's moment, which a
+// give-back there does not reach, so a refused read reads the claim itself, and claims the commit
+// again where no claim stands (ReclaimAcrossProcesses).
 
 // CommitPullReadStaleAfter is how long one commit's read-through stands before another read may
 // run for that commit. Each read costs the commit's share of one GraphQL query, which asks about
@@ -205,11 +209,13 @@ func (c *CommitPullReads) hold(repoFull, sha string, until time.Time) {
 // process shares (commit_pull_reads, claimCommitPullReadSQL). So N processes read one commit
 // through at most once a CommitPullReadStaleAfter, as one process does, and each process sends
 // the claim at most once a span for each commit. A claim the database refuses keeps the moment
-// the database holds in this process's memory, so the process asks again once that moment has
-// passed. A claim that fails grants nothing and leaves the pair free in this process's memory,
-// so the next read asks again; the read then answers from the stored rows, as a read that asks
-// GitHub nothing does. A granted claim then deletes the rows whose moment has passed
-// (sweepCommitPullReadsSQL).
+// the database holds in this process's memory, so the process sends no claim of the pair again
+// before that moment. That moment is another process's: a give-back there deletes the claim and
+// cannot reach this memory, so a read this memory refuses reads the claim itself
+// (HeldAcrossProcesses) and claims the pair again where none stands (ReclaimAcrossProcesses). A
+// claim that fails grants nothing and leaves the pair free in this process's memory, so the next
+// read asks again; the read then reads the commit as a read that did not answer. A granted claim
+// then deletes the rows whose moment has passed (sweepCommitPullReadsSQL).
 //
 // The moments are each process's clock, as the memory's are, so two processes whose clocks
 // differ by d can read one commit through twice in one span that is d shorter.
@@ -246,15 +252,15 @@ func (c *CommitPullReads) ClaimAcrossProcesses(ctx context.Context, pool *store.
 // $1 the repository, $2 the commit, $3 now and $4 the moment a granted claim records. The
 // insert moves the moment only where the moment held has passed, so of two processes that ask
 // at once one is granted: the second waits on the row the first wrote, for that one statement,
-// and reads its moment. A granted claim is a read not yet made, so it is no failed one: it sets
-// failed false over the mark an earlier claim's failed read left (FailAcrossProcesses). It
-// answers one row, true and the new moment where it granted the claim, and false and the moment
-// held where it refused it; no row where another process inserted the pair after this
-// statement's snapshot. It locks that one row and no other.
+// and reads its moment. A granted claim is a read not yet made, so no answer of GitHub's stands
+// behind it: it sets answered false over the mark an earlier claim's answered read left
+// (AnswerAcrossProcesses). It answers one row, true and the new moment where it granted the
+// claim, and false and the moment held where it refused it; no row where another process inserted
+// the pair after this statement's snapshot. It locks that one row and no other.
 const claimCommitPullReadSQL = `
 	with granted as (
 		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $4)
-		on conflict (repo, sha) do update set not_before = excluded.not_before, failed = false
+		on conflict (repo, sha) do update set not_before = excluded.not_before, answered = false
 		where held.not_before <= $3
 		returning held.not_before
 	)
@@ -280,76 +286,110 @@ const sweepCommitPullReadsSQL = `
 
 // SettleAcrossProcesses is Settle for every process: it records CommitPullSettledFor past now in
 // this process's memory and in the claim every process shares, where it keeps the later of that
-// moment and the one held. A settle follows an answer of GitHub's, so it sets failed false
-// (FailAcrossProcesses). The write runs on a context its caller's end cannot cancel, bounded by
-// commitPullRecordTimeout: its caller is a request, and a client that hangs up after GitHub
-// answered must not cost the next read a second ask within the hour.
+// moment and the one held. A settle follows an answer of GitHub's that the read stored, so it
+// marks the claim answered (AnswerAcrossProcesses). The write runs on a context its caller's end
+// cannot cancel, bounded by commitPullRecordTimeout: its caller is a request, and a client that
+// hangs up after GitHub answered must not cost the next read a second ask within the hour.
 func (c *CommitPullReads) SettleAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
 	c.Settle(repoFull, sha, now)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitPullRecordTimeout)
 	defer cancel()
 	if _, err := pool.Exec(ctx, `
-		insert into commit_pull_reads as held (repo, sha, not_before) values ($1, $2, $3)
-		on conflict (repo, sha) do update set not_before = greatest(held.not_before, excluded.not_before), failed = false`,
+		insert into commit_pull_reads as held (repo, sha, not_before, answered) values ($1, $2, $3, true)
+		on conflict (repo, sha) do update set not_before = greatest(held.not_before, excluded.not_before), answered = true`,
 		repoFull, sha, now.Add(CommitPullSettledFor)); err != nil {
 		return fmt.Errorf("settle the read of the pull requests of %s at %s: %w", repoFull, sha, err)
 	}
 	return nil
 }
 
-// FailAcrossProcesses marks the claim ClaimAcrossProcesses granted at now as the claim of a read
-// GitHub failed, in the claim every process shares. The claim stands, since GitHub was asked and
-// the claim bounds how often it is; the mark is what every read the claim refuses for the rest of
-// its span, in any process, reads it by (FailedAcrossProcesses), so each reads a result at the
-// commit as a read that failed and never as what the stored rows alone say: the read that would
-// have taught Dispatch a pull request at the commit did not answer. It marks only that claim: a
-// moment later than it, which a settle or another process's later claim recorded, is another
-// read's, and a granted claim and a settle each set the mark false. The write runs on a context
-// its caller's end cannot cancel, bounded by commitPullRecordTimeout, as the settle's does.
-func (c *CommitPullReads) FailAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) error {
+// AnswerAcrossProcesses marks the claims ClaimAcrossProcesses granted at now for each of shas in
+// repoFull as claims an answer of GitHub's stands behind: the read they were granted for has
+// stored GitHub's answer about each commit. Only then does a read the claim refuses, in any
+// process, read the commit from the stored rows (HeldAcrossProcesses); before it, the claim is a
+// read under way, a read GitHub failed, or a read whose process stopped, and none of those says
+// anything about the commit. It marks only those claims: a moment later than theirs, which a
+// settle or another process's later claim recorded, is another read's. It is one statement for all
+// of shas. The write runs on a context its caller's end cannot cancel, bounded by
+// commitPullRecordTimeout, as the settle's does.
+func (c *CommitPullReads) AnswerAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull string, shas []string, now time.Time) error {
+	if len(shas) == 0 {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), commitPullRecordTimeout)
 	defer cancel()
-	if _, err := pool.Exec(ctx, `update commit_pull_reads set failed = true where repo = $1 and sha = $2 and not_before <= $3`,
-		repoFull, sha, now.Add(CommitPullReadStaleAfter)); err != nil {
-		return fmt.Errorf("mark the read of the pull requests of %s at %s failed: %w", repoFull, sha, err)
+	if _, err := pool.Exec(ctx, `update commit_pull_reads set answered = true where repo = $1 and sha = any($2) and not_before <= $3`,
+		repoFull, shas, now.Add(CommitPullReadStaleAfter)); err != nil {
+		return fmt.Errorf("mark the reads of the pull requests of %d commits of %s answered: %w", len(shas), repoFull, err)
 	}
 	return nil
 }
 
-// FailedAcrossProcesses is each of shas whose claim in repoFull, held past now, is the claim of a
-// read GitHub failed (FailAcrossProcesses): of the commits a claim refuses at now, the ones a read
-// reads as a read that failed. It records nothing, so a read-only caller's read asks it as a
-// writer's does, and it is one statement for all of shas. A read of it that fails answers its
-// error, and the caller reads each of shas as a read that failed, as it reads a claim it could not
-// take: Dispatch could not say whether the read behind the claim answered.
-func (c *CommitPullReads) FailedAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull string, shas []string, now time.Time) (map[string]bool, error) {
-	failed := map[string]bool{}
+// HeldAcrossProcesses reads the claim every process shares of each of shas in repoFull that is
+// held past now, and answers, for each commit that has one, whether an answer of GitHub's stands
+// behind it (AnswerAcrossProcesses, SettleAcrossProcesses). A commit absent from the answer has no
+// claim held past now. A results read asks it for the commits a claim refused, in this process's
+// memory or in the database, so it reads:
+//   - a commit whose claim is answered from the stored rows, which hold that answer;
+//   - a commit whose claim is not answered as a read that did not answer, since the read behind
+//     the claim is under way, failed at GitHub, or stopped with its process;
+//   - and a commit with no claim as one this process's memory refused on a moment no claim holds
+//     any more: a claim another process gave back, or a moment the memory holds longer than the
+//     database does. It claims such a commit again (ReclaimAcrossProcesses).
+//
+// It records nothing, so a read-only caller's read asks it as a writer's does, and it is one
+// statement for all of shas. A read of it that fails answers its error, and the caller reads each
+// of shas as a read that did not answer: Dispatch could not say whether an answer stands behind
+// the claim.
+func (c *CommitPullReads) HeldAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull string, shas []string, now time.Time) (map[string]bool, error) {
+	held := map[string]bool{}
 	if len(shas) == 0 {
-		return failed, nil
+		return held, nil
 	}
 	rows, err := pool.Query(ctx, `
-		select sha from commit_pull_reads where repo = $1 and sha = any($2) and failed and not_before > $3
+		select sha, answered from commit_pull_reads where repo = $1 and sha = any($2) and not_before > $3
 	`, repoFull, shas, now)
 	if err != nil {
-		return nil, fmt.Errorf("read which claims of the reads of %d commits of %s failed: %w", len(shas), repoFull, err)
+		return nil, fmt.Errorf("read the claims of the reads of %d commits of %s: %w", len(shas), repoFull, err)
 	}
-	marked, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read which claims of the reads of %d commits of %s failed: %w", len(shas), repoFull, err)
+	defer rows.Close()
+	for rows.Next() {
+		var sha string
+		var answered bool
+		if err := rows.Scan(&sha, &answered); err != nil {
+			return nil, fmt.Errorf("read the claims of the reads of %d commits of %s: %w", len(shas), repoFull, err)
+		}
+		held[sha] = answered
 	}
-	for _, sha := range marked {
-		failed[sha] = true
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the claims of the reads of %d commits of %s: %w", len(shas), repoFull, err)
 	}
-	return failed, nil
+	return held, nil
+}
+
+// ReclaimAcrossProcesses is ClaimAcrossProcesses for a commit this process's memory refused at now
+// although no claim of it is held past now in the database (HeldAcrossProcesses): the moment the
+// memory holds was another process's claim, which that process gave back, or it outlasts the
+// claim the database holds. It forgets that moment and claims the pair again, so the read asks
+// GitHub at once, as the give-back meant. A claim another process took since is refused as any
+// claim is.
+func (c *CommitPullReads) ReclaimAcrossProcesses(ctx context.Context, pool *store.Pool, repoFull, sha string, now time.Time) (bool, error) {
+	c.mu.Lock()
+	delete(c.notBefore, commitPullKey{repo: repoFull, sha: sha})
+	c.mu.Unlock()
+	return c.ClaimAcrossProcesses(ctx, pool, repoFull, sha, now)
 }
 
 // ReleaseAcrossProcesses gives back the claim ClaimAcrossProcesses granted at now, in this
 // process's memory and in the claim every process shares, so the next read of the pair asks
 // GitHub at once. Its one caller is the results read, for a commit whose claim no answer of
-// GitHub's stands behind: one the read stopped before, in an earlier batch or earlier in its own
-// query's answer, and one whose answer was not stored (ErrReadThroughNotStored). The claim bounds
-// how often GitHub is asked, and such a read has left nothing for the bound to protect, so holding
-// it would leave the result at no head for CommitPullReadStaleAfter for no saving. It gives back
+// GitHub's stands behind and no failure of GitHub's either: one the read stopped before, in an
+// earlier batch or earlier in its own query's answer, and one whose answer was not stored
+// (ErrReadThroughNotStored), or not marked answered. The claim bounds how often GitHub is asked,
+// and such a read has left nothing for the bound to protect, so holding it would leave the result
+// not known for CommitPullReadStaleAfter for no saving. Another process's memory may still hold
+// the claim's moment, which this cannot reach: that process reads the claim itself and finds it
+// gone (HeldAcrossProcesses, ReclaimAcrossProcesses). It gives back
 // only that claim: a moment later than it, which a settle or another process's later claim
 // recorded, stays. The write runs on a
 // context its caller's end cannot cancel, bounded by commitPullRecordTimeout, as the settle's does.
@@ -371,7 +411,7 @@ func (c *CommitPullReads) ReleaseAcrossProcesses(ctx context.Context, pool *stor
 }
 
 // commitPullRecordTimeout bounds one write of the claim every process shares that a read-through
-// makes after GitHub answered or failed (SettleAcrossProcesses, FailAcrossProcesses,
+// makes after GitHub answered or failed (SettleAcrossProcesses, AnswerAcrossProcesses,
 // ReleaseAcrossProcesses). Each is one statement, which a healthy database answers in
 // milliseconds, as githubapp bounds its one write of a limit (limitRecordTimeout).
 const commitPullRecordTimeout = 5 * time.Second

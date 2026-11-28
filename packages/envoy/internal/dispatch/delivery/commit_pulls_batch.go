@@ -67,8 +67,9 @@ type CommitPullsRead struct {
 // or GitHub answered it and the read stopped before storing that answer.
 //
 // Failed is each commit Asked holds whose read GitHub failed: each commit of a query GitHub
-// failed or answered with what could not be read, a commit whose REST read GitHub failed, and a
-// commit whose answer was cut short by GitHub's rate limit on a pull request's commit messages.
+// failed or answered with what could not be read, a commit whose alias GitHub's answer names an
+// error for or answers with no list of its pull requests, a commit whose REST read GitHub failed,
+// and a commit whose answer was cut short by GitHub's rate limit on a pull request's commit messages.
 // Its claim stands, and the read is no answer about the commit: the caller reads a result there
 // as a read that failed, never as what the stored rows alone say. A commit whose answer Dispatch's
 // own database could not store is in neither Reads nor Failed, and the error says so
@@ -97,6 +98,9 @@ type CommitsPullsAnswer struct {
 // of one pull request. The first failure ends the read, with what the commits before it learned:
 // a failure of GitHub's is most often one the next batch meets too (a rate limit, an outage), and
 // the commits after it are given back to the next read rather than asked into the same failure.
+// The read starts no batch once ctx is done — its deadline passed or its caller hung up — and
+// ends with the commits from there on unasked, so a caller bounds the whole read by the deadline
+// it gives: a batch already started runs to its own bound.
 //
 // A writer's read calls this. A read-only caller's read of an issue's results stores nothing and
 // calls AnswerCommitsPulls, which is this read with its writes kept for the request.
@@ -122,10 +126,11 @@ func (a *Attributor) AnswerCommitsPulls(
 // readThroughCommitsPulls is the two above through f (facts): one read of the repository's token
 // and of the reads owed in it, then a query for each batch of commits.
 //
-// The whole read runs on a context its caller's end cannot cancel, as the REST read-through of
-// one commit does: a client that hangs up must not cut a read or a write short and leave its
-// claims standing with nothing asked or stored. The read of the token and of the owed reads, and
-// each batch, are each bounded by ReadThroughTimeout instead.
+// The reads run on a context its caller's end cannot cancel, as the REST read-through of one
+// commit does: a client that hangs up must not cut a read or a write short and leave its claims
+// standing with nothing asked or stored. The read of the token and of the owed reads, and each
+// batch with the REST reads of its commits, are each bounded by ReadThroughTimeout instead. ctx
+// itself decides only whether another batch starts.
 func (a *Attributor) readThroughCommitsPulls(
 	ctx context.Context, f facts, client *githubapp.Client, repoFull string, shas []string, now time.Time,
 ) (CommitsPullsAnswer, error) {
@@ -133,8 +138,12 @@ func (a *Attributor) readThroughCommitsPulls(
 	if len(shas) == 0 {
 		return answer, nil
 	}
+	whole := ctx
 	ctx = context.WithoutCancel(ctx)
 	canonical := a.canonical(repoFull)
+	if whole.Err() != nil {
+		return answer, fmt.Errorf("asked nothing about %d commits of %s: %w", len(shas), canonical, context.Cause(whole))
+	}
 	bounded, cancel := context.WithTimeout(ctx, ReadThroughTimeout)
 	owner, repo, token, err := repositoryRead(bounded, client, canonical)
 	if err != nil {
@@ -155,7 +164,11 @@ func (a *Attributor) readThroughCommitsPulls(
 		canonical: canonical, storedUnder: repoFull, owner: owner, repo: repo,
 		owed: owed, now: now, answer: answer,
 	}
-	for _, chunk := range slices.Collect(slices.Chunk(shas, CommitPullsBatch)) {
+	for at, chunk := range slices.Collect(slices.Chunk(shas, CommitPullsBatch)) {
+		if whole.Err() != nil {
+			return answer, fmt.Errorf("asked nothing about the last %d of %d commits of %s: %w",
+				len(shas)-at*CommitPullsBatch, len(shas), canonical, context.Cause(whole))
+		}
 		bounded, cancel := context.WithTimeout(ctx, ReadThroughTimeout)
 		err := batch.query(bounded, f, chunk)
 		cancel()
@@ -236,11 +249,13 @@ func (c *commitPullsRead) query(ctx context.Context, f facts, shas []string) err
 		// over REST, or on GitHub's failure of that REST read. An exit below leaves every commit
 		// after sha unasked.
 		c.answer.Asked[sha] = true
-		pulls, found := answered[sha]
+		pulls := answered[sha]
 		switch {
-		case !found:
-			// GitHub answered the repository null, or named this commit nothing at all: no
-			// answer about it, so the commit keeps whatever the stored rows say.
+		case pulls.failed:
+			// GitHub's answer names an error at this commit's alias, or holds no list of its pull
+			// requests: a failure of GitHub's behind this commit alone, and the rest of the
+			// answer stands.
+			c.answer.Failed[sha] = true
 			continue
 		case pulls.more:
 			// GitHub names more pull requests for the commit than the query reads of it, oldest
@@ -332,8 +347,9 @@ func (c *commitPullsRead) store(ctx context.Context, f facts, sha string, pulls 
 // The owner and the name go in variables; each commit goes in the text, since an alias cannot take
 // one.
 //
-// A commit the repository does not hold answers null for its alias, which is no answer about it,
-// as the REST read's own empty answer for such a commit is none.
+// A commit the repository does not hold answers null for its alias, with no error naming it, as
+// GitHub answered such a commit on 2026-11-28: that is GitHub's answer that no pull request names
+// the commit, as the REST read's 422 for it answers an empty list (fetchCommitPullPayloads).
 func commitPullsQuery(owner, repo string, shas []string) (string, map[string]any) {
 	var text strings.Builder
 	text.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
@@ -347,22 +363,35 @@ func commitPullsQuery(owner, repo string, shas []string) (string, map[string]any
 }
 
 // commitPulls is one commit of decodeCommitPulls' answer: the pull requests GitHub named for it,
-// and more where it names more of them than the query read (totalCount above the nodes).
+// and more where it names more of them than the query read (totalCount above the nodes), or failed
+// where GitHub's answer is no answer about it.
 type commitPulls struct {
-	pulls []pullRequestPayload
-	more  bool
+	pulls  []pullRequestPayload
+	more   bool
+	failed bool
 }
 
-// decodeCommitPulls reads GitHub's answer to one query of shas: the pull requests of each commit
-// the answer names, by commit, in the shape every writer of a head row takes
-// (pullRequestPayload). A commit whose alias is null, and one whose alias is no commit, is absent
-// from the answer: GitHub said nothing about it, which is not the same as naming no pull request
-// for it.
+// decodeCommitPulls reads GitHub's answer to one query of shas: the pull requests of each commit,
+// by commit, in the shape every writer of a head row takes (pullRequestPayload). It reads `errors`
+// beside `data`, as the facts batch does (factsRead.decode):
+//   - an error whose path names a commit's alias (`repository`, `c<i>`, and anything below it)
+//     fails that commit alone, whatever its alias holds;
+//   - an error whose path names no commit's alias fails the whole answer, since no commit of it
+//     can be told apart from the one GitHub failed;
+//   - a commit whose alias is null with no error is one the repository does not hold, and an alias
+//     `{}` names an object that is no commit, as GitHub answers a tree's id: GitHub names no pull
+//     request for either, an answer, as the REST read answers both;
+//   - a commit whose associatedPullRequests is null, or whose alias the answer leaves out, has no
+//     answer about its pull requests, which fails it.
 func decodeCommitPulls(body []byte, shas []string) (map[string]commitPulls, error) {
 	var answer struct {
 		Data struct {
 			Repository map[string]json.RawMessage `json:"repository"`
 		} `json:"data"`
+		Errors []struct {
+			Path    []any  `json:"path"`
+			Message string `json:"message"`
+		} `json:"errors"`
 	}
 	if err := json.Unmarshal(body, &answer); err != nil {
 		return nil, fmt.Errorf("decode the answer to the query of %d commits' pull requests: %w", len(shas), err)
@@ -371,32 +400,57 @@ func decodeCommitPulls(body []byte, shas []string) (map[string]commitPulls, erro
 		return nil, fmt.Errorf("GitHub answered the query of %d commits' pull requests with no repository: %s",
 			len(shas), githubapp.ShownBody(body))
 	}
+	refused := map[string]bool{}
+	for _, refusal := range answer.Errors {
+		var alias string
+		if len(refusal.Path) >= 2 && refusal.Path[0] == "repository" {
+			alias, _ = refusal.Path[1].(string)
+		}
+		if alias == "" {
+			return nil, fmt.Errorf("GitHub answered the query of %d commits' pull requests with an error that names no commit (path %v): %s",
+				len(shas), refusal.Path, refusal.Message)
+		}
+		refused[alias] = true
+	}
 	answered := make(map[string]commitPulls, len(shas))
 	for index, sha := range shas {
-		raw := answer.Data.Repository["c"+strconv.Itoa(index)]
-		if isJSONNull(raw) {
+		alias := "c" + strconv.Itoa(index)
+		raw, named := answer.Data.Repository[alias]
+		switch {
+		case refused[alias] || !named:
+			// An error names the alias, or the answer leaves it out: no answer about the commit.
+			answered[sha] = commitPulls{failed: true}
+			continue
+		case isJSONNull(raw):
+			answered[sha] = commitPulls{}
 			continue
 		}
-		var commit struct {
-			// AssociatedPullRequests is nil where the object is no commit: `... on Commit` then
-			// selects nothing, and GitHub answers the alias `{}`.
-			AssociatedPullRequests *struct {
-				TotalCount int         `json:"totalCount"`
-				Nodes      []factsNode `json:"nodes"`
-			} `json:"associatedPullRequests"`
-		}
+		var commit map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &commit); err != nil {
 			return nil, fmt.Errorf("decode the pull requests of %s: %w", sha, err)
 		}
-		if commit.AssociatedPullRequests == nil {
+		connection, isCommit := commit["associatedPullRequests"]
+		switch {
+		case !isCommit:
+			// `... on Commit` selected nothing: the object is no commit, which no pull request heads.
+			answered[sha] = commitPulls{}
+			continue
+		case isJSONNull(connection):
+			answered[sha] = commitPulls{failed: true}
 			continue
 		}
-		nodes := commit.AssociatedPullRequests.Nodes
-		pulls := make([]pullRequestPayload, 0, len(nodes))
-		for _, node := range nodes {
+		var listed struct {
+			TotalCount int         `json:"totalCount"`
+			Nodes      []factsNode `json:"nodes"`
+		}
+		if err := json.Unmarshal(connection, &listed); err != nil {
+			return nil, fmt.Errorf("decode the pull requests of %s: %w", sha, err)
+		}
+		pulls := make([]pullRequestPayload, 0, len(listed.Nodes))
+		for _, node := range listed.Nodes {
 			pulls = append(pulls, node.payload())
 		}
-		answered[sha] = commitPulls{pulls: pulls, more: commit.AssociatedPullRequests.TotalCount > len(nodes)}
+		answered[sha] = commitPulls{pulls: pulls, more: listed.TotalCount > len(listed.Nodes)}
 	}
 	return answered, nil
 }

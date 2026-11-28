@@ -2542,9 +2542,7 @@ func TestALinkAfterAMergedRowComparesInTheNextReadWithNoAsk(t *testing.T) {
 					t.Fatalf("delete the texts of #93: %v", err)
 				}
 			}
-			if !served.commitPulls.Claim("acme/widgets", newHeadCommit, time.Now()) {
-				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
-			}
+			holdReadOff(t, served, "acme/widgets", newHeadCommit)
 			if before := checkOf(t, readResults(t, handler, issue.Key), "k1"); len(before.ComparedWith) != 0 {
 				t.Fatalf("before the link k1 compares with %+v, want nothing: #93 names no issue", before.ComparedWith)
 			}
@@ -2896,6 +2894,10 @@ type commitPullsFake struct {
 	// query's commits, in the order GitHub was asked them, a refused query's included.
 	refuseQuery  func(shas []string) int
 	namedByQuery [][]string
+	// holdQuery, where set, is called with the commits of each batched query of commits' pull
+	// requests once the query is counted and before GitHub answers it, outside the fake's lock, so
+	// a test can hold one process's read open while another process reads (holdsCommitQueries).
+	holdQuery func(shas []string)
 	// commits answers GET /repos/{owner}/{repo}/pulls/{number}/commits with a status and, for a
 	// 200, a page of commits. No function is one empty page. commitPages counts those reads.
 	commits     func(repo, number string) (int, string)
@@ -3111,6 +3113,15 @@ func (f *commitPullsFake) commitsNamedByQueries(from int) [][]string {
 	return slices.Clone(f.namedByQuery[min(from, len(f.namedByQuery)):])
 }
 
+// holdsCommitQueries makes GitHub wait in each batched query of commits' pull requests from now
+// on: hold is called with the commits the query names, after the query is counted and before it
+// is answered or refused, and GitHub answers once hold returns.
+func (f *commitPullsFake) holdsCommitQueries(hold func(shas []string)) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.holdQuery = hold
+}
+
 // factsAlias reads the aliases of the batched query of facts (delivery's factsQuery), in their
 // order. Each is a repository alias with the names of its two variables, or a pull request alias
 // with its number.
@@ -3130,9 +3141,12 @@ var (
 // GET /repos/{owner}/{repo}/commits/{sha}/pulls with the request's own Authorization, at
 // GitHub's largest page, and answers that commit's aliased object as GitHub does: the first
 // `first` of those pull requests (commitPullsFirst), in the fields of the query (factsNodeOf),
-// and the count of them all, so a commit of more than the query reads is read over REST. A test
-// whose fake counts its REST reads counts one for each commit the query asks about, as it counted
-// one for each read of one commit.
+// and the count of them all, so a commit of more than the query reads is read over REST. A commit
+// the REST route answers 422 for, one the repository does not hold, is a null alias with no error,
+// as GitHub answered such a commit on 2026-11-28, and the rest of the query is answered; any other
+// refusal of the REST route refuses the whole query with its status, as a failure of GitHub's
+// does. A test whose fake counts its REST reads counts one for each commit the query asks about,
+// as it counted one for each read of one commit.
 //
 // Every fake of this package that answers that route registers it, so the read-through reads what
 // the fake holds whether it asks about one commit or about all of them at once. The fake of
@@ -3161,8 +3175,14 @@ func commitPullsThroughMux(t *testing.T, mux *http.ServeMux) http.HandlerFunc {
 			inner.Header.Set("Authorization", r.Header.Get("Authorization"))
 			answer := httptest.NewRecorder()
 			mux.ServeHTTP(answer, inner)
-			if answer.Code != http.StatusOK {
-				// GitHub answers one query one status, so a refused commit refuses the query.
+			switch answer.Code {
+			case http.StatusOK:
+			case http.StatusUnprocessableEntity:
+				// GitHub answers a commit the repository does not hold null, inside a 200 that
+				// answers every other commit of the query.
+				commits["c"+strconv.Itoa(index)] = nil
+				continue
+			default:
 				w.WriteHeader(answer.Code)
 				fmt.Fprintf(w, `{"message":%q}`, http.StatusText(answer.Code))
 				return
@@ -3232,7 +3252,11 @@ func (f *commitPullsFake) serveCommitPullsQuery(t *testing.T, w http.ResponseWri
 	if refusal == 0 && f.refuseQuery != nil {
 		refusal = f.refuseQuery(named)
 	}
+	hold := f.holdQuery
 	f.mu.Unlock()
+	if hold != nil {
+		hold(named)
+	}
 	if refusal != 0 {
 		w.WriteHeader(refusal)
 		fmt.Fprintf(w, `{"message":%q}`, http.StatusText(refusal))
@@ -3499,6 +3523,23 @@ func rewindCommitPullReads(t *testing.T, served *server) {
 	}
 }
 
+// holdReadOff holds the read of repo's commit sha off as a read that claimed the commit and
+// stored GitHub's answer a moment ago does: a claim in the server's memory and in the claim every
+// process shares, marked answered, so a results read asks GitHub nothing about the commit and the
+// stored rows answer for it. A claim in the memory alone holds nothing off: a read it refuses finds
+// no claim in the database and claims the commit again (delivery.CommitPullReads
+// .ReclaimAcrossProcesses).
+func holdReadOff(t *testing.T, served *server, repo, sha string) {
+	t.Helper()
+	ctx, now := context.Background(), time.Now()
+	if granted, err := served.commitPulls.ClaimAcrossProcesses(ctx, served.deps.Store.Pool, repo, sha, now); err != nil || !granted {
+		t.Fatalf("SETUP: the claim of %s at %s = %v, %v; want granted: the record claims nothing", repo, sha, granted, err)
+	}
+	if err := served.commitPulls.AnswerAcrossProcesses(ctx, served.deps.Store.Pool, repo, []string{sha}, now); err != nil {
+		t.Fatalf("SETUP: mark the claim of %s at %s answered: %v", repo, sha, err)
+	}
+}
+
 // endSettledSpan is what the clock does to a settled commit once delivery.CommitPullSettledFor
 // has passed, without the test waiting an hour: the settle is stamped again from that much
 // earlier, in the server's memory and in the claim every process shares, so its span has just
@@ -3684,9 +3725,7 @@ func TestASupersededResultsCommitIsAskedOfGitHubOnceAndNotAgainWithinTheSpan(t *
 			issue.Key+" the work", repo, newHeadCommit, repo)
 	})
 	rewindCommitPullReads(t, served)
-	if !served.commitPulls.Claim("acme/widgets", newHeadCommit, time.Now()) {
-		t.Fatal("SETUP: a claim of the newest result's commit was refused in an empty cache")
-	}
+	holdReadOff(t, served, "acme/widgets", newHeadCommit)
 
 	for _, read := range []struct {
 		name  string

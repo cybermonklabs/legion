@@ -333,6 +333,113 @@ func TestABatchedReadThatFailsDropsNoCommitSilently(t *testing.T) {
 	}
 }
 
+// GitHub answers a query of many commits with a 200 whose `errors` can name one alias: that alias
+// is no answer about its commit, and the read fails that commit alone (CommitsPullsAnswer.Failed),
+// as the facts batch reads `errors` beside `data`. Of five commits, GitHub answers the first alias
+// null with an error naming it, the second's associatedPullRequests null with an error naming
+// it, the third `{}` (its object is no commit, as GitHub answers a tree's id), the fourth null
+// with no error (a commit the repository does not hold, as GitHub answered such a commit on
+// 2026-11-28), and the fifth its pull request. The first two are asked and failed; the third and
+// fourth are answered, naming no pull request, as the REST read answers GitHub's 422 for a commit
+// the repository does not hold; the fifth is stored. An error that names no alias fails every
+// commit of the query. A read that reads `data` alone answers the first two as commits GitHub named
+// nothing for, which a caller reads from the stored rows as an answer.
+func TestAnAliasGitHubAnswersWithAnErrorFailsThatCommitAlone(t *testing.T) {
+	t.Parallel()
+	run := func(t *testing.T, errors []map[string]any) (CommitsPullsAnswer, error, []string) {
+		pool, ctx := deliveryTestPool(t)
+		_, fake, github, shas := seedCommitPullsFixture(t, ctx, pool, 71, 4)
+		absent := fmt.Sprintf("%040x", 99)
+		shas = []string{shas[0], shas[1], shas[2], absent, shas[3]}
+		serveCommitPullsQuery(t, fake, github, "acme/widgets", map[string]bool{absent: true})
+		answerer := fake.facts
+		fake.facts = func(w http.ResponseWriter, r *http.Request) {
+			sent, err := io.ReadAll(r.Body)
+			if err != nil {
+				t.Errorf("read the GraphQL request: %v", err)
+				return
+			}
+			r.Body = io.NopCloser(bytes.NewReader(sent))
+			var request struct {
+				Query string `json:"query"`
+			}
+			if err := json.Unmarshal(sent, &request); err != nil || !commitPullsAlias.MatchString(request.Query) {
+				answerer(w, r)
+				return
+			}
+			recorded := &bufferedResponse{header: http.Header{}}
+			answerer(recorded, r)
+			var answer map[string]map[string]map[string]any
+			if err := json.Unmarshal(recorded.body.Bytes(), &answer); err != nil {
+				t.Errorf("decode the fake's answer: %v: %s", err, recorded.body.String())
+				return
+			}
+			commits := answer["data"]["repository"]
+			commits["c0"] = nil
+			commits["c1"] = map[string]any{"associatedPullRequests": nil}
+			commits["c2"] = map[string]any{}
+			mustEncode(t, w, map[string]any{"data": answer["data"], "errors": errors})
+		}
+		answer, err := unrenamed().ReadThroughCommitsPulls(ctx, pool, fake.newTestClient(), "acme/widgets", shas, time.Now())
+		return answer, err, shas
+	}
+	read := func(answer CommitsPullsAnswer, shas []string) string {
+		var each []string
+		for index, sha := range shas {
+			learned, stored := answer.Reads[sha]
+			switch {
+			case answer.Failed[sha]:
+				each = append(each, fmt.Sprintf("c%d failed", index))
+			case stored:
+				each = append(each, fmt.Sprintf("c%d answered %d", index, learned.Written))
+			case answer.Asked[sha]:
+				each = append(each, fmt.Sprintf("c%d asked and nothing", index))
+			default:
+				each = append(each, fmt.Sprintf("c%d not asked", index))
+			}
+		}
+		return strings.Join(each, ", ")
+	}
+
+	answer, err, shas := run(t, []map[string]any{
+		{"type": "SERVICE_UNAVAILABLE", "path": []any{"repository", "c0"}, "message": "Something went wrong while executing your query."},
+		{"path": []any{"repository", "c1", "associatedPullRequests"}, "message": "Timeout on validation of query"},
+	})
+	if err != nil {
+		t.Fatalf("a query GitHub answered with errors naming two aliases ended with %v, want no error: the other commits are answered", err)
+	}
+	if got, want := read(answer, shas), "c0 failed, c1 failed, c2 answered 0, c3 answered 0, c4 answered 1"; got != want {
+		t.Fatalf("the read answers %q, want %q", got, want)
+	}
+
+	answer, _, shas = run(t, []map[string]any{{"message": "Something went wrong while executing your query."}})
+	if got, want := read(answer, shas), "c0 failed, c1 failed, c2 failed, c3 failed, c4 failed"; got != want {
+		t.Fatalf("a query GitHub answered with an error that names no alias reads %q, want %q: no commit of it can be told apart", got, want)
+	}
+}
+
+// bufferedResponse is an http.ResponseWriter that keeps what a handler writes, so a test can change
+// a fake's answer before it reaches the client.
+type bufferedResponse struct {
+	header http.Header
+	body   bytes.Buffer
+	status int
+}
+
+func (b *bufferedResponse) Header() http.Header         { return b.header }
+func (b *bufferedResponse) Write(p []byte) (int, error) { return b.body.Write(p) }
+func (b *bufferedResponse) WriteHeader(status int)      { b.status = status }
+
+// mustJSON is value as JSON text.
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("encode %v: %v", value, err)
+	}
+	return string(data)
+}
+
 // A query whose answer is above the client's limit is split in two and asked again, down to one
 // commit, and one commit whose answer alone is too large is read over REST (overREST), so a large
 // answer drops no commit. GitHub answers every query that names the fourth of six commits with a
@@ -435,8 +542,8 @@ func TestACommitWithMorePullRequestsThanTheQueryReadsIsReadOverREST(t *testing.T
 // stop: GitHub answered them, and nothing of that answer was stored, so no answer of GitHub's is
 // behind their claims. Of three commits in one query, the first has eleven pull requests, so it is
 // read over REST, and GitHub answers that REST read 502: the read ends with GitHub's error, the
-// first commit is asked and failed (GitHub failed it, so its claim stands, as the read of one
-// commit GitHub failed keeps its claim, and carries the failure), and the two after it are neither,
+// first commit is asked and failed (GitHub failed it, so its claim stands, not answered, as the
+// read of one commit GitHub failed keeps its claim), and the two after it are neither,
 // so their caller gives their claims back and the next read asks them at once. The control is the
 // same read with the REST read answered: all three are asked, read and stored, and none failed.
 func TestAReadThatStopsInsideAnAnsweredQueryGivesBackTheCommitsAfterIt(t *testing.T) {

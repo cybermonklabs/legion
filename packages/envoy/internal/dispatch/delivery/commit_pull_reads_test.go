@@ -3,7 +3,6 @@ package delivery
 import (
 	"context"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -487,14 +486,16 @@ func TestTwoSweepsAtOnceOverOnePassedRowWaitOnNoRow(t *testing.T) {
 	}
 }
 
-// A claim whose read GitHub failed carries the failure for its span, in every process
-// (FailAcrossProcesses, FailedAcrossProcesses), so a read the claim refuses reads the commit as a
-// read that failed rather than as what the stored rows alone say. The mark ends with the span, and
-// a claim granted over it and a settle each clear it: each is a read not yet made or one GitHub
-// answered. A claim no failure marked reads as no failed read, and a read of no commit asks
-// nothing. A claim that keeps the mark it was granted over reads the next span's commit as failed,
-// and a settle that keeps it reads an answered commit as failed for the hour.
-func TestAFailedReadsClaimReadsFailedInEveryProcessUntilAClaimOrASettleClearsIt(t *testing.T) {
+// A claim reads as answered, in every process, only once the read it was granted for has stored
+// GitHub's answer (AnswerAcrossProcesses, SettleAcrossProcesses, HeldAcrossProcesses): before that
+// its read is under way, failed at GitHub or stopped with its process, and a read the claim
+// refuses reads the commit as not known rather than as what the stored rows alone say. A claim
+// granted over an answered one is a read not yet made, so it is not answered, and a read's mark
+// reaches its own claim alone, not a later claim another process took. A claim whose moment has
+// passed, and a claim given back, are held by no one, and a read of no commit reads nothing. A
+// claim that is answered as it is granted reads an under-way read as an answer; a granted claim
+// that keeps the mark it was granted over reads the next span's read as answered.
+func TestAClaimReadsAnsweredInEveryProcessOnlyOnceItsReadStoredGitHubsAnswer(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool
 	start := time.Date(2026, 11, 27, 19, 30, 0, 0, time.UTC)
@@ -505,44 +506,94 @@ func TestAFailedReadsClaimReadsFailedInEveryProcessUntilAClaimOrASettleClearsIt(
 			t.Fatalf("the claim of %s at %s = %v, %v; want granted", sha, at, granted, err)
 		}
 	}
-	failed := func(on *store.Pool, at time.Time, shas ...string) []string {
+	held := func(on *store.Pool, at time.Time, shas ...string) string {
 		t.Helper()
-		marked, err := first.FailedAcrossProcesses(ctx, on, "acme/widgets", shas, at)
+		claims, err := first.HeldAcrossProcesses(ctx, on, "acme/widgets", shas, at)
 		if err != nil {
-			t.Fatalf("read which claims of %v failed at %s: %v", shas, at, err)
+			t.Fatalf("read the claims of %v at %s: %v", shas, at, err)
 		}
-		var names []string
+		var read []string
 		for _, sha := range shas {
-			if marked[sha] {
-				names = append(names, sha)
+			answered, found := claims[sha]
+			switch {
+			case !found:
+				read = append(read, sha+" none")
+			case answered:
+				read = append(read, sha+" answered")
+			default:
+				read = append(read, sha+" not answered")
 			}
 		}
-		return names
+		return strings.Join(read, ", ")
 	}
-	claim(&first, pool, "failed", start)
-	claim(&first, pool, "answered", start)
-	claim(&first, pool, "settled", start)
-	for _, sha := range []string{"failed", "settled"} {
-		if err := first.FailAcrossProcesses(ctx, pool, "acme/widgets", sha, start); err != nil {
-			t.Fatal(err)
-		}
+	for _, sha := range []string{"under way", "answered", "settled", "given back"} {
+		claim(&first, pool, sha, start)
+	}
+	if err := first.AnswerAcrossProcesses(ctx, pool, "acme/widgets", []string{"answered"}, start); err != nil {
+		t.Fatal(err)
 	}
 	if err := first.SettleAcrossProcesses(ctx, pool, "acme/widgets", "settled", start); err != nil {
 		t.Fatal(err)
 	}
-	if got := failed(second, start.Add(time.Minute), "failed", "answered", "settled"); !slices.Equal(got, []string{"failed"}) {
-		t.Fatalf("a minute into the span the second process reads %v as failed, want [failed]: the read GitHub failed alone, "+
-			"not the claim no failure marked and not the one a settle followed", got)
+	if err := first.ReleaseAcrossProcesses(ctx, pool, "acme/widgets", "given back", start); err != nil {
+		t.Fatal(err)
 	}
-	if got := failed(second, start.Add(CommitPullReadStaleAfter), "failed"); len(got) != 0 {
-		t.Fatalf("at the span's end the second process reads %v as failed, want none: a claim whose moment passed refuses nothing", got)
+	all := []string{"under way", "answered", "settled", "given back"}
+	if got, want := held(second, start.Add(time.Minute), all...),
+		"under way not answered, answered answered, settled answered, given back none"; got != want {
+		t.Fatalf("a minute into the span the second process reads %q, want %q: only a read that stored GitHub's answer "+
+			"stands on it, and a claim given back is held by no one", got, want)
 	}
-	claim(&other, second, "failed", start.Add(CommitPullReadStaleAfter))
-	if got := failed(pool, start.Add(CommitPullReadStaleAfter+time.Minute), "failed"); len(got) != 0 {
-		t.Fatalf("a minute into the claim granted over the failed one the first process reads %v as failed, want none: "+
-			"the claim is a read not yet made", got)
+	if got, want := held(second, start.Add(CommitPullReadStaleAfter), all...),
+		"under way none, answered none, settled answered, given back none"; got != want {
+		t.Fatalf("at the span's end the second process reads %q, want %q: a claim whose moment passed is held by no one, "+
+			"and a settle holds for its hour", got, want)
 	}
-	if got := failed(pool, start); len(got) != 0 {
-		t.Fatalf("a read of no commit reads %v as failed, want none", got)
+	claim(&other, second, "answered", start.Add(CommitPullReadStaleAfter))
+	if err := first.AnswerAcrossProcesses(ctx, pool, "acme/widgets", []string{"answered"}, start); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := held(pool, start.Add(CommitPullReadStaleAfter+time.Minute), "answered"), "answered not answered"; got != want {
+		t.Fatalf("a minute into the claim granted over the answered one the first process reads %q, want %q: the claim "+
+			"is a read not yet made, and the first read's mark reaches its own claim alone", got, want)
+	}
+	if got := held(pool, start); got != "" {
+		t.Fatalf("a read of no commit reads %q, want nothing", got)
+	}
+}
+
+// A commit this process's memory refuses on another process's moment is claimed again once that
+// claim is gone from the database (ReclaimAcrossProcesses). The first process's claim is refused
+// in the second process, which keeps the first process's moment in its memory; the first process
+// gives the claim back, which reaches its own memory and the database alone. The second process's
+// memory still refuses the commit, the database holds no claim of it, and a reclaim is granted.
+// A reclaim that keeps the memory's moment is refused for the rest of the span.
+func TestAMomentAnotherProcessGaveBackIsClaimedAgain(t *testing.T) {
+	pool, ctx := deliveryTestPool(t)
+	second := storetest.SecondProcess(t, &store.Store{Pool: pool}).Pool
+	start := time.Date(2026, 11, 27, 19, 30, 0, 0, time.UTC)
+	var first, other CommitPullReads
+	if granted, err := first.ClaimAcrossProcesses(ctx, pool, "acme/widgets", "x", start); err != nil || !granted {
+		t.Fatalf("the first process's claim = %v, %v; want granted", granted, err)
+	}
+	if granted, err := other.ClaimAcrossProcesses(ctx, second, "acme/widgets", "x", start.Add(time.Second)); err != nil || granted {
+		t.Fatalf("the second process's claim within the first's span = %v, %v; want refused", granted, err)
+	}
+	if err := first.ReleaseAcrossProcesses(ctx, pool, "acme/widgets", "x", start); err != nil {
+		t.Fatal(err)
+	}
+	at := start.Add(2 * time.Second)
+	if !other.Refuses("acme/widgets", "x", at) {
+		t.Fatal("the second process's memory refuses nothing after the first process's give-back: the row tests nothing")
+	}
+	claims, err := other.HeldAcrossProcesses(ctx, second, "acme/widgets", []string{"x"}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := claims["x"]; found {
+		t.Fatalf("the database holds a claim of x after the first process gave it back: %v", claims)
+	}
+	if granted, err := other.ReclaimAcrossProcesses(ctx, second, "acme/widgets", "x", at); err != nil || !granted {
+		t.Fatalf("the second process's reclaim = %v, %v; want granted: the moment its memory held was a claim given back", granted, err)
 	}
 }

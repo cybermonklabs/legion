@@ -717,6 +717,10 @@ type server struct {
 	// owed name and `pull/<number>` in the place of a commit, however often the results are read. A
 	// read-only caller's read takes no claim here and only reads the writers' (Refuses).
 	linkedHeads delivery.CommitPullReads
+	// readThroughBudget is how long after it begins one results read's read-through may start a
+	// question to GitHub (comparisonReader.learn): zero is delivery.ReadThroughTimeout. A test
+	// shortens it.
+	readThroughBudget time.Duration
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of

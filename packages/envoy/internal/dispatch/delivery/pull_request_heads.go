@@ -1352,17 +1352,20 @@ func (a *Attributor) ReadThroughCommitPulls(
 	ctx context.Context, pool *store.Pool, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReadThroughTimeout)
+	defer cancel()
 	return a.readThroughCommitPulls(ctx, facts{pool: pool}, client, repoFull, sha, now)
 }
 
 // readThroughCommitPulls is ReadThroughCommitPulls through f (facts): its reads of GitHub, and
-// each statement on the pool for a writer or kept for a read-only caller's request.
+// each statement on the pool for a writer or kept for a read-only caller's request. It runs on ctx
+// as given: ReadThroughCommitPulls bounds it by its own ReadThroughTimeout, and a batched read
+// that reads one of its commits over REST (commitPullsRead.overREST) by that batch's, so the
+// fallback runs inside the minute its batch is bounded by rather than a minute of its own.
 func (a *Attributor) readThroughCommitPulls(
 	ctx context.Context, f facts, client *githubapp.Client,
 	repoFull, sha string, now time.Time,
 ) (written int, atHead bool, err error) {
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), ReadThroughTimeout)
-	defer cancel()
 	canonical := a.canonical(repoFull)
 	owner, repo, token, err := repositoryRead(ctx, client, canonical)
 	if err != nil {
@@ -1427,7 +1430,10 @@ func (a *Attributor) readThroughCommitPulls(
 // Three such calls are a minute, so a read-through that GitHub answers within each call's bound
 // writes the first pull request's head inside it; a slower read ends there, and a later read asks
 // again once the claim it took has passed. It is intakeMessageTimeout's bound for the same work of
-// one envelope.
+// one envelope. It bounds each batch of the batched read too, the REST reads of its commits
+// included (readThroughCommitsPulls), and the time in which one results read may start a batch
+// (api's comparisonReader.learn), so the read-through of one results read takes at most two
+// minutes.
 const ReadThroughTimeout = time.Minute
 
 // ErrReadThroughNotStored marks a read-through that failed in Dispatch's own database: before it

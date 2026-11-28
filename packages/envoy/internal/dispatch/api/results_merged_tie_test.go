@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -126,9 +125,7 @@ func TestATieMadeAfterAMergeIsFollowedAtTheResultsRead(t *testing.T) {
 			storeMergedRowWithTexts(t, served.deps.Attributor, database, 81, title, body, stored)
 			kase.tie(t, handler, check, stored)
 			fake.answers(mergedPullAt(81, title, body))
-			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
-				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
-			}
+			holdReadOff(t, served, "acme/widgets", headCommit)
 			spent := fake.asks("acme/widgets")
 
 			read := readResults(t, handler, check)
@@ -203,9 +200,7 @@ func TestAMergedHeadBesideAnOpenRowOfTheSameCommitComparesAtTheFirstRead(t *test
 				}
 				return "[" + pulls + "]"
 			})
-			if !served.commitPulls.Claim("acme/widgets", headCommit, time.Now()) {
-				t.Fatal("SETUP: a claim of the commit was refused; the record claims nothing")
-			}
+			holdReadOff(t, served, "acme/widgets", headCommit)
 			spent := fake.asks("acme/widgets")
 			first := readResults(t, handler, check)
 			asked := fake.asks("acme/widgets") - spent

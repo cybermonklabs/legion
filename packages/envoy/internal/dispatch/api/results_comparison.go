@@ -162,9 +162,10 @@ type comparisonReader struct {
 	holdAnswers    map[[3]string]delivery.HoldAnswer
 	readThroughs   map[[2]string]struct{}
 	// readFailed is each repository and commit whose read-through this read could not make whole
-	// (readThroughHeads): GitHub failed it, in this read or in the read whose claim refused this
-	// one (delivery.CommitPullReads.FailedAcrossProcesses), or the read stopped before it, or
-	// Dispatch's own database could not claim the commit or store GitHub's answer. A
+	// (readThroughHeads): GitHub failed it in this read, or the read stopped before it, or the
+	// claim that refused this read has no answer of GitHub's behind it — that read is under way,
+	// failed or stopped (delivery.CommitPullReads.HeldAcrossProcesses) — or Dispatch's own
+	// database could not claim the commit, read its claim or store GitHub's answer. A
 	// `before_merge` result there that the stored rows alone leave at another commit is not known
 	// instead (commitStands). The repository is the one readThroughRepository names.
 	readFailed map[[2]string]bool
@@ -585,16 +586,23 @@ func (c *comparisonReader) nothingReason(ctx context.Context, issueKey string) s
 // stopped short answered a check's pass_stands `no` where a read that reached the pass answered
 // `yes` (A/results_read_through_bound_test.go), which is a false verdict and not a slower one.
 //
+// The bound is in time instead, and a commit it leaves unasked is not known rather than placed:
+// the read-through of one results read starts no question to GitHub once
+// delivery.ReadThroughTimeout has passed since it began (server.readThroughBudget), over every
+// repository, and each question already started runs to its own ReadThroughTimeout, the REST
+// reads of its commits included. So the read-through of one results read takes at most two
+// minutes, however many commits and repositories it reads. A commit no question asked is given
+// back, so the next read asks it, and a result there is not known for model.ReasonReadFailed.
+//
 // Each commit is claimed before the question and settled after it (readThroughHeads): a commit
 // another process or an earlier read of this process claimed is left out of the question, and a
 // commit whose answer named a pull request headed elsewhere is settled. A commit whose answer was
 // not stored gives its claim back, and so does a commit no question of the read named, since the
 // read stops at the first failure and asks nothing after it: no answer of GitHub's is behind
 // either claim, so the next read asks again at once. A commit a question named that GitHub failed
-// keeps its claim, as the read of one commit GitHub failed keeps it, and the claim carries the
-// failure. None of these is an answer about the commit: a result at it that no basis names is not
-// known for model.ReasonReadFailed (commitStands), on this read and, for a commit GitHub failed,
-// on every read the claim refuses.
+// keeps its claim, which no answer stands behind. None of these is an answer about the commit: a
+// result at it that no basis names is not known for model.ReasonReadFailed (commitStands), on
+// this read and, while a claim no answer stands behind holds it, on every read the claim refuses.
 func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock) {
 	if c.at != noCommitNamed {
 		return
@@ -621,8 +629,14 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 			byRepository[repo] = append(byRepository[repo], result)
 		}
 	}
+	budget := c.server.readThroughBudget
+	if budget == 0 {
+		budget = delivery.ReadThroughTimeout
+	}
+	bounded, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 	for _, repo := range repositories {
-		c.readThroughHeads(ctx, repo, byRepository[repo])
+		c.readThroughHeads(bounded, repo, byRepository[repo])
 	}
 }
 
