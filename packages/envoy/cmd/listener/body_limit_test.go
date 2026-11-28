@@ -12,13 +12,18 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+
+	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/cistore"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/session"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/internal/webhook"
 	"github.com/sjawhar/envoy/listenerwire"
 )
@@ -43,29 +48,35 @@ type bodyLimitRig struct {
 	webhooks     http.Handler
 	webhookPaths []string
 	logs         *cmdtest.LockedBuffer
+	requestID    int
 }
 
 func newBodyLimitRig(t *testing.T) *bodyLimitRig {
 	t.Helper()
 	client := setupPublishTestClient(t)
-	registry, sessions := setupSessionsTest(t, nil, nil)
-	legionAgents, err := legionagents.Open(t.Context(), client.Conn, legionagents.WithReplicas(1))
+	registry, sessions := openRouteTestRegistries(t, client)
+	ctx := testwait.Context(t)
+	legionAgents, err := legionagents.Open(ctx, client.Conn, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the legion agent registry: %v", err)
 	}
-	ciStore, err := cistore.Open(t.Context(), client.Conn, logging.New("test"), cistore.WithReplicas(1))
+	ciStore, err := cistore.Open(ctx, client.Conn, logging.New("test"), cistore.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}
 	t.Cleanup(ciStore.StopWatch)
 	logs := &cmdtest.LockedBuffer{}
 	v1 := http.NewServeMux()
+	fake := clocktest.New(time.Now())
+	consumers := setupSessionConsumers(t, client)
+	consumers.clock = fake
 	registerV1Routes(v1, withPublishRoute(t, &listenerDeps{
 		client:       client,
 		registry:     registry,
 		sessions:     sessions,
 		legionAgents: newLegionAgentRegistry(legionAgents),
-		consumers:    setupSessionConsumers(t, client),
+		consumers:    consumers,
+		clock:        fake,
 	}), "test-machine", logging.NewWithWriter("test", logs))
 	hooks := webhookRoutes(&webhook.WebhookConfig{
 		GitHub:     &webhook.GitHubWebhook{Secret: webhookSecret, MentionTrigger: "@legion"},
@@ -82,23 +93,32 @@ func newBodyLimitRig(t *testing.T) *bodyLimitRig {
 	return &bodyLimitRig{client: client, sessions: sessions, v1: v1, webhooks: gate, webhookPaths: webhookPaths, logs: logs}
 }
 
+func (rig *bodyLimitRig) next(prefix string) string {
+	rig.requestID++
+	return fmt.Sprintf("%s-%d", prefix, rig.requestID)
+}
+
 // register writes a live session entry for id, as a registration would.
 func (rig *bodyLimitRig) register(t *testing.T, id string) {
 	t.Helper()
-	if err := rig.sessions.Put(id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
+	if err := rig.sessions.PutWithin(testwait.Context(t), id, session.SessionEntry{SelfSubscribed: true, MachineID: "test-machine", Dir: "/test/" + id, Title: id}); err != nil {
 		t.Fatalf("register %s: %v", id, err)
 	}
 }
 
 // serve answers request as the listener does: a webhook path on the webhook routes, any other on
 // the /v1 routes.
-func (rig *bodyLimitRig) serve(request *http.Request) *httptest.ResponseRecorder {
+func (rig *bodyLimitRig) serve(t *testing.T, request *http.Request) *httptest.ResponseRecorder {
+	t.Helper()
 	recorder := httptest.NewRecorder()
+	request = request.WithContext(testwait.Context(t))
+	handler := http.Handler(rig.v1)
 	if slices.Contains(rig.webhookPaths, request.URL.Path) {
-		rig.webhooks.ServeHTTP(recorder, request)
-	} else {
-		rig.v1.ServeHTTP(recorder, request)
+		handler = rig.webhooks
 	}
+	testwait.Returns(t, request.Method+" "+request.URL.Path+" to answer", func() {
+		handler.ServeHTTP(recorder, request)
+	})
 	return recorder
 }
 
@@ -108,8 +128,9 @@ func (rig *bodyLimitRig) serve(request *http.Request) *httptest.ResponseRecorder
 func (rig *bodyLimitRig) storedState(t *testing.T) map[string]uint64 {
 	t.Helper()
 	state := map[string]uint64{}
-	for name := range rig.client.JS().StreamNames() {
-		info, err := rig.client.JS().StreamInfo(name)
+	option := natsgo.Context(testwait.Context(t))
+	for name := range rig.client.JS().StreamNames(option) {
+		info, err := rig.client.JS().StreamInfo(name, option)
 		if err != nil {
 			t.Fatalf("read stream %s: %v", name, err)
 		}
@@ -122,18 +143,6 @@ func (rig *bodyLimitRig) storedState(t *testing.T) map[string]uint64 {
 		t.Fatal("the rig's account holds no stream")
 	}
 	return state
-}
-
-// padded is the JSON object object with a member "pad" of x's added, so that the whole is exactly
-// size bytes. No route reads a member it does not know.
-func padded(t *testing.T, object string, size int) string {
-	t.Helper()
-	open, closed := strings.CutSuffix(object, "}")
-	fill := size - len(open) - len(`,"pad":""}`)
-	if !closed || fill < 0 {
-		t.Fatalf("cannot pad %.200s to %d bytes", object, size)
-	}
-	return open + `,"pad":"` + strings.Repeat("x", fill) + `"}`
 }
 
 // v1Request is a request to a /v1 route, as a client sends it.
@@ -166,8 +175,8 @@ type bodyLimitRow struct {
 	webhook bool
 	// record names the line the route writes for each request (requestRecord), when it writes one.
 	record string
-	build  func(t *testing.T, size int) *http.Request
-	real   func(t *testing.T) *http.Request
+	build  func(t *testing.T, rig *bodyLimitRig, size int) *http.Request
+	real   func(t *testing.T, rig *bodyLimitRig) *http.Request
 }
 
 // Every listener route that reads a request body reads it to a limit, set above the largest real
@@ -185,18 +194,26 @@ type bodyLimitRow struct {
 // Content-Length and without one (chunked), is answered 413 as well, and not 400.
 func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	t.Parallel()
-	rig := newBodyLimitRig(t)
-	const (
-		sendTarget = "ses_body_limit_send_target"
-		teamTopic  = "notifications.team.body-limit"
-		started    = "2026-11-16T03:15:00Z"
-	)
-	rig.register(t, sendTarget)
-	count := 0
-	next := func(prefix string) string {
-		count++
-		return fmt.Sprintf("%s-%d", prefix, count)
+	// One immutable source for both the padding and the malformed bodies.
+	padding := strings.Repeat("x", githubBodyLimit+1)
+	padded := func(t *testing.T, object string, size int) string {
+		t.Helper()
+		if size == 0 { // notJSON needs the request metadata, not a padded body
+			return object
+		}
+		open, closed := strings.CutSuffix(object, "}")
+		fill := size - len(open) - len(`,"pad":""}`)
+		if !closed || fill < 0 || fill > len(padding) {
+			t.Fatalf("cannot pad %.200s to %d bytes", object, size)
+		}
+		return open + `,"pad":"` + padding[:fill] + `"}`
 	}
+	const (
+		sendTarget     = "ses_body_limit_send_target"
+		realSubscriber = "ses_body_limit_real_subscriber"
+		teamTopic      = "notifications.team.body-limit"
+		started        = "2026-11-16T03:15:00Z"
+	)
 
 	// The largest registration the live listener held on 2026-11-16, read from GET /v1/sessions and
 	// GET /v1/interests/ there: 802 topics, their list 34,611 bytes of JSON, none longer than 90
@@ -208,7 +225,7 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	}
 	realTitle := strings.Repeat("t", 66)
 	realDir := "/" + strings.Repeat("d", 85)
-	registration := func(id string, topics []string, title, dir string) string {
+	registration := func(t *testing.T, id string, topics []string, title, dir string) string {
 		return marshalled(t, map[string]any{
 			"session_id":         id,
 			"dir":                dir,
@@ -224,9 +241,12 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 			"plugin_version":     "0.0.0",
 		})
 	}
-	subscribed := func(t *testing.T, id string, topics []string) {
+	// Both routes use the same registration bytes, but each writes them to its
+	// own account. The unsubscribe case can run without the subscribe subtest.
+	realRegistration := registration(t, realSubscriber, realTopics, realTitle, realDir)
+	subscribed := func(t *testing.T, rig *bodyLimitRig, id, body string) {
 		t.Helper()
-		if answer := rig.serve(v1Request(http.MethodPost, "/v1/interests/subscribe", registration(id, topics, "Body limit", "/test/"+id))); answer.Code != http.StatusOK {
+		if answer := rig.serve(t, v1Request(http.MethodPost, "/v1/interests/subscribe", body)); answer.Code != http.StatusOK {
 			t.Fatalf("register %s: status %d, body %.300s", id, answer.Code, answer.Body.String())
 		}
 	}
@@ -242,8 +262,7 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 			"harness": "omp", "started_at": started,
 		})
 	}
-	longID := func(prefix string) string {
-		id := next(prefix)
+	longID := func(id string) string {
 		return id + strings.Repeat("x", 128-len(id))
 	}
 	comment := func(id string) string {
@@ -269,12 +288,12 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	rows := []bodyLimitRow{
 		{
 			name: "send", path: "/v1/messages/send", limit: v1BodyLimit, record: "listener send",
-			build: func(t *testing.T, size int) *http.Request {
+			build: func(t *testing.T, _ *bodyLimitRig, size int) *http.Request {
 				return v1Request(http.MethodPost, "/v1/messages/send", padded(t, marshalled(t, map[string]any{
 					"target_session": sendTarget, "source": "agent", "message": "a send of its size",
 				}), size))
 			},
-			real: func(t *testing.T) *http.Request {
+			real: func(t *testing.T, _ *bodyLimitRig) *http.Request {
 				body := maps.Clone(realMessage)
 				body["target_session"] = sendTarget
 				return v1Request(http.MethodPost, "/v1/messages/send", marshalled(t, body))
@@ -282,12 +301,12 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 		},
 		{
 			name: "publish", path: "/v1/messages/publish", limit: v1BodyLimit, record: "listener publish",
-			build: func(t *testing.T, size int) *http.Request {
+			build: func(t *testing.T, _ *bodyLimitRig, size int) *http.Request {
 				return v1Request(http.MethodPost, "/v1/messages/publish", padded(t, marshalled(t, map[string]any{
 					"topic": teamTopic, "source": "agent", "message": "a publish of its size",
 				}), size))
 			},
-			real: func(t *testing.T) *http.Request {
+			real: func(t *testing.T, _ *bodyLimitRig) *http.Request {
 				body := maps.Clone(realMessage)
 				body["topic"] = teamTopic
 				return v1Request(http.MethodPost, "/v1/messages/publish", marshalled(t, body))
@@ -295,122 +314,121 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 		},
 		{
 			name: "subscribe", path: "/v1/interests/subscribe", limit: v1BodyLimit,
-			build: func(t *testing.T, size int) *http.Request {
-				id := next("ses_body_limit_subscribe")
-				return v1Request(http.MethodPost, "/v1/interests/subscribe", padded(t, registration(id, []string{teamTopic}, "Body limit", "/test/"+id), size))
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				id := rig.next("ses_body_limit_subscribe")
+				return v1Request(http.MethodPost, "/v1/interests/subscribe", padded(t, registration(t, id, []string{teamTopic}, "Body limit", "/test/"+id), size))
 			},
-			real: func(t *testing.T) *http.Request {
-				return v1Request(http.MethodPost, "/v1/interests/subscribe", registration(next("ses_body_limit_subscribe_real"), realTopics, realTitle, realDir))
+			real: func(t *testing.T, _ *bodyLimitRig) *http.Request {
+				return v1Request(http.MethodPost, "/v1/interests/subscribe", realRegistration)
 			},
 		},
 		{
 			name: "unsubscribe", path: "/v1/interests/unsubscribe", limit: v1BodyLimit,
-			build: func(t *testing.T, size int) *http.Request {
-				id := next("ses_body_limit_unsubscribe")
-				subscribed(t, id, []string{teamTopic})
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				id := rig.next("ses_body_limit_unsubscribe")
+				subscribed(t, rig, id, registration(t, id, []string{teamTopic}, "Body limit", "/test/"+id))
 				return v1Request(http.MethodPost, "/v1/interests/unsubscribe", padded(t, marshalled(t, map[string]any{
 					"session_id": id, "topics": []string{teamTopic}, "client_instance_id": id + "-instance",
 				}), size))
 			},
 			// An unsubscribe of every topic of the largest registration.
-			real: func(t *testing.T) *http.Request {
-				id := next("ses_body_limit_unsubscribe_real")
-				subscribed(t, id, realTopics)
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				subscribed(t, rig, realSubscriber, realRegistration)
 				return v1Request(http.MethodPost, "/v1/interests/unsubscribe", marshalled(t, map[string]any{
-					"session_id": id, "topics": realTopics, "client_instance_id": id + "-instance",
+					"session_id": realSubscriber, "topics": realTopics, "client_instance_id": realSubscriber + "-instance",
 				}))
 			},
 		},
 		{
 			name: "role claim", path: "/v1/roles/set", limit: v1BodyLimit,
-			build: func(t *testing.T, size int) *http.Request {
-				id := next("ses_body_limit_claimant")
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				id := rig.next("ses_body_limit_claimant")
 				rig.register(t, id)
 				return v1Request(http.MethodPost, "/v1/roles/set", padded(t, marshalled(t, map[string]any{
-					"session_id": id, "role": next("body-limit-role"),
+					"session_id": id, "role": rig.next("body-limit-role"),
 				}), size))
 			},
 			// A soft claim naming every field envoy-client's setRole sends, its ids as long as a
 			// session id is.
-			real: func(t *testing.T) *http.Request {
-				id := longID("ses_body_limit_real_claimant")[:36]
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				id := longID(rig.next("ses_body_limit_real_claimant"))[:36]
 				rig.register(t, id)
 				return v1Request(http.MethodPost, "/v1/roles/set", marshalled(t, map[string]any{
-					"session_id": id, "role": fmt.Sprintf("legion-infra-infra-%d-implementer", 3589+count), "soft": true,
+					"session_id": id, "role": fmt.Sprintf("legion-infra-infra-%d-implementer", 3589+rig.requestID), "soft": true,
 					"previous_session_id": strings.Repeat("p", 36), "client_instance_id": strings.Repeat("c", 36),
 				}))
 			},
 		},
 		{
 			name: "legion agent batch", path: "/v1/legion/agents", limit: v1BodyLimit,
-			build: func(t *testing.T, size int) *http.Request {
-				return v1Request(http.MethodPut, "/v1/legion/agents", padded(t, `{"entries":[`+legionEntry(next("ses-body-limit-batch"), "INFRA-3589", "tester", started)+`]}`, size))
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				return v1Request(http.MethodPut, "/v1/legion/agents", padded(t, `{"entries":[`+legionEntry(rig.next("ses-body-limit-batch"), "INFRA-3589", "tester", started)+`]}`, size))
 			},
 			// The largest batch the registry takes: legionagents.MaxBatch entries, each the largest
 			// entry.
-			real: func(t *testing.T) *http.Request {
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
 				entries := make([]string, legionagents.MaxBatch)
 				for i := range entries {
-					entries[i] = largestEntry(longID("ses-body-limit-real-batch"))
+					entries[i] = largestEntry(longID(rig.next("ses-body-limit-real-batch")))
 				}
 				return v1Request(http.MethodPut, "/v1/legion/agents", `{"entries":[`+strings.Join(entries, ",")+`]}`)
 			},
 		},
 		{
 			name: "legion agent entry", path: "/v1/legion/agents/sessions/", limit: v1BodyLimit,
-			build: func(t *testing.T, size int) *http.Request {
-				id := next("ses-body-limit-entry")
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				id := rig.next("ses-body-limit-entry")
 				return v1Request(http.MethodPut, "/v1/legion/agents/sessions/"+id, padded(t, legionEntry(id, "INFRA-3589", "tester", started), size))
 			},
-			real: func(t *testing.T) *http.Request {
-				id := longID("ses-body-limit-real-entry")
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				id := longID(rig.next("ses-body-limit-real-entry"))
 				return v1Request(http.MethodPut, "/v1/legion/agents/sessions/"+id, largestEntry(id))
 			},
 		},
 		{
 			name: "github webhook", path: "/webhook/github", limit: githubBodyLimit, webhook: true,
-			build: func(t *testing.T, size int) *http.Request {
-				id := strconv.Itoa(1000 + count)
-				return githubDelivery("issue_comment", next("delivery-body-limit"), padded(t, comment(id), size))
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				id := strconv.Itoa(1000 + rig.requestID)
+				return githubDelivery("issue_comment", rig.next("delivery-body-limit"), padded(t, comment(id), size))
 			},
 			// GitHub delivers a payload of up to 25 MB ("Payload cap",
 			// docs.github.com/en/webhooks/webhook-events-and-payloads).
-			real: func(t *testing.T) *http.Request {
-				id := strconv.Itoa(1000 + count)
-				return githubDelivery("issue_comment", next("delivery-body-limit-real"), padded(t, comment(id), 25_000_000))
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				id := strconv.Itoa(1000 + rig.requestID)
+				return githubDelivery("issue_comment", rig.next("delivery-body-limit-real"), padded(t, comment(id), 25_000_000))
 			},
 		},
 		{
 			name: "slack webhook", path: "/webhook/slack", limit: slackBodyLimit, webhook: true,
-			build: func(t *testing.T, size int) *http.Request {
-				return slackDelivery(padded(t, slackEvent(next("Ev_body_limit"), "a message of its size"), size))
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				return slackDelivery(padded(t, slackEvent(rig.next("Ev_body_limit"), "a message of its size"), size))
 			},
 			// A message at the 40,000 characters Slack cuts a message's text to ("Truncating
 			// content", docs.slack.dev/reference/methods/chat.postMessage), each a six-byte \u
 			// escape, in its text and again in its blocks.
-			real: func(t *testing.T) *http.Request {
-				return slackDelivery(slackEvent(next("Ev_body_limit_real"), strings.Repeat(`\u00e9`, 40_000)))
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				return slackDelivery(slackEvent(rig.next("Ev_body_limit_real"), strings.Repeat(`\u00e9`, 40_000)))
 			},
 		},
 		{
 			name: "ghostwispr webhook", path: "/webhook/ghostwispr", limit: ghostWisprBodyLimit, webhook: true,
-			build: func(t *testing.T, size int) *http.Request {
-				return ghostWisprDelivery(next("gw-body-limit"), padded(t, summary(next("2026111603")), size))
+			build: func(t *testing.T, rig *bodyLimitRig, size int) *http.Request {
+				return ghostWisprDelivery(rig.next("gw-body-limit"), padded(t, summary(rig.next("2026111603")), size))
 			},
 			// A summary_ready event carrying every field the envelope copies (ghostWisprPayload).
-			real: func(t *testing.T) *http.Request {
-				return ghostWisprDelivery(next("gw-body-limit-real"), summary(next("2026111604")))
+			real: func(t *testing.T, rig *bodyLimitRig) *http.Request {
+				return ghostWisprDelivery(rig.next("gw-body-limit-real"), summary(rig.next("2026111604")))
 			},
 		},
 	}
 
 	// refused serves request, whose body is one byte past row's limit, and requires the route to
 	// answer 413 naming the limit, having written, published and logged nothing else.
-	refused := func(t *testing.T, row bodyLimitRow, request *http.Request) {
+	refused := func(t *testing.T, rig *bodyLimitRig, row bodyLimitRow, request *http.Request) {
 		t.Helper()
 		before := rig.storedState(t)
 		logged := rig.logs.Len()
-		answer := rig.serve(request)
+		answer := rig.serve(t, request)
 		body := answer.Body.String()
 		if answer.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("%s with a body of %d bytes: status %d, body %.300s; want 413", row.path, row.limit+1, answer.Code, body)
@@ -439,10 +457,10 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 	// notJSON is row's request one byte past its limit, with its method, path and headers, and a
 	// body of that size that is not JSON: it starts with x. chunked sends it with no
 	// Content-Length, so the route learns the body's size only by reading it.
-	notJSON := func(t *testing.T, row bodyLimitRow, chunked bool) *http.Request {
+	notJSON := func(t *testing.T, rig *bodyLimitRig, row bodyLimitRow, chunked bool) *http.Request {
 		t.Helper()
-		request := row.build(t, row.limit+1)
-		body := strings.Repeat("x", row.limit+1)
+		request := row.build(t, rig, 0)
+		body := padding[:row.limit+1]
 		request.Body = io.NopCloser(strings.NewReader(body))
 		request.ContentLength = int64(len(body))
 		if chunked {
@@ -454,25 +472,35 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 
 	for _, row := range rows {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newBodyLimitRig(t)
+			if row.name == "send" {
+				rig.register(t, sendTarget)
+			}
+			// The five cases share setup, not concurrent writes. The assertions
+			// compare snapshots of the whole account before and after each request.
 			t.Run("one byte over the limit", func(t *testing.T) {
-				refused(t, row, row.build(t, row.limit+1))
+				refused(t, rig, row, row.build(t, rig, row.limit+1))
 			})
 			t.Run("one byte over the limit, not JSON, with its Content-Length", func(t *testing.T) {
-				refused(t, row, notJSON(t, row, false))
+				refused(t, rig, row, notJSON(t, rig, row, false))
 			})
 			t.Run("one byte over the limit, not JSON, chunked", func(t *testing.T) {
-				refused(t, row, notJSON(t, row, true))
+				refused(t, rig, row, notJSON(t, rig, row, true))
 			})
 			t.Run("at the limit", func(t *testing.T) {
-				wantServed(t, rig, row, row.build(t, row.limit))
+				wantServed(t, rig, row, row.build(t, rig, row.limit))
 			})
 			t.Run("the largest real request", func(t *testing.T) {
-				wantServed(t, rig, row, row.real(t))
+				wantServed(t, rig, row, row.real(t, rig))
 			})
 		})
 	}
 
 	t.Run("send: a small value followed by more than the limit", func(t *testing.T) {
+		t.Parallel()
+		rig := newBodyLimitRig(t)
+		rig.register(t, sendTarget)
 		small := marshalled(t, map[string]any{"target_session": sendTarget, "source": "agent", "message": "a send followed by spaces"})
 		request := v1Request(http.MethodPost, "/v1/messages/send", small+strings.Repeat(" ", v1BodyLimit))
 		// With no Content-Length the route reads the body to find its size, so the refusal is
@@ -481,7 +509,7 @@ func TestARequestBodyOverTheLimitIsRefused(t *testing.T) {
 		request.TransferEncoding = []string{"chunked"}
 		before := rig.storedState(t)
 		logged := rig.logs.Len()
-		answer := rig.serve(request)
+		answer := rig.serve(t, request)
 		if answer.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("a send of %d bytes followed by %d spaces: status %d, body %.300s; want 413", len(small), v1BodyLimit, answer.Code, answer.Body.String())
 		}
@@ -531,6 +559,7 @@ func TestAV1BodyIsJudgedByItsDecodeAndTheReadOfItsRest(t *testing.T) {
 		{name: "an empty body", body: strings.NewReader(""), status: http.StatusBadRequest, message: "invalid json"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			request := httptest.NewRequest(http.MethodPost, "/v1/messages/send", row.body)
 			request.ContentLength = -1
 			var into any
@@ -548,7 +577,7 @@ func wantServed(t *testing.T, rig *bodyLimitRig, row bodyLimitRow, request *http
 	t.Helper()
 	size := request.ContentLength
 	before := rig.storedState(t)
-	answer := rig.serve(request)
+	answer := rig.serve(t, request)
 	if answer.Code != http.StatusOK {
 		t.Fatalf("%s with a body of %d bytes: status %d, body %.300s; want 200", row.path, size, answer.Code, answer.Body.String())
 	}
