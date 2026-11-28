@@ -241,6 +241,16 @@ export function IssuesTable({
   const recordMark = useCallback((key: string) => {
     lastMarked.current = key;
   }, []);
+  // A mark belongs to the selection it was made in: once that selection has ended, the List
+  // forgets it, so a selection begun with no row of the reader's own - a select-all from the
+  // table's head - has no row marked. The hand-off of the selection that ended has read the mark
+  // by then, in the commit that empties the selection, and keeps what it read for the landing it
+  // owes: the going's own read is a layout effect (`useLastMarkedPlace`), and the bar's
+  // `returnFocus` runs in the bar's passive effect, a child's, which runs before this one.
+  const selected = Object.keys(selection).length !== 0;
+  useEffect(() => {
+    if (!selected) lastMarked.current = null;
+  }, [selected]);
   const [openFilter, setOpenFilter] = useState<string>();
   const openedLabels = useOpenedGroups();
 
@@ -387,7 +397,7 @@ export function IssuesTable({
     leaving: (key) => leavingNow.current?.(key) === true,
     list: tableStop,
     order: leaves,
-    shown: Object.keys(selection).length !== 0,
+    shown: selected,
   });
   // The bar gone with the focus (`SelectionBar`): the hand-off above (`landAtPlace`) puts the
   // focus itself, including where the table lists the issue marked last and its window has not

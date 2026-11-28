@@ -1250,6 +1250,66 @@ test("the List's bar gone with the focus while no issue is marked hands the focu
   expect(landing).toHaveFocus();
 });
 
+// A mark belongs to the selection it was made in. The reader marks the third row and presses
+// Clear selection, and the focus lands on that row's checkbox. Deep in the List later, a
+// select-all from the table's head starts a selection that marks no issue of the reader's own,
+// and Clear selection hands the focus on as with no issue marked: to the checkbox of the first
+// row in sight below the table's sticky head, with no scroll. The row the earlier selection
+// marked, seven rows above the window, would take the focus and scroll the table's box up to it.
+test("after a selection that marked a row has ended, a select-all from the table's head marks no issue, so Clear selection lands on the first row in sight, with no scroll", async () => {
+  const user = userEvent.setup();
+  // Drawn in the shell's main content, as the app draws it: Clear selection is a press of the
+  // reader's, so the bar hands its focus on.
+  table(
+    Array.from({ length: 20 }, (_, index) => issue(`CORE-${index + 1}`)),
+    "",
+    { inMain: true }
+  );
+  await screen.findByRole("checkbox", { name: "Select CORE-20" });
+  // The rows in the order the table draws them.
+  const order = [...document.querySelectorAll("[data-issue-row]")].map(
+    (row) => row.getAttribute("data-issue-row") ?? ""
+  );
+  // The first selection, in happy-dom's own boxes, where every row reads as in sight.
+  const earlier = screen.getByRole("checkbox", { name: `Select ${order[2]}` });
+  await user.click(earlier);
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  await waitFor(() => expect(earlier).toHaveFocus());
+  // Deep in the List: the table's box clips what overflows it, as its `overflow-auto` makes it do
+  // in a browser, and its scroll is only noted. happy-dom lays nothing out and does not expand
+  // the `overflow` shorthand, so the case gives the box its place and the two values the browser
+  // computes, before the rows' boxes below, whose stub of every element's box this one must not
+  // take the place of. Each row's checkbox is drawn where its row stands now, 100 px a row, with
+  // the tenth row at the window's top.
+  const box = tableBox();
+  if (box === null) throw new Error("The List drew no scroll box");
+  const boxRect = spyOn(box, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 1000, 600));
+  restores.push(() => boxRect.mockRestore());
+  box.style.overflowX = "auto";
+  box.style.overflowY = "auto";
+  const scrolled = spyOn(box, "scrollBy").mockImplementation(() => undefined);
+  restores.push(() => scrolled.mockRestore());
+  restores.push(layRowsOut("[data-issue-row]", 9));
+  await user.click(screen.getByRole("checkbox", { name: "Select every row on this page" }));
+  expect(readSelectedIssues()).toHaveLength(20);
+  // The table's head, 60 px tall, over the top of the tenth row, which stands from 0 to 100 px.
+  const head = screen.getByRole("table", { name: "Project issues table" }).querySelector("thead");
+  if (head === null) throw new Error("The List drew no table head");
+  restores.push(drawOver(head, 60, "[data-issue-row]", 9));
+  act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+  const moves = watchMoves();
+  restores.push(moves.restore);
+  await user.keyboard("{Enter}");
+  await waitFor(() => expect(screen.queryByRole("toolbar")).not.toBeInTheDocument());
+  const landing = screen.getByRole("checkbox", { name: `Select ${order[10]}` });
+  await waitFor(() => expect(focusedName()).toBe(`Select ${order[10]}`));
+  expect(moves.focused.at(-1)).toEqual({ options: { preventScroll: true }, target: landing });
+  expect<readonly unknown[]>(scrolled.mock.calls).toEqual([]);
+  expect(moves.scrolled).toEqual([]);
+});
+
 /** What holds the focus, as a string a failed assertion prints whole: the body, or the control's
  *  label, else its text. */
 function focusedName(): string {
