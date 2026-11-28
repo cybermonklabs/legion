@@ -5143,7 +5143,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     const pod = freshDir("store-swap");
     plantScored(pod, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
     const secret = path.join(freshDir("store-swap-secret"), "token");
-    writeFileSync(secret, "credential-marker-5f1c\n");
+    const credential = fixtureSecret("cred");
+    writeFileSync(secret, `${credential}\n`);
     const stored = bash(
       [
         defs("note", "fail", "store_scored_run"),
@@ -5161,7 +5162,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     expect(members(pack)).toContain(`${run(1)}/world.json`);
     expect(types(pack)).toContain("l");
     const bytes = childSpawn({ ...RIG_STEP, part: "tar -xOzf" }, ["tar", "-xOzf", pack]);
-    expect(bytes.stdout.toString()).not.toContain("credential-marker-5f1c");
+    expect(bytes.stdout.toString()).not.toContain(credential);
   });
 
   // Catches: a restart that launches its cell from nothing; one that counts a run whose row was

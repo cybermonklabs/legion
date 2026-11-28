@@ -699,6 +699,41 @@ test("a check CI proves with no derived result shows why its run proved nothing"
   expect(within(card).queryByTestId("verification-result")).toBeNull();
 });
 
+// Catches: the server's sentence shown only where a check holds no result at all, so a check whose
+// run derived nothing and whose CI job recorded a result of its own lists the job's result and
+// never says why the run derived none, where `dispatch results --issue` says it on the head line.
+test("a check CI proves whose run derived nothing shows why above the result its job recorded", async () => {
+  const detail = `CI run contracts concluded failure at ${commit}, the head of acme/widgets#7, and its CI job recorded a result of its own for the check.`;
+  const jobResult = result({
+    actor: { id: "ci-session", kind: "session" },
+    id: "job-1",
+    role: "ci",
+    run: "contracts",
+  });
+  const { getIssueResults, view } = renderTab(verification, [
+    ciCheck(
+      "c-job",
+      {
+        case: "job_recorded",
+        detail,
+        line: "- Check c-job (before_merge): pass at the head by ci",
+        run: "contracts",
+        state: "no_result",
+      },
+      [jobResult]
+    ),
+  ]);
+  restore = () => {
+    getIssueResults.mockRestore();
+    view.unmount();
+  };
+
+  const card = await screen.findByTestId("verification-check");
+  expect(within(card).getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
+  expect(within(card).getByTestId("verification-result-role").textContent).toBe("ci");
+  expect(within(card).queryByTestId("verification-check-no-results")).toBeNull();
+});
+
 // A block that carries `ci_check` and breaks one of its rules is no check CI proves, so the server
 // gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
 test("a check the server gives no ci reads as an ordinary check", async () => {
