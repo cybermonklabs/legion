@@ -2132,17 +2132,13 @@ func waitForSettlementMarkedAfter(t *testing.T, database *store.Store, artifactI
 	}
 }
 
-// waitForSettlementOwed waits up to 10 s for the document's pending-settlement row to be there, or
-// gone.
+// waitForSettlementOwed waits for the document's pending-settlement row to be there, or gone.
 func waitForSettlementOwed(t *testing.T, database *store.Store, artifactID string, owed bool) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for settlementOwed(t, database, artifactID) != owed {
-		if time.Now().After(deadline) {
-			t.Fatalf("the document's pending-settlement row was not %s within 10s", map[bool]string{true: "there", false: "gone"}[owed])
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	testwait.Until(t, "the document's pending-settlement row to be "+map[bool]string{true: "there", false: "gone"}[owed], func() (bool, bool) {
+		held := settlementOwed(t, database, artifactID)
+		return held, held == owed
+	})
 }
 
 // latestVersion is the number, markdown and authors (JSON) of the document's latest version.
