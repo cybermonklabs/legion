@@ -144,29 +144,34 @@ func (r *modelRequestRig) moveTo(t *testing.T, to time.Time) {
 	}
 }
 
-// advance moves the clock on by d, which fires each window due by then, and, where a window fired
-// while one was armed, waits until the reporter has acted on the one armed: a window that is due
-// closes every open request and sends what is pending (flushLocked), and an early one only arms
-// again. It answers how many windows fired.
+// advance moves the clock on by d, which fires each window due by then, and, where the window
+// armed was due by then, waits until the reporter has acted on it: a window that is due closes
+// every open request and sends what is pending (flushLocked), and an early one only arms again. A
+// window armed in place of another (armAtLocked) leaves the other's timer waiting, and the
+// reporter does nothing when it fires, so advance neither waits on that firing nor counts it. It
+// answers how many windows fired that the reporter acts on: one where the window armed was due by
+// then, else none.
 func (r *modelRequestRig) advance(t *testing.T, d time.Duration) int {
 	t.Helper()
 	r.reporter.mu.Lock()
-	armed := r.reporter.window
+	armed, due := r.reporter.window, r.reporter.windowDue
 	r.reporter.mu.Unlock()
-	fired := r.clock.advance(d)
-	if fired != 0 && armed != 0 {
-		testwait.Eventually(t, "the window to be acted on", func() bool {
-			r.reporter.mu.Lock()
-			defer r.reporter.mu.Unlock()
-			return r.reporter.window != armed
-		})
+	r.clock.advance(d)
+	if armed == 0 || due.After(r.clock.Now()) {
+		return 0
 	}
-	return fired
+	testwait.Eventually(t, "the window to be acted on", func() bool {
+		r.reporter.mu.Lock()
+		defer r.reporter.mu.Unlock()
+		return r.reporter.window != armed
+	})
+	return 1
 }
 
 // fireWindow moves the clock on to to, where the one window armed fires, and waits until the
 // reporter has acted on it (advance): a window that is due closes every open request and sends
-// what is pending, and an early one only arms again.
+// what is pending, and an early one only arms again. It counts that window's firing alone: the
+// timer of a window another replaced (armAtLocked) may fire too, and counts for nothing.
 func (r *modelRequestRig) fireWindow(t *testing.T, to time.Time) {
 	t.Helper()
 	if fired := r.advance(t, to.Sub(r.clock.Now())); fired != 1 {
@@ -468,6 +473,10 @@ func TestModelRequestsBacksOffOnDaemonFailureWithOverflow(t *testing.T) {
 				t.Fatalf("sent %d IDs without waiting for a retry window", len(extra))
 			default:
 			}
+			// The failed requests are taken (pendingRequest), so their own deadlines, past already, do
+			// not make the retry window due: it comes no sooner than requestWindow - requestSendMargin
+			// after the failed report's flush.
+			r.moveTo(t, r.clock.Now().Add(requestWindow-requestSendMargin-time.Millisecond))
 			if fired := r.clock.fire(); fired != 1 {
 				t.Fatalf("fired %d retry windows, want 1", fired)
 			}

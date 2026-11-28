@@ -160,10 +160,31 @@ func (r *requestsRig) reported() claim.ModelRequestsRequest {
 	}
 }
 
-// rows is each request of reports as rowsOf reads it.
+// rows is each request of reports as a requestRow, and fails on a request that names no id, no
+// end, or an id another request of reports has: each request counts once. uncached is "" where
+// the request names none.
 func (r *requestsRig) rows(reports ...claim.ModelRequestsRequest) []requestRow {
 	r.t.Helper()
-	return rowsOf(r.t, reports...)
+	var rows []requestRow
+	seen := map[string]bool{}
+	for _, report := range reports {
+		if report.BootToken != testBootToken || report.Generation != 4 || report.ClaimToken != "" || report.Secret != "" {
+			r.t.Fatalf("the report named %+v, want the launch's boot token and generation 4 and no other credential", report)
+		}
+		for _, request := range report.Requests {
+			if request.ID == "" || seen[request.ID] || request.EndedAt.IsZero() {
+				r.t.Fatalf("the request %+v has no id, an id reported already, or no end", request)
+			}
+			seen[request.ID] = true
+			row := requestRow{session: request.Session, model: request.Model,
+				endedAt: request.EndedAt.UTC().Format(time.RFC3339Nano)}
+			if request.UncachedInputTokens != nil {
+				row.uncached = strconv.FormatInt(*request.UncachedInputTokens, 10)
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 // noReport holds that the bridge sends no report of model requests within a short while.
@@ -190,33 +211,6 @@ type requestRow struct {
 	model    string
 	endedAt  string
 	uncached string
-}
-
-// rowsOf is each request of reports as a requestRow, and fails on a request that names no id, no
-// end, or an id another request of reports has: each request counts once. uncached is "" where
-// the request names none.
-func rowsOf(t *testing.T, reports ...claim.ModelRequestsRequest) []requestRow {
-	t.Helper()
-	var rows []requestRow
-	seen := map[string]bool{}
-	for _, report := range reports {
-		if report.BootToken != testBootToken || report.Generation != 4 || report.ClaimToken != "" || report.Secret != "" {
-			t.Fatalf("the report named %+v, want the launch's boot token and generation 4 and no other credential", report)
-		}
-		for _, request := range report.Requests {
-			if request.ID == "" || seen[request.ID] || request.EndedAt.IsZero() {
-				t.Fatalf("the request %+v has no id, an id reported already, or no end", request)
-			}
-			seen[request.ID] = true
-			row := requestRow{session: request.Session, model: request.Model,
-				endedAt: request.EndedAt.UTC().Format(time.RFC3339Nano)}
-			if request.UncachedInputTokens != nil {
-				row.uncached = strconv.FormatInt(*request.UncachedInputTokens, 10)
-			}
-			rows = append(rows, row)
-		}
-	}
-	return rows
 }
 
 func compareRows(t *testing.T, what string, got, want []requestRow) {
@@ -331,7 +325,7 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 
 	// The sessions a Claude Code role's requests run in: its own and each subagent's it starts.
 	// Each is reported once, under its own session, and every report names the launch's boot token
-	// alone, never a credential of the subagent's (rowsOf).
+	// alone, never a credential of the subagent's (rows).
 	t.Run("session-inventory", func(t *testing.T) {
 		r := newRequestsRig(t)
 		r.prompt("p1", "replay subagent-turn.jsonl")

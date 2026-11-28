@@ -16,21 +16,23 @@ import (
 // requestWindow is how long after a model request's end the bridge may hold its report: a quarter
 // of the minute the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests").
 // One window serves the whole bridge, whatever session a request ran in: a window that sends
-// sends every request the bridge holds in one report. It is due at the earlier of two times
-// (windowDueLocked): the window's flush, requestWindow - requestSendMargin after the oldest end
-// among the requests the bridge holds but no sooner than that after the last flush; and the
-// deadline of the oldest request no flush has taken yet, requestWindow - requestSendMargin after
-// its own end. So each request leaves within requestWindow of its end on the bridge's clock, and
-// one the bridge reads only after its deadline leaves at once. A deadline comes before the
-// window's flush only for a request that ended before the last flush, which the bridge read only
-// after it: such a request adds a report. Without one, a pane's windows send at most one report
-// each 14.75 s, about four a minute. A turn's end sends what is left at once (modelRequests).
+// sends every request the bridge holds in one report, and windowDueLocked says when it is due. A
+// window sends at its time only where no report is on its way: then each request the bridge read
+// by its deadline leaves within requestWindow of its end on the bridge's clock, and one it read
+// later leaves at once. Otherwise the window's requests leave once that report is answered, at
+// most requestReportTimeout later: the bridge sends one report at a time. A turn's end sends what
+// is left at once (modelRequests).
 const requestWindow = 15 * time.Second
 
 // requestSendMargin is how much sooner than requestWindow after an end the window is due: room
-// for the window's own work before the report leaves, so a request the bridge read by its
-// deadline leaves within requestWindow of its end.
+// for the window's own work before the report leaves, so that, where no report is on its way, a
+// request the bridge read by its deadline leaves within requestWindow of its end
+// (windowDueLocked).
 const requestSendMargin = 250 * time.Millisecond
+
+// requestDueAfter is how long after a request's time (windowDueLocked) the window is due for it:
+// requestSendMargin short of requestWindow.
+const requestDueAfter = requestWindow - requestSendMargin
 
 // requestReportTimeout bounds one report's call, as reportTimeout bounds a turn outcome's: a
 // daemon that takes the connection and never answers costs the report its window, and the
@@ -66,28 +68,24 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 //
 // Each session (sessionOfLine) has at most one open request, the one its lines are of: a session
 // runs one request at a time, so a later line of the session, or the turn's `result`, closes it,
-// and a line of another session closes nothing. A window closes every open request too, so a
-// request is reported within requestWindow of its last block however long the tool it called
-// runs. No close can know that no block of the request follows: Claude Code writes a tool's result
-// while the request's next tool call is still being written
-// (testdata/background-during-prompt.jsonl:7,10,11), and a block can take longer than
-// requestWindow to write. So a block of a closed request opens it again, with that block's end: a
-// request not yet sent is taken back from what is pending, and one already sent goes again under
-// the same id with the later end, which the daemon moves the request to
+// and a line of another session closes nothing. A window closes every open request too, so it
+// takes a request however long the tool it called runs (windowDueLocked). No close can know that
+// no block of the request follows: Claude Code writes a tool's result while the request's next
+// tool call is still being written (testdata/background-during-prompt.jsonl:7,10,11), and a block
+// can take longer than requestWindow to write. So a block of a closed request opens it again, with
+// that block's end: a request not yet sent is taken back from what is pending, and one already
+// sent goes again under the same id with the later end, which the daemon moves the request to
 // (record.Store.KeepModelRequests). No block is left out of its request's end.
 //
-// One window serves the bridge, whatever session a request ran in. It is due requestSendMargin
-// before requestWindow from the oldest end of a request open or pending, no sooner than
-// requestWindow - requestSendMargin after the last flush, but no later than requestSendMargin
-// before requestWindow from the end of a request no flush has taken yet (windowDueLocked). The
-// first request arms it, and a request whose own deadline comes before the window armed arms it
-// again for that deadline. A window that fires before it is due, since a block moved the oldest
-// end on, is armed again for that end; one that is due closes every open request and sends what
-// is pending in one report (flushLocked), as a result does at once. Overflow drains on an answer
-// that keeps at least one request. Otherwise a failed or incomplete report can retry at the next
-// window or result; only IDs the daemon did not keep go again. Requests past the keep window and
-// reports the daemon refuses (a 4xx) are dropped with a line. Every report names the launch's boot
-// token. Nothing in the bridge's loop waits on a report.
+// One window serves the bridge, whatever session a request ran in, due when windowDueLocked
+// says. The first request arms it, and a request whose own deadline comes before the window
+// armed arms it again for that deadline. A window that fires before it is due, since a block
+// moved the oldest end on, is armed again for that end; one that is due closes every open
+// request and sends what is pending in one report (flushLocked), as a result does at once.
+// Overflow drains on an answer that keeps at least one request. Otherwise a failed or incomplete
+// report can retry at the next window or result; only IDs the daemon did not keep go again.
+// Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a line.
+// Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
 type modelRequests struct {
 	*daemonPoster
 	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
@@ -200,7 +198,7 @@ func (r *modelRequests) assistant(line streamLine) {
 	r.open[session] = &request
 	// A request that ended before the last flush, which the bridge read only after it, can be due
 	// before the window armed: the window is armed again for its deadline (windowDueLocked).
-	if due := request.EndedAt.Add(requestWindow - requestSendMargin); r.window != 0 && due.Before(r.windowDue) {
+	if due := request.EndedAt.Add(requestDueAfter); r.window != 0 && due.Before(r.windowDue) {
 		r.armAtLocked(due)
 		return
 	}
@@ -268,30 +266,33 @@ func earlier(a, b time.Time) time.Time {
 }
 
 // windowDueLocked is when the window is due, and whether the bridge holds a request, open or
-// pending. It is due at the earlier of two times. One is the window's flush: requestWindow -
-// requestSendMargin after the oldest end among the requests held, but no sooner than that after
-// the last flush, so the flushes send one report each that long at most and a report the daemon
-// failed goes again no sooner. The other is the deadline of the oldest request no flush has taken
-// yet (pendingRequest; every open request is one): requestWindow - requestSendMargin after its
-// own end, so each request goes within requestWindow of its end, and one the bridge reads only
-// after its deadline goes at once. A deadline comes before the window's flush only for a request
-// that ended before the last flush, which the bridge read only after it. The caller holds r.mu.
+// pending. Each request held makes the window due requestDueAfter after a time of its own: after
+// its end, its deadline, where no flush has taken it yet (pendingRequest; every open request is
+// one), and else after its end or the last flush, whichever is later. The window is due at the
+// earliest of these. So the windows send one report each requestDueAfter at most, about four a
+// minute, and a report the daemon failed goes again no sooner, but for a request that ended
+// before the last flush, which the bridge read only after it: its deadline can come sooner, and
+// it adds a report. A request the bridge reads only after its deadline goes at once. A window
+// sends at its time only where no report is on its way (sendLocked): then each request the
+// bridge read by its deadline goes within requestWindow of its end. Otherwise the window's
+// requests go once that report is answered, at most requestReportTimeout later, as the bridge
+// sends one report at a time. The caller holds r.mu.
 func (r *modelRequests) windowDueLocked() (time.Time, bool) {
 	if len(r.open) == 0 && len(r.pending) == 0 {
 		return time.Time{}, false
 	}
-	// oldest is the oldest end among the requests held, and owed among those no flush has taken.
-	var oldest, owed time.Time
+	var due time.Time
 	for _, open := range r.open {
-		oldest, owed = earlier(oldest, open.EndedAt), earlier(owed, open.EndedAt)
+		due = earlier(due, open.EndedAt)
 	}
 	for _, request := range r.pending {
-		oldest = earlier(oldest, request.EndedAt)
-		if !request.taken {
-			owed = earlier(owed, request.EndedAt)
+		from := request.EndedAt
+		if request.taken {
+			from = later(from, r.flushed)
 		}
+		due = earlier(due, from)
 	}
-	return earlier(owed, later(oldest, r.flushed)).Add(requestWindow - requestSendMargin), true
+	return due.Add(requestDueAfter), true
 }
 
 // armLocked arms the window, if none is armed and the bridge holds a request, to fire when it is
