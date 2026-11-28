@@ -17,7 +17,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -49,13 +48,17 @@ type countedShape struct {
 
 // countedRows lets the child find the same shape and operation that the parent selected.
 var countedRows = map[string]func() []countedShape{
-	"TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText": delimiterAndOpenerShapes,
-	"TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds":       runsAndLabelsShapes,
-	"TestParseIsLinearInATableOfEscapedPipes":                  escapedPipeTableShapes,
-	"TestParseIsLinearInFootnoteReferences":                    footnoteReferenceShapes,
-	"TestBareURLShapesParseAndRenderLinearly":                  bareURLShapes,
-	"TestUnclosedRawHTMLShapesParseAndRenderLinearly":          unclosedRawHTMLShapes,
-	"TestUpdateIsLinearInTheBlockCount":                        updateShapes,
+	"TestParseAndRenderAreLinearOnDelimiterAndOpenerHeavyText":                           delimiterAndOpenerShapes,
+	"TestRenderIsLinearOnRunsFootnoteLabelsAndLineFeeds":                                 runsAndLabelsShapes,
+	"TestParseIsLinearInATableOfEscapedPipes":                                            escapedPipeTableShapes,
+	"TestParseIsLinearInFootnoteReferences":                                              footnoteReferenceShapes,
+	"TestBareURLShapesParseAndRenderLinearly":                                            bareURLShapes,
+	"TestUnclosedRawHTMLShapesParseAndRenderLinearly":                                    unclosedRawHTMLShapes,
+	"TestUpdateIsLinearInTheBlockCount":                                                  updateShapes,
+	"TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCharacter": heavyBodyCapShapes,
+	"TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength":                   heavyBodyParseShapes,
+	"TestHeavyBodiesAtTheBodyCapParseAndEncodeInWorkProportionalToTheirLength":           heavyBodyWriteShapes,
+	"TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly":                          nestedDirectiveShapes,
 }
 
 // countedStages keeps the four independent readings around the operation, not its preparation.
@@ -243,14 +246,12 @@ func readCountedNone(t *testing.T) (countedStatementRun, error) {
 // countedChildSlots limits the number of memory-hungry leaves that may use children at once.
 var countedChildSlots = make(chan struct{}, 2)
 
-// runCountedLeaf counts and judges one shape and operation at both sizes in isolation.
+// runCountedLeaf counts and judges one shape and operation in isolation.
 func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSample {
 	t.Helper()
 	t.Parallel()
 	countedBuild.buildOnce.Do(func() {
-		started := time.Now()
 		countedBuild.buildErr = buildCounted(t)
-		t.Logf("shared counted build (package list and compile): %v", time.Since(started))
 	})
 	if countedBuild.buildErr != nil {
 		t.Fatal(countedBuild.buildErr)
@@ -274,6 +275,9 @@ func runCountedLeaf(t *testing.T, row string, leaf countedShape) [2]countedSampl
 	}
 	var samples [2]countedSample
 	for i, size := range leaf.sizes {
+		if leaf.fixedSize && i == 1 {
+			break
+		}
 		samples[i] = readCountedSample(t, row, leaf, size, none, false)
 		if leaf.prepareWalks != nil {
 			walks := readCountedSample(t, row, leaf, size, nil, true)
@@ -357,26 +361,12 @@ func readCountedSample(t *testing.T, row string, leaf countedShape, size int, no
 	}
 }
 
-// TestHeavyBodiesCountedHelper runs the requested child mode. Until the old rows move to the new
-// harness, it also accepts their original request and reports the same outcome in their format.
+// TestHeavyBodiesCountedHelper runs the requested child mode, including the census.
 func TestHeavyBodiesCountedHelper(t *testing.T) {
 	t.Parallel()
 	mode := os.Getenv(countedModeEnv)
 	if mode == "" {
-		text := os.Getenv(countedHelperEnv)
-		if text == "" {
-			t.Skip("the child process the counted rows run to measure work")
-		}
-		op, err := parseHeavyOp(text)
-		if err != nil {
-			t.Fatal(err)
-		}
-		call, err := op.prepare()
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Log(countedHelperRan + op.String() + ": " + call().String())
-		return
+		t.Skip("the child process the counted rows run to measure work")
 	}
 	if mode == "census" {
 		writeCensus(t)

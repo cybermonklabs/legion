@@ -44,12 +44,19 @@ func countedStatementDifferences(name string, size int, none *countedStatementRu
 	return whole.statements - prepared.statements, withPreparation, nil
 }
 
-// countedReading sets a leaf's floor from the operation-only statements per added builder unit
-// (past). The ceilings use the largest counts per unit at either size. For leaves that grow by
-// body length, those units are body characters. A zero stage reading records no work in that stage.
+// countedReading sets a leaf's floor from the statements per added builder unit (past).
+// Ceilings normally use the larger count per unit of the two sizes. For nested directive
+// statements the ceiling uses the full body's count per character. A zero stage reading
+// records no work in that stage.
 type countedReading struct {
 	past, most             float64
 	searchedMost, scanMost float64
+}
+
+// recordLine formats a reading so a run can supply the exact values to record for its leaf.
+func (r countedReading) recordLine() string {
+	return fmt.Sprintf("reading to record: {past: %g, most: %g, searchedMost: %g, scanMost: %g}",
+		r.past, r.most, r.searchedMost, r.scanMost)
 }
 
 // countedLeaf names the builder unit and the bounds the leaf applies. A heavy body also measures
@@ -58,6 +65,8 @@ type countedLeaf struct {
 	name, unit         string
 	reading            countedReading
 	heavyBody          bool
+	fixedSize          bool
+	ceilingAtFullBody  bool
 	perCharacterGrowth bool
 }
 
@@ -76,11 +85,15 @@ type countedSample struct {
 	walks                       *countedSample
 }
 
-// countedVerdict returns one diagnostic per broken bound and one line with the readings at both
-// sizes. It judges the two search stages apart so growth in one cannot hide behind the other.
+// countedVerdict returns one diagnostic per broken bound and the readings. A fixed budget
+// measures only the cap. Growth leaves judge the two search stages separately.
 func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []string, readings string) {
 	small, large := samples[0], samples[1]
-	for _, sample := range samples {
+	measured := samples[:]
+	if leaf.fixedSize {
+		measured = measured[:1]
+	}
+	for _, sample := range measured {
 		readings += fmt.Sprintf("%d %ss (%d body characters): %d operation-only statements, %d bytes allocated in the counted build, "+
 			"%d searched bytes, %d scan bytes, busiest block %q ran %d times; ", sample.units, leaf.unit, sample.characters,
 			sample.operation, sample.countedBytes, sample.searchedBytes, sample.scanBytes, sample.busiestBlock, sample.busiest)
@@ -93,11 +106,14 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		}
 	}
 	readings = leaf.name + ": " + readings
+	if leaf.fixedSize {
+		return countedFixedBudget(leaf, small, readings)
+	}
 	alternating := small.walks != nil || large.walks != nil
 	if small.units <= 0 || large.units <= small.units {
 		return []string{fmt.Sprintf("%s: the builder sizes must be positive and increasing, got %d and %d", leaf.name, small.units, large.units)}, readings
 	}
-	if leaf.heavyBody || leaf.perCharacterGrowth {
+	if leaf.heavyBody || leaf.perCharacterGrowth || leaf.ceilingAtFullBody {
 		if small.characters <= 0 || large.characters <= small.characters {
 			return []string{fmt.Sprintf("%s: the body lengths must be positive and increasing, got %d and %d", leaf.name, small.characters, large.characters)}, readings
 		}
@@ -147,11 +163,21 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		added = -float64(small.operation - large.operation)
 	}
 	past := added / float64(large.units-small.units)
-	perUnit := func(count uint64, i int) float64 { return float64(count) / float64(units[i]) }
-	most := max(perUnit(small.operation, 0), perUnit(large.operation, 1))
-	searchedMost := max(perUnit(small.searchedBytes, 0), perUnit(large.searchedBytes, 1))
-	scanMost := max(perUnit(small.scanBytes, 0), perUnit(large.scanBytes, 1))
-	record := fmt.Sprintf("reading to record: {past: %g, most: %g, searchedMost: %g, scanMost: %g}", past, most, searchedMost, scanMost)
+	ceilingUnits, ceilingUnit := units, unit
+	if leaf.ceilingAtFullBody {
+		ceilingUnits, ceilingUnit = [2]int{small.characters, large.characters}, "body character"
+	}
+	perUnit := func(count uint64, i int) float64 { return float64(count) / float64(ceilingUnits[i]) }
+	reading := countedReading{
+		past:         past,
+		most:         max(perUnit(small.operation, 0), perUnit(large.operation, 1)),
+		searchedMost: max(perUnit(small.searchedBytes, 0), perUnit(large.searchedBytes, 1)),
+		scanMost:     max(perUnit(small.scanBytes, 0), perUnit(large.scanBytes, 1)),
+	}
+	if leaf.ceilingAtFullBody {
+		reading.most = perUnit(large.operation, 1)
+	}
+	record := reading.recordLine()
 	readings += fmt.Sprintf("%.2f times the %ss (growth at most %.2f); %s", growth, unit, limit, record)
 	if leaf.reading.past <= 0 || leaf.reading.most <= 0 {
 		failures = append(failures, fmt.Sprintf("%s: no reading is recorded; %s", leaf.name, record))
@@ -163,13 +189,12 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 	checkCeiling := func(what string, count uint64, i int, recorded float64) {
 		if ceiling := countedMargin * recorded; recorded > 0 && perUnit(count, i) > ceiling {
 			failures = append(failures, fmt.Sprintf("%s: %d %ss count %.2f %s a %s, more than %.2f",
-				leaf.name, units[i], unit, perUnit(count, i), what, unit, ceiling))
+				leaf.name, ceilingUnits[i], ceilingUnit, perUnit(count, i), what, ceilingUnit, ceiling))
 		}
 	}
 	checkWrap := func(what string, sample countedSample) {
-		if sample.busiest >= countedBlockLimit {
-			failures = append(failures, fmt.Sprintf("%s: the block %s ran %d times at %d %ss, at or past 2^31: its coverage counter can wrap at the next size%s",
-				leaf.name, sample.busiestBlock, sample.busiest, sample.units, leaf.unit, what))
+		if failure := countedWrapFailure(leaf, sample, what); failure != "" {
+			failures = append(failures, failure)
 		}
 	}
 	for i, sample := range samples {
@@ -210,6 +235,38 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		}
 	}
 	return failures, readings
+}
+
+// countedFixedBudget applies the shared heavy-body limits once, at the cap rather than at
+// two sizes. The recorded reading has no floor because the leaf does not measure growth.
+func countedFixedBudget(leaf countedLeaf, sample countedSample, readings string) ([]string, string) {
+	if sample.units <= 0 || sample.characters <= 0 {
+		return []string{fmt.Sprintf("%s: want positive builder size and body length, got %d and %d",
+			leaf.name, sample.units, sample.characters)}, readings
+	}
+	failures := countedHeavyBodyFailures(leaf, sample)
+	if failure := countedWrapFailure(leaf, sample, ""); failure != "" {
+		failures = append(failures, failure)
+	}
+	units := float64(sample.units)
+	record := countedReading{
+		most:         float64(sample.operation) / units,
+		searchedMost: float64(sample.searchedBytes) / units,
+		scanMost:     float64(sample.scanBytes) / units,
+	}.recordLine()
+	if leaf.reading.most <= 0 {
+		failures = append(failures, fmt.Sprintf("%s: no reading is recorded; %s", leaf.name, record))
+	}
+	return failures, readings + record
+}
+
+// countedWrapFailure identifies a block whose counter ran halfway to wrapping.
+func countedWrapFailure(leaf countedLeaf, sample countedSample, what string) string {
+	if sample.busiest < countedBlockLimit {
+		return ""
+	}
+	return fmt.Sprintf("%s: the block %s ran %d times at %d %ss, at or past 2^31: its coverage counter can wrap at the next size%s",
+		leaf.name, sample.busiestBlock, sample.busiest, sample.units, leaf.unit, what)
 }
 
 // countedAlternatingBounds compares the write with the work ygo necessarily does at each
@@ -404,6 +461,33 @@ func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing
 		}
 		return samples
 	}
+	t.Run("fixed budget only measures the cap", func(t *testing.T) {
+		leaf := heavyLeaf
+		leaf.fixedSize, leaf.reading = true, countedReading{most: 1000}
+		samples := [2]countedSample{heavySamples(base)[0]}
+		check(t, leaf, samples)
+		samples[0].withPreparation = statementsPerCharacter*small + 1
+		samples[0].invokingBytes = bytesPerCharacter*small + 1
+		samples[0].busiest = countedBlockLimit
+		check(t, leaf, samples, "statements with preparation at 1000 body characters exceed the fixed limit",
+			"invoking build bytes allocated at 1000 body characters exceed the fixed limit", "coverage counter can wrap")
+		leaf.reading = countedReading{}
+		check(t, leaf, [2]countedSample{heavySamples(base)[0]}, "no reading is recorded; reading to record: {past: 0, most: 1000")
+	})
+	t.Run("full body statement ceiling uses body characters", func(t *testing.T) {
+		leaf := leaf
+		leaf.ceilingAtFullBody = true
+		leaf.reading.most = 100
+		samples := base
+		samples[0].characters, samples[1].characters = small*5, large*10
+		check(t, leaf, samples)
+		_, readings := countedVerdict(leaf, samples)
+		if !strings.Contains(readings, "most: 100,") {
+			t.Errorf("reading does not record the full body: %s", readings)
+		}
+		samples[1].operation = 400*uint64(samples[1].characters) + 1
+		check(t, leaf, samples, "operation-only statements grow", "operation-only statements a body character, more than")
+	})
 	t.Run("no invoking build bytes", func(t *testing.T) {
 		samples := heavySamples(base)
 		samples[0].invokingBytes, samples[1].invokingBytes = 0, 0

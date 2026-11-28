@@ -117,10 +117,9 @@ func Shapes() []Shape {
 	nest49, nest100 := nestedItems(49), nestedItems(100)
 	// markers49 is the same 98 blocks written on one line.
 	markers49 := strings.Repeat("- ", 49) + "x\n"
-	// The typed fence spends eleven characters on its own opening, and its label opens a run of
-	// 15,000 brackets that the rest of the line closes all but eleven of.
+	// The typed fence keeps the label unclosed at both sizes. At full size it writes
+	// 15,000 openers after the fence, as the browser fixture does.
 	const typedFence = ":::callout["
-	const bracketOpeners = 15_000
 	// A footnote pair is a reference on the body's first line and a definition below, both under a
 	// label of five characters, so each pair costs footnotePair characters wherever it is. Each
 	// definition's label is `a` and four digits; the references take, in turn, its label, the label
@@ -198,7 +197,8 @@ func Shapes() []Shape {
 			ID:   "callout-bracket-run",
 			Name: "a typed fence whose label opens a run of brackets",
 			Body: func(size int) string {
-				return typedFence + strings.Repeat("[", bracketOpeners) + strings.Repeat("]", size-bracketOpeners)
+				openers := (size + len(typedFence)) / 2
+				return typedFence + strings.Repeat("[", openers) + strings.Repeat("]", size-openers)
 			},
 			Grown: 30_000 - len(typedFence),
 			// The label swallows the line, so what stands there is a fence naming no typed block.
@@ -238,24 +238,38 @@ type NestedDirective struct {
 	ID string
 	// Name says what the body is and names its subtest.
 	Name string
-	// Markdown is the body itself, whole: unlike a Shape it does not grow.
+	// Markdown is the shared body, built with Openers.
 	Markdown string
+	// Body scales the rest of the input with the number of openers.
+	Body func(openers int) string
+	// Openers is the number of directive openers in Markdown.
+	Openers int
 }
 
 // NestedDirectives are the two deeply nested bare-directive bodies a document write refuses. The
 // browser suite spells both (e2e/heavy-bodies.ts, drawn by e2e/nested-directive.e2e.ts), so both
 // stand in testdata/shared-bodies.json.
 func NestedDirectives() []NestedDirective {
-	return []NestedDirective{
+	directives := []NestedDirective{
 		{
-			ID:       "directive-openers-then-long-line",
-			Name:     "2,000 unclosed openers then a long line",
-			Markdown: strings.Repeat(":::a\n", 2000) + strings.Repeat("x", 21000),
+			ID:      "directive-openers-then-long-line",
+			Name:    "2,000 unclosed openers then a long line",
+			Openers: 2000,
+			Body: func(openers int) string {
+				return strings.Repeat(":::a\n", openers) + strings.Repeat("x", openers*21/2)
+			},
 		},
 		{
-			ID:       "directive-openers-then-closers",
-			Name:     "1,000 openers then 1,000 closing lines",
-			Markdown: strings.Repeat(":::a\n", 1000) + strings.Repeat(":::\n", 1000),
+			ID:      "directive-openers-then-closers",
+			Name:    "1,000 openers then 1,000 closing lines",
+			Openers: 1000,
+			Body: func(openers int) string {
+				return strings.Repeat(":::a\n", openers) + strings.Repeat(":::\n", openers)
+			},
 		},
 	}
+	for i := range directives {
+		directives[i].Markdown = directives[i].Body(directives[i].Openers)
+	}
+	return directives
 }
