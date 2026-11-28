@@ -16,13 +16,28 @@ function Palette({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** The navigation sheet's stand-in: a dialog whose Open search closes it and opens the palette in
+ *  one handler, as the navigation sheet's Search and New issue do (`app.tsx`). */
+function Sheet({ onClose, onSearch }: { onClose: () => void; onSearch: () => void }) {
+  const dialog = useDialog<HTMLDivElement>({ onClose, open: true });
+  return (
+    <div aria-label="Sheet" ref={dialog.containerRef} role="dialog">
+      <button onClick={onSearch} type="button">
+        Open search
+      </button>
+    </div>
+  );
+}
+
 /**
- * A row whose act is drawn only while the focus is inside the row, as a focused row of the new
- * page draws its Copy reference, and a palette that Ctrl+K opens and Escape closes. `marked`
- * puts the dialog's return mark on the row, as `NodeRow` does on its focusable element.
+ * A row whose acts are drawn only while the focus is inside the row, as a focused row of the new
+ * page draws its Copy reference, a palette that Ctrl+K opens and Escape closes, and a sheet that
+ * the row's Menu opens. `marked` puts the dialog's return mark on the row, as `NodeRow` does on
+ * its focusable element.
  */
 function Page({ marked }: { marked: boolean }) {
   const [open, setOpen] = useState(false);
+  const [sheet, setSheet] = useState(false);
   const [within, setWithin] = useState(false);
   useEffect(() => {
     const openOnK = (event: KeyboardEvent) => {
@@ -44,8 +59,22 @@ function Page({ marked }: { marked: boolean }) {
       >
         The row's words
         {within ? <button type="button">Copy reference</button> : null}
+        {within ? (
+          <button onClick={() => setSheet(true)} type="button">
+            Menu
+          </button>
+        ) : null}
       </div>
       {open ? <Palette onClose={() => setOpen(false)} /> : null}
+      {sheet ? (
+        <Sheet
+          onClose={() => setSheet(false)}
+          onSearch={() => {
+            setSheet(false);
+            setOpen(true);
+          }}
+        />
+      ) : null}
     </>
   );
 }
@@ -93,5 +122,41 @@ test("with no marked ancestor the focus goes to the body, as before", async () =
     ).toHaveFocus();
   } finally {
     unmount();
+  }
+});
+
+// The row's Menu opens the sheet, whose Open search closes it and opens the palette in one
+// handler: the sheet hands its target, the Menu, to the palette (`handOverFocus`). The Menu went
+// with the row's focus as the sheet opened, so the palette gives the focus to the Menu's row.
+test("a dialog that the act's dialog hands its target to gives the focus to the act's row", async () => {
+  const user = userEvent.setup();
+  const view = render(
+    <KeymapProvider>
+      <Page marked />
+    </KeymapProvider>
+  );
+  try {
+    act(() => screen.getByRole("treeitem").focus());
+    act(() => screen.getByRole("button", { name: "Menu" }).focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(screen.getByRole("button", { name: "Open search" })).toHaveFocus());
+    expect(
+      screen.queryByRole("button", { name: "Menu" }),
+      "the act stayed drawn once the row lost the focus to the sheet"
+    ).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Open search" }));
+    expect(
+      screen.queryByRole("dialog", { name: "Sheet" }),
+      "Open search left the sheet open"
+    ).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Search" })).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog"), "Escape left the palette open").toBeNull();
+    expect(
+      screen.getByRole("treeitem"),
+      `the palette's close left the focus on ${document.activeElement?.tagName}`
+    ).toHaveFocus();
+  } finally {
+    view.unmount();
   }
 });
