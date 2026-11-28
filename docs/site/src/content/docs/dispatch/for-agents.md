@@ -441,8 +441,9 @@ its code one of those `packages/contracts/schemas/dispatch-openapi-v2.json` decl
 A query key the route does not declare is refused `400 QUERY_KEY_UNKNOWN`, naming the key and every
 key the route declares, so a misspelt filter is never read as no filter.
 
-`/api/v1` is deprecated. Its routes keep their answers, each answer names the `/api/v2` route that
-answers for it in a `Link` header (`rel="successor-version"`), and a deployment ends it on a date it
+`/api/v1` is deprecated. Its routes keep their answers, each answer carries a `Link` header
+(`rel="successor-version"`) naming the `/api/v2` route that answers for it (or `GET /api/v2` for a
+post-freeze `/api/v1` route awaiting its `/api/v2` route), and a deployment ends it on a date it
 sets, after which every `/api/v1` path answers `410 API_V1_ENDED`
 ([HTTP API v1](/legion/dispatch/reference/api-v1/)). The `dispatch` command still calls `/api/v1`
 at that release, and names itself and its release in its `User-Agent`

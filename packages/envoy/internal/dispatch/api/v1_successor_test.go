@@ -26,11 +26,12 @@ func unfilledLinkOf(route string) string {
 	return `</api/v2>; rel="successor-version"; title="` + route + `"`
 }
 
-// Every /api/v1 answer links the /api/v2 route that answers for it (R3.1): its path filled from
-// the request's own path values, the successor's query where the v1 route became a filter of it
-// (row 87), a binding's literal and the v1 value it names, a both-version row's own /api/v2 path,
-// and the index's /api/v2; whether the answer is a success or a refusal, a route whose link needs
-// nothing its handler resolves links its route. No /api/v2 answer carries a Link.
+// Every /api/v1 answer links the /api/v2 route that answers for it (R3.1), or GET /api/v2 for a
+// post-freeze route on the awaiting list (TestARouteAwaitingItsV2RouteLinksV2): its path filled
+// from the request's own path values, the successor's query where the v1 route became a filter of
+// it (row 87), a binding's literal and the v1 value it names, a both-version row's own /api/v2
+// path, and the index's /api/v2; whether the answer is a success or a refusal, a route whose link
+// needs nothing its handler resolves links its route. No /api/v2 answer carries a Link.
 func TestAV1AnswerLinksTheV2RouteThatAnswersForIt(t *testing.T) {
 	handler := newTestHandler(t)
 	key := createTestIssue(t, handler, "LINK", "Linked")

@@ -87,7 +87,7 @@ func v1OnlyRowsOutside(rows []routeDecl, frozen map[string]bool) []string {
 }
 
 // v1Declarations is every route file's declaration but a test hook's: the routes /api/v1 alone
-// serves, each naming its Successor, by pattern and then method.
+// serves, each naming its Successor except those on v1AwaitingV2List, by pattern and then method.
 func v1Declarations() []routeDecl {
 	declared := slices.SortedFunc(slices.Values(routeRegistry), byPatternThenMethod)
 	return slices.DeleteFunc(declared, func(route routeDecl) bool { return route.TestHook })

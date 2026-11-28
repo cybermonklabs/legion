@@ -1,10 +1,12 @@
 # The frozen list of the routes /api/v1 alone serves: every route file's declaration that is no
 # test hook (route_api_v1_<path>+<method>.go, declareRoute), one `METHOD path` a line, sorted by
 # path then method as `envoy-dispatch routes` lists them. Each names its /api/v2 route in its
-# Successor, but a route v1-awaiting-v2-routes.txt holds; every route added after /api/v2 began
-# is served in both versions by one declaration (a routeRow), so
-# TestAV1OnlyRowOutsideTheFrozenListFails refuses a route /api/v1 alone serves that this list does
-# not hold, and a line no route file declares.
+# Successor, but a route v1-awaiting-v2-routes.txt holds. Once /api/v2's change merges, a route
+# added is served in both versions by one declaration (a routeRow), while each route another pull
+# request merged into main before /api/v2's change merged stands in this list (one merged after
+# /api/v2's freeze in v1-awaiting-v2-routes.txt too), so TestAV1OnlyRowOutsideTheFrozenListFails
+# refuses a route /api/v1 alone serves that this list does not hold, and a line no route file
+# declares.
 #
 # It holds the 184 rows of c8a44f97's testdata/routes.txt that are no rows of the INFRA-979 tree
 # (those five are rows marked OfINFRA979, served in both versions), less the two a pull request merged

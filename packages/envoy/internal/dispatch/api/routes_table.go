@@ -201,9 +201,12 @@ var (
 // and that file holds one declaration, `var _ = declareRoute(routeDecl{...})` for /api/v1 or
 // `var _ = declareRow(func(s *server) routeRow { ... })` for /api/v2, whose fields are every fact
 // Dispatch knows of the route: two changes that add different routes touch no file in common.
-// routeDecl is a /api/v1 route as /api/v2 began, each naming the /api/v2 route that answers it
-// (Successor): add a route as a routeRow in a row file route_api_v2_<path>+<method>.go holding
-// one declareRow, never as a routeDecl file and never as a mux.HandleFunc line (routes()).
+// routeDecl is a /api/v1 route as /api/v2 began, or one another pull request merged into main
+// before /api/v2 merged, each naming the /api/v2 route that answers it (Successor) but a route a
+// merge on main added after /api/v2's freeze, which testdata/v1-awaiting-v2-routes.txt holds: it
+// names none until its /api/v2 route lands (Successor). Add a route as a routeRow in a row file
+// route_api_v2_<path>+<method>.go holding one declareRow, never as a routeDecl file and never as
+// a mux.HandleFunc line (routes()).
 type routeDecl struct {
 	Method      string
 	Pattern     string

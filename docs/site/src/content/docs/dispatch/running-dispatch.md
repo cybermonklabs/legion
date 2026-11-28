@@ -858,7 +858,9 @@ the same list.
 `/api/v1` is deprecated. `GET /api/v1` and the
 [HTTP API v1 reference](/legion/dispatch/reference/api-v1/) list its routes, which keep the
 answers they had, and from that release on each answer carries a `Deprecation` header and a
-`Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it. At that
+`Link` header (`rel="successor-version"`) naming the `/api/v2` route that answers for it, or
+`GET /api/v2` for a `/api/v1` route added on `main` after `/api/v2`'s freeze until its `/api/v2`
+route lands (`GET` and `POST /api/v1/projects/{key}/results` at that release). At that
 release the `dispatch` command, the Oh My Pi and Claude Code plugins, the Legion daemon and the
 Secrets Broker still call `/api/v1`. Each names itself and its release in its `User-Agent`
 (`dispatch/<version> (<plugin>)`, `pi-envoy/<version>`, `pi-legion/<version>`,

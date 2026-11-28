@@ -5,7 +5,8 @@ package api
 // mounted around every /api/v1 route (routeHandler), sets when the answer's status is written.
 // The route's Successor names the /api/v2 route, and its path is filled from the request's own
 // path values, with the successor's query where the /api/v1 route became a filter of it
-// (successor, routes_versions.go).
+// (successor, routes_versions.go); a post-freeze route on testdata/v1-awaiting-v2-routes.txt
+// names no Successor and links GET /api/v2 until its /api/v2 route lands (newSuccessorLink).
 //
 // Rows 6, 17, 89, 91, 92, 161, 164 and 165 of the route map name a /api/v2 route whose path holds
 // a value the v1 request does not carry - the artifact a slug names, the issue a document belongs

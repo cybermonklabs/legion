@@ -41,17 +41,21 @@ import (
 )
 
 // routeVersions is which versions of the API serve a routeRow. Its zero value is both. A route
-// only /api/v1 serves is no routeRow: it is a route file's declaration, which names its successor,
-// and the frozen list testdata/v1-only-routes.txt holds it
-// (TestAV1OnlyRowOutsideTheFrozenListFails).
+// only /api/v1 serves is no routeRow: it is a route file's declaration, which names its successor
+// unless testdata/v1-awaiting-v2-routes.txt holds it (a route a merge on main added after
+// /api/v2's freeze, which names none until its /api/v2 route lands), and the frozen list
+// testdata/v1-only-routes.txt holds it (TestAV1OnlyRowOutsideTheFrozenListFails).
 type routeVersions int
 
 const (
 	// bothVersions serves the row at /api/v1<Pattern> and at /api/v2<Pattern>.
 	bothVersions routeVersions = iota
 	// onlyV2 serves the row at /api/v2<Pattern> alone: a route of the new shape, which answers
-	// what the /api/v1 routes that name it as their Successor answered, while those rows keep their own
-	// answer at /api/v1. A row with no older /api/v1 answer takes the zero value instead.
+	// what a /api/v1 route answered, or a part of it, while that route keeps its own answer at
+	// /api/v1, whether or not it names this row as its Successor. Such a row can share its path
+	// with that route: GET /api/v2/issues/{key}/steps lists the runs GET /api/v1/issues/{key}/steps
+	// answers, which names GET /api/v2/issues/{key}/step-tasks, and serving the row at /api/v1 too
+	// would collide with it. A row with no older /api/v1 answer takes the zero value instead.
 	onlyV2
 )
 

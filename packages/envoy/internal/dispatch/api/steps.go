@@ -23,8 +23,9 @@ import (
 // Legion daemon writes twice, at the run's start and at its end, under one
 // id it derives for the run (PUT /api/v1/issues/{key}/steps/{id}, and PUT
 // /api/v2/issues/{key}/steps/{id}), and which every reader of the project reads (GET
-// /api/v1/issues/{key}/steps, and GET /api/v2/issues/{key}/steps). A retro's record also takes the
-// rating the agent that did the retro gave the plan, and its reason, through a route of its own
+// /api/v1/issues/{key}/steps, GET /api/v2/issues/{key}/step-tasks for each task with its needs
+// and planned steps, and GET /api/v2/issues/{key}/steps for the flattened runs). A retro's record
+// also takes the rating the agent that did the retro gave the plan, and its reason, through a route of its own
 // (PUT /api/v1/issues/{key}/steps/{id}/rating, and PUT /api/v2/issues/{key}/steps/{id}/rating),
 // and the record of a run of an issue that a draw put in an experiment takes the experiment and
 // the variant drawn through another (PUT /api/v1/issues/{key}/steps/{id}/experiment, and PUT

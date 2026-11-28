@@ -306,7 +306,7 @@ function renderV2(routes: RouteV2[]): string {
 
 function renderV1(routes: Route[]): string {
   return [
-    `\`/api/v1\` is deprecated. [HTTP API](/legion/dispatch/reference/api/) lists the \`/api/v2\` routes that replace it, which Dispatch serves from ${V2_FIRST_RELEASE}. From that release on, each \`/api/v1\` answer carries a \`Deprecation\` header (RFC 9745) and a \`Link\` header with \`rel="successor-version"\` that names the \`/api/v2\` route answering for it.`,
+    `\`/api/v1\` is deprecated. [HTTP API](/legion/dispatch/reference/api/) lists the \`/api/v2\` routes that replace it, which Dispatch serves from ${V2_FIRST_RELEASE}. From that release on, each \`/api/v1\` answer carries a \`Deprecation\` header (RFC 9745) and a \`Link\` header with \`rel="successor-version"\` that names the \`/api/v2\` route answering for it, or \`GET /api/v2\` for a post-freeze \`/api/v1\` route awaiting its \`/api/v2\` route.`,
     "",
     "A deployment ends `/api/v1` at an instant it sets: `DISPATCH_API_V1_END` on the server, which the `gcp:Dispatch` component's `apiV1End` input sets. While that instant is ahead, each `/api/v1` answer carries a `Sunset` header (RFC 8594) naming it. Once it has passed, every path under `/api/v1` answers `410 API_V1_ENDED` and points to `GET /api/v2`. With the setting unset, `/api/v1` has no end.",
     "",
