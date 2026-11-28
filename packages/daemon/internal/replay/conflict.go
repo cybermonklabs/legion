@@ -27,17 +27,20 @@ import (
 // R2; the fixture windows' README, "Conflicts"): one visit of the issue to the phases from testing
 // to merging, from its move into testing to the move that ends the visit — its merge, a conflict or
 // another move back. Phase is the phase of a stretch it ended in, the phase of the last visit of it
-// that a hold did not stand in. Merges is M, the first-parent commits of the issue's base branch
-// (the window's merges) strictly after Start and strictly before End but the issue's own merge —
-// the commit whose pull request (Merge.PR) is the one the issue's Dispatch events link
-// (IssueTrace.LinkedPullRequests) — and Conflict says a recorded conflict move ended it.
-// OwnMergeUnknown says M holds a commit that may be the issue's own merge: the issue links no pull
-// request of its repository, or a commit inside the stretch names none. Boot says a daemon's boot
-// read the pull requests inside the stretch (bootRead after Start and at or before End), where a
-// replay draws the stretch at that boot (driver.bootConflicts): M is then counted to that read, the
-// moment of the draw. Part is the release part of the window its End falls in, numbered from 1
-// (partAt), for a stretch that ends in merging, and 0 for any other. It is one observation of the
-// conflict model (FitConflicts).
+// that a hold did not stand in. Merges is M, counted at the stretch's draw, the moment a replay
+// draws it (Boot, else End): the first-parent commits of the issue's base branch (the window's
+// merges) strictly after Start and strictly before that moment but the issue's own merge — the
+// commit whose pull request (Merge.PR) is the one the issue's Dispatch events link
+// (IssueTrace.LinkedPullRequests) — and, for a stretch of a repository with git input whose head
+// has a profile, its touching merges at that moment (windowConflicts). Conflict says a recorded
+// conflict move ended it. OwnMergeUnknown says M holds a commit that may be the issue's own merge:
+// the issue links no pull request of its repository, or a commit inside the stretch names none.
+// Boot says a daemon's boot read the pull requests inside the stretch (bootRead after Start and at
+// or before End), where a replay draws the stretch at that boot (driver.bootConflicts): M is then
+// counted to that read, the moment of the draw. Part is the release part of the window its End
+// falls in, numbered from 1 (partAt), for a stretch that ends in merging, and 0 for any other; the
+// fit cuts each part's into pieces by the day of their End (mergingPieces). It is one observation
+// of the conflict model (FitConflicts).
 type Stretch struct {
 	Issue           string      `json:"issue"`
 	Phase           phase.Phase `json:"phase"`
@@ -235,10 +238,15 @@ func (iss *IssueTrace) mergerMergedForward(from, to time.Time) bool {
 // the window's start and end before its end, with M counted from merges, and that span. A
 // stretch that starts in the reach before the window is left out: the reach may have run another
 // release, and one with no conflict trigger records a conflict as another move back, so each of
-// its stretches would enter the fit as one without a conflict. A stretch that a daemon's boot read
-// the pull requests inside (bootRead, assumption 3) spans that boot, its M counted to the first such
-// read, where a replay draws it (driver.bootConflicts); and a stretch that ends in merging is of the
-// release part its end falls in (partAt).
+// its stretches would enter the fit as one without a conflict. M is counted at the moment a replay
+// draws the stretch, as the draw counts it (driver.drawAt): a stretch that a daemon's boot read the
+// pull requests inside (bootRead, assumption 3) spans that boot and draws at the first such read
+// (driver.bootConflicts), so its M, and the head whose profile it counts by, are those of that
+// read; any other draws at its end. A stretch that ends in merging is of the release part its end
+// falls in (partAt). With git input, the model is fitted on the stretches whose head has a profile
+// and a touching merge; a stretch whose head has no profile is fitted apart (NoProfile), with M
+// every commit since its start, as a draw with no profile counts it (assumption 52); and one with a
+// profile and no touching merge is left out, since it draws no conflict, and counted.
 func windowConflicts(t Trace, merges baseMerges) ConflictModel {
 	inside := slices.DeleteFunc(recordedStretches(t, merges), func(s Stretch) bool {
 		return s.Start.Before(t.From) || !s.End.Before(t.To)
@@ -248,32 +256,33 @@ func windowConflicts(t Trace, merges baseMerges) ConflictModel {
 		reads = append(reads, bootRead(boot))
 	}
 	slices.SortFunc(reads, time.Time.Compare)
-	var noProfile, noTouch, noTouchConflict, pathsUnknown int
+	var noTouch, noTouchConflict, pathsUnknown int
 	legacy := map[string]bool{}
 	for _, iss := range t.Issues {
 		if iss.Project == t.Project && iss.Repo != "" && merges.git[strings.ToLower(iss.Repo)] == nil {
 			legacy[iss.Repo] = true
 		}
 	}
-	var profiled []Stretch
+	var profiled, unprofiled []Stretch
 	for i := range inside {
 		s := &inside[i]
 		iss := t.Issues[s.Issue]
 		if s.Phase == phase.Merging {
 			s.Part = partAt(t.Parts, s.End)
 		}
+		drawn := s.End
 		if b := sort.Search(len(reads), func(b int) bool { return reads[b].After(s.Start) }); b < len(reads) && !reads[b].After(s.End) {
-			s.Boot = true
-			s.Merges, s.OwnMergeUnknown = merges.between(iss.Repo, ownPullRequest(iss), s.Start, reads[b])
+			s.Boot, drawn = true, reads[b]
+			s.Merges, s.OwnMergeUnknown = merges.between(iss.Repo, ownPullRequest(iss), s.Start, drawn)
 		}
 		r := merges.git[strings.ToLower(iss.Repo)]
 		if r == nil {
 			continue
 		}
-		count, profile, unknown := r.recordedM(recordedPR(iss), s.End)
+		count, profile, unknown := r.recordedM(recordedPR(iss), drawn)
 		switch {
 		case !profile:
-			noProfile++
+			unprofiled = append(unprofiled, *s)
 		case count == 0:
 			noTouch++
 			if s.Conflict {
@@ -300,7 +309,9 @@ func windowConflicts(t Trace, merges baseMerges) ConflictModel {
 	}
 	m := fit(profiled)
 	m.GitRepositories = slices.Sorted(maps.Keys(merges.git))
-	m.NoProfileStretches, m.NoTouchStretches, m.NoTouchConflicts, m.PathsUnknown = noProfile, noTouch, noTouchConflict, pathsUnknown
+	m.NoTouchStretches, m.NoTouchConflicts, m.PathsUnknown = noTouch, noTouchConflict, pathsUnknown
+	noProfile := fit(unprofiled)
+	m.NoProfile = &noProfile
 	if len(legacy) > 0 {
 		fallback := fit(inside)
 		fallback.NoGitRepositories = slices.Sorted(maps.Keys(legacy))
@@ -431,31 +442,104 @@ type PhaseFit struct {
 	BootTerm      *Coefficient `json:"bootTerm,omitempty"`
 }
 
-// PartFit is the conflict model's reading of the stretches that end in merging in one release part
-// of the window (Stretch.Part): how many of them the model was fitted on, how many ended in a
-// conflict, and the part's term beside the base, nil for the first part that holds such a stretch,
-// which the base stands for, and for a part that takes no term (partTermed). A release that posts
-// the merger's conflicts records each as a conflict, and one that does not records it as another
-// send-back, so the rate of merging is the part's own (assumption 3).
-type PartFit struct {
+// PieceFit is the conflict model's reading of one piece of the stretches that end in merging in a
+// release part of the window (Stretch.Part), the part's stretches cut by the UTC day of their end
+// (mergingPieces): its part's number, the start of its first day, how many of its stretches the
+// model was fitted on, how many ended in a conflict, and the piece's term beside the base, nil for
+// the first piece of the first part that holds such a stretch, which the base stands for, and for a
+// piece that takes no term (pieceTermed). A release that posts the merger's conflicts records each
+// as a conflict, and one that does not records it as another send-back, so the rate of merging is
+// the part's own; and within a part it follows the record from day to day (assumption 3).
+type PieceFit struct {
+	Part      int          `json:"part"`
+	From      time.Time    `json:"from"`
 	Stretches int          `json:"stretches"`
 	Conflicts int          `json:"conflicts"`
 	Term      *Coefficient `json:"term,omitempty"`
+}
+
+// The least stretches a piece of a part's stretches that end in merging holds (mergingPieces), and
+// the least conflicts and stretches without one each among them, so that no piece's rate is read
+// from a handful of stretches.
+const (
+	pieceStretches = 20
+	pieceOutcomes  = 5
+)
+
+// mergingPieces cuts the stretches that end in merging of each release part (Stretch.Part) into
+// pieces by the UTC day their end falls on, in the order of the parts and then of the days: a piece
+// takes day after day until it holds pieceStretches stretches, pieceOutcomes of them conflicts and
+// pieceOutcomes without one, and the next day begins the next piece; a part's last piece that falls
+// short joins the piece before it in the part. So a part is one piece where its stretches are too
+// few to cut, and each piece's rate is the record's own over its days. It answers the pieces, their
+// counts and From, and the piece of each of stretches by its place in them, -1 for one of no part
+// or that does not end in merging.
+func mergingPieces(stretches []Stretch) ([]PieceFit, []int) {
+	of := make([]int, len(stretches))
+	var merging []int
+	for i, s := range stretches {
+		of[i] = -1
+		if s.Phase == conflictBasePhase && s.Part > 0 {
+			merging = append(merging, i)
+		}
+	}
+	slices.SortStableFunc(merging, func(a, b int) int {
+		return cmp.Or(cmp.Compare(stretches[a].Part, stretches[b].Part), stretches[a].End.Compare(stretches[b].End))
+	})
+	dayOf := func(at time.Time) time.Time {
+		at = at.UTC()
+		return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
+	}
+	full := func(p PieceFit) bool {
+		return p.Stretches >= pieceStretches && p.Conflicts >= pieceOutcomes && p.Stretches-p.Conflicts >= pieceOutcomes
+	}
+	var pieces []PieceFit
+	first := 0 // the first piece of the part being cut
+	for k, i := range merging {
+		s := stretches[i]
+		last := len(pieces) - 1
+		switch day := dayOf(s.End); {
+		case last < 0 || pieces[last].Part != s.Part:
+			pieces, first = append(pieces, PieceFit{Part: s.Part, From: day}), len(pieces)
+		case day.After(dayOf(stretches[merging[k-1]].End)) && full(pieces[last]):
+			pieces = append(pieces, PieceFit{Part: s.Part, From: day})
+		}
+		last = len(pieces) - 1
+		pieces[last].Stretches++
+		if s.Conflict {
+			pieces[last].Conflicts++
+		}
+		of[i] = last
+		if next := k + 1; next == len(merging) || stretches[merging[next]].Part != s.Part {
+			if last > first && !full(pieces[last]) {
+				pieces[last-1].Stretches += pieces[last].Stretches
+				pieces[last-1].Conflicts += pieces[last].Conflicts
+				pieces = pieces[:last]
+				for _, j := range merging[:next] {
+					if of[j] == last {
+						of[j] = last - 1
+					}
+				}
+			}
+		}
+	}
+	return pieces, of
 }
 
 // ConflictModel is the chance that a stretch of an issue's work ends in a conflict, fitted on the
 // recorded stretches inside a window (windowConflicts; spec R2; plan D3: only window one records
 // conflict moves, so only it fits a chance above zero; plan D7): logistic(Base + P + R + B + Term ×
 // log2(1 + M)), P the term of the phase the stretch ends in, R, for a stretch that ends in merging,
-// the term of the release part its end falls in, B, for a stretch that spans a boot, the boot term
-// of its phase, and M the merges into the stretch's base branch during it, to the boot for a
-// stretch drawn there, the coefficients fitted together by maximum likelihood with their intervals.
-// The base stands for the stretches that end in merging in the first release part that holds any
-// (conflictBasePhase), spanning no boot, and in each phase that takes no term (termedPhases), for
-// which P is zero. A rule moves the chance through the merges term alone, since every stretch ends
-// in the phase the record shows it ending in, at the moment of the record's part and boots the replay
-// reaches it at. A window that records no conflict fits a chance of 0 for every stretch, and one
-// whose every stretch conflicted a chance of 1, without a fit.
+// the term of the piece of the release part its end falls in (mergingPieces), B, for a stretch that
+// spans a boot, the boot term of its phase, and M the merges into the stretch's base branch during
+// it, to the boot for a stretch drawn there, the coefficients fitted together by maximum likelihood
+// with their intervals. The base stands for the stretches that end in merging in the first piece of
+// the first release part that holds any (conflictBasePhase), spanning no boot, and in each phase
+// that takes no term (termedPhases), for which P is zero. A rule moves the chance through the
+// merges term alone, since every stretch ends in the phase the record shows it ending in, at the
+// moment of the record's part, piece and boots the replay reaches it at. A window that records no
+// conflict fits a chance of 0 for every stretch, and one whose every stretch conflicted a chance of
+// 1, without a fit.
 type ConflictModel struct {
 	// From and To are the span of the window the model was fitted on: each of its stretches began
 	// at or after From and ended before To. Both are zero for a fit of stretches no window gave.
@@ -471,26 +555,30 @@ type ConflictModel struct {
 	Term   Coefficient              `json:"term"`
 	Phases map[phase.Phase]PhaseFit `json:"phases"`
 	// Parts is the window's release parts, by which a stretch that ends in merging takes its part
-	// (partAt), and MergingParts the reading of each part's stretches that end in merging, by the
-	// part's number from 1; a part that holds none is not in it.
-	Parts        []Part          `json:"parts,omitempty"`
-	MergingParts map[int]PartFit `json:"mergingParts,omitempty"`
+	// (partAt), and MergingPieces the reading of each piece of each part's stretches that end in
+	// merging (mergingPieces), by part and then day; a part that holds none has no piece.
+	Parts         []Part     `json:"parts,omitempty"`
+	MergingPieces []PieceFit `json:"mergingPieces,omitempty"`
 	// Level is the level of the coefficients' intervals.
 	Level float64 `json:"level"`
 	// OwnMergeUnknown is how many of the stretches the model was fitted on, and DrawnOwnMergeUnknown
 	// how many of the stretches a replay drew by it, counted a commit in M that may be the issue's
 	// own merge (Stretch.OwnMergeUnknown): the issue's own pull request or the commit's unknown.
-	OwnMergeUnknown      int            `json:"ownMergeUnknown"`
-	DrawnOwnMergeUnknown int            `json:"drawnOwnMergeUnknown"`
-	NoGitRepositories    []string       `json:"noGitRepositories,omitempty"`
-	NoProfileStretches   int            `json:"noProfileStretches"`
-	NoTouchStretches     int            `json:"noTouchStretches"`
-	NoTouchConflicts     int            `json:"noTouchConflicts"`
-	NoProfileDraws       int            `json:"noProfileDraws"`
-	GitRepositories      []string       `json:"gitRepositories,omitempty"`
-	Legacy               *ConflictModel `json:"legacy,omitempty"`
-	PathsUnknown         int            `json:"pathsUnknown"`
-	DrawnPathsUnknown    int            `json:"drawnPathsUnknown"`
+	OwnMergeUnknown      int      `json:"ownMergeUnknown"`
+	DrawnOwnMergeUnknown int      `json:"drawnOwnMergeUnknown"`
+	NoGitRepositories    []string `json:"noGitRepositories,omitempty"`
+	NoTouchStretches     int      `json:"noTouchStretches"`
+	NoTouchConflicts     int      `json:"noTouchConflicts"`
+	NoProfileDraws       int      `json:"noProfileDraws"`
+	GitRepositories      []string `json:"gitRepositories,omitempty"`
+	// NoProfile is the model of a window with git input fitted on its stretches whose head has no
+	// profile, with M every commit of the base since the stretch's start, by which a draw with no
+	// profile draws (driver.profileM, assumption 52); nil for a model of such stretches or of a window
+	// with no git input.
+	NoProfile         *ConflictModel `json:"noProfile,omitempty"`
+	Legacy            *ConflictModel `json:"legacy,omitempty"`
+	PathsUnknown      int            `json:"pathsUnknown"`
+	DrawnPathsUnknown int            `json:"drawnPathsUnknown"`
 }
 
 // fitted says whether the model's coefficients were fitted: some stretch conflicted and some did
@@ -498,16 +586,17 @@ type ConflictModel struct {
 func (m ConflictModel) fitted() bool { return m.Conflicts > 0 && m.Conflicts < m.Stretches }
 
 // Chance is the chance that a stretch that ends in in, with merges merges into its base branch,
-// ends in a conflict, spanning no boot and, where it ends in merging, in the first release part,
-// which the base stands for. A phase the model holds no term of draws at the base.
+// ends in a conflict, spanning no boot and, where it ends in merging, in the first piece of the
+// first release part, which the base stands for. A phase the model holds no term of draws at the
+// base.
 func (m ConflictModel) Chance(in phase.Phase, merges int) float64 {
 	return m.chanceAt(in, merges, time.Time{}, false)
 }
 
 // chanceAt is the chance that a stretch that ends in in, with merges merges into its base branch,
-// draws at at: where it ends in merging, with the term of the release part at falls in (partAt), at
-// the base's part for a zero at; and with the boot term of its phase where boot says the draw is a
-// boot's (driver.bootConflicts), which reads no boot after at.
+// draws at at: where it ends in merging, with the term of the piece of the release part at falls in
+// (pieceAt), at the base's for a zero at; and with the boot term of its phase where boot says the
+// draw is a boot's (driver.bootConflicts), which reads no boot after at.
 func (m ConflictModel) chanceAt(in phase.Phase, merges int, at time.Time, boot bool) float64 {
 	switch {
 	case m.Conflicts == 0:
@@ -520,8 +609,8 @@ func (m ConflictModel) chanceAt(in phase.Phase, merges int, at time.Time, boot b
 	if fit.Term != nil {
 		eta += fit.Term.Estimate
 	}
-	if term := m.MergingParts[partAt(m.Parts, at)].Term; in == phase.Merging && !at.IsZero() && term != nil {
-		eta += term.Estimate
+	if piece := m.pieceAt(at); in == phase.Merging && !at.IsZero() && piece >= 0 && m.MergingPieces[piece].Term != nil {
+		eta += m.MergingPieces[piece].Term.Estimate
 	}
 	if boot && fit.BootTerm != nil {
 		eta += fit.BootTerm.Estimate
@@ -530,15 +619,34 @@ func (m ConflictModel) chanceAt(in phase.Phase, merges int, at time.Time, boot b
 	return logistic(eta)
 }
 
-// String is the model as a run prints it: the span and the stretches and conflicts it was fitted
-// on, each coefficient with its interval and the stretches of each phase and part (terms), and the
-// stretches whose M may hold their own merge.
-func (m ConflictModel) canDrawConflict() bool {
-	return m.Conflicts > 0 || m.Legacy != nil && m.Legacy.Conflicts > 0
+// pieceAt is the place in MergingPieces of the piece at falls in: of the release part at falls in
+// (partAt), the last piece whose first day begins at or before at, or the part's first where at
+// comes before them all; -1 where the part holds no piece.
+func (m ConflictModel) pieceAt(at time.Time) int {
+	part, found := partAt(m.Parts, at), -1
+	for i, piece := range m.MergingPieces {
+		if piece.Part == part && (found < 0 || !at.Before(piece.From)) {
+			found = i
+		}
+	}
+	return found
 }
 
+// canDrawConflict says whether a draw by the model can make a conflict: whether its fit, or the fit
+// of the stretches with no profile or the legacy fit beside it, holds one.
+func (m ConflictModel) canDrawConflict() bool {
+	return m.Conflicts > 0 || m.NoProfile != nil && m.NoProfile.Conflicts > 0 || m.Legacy != nil && m.Legacy.Conflicts > 0
+}
+
+// String is the model as a run prints it: the span and the stretches and conflicts it was fitted
+// on, each coefficient with its interval and the stretches of each phase and piece (terms), and the
+// stretches whose M may hold their own merge; then the fit of the stretches with no profile and the
+// legacy fit, where the model holds them.
 func (m ConflictModel) String() string {
 	text := m.fitText()
+	if m.NoProfile != nil {
+		text += ". Fit of the stretches without a profile: " + m.NoProfile.fitText()
+	}
 	if m.Legacy != nil {
 		text += ". Legacy fit: " + m.Legacy.fitText()
 	}
@@ -556,9 +664,9 @@ func (m ConflictModel) fitText() string {
 		unknown += "; touching merges in " + strings.Join(m.GitRepositories, ", ")
 		unknown += fmt.Sprintf("; %d fitted stretches and %d draws held a commit without a path list", m.PathsUnknown, m.DrawnPathsUnknown)
 	}
-	if m.NoProfileStretches+m.NoTouchStretches+m.NoProfileDraws > 0 {
-		unknown += fmt.Sprintf("; fit excludes %d stretches without a profile and %d without touching merges (%d recorded conflicts); %d draws without a profile",
-			m.NoProfileStretches, m.NoTouchStretches, m.NoTouchConflicts, m.NoProfileDraws)
+	if m.NoTouchStretches+m.NoProfileDraws > 0 {
+		unknown += fmt.Sprintf("; fit excludes %d stretches without touching merges (%d recorded conflicts); %d draws without a profile",
+			m.NoTouchStretches, m.NoTouchConflicts, m.NoProfileDraws)
 	}
 	switch {
 	case m.Stretches == 0:
@@ -575,9 +683,9 @@ func (m ConflictModel) fitText() string {
 // at the model's level: the base, with its phase and the stretches and conflicts of that phase;
 // each other phase's term, with the stretches and conflicts of that phase; each phase's term for a
 // stretch that spans a boot, with those of its stretches, where any spanned one; the term of each
-// release part of the window for the stretches that end in merging, with that part's stretches and
-// conflicts and the chance a stretch that ends in merging in that part draws at M = 0 with no boot;
-// and the merges term, with the odds ratio per doubling of 1 + M.
+// piece of each release part of the window for the stretches that end in merging, with its first
+// day and its stretches and conflicts and the chance a stretch that ends in merging in that piece
+// draws at M = 0 with no boot; and the merges term, with the odds ratio per doubling of 1 + M.
 func (m ConflictModel) terms() string {
 	interval := func(c Coefficient, scale func(float64) float64) string {
 		return fmt.Sprintf("%.4g [%s, %s]", scale(c.Estimate), endText(scale(c.Low)), endText(scale(c.High)))
@@ -602,11 +710,15 @@ func (m ConflictModel) terms() string {
 				fit.BootConflicts)
 		}
 	}
-	for i, part := range m.Parts {
-		if fit, held := m.MergingParts[i+1]; held {
-			fmt.Fprintf(&text, ", %s in part %d (%s) term %s (stretches %d, conflicts %d, a chance of %.4g at M = 0)", conflictBasePhase, i+1,
-				part.Release, optional(fit.Term), fit.Stretches, fit.Conflicts, m.chanceAt(conflictBasePhase, 0, part.From, false))
+	for _, piece := range m.MergingPieces {
+		release, at := "", piece.From
+		if piece.Part <= len(m.Parts) {
+			part := m.Parts[piece.Part-1]
+			release, at = part.Release, maxTime(at, part.From)
 		}
+		fmt.Fprintf(&text, ", %s in part %d (%s) from %s term %s (stretches %d, conflicts %d, a chance of %.4g at M = 0)", conflictBasePhase,
+			piece.Part, release, piece.From.Format(time.DateOnly), optional(piece.Term), piece.Stretches, piece.Conflicts,
+			m.chanceAt(conflictBasePhase, 0, at, false))
 	}
 	fmt.Fprintf(&text, ", merges term %s, odds ratio per doubling of 1 + M %s (%g intervals)", interval(m.Term, same),
 		interval(m.Term, math.Exp), m.Level)
@@ -643,20 +755,21 @@ func log1pExp(x float64) float64 {
 
 // FitConflicts fits the conflict model to stretches by maximum likelihood: Newton-Raphson on the
 // base, the merges term, the term of each phase that takes one (termedPhases), the term of each
-// release part that takes one for the stretches that end in merging (partTermed) and the boot term
-// of each phase that takes one (bootTermed), together, with step halving, from zero, until a step
-// gains less than 1e-12 of log-likelihood. A phase or a part takes a term of its own only where
-// both groups the term sets apart each hold a conflict and a stretch without one (mixed): the
-// phase's stretches and the base's, a later part's and the first part's, a phase's stretches that
-// span a boot and those that span none; so no such term runs off to infinity on stretches that all
-// conflicted or none did. Where the stretches separate otherwise (every conflict at a larger M than
-// every stretch without one) the likelihood rises to its supremum only at infinity, and the fit
-// stops where the fitted chances stand within 1e-9 of 0 and 1. Each coefficient's interval is its
-// Wald interval at 95% from the inverse of the observed information at the estimate, with no end
-// for a coefficient the stretches do not identify.
+// piece of a release part that takes one for the stretches that end in merging (mergingPieces,
+// pieceTermed) and the boot term of each phase that takes one (bootTermed), together, with step
+// halving, from zero, until a step gains less than 1e-12 of log-likelihood. A phase or a piece takes
+// a term of its own only where both groups the term sets apart each hold a conflict and a stretch
+// without one (mixed): the phase's stretches and the base's, a later piece's and the first piece's,
+// a phase's stretches that span a boot and those that span none; so no such term runs off to
+// infinity on stretches that all conflicted or none did. Where the stretches separate otherwise
+// (every conflict at a larger M than every stretch without one) the likelihood rises to its
+// supremum only at infinity, and the fit stops where the fitted chances stand within 1e-9 of 0 and
+// 1. Each coefficient's interval is its Wald interval at 95% from the inverse of the observed
+// information at the estimate, with no end for a coefficient the stretches do not identify.
 func FitConflicts(stretches []Stretch) ConflictModel {
-	m := ConflictModel{Stretches: len(stretches), Level: conflictLevel, Phases: make(map[phase.Phase]PhaseFit, len(conflictPhases)+1),
-		MergingParts: map[int]PartFit{}}
+	m := ConflictModel{Stretches: len(stretches), Level: conflictLevel, Phases: make(map[phase.Phase]PhaseFit, len(conflictPhases)+1)}
+	var pieceOf []int
+	m.MergingPieces, pieceOf = mergingPieces(stretches)
 	m.Phases[conflictBasePhase] = PhaseFit{}
 	for _, in := range conflictPhases {
 		m.Phases[in] = PhaseFit{}
@@ -675,12 +788,6 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 			}
 			m.Phases[stretch.Phase] = fit
 		}
-		if stretch.Phase == conflictBasePhase && stretch.Part > 0 {
-			fit := m.MergingParts[stretch.Part]
-			fit.Stretches++
-			fit.Conflicts += conflicted
-			m.MergingParts[stretch.Part] = fit
-		}
 		m.Conflicts += conflicted
 		if stretch.OwnMergeUnknown {
 			m.OwnMergeUnknown++
@@ -690,16 +797,17 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 		return m
 	}
 	// The coefficients are the base (0), the merges term (1), and then the term of each phase that
-	// takes one, of each release part that takes one and of each phase's stretches that span a boot
-	// where it takes one; each stretch reads the base, the merges term and at most three others.
-	phaseCol, partCol, bootCol := map[phase.Phase]int{}, map[int]int{}, map[phase.Phase]int{}
+	// takes one, of each piece of a release part that takes one and of each phase's stretches that
+	// span a boot where it takes one; each stretch reads the base, the merges term and at most three
+	// others.
+	phaseCol, pieceCol, bootCol := map[phase.Phase]int{}, map[int]int{}, map[phase.Phase]int{}
 	k := 2
 	for _, in := range m.termedPhases() {
 		phaseCol[in] = k
 		k++
 	}
-	for _, part := range m.partTermed() {
-		partCol[part] = k
+	for _, piece := range m.pieceTermed() {
+		pieceCol[piece] = k
 		k++
 	}
 	for _, in := range m.bootTermed() {
@@ -721,7 +829,7 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 			r.cols[r.n] = col
 			r.n++
 		}
-		if col := partCol[stretch.Part]; stretch.Phase == conflictBasePhase && col != 0 {
+		if col := pieceCol[pieceOf[i]]; col != 0 {
 			r.cols[r.n] = col
 			r.n++
 		}
@@ -822,10 +930,9 @@ func FitConflicts(stretches []Stretch) ConflictModel {
 		fit.Term = &term
 		m.Phases[in] = fit
 	}
-	for part, col := range partCol {
-		fit, term := m.MergingParts[part], coefficient(col)
-		fit.Term = &term
-		m.MergingParts[part] = fit
+	for piece, col := range pieceCol {
+		term := coefficient(col)
+		m.MergingPieces[piece].Term = &term
 	}
 	for in, col := range bootCol {
 		fit, term := m.Phases[in], coefficient(col)
@@ -856,20 +963,19 @@ func (m ConflictModel) termedPhases() []phase.Phase {
 	return termed
 }
 
-// partTermed is the release parts that take a term of their own in the fit for the stretches that
-// end in merging (PartFit), in their order: each after the first part that holds such a stretch,
-// whose stretches hold a conflict and a stretch without one, where the first part's do too, so each
-// part's rate is known apart from the other's. The stretches of a part that takes no term draw at
-// the first part's rate, which the base stands for.
-func (m ConflictModel) partTermed() []int {
-	parts := slices.Sorted(maps.Keys(m.MergingParts))
-	if len(parts) < 2 || !mixed(m.MergingParts[parts[0]].Stretches, m.MergingParts[parts[0]].Conflicts) {
+// pieceTermed is the places in MergingPieces of the pieces that take a term of their own in the fit
+// for the stretches that end in merging, in their order: each after the first piece of the first
+// part that holds such a stretch, whose stretches hold a conflict and a stretch without one, where
+// the first piece's do too, so each piece's rate is known apart from the other's. The stretches of
+// a piece that takes no term draw at the first piece's rate, which the base stands for.
+func (m ConflictModel) pieceTermed() []int {
+	if len(m.MergingPieces) < 2 || !mixed(m.MergingPieces[0].Stretches, m.MergingPieces[0].Conflicts) {
 		return nil
 	}
 	var termed []int
-	for _, part := range parts[1:] {
-		if fit := m.MergingParts[part]; mixed(fit.Stretches, fit.Conflicts) {
-			termed = append(termed, part)
+	for i, piece := range m.MergingPieces[1:] {
+		if mixed(piece.Stretches, piece.Conflicts) {
+			termed = append(termed, i+1)
 		}
 	}
 	return termed
@@ -1252,16 +1358,19 @@ func (d *driver) nextDraw(p *piece) stretchDraw {
 // the merges into the issue's base branch strictly after start and strictly before at but the
 // issue's own merge, a draw u, seeded by the run's seed and the stretch's place (seedDraw), makes a
 // conflict where u is below the model's chance at at in p's phase, the phase the record shows the
-// stretch ending in, at M (ConflictModel.chanceAt): with the term of the release part at falls in
-// for a stretch that ends in merging, and the boot term of that phase for a boot's draw. A draw
-// reads no boot after at. A stretch whose M may hold its own merge is counted
-// (ConflictModel.DrawnOwnMergeUnknown). It answers the draw, which its caller keeps (recordDraw).
+// stretch ending in, at M (ConflictModel.chanceAt): with the term of the piece of the release part
+// at falls in for a stretch that ends in merging, and the boot term of that phase for a boot's
+// draw. A draw reads no boot after at. With git input, M is the touching merges of the head's
+// profile (profileM), and a stretch whose head has no profile draws by the fit of the window's
+// stretches with none, at M every commit since start (ConflictModel.NoProfile, assumption 52). A
+// stretch whose M may hold its own merge is counted (ConflictModel.DrawnOwnMergeUnknown). It
+// answers the draw, which its caller keeps (recordDraw).
 func (d *driver) drawAt(p *piece, start, at time.Time, boot bool, running ...*piece) conflictDraw {
 	repo, own := "", 0
 	if iss, known := d.trace.Issues[p.issue]; known {
 		repo, own = iss.Repo, ownPullRequest(iss)
 	}
-	merges, unknown := 0, false
+	merges, unknown, profiled := 0, false, true
 	r := d.merges.git[strings.ToLower(repo)]
 	if r != nil {
 		reading, rec := p, p.end
@@ -1271,7 +1380,7 @@ func (d *driver) drawAt(p *piece, start, at time.Time, boot bool, running ...*pi
 		} else if move := p.move(); move != nil {
 			rec = move.At
 		}
-		merges = d.profileM(reading, r, repo, recordedPR(d.trace.Issues[p.issue]), start, at, rec)
+		merges, profiled = d.profileM(reading, r, repo, recordedPR(d.trace.Issues[p.issue]), start, at, rec)
 	} else {
 		merges, unknown = d.merges.between(repo, own, start, at)
 	}
@@ -1286,9 +1395,15 @@ func (d *driver) drawAt(p *piece, start, at time.Time, boot bool, running ...*pi
 	d.seedDraw(place, conflictStream)
 	u := d.draws.Float64()
 	var chance float64
-	if r == nil {
+	switch {
+	case r == nil:
 		chance = model.chanceAt(p.phase, merges, at, boot)
-	} else {
+	case !profiled:
+		d.used[assumeNoProfileRate] = true
+		if fit := model.NoProfile; fit != nil {
+			chance = fit.chanceAt(p.phase, merges, at, boot)
+		}
+	default:
 		chance = model.profileChance(p.phase, merges, at, boot)
 	}
 	return conflictDraw{at: place, start: start, drawn: at, merges: merges, boot: boot, u: u, chance: chance, conflicted: u < chance}

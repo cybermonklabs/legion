@@ -1542,6 +1542,47 @@ func TestTheMergingRateIsFittedForEachReleasePart(t *testing.T) {
 	}
 }
 
+// The conflict model follows merging's rate within a release part where the record shows it moving
+// (assumption 3): it cuts each part's stretches that end in merging into pieces by the UTC day of
+// their end, a piece taking day after day until it holds at least 20 of them, 5 of them conflicts
+// and 5 without one, and a part's last piece that falls short joining the piece before it; each
+// piece takes a rate of its own, and a stretch draws at the rate of the piece of its draw's moment.
+// The test fits stretches built in code, all in one release part and all at M = 0: 20 that end in
+// merging on the first day, 5 of them conflicts; 20 on the second, 15 of them conflicts; and 5 on
+// the third, 2 of them conflicts, too few for a piece of their own, which join the second day's. A
+// stretch that ends in merging on the first day draws at 5/20 = 0.25, and one on the second or the
+// third at 17/25 = 0.68, by the fitted chance and by the driver's own draw (drawAt). It fails for
+// one rate over the part, 22/45, on every day.
+func TestTheMergingRateFollowsTheRecordWithinAPart(t *testing.T) {
+	t.Parallel()
+	dayAt := func(day, hour int) time.Time { return clock(0, 0).Add(time.Duration(24*day+hour) * time.Hour) }
+	var stretches []Stretch
+	for day, c := range []struct{ stretches, conflicts int }{{20, 5}, {20, 15}, {5, 2}} {
+		for i := range c.stretches {
+			end := dayAt(day, 1+i)
+			stretches = append(stretches, Stretch{Issue: fmt.Sprintf("ACME-%d", len(stretches)+1), Phase: phase.Merging, Start: end.Add(-30 * time.Minute),
+				End: end, Conflict: i < c.conflicts, Part: 1})
+		}
+	}
+	model := FitConflicts(stretches)
+	model.Parts = []Part{{From: dayAt(0, 0), To: dayAt(3, 0), Release: "one-release"}}
+	t.Logf("the model of the part's stretches: %s", model.terms())
+	for _, c := range []struct {
+		at   time.Time
+		want float64
+	}{{dayAt(0, 12), 0.25}, {dayAt(1, 12), 0.68}, {dayAt(2, 12), 0.68}} {
+		if got := model.chanceAt(phase.Merging, 0, c.at, false); math.Abs(got-c.want) > 1e-6 {
+			t.Errorf("a stretch that ends in merging at %s draws at a fitted chance of %.6f, want %.2f", stamp(c.at), got, c.want)
+		}
+	}
+	source := rand.NewPCG(0, 0)
+	d := driver{trace: Trace{Issues: map[string]*IssueTrace{}}, conflicts: model, drawSource: source, draws: rand.New(source),
+		stretchDraws: map[stretchDraw]int{}, lastDraw: map[string]stretchDraw{}, used: map[int]bool{}}
+	if draw := d.drawAt(&piece{issue: "ACME-46", phase: phase.Merging, start: dayAt(1, 11)}, dayAt(1, 11), dayAt(1, 12), false); math.Abs(draw.chance-0.68) > 1e-6 {
+		t.Errorf("the driver draws a stretch that ends in merging at %s at %.6f, want 0.68", stamp(dayAt(1, 12)), draw.chance)
+	}
+}
+
 // bootSpanWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5 with a cap of 20,
 // its inputs reaching back to the daemon's boot at 06:00; a daemon process stops and the next
 // starts at 10:30. Sixteen roots work 5 minutes in planning and in implementing: ACME-1 to ACME-8,
@@ -1644,6 +1685,57 @@ func TestAStretchSpanningABootDrawsThereAtItsOwnChance(t *testing.T) {
 			t.Errorf("the stretches from %s drew %d times and conflicted %d times, want 80 draws and from %d to %d conflicts", stamp(group.start),
 				drawn[g], conflicted[g], group.low, group.high)
 		}
+	}
+}
+
+// bootReadWindow is a window from 09:00 to 13:00 recorded under legion-v20.42.5, its inputs reaching
+// back to the daemon's boot at 06:00; a daemon process stops and the next starts at 10:00. ACME-1, a
+// root promoted at 09:00 that links acme/widgets#11, works 5 minutes in planning and 20 in
+// implementing to testing at 09:30, and a conflict moves it back at 11:00, so its stretch from 09:30
+// to 11:00 spans the boot; it is back in testing at 11:30, to the window's end. Its pull request's
+// one head stands from 09:20, its merge base a commit before the window and its one path a.go. The
+// base branch, main, takes one commit in the window, of acme/widgets#20, at 10:30, after the boot,
+// and that commit changes a.go.
+func bootReadWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.reaches(3 * time.Hour)
+	b.window.Parts[0].Rule = "legion-v20.42.5"
+	b.boot(clock(6, 0))
+	b.stopped(clock(10, 0))
+	b.boot(clock(10, 0))
+	rootThrough(b, "ACME-1", "a1", clock(9, 0), clock(9, 5), moveAt(9, 10, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(9, 30, phase.Testing, workflow.TriggerImplementationReady), moveAt(11, 0, phase.Implementing, workflow.TriggerConflict),
+		moveAt(11, 30, phase.Testing, workflow.TriggerImplementationReady))
+	window := linkedPullRequest(t, b.build(), "ACME-1", "https://github.com/acme/widgets/pull/11")
+	const touching = "a1c3e5f7091b2d4f6a8c0e2a4c6e8f0a1b3d5f70"
+	window.Merges = map[string][]Merge{builtRepository: {{SHA: touching, At: clock(10, 30), Branch: "main", PR: 20}}}
+	window.Git = map[string]GitInput{builtRepository: {
+		Commits: []GitCommit{{SHA: touching, Paths: []string{"a.go"}}},
+		Pulls: []GitPull{{Number: 11, Base: "main", Heads: []GitHead{{SHA: "b2d4f6a8c0e2a4c6e8f0a1b3d5f70a1c3e5f7091", At: clock(9, 20),
+			From: GitHeadCommit, Tip: touching, MergeBase: "c3e5f7091b2d4f6a8c0e2a4c6e8f0a1b3d5f70a1", Paths: []string{"a.go"}}}}},
+	}}
+	return window
+}
+
+// A stretch that a daemon's boot reads draws there, once, with M counted to the boot (drawAt), so
+// the fit counts that stretch's M to the boot too, with the head that stands at the boot: M is one
+// count, at the moment of the stretch's draw, in the fit and in the draw (spec R2). The test fits
+// bootReadWindow, whose one stretch, from 09:30 to its conflict at 11:00, a boot reads at 10:00:
+// the one commit that changes its head's path lands at 10:30, after the boot, so its boot draw
+// counts M = 0, and the fit counts M = 0 too and leaves the stretch out as one with no touching
+// merge, its conflict counted among those. It fails for a fit that counts that stretch's M at its
+// end, M = 1, and fits the model on it.
+func TestTheFitCountsABootStretchsMergesToTheBoot(t *testing.T) {
+	t.Parallel()
+	window := bootReadWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the window's trace: %v", err)
+	}
+	model := windowConflicts(trace, newBaseMerges(window, trace))
+	if model.Stretches != 0 || model.NoTouchStretches != 1 || model.NoTouchConflicts != 1 {
+		t.Errorf("the model is fitted on %d stretches and leaves out %d with no touching merge, %d of them conflicts; want 0, 1 and 1: "+
+			"the boot at 10:00 reads the stretch before the commit at 10:30", model.Stretches, model.NoTouchStretches, model.NoTouchConflicts)
 	}
 }
 

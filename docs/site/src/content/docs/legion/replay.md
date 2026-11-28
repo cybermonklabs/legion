@@ -834,7 +834,7 @@ An unanswered read has the first applicable kind in this order:
 Unanswered reads use the conflict generator, with at most one draw per live stretch.
 A boot in an open stretch with no recorded end can use an answered read but does not draw.
 An answered end read overrides a deferred boot draw.
-After a loop whose work was drawn, the head holds the replay's base as of the return to the phase it left, or the landing of the merge forward.
+After a loop whose work was drawn, the head holds the replay's base as of the end of the loop's implementing round, its move out of implementing, where the rule moves the issue back, or as of the landing of the merge forward.
 Later reads consider only commits that landed after that point.
 No touching merges gives a clean read, and touching merges give `order` unless a higher-priority unanswered kind applies.
 A kept loop uses the recorded heads again.
@@ -847,17 +847,27 @@ Neither timeline reads these lines as moves.
 
 `main+conflicts=drawn` draws at each live stretch's first eligible read.
 The model fits stretches that begin and end inside the window.
+
+M has one definition in the fit and in the draw.
+It is counted at the moment that the stretch draws: the first daemon boot that reads the stretch, or else the stretch's end.
+It counts the commits that the base holds at that moment and that the head lacks: those after the head's merge base, or after the moment when the replay's head took the base itself.
+For a repository with git input, it counts only the commits that share a path with the profile of the head that stands at that moment.
+The fit counts M on the record's base, with the record's heads.
+The draw counts M on the replay's base, with the head that stands at the recorded moment of the work that runs.
+So, where a replay runs as the record ran, each draw's M is the fit's M for the same stretch, at a boot too.
+A rule changes M only through when the replay's work and merges land.
+
 For a repository with git input, an issue's profile is the paths of the standing head at the read, or the last available head's paths.
 Drawn work of an issue that never started takes its source's profile but has no head of its own.
-The generator counts only landed commits that share a path with the profile and come after the head's merge base.
-When the head is unknown, it counts from the later of the first implementing segment's start and the last merge forward in that generation.
-After a drawn conflict loop, it counts only commits that landed after the loop ended.
-If the issue has no profile, it counts all commits since the stretch's start and reports those draws.
-With no touching merges the chance is zero.
-The fit counts touching merges at the recorded stretch end and excludes stretches with none or with no profile.
-The fit reports the excluded stretches and the recorded conflicts with no touching merge.
+When the head is unknown, the generator counts from the later of the first implementing segment's start and the last merge forward in that generation.
+After a drawn conflict loop, it counts only commits that landed after the head took the base in that loop: the end of the loop's implementing round, where the rule moves the issue back, as the record's head after a conflict loop holds the base merged in that round; or the landing of the merge forward.
+With a profile and no touching merges, the chance is zero.
+The fit leaves out the stretches with a profile and no touching merge, and reports them and the recorded conflicts among them.
+If the issue's head has no profile, as for an issue whose pull request the record does not hold, M counts all commits since the stretch's start.
+Such a stretch draws at the chance of a separate fit on the window's stretches whose heads have no profile, with M counted the same way (assumption 52).
+The result reports the draws without a profile and gives that fit's coefficients.
 Repositories without git input use a separate legacy fit over the whole window.
-That fit and its draws count each recorded base commit strictly inside the stretch except the issue's own merge.
+That fit and its draws count each recorded base commit strictly inside the stretch, to its draw, except the issue's own merge.
 The result names the repositories that use each fit and gives both sets of coefficients when both fits apply.
 The profiled fit and draws count only known touching commits.
 The result counts fitted stretches and draws that encounter a commit with no path list.
@@ -2402,6 +2412,7 @@ Numbers 26 to 37 are the tool's own.
 Numbers 38 to 44 come from a later review of the tool's own replays of one deployment's recorded window, which read the replays, the daemon's code and the window's record.
 Numbers 45 to 48 are those of [The signals](#the-signals): what the models of three of them rest on, how the refusals and a signal with no record are read, and how the provider's limit is read between two observations of it.
 Number 49 is the project's token limit that a replay takes from its caller where the record holds none.
+Numbers 50 to 52 came with later changes: the design-gate basis of cybermonklabs/legion#4592, the priority that Dispatch resolves, and the rate at which the conflict generator draws a stretch whose head has no profile.
 Each section below gives the assumption as the tool states it, and its verdict.
 It then gives the evidence in a recorded window, the direction in which the assumption moves each measure if it is wrong, and the reading of a window that would test it.
 
@@ -2511,9 +2522,9 @@ Doubtful for conflicts.
 The first replay saw more conflicts after a longer wait for a slot.
 If a longer wait brings more conflicts than the fitted rate gives, the replay favours a rule under which branches wait longer.
 The tool draws conflicts from a rate that it fits on the stretches inside the window.
-The rate has a base, a term for each phase in which a stretch can end, a term for each release part of the stretches that end in merging, a term for each phase's stretches that span a boot, and a merges term, all fitted together.
-The base stands for the stretches that end in merging in the window's first release part, and each other phase's term moves the rate of the stretches that end in that phase.
-A phase or a part takes a term of its own only where both groups that the term sets apart hold a conflict and a stretch without one: the phase's stretches and the base's, a later part's stretches and the first part's, a phase's stretches that span a boot and those that span none.
+The rate has a base, a term for each phase in which a stretch can end, a term for each piece of each release part of the stretches that end in merging, a term for each phase's stretches that span a boot, and a merges term, all fitted together.
+The base stands for the stretches that end in merging in the first piece of the window's first release part, and each other phase's term moves the rate of the stretches that end in that phase.
+A phase or a piece takes a term of its own only where both groups that the term sets apart hold a conflict and a stretch without one: the phase's stretches and the base's, a later piece's stretches and the first piece's, a phase's stretches that span a boot and those that span none.
 Every other group draws at the rate of the group that it would be set apart from.
 The main branch keeps recorded conflicts.
 The git branch uses stored verdicts, and the drawn branch uses the fitted model for every draw.
@@ -2523,7 +2534,11 @@ Merging's rate is each release part's own.
 A release that posts the merger's conflicts records each as a conflict, and a release that does not records it as another send-back, which the replay keeps as a recorded loop.
 In window one the merger sent work back on about 47% of its visits in both parts: 93 send-backs and 18 conflicts of 238 visits under `legion-v20.25.1`, and 8 and 66 of 158 under `legion-v20.42.5`.
 Only the split between send-backs and conflicts moved, so one rate over both parts would count the earlier part's conflicts twice.
-Under every rule, a stretch that ends in merging draws at the rate of the part in which its end falls.
+Within a part, merging's rate follows the record from day to day.
+The tool cuts each part's stretches that end in merging into pieces by the UTC day of their end.
+A piece takes day after day until it holds at least 20 such stretches, at least 5 of them conflicts and at least 5 without one, and the next day begins the next piece.
+A part's last piece that falls short joins the piece before it, so a part whose stretches are too few to cut is one piece, and no piece's rate is read from a handful of stretches.
+Under every rule, a stretch that ends in merging draws at the rate of the piece of the part in which its draw falls: its end, or the boot that draws it.
 
 A daemon's boot reads each pull request again.
 So a stretch that a boot read the pull requests inside has a chance of its own in its phase, and the tool reads that phase's stretches that span a boot apart.
@@ -2553,12 +2568,13 @@ It keeps every other send-back loop at its recorded count and length.
 
 **Evidence in a recorded window.** _A conflict rate fitted on the window, and loops kept as recorded._
 The phase lines give each move back with its trigger, and the trace names its cause.
-`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, the base, the term of each phase with the stretches and conflicts of that phase, each phase's term for the stretches that span a boot with those stretches, the term of each release part for the stretches that end in merging with that part's stretches, conflicts and the chance at no merges, the merges term, each with its interval, and the odds ratio for each doubling of the merges.
-`compare` prints the same terms for each window that measures conflicts, each part's rate among them.
+`run` prints the conflict model: the window, and the stretches and conflicts, that it was fitted on, the base, the term of each phase with the stretches and conflicts of that phase, each phase's term for the stretches that span a boot with those stretches, the term of each piece of each release part for the stretches that end in merging with that piece's first day, stretches, conflicts and the chance at no merges, the merges term, each with its interval, and the odds ratio for each doubling of the merges.
+`compare` prints the same terms for each window that measures conflicts, each piece's rate among them.
 In the prototype's record, that odds ratio was 1.21, with a 95% interval of 0.92 to 1.35, so the record does not show the merges term.
 In one deployment's window, a rate with no phase term gave the stretches that end in merging about twice the share of conflicts that the record shows for them, so the rate takes a term for each phase.
 In window one, merging's conflicts were 16 of 230 stretches under `legion-v20.25.1` and 51 of 145 under `legion-v20.42.5`.
 There, accepting's stretches conflicted in 30 of 52 that spanned a boot, against 7 of 175 that spanned none, and testing's in 29 of 136 against 95 of 680.
+In `legion-v20.42.5`'s part of window one, `main`'s replay of the record ends 40 of the 93 merging visits of 2026-11-20 in a conflict, against 13 of the 43 of that part before that day, so one rate over the part draws too few conflicts on its last day.
 `run` prints the number of recorded conflict loops that it passed over and the number of conflicts that it drew where the record shows none, and `run.json` counts them as `divergence.skippedLoops` and `divergence.addedLoops`.
 
 **If it is wrong.**
@@ -2585,7 +2601,7 @@ For each phase, the share of the stretches that end there in a conflict in a win
 A window that records no conflict of its own, such as one of a release that records a conflict as red checks (assumption 22), tests neither the phase terms nor the merges term.
 Compare the git and drawn branches against the recorded conflicts on `main`.
 For each phase, the share of the stretches that span a boot and end in a conflict, against the share of those that span none, in a window that the model was not fitted on, tests the boot term.
-For each release part, the share of the merging stretches that end in a conflict, in a window of the same releases, tests the part terms.
+For each release part and each day, the share of the merging stretches that end in a conflict, in a window of the same releases, tests the piece terms.
 The number of recorded loops that a run passes over and the number that it adds, over the seeds, show how far the draws move the record's loops.
 
 ### Assumption 4: A link removal, a child moved out, a gate closing and an outside blocker's close happen at their recorded time, or at their recorded offset from the wait's start
@@ -4131,3 +4147,37 @@ An ancestor that Dispatch hid from the daemon's reader, but that the collector r
 
 **The reading that would test it.** _A window recorded after Dispatch served `resolved_priority`._
 Strip `resolved_priority` from the events of such a window, reconstruct each issue's priority from the window's parent chains, and compare it with Dispatch's recorded value at each event.
+
+### Assumption 52: A stretch whose head has no profile conflicts at the rate of the window's stretches with none
+
+Doubtful.
+The record does not show which paths an issue changes where it holds no pull request of the issue, so the head of such a stretch has no profile, and the generator cannot count its touching merges.
+The tool fits the stretches of the window whose heads have no profile apart from those with one, with M every commit of the base since the stretch's start, the merges at the stretch's draw.
+Such a stretch draws at that fit's chance, with M counted the same way on the replay's base ([The conflict generator](#the-conflict-generator)).
+So a stretch with no profile that took no commit since its start draws at that fit's chance at M = 0, not at the chance of 0 that the fit of the stretches with a profile gives one with no touching merge.
+`run` prints both fits and counts the draws with no profile.
+
+**Evidence in a recorded window.** _The issues with no recorded pull request, and their conflicts._
+In window one, 172 of the issues that the git branch read had no recorded pull request.
+The fit of the stretches with a profile left out 867 stretches with no profile, which held about 151 of the record's conflicts.
+Before the tool fitted these stretches apart, their draws read the fit of the stretches with a profile, at a count of merges that that fit never saw, and 30% of them drew at a chance of 0.
+The 172 issues made 107 conflict moves a seed on the branch that draws every conflict, against 136 in `main`'s replay of the record.
+
+**If it is wrong.**
+The chance pools every stretch with no profile and counts every merge since the stretch's start, not the merges that change the issue's paths since its head last took its base.
+A merge before the stretch's start never counts, so a rule that makes such an issue wait longer before its stretch raises its chance less than the wait would, and the replay moves the measures so for that rule.
+
+- Issues finished: Up, because the replay draws fewer conflicts for such issues than the rule would meet.
+
+- Started work that waits for a slot: Down where a conflict moves its issue back from a phase that keeps no slot, because each missed conflict is a start that would wait for a slot.
+
+- Priority taken by holders: Unknown.
+  The missed conflicts change which issues wait, not their rank.
+
+- Other delays: Down, because the replay counts fewer rounds and hours of `conflict` than the rule would bring.
+
+- Slots: Down, because each missed conflict is work, with its turns and its time in flight, that the replay does not run.
+
+**The reading that would test it.** _A window whose issues link their pull requests._
+In a window whose issues all link their pull requests, take the profile from some of them and fit their stretches apart.
+For each phase, compare the share of those stretches that end in a conflict on the branch that draws every conflict with the record's share, at short and long waits before the stretch.

@@ -663,6 +663,7 @@ func (d *driver) observe() error {
 					return err
 				}
 			}
+			d.tookBase(key, from)
 			d.endedGitLoops(key, to)
 			d.openOnPhase(key, to)
 			d.queueFreshRetries(key, to)

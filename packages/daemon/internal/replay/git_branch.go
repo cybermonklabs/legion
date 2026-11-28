@@ -370,12 +370,14 @@ func (d *driver) readGit(p *piece, recorded time.Time, boot bool) gitAnswer {
 }
 
 // gitLoop follows a real conflict round; a waiting conflict starts its round when the merge
-// forward is asked for, not while the architect still works.
+// forward is asked for, not while the architect still works. based says the issue's head took the
+// replay's base inside the loop, at the end of its implementing round (tookBase).
 type gitLoop struct {
 	issue      string
 	phase      phase.Phase
 	start, end time.Time
 	kept       bool
+	based      bool
 	source     string
 }
 
@@ -399,13 +401,35 @@ func (d *driver) beginGitLoop(key string, ph phase.Phase, forward, kept bool, so
 	return l
 }
 
+// endGitLoop ends l. The issue's head holds the replay's base as of the loop's end, a later read
+// and draw counting only the commits after it, unless the loop is kept, whose recorded heads after
+// it carry the record's own merge forward, or its head took the base in its implementing round
+// already (tookBase).
 func (d *driver) endGitLoop(l *gitLoop) {
 	if l == nil || !l.end.IsZero() {
 		return
 	}
 	l.end = d.clock.Instant()
-	if !l.kept {
+	if !l.kept && !l.based {
 		d.git.loopEnds[l.issue] = l.end
+	}
+}
+
+// tookBase marks where the replay's head of key takes the replay's base in a conflict loop whose
+// work it does not keep as recorded, under a rule that moves the issue back to implementing: the
+// end of the loop's implementing round, the issue's move out of implementing, as the record's head
+// after a conflict loop holds the base its implementer merged in that round. A later read and draw
+// count only the commits after it (read, profileM), as the fit counts them after the merge base of
+// the record's head (spec R2).
+func (d *driver) tookBase(key string, from phase.Phase) {
+	if from != phase.Implementing {
+		return
+	}
+	for _, l := range d.git.openMoves[key] {
+		if !l.kept {
+			l.based = true
+			d.git.loopEnds[key] = d.clock.Instant()
+		}
 	}
 }
 
@@ -448,7 +472,8 @@ func (d *driver) gitLoopHours() map[string]GitLoopHours {
 	return d.git.hours
 }
 
-// recordedM counts touching commits at the recorded end, with no simulated merge order.
+// recordedM counts touching commits at a recorded moment, the draw of a stretch (windowConflicts),
+// with no simulated merge order.
 func (r *gitRepository) recordedM(pr int, end time.Time) (count int, profile, missing bool) {
 	pull, ok := r.input.Pull(pr)
 	if !ok {
@@ -466,7 +491,15 @@ func (r *gitRepository) recordedM(pr int, end time.Time) (count int, profile, mi
 	return len(touching), true, missing
 }
 
-func (d *driver) profileM(p *piece, r *gitRepository, repo string, own int, start, at, recorded time.Time) int {
+// profileM is M of p's stretch at a draw at at, from start in the replay, the head read at its
+// recorded moment recorded, and whether the head has a profile (drawProfile). With one, M is the
+// touching merges of the replay's base at at since the head last took the base: after the head's
+// merge base, or, where the replay's head took it itself, after that moment (tookBase,
+// endGitLoop; the first implementing segment or the last merge forward of drawn work). With none,
+// M is every commit of the replay's base since start but the issue's own merge, by which the fit
+// of the stretches with no profile counts (windowConflicts, assumption 52); such a draw is counted,
+// and one whose own merge is unknown is counted on that fit (ConflictModel.DrawnOwnMergeUnknown).
+func (d *driver) profileM(p *piece, r *gitRepository, repo string, own int, start, at, recorded time.Time) (int, bool) {
 	head := d.drawProfile(p, r, recorded)
 	base := d.git.base(strings.ToLower(repo), r, at)
 	pull, _ := r.input.Pull(own)
@@ -483,7 +516,10 @@ func (d *driver) profileM(p *piece, r *gitRepository, repo string, own int, star
 		if missing {
 			d.conflicts.DrawnPathsUnknown++
 		}
-		return n
+		if fit := d.conflicts.NoProfile; fit != nil && n > 0 && pull.Merge == "" {
+			fit.DrawnOwnMergeUnknown++
+		}
+		return n, false
 	}
 	after := d.git.loopEnds[p.issue]
 	if after.IsZero() && head.MergeBase == "" {
@@ -493,7 +529,7 @@ func (d *driver) profileM(p *piece, r *gitRepository, repo string, own int, star
 	if missing {
 		d.conflicts.DrawnPathsUnknown++
 	}
-	return len(touching)
+	return len(touching), true
 }
 
 func (d *driver) noteGitPieceStart(p *piece, at time.Time) {
