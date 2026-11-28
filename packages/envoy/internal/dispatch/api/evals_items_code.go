@@ -40,8 +40,9 @@ import (
 // An absent row answers for every series of the eval. The reasons it names are each marked day of
 // the range and each commit that blocks days of it, which code_days names where the status rows say
 // the days are marked or blocked; a default repository the App cannot read (code_repos); no default
-// repository, where the range holds no measured day; and no code group. Every address is the
-// repository's on GitHub, or the project's settings page for a reason a setting gives.
+// repository, where the project holds no day row of the eval whatever the range; and no code
+// group. Every address is the repository's on GitHub, or the project's settings page for a reason
+// a setting gives.
 
 // codeMeasureSource is the source of a change row and of a pair row: the function that measured
 // them.
@@ -82,16 +83,24 @@ var (
 
 // codeProject is a project as the code evals' rows read it, once a request (evalRequestReads):
 // its key and its default repository in lower case ("" for none), as the run reads them; its code
-// groups in order, none where it names none; and its default repository's row of code_repos, where
-// the run has read that repository.
+// groups in order, none where it names none; its default repository's row of code_repos, where
+// the run has read that repository; and, for a project with no default repository, whether the
+// eval holds no day row of it, whatever the range (noDayRow). A project with no default
+// repository takes its own days from each repository that holds a change of one of its issues
+// (codesurvival.OwnRepos), so only one with no day row at all reads "no data" for want of the
+// repository (R11).
 type codeProject struct {
 	fold       fold.Project
 	groups     []survival.CodeGroup
 	repo       codesurvival.Repo
 	repoStored bool
+	noDayRow   bool
 }
 
-// codeProjectOf is read's project as the code evals' rows read it (codeProject).
+// codeProjectOf is read's project as the code evals' rows read it (codeProject). Whether a
+// project with no default repository holds a day row is whether its own rows hold a first day of
+// the status series (evals.FirstDaysIn), which every day row the code evals' builder writes holds
+// beside its group rows.
 func codeProjectOf(ctx context.Context, read evalItemsRead) (*codeProject, error) {
 	if read.once.code != nil {
 		return read.once.code, nil
@@ -113,6 +122,13 @@ func codeProjectOf(ctx context.Context, read evalItemsRead) (*codeProject, error
 		if project.repo, project.repoStored, err = codesurvival.GetRepo(ctx, read.tx, project.fold.DefaultRepo); err != nil {
 			return nil, err
 		}
+	} else {
+		firsts, err := evals.FirstDaysIn(ctx, read.tx, []evals.Entry{read.entry}, read.deployRepos)
+		if err != nil {
+			return nil, err
+		}
+		_, held := firsts[read.entry.Definition.EvalID][fold.SeriesStatus]
+		project.noDayRow = !held
 	}
 	read.once.code = project
 	return project, nil
@@ -385,9 +401,9 @@ func (s *server) pairItemSource(ctx context.Context, read evalItemsRead) (evalIt
 // waiting, one row each, every series' (cols.cause): first the settings, each addressed to the
 // project's settings page with no link and measured at the read, since a setting is of the present:
 // a default repository the App cannot read (repo_unreadable, its repo and the reason code_repos
-// holds), no default repository where no day of the range was measured for the project
-// (no_default_repo), and no code group (no_group); then the marked days and the blocking commits
-// of the range (stoppedItemRows), by day.
+// holds), no default repository where the eval holds no day row of the project, whatever the range
+// (no_default_repo, codeProject.noDayRow), and no code group (no_group); then the marked days and
+// the blocking commits of the range (stoppedItemRows), by day.
 func (s *server) absentItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	r, err := codeRangeOf(ctx, read)
 	if err != nil {
@@ -403,7 +419,7 @@ func (s *server) absentItemRows(ctx context.Context, read evalItemsRead) ([]eval
 		rows = append(rows, setting(absentRepoUnreadable+"@"+project.repo.Repo, "code_repos",
 			map[string]any{"cause": absentRepoUnreadable, "repo": project.repo.Repo, "reason": project.repo.Reason}))
 	}
-	if project.fold.DefaultRepo == "" && !slices.ContainsFunc(r.rows, func(row evals.DayRow) bool { return codeDayState(row) == survival.DayMeasured }) {
+	if project.fold.DefaultRepo == "" && project.noDayRow {
 		rows = append(rows, setting(absentNoDefaultRepo, "projects.default_repo", map[string]any{"cause": absentNoDefaultRepo}))
 	}
 	if len(project.groups) == 0 {
@@ -417,15 +433,17 @@ func (s *server) absentItemRows(ctx context.Context, read evalItemsRead) ([]eval
 }
 
 // codeStopped is one repository's day as code_days holds it: marked, or blocked by a commit with
-// the count of its withheld files and why, and when the run last tried it.
+// the count of its withheld files, whether its listing left out files whose number no answer
+// names, and why, and when the run last tried it.
 type codeStopped struct {
-	repo   string
-	day    time.Time
-	state  survival.DayState
-	sha    string
-	files  int
-	reason string
-	tried  time.Time
+	repo     string
+	day      time.Time
+	state    survival.DayState
+	sha      string
+	files    int
+	unlisted bool
+	reason   string
+	tried    time.Time
 }
 
 // stoppedItemRows is the absent rows of the range's marked and blocked days, by day and then by
@@ -438,8 +456,9 @@ type codeStopped struct {
 // its day: the day, the repository and its first change, to which it is addressed, or to the
 // project's settings page where the day holds none. A blocking commit is one row keyed
 // `blocked@<repo>@<sha>`, measured on the oldest day of the range it blocks: its repository, its
-// SHA, how many files it withheld, why, and the days of the range it blocks; addressed to the
-// commit, with a via link to it.
+// SHA, how many files it withheld (files, the count the run knows), whether its listing left out
+// files whose number no answer names (unlisted), why, and the days of the range it blocks;
+// addressed to the commit, with a via link to it.
 func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	want := map[codeCutDay]survival.DayState{}
 	var repos []string
@@ -510,8 +529,8 @@ func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]
 		rows = append(rows, evalItemRow{
 			RowKey: key, RowKind: evalRowAbsent,
 			Cols: map[string]any{
-				"cause": absentBlocked, "repo": day.repo, "sha": day.sha, "files": day.files, "reason": nullableText(day.reason),
-				"days": []string{date},
+				"cause": absentBlocked, "repo": day.repo, "sha": day.sha, "files": day.files, "unlisted": day.unlisted,
+				"reason": nullableText(day.reason), "days": []string{date},
 			},
 			MeasuredAt: day.day, Source: "code_days", Href: githubCommitURL(day.repo, day.sha),
 			Links: []evals.Link{commitLink(linkRelVia, day.repo, day.sha, "commit", day.tried)}, Range: read.rng.label,
@@ -527,8 +546,8 @@ func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]
 // of repos and days, read in tx, by day and repository.
 func codeStoppedIn(ctx context.Context, tx pgx.Tx, repos []string, days []time.Time) ([]codeStopped, error) {
 	rows, err := tx.Query(ctx, `
-		select c.repo, c.day, c.state, coalesce(c.blocked_sha, ''), coalesce(c.blocked_files, 0), coalesce(c.blocked_reason, ''),
-			coalesce(c.tried_at, c.marked_at, c.measured_at)
+		select c.repo, c.day, c.state, coalesce(c.blocked_sha, ''), coalesce(c.blocked_files, 0), c.blocked_unlisted,
+			coalesce(c.blocked_reason, ''), coalesce(c.tried_at, c.marked_at, c.measured_at)
 		from code_days c join unnest($1::text[], $2::date[]) as w(repo, day) on c.repo = w.repo and c.day = w.day
 		where c.state in ('marked', 'blocked')
 		order by c.day, c.repo`, repos, days)
@@ -540,7 +559,7 @@ func codeStoppedIn(ctx context.Context, tx pgx.Tx, repos []string, days []time.T
 			day   codeStopped
 			state string
 		)
-		err := row.Scan(&day.repo, &day.day, &state, &day.sha, &day.files, &day.reason, &day.tried)
+		err := row.Scan(&day.repo, &day.day, &state, &day.sha, &day.files, &day.unlisted, &day.reason, &day.tried)
 		day.day, day.state, day.tried = day.day.UTC(), survival.DayState(state), day.tried.UTC()
 		return day, err
 	})

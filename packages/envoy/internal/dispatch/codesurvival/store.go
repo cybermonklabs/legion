@@ -132,11 +132,12 @@ func PutRepo(ctx context.Context, db Querier, r Repo) error {
 // For each selected day it deletes the day's rows (a change's pairs go with it) and inserts out's:
 // the changes and pairs, and one code_days row, measured or blocked as the day's result says, with
 // the fingerprint out holds for it, at as measured_at (of a measured day) and as tried_at, and, for
-// a blocked day, the commit that blocked it, the count of its files and the reason reasons gives
-// it (none where it gives none). A day's old row carries nothing over, so a replace clears the mark
-// of a day it measures and the blocking commit of a day it no longer blocks. Every other day out
-// fingerprints is written as replayed, a fingerprint and nothing else, and only where the table
-// holds no row of the day or a replayed one: a measured, marked or blocked day is never
+// a blocked day, the commit that blocked it, the count of the files it withheld, whether its
+// listing left out files whose number no answer names (blocked_unlisted), and the reason reasons
+// gives it (none where it gives none). A day's old row carries nothing over, so a replace clears
+// the mark of a day it measures and the blocking commit of a day it no longer blocks. Every other
+// day out fingerprints is written as replayed, a fingerprint and nothing else, and only where the
+// table holds no row of the day or a replayed one: a measured, marked or blocked day is never
 // overwritten by a fingerprint.
 //
 // It refuses before it writes anything an output that does not match days: a day that is no UTC
@@ -177,31 +178,32 @@ func ReplaceDays(ctx context.Context, tx pgx.Tx, repo string, days []time.Time, 
 	}
 
 	var (
-		selectedDays   = make([]time.Time, len(plan.days))
-		commits        = make([]int, len(plan.days))
-		digests        = make([][]byte, len(plan.days))
-		states         = make([]string, len(plan.days))
-		blockedSHAs    = make([]*string, len(plan.days))
-		blockedFiles   = make([]*int, len(plan.days))
-		blockedReasons = make([]*string, len(plan.days))
+		selectedDays    = make([]time.Time, len(plan.days))
+		commits         = make([]int, len(plan.days))
+		digests         = make([][]byte, len(plan.days))
+		states          = make([]string, len(plan.days))
+		blockedSHAs     = make([]*string, len(plan.days))
+		blockedFiles    = make([]*int, len(plan.days))
+		blockedUnlisted = make([]bool, len(plan.days))
+		blockedReasons  = make([]*string, len(plan.days))
 	)
 	for i, day := range plan.days {
 		result, fp := plan.results[dayKey(day)], plan.prints[dayKey(day)]
 		selectedDays[i], commits[i], digests[i], states[i] = day, fp.Commits, fp.Digest[:], string(result.State)
 		if result.State == survival.DayBlocked {
-			blockedSHAs[i], blockedFiles[i] = &result.BlockedSHA, &result.BlockedFiles
+			blockedSHAs[i], blockedFiles[i], blockedUnlisted[i] = &result.BlockedSHA, &result.BlockedFiles, result.BlockedUnlisted
 			if reason := reasons[result.BlockedSHA]; reason != "" {
 				blockedReasons[i] = &reason
 			}
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		insert into code_days (repo, day, commits, digest, state, measured_at, blocked_sha, blocked_files, blocked_reason, tried_at)
-		select $1::text, d.day, d.commits, d.digest, d.state, case when d.state = 'measured' then $9::timestamptz end,
-			d.blocked_sha, d.blocked_files, d.blocked_reason, $9::timestamptz
-		from unnest($2::date[], $3::int[], $4::bytea[], $5::text[], $6::text[], $7::int[], $8::text[])
-			as d(day, commits, digest, state, blocked_sha, blocked_files, blocked_reason)`,
-		repo, selectedDays, commits, digests, states, blockedSHAs, blockedFiles, blockedReasons, at); err != nil {
+		insert into code_days (repo, day, commits, digest, state, measured_at, blocked_sha, blocked_files, blocked_unlisted, blocked_reason, tried_at)
+		select $1::text, d.day, d.commits, d.digest, d.state, case when d.state = 'measured' then $10::timestamptz end,
+			d.blocked_sha, d.blocked_files, d.blocked_unlisted, d.blocked_reason, $10::timestamptz
+		from unnest($2::date[], $3::int[], $4::bytea[], $5::text[], $6::text[], $7::int[], $8::bool[], $9::text[])
+			as d(day, commits, digest, state, blocked_sha, blocked_files, blocked_unlisted, blocked_reason)`,
+		repo, selectedDays, commits, digests, states, blockedSHAs, blockedFiles, blockedUnlisted, blockedReasons, at); err != nil {
 		return fmt.Errorf("store the selected days of %s: %w", repo, err)
 	}
 

@@ -314,7 +314,7 @@ var (
 	codePairCols   = []string{"adder_issue", "adder_pr", "days_between", "group", "kind", "lines", "remover_issue", "remover_pr"}
 	codeAbsentCols = map[string][]string{
 		"marked":          {"cause", "day", "repo", "sha"},
-		"blocked":         {"cause", "days", "files", "reason", "repo", "sha"},
+		"blocked":         {"cause", "days", "files", "reason", "repo", "sha", "unlisted"},
 		"repo_unreadable": {"cause", "reason", "repo"},
 		"no_default_repo": {"cause"},
 		"no_group":        {"cause"},
@@ -355,6 +355,16 @@ func colText(t *testing.T, row evalItemRow, name string) string {
 	}
 	t.Fatalf("%s row %s holds %s %#v, want a text or null", row.RowKind, row.RowKey, name, row.Cols[name])
 	return ""
+}
+
+// colBool is row's column name, failing where it holds no boolean.
+func colBool(t *testing.T, row evalItemRow, name string) bool {
+	t.Helper()
+	value, ok := row.Cols[name].(bool)
+	if !ok {
+		t.Fatalf("%s row %s holds %s %#v, want a boolean", row.RowKind, row.RowKey, name, row.Cols[name])
+	}
+	return value
 }
 
 // linksOfRel is row's links of rel.
@@ -827,6 +837,40 @@ func TestAnAbsentRowNamesEachReason(t *testing.T) {
 	t.Logf("%d absent rows named their reasons", named)
 }
 
+// TestANoDefaultRepositoryIsNamedOnlyForAProjectWithNoDayRow (R11): a project with no default
+// repository takes its own days from each repository that holds a change of one of its issues
+// (codesurvival.OwnRepos), so once it holds a day row a window with no measured day reads its own
+// rows, or its days still waiting, and names no missing repository; only a project that holds no
+// day row of the eval, whatever the range, names it. In newCodeStrayRig's seed, LONE, whose one
+// issue's change acme/stray holds, holds day rows of days 0 to 7, of which 0 and 1 are blocked:
+// over days 20 to 28, which hold no row of it, it answers nothing in both code evals, and over days
+// 0 to 2, which hold no measured day, the blocking commit alone. VOID, with no default repository
+// and no issue, holds no day row, and names no default repository over both windows.
+func TestANoDefaultRepositoryIsNamedOnlyForAProjectWithNoDayRow(t *testing.T) {
+	t.Parallel()
+	r := newCodeStrayRig(t, 12, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
+	day := func(n int) string { return codeItemsDay(n).Format(time.DateOnly) }
+	blocked := fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 3 files, diff refused (422), files[] withheld 3 of 12 files, days %v",
+		codeStrayRepo, r.blocked, r.blocked, codeStrayRepo, []string{day(0), day(1)})
+	cases := []struct {
+		project  string
+		from, to int
+		want     []string
+	}{
+		{codeStrayLone, 20, 28, nil},
+		{codeStrayLone, 0, 2, []string{blocked}},
+		{codeStrayVoid, 20, 28, []string{"no_default_repo: no default repository"}},
+		{codeStrayVoid, 0, 2, []string{"no_default_repo: no default repository"}},
+	}
+	for _, c := range cases {
+		for slug := range codeSlugs {
+			if got := r.absent(t, c.project, slug, c.from, c.to); !slices.Equal(got, c.want) {
+				t.Errorf("%s/%s over days %d to %d names %q, want %q", c.project, slug, c.from, c.to, got, c.want)
+			}
+		}
+	}
+}
+
 // TestAnUnreadableDefaultRepositoryWithNoDayRowIsNamed (R11, the code cards' no-row case): HIDDEN's
 // default repository is one the App cannot read, and none of its issues holds a change in any
 // repository, so it holds no day row: over the 28 days its list read's status names no first day
@@ -866,29 +910,33 @@ func TestAnUnreadableDefaultRepositoryWithNoDayRowIsNamed(t *testing.T) {
 	}
 }
 
-// The seed of TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository: acme/stray,
-// HOME's default repository, and LONE, a project with no default repository, whose one issue
-// LONE-1 is of acme/stray.
+// The seed of the tests of a project with no default repository (newCodeStrayRig): acme/stray,
+// HOME's default repository; LONE, a project with no default repository, whose one issue LONE-1
+// is of acme/stray; and VOID, a project with no default repository and no issue in any repository.
 const (
 	codeStrayRepo  = "acme/stray"
 	codeStrayHome  = "HOME"
 	codeStrayLone  = "LONE"
+	codeStrayVoid  = "VOID"
 	codeStrayIssue = "LONE-1"
 )
 
-// TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository (R8, R9, R11): a project
-// with no default repository takes its own days from each repository that holds a change of one of
-// its issues on any day (codesurvival.OwnRepos), so the absent row of each blocked or marked day of
-// its own rows names that repository's blocking commit or marked day, on a day that holds no change
-// of the project too. acme/stray lands one commit a day for ten days: day 1's, whose patch the
-// double withholds, blocks days 0 and 1; day 3's is the one change of LONE-1; day 5's is a change of
-// no issue, which counts for HOME alone. The run measures days 0 to 7, and codesurvival.WriteMarks
-// then marks day 5. Over days 0 to 8, LONE answers in both code evals the blocking commit, keyed
-// blocked@acme/stray@<sha>, and the marked day with its first change, keyed
-// marked@<day 5>@acme/stray, each addressed to its commit, as HOME, whose default repository
-// acme/stray is, does.
-func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *testing.T) {
-	t.Parallel()
+// codeStrayRig is one test's server holding newCodeStrayRig's seed, measured by the code survival
+// run and then marked: the commit of day 1 that blocks days 0 and 1, and day 5's change, the first
+// change of the marked day.
+type codeStrayRig struct {
+	*codeItemsRig
+	blocked, marked string
+}
+
+// newCodeStrayRig is the seed of the tests of a project with no default repository. acme/stray
+// lands one commit a day for ten days: day 1's merged no pull request and adds tables files of two
+// lines each, and the double refuses its patch as refusal says, so it blocks days 0 and 1; day 3's
+// is the one change of LONE-1; day 5's is a change of no issue, which counts for HOME alone. HOME,
+// LONE and VOID each name one code group, all. The run measures days 0 to 7, and
+// codesurvival.WriteMarks then marks day 5.
+func newCodeStrayRig(t *testing.T, tables int, refusal codesurvivaltest.Refusal) *codeStrayRig {
+	t.Helper()
 	h := codesurvivaltest.NewHistory(t)
 	write := func(path, what string, n int) {
 		lines := make([]string, n)
@@ -897,21 +945,21 @@ func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *te
 		}
 		h.Repo.Write(path, strings.Join(lines, "\n")+"\n")
 	}
-	var blocked, marked string
+	r := &codeStrayRig{}
 	for n := range 10 {
 		at := codeItemsDay(n).Add(9 * time.Hour)
 		switch n {
 		case 1:
-			for file := range 12 {
-				write(fmt.Sprintf("data/table%02d.txt", file), fmt.Sprintf("day %d table %d", n, file), 2)
+			for file := range tables {
+				write(fmt.Sprintf("data/table%04d.txt", file), fmt.Sprintf("day %d table %d", n, file), 2)
 			}
-			blocked = h.Push("twelve tables", at)
+			r.blocked = h.Push(fmt.Sprintf("%d tables", tables), at)
 		case 3:
 			write("src/lone.txt", "the lone work", 4)
 			h.Land(codesurvivaltest.Pull{Number: 1, HeadRef: "feature/1", Author: "someone", Title: codeStrayIssue + ": the lone work"}, at)
 		case 5:
 			write("src/home.txt", "a change of no issue", 4)
-			marked = h.Land(codesurvivaltest.Pull{Number: 2, HeadRef: "feature/2", Author: "someone", Title: "a change of no issue"}, at)
+			r.marked = h.Land(codesurvivaltest.Pull{Number: 2, HeadRef: "feature/2", Author: "someone", Title: "a change of no issue"}, at)
 		default:
 			write(fmt.Sprintf("notes/day%02d.txt", n), fmt.Sprintf("note of day %d", n), 1)
 			h.Push("note", at)
@@ -921,10 +969,10 @@ func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *te
 
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	ctx := t.Context()
-	createTestProject(t, handler, codeStrayHome, codeStrayLone)
+	createTestProject(t, handler, codeStrayHome, codeStrayLone, codeStrayVoid)
 	setDefaultRepository(t, handler, codeStrayHome, codeStrayRepo)
 	every := []delivery.CodeGroup{{Name: "all"}}
-	for _, project := range []string{codeStrayHome, codeStrayLone} {
+	for _, project := range []string{codeStrayHome, codeStrayLone, codeStrayVoid} {
 		saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{Project: project, CodeGroups: &every})
 	}
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
@@ -940,7 +988,7 @@ func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *te
 
 	double := codesurvivaltest.New(t)
 	double.Serve(codeStrayRepo, branch)
-	double.Refuse(blocked, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
+	double.Refuse(r.blocked, refusal)
 	pass := codeItemsDay(40).Add(time.Hour)
 	run := &codesurvival.Run{Pool: database.Pool, Client: double.Client(t), Attributor: deps.Attributor, Build: testServerBuild,
 		Now: func() time.Time { return pass }}
@@ -961,37 +1009,91 @@ func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *te
 		!slices.Equal(got, []time.Time{codeItemsDay(5)}) {
 		t.Fatalf("the mark of day 5 of %s marked %v (%v)", codeStrayRepo, got, err)
 	}
+	r.codeItemsRig = &codeItemsRig{handler: handler}
+	return r
+}
 
-	r := &codeItemsRig{handler: handler}
+// absent is what each absent row of slug's eval of project over the days [from, to) names, keyed
+// `<row key>: <words>`, sorted; it fails t unless each row that names a commit is addressed to it,
+// and each blocked row carries one via link to its commit.
+func (r *codeStrayRig) absent(t *testing.T, project, slug string, from, to int) []string {
+	t.Helper()
+	query := codeWindow(from, to)
+	query.Set("row_kind", "absent")
+	var got []string
+	for _, row := range r.items(t, project, slug, query) {
+		got = append(got, row.RowKey+": "+absentWords(t, row))
+		sha := colText(t, row, "sha")
+		if sha == "" {
+			continue
+		}
+		if row.Href != wantCommitURL(codeStrayRepo, sha) {
+			t.Errorf("%s/%s's absent row %s is addressed %q, want the commit it names, %s", project, slug, row.RowKey, row.Href, wantCommitURL(codeStrayRepo, sha))
+		}
+		if links := linksOfRel(row, "via"); colText(t, row, "cause") == "blocked" && (len(links) != 1 || links[0].Href != wantCommitURL(codeStrayRepo, sha)) {
+			t.Errorf("%s/%s's absent row %s links %+v, want one via link to %s", project, slug, row.RowKey, row.Links, wantCommitURL(codeStrayRepo, sha))
+		}
+	}
+	slices.Sort(got)
+	return got
+}
+
+// TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository (R8, R9, R11): a project
+// with no default repository takes its own days from each repository that holds a change of one of
+// its issues on any day (codesurvival.OwnRepos), so the absent row of each blocked or marked day of
+// its own rows names that repository's blocking commit or marked day, on a day that holds no change
+// of the project too. In newCodeStrayRig's seed, day 1's commit of 12 files, 3 of which files[]
+// withholds, blocks days 0 and 1, and day 5 is marked. Over days 0 to 8, LONE answers in both code
+// evals the blocking commit, keyed blocked@acme/stray@<sha>, with its 3 files, and the marked day
+// with its first change, keyed marked@<day 5>@acme/stray, each addressed to its commit, as HOME,
+// whose default repository acme/stray is, does.
+func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *testing.T) {
+	t.Parallel()
+	r := newCodeStrayRig(t, 12, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
 	day := func(n int) string { return codeItemsDay(n).Format(time.DateOnly) }
 	want := []string{
 		fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 3 files, diff refused (422), files[] withheld 3 of 12 files, days %v",
-			codeStrayRepo, blocked, blocked, codeStrayRepo, []string{day(0), day(1)}),
-		fmt.Sprintf("marked@%s@%s: marked day %s of %s, first change %s", day(5), codeStrayRepo, day(5), codeStrayRepo, marked),
+			codeStrayRepo, r.blocked, r.blocked, codeStrayRepo, []string{day(0), day(1)}),
+		fmt.Sprintf("marked@%s@%s: marked day %s of %s, first change %s", day(5), codeStrayRepo, day(5), codeStrayRepo, r.marked),
 	}
 	for _, project := range []string{codeStrayHome, codeStrayLone} {
 		for slug := range codeSlugs {
-			query := codeWindow(0, 8)
-			query.Set("row_kind", "absent")
-			var got []string
-			for _, row := range r.items(t, project, slug, query) {
-				got = append(got, row.RowKey+": "+absentWords(t, row))
-				sha := colText(t, row, "sha")
-				if row.Href != wantCommitURL(codeStrayRepo, sha) {
-					t.Errorf("%s/%s's absent row %s is addressed %q, want the commit it names, %s", project, slug, row.RowKey, row.Href, wantCommitURL(codeStrayRepo, sha))
-				}
-				if links := linksOfRel(row, "via"); colText(t, row, "cause") == "blocked" && (len(links) != 1 || links[0].Href != wantCommitURL(codeStrayRepo, sha)) {
-					t.Errorf("%s/%s's absent row %s links %+v, want one via link to %s", project, slug, row.RowKey, row.Links, wantCommitURL(codeStrayRepo, sha))
-				}
-			}
-			if slices.Sort(got); !slices.Equal(got, want) {
+			if got := r.absent(t, project, slug, 0, 8); !slices.Equal(got, want) {
 				t.Errorf("%s/%s over days 0 to 8 names %q, want %q", project, slug, got, want)
 			}
 		}
 	}
 }
 
-// absentWords is what an absent row names, in words a failure shows.
+// TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow (R9): a files[] that
+// GitHub cut at its limit of 3,000 files, every listed patch there, withholds no file it lists and
+// leaves out files whose number no answer names, and the absent row of the commit it blocks days
+// by states the count it knows and that more are unlisted, never a count of files it does not
+// know. In newCodeStrayRig's seed, day 1's commit adds 3,000 files and the double refuses its patch
+// with a 406 and serves all 3,000 on files[]. Over days 0 to 8, HOME and LONE answer in both code
+// evals that commit's row with files 0 and unlisted true, and GitHub's limit as its reason, beside
+// the marked day.
+func TestABlockedCommitWhoseListingLeftFilesOutStatesNoCountItDoesNotKnow(t *testing.T) {
+	t.Parallel()
+	r := newCodeStrayRig(t, codesurvivaltest.FilesLimit, codesurvivaltest.Refusal{Status: 406, Body: "Sorry, the diff exceeded the maximum number of files"})
+	day := func(n int) string { return codeItemsDay(n).Format(time.DateOnly) }
+	want := []string{
+		fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 0 files and more unlisted, diff refused (406), files[] withheld 0 of 3000 files and listed 3000 files, GitHub's limit, days %v",
+			codeStrayRepo, r.blocked, r.blocked, codeStrayRepo, []string{day(0), day(1)}),
+		fmt.Sprintf("marked@%s@%s: marked day %s of %s, first change %s", day(5), codeStrayRepo, day(5), codeStrayRepo, r.marked),
+	}
+	for _, project := range []string{codeStrayHome, codeStrayLone} {
+		for slug := range codeSlugs {
+			if got := r.absent(t, project, slug, 0, 8); !slices.Equal(got, want) {
+				t.Errorf("%s/%s over days 0 to 8 names %q, want %q", project, slug, got, want)
+			}
+		}
+	}
+}
+
+// absentWords is what an absent row names, in words a failure shows: a blocked row's count of
+// files, and "and more unlisted" after it where its listing left out files whose number no answer
+// names.
 func absentWords(t *testing.T, row evalItemRow) string {
 	t.Helper()
 	switch cause := colText(t, row, "cause"); cause {
@@ -1003,7 +1105,11 @@ func absentWords(t *testing.T, row evalItemRow) string {
 		for _, day := range list {
 			days = append(days, fmt.Sprint(day))
 		}
-		return fmt.Sprintf("blocked by %s of %s, %g files, %s, days %v", colText(t, row, "sha"), colText(t, row, "repo"), colNumber(t, row, "files"), colText(t, row, "reason"), days)
+		files := fmt.Sprintf("%g files", colNumber(t, row, "files"))
+		if colBool(t, row, "unlisted") {
+			files += " and more unlisted"
+		}
+		return fmt.Sprintf("blocked by %s of %s, %s, %s, days %v", colText(t, row, "sha"), colText(t, row, "repo"), files, colText(t, row, "reason"), days)
 	case "repo_unreadable":
 		if colText(t, row, "reason") == "" {
 			t.Errorf("the absent row %s names no reason the App cannot read %s", row.RowKey, colText(t, row, "repo"))

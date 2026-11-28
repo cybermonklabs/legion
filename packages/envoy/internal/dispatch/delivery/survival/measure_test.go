@@ -311,6 +311,9 @@ func TestTheRangeHoldsAnOutOfOrderCommit(t *testing.T) {
 	}
 }
 
+// A commit whose patch could not be read whole blocks the selected days whose 30 days hold it:
+// one whose listing withheld 3 files names them, and one whose listing gave every file it listed
+// whole but left out files whose number no answer names (Unlisted) names no file and that fact.
 func TestAnUnreadableCommitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	t.Parallel()
 	h := synthetic(5, 90)
@@ -318,7 +321,8 @@ func TestAnUnreadableCommitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	whole := h.measure(t, selected)
 	for _, blocked := range []struct {
 		day, from, to int
-	}{{40, 9, 27}, {5, 0, 5}} {
+		unlisted      bool
+	}{{40, 9, 27, false}, {5, 0, 5, false}, {40, 9, 27, true}} {
 		position := slices.IndexFunc(h.chain, func(c survival.Commit) bool {
 			return survival.DayOf(c.CommittedAt).Equal(day(blocked.day))
 		})
@@ -333,7 +337,10 @@ func TestAnUnreadableCommitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 		chain := survival.ReplayRange(h.chain, selected[0], selected[len(selected)-1])
 		out, err := survival.Measure(survival.MeasureInput{Days: selected, Chain: chain,
 			Patch: func(i int) (survival.Patch, error) {
-				if chain[i].SHA == blocker.SHA {
+				switch {
+				case chain[i].SHA == blocker.SHA && blocked.unlisted:
+					return survival.Patch{Files: h.patches[index[chain[i].SHA]], Unlisted: true}, nil
+				case chain[i].SHA == blocker.SHA:
 					return survival.Patch{Withheld: 3}, nil
 				}
 				return survival.Patch{Files: h.patches[index[chain[i].SHA]]}, nil
@@ -346,6 +353,9 @@ func TestAnUnreadableCommitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 			state := survival.DayResult{Day: day(n), State: survival.DayMeasured}
 			if n >= blocked.from && n <= blocked.to {
 				state = survival.DayResult{Day: day(n), State: survival.DayBlocked, BlockedSHA: blocker.SHA, BlockedFiles: 3}
+				if blocked.unlisted {
+					state.BlockedFiles, state.BlockedUnlisted = 0, true
+				}
 			}
 			wantDays = append(wantDays, state)
 		}

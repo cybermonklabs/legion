@@ -108,10 +108,11 @@ func filesReads(requests []codesurvivaltest.Request, sha string) int {
 }
 
 // requireBlocked fails t unless r's first pass blocked days 0 to 3 by the commit sha and measured
-// days 4 to 27: each blocked day's code_days row names sha, its count of withheld files files and
-// reason, its status row counts one blocked day and those files, and every window that holds one
-// reads "no data", never 0, with its blocked days and their files.
-func requireBlocked(t *testing.T, r *rig, sha string, files int, reason string) {
+// days 4 to 27: each blocked day's code_days row names sha, its count of withheld files files,
+// whether its listing left out files whose number no answer names (unlisted) and its reason, its
+// status row counts one blocked day and those files, and every window that holds one reads "no
+// data", never 0, with its blocked days and their files.
+func requireBlocked(t *testing.T, r *rig, sha string, files int, unlisted bool, reason string) {
 	t.Helper()
 	states := r.days(widgets)
 	for n := range 28 {
@@ -126,9 +127,10 @@ func requireBlocked(t *testing.T, r *rig, sha string, files int, reason string) 
 	for n := range 4 {
 		var blocking, why string
 		var count int
-		if err := r.database.Pool.QueryRow(r.ctx, `select blocked_sha, blocked_files, blocked_reason from code_days where repo = $1 and day = $2`, widgets, day(n)).
-			Scan(&blocking, &count, &why); err != nil || blocking != sha || count != files || why != reason {
-			t.Errorf("blocked day %d holds %q, %d files and %q (%v), want %s, %d and %q", n, blocking, count, why, err, sha, files, reason)
+		var left bool
+		if err := r.database.Pool.QueryRow(r.ctx, `select blocked_sha, blocked_files, blocked_unlisted, blocked_reason from code_days where repo = $1 and day = $2`, widgets, day(n)).
+			Scan(&blocking, &count, &left, &why); err != nil || blocking != sha || count != files || left != unlisted || why != reason {
+			t.Errorf("blocked day %d holds %q, %d files, unlisted %t and %q (%v), want %s, %d, %t and %q", n, blocking, count, left, why, err, sha, files, unlisted, reason)
 		}
 		for _, row := range r.codeRows(widgetsProject, day(n)) {
 			if !strings.Contains(row, "|"+fold.SeriesStatus+"|") || !strings.Contains(row, `"blocked": 1`) || !strings.Contains(row, fmt.Sprintf(`"blocked_files": %d`, files)) {
@@ -195,11 +197,11 @@ func TestAnOversizeAnswerIsRecoveredFromFiles(t *testing.T) {
 // A file whose patch neither route gives blocks the days whose 30 days hold its commit (k8, R9, the
 // day-state table's row 9): day 3's commit, which merged no pull request, refuses on the diff route
 // and withholds 3 of its 12 files on files[], so days 0 to 3 are blocked by it, each naming the
-// commit, the count 3 and why; every window that holds one reads "no data", never 0, with the
-// count; days 4 to 27 read what a run whose diff route answered reads. Once the double serves the
-// commit whole, the pass a week and a day later, which has fewer than seven days waiting, tries
-// the blocked days again and measures them: no row of the five tables holds the commit's SHA, and
-// those windows read the whole run's numbers.
+// commit, the count 3, no file left unlisted, and why; every window that holds one reads "no data",
+// never 0, with the count; days 4 to 27 read what a run whose diff route answered reads. Once the
+// double serves the commit whole, the pass a week and a day later, which has fewer than seven days
+// waiting, tries the blocked days again and measures them: no row of the five tables holds the
+// commit's SHA, and those windows read the whole run's numbers.
 func TestAWithheldFileBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	t.Parallel()
 	set := refusalBranch(t)
@@ -210,7 +212,7 @@ func TestAWithheldFileBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	r := widgetsRig(t, set.branch)
 	r.github.Refuse(set.third, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
 	r.passAt(firstPass)
-	requireBlocked(t, r, set.third, 3, "diff refused (422), files[] withheld 3 of 12 files")
+	requireBlocked(t, r, set.third, 3, false, "diff refused (422), files[] withheld 3 of 12 files")
 	requireSameWindows(t, r, whole, 4, 28)
 
 	r.passAt(weekLater)
@@ -233,11 +235,12 @@ func TestAWithheldFileBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 
 // A files[] that lists GitHub's limit of 3,000 files blocks the days whose 30 days hold its commit
 // (R9), though every patch it lists is there: GitHub lists no file past the limit, so such a
-// listing may hold only part of the commit. Day 3's commit, which merged no pull request, adds
-// 3,000 files; the double refuses its patch with a 406 and serves all 3,000 on files[], 30 pages.
-// Days 0 to 3 are blocked by it, each naming the commit, one file for the files GitHub did not
-// list, and GitHub's limit; every window that holds one reads "no data", never 0; days 4 to 27
-// read what a run whose diff route answered reads.
+// listing may hold only part of the commit, and no answer names how many files it left out. Day
+// 3's commit, which merged no pull request, adds 3,000 files; the double refuses its patch with a
+// 406 and serves all 3,000 on files[], 30 pages. Days 0 to 3 are blocked by it, each naming the
+// commit, no file withheld (blocked_files 0), files left unlisted in a number no answer names
+// (blocked_unlisted), and GitHub's limit; every window that holds one reads "no data", never 0;
+// days 4 to 27 read what a run whose diff route answered reads.
 func TestAFilesListOfGitHubsLimitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	t.Parallel()
 	branch, wide := wideBranch(t)
@@ -249,17 +252,18 @@ func TestAFilesListOfGitHubsLimitBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T
 	if reads, pages := patchReads(requests)[wide], filesReads(requests, wide); reads != 1 || pages != codesurvivaltest.FilesLimit/100 {
 		t.Fatalf("the refused patch was read %d times and its files[] in %d pages, want once and in %d", reads, pages, codesurvivaltest.FilesLimit/100)
 	}
-	requireBlocked(t, r, wide, 1, "diff refused (406), files[] withheld 0 of 3000 files and listed 3000 files, GitHub's limit")
+	requireBlocked(t, r, wide, 0, true, "diff refused (406), files[] withheld 0 of 3000 files and listed 3000 files, GitHub's limit")
 	requireSameWindows(t, r, whole, 4, 28)
 }
 
 // A files[] whose files add and delete fewer lines than the commit's stats count blocks the days
 // whose 30 days hold the commit (R9), though every patch it lists is there: the listing holds
-// only part of the commit. Day 3's commit of 12 files and 24 lines, which merged no pull request,
-// refuses on the diff route, and its files[] lists its first 10 files, 20 lines, while its stats
-// count all 24. Days 0 to 3 are blocked by it, each naming the commit, one file for the files the
-// listing left out, and the lines it holds of the commit's; every window that holds one reads "no
-// data", never 0; days 4 to 27 read what a run whose diff route answered reads.
+// only part of the commit, and no answer names how many files it left out. Day 3's commit of 12
+// files and 24 lines, which merged no pull request, refuses on the diff route, and its files[]
+// lists its first 10 files, 20 lines, while its stats count all 24. Days 0 to 3 are blocked by it,
+// each naming the commit, no file withheld, files left unlisted in a number no answer names, and
+// the lines it holds of the commit's; every window that holds one reads "no data", never 0; days 4
+// to 27 read what a run whose diff route answered reads.
 func TestAFilesListShortOfTheCommitsStatsBlocksTheDaysWhoseThirtyDaysHoldIt(t *testing.T) {
 	t.Parallel()
 	set := refusalBranch(t)
@@ -271,7 +275,7 @@ func TestAFilesListShortOfTheCommitsStatsBlocksTheDaysWhoseThirtyDaysHoldIt(t *t
 	if reads, pages := patchReads(requests)[set.third], filesReads(requests, set.third); reads != 1 || pages != 1 {
 		t.Fatalf("the refused patch was read %d times and its files[] %d times, want once each", reads, pages)
 	}
-	requireBlocked(t, r, set.third, 1, "diff refused (422), files[] withheld 0 of 10 files and listed 20 of the commit's 24 changed lines")
+	requireBlocked(t, r, set.third, 0, true, "diff refused (422), files[] withheld 0 of 10 files and listed 20 of the commit's 24 changed lines")
 	requireSameWindows(t, r, whole, 4, 28)
 }
 
@@ -281,9 +285,9 @@ func TestAFilesListShortOfTheCommitsStatsBlocksTheDaysWhoseThirtyDaysHoldIt(t *t
 // files and 24 lines, which merged no pull request, refuses on the diff route; its files[] lists
 // all 12, the first with no patch and its 2 changed lines, the second with no patch and changes 0,
 // as GitHub serves a text file it shows no diff of, while its stats count all 24 lines. Days 0 to
-// 3 are blocked by it, each naming the commit, the one file withheld and no count of lines; every
-// window that holds one reads "no data", never 0; days 4 to 27 read what a run whose diff route
-// answered reads.
+// 3 are blocked by it, each naming the commit, the one file withheld, no file left unlisted and no
+// count of lines; every window that holds one reads "no data", never 0; days 4 to 27 read what a
+// run whose diff route answered reads.
 func TestAFilesListThatWithholdsAFileIsBlockedByThatFileAlone(t *testing.T) {
 	t.Parallel()
 	set := refusalBranch(t)
@@ -295,6 +299,6 @@ func TestAFilesListThatWithholdsAFileIsBlockedByThatFileAlone(t *testing.T) {
 	if reads, pages := patchReads(requests)[set.third], filesReads(requests, set.third); reads != 1 || pages != 1 {
 		t.Fatalf("the refused patch was read %d times and its files[] %d times, want once each", reads, pages)
 	}
-	requireBlocked(t, r, set.third, 1, "diff refused (422), files[] withheld 1 of 12 files")
+	requireBlocked(t, r, set.third, 1, false, "diff refused (422), files[] withheld 1 of 12 files")
 	requireSameWindows(t, r, whole, 4, 28)
 }

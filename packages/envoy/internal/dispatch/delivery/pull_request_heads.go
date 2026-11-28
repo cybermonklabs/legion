@@ -1288,18 +1288,16 @@ func headInOwnRepository(repoFull, headRepo string) bool {
 // branch of the pull request's own repository, and whether the attempt read every source there
 // was. complete is the write's leave to replace a stored attribution: an attempt that could not
 // read a source it wanted — a payload that named no head repository, a commit read GitHub
-// refused — may add an attribution but never deletes one (UpsertPullRequestHead). pages is how
-// many pages of commit messages the attempt asked GitHub for, the failed one included
-// (fetchCommitMessagesWithToken), and unread is the commit read it gave up on, a refusal that is
-// no rate limit, nil where it read them or had no need to: what a caller that counts its requests,
-// or must not take a weaker attribution for the whole one, reads (IssueOf).
+// refused — may add an attribution but never deletes one (UpsertPullRequestHead). unread is the
+// commit read it gave up on, a refusal that is no rate limit, nil where it read them or had no
+// need to: what a caller that must not take a weaker attribution for the whole one reads
+// (IssueOf).
 type headAttributionResult struct {
 	issueKey *string
 	source   string
 	messages []string
 	ownHead  bool
 	complete bool
-	pages    int
 	unread   error
 }
 
@@ -1396,21 +1394,21 @@ func (a *Attributor) attributeHead(ctx context.Context, logger *slog.Logger, poo
 	if err != nil {
 		return headAttributionResult{source: string(sourceNone)}, err
 	}
-	read, pages, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
+	read, _, readErr := fetchCommitMessagesWithToken(ctx, client, token, owner, repo, number)
 	if readErr != nil {
 		if limited, ok := githubapp.AsRateLimit(readErr); ok {
-			return headAttributionResult{source: string(sourceNone), pages: pages}, limited
+			return headAttributionResult{source: string(sourceNone)}, limited
 		}
 		logger.Debug("dispatch delivery: a pull request head is attributed without its commit messages",
 			"repo", facts.Repo, "number", number, "error", readErr)
 		githubreads.NoteFailuref(ctx, "attribute the head of %s PR #%d without its commit messages: %w", facts.Repo, number, readErr)
 		attributed.complete = false
-		attributed.pages, attributed.unread = pages, readErr
+		attributed.unread = readErr
 		return attributed, nil
 	}
 	facts.CommitMessages = read
 	attributed, err = a.headAttribution(ctx, logger, pool, facts, headRepo)
-	attributed.messages, attributed.pages = read, pages
+	attributed.messages = read
 	return attributed, err
 }
 
@@ -1489,25 +1487,24 @@ type PullRequestFacts struct {
 // source named it. The repository is held under its name of today (refs.Renames.Canonical), as
 // RefreshPullRequestHead holds it. token is asked for the installation token of each page.
 //
-// It answers how many pages of commit messages it asked GitHub for, on every path, so the caller
-// counts them. A rate limit is returned as the *githubapp.RateLimitError. A commit read GitHub
-// refused otherwise is an error here, where attributeHead's own callers write a weaker attribution
-// and read it again later: this caller stores what it is answered for good, and an answer short of
+// A rate limit is returned as the *githubapp.RateLimitError. A commit read GitHub refused
+// otherwise is an error here, where attributeHead's own callers write a weaker attribution and
+// read it again later: this caller stores what it is answered for good, and an answer short of
 // the commit messages would credit nobody where the whole read credits an issue.
-func (a *Attributor) IssueOf(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), pull PullRequestFacts) (string, int, error) {
+func (a *Attributor) IssueOf(ctx context.Context, pool *store.Pool, client *githubapp.Client, token func() (string, error), pull PullRequestFacts) (string, error) {
 	repo := a.canonical(pull.Repo)
 	attributed, err := a.attributeHead(ctx, slog.Default(), pool, client, token, attributionFacts{
 		Repo: repo, URL: pull.URL, Title: pull.Title, Body: pull.Body, HeadRef: pull.HeadRef,
 	}, pull.HeadRepo, pull.Number)
 	switch {
 	case err != nil:
-		return "", attributed.pages, err
+		return "", err
 	case attributed.unread != nil:
-		return "", attributed.pages, fmt.Errorf("attribute %s PR #%d: its commit messages were not read: %w", repo, pull.Number, attributed.unread)
+		return "", fmt.Errorf("attribute %s PR #%d: its commit messages were not read: %w", repo, pull.Number, attributed.unread)
 	case attributed.issueKey == nil:
-		return "", attributed.pages, nil
+		return "", nil
 	}
-	return *attributed.issueKey, attributed.pages, nil
+	return *attributed.issueKey, nil
 }
 
 // judgedIssuesQuery is JudgedIssues' one statement: the merged rows of one repository, of the

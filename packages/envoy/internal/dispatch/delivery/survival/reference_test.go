@@ -197,7 +197,7 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 		}
 		merged++
 		before := asked.Load()
-		got, pages, err := attributor.IssueOf(ctx, database.Pool, client, token, delivery.PullRequestFacts{
+		got, err := attributor.IssueOf(ctx, database.Pool, client, token, delivery.PullRequestFacts{
 			Repo: survivaltest.ReferenceRepo, Number: pull.Number,
 			URL:   fmt.Sprintf("https://github.com/%s/pull/%d", survivaltest.ReferenceRepo, pull.Number),
 			Title: pull.Title, Body: pull.Body, HeadRef: pull.HeadRef, HeadRepo: survivaltest.ReferenceRepo,
@@ -205,13 +205,13 @@ func TestReferenceIssuesAreAttributionsSourcesThreeAndFour(t *testing.T) {
 		reads := asked.Load() - before
 		var status *githubapp.StatusError
 		switch {
-		case err == nil && got != "" && pages == 0 && reads == 0:
+		case err == nil && got != "" && reads == 0:
 			attributed++
-		case err != nil && errors.As(err, &status) && status.Status == http.StatusForbidden && pages == 1 && reads == 1:
+		case err != nil && errors.As(err, &status) && status.Status == http.StatusForbidden && reads == 1:
 			refused++
 			got = ""
 		default:
-			t.Fatalf("PR #%d: IssueOf answered %q after %d commit pages and %d requests: %v", pull.Number, got, pages, reads, err)
+			t.Fatalf("PR #%d: IssueOf answered %q after %d requests: %v", pull.Number, got, reads, err)
 		}
 		if wanted, ok := want[pull.Number]; !ok || got != wanted {
 			differ = append(differ, fmt.Sprintf("PR #%d: attribution gives %q, pr_issue.tsv %q (listed %v)", pull.Number, got, wanted, ok))

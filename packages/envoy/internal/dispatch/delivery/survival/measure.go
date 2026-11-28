@@ -17,12 +17,15 @@ type Commit struct {
 	Change      ChangeFacts
 }
 
-// Patch is one commit's patch as Measure reads it: its file diffs, or, where the commit's patch
-// could not be read whole, how many of its files were withheld. A patch with withheld files
-// blocks the selected days whose 30 days hold its commit, and its files are not applied.
+// Patch is one commit's patch as Measure reads it: its file diffs, how many of the files its
+// listing named with changes came with no whole patch (Withheld), and whether its listing left out
+// files whose number no answer names (Unlisted). A patch with a withheld file or unlisted files
+// could not be read whole: it blocks the selected days whose 30 days hold its commit, and its files
+// are not applied.
 type Patch struct {
 	Files    []FileDiff
 	Withheld int
+	Unlisted bool
 }
 
 // MeasureInput is what Measure reads: the selected days (UTC midnights), the first-parent commits
@@ -60,12 +63,14 @@ type Pair struct {
 }
 
 // DayResult is one selected day's state after a measurement: measured, or blocked by the first
-// commit in chain order whose patch could not be read whole, with how many files it withheld.
+// commit in chain order whose patch could not be read whole, with how many files it withheld and
+// whether its listing left out files whose number no answer names.
 type DayResult struct {
-	Day          time.Time
-	State        DayState
-	BlockedSHA   string
-	BlockedFiles int
+	Day             time.Time
+	State           DayState
+	BlockedSHA      string
+	BlockedFiles    int
+	BlockedUnlisted bool
 }
 
 // Fingerprint is one day's fingerprint (R8): the count of the first-parent commits dated that day
@@ -157,24 +162,25 @@ func (m *measurement) step(index int) error {
 	if err != nil {
 		return fmt.Errorf("survival: the patch of %s: %w", commit.SHA, err)
 	}
-	if patch.Withheld > 0 {
-		m.block(commit, patch.Withheld)
+	if patch.Withheld > 0 || patch.Unlisted {
+		m.block(commit, patch.Withheld, patch.Unlisted)
 		patch.Files = nil
 	}
 	m.replay.Apply(commit, patch.Files)
 	return nil
 }
 
-// block blocks every selected day whose 30 days hold commit, which withheld files, and drops
-// their changes' lines; a day a commit before it blocked stays blocked by that one.
-func (m *measurement) block(commit Commit, files int) {
+// block blocks every selected day whose 30 days hold commit, which withheld files and left files
+// unlisted where unlisted says so, and drops their changes' lines; a day a commit before it blocked
+// stays blocked by that one.
+func (m *measurement) block(commit Commit, files int, unlisted bool) {
 	last := dayNumber(commit.CommittedAt)
 	for number := last - blockDays; number <= last; number++ {
 		if _, done := m.blocked[number]; done || !m.selected[number] {
 			continue
 		}
 		m.blocked[number] = DayResult{Day: dayOfNumber(number), State: DayBlocked, BlockedSHA: commit.SHA,
-			BlockedFiles: files}
+			BlockedFiles: files, BlockedUnlisted: unlisted}
 		m.replay.Drop(m.changes[number]...)
 	}
 }

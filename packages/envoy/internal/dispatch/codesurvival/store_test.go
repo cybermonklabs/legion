@@ -172,18 +172,19 @@ var allowed = map[string]string{
 	"code_pairs.lines":             "integer",
 	"code_pairs.days_between":      "double precision",
 	// Days: a count and a 32-byte digest, a state, its times, and a blocking commit's SHA with
-	// the count of its files and a reason.
-	"code_days.repo":           "text",
-	"code_days.day":            "date",
-	"code_days.commits":        "integer",
-	"code_days.digest":         "bytea",
-	"code_days.state":          "text",
-	"code_days.measured_at":    "timestamp with time zone",
-	"code_days.marked_at":      "timestamp with time zone",
-	"code_days.blocked_sha":    "text",
-	"code_days.blocked_files":  "integer",
-	"code_days.blocked_reason": "text",
-	"code_days.tried_at":       "timestamp with time zone",
+	// the count of its withheld files, whether its listing left files out, and a reason.
+	"code_days.repo":             "text",
+	"code_days.day":              "date",
+	"code_days.commits":          "integer",
+	"code_days.digest":           "bytea",
+	"code_days.state":            "text",
+	"code_days.measured_at":      "timestamp with time zone",
+	"code_days.marked_at":        "timestamp with time zone",
+	"code_days.blocked_sha":      "text",
+	"code_days.blocked_files":    "integer",
+	"code_days.blocked_unlisted": "boolean",
+	"code_days.blocked_reason":   "text",
+	"code_days.tried_at":         "timestamp with time zone",
 	// Projects: a project's key, the digest of the groups its rows stand built under, and when.
 	"code_projects.project_key":   "text",
 	"code_projects.groups_digest": "bytea",
@@ -291,7 +292,7 @@ func TestTheSelectedDaysAreReplacedWholeOrNotAtAll(t *testing.T) {
 			build: func(out *survival.MeasureOutput) {
 				out.Days = []survival.DayResult{measured(0), {Day: dayN(1), State: survival.DayBlocked, BlockedSHA: shaOf(25)}}
 			},
-			constraint: "code_days_blocked_files_check",
+			constraint: "code_days_blocked_columns",
 		},
 	}
 	for name, failure := range fails {
@@ -757,8 +758,13 @@ func TestTheResultsTablesRefuseARowThatBreaksTheirRules(t *testing.T) {
 		{"a measured day that names a blocking commit", "", fmt.Sprintf(day, "measured_at, tried_at, blocked_sha", `'measured', now(), now(), repeat('a', 40)`), "23514", "code_days_measured_columns"},
 		{"a marked day with no mark", "", fmt.Sprintf(day, "measured_at, tried_at", `'marked', now(), now()`), "23514", "code_days_marked_columns"},
 		{"a blocked day with no file count", "", fmt.Sprintf(day, "blocked_sha, tried_at", `'blocked', repeat('a', 40), now()`), "23514", "code_days_blocked_columns"},
+		{"a blocked day with no file withheld and none unlisted", "", fmt.Sprintf(day, "blocked_sha, blocked_files, tried_at", `'blocked', repeat('a', 40), 0, now()`), "23514", "code_days_blocked_columns"},
+		{"a blocked day with a negative count of files", "", fmt.Sprintf(day, "blocked_sha, blocked_files, blocked_unlisted, tried_at", `'blocked', repeat('a', 40), -1, true, now()`), "23514", "code_days_blocked_files_check"},
 		{"a blocked day with a measured time", "", fmt.Sprintf(day, "blocked_sha, blocked_files, tried_at, measured_at", `'blocked', repeat('a', 40), 2, now(), now()`), "23514", "code_days_blocked_columns"},
 		{"a blocked day with no commit", "", fmt.Sprintf(day, "blocked_files, tried_at", `'blocked', 2, now()`), "23514", "code_days_blocked_columns"},
+		{"a replayed day that holds files unlisted", "", fmt.Sprintf(day, "blocked_unlisted", `'replayed', true`), "23514", "code_days_replayed_holds_a_fingerprint_only"},
+		{"a measured day that holds files unlisted", "", fmt.Sprintf(day, "measured_at, tried_at, blocked_unlisted", `'measured', now(), now(), true`), "23514", "code_days_measured_columns"},
+		{"a marked day that holds files unlisted", "", fmt.Sprintf(day, "measured_at, tried_at, marked_at, blocked_unlisted", `'marked', now(), now(), now(), true`), "23514", "code_days_marked_columns"},
 		{"a project digest of 16 bytes", project, `insert into code_projects (project_key, groups_digest, built_at) values ('ALPHA', decode(repeat('ab', 16), 'hex'), now())`, "23514", "code_projects_groups_digest_check"},
 		{"a project digest with no time", project, `insert into code_projects (project_key, groups_digest) values ('ALPHA', decode(repeat('ab', 32), 'hex'))`, "23514", "code_projects_digest_and_time_together"},
 		{"a row of no project", "", `insert into code_projects (project_key) values ('NOSUCH')`, "23503", "code_projects_project_key_fkey"},
@@ -785,6 +791,8 @@ func TestTheResultsTablesRefuseARowThatBreaksTheirRules(t *testing.T) {
 		`insert into code_pairs (repo, adder_sha, remover_sha, remover_pr, remover_head_ref, remover_author, lines, days_between)
 			values ('acme/w', repeat('a', 40), repeat('b', 40), 2, 'c', 'bob', 1, -0.5)`,
 		fmt.Sprintf(day, "measured_at, tried_at", `'measured', now(), now()`),
+		`insert into code_days (repo, day, commits, digest, state, blocked_sha, blocked_files, blocked_unlisted, tried_at)
+			values ('acme/w', '2026-09-02', 1, decode(repeat('ab', 32), 'hex'), 'blocked', repeat('a', 40), 0, true, now())`,
 		`insert into code_projects (project_key) values ('ALPHA')`,
 	} {
 		if _, err := tx.Exec(t.Context(), statement); err != nil {

@@ -80,10 +80,12 @@ func readable(parts []measures.DayPart) bool {
 }
 
 // Status is the status series folded over the days of a range: how many are measured, marked and
-// blocked, the files the blocking commits withheld, the oldest marked day (nil with none), the
-// groups the rows were built under (nil with no row), how many rows name a repository the App
-// cannot read, and how many days of the range wait: those after the newest day with a row, every
-// day of the range when none has one.
+// blocked, the files the blocking commits withheld (BlockedFiles: the files GitHub listed with no
+// patch, summed over the blocked days, so a commit whose listing left files out blocks its days
+// and adds none of the files it left out), the oldest marked day (nil with none), the groups the
+// rows were built under (nil with no row), how many rows name a repository the App cannot read,
+// and how many days of the range wait: those after the newest day with a row, every day of the
+// range when none has one.
 type Status struct {
 	MeasuredDays   int
 	MarkedDays     int

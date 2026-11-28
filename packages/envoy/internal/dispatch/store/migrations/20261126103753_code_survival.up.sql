@@ -39,11 +39,15 @@
 --   measured  a run stored the day's changes and pairs (measured_at, tried_at).
 --   marked    a measured day that a later run found changed, or whose 30 days hold a changed
 --             day (marked_at); it reads as no data until a run measures it again.
---   blocked   a commit whose patch neither route gave whole blocks the day (R9): blocked_sha and
---             blocked_files name it, blocked_reason may say why, tried_at says when. The SHA is
---             kept only while the day is blocked, and the row that measures the day replaces it.
--- Each state's checks name the columns it holds and the columns it leaves null, so no row says
--- two things.
+--   blocked   a commit whose patch neither route gave whole blocks the day (R9): blocked_sha
+--             names it, blocked_files counts the files it withheld (listed with changes and no
+--             whole patch), and blocked_unlisted says its listing left out files whose number no
+--             answer names (GitHub's limit of 3,000 files, no stats, or fewer lines than the
+--             stats count), so blocked_files is 0 only where blocked_unlisted holds;
+--             blocked_reason may say why, tried_at says when. The SHA is kept only while the day
+--             is blocked, and the row that measures the day replaces it.
+-- Each state's checks name the columns it holds and the columns it leaves null, or false for
+-- blocked_unlisted, so no row says two things.
 --
 -- code_projects holds one row per project whose day rows the run or the regroup built: the sha256
 -- of the default repository and the code groups they stand built under (groups_digest; the
@@ -108,30 +112,31 @@ create table code_pairs (
 );
 
 create table code_days (
-    repo           text not null check (repo <> '' and repo = lower(repo)),
-    day            date not null,
-    commits        integer not null check (commits >= 0),
-    digest         bytea not null check (octet_length(digest) = 32),
-    state          text not null check (state in ('replayed', 'measured', 'marked', 'blocked')),
-    measured_at    timestamptz,
-    marked_at      timestamptz,
-    blocked_sha    text check (blocked_sha ~ '^[0-9a-f]{40}$'),
-    blocked_files  integer check (blocked_files > 0),
-    blocked_reason text check (blocked_reason <> ''),
-    tried_at       timestamptz,
+    repo             text not null check (repo <> '' and repo = lower(repo)),
+    day              date not null,
+    commits          integer not null check (commits >= 0),
+    digest           bytea not null check (octet_length(digest) = 32),
+    state            text not null check (state in ('replayed', 'measured', 'marked', 'blocked')),
+    measured_at      timestamptz,
+    marked_at        timestamptz,
+    blocked_sha      text check (blocked_sha ~ '^[0-9a-f]{40}$'),
+    blocked_files    integer check (blocked_files >= 0),
+    blocked_unlisted boolean not null default false,
+    blocked_reason   text check (blocked_reason <> ''),
+    tried_at         timestamptz,
     primary key (repo, day),
     constraint code_days_replayed_holds_a_fingerprint_only check (state <> 'replayed' or (
         measured_at is null and marked_at is null and blocked_sha is null and blocked_files is null
-        and blocked_reason is null and tried_at is null)),
+        and not blocked_unlisted and blocked_reason is null and tried_at is null)),
     constraint code_days_measured_columns check (state <> 'measured' or (
         measured_at is not null and tried_at is not null and marked_at is null
-        and blocked_sha is null and blocked_files is null and blocked_reason is null)),
+        and blocked_sha is null and blocked_files is null and not blocked_unlisted and blocked_reason is null)),
     constraint code_days_marked_columns check (state <> 'marked' or (
         measured_at is not null and tried_at is not null and marked_at is not null
-        and blocked_sha is null and blocked_files is null and blocked_reason is null)),
+        and blocked_sha is null and blocked_files is null and not blocked_unlisted and blocked_reason is null)),
     constraint code_days_blocked_columns check (state <> 'blocked' or (
-        blocked_sha is not null and blocked_files is not null and tried_at is not null
-        and measured_at is null and marked_at is null))
+        blocked_sha is not null and blocked_files is not null and (blocked_files > 0 or blocked_unlisted)
+        and tried_at is not null and measured_at is null and marked_at is null))
 );
 
 create table code_projects (

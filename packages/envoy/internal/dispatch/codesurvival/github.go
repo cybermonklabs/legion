@@ -672,7 +672,7 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 			if err := g.atFloor(); err != nil {
 				return err
 			}
-			key, _, err := g.attributor.IssueOf(ctx, g.pool, g.client, token, delivery.PullRequestFacts{
+			key, err := g.attributor.IssueOf(ctx, g.pool, g.client, token, delivery.PullRequestFacts{
 				Repo: r.Repo, Number: pull.Number, URL: pull.URL, Title: pull.Title, Body: pull.Body,
 				HeadRef: pull.HeadRef, HeadRepo: pull.HeadRepo,
 			})
@@ -709,8 +709,8 @@ type PatchRead struct {
 //
 // A patch GitHub refuses (refusal) is read once through the commit's files[] in its place, every
 // page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch), a
-// listing that shows it holds less than the whole commit counted as withholding the files it left
-// out (filesListing), and the refusal and the count named in the read's Reason.
+// listing that shows it holds less than the whole commit marked as leaving out files whose number
+// no answer names (filesListing.patch), and the refusal and the count named in the read's Reason.
 // A failure that may pass is asked again (get), and one that still fails after the last try, or a
 // failure that is no refusal, fails the read: the run stores nothing and tries again at its next
 // pass. A rate limit is the budget's, returned at once as the *githubapp.RateLimitError.
@@ -812,14 +812,12 @@ func (l *filesListing) short() string {
 	return ""
 }
 
-// withheldFiles is how many of the commit's files the listing withheld: those it listed with no
-// whole patch, and, where it is short, one more for the files it did not list, whose number no
-// answer names. A listing that withheld any blocks the days whose 30 days hold its commit.
-func (l *filesListing) withheldFiles() int {
-	if l.short() != "" {
-		return l.withheld + 1
-	}
-	return l.withheld
+// patch is files, the listing's files in the replay's form, as the commit's patch: Withheld, how
+// many files it listed with no whole patch, and, where it is short, Unlisted, since the files it
+// left out are a number no answer names. A patch with either blocks the days whose 30 days hold
+// its commit (survival.Measure).
+func (l *filesListing) patch(files []survival.FileDiff) survival.Patch {
+	return survival.Patch{Files: files, Withheld: l.withheld, Unlisted: l.short() != ""}
 }
 
 // reason is what the listing withheld as a blocked day's reason names it after the refusal:
@@ -836,8 +834,9 @@ func (l *filesListing) reason() string {
 // filesPatch reads the files[] of commit sha, every page of it
 // (`GET /repos/{owner}/{repo}/commits/{sha}?per_page=100&page=n`, following each page's Link
 // header), into the replay's form, a page at a time (filesListing), so no page's patch text is
-// held past its own. The patch withholds what the listing withheld (filesListing.withheldFiles),
-// and the read's Reason names it (filesListing.reason), for Patch to put the refusal before.
+// held past its own. The patch withholds what the listing withheld and says where it left files
+// out (filesListing.patch), and the read's Reason names it (filesListing.reason), for Patch to put
+// the refusal before.
 func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, error) {
 	files, read := []survival.FileDiff{}, 0
 	var listing filesListing
@@ -856,6 +855,5 @@ func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (Patc
 			return PatchRead{}, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
 	}
-	return PatchRead{Patch: survival.Patch{Files: files, Withheld: listing.withheldFiles()}, Route: RouteFiles, Bytes: read,
-		Reason: listing.reason()}, nil
+	return PatchRead{Patch: listing.patch(files), Route: RouteFiles, Bytes: read, Reason: listing.reason()}, nil
 }
