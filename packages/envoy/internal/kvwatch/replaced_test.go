@@ -10,6 +10,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -28,6 +29,8 @@ type fakeWatcher struct {
 	stopped chan struct{}
 	stopOne sync.Once
 	endOne  sync.Once
+	reader  sync.Once
+	readID  atomic.Uint64
 	mu      sync.Mutex
 	ctx     context.Context
 }
@@ -38,7 +41,10 @@ func newFakeWatcher(t *testing.T) *fakeWatcher {
 	return f
 }
 
-func (f *fakeWatcher) Updates() <-chan jetstream.KeyValueEntry { return f.updates }
+func (f *fakeWatcher) Updates() <-chan jetstream.KeyValueEntry {
+	f.reader.Do(func() { f.readID.Store(goroutinetest.ID()) })
+	return f.updates
+}
 
 func (f *fakeWatcher) Stop() error {
 	f.stops.Add(1)
@@ -151,29 +157,33 @@ func scanningFirst(t *testing.T, kv bus.KeyValue, f *fakeWatcher, into kvwatch.C
 // and its end, when nats.go closes it, records nothing and logs nothing. End, which ends what
 // kvwatch still holds, does not stop it again.
 func TestAReplacedWatcherStillScanningIsStoppedAtOnceAndReadUntilItEnds(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	_, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)
 	scanning := newFakeWatcher(t)
 	into := newSeen()
-	w := scanningFirst(t, kv, scanning, into, kvwatch.WithLogger(logger))
+	w := scanningFirst(t, kv, scanning, into, kvwatch.WithLogger(logger), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
 
 	if err := kvwatch.WatchOn(w, scripted(kv).handle()); err != nil {
 		t.Fatalf("the replacing watch: %v", err)
 	}
 	scanning.stopCount(t, 1, "replaced mid-scan, when the replacing watch returned")
 	scanning.released(t, "replaced mid-scan")
-	eventually(t, "the replacement's read to complete", w.Following)
+	testwait.Until(t, "the replacement's read to complete", func() (bool, bool) {
+		following := w.Following()
+		return following, following
+	})
 
 	scanning.deliver(t, fakeEntry{key: "from-the-replaced-watcher"})
 	scanning.deliver(t, nil)
 	scanning.end()
-	time.Sleep(200 * time.Millisecond)
+	returned(t, "the replaced watcher to finish consuming", scanning.readID.Load())
 	if into.has("from-the-replaced-watcher") || w.Err() != nil || len(warnings(records())) != 0 || !w.Following() {
 		t.Fatalf("after the replaced watcher delivered and ended: its record applied %v, Err %v, logged %q, Following %v; want nothing applied, recorded or logged, the copy following",
 			into.has("from-the-replaced-watcher"), w.Err(), warnings(records()), w.Following())
 	}
-	w.End(testContext(t))
+	w.End(testwait.Context(t))
 	scanning.stopCount(t, 1, "after End")
 }
 

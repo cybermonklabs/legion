@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -122,6 +123,19 @@ func injecting(records <-chan jetstream.KeyValueEntry) watchStep {
 		}()
 		return &forwardedWatcher{KeyWatcher: watcher, updates: updates}, nil
 	}
+}
+
+// offerRecord waits for the injecting watch to accept an entry without leaving a sender blocked.
+func offerRecord(t *testing.T, records chan<- jetstream.KeyValueEntry, entry jetstream.KeyValueEntry) {
+	t.Helper()
+	testwait.Until(t, "the injecting watch to accept "+entry.Key(), func() (bool, bool) {
+		select {
+		case records <- entry:
+			return true, true
+		default:
+			return false, false
+		}
+	})
 }
 
 // recreate deletes the test bucket and creates it again holding keys, and returns the new bucket.
@@ -246,6 +260,7 @@ func TestARecordOnAnOldConfirmationWaitsForAReadOfTheStream(t *testing.T) {
 // follows on an old confirmation, is applied only after the read of the stream it waits for has
 // found the new bucket and stopped the copy following; the watcher then reads the new bucket whole.
 func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("old")); err != nil {
@@ -270,13 +285,19 @@ func TestARecordFromARecreatedBucketIsAppliedOnlyOnceTheCopyStoppedFollowing(t *
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	testwait.Until(t, "the first read's completion", func() (bool, bool) {
+		following := w.Following()
+		return following, following
+	})
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
 	now.advance(staleConfirmation)
-	records <- entry
-	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
+	offerRecord(t, records, entry)
+	testwait.Until(t, "the new bucket's record to be applied", func() (bool, bool) {
+		has := into.has("fresh")
+		return has, has
+	})
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()
@@ -510,15 +531,11 @@ func (k *heldStreams) handle(kv bus.KeyValue) bus.KeyValue {
 	return bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), k)
 }
 
-// waitingInTheGate reports whether a record is held in the gate on a read of the stream already in
-// flight: a goroutine parked on a channel receive in applyCurrent itself.
-func waitingInTheGate() bool {
-	for _, goroutine := range goroutinetest.Traces() {
-		if strings.Contains(goroutine, "[chan receive") && strings.Contains(goroutine, "kvwatch.(*Watcher).applyCurrent(") {
-			return true
-		}
-	}
-	return false
+// waitingInTheGate reports whether this consume is waiting in applyCurrent for an in-flight read.
+func waitingInTheGate(id uint64) bool {
+	header, stack, _ := strings.Cut(traceOf(id), "\n")
+	return strings.Contains(header, "[chan receive") &&
+		strings.HasPrefix(stack, "github.com/sjawhar/envoy/internal/kvwatch.(*Watcher).applyCurrent(")
 }
 
 // A record on an old confirmation sends a read of the stream; while that read stalls, every
@@ -627,6 +644,7 @@ func TestAFailedReadOfTheStreamIsNotRetriedPerRecord(t *testing.T) {
 // consumer nats.go moved onto the new bucket delivered, is applied only once the copy stopped
 // following.
 func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	if _, err := kv.Put("ghost", []byte("old")); err != nil {
@@ -639,7 +657,10 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 		followingAt = map[string]bool{}
 	)
 	into := newSeen()
+	reading := make(chan uint64, 1)
+	var firstApply sync.Once
 	cache := withApply{seen: into, before: func(entry natsgo.KeyValueEntry) {
+		firstApply.Do(func() { reading <- goroutinetest.ID() })
 		following := w.Following()
 		mu.Lock()
 		defer mu.Unlock()
@@ -654,7 +675,11 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 		kvwatch.WithNow(now.Now), kvwatch.WithAfterFunc(timers.afterFunc()))
 	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first read's completion", w.Following)
+	consumeID := testwait.Receive(t, "the first watcher's first apply", reading)
+	testwait.Until(t, "the first read's completion", func() (bool, bool) {
+		following := w.Following()
+		return following, following
+	})
 
 	recreated := recreate(t, conn, "fresh")
 	entry := jetStreamEntry(t, wrap(t, conn, recreated), "fresh")
@@ -667,15 +692,24 @@ func TestARecordWaitsForTheProbesReadInFlight(t *testing.T) {
 		defer close(probed)
 		probe.fire()
 	}()
-	eventually(t, "the probe's read of the stream", func() bool { return streams.reads() == base+1 })
-	records <- entry
-	eventually(t, "the record to wait in the gate", waitingInTheGate)
+	testwait.Until(t, "the probe's read of the stream", func() (int, bool) {
+		n := streams.reads()
+		return n, n == base+1
+	})
+	offerRecord(t, records, entry)
+	testwait.Until(t, "the record to wait in the gate", func() (bool, bool) {
+		waiting := waitingInTheGate(consumeID)
+		return waiting, waiting
+	})
 	if into.has("fresh") {
 		t.Fatal("the record was applied while the probe's read was in flight")
 	}
 	let()
 	wait(t, probed, "the probe to end")
-	eventually(t, "the new bucket's record to be applied", func() bool { return into.has("fresh") })
+	testwait.Until(t, "the new bucket's record to be applied", func() (bool, bool) {
+		has := into.has("fresh")
+		return has, has
+	})
 	mu.Lock()
 	whileFollowing := followingAt["fresh"]
 	mu.Unlock()

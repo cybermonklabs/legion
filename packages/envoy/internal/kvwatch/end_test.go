@@ -231,13 +231,14 @@ func TestADeleteConsumerAnsweredErrDisconnectedDuringEndIsAWarning(t *testing.T)
 	}
 }
 
-// endsWaiting counts the goroutines parked inside End: waiting for a watch, or for another End.
-func endsWaiting() int {
+// endsWaiting counts the recorded End callers parked waiting for a watch or for another End.
+func endsWaiting(ids []uint64) int {
 	n := 0
-	for _, goroutine := range goroutinetest.Traces() {
-		header, _, _ := strings.Cut(goroutine, "\n")
+	for _, id := range ids {
+		trace := traceOf(id)
+		header, _, _ := strings.Cut(trace, "\n")
 		parked := strings.Contains(header, "[select") || strings.Contains(header, "[sync.Mutex.Lock")
-		if parked && strings.Contains(goroutine, "kvwatch.(*Watcher).End(") {
+		if parked && strings.Contains(trace, "kvwatch.(*Watcher).End(") {
 			n++
 		}
 	}
@@ -248,6 +249,7 @@ func endsWaiting() int {
 // caller returns once it has, so a second End beside a first still waiting on a watch never takes
 // the first's wake-up.
 func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	conn, kv := bucket(t, uri)
 	held := holdWatch(kv)
@@ -256,15 +258,24 @@ func TestEndCalledTwiceAtOnceReturnsForBoth(t *testing.T) {
 	w.Start()
 	armedWatch(t, held, "the watch to arm its watcher")
 	ended := make(chan struct{}, 2)
+	calling := make(chan uint64, 2)
 	for range 2 {
 		go func() {
+			calling <- goroutinetest.ID()
 			// Under the test's own context, which has no deadline: each End's return is the fact
 			// the row waits for, and only the wait below ends that wait.
 			w.End(t.Context())
 			ended <- struct{}{}
 		}()
 	}
-	eventually(t, "both Ends to wait for the watch", func() bool { return endsWaiting() == 2 })
+	ids := make([]uint64, 0, 2)
+	for range 2 {
+		ids = append(ids, testwait.Receive(t, "an End caller's goroutine id", calling))
+	}
+	testwait.Until(t, "both Ends to wait for the watch", func() (int, bool) {
+		n := endsWaiting(ids)
+		return n, n == len(ids)
+	})
 	close(held.release)
 	for range 2 {
 		testwait.Receive(t, "both Ends to return once the watch they waited for had finished", ended)
@@ -299,27 +310,43 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 	}
 }
 
-// End is bounded by its context: against a server that does not answer, it returns at the
-// deadline and logs the unanswered delete as an ERROR rather than holding the shutdown.
+// End is bounded by its context. Cancel it while the consumer delete is held unanswered.
+// End must report that cause as an ERROR without waiting for the delete to finish.
 func TestEndIsBoundedByItsContext(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	_, kv := bucket(t, uri)
+	held := newHeldStopKV(kv.WatchHandle())
+	defer close(held.release)
 	logger, records := jsonLogger(t)
-	w := kvwatch.New("test cache", kv, newSeen(), kvwatch.WithLogger(logger))
+	w := kvwatch.New("test cache", bus.NewKeyValue(kv.Legacy(), held, kv.Streams()), newSeen(),
+		kvwatch.WithLogger(logger), kvwatch.WithAfterFunc((&pending{}).afterFunc()))
+	t.Cleanup(w.Stop)
 	w.Start()
-	eventually(t, "the first scan", w.Ready)
+	if err := w.WaitReady(testwait.Context(t)); err != nil {
+		t.Fatalf("WaitReady: %v", err)
+	}
 
 	thaw := srv.Freeze(t)
-	t.Cleanup(thaw)
+	defer thaw()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	w.End(ctx)
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("End took %s against an unresponsive server, want it to return at its deadline", elapsed)
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	ended := make(chan struct{})
+	go func() {
+		w.End(ctx)
+		close(ended)
+	}()
+	testwait.Receive(t, "End to enter the held stop", held.entered)
+	cause := errors.New("shutdown canceled while the consumer delete was unanswered")
+	cancel(cause)
+	testwait.Receive(t, "End to return on cancellation", ended)
+	select {
+	case <-held.returned:
+		t.Fatal("the stop returned before its unanswered delete was released")
+	default:
 	}
-	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: context deadline exceeded"; got != want {
+	if got, want := strings.Join(warnings(records()), ", "), "ERROR test cache watcher end failed: delete its consumer: "+cause.Error(); got != want {
 		t.Fatalf("End logged %q, want %q", got, want)
 	}
 	// The stop is still waiting on its delete, so End cannot say the watcher ended.
