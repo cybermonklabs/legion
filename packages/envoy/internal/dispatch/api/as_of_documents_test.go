@@ -70,6 +70,7 @@ const repeatedBlockText = "To be decided."
 // block's token, embedding state and anchored counts, which the version does not record. Every
 // other member is the member of the answer read at the cut.
 func TestADocumentReadAtACutIsTheVersionThen(t *testing.T) {
+	t.Parallel()
 	// A document service that settles nothing during the test and admits a browser's socket.
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "ASDV", "Documents read at a cut", "# Spec\n\nThe spec.\n")
@@ -191,6 +192,7 @@ func TestADocumentReadAtACutIsTheVersionThen(t *testing.T) {
 // ARTIFACT_NOT_FOUND as of the cut, and the issue's document list and the issue read, as of the
 // cut, are the answers read at the cut without it.
 func TestARemovedDocumentIsAbsentAtACutBeforeItsRemoval(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "ASDR", "A document removed after the cut", "The spec.\n")
 	scratch := emptyDocument(t, handler, issue.Key, "Scratch")
@@ -246,6 +248,7 @@ func TestARemovedDocumentIsAbsentAtACutBeforeItsRemoval(t *testing.T) {
 // download's file name counts the versions at the cut, so the document's newest version then
 // carries no number in it.
 func TestAVersionMadeAfterTheCutIsNotFound(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "ASDN", "Versions read at a cut", "The spec.\n")
 	owner := "/api/v1/issues/" + issue.Key
@@ -319,6 +322,7 @@ func TestAVersionMadeAfterTheCutIsNotFound(t *testing.T) {
 // approval awaits it, names it, and leaves out its documents and names them absent (reason B), as
 // the request's own read does.
 func TestADocumentAtACutAwaitsAnApprovalRequestWrittenBeforeItsDocuments(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASDA")
 	issue := asOfIssue(t, world.handler, map[string]any{
 		"project": "ASDA", "title": "An approval from before its documents", "spec": "# Spec\n\nApprove this.\n",
@@ -388,6 +392,7 @@ func TestADocumentAtACutAwaitsAnApprovalRequestWrittenBeforeItsDocuments(t *test
 // its state and version among them, is the member of the present read, which gives the fill's
 // hash and source.
 func TestAReviewHashTheBootFillPinnedIsAbsentAtEveryCut(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASDH")
 	ctx := context.Background()
 	pool := world.served.deps.Store.Pool

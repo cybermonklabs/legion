@@ -32,6 +32,7 @@ import (
 // twice, the daemon logged no question at all, and A1 failed with "no answer in ask
 // 9d743249-1da3-45d6-b18d-405b214830eb's thread within four minutes".
 func TestAMessageToAStoppedAgentWhoseInterestNamesThisListenerIsHandedToItsDaemon(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

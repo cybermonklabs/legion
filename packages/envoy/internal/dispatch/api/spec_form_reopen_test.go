@@ -35,6 +35,7 @@ const withdrawnDecision = "\n:::ask{#close-decision urgency=\"med\" multiple=\"f
 // person's approval of a version that breaks the form is refused. The control: a clean edit is
 // approved.
 func TestAReopenJudgesTheVersionsThatTheRequestNamesOnceItMoves(t *testing.T) {
+	t.Parallel()
 	// edited sets the text of the first paragraph of the first requirement or check block to edit.
 	edited := func(edit string) func(document *pmdoc.Node) error {
 		return func(document *pmdoc.Node) error {

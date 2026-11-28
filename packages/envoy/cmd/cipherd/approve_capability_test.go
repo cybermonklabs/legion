@@ -86,6 +86,7 @@ func postThroughProxy(t *testing.T, client *http.Client, path, held string) (int
 // person and the session, bound to the key the boot logged as the proxy's; and the broker logged
 // the token's SHA-256 and that key's thumbprint, never the token.
 func TestTheBootServesTheApproveCapabilityOfItsDPoPBlock(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	github.PublishKey(t, "github-key")
@@ -234,6 +235,7 @@ func TestTheBootServesTheApproveCapabilityOfItsDPoPBlock(t *testing.T) {
 // same broker with no profiles file logs the capability off and refuses the same trade
 // invalid_request, so the placeholder comes from the DISPATCH_APPROVE_TOKEN block.
 func TestABrokerWithoutTheApproveBlockRefusesThePlaceholder(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github, google := oidctest.New(t), oidctest.New(t), oidctest.New(t)
 	github.PublishKey(t, "github-key")

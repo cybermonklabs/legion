@@ -18,6 +18,7 @@ import (
 // enrollment names is refused as for a record id no record has, and the request is left pending,
 // while a person the project lists decides it as before.
 func TestADecisionChecksTheProjectsOfBothEnrollments(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name       string
 		asked, now []string

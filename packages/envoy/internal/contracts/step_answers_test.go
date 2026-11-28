@@ -11,6 +11,7 @@ import (
 // first. Then, entry by entry, a model outside the form of an agent's text, fewer than 1 call, and
 // a model an earlier entry named. A list with no entry breaks none.
 func TestCheckStepAnswersAnswersTheFirstRuleTheAnswersBreak(t *testing.T) {
+	t.Parallel()
 	type answer struct {
 		model string
 		calls int64

@@ -248,6 +248,7 @@ func askObjects(doc any) map[string][]postAt {
 // thread, a comment on a project document, and an issue message sent to a live session that a
 // person quoted in a reply, each edited before the cut so its history holds an entry then.
 func TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread(t *testing.T) {
+	t.Parallel()
 	const project = "ASOD"
 	world, takeCut := newAsOfThreadWorld(t, project)
 	handler := world.handler
@@ -375,6 +376,7 @@ func TestAPostDeletedAfterTheCutReadsAsDeletedInEveryThread(t *testing.T) {
 // after the cut reads at the cut, on every message route, with the text of the first edit and
 // that edit's time, and its history at the cut holds the one body that edit replaced.
 func TestAnIssueMessageEditedBeforeAndAfterTheCutReadsItsTextThen(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOE")
 	// Two paragraphs, each under the block limit, together past what an event carries whole.
 	paragraph := strings.Repeat("harbour ", 2500)
@@ -433,6 +435,7 @@ func TestAnIssueMessageEditedBeforeAndAfterTheCutReadsItsTextThen(t *testing.T) 
 // migration, with no history row), and edited again after the cut holds no entry at the cut, and
 // reads at the cut with the body of the older build's edit.
 func TestAPostsHistoryAtACutHoldsTheEntriesThen(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOH")
 	handler := world.handler
 	database := world.served.deps.Store
@@ -518,6 +521,7 @@ func TestAPostsHistoryAtACutHoldsTheEntriesThen(t *testing.T) {
 // turn), not the session's reply after the cut. Snoozes keep no history, so the snooze is left
 // out and named absent.
 func TestAnInboxAtACutListsTheAsksOpenThen(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOI")
 	handler := world.handler
 	asks := "/api/v1/issues/" + world.issue + "/asks"
@@ -579,6 +583,7 @@ func TestAnInboxAtACutListsTheAsksOpenThen(t *testing.T) {
 // is a reply in an open ask's thread, so the ask's read, the issue's ask list with its threads and
 // the inbox leave it out of the thread too.
 func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOT")
 	database := world.served.deps.Store
 	long := func(word string) string {
@@ -644,6 +649,7 @@ func TestALongCommentEditedAfterTheCutNamesItsBodyAbsent(t *testing.T) {
 // open ask's thread, so the ask's read, the issue's ask list with its threads and the inbox leave
 // out the same members of it.
 func TestADeliveryWhoseStateNoEventDatesIsNamedAbsent(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOS")
 	database := world.served.deps.Store
 	ask := decodeBody[model.Ask](t, asOfSessionWrite(t, world.handler, http.MethodPost, "/api/v1/issues/"+world.issue+"/asks",
@@ -736,6 +742,7 @@ func TestADeliveryWhoseStateNoEventDatesIsNamedAbsent(t *testing.T) {
 // after the cut, and a since later than now, which the present read refuses as a time in the
 // future. Under a token that carries a cut, pi-envoy's own poll so gets an empty answer, not 400.
 func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOP")
 	send := func(body string) model.Message {
 		t.Helper()
@@ -796,6 +803,7 @@ func TestAnAnswersPollWithASinceAfterTheCutAnswersNothing(t *testing.T) {
 // cut reaches the answer through the tree; a read with none gives no tree and names none. The
 // block's node and id are the reply's own, and are given.
 func TestAReplyBlockAtACutIsLeftOut(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOB")
 	handler := world.handler
 	edited := world.comment(t, map[string]any{"body": "Alpha.\n\nBeta."})
@@ -888,6 +896,7 @@ func TestAReplyBlockAtACutIsLeftOut(t *testing.T) {
 // after the cut reads its block removed with no text, as the post reads deleted at the cut
 // (decision 14), and the answer names none of the three absent.
 func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOX")
 	handler, database := world.handler, world.served.deps.Store
 	ctx := context.Background()
@@ -1013,6 +1022,7 @@ func TestAPostsReplyBlockIsLeftOutAtACutThoughNoEventFollowsIt(t *testing.T) {
 // tree. The present read gives each ask's parts (requireAskPartsNow). No write changed a wording
 // with no event, so each ask's read gives its wording.
 func TestAnAsksPartsAreLeftOutAtEveryCut(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOK")
 	handler := world.handler
 	issue := "/api/v1/issues/" + world.issue
@@ -1117,6 +1127,7 @@ func TestAnAsksPartsAreLeftOutAtEveryCut(t *testing.T) {
 // of a typed block only, so no record gives the place of this paragraph at the cut. The read
 // leaves anchor_block out and names it absent (reason E).
 func TestAnAnchoredReadAtACutLeavesTheBlocksPlaceOut(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOA")
 	handler := world.handler
 	issue := asOfIssue(t, handler, map[string]any{
@@ -1158,6 +1169,7 @@ func TestAnAnchoredReadAtACutLeavesTheBlocksPlaceOut(t *testing.T) {
 // and names the three absent (reason L): the ask's read, the issue's ask list with its threads and
 // the inbox.
 func TestAnAsksRouteReachAtACutIsLeftOutWhole(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOR")
 	route := "session:" + asOfListenerSession
 	asOfWrite(t, world.handler, http.MethodPatch, "/api/v1/issues/"+world.issue, map[string]any{"route": route}, "alice")
@@ -1205,6 +1217,7 @@ func TestAnAsksRouteReachAtACutIsLeftOutWhole(t *testing.T) {
 // inbox at the cut leaves approval.documents out and names it absent (reason B), as the ask's own
 // read does, rather than give the empty list of documents.
 func TestAnInboxAtACutNamesAnOldApprovalsDocumentsAbsent(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOV")
 	database := world.served.deps.Store
 	spec := asOfIssue(t, world.handler, map[string]any{
@@ -1263,6 +1276,7 @@ func TestAnInboxAtACutNamesAnOldApprovalsDocumentsAbsent(t *testing.T) {
 // as of the cut, where it gives human now: the issue read, for its open ask and for its spec's
 // approval, the issue's asks, the ask's own read, open asks and the inbox.
 func TestAnOldApprovalRequestMovedBeforeTheCutWaitsOnItsAgentThen(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASOM")
 	database := world.served.deps.Store
 	issue := asOfIssue(t, world.handler, map[string]any{
@@ -1362,6 +1376,7 @@ func turnsAre(turns map[string]string, want string) bool {
 // conversation, so that reply is stored as the rule reads it, a message of that session in the
 // thread.
 func TestADirectThreadAtACutIsReadByTheSessionRuleThen(t *testing.T) {
+	t.Parallel()
 	handler, database, root, reply, _ := directConversationFrom(t, "alice")
 	if first := reply("On it."); first.Code != http.StatusCreated {
 		t.Fatalf("s1's reply: status=%d body=%s", first.Code, first.Body.String())

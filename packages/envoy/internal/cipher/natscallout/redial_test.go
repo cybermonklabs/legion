@@ -2,7 +2,6 @@ package natscallout
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"testing"
@@ -21,14 +20,7 @@ import (
 // varz's total_connections.
 func hubConnects(t *testing.T, server *testnats.Server) int64 {
 	t.Helper()
-	resp, err := http.Get(server.MonitorURL() + "/varz")
-	require.NoError(t, err)
-	defer resp.Body.Close()
-	require.Equal(t, http.StatusOK, resp.StatusCode, "the hub's /varz")
-	var varz struct {
-		TotalConnections *int64 `json:"total_connections"`
-	}
-	require.NoError(t, json.NewDecoder(resp.Body).Decode(&varz))
+	varz := readHubVarz(t, server)
 	require.NotNil(t, varz.TotalConnections, "the hub's /varz names no total_connections")
 	return *varz.TotalConnections
 }

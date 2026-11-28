@@ -123,6 +123,7 @@ func machineRows(t *testing.T, body []byte, own bool) []string {
 // row for row as Dispatch's machine-login page lists it, and ends its own login, after which the
 // broker refuses its proofs; another person's machine login is refused it and keeps its own.
 func TestOperatorListsAndRevokesTheirOwnMachines(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credID, key := ts.mintLauncherCredential(t, testApprover, "example-host-devbox-a")
 	otherID, otherKey := ts.mintLauncherCredential(t, "mallory@example.com", "example-host-devbox-m")
@@ -158,6 +159,7 @@ func TestOperatorListsAndRevokesTheirOwnMachines(t *testing.T) {
 // person's lists only theirs. A service's login is no more revocable there than an unknown id
 // (404 NOT_FOUND), and a malformed id is refused; none of those revokes ends anything.
 func TestOperatorMachinesAreThePersonsOwnRowsOfDispatchsList(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	devbox, devboxKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	laptop, _ := ts.mintLauncherCredential(t, testApprover, "example-host-laptop")
@@ -207,6 +209,7 @@ func TestOperatorMachinesAreThePersonsOwnRowsOfDispatchsList(t *testing.T) {
 // operator route refuses it, its own revoke included, which ends nothing: a token login's (the
 // Legion daemon's) and one a person approved before token logins alike.
 func TestServiceCredentialIsRefusedOperatorRoutes(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	tokenID, tokenKey := ts.mintServiceLauncherCredential(t)
 	outstandingID, outstandingKey := ts.mintOutstandingServiceCredential(t, testApprover)
@@ -246,6 +249,7 @@ func TestServiceCredentialIsRefusedOperatorRoutes(t *testing.T) {
 // grants, and a grant they approved on another person's session — and that other person's machine
 // login lists theirs.
 func TestOperatorGrantsMatchTheApproversDispatchList(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	box, boxKey := ts.enrolledBox(t, machineKey, credID, "box-"+t.Name())
@@ -284,6 +288,7 @@ func TestOperatorGrantsMatchTheApproversDispatchList(t *testing.T) {
 // Dispatch. On a grant its session already ended, the operator's revoke still withholds, which a
 // grant.withheld audit row records, naming the calling machine login too.
 func TestOperatorRevokesAGrant(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	box, boxKey := ts.enrolledBox(t, machineKey, credID, "box-"+t.Name())
@@ -373,6 +378,7 @@ func TestOperatorRevokesAGrant(t *testing.T) {
 // so nothing is withheld from that session: its other grant that got a secret automatically stays
 // live, it gets that secret at once again, and the grant's audit row withholds nothing.
 func TestAnApproverWhoIsNotTheOperatorRevokesWithoutWithholding(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credID, machineKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	mallory, malloryKey := ts.mintLauncherCredential(t, "mallory@example.com", "example-host-devbox-m")
@@ -408,6 +414,7 @@ func TestAnApproverWhoIsNotTheOperatorRevokesWithoutWithholding(t *testing.T) {
 // other machine's login; that machine's proofs and sessions end, the calling machine's go on, and
 // every row the revoke writes names the calling machine login.
 func TestOperatorRevokesAnotherOfTheirMachinesAsTheCallingLogin(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	devbox, devboxKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
 	laptop, laptopKey := ts.mintLauncherCredential(t, testApprover, "example-host-laptop")
@@ -460,6 +467,7 @@ func TestOperatorRevokesAnotherOfTheirMachinesAsTheCallingLogin(t *testing.T) {
 // Dispatch names, canonicalized, as its actor, however Dispatch spelled the login: the grant's
 // revoke and the machine login's revoke, with every row each writes.
 func TestUIRevokesRecordTheSignedInPerson(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	spelled := " \t" + "SAMI@Example.COM "
 	actor := record.HumanActor(testApprover)

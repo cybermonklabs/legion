@@ -46,6 +46,7 @@ func newServedRig(t *testing.T) *signInRig {
 // callback and ends there with the canonical address's session cookie, host-only; one started at
 // the canonical Host, whatever X-Forwarded-Host says, comes back to the canonical callback.
 func TestServedAddressTakesBrowserWritesAndSignIn(t *testing.T) {
+	t.Parallel()
 	rig := newServedRig(t)
 	for _, write := range []struct {
 		host, origin string
@@ -96,6 +97,7 @@ func TestServedAddressTakesBrowserWritesAndSignIn(t *testing.T) {
 // Control: remove the former fence (hostOrigins.atFormer answering false) and the sign-in starts
 // there, back to the canonical callback, and the writes with the canonical Origin or none pass.
 func TestAFormerHostIsNotServed(t *testing.T) {
+	t.Parallel()
 	rig := newServedRig(t)
 	for _, host := range []string{"old.example.test", "old.example.test:8443", "OLD.example.test."} {
 		for _, path := range []string{"/auth/start", "/auth/callback?code=c&state=s"} {
@@ -185,6 +187,7 @@ func TestAFormerHostIsNotServed(t *testing.T) {
 // there comes back to the canonical callback, and a cookie write there passes with the canonical
 // Origin and is refused with the served address's, at either port.
 func TestServedHostAtAnotherPortIsAnsweredAsTheCanonicalOne(t *testing.T) {
+	t.Parallel()
 	rig := newServedRig(t)
 	for _, start := range []struct{ host, callback string }{
 		{"b.example.test:8443", tableCanonical + "/auth/callback"},
@@ -237,6 +240,7 @@ func rawWhoamiAt(t *testing.T, handler http.Handler, host, login string) (int, s
 // canonical one, a served one, a former one and one the server names no origin at. With neither
 // list, its answer is byte for byte the one it was before either existed, with no origins key.
 func TestWhoamiNamesTheServedAndFormerAddresses(t *testing.T) {
+	t.Parallel()
 	const answer = `{"event_head":"0","kind":"user","login":"alice@example.com"`
 	lists := whoamiRouter(t, func(options *AppContextOptions) {
 		options.ServerURL, options.ServedOrigins, options.FormerOrigins = tableCanonical, []string{tableServed}, []string{tableFormer}
@@ -268,6 +272,7 @@ func TestWhoamiNamesTheServedAndFormerAddresses(t *testing.T) {
 //   - with both lists set, canonical, served, former at the canonical, a served and a former Host;
 //   - with neither list, no "origins" key on either form.
 func TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter(t *testing.T) {
+	t.Parallel()
 	const agentKey = "dispatch-router-whoami-origins-fixture"
 	tokens, err := auth.ParseSharedAgentTokens(agentKey)
 	if err != nil {
@@ -339,6 +344,7 @@ func TestTheAPIWhoamiMatchesAuthWhoamiThroughTheRouter(t *testing.T) {
 // former address beside no ServerURL, which leaves no canonical origin for the table to answer
 // every other Host with, and with an entry that is no origin weborigin.Parse takes.
 func TestBuildAppContextRefusesAListItCannotAnswer(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name    string
 		options AppContextOptions

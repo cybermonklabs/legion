@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -200,7 +201,7 @@ func keyDirSource(dir string) signerSource {
 	build := func(context.Context) (string, Signer, error) {
 		keyPath := filepath.Join(dir, keyFile)
 		if !exists(keyPath) {
-			if freshMarker(dir) {
+			if freshMarker(clock.Real(), dir) {
 				return "", nil, fmt.Errorf("%s holds %s and no key.pem yet: the launcher that wrote it is still enrolling this process", keyDirName(), pendingMarker)
 			}
 			return "", nil, absent("no key.pem in %s (a launcher puts one there for a box or a pod)", keyDirName())
@@ -346,7 +347,7 @@ func signInPassedOver(ctx context.Context, record cipherclient.SignInRecord, key
 // broken, so a process in one of its sessions stops rather than act as the machine.
 func helperSource() signerSource {
 	find := func() (string, error) {
-		answer := probeHelper()
+		answer := probeHelper(clock.Real())
 		switch {
 		case !answer.there:
 			if _, named := helperSocket(); named {

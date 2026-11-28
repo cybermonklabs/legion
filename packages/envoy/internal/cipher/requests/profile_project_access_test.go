@@ -39,6 +39,7 @@ func newPrivateProfileFixture(t *testing.T, team projectaccesstest.Row) (m *Mach
 // same session once it names PRIV; and its grant ends for good at the release after the session
 // no longer names PRIV.
 func TestAProfileOfAPrivateProjectsSecretGoesOnlyToASessionThatNamesIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newPrivateProfileFixture(t, publicTeam)
 	request, err := m.Create(t.Context(), enr, signRequest(t, m, key, "read it", "PRIV_READ"), "")
 	deniedFor(t, "a request for PRIV_READ, a profile of PRIV_KEY, from a session naming no project", request, err, "PRIV_READ", policy.ReasonProjectNotNamed)
@@ -62,6 +63,7 @@ func TestAProfileOfAPrivateProjectsSecretGoesOnlyToASessionThatNamesIt(t *testin
 // session does not name it, the next connection is refused ErrGrantNotLive and the grant ended, as
 // for TEAM_TOKEN itself (TestTheAirlockRefusesAConnectionOfALostProject).
 func TestTheAirlockRefusesAConnectionOfAProfileOfALostProject(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newPrivateProfileFixture(t, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_READ")
 	if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{}); err != nil {
@@ -90,6 +92,7 @@ func TestTheAirlockRefusesAConnectionOfAProfileOfALostProject(t *testing.T) {
 // as for a grant id no grant has, ErrGrantNotLive, never ErrNotYours, which would say the grant
 // exists; a session of carol that names TEAM is told ErrNotYours.
 func TestAGrantOfAPrivateProjectsProfileIsHiddenFromASessionOutsideIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newPrivateProfileFixture(t, publicTeam)
 	_, grantID := grantOf(t, m, enr, key, "read it", "TEAM_READ")
 	answerFrom(t, m, dispatchRows(privateTeam(insider)))
@@ -108,6 +111,7 @@ func TestAGrantOfAPrivateProjectsProfileIsHiddenFromASessionOutsideIt(t *testing
 // project's request, and a request for PRIV_READ is one, though PRIV_READ names no project of its
 // own: JudgeProject answers true for it, as for PRIV_KEY, and false for an untagged secret.
 func TestTheJudgeLeavesAPrivateProjectsProfileToAPerson(t *testing.T) {
+	t.Parallel()
 	m, enr, _ := newPrivateProfileFixture(t, publicTeam)
 	if private, err := m.JudgeProject(t.Context(), enr, "PRIV_READ", ""); err != nil || !private {
 		t.Fatalf("JudgeProject(PRIV_READ) = %v, %v; want true: its source is PRIV's, a private project", private, err)
@@ -122,6 +126,7 @@ func TestTheJudgeLeavesAPrivateProjectsProfileToAPerson(t *testing.T) {
 // channels PRIV's owner named, as SLACK_TOKEN does (TestAPrivateProjectsSlackGrantCarriesItsOwnersChannels),
 // so the proxy holds each post to them.
 func TestAProfileOfTheSlackTokenCarriesItsSourcesChannelLimit(t *testing.T) {
+	t.Parallel()
 	m, enr, key := newPrivateProfileFixture(t, publicTeam)
 	answerFrom(t, m, slackRows(projectaccesstest.Row{SlackChannels: []string{"C0ALLOWED1"}}, publicTeam))
 	nameProjects(t, m, enr, privProject)

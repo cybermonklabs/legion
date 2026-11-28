@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Server answers the helper socket. PeerOf is a field so tests can present a chosen pid.
@@ -52,6 +53,11 @@ type Server struct {
 	// Zero, which is what cmd/cipher-helper leaves it, means DefaultBrokerCallBound; a row that
 	// reads the bound sets one short enough to be quick.
 	BrokerCallBound time.Duration
+	// Clock is the clock brokerCall measures each broker-call op's bound and its timer on (clk).
+	// Production leaves it nil, which is the wall clock (clock.Real): cmd/cipher-helper sets
+	// nothing here. A test sets a clocktest.Fake, reads the bound and the timer the op arms on it,
+	// and moves it to the bound, so the row checks the bound without waiting it out.
+	Clock clock.Clock
 	// calls counts the connections Serve accepted that may still owe a broker call's answer, and
 	// pending is the same count as a number, for the "connections" attribute of the line Serve
 	// logs while it waits on calls: each connection counts from its accept until its handler has
@@ -335,15 +341,25 @@ func (s *Server) brokerCallTimerSlack() time.Duration {
 	return DefaultBrokerCallSlack
 }
 
+// clk is the clock brokerCall's bound and timer run on: Clock, and clock.Real when it is nil,
+// which every production Server is.
+func (s *Server) clk() clock.Clock {
+	if s.Clock == nil {
+		return clock.Real()
+	}
+	return s.Clock
+}
+
 // brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
 // answers by B + S, S the timer's slack (brokerCallTimerSlack, DefaultBrokerCallSlack unless a test
 // sets another), whatever the op is doing. It sets conn's deadline at B + S + 4 s, which is B + 5 s
 // at the default slack, the 5 s every op has for its read and its write, so the connection stays
 // open past the latest answer. call runs on a goroutine of its own, under ctx (Serve's) ended at
-// B, and the answer is the first of its result and a timer at B + S. On the timer the answer is
-// brokerCallOps[op](cause), the op's own refusal for an outcome it does not know, and a WARN names
-// the op and the bound; when the op ends after that, its result is logged too, so an operator can
-// see what the broker did.
+// B, and the answer is the first of its result and a timer at B + S. The bound and the timer run
+// on the Server's clock (clk), which is the wall clock unless a test sets a fake; conn's deadline
+// is on the wall clock. On the timer the answer is brokerCallOps[op](cause), the op's own refusal
+// for an outcome it does not know, and a WARN names the op and the bound; when the op ends after
+// that, its result is logged too, so an operator can see what the broker did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
@@ -386,18 +402,18 @@ func (s *Server) brokerCallTimerSlack() time.Duration {
 func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
 	bound, slack := s.brokerCallBound(), s.brokerCallTimerSlack()
 	_ = conn.SetDeadline(time.Now().Add(bound + slack + 4*time.Second))
-	callCtx, cancel := context.WithTimeout(ctx, bound)
+	callCtx, cancel := s.clk().WithTimeout(ctx, bound)
 	result := make(chan Response, 1)
 	go func() {
 		defer cancel()
 		result <- call(callCtx)
 	}()
-	timer := time.NewTimer(bound + slack)
+	timer := s.clk().NewTimer(bound + slack)
 	defer timer.Stop()
 	select {
 	case resp := <-result:
 		return resp
-	case <-timer.C:
+	case <-timer.C():
 	}
 	s.Log.Warn("a broker call did not end within its bound; its outcome is answered as unknown", "op", op, "bound", bound)
 	go func() {

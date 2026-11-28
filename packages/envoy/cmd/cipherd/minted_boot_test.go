@@ -39,6 +39,7 @@ func mintedProfiles(hosts string, names []string) string {
 // without ever binding. The database it is given is unreachable, so a broker that checked the
 // blocks after opening the store would fail on the host instead.
 func TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost(t *testing.T) {
+	t.Parallel()
 	binary := buildBroker(t)
 	wildcard := `[{"name": "wildcard", "hosts": ["*.test"], "ways": ["swap"]}]`
 	for _, c := range []struct {
@@ -70,6 +71,7 @@ func TestTheBootHoldsEveryDPoPBlockToItsOwnDestinationsHost(t *testing.T) {
 // of the private destination's one host start, and the broker logs its airlock's DPoP key by its
 // thumbprint alone and goes on to serve.
 func TestTheBootTakesDPoPBlocksOfTheDestinationsHost(t *testing.T) {
+	t.Parallel()
 	memorySecretsFile := filepath.Join(t.TempDir(), "memory-secrets.json")
 	if err := os.WriteFile(memorySecretsFile, []byte(`{"secrets": []}`), 0o600); err != nil {
 		t.Fatal(err)

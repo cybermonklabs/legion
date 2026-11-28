@@ -51,13 +51,8 @@ func openTestStore(t *testing.T) *Store {
 func openEmptyTestStore(t *testing.T) *Store {
 	t.Helper()
 	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	adminURL := adminDatabaseURL(t)
+	store, err := Open(ctx, testdb.DatabaseOn(t, adminURL.String(), "", "dispatch_test"))
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
@@ -85,7 +80,8 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	base := testDatabaseURL(t)
 	withPoolSize, err := url.Parse(base)
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	query := withPoolSize.Query()
 	query.Set(poolSizeParam, "4")
@@ -721,13 +717,8 @@ func TestMigrateRecordsTheVersionUnderTheValuesResetGives(t *testing.T) {
 func openIsolatedStoreWithPool(t *testing.T, configure func(*pgxpool.Config)) *Store {
 	t.Helper()
 	ctx := context.Background()
-	baseURL, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
-	}
-	adminURL := *baseURL
-	adminURL.Path = "/postgres"
-	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "dispatch_test"))
+	adminURL := adminDatabaseURL(t)
+	config, err := pgxpool.ParseConfig(testdb.DatabaseOn(t, adminURL.String(), "", "dispatch_test"))
 	if err != nil {
 		t.Fatalf("parse the isolated database's URL: %v", err)
 	}
@@ -1122,7 +1113,8 @@ func adminDatabaseURL(t *testing.T) url.URL {
 	t.Helper()
 	admin, err := url.Parse(testDatabaseURL(t))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the test database URL does not parse")
 	}
 	admin.Path = "/postgres"
 	return *admin

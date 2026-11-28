@@ -151,6 +151,7 @@ func TestASendTheListenerCouldNotConfirmStoredIsRecordedAsPossiblyDelivered(t *t
 // (retryableDeliveryFailure). The listener's own 500 (listenerwire.FaultStatus) and its 400 are
 // its answers, which settle the attempt at once.
 func TestASendTheListenerAnsweredWithAnOutageIsTriedAgain(t *testing.T) {
+	t.Parallel()
 	session := "s1"
 	live := ResolvedMention{Target: "session:s1", Delivery: "steer", SessionID: &session}
 	for _, tc := range []struct {

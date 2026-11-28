@@ -642,10 +642,11 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   directories a package's `TestMain` owns (the build directories of `internal/daemon`,
   `internal/stream` and `internal/runtime/tmux`, the jj configuration directory of
   `cmd/legion/main_test.go` and the home of `internal/workspace/workspace_test.go` in the daemon
-  module; the sign-in secret directory of `internal/cipher/config` and the certificate directory
-  of `infra/seed/main_test.go` in the envoy module) bind no socket, so they need no byte budget,
-  and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a removal in that
-  `TestMain`.
+  module; the sign-in secret directory of `internal/cipher/config`, the overlay directory of the
+  exec rows' hooked `agent-secrets` build in `cmd/cipher` (`exec_wait_test.go`) and the
+  certificate directory of `infra/seed/main_test.go` in the envoy module) bind no socket, so they
+  need no byte budget, and no `*testing.T` outlives them, so they keep `os.MkdirTemp("", …)` and a
+  removal in that `TestMain`.
 - A test changes a process variable, `TMPDIR` above all, only through `t.Setenv`, and a test
   that must unset one calls the module's `fixtureenv.Unset`, which goes through `t.Setenv`,
   never a bare `os.Setenv` or `os.Unsetenv`. `t.Setenv` puts back what the process held when the
@@ -661,12 +662,43 @@ the limit, as on a dev box whose `TMPDIR` is on a data disk.
   TMPDIR="$L" GOTMPDIR="$L" go test ./<package>/... -count=1
   ```
 
+## A test in a package whose tests run beside each other
+
+Every top-level test of these packages, in every build (a file behind `e2e`, `multiprocess` or
+another tag included, since it runs in some lane), calls `t.Parallel()` as its first statement, or
+says on its first line, in a `// Not parallel:` comment, why it cannot:
+
+- in `packages/envoy`: `internal/dispatch/api`, `internal/dispatch/docs`, `cmd/listener`, the
+  broker's `internal/cipher/requests`, `internal/cipher/api` and `cmd/cipherd`, and the 19 smaller
+  packages of "A test in Dispatch's smaller packages runs beside the others" below, with
+  `internal/dispatch/refs`;
+- in `packages/daemon`: `internal/intake`, and `internal/daemon`, `internal/workflow`,
+  `internal/store`, `internal/runtime/sandbox`, `internal/workspace`, `cmd/legion` and
+  `internal/ghroute` (#5660; "A test in a daemon package that states the rule" below).
+
+The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
+`t.Setenv`, `` `took >= time.Second` ``, `JudgeRowReserve`'s one second), never a line of a file
+(`logtest.go:36`, `logtest.go#L36`, `:85`, `line 85`), which the next edit above that line makes
+false; an address goes in with its host (`127.0.0.1:8080`), since a bare `:8080` reads as a line.
+A test that says it is not parallel and then calls `t.Parallel()` in its own code breaks the rule
+too, wherever the call is: a guard around it, `if` or any other, is no exemption. A subtest of a
+serial test may still run in parallel. A test that runs itself again alone (`internal/alonetest`)
+is serial in both runs: the run that starts the other only waits, so one marker holds for both.
+go test starts no parallel test until every serial one has run, so a test with neither the call
+nor the comment runs alone for no reason, as 46 of `internal/daemon`'s did by 2026-11-25.
+
+Each package checks itself: its `TestEveryTestCallsParallelOrSaysWhyNot` (`parallel_rule_test.go`,
+or the file that declares `TestMain` in seven daemon packages: `main_test.go`, and `workspace_test.go`
+in `internal/workspace`) calls `packages/envoy/testparallel`'s `Require`, which reads every
+`_test.go` file of the package and fails naming each test that breaks the rule, and how. The
+daemon module's packages call the same check, since that module requires this one. A package that
+comes to run its tests beside each other adds itself to the list above and that test.
+
 ## A test in `internal/dispatch/api`, `internal/dispatch/docs` or the daemon's `internal/intake` runs beside the others
 
-Every top-level test of `packages/envoy/internal/dispatch/api`,
-`packages/envoy/internal/dispatch/docs` and `packages/daemon/internal/intake` calls `t.Parallel()`
-as its first statement, and each package's `TestMain` sets how many run at once: 8 in api, 6 in
-docs, 4 in intake. Each test already has a database and a server or document service of its own
+Each of `packages/envoy/internal/dispatch/api`, `packages/envoy/internal/dispatch/docs` and
+`packages/daemon/internal/intake` holds to the rule above, and its `TestMain` sets how many run at
+once: 8 in api, 6 in docs, 4 in intake. Each test already has a database and a server or document service of its own
 (`storetest.Open`; in intake `testpg.Clone` and a NATS server of `testnats`' pool, one per test that
 holds one), so run alone it spends most of its time waiting on Postgres while the machine's other
 cores sit idle.
@@ -676,10 +708,9 @@ process shares: the default logger (`logtest.SetDefault`, `slog.SetDefault`), th
 (`t.Setenv`), a package variable, flags, the GC or `GOMAXPROCS`, heap statistics or goroutine
 counts, or pmdoc's schema manifest, display tree version or block ID generator
 (`pmdoc.UseManifestForTest`, `pmdoc.UseStagedBlockForTest`, `pmdoctest.UseBlockSchema`,
-`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`). go test runs every serial
-test before it starts the parallel ones, so such a test runs alone. A serial test whose reason is
-not a call in its own body or a helper of the package's says why on its first line: a wall-clock
-bound that missed under parallel load, or a write through another package's test hook.
+`pmdoc.SetDisplayTreeVersionForTest`, `pmdoc.SetBlockIDGenerator`), or holds a wall-clock bound
+that missed under parallel load, or writes through another package's test hook. Its first line
+says which (the rule above).
 
 A test that reads `pg_locks` or `pg_stat_activity` names its own database in the predicate
 (`database = (select oid from pg_database where datname = current_database())`, or
@@ -713,16 +744,13 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Seven packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
-the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace`,
-`cmd/legion` and `internal/ghroute`. Each `TestMain` sets how many run at once
-(`daemonTestParallelism`, `workflowTestParallelism` and `storeTestParallelism` 4,
-`sandboxTestParallelism`, `workspaceTestParallelism`, `cmdTestParallelism` and
-`ghrouteTestParallelism` 8).
-The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
-`internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
-check below reads only the default build. Each test of `internal/daemon` already has a database of
+Seven packages of `packages/daemon` hold to the rule above in every build, the live drivers behind
+`//go:build e2e` of `internal/daemon` included: `internal/daemon`, `internal/workflow`,
+`internal/store`, `internal/runtime/sandbox`, `internal/workspace`, `cmd/legion` and
+`internal/ghroute`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
+`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
+`workspaceTestParallelism`, `cmdTestParallelism` and `ghrouteTestParallelism` 8). Each test of
+`internal/daemon` already has a database of
 its own (a clone of the package's template, `testDSN` and `isolatedOutboxPool`), its own ports and
 state directory, and a NATS server of the package's pool (`internal/testnats`); each test of
 `internal/workflow` drives its engine over a clone of its own (`migratedPool`) or renders text from
@@ -740,20 +768,27 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 the comment runs alone for no reason.
 
 So each of the seven packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
-in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
-over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
-does, whatever name the file imported `testing` under. The reason goes on the comment's first
-line, after the colon: a `// Not parallel:` line with nothing after it is no reason, and neither
-is a comment that is not the body's first. A `t.Parallel()` after another statement, in a `defer`
-or in a subtest alone is no first statement. A test under a `// Not parallel:` comment that calls
-`t.Parallel()` anyway, first or later, in a closure over its `t` or through the method value
-`t.Parallel`, fails too, since its comment says the opposite of what it does; a subtest of it, with
-a `t` of its own, may still run in parallel. The check logs each test that runs alone with the
-reason its first line gives. `testparallel`'s own tests plant a package with a test of each shape
-and hold the check to naming exactly the ones that break the rule. A package that comes to state
-the rule holds it the same way, with a test of its own that calls `Require` on its directory.
-`internal/intake` states a looser one (above): a serial test whose reason is a call in its own body
-needs no comment there.
+in the file that declares `TestMain`, runs the one check of "A test in a package whose tests run
+beside each other" above. #5660 brought five of them under the rule with a check of the daemon
+module's own (`packages/daemon/internal/testparallel`), which read only the default build, and
+#5848 and #5913 added `internal/workspace` and `internal/ghroute` to them; it is folded into `packages/envoy/testparallel`, whose
+own tests plant a package with a test of each shape.
+
+## A test in the broker's `requests`, `api` or `cmd/cipherd` package runs beside the others
+
+Each of `packages/envoy/internal/cipher/requests`, `packages/envoy/internal/cipher/api` and
+`packages/envoy/cmd/cipherd` (the `multiprocess` build's included) holds to the rule above, and its
+`TestMain` runs 4 at once (`requestsTestParallelism`,
+`apiTestParallelism`, `cipherdTestParallelism`), the runner's core count. Each test already has a
+database of its own (`storetest.URL`), so its migration and its brokers' advisory locks wait on no
+other test.
+
+A test stays serial when it, or a helper it calls, changes or reads back something the whole test
+process shares: the default logger (`logtest.SetDefault`, `logtest.Swap`, `slog.SetDefault`,
+`policytest.CaptureLog`'s `log.SetFlags`), the environment (`t.Setenv`), or a package variable. It
+stays serial too when it holds code to a bound on a measured time that the parallel tests' load
+could push past, or to a product latency carried by a context's deadline, as the judge's
+`JudgeRowReserve` and the half of what is left that `LogJudged`'s read of a landed approval spends.
 
 ## A test in `packages/daemon/internal/workspace` keeps its runner's state local
 
@@ -799,8 +834,7 @@ test that asserts which deadline a wait meets sets a `clocktest.Fake` as the run
 
 ## A test in Dispatch's smaller packages runs beside the others
 
-Every top-level test of these 19 packages of `packages/envoy` calls `t.Parallel()` as its first
-statement, or says on its first line, in a `// Not parallel:` comment, why it cannot:
+These 19 packages of `packages/envoy` hold to the rule above:
 
 - `internal/dispatch/architecture`, `internal/dispatch/architecture/notes`,
   `internal/dispatch/duty`, `internal/dispatch/events`, `internal/dispatch/files`,
@@ -842,9 +876,7 @@ bound, a quiet window or a step a sleep orders, which the parallel tests' load c
 on a correct product or pass with the defect present; the comment names the span. A seam that
 takes the deciding clock out lets the test run beside the others. A wait for an
 event takes `testwait` (`Receive`, `Until`, `Context`), bounded only by the test binary's deadline,
-and a product bound the test does not mean to race takes `testwait.PastTheRun`. Nothing checks the
-marker in these packages: a new test with neither the call nor the comment runs alone for no
-reason.
+and a product bound the test does not mean to race takes `testwait.PastTheRun`.
 
 ## Go's package deadline
 
@@ -1050,6 +1082,23 @@ composes with the `TestMain` a package already has
 (`testpg.Main(prefix, func() int { return testnats.Main(m) })`).
 `packages/envoy/internal/dispatch/store/storetest`'s `Open` is the same fixture for Dispatch's
 schema.
+The broker's `packages/envoy/internal/cipher/store/storetest` (`URL`, `Open`) copies a template too,
+in three ways unlike these two. The template is one per login and migration set on the server,
+`broker_template_<digest of the embedded migrations>_<login key>` (the login key is 12 hex digits
+of the SHA-256 of the login's name), owned by that login and made once under an advisory lock
+taken in the server's `postgres` database, and nothing drops it: every broker test binary of a
+run, and of every later run of the same migrations on that server as that login, copies it, so no
+binary owns it. It is the login's because Postgres copies a database only for its owner, a
+superuser, or where the database is marked a template, and a copy keeps its template's owner of
+schema and tables: another login's template would refuse the copy, or hand it a schema and tables
+that login owns. A test drops its own copy in its own cleanup (`testdb.DatabaseOn` with the
+template) and waits for that drop's checkpoint, since no broker package has a `TestMain` that would
+wait for drops left running. And each create and drop opens a connection of its own, so no pool
+outlives a test. CI gives each job a server of its own; on a server that outlives runs, as a dev
+box's does, each login and set of migrations leaves one template, and a change to how `Migrate`
+applies the files that leaves them as they are reuses the template the earlier code built.
+`drop database broker_template_<digest>_<login key>` makes the next run build it again, and the
+`broker_test_<hex>` copies a killed test binary left are dropped the same way when no run is going.
 `testdb.Database` is still there for a test that wants an empty database: `internal/record`'s own tests
 apply part of the migration set by hand and assert what `Migrate` then returns, which a migrated
 clone would not let them do.

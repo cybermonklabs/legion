@@ -25,6 +25,7 @@ import (
 //     cut each mention's excerpt: a mention it reads gets the block holding it, and an edge it reads
 //     no mention for gets none.
 func TestTheDocsReconciliationsReadServedAndFormerLinks(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	// The issues each link names, CORE-1 to CORE-4, by the address it is written at, and whether it

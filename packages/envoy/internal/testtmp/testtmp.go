@@ -54,10 +54,11 @@ const fallbackBase = "/tmp"
 //
 // One kind of site keeps a directory of its own on purpose and does not come here: the
 // once-per-binary directories a package's TestMain owns, the sign-in secret directory of
-// packages/envoy/internal/cipher/config/config_test.go and the certificate directory of
-// packages/envoy/infra/seed/main_test.go. They bind no socket, so they need no byte budget, and
-// no *testing.T outlives them, so they keep os.MkdirTemp("", …) and a removal of their own. The
-// daemon copy of this file names that module's sites.
+// packages/envoy/internal/cipher/config/config_test.go, the overlay directory of the exec rows'
+// hooked agent-secrets build in packages/envoy/cmd/cipher/exec_wait_test.go and the certificate
+// directory of packages/envoy/infra/seed/main_test.go. They bind no socket, so they need no byte
+// budget, and no *testing.T outlives them, so they keep os.MkdirTemp("", …) and a removal of their
+// own. The daemon copy of this file names that module's sites.
 func Dir(t testing.TB, longest string) string {
 	t.Helper()
 	base := os.TempDir()

@@ -170,6 +170,7 @@ func (crossed crossedHolderRole) requireReachedHolder(t *testing.T, holder, even
 // finds the holder live and forwards the publish to it, 200. The publish names a source session,
 // so its first resolution reads as GET /v1/roles/<role> does (roleSend.resolve).
 func TestARolePublishReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJudgement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		crossing bool
@@ -211,6 +212,7 @@ func TestARolePublishReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJu
 // daemon, 200: the live holder never received it. Control: with the cached registration live when
 // judged too, the same send is kept for the holder and reaches it.
 func TestAMarkedSendReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJudgement(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		crossing bool
@@ -248,6 +250,7 @@ func TestAMarkedSendReachesTheLiveHolderWhoseCachedRecordLapsesBetweenLookAndJud
 // Control: a keep false publish resolves its holder first from the cache and direct gets, and its
 // confirmation is its one leader resolution.
 func TestANoSessionPublishWithNoLiveHolderResolvesFromTheLeadersOnce(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		claimed bool

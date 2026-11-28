@@ -71,6 +71,7 @@ type handedPublishAnswer struct {
 // line and its count read handed_off, as the agent subject's hand-off's do, and the line names the
 // agent it was handed to (sendHandedOff).
 func TestAPublishToAFinishedLegionRoleIsHandedToItsDaemonAndNotKept(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	withFinishedHandoff(t, d)
 	logs := &cmdtest.LockedBuffer{}

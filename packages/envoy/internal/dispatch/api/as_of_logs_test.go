@@ -64,6 +64,7 @@ func loggedEventIDs(t *testing.T, body []byte) []int64 {
 // read at the cut by the harness's comparison, which takes each deleted post's body and marks out
 // of both answers and compares the rest.
 func TestAPostDeletedAfterTheCutAnswersItsOwnEventsWithNoBody(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASDE")
 	handler := world.handler
 	handbook := decodeBody[struct {
@@ -188,6 +189,7 @@ func TestAPostDeletedAfterTheCutAnswersItsOwnEventsWithNoBody(t *testing.T) {
 // against 3 ms on a copy of production's log). An issue's log, paged newest first, starts at the
 // issue's newest event at the cut.
 func TestAPastTimeEventLogPageStopsAtTheCut(t *testing.T) {
+	t.Parallel()
 	statements := &statementCounter{}
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{tracer: statements})
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASDL", "name": "The log at a cut"}, "alice")
@@ -276,6 +278,7 @@ func TestAPastTimeEventLogPageStopsAtTheCut(t *testing.T) {
 // at the cut, so it waits under no cut: the page at a cut is answered, and the observation that it
 // shares with the readers at the present is not refused.
 func TestAPastTimeEventLogPageUnderTheFallbackHorizonPool(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	served.horizonOnce.Do(func() { served.eventHorizon = events.NewHorizon(database.Pool) })
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ASDH", "name": "The log on the shared pool"}, "alice")
@@ -323,6 +326,7 @@ func pageBounds(statements *statementCounter, since int) []string {
 // comment is written after the cut, the present log holds it and the log at the cut does not:
 // neither is answered from what the other kept.
 func TestAnIssueLogETagAtACutIsNotThePresentsETag(t *testing.T) {
+	t.Parallel()
 	world, takeCut := newAsOfThreadWorld(t, "ASDT")
 	world.comment(t, map[string]any{"body": "Written before the cut."})
 	target := "/api/v1/issues/" + world.issue + "/events"

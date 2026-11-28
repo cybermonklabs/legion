@@ -78,9 +78,6 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 	}
 }
 
-// Serial (listenerTestParallelism): it changes something the whole process shares: it calls
-// t.Setenv.
-//
 // Check l16 of dispatch://INFRA-3589 (R18) at the edge's start: an edge listener whose machine id
 // is a fully qualified host name takes the grant natsgrant.Edge builds for that id, and its start
 // names every inbox under the prefix that grant subscribes, the id spelled as its durable spells it
@@ -89,6 +86,7 @@ func TestTheEdgeRefusesToStartWithoutTheStream(t *testing.T) {
 // the missing stream: a reply under any other prefix would be a subscription the server refuses.
 // An id with a space is refused naming edge mode, since its spelling, a hyphen, is another id's.
 func TestADottedEdgeMachineIDStartsUnderItsSpelledPrefix(t *testing.T) {
+	// Not parallel: it changes something the whole process shares: it calls t.Setenv.
 	const (
 		machineID = "host.example.internal"
 		prefix    = "_INBOX_envoy_edge_host%2Eexample%2Einternal"

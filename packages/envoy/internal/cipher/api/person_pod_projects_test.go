@@ -82,6 +82,7 @@ func (p bobsPod) enrol(t *testing.T, ts *testServer, projects []string) (int, []
 // its operator and PRIV as its projects. So the route takes a pod's projects and gives them to the
 // rule that checks a person's pod against its person.
 func TestAPersonsPodEnrollsNamingItsProjects(t *testing.T) {
+	t.Parallel()
 	ts := newPersonPodProjectsServer(t)
 
 	pod := logInBobsPod(t, ts, "pod-uid-bob-priv")

@@ -101,6 +101,7 @@ func TestCheckSize(t *testing.T) {
 // or one byte more is ErrSetTooLarge naming the directory, the count or the sum, and the limit.
 // A set over both bounds names the count.
 func TestCheckSet(t *testing.T) {
+	t.Parallel()
 	const dir = ".dispatch/spec"
 	if err := CheckSet(dir, MaxFiles, MaxSetSize); err != nil {
 		t.Fatalf("CheckSet at both bounds: %v, want nil", err)

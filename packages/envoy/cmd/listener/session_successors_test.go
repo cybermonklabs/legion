@@ -81,6 +81,7 @@ func registerAs(t *testing.T, known *session.KnownSessions, principal string, se
 // the empty list, never null. A session whose principal no registration recorded is named by
 // none, its records notwithstanding, since nothing says its successors are its principal's.
 func TestTheSuccessorsRouteNamesTheSessionsThatReplacedASession(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	const replaced, unrecorded = "ses_successors_route_replaced", "ses_successors_route_unrecorded"
@@ -120,6 +121,7 @@ func TestTheSuccessorsRouteNamesTheSessionsThatReplacedASession(t *testing.T) {
 // session of another principal (stranger, beyond), or names another principal than theirs or
 // one beside no successor (beyond, whom nobody replaced).
 func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	const (
@@ -160,6 +162,7 @@ func TestTheSuccessorsRouteFollowsAChainOfOnePrincipal(t *testing.T) {
 // case fails where the route stops after a fixed number of hops and answers the sessions it
 // reached as the whole list; the control is the session one before the end, which has one.
 func TestTheSuccessorsRouteFollowsAChainOfAnyLength(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	chain := make([]string, 11)
@@ -200,6 +203,7 @@ func TestTheSuccessorsRouteFollowsAChainOfAnyLength(t *testing.T) {
 // names no Dispatch principal. Each case fails where the route names the principal to any caller;
 // the control is Dispatch's read, which names it.
 func TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	const replaced, heir = "ses_successors_principal_replaced", "ses_successors_principal_heir"
@@ -240,6 +244,7 @@ func TestTheSuccessorsRouteNamesThePrincipalToDispatchAlone(t *testing.T) {
 // the route answers that read 503; the control is the same read through the store whose bucket is
 // open, which names the successor.
 func TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen(t *testing.T) {
+	t.Parallel()
 	client := setupPublishTestClient(t)
 	known := openKnownSessionsOn(t, client.Conn, time.Now)
 	const replaced, heir = "ses_successors_shut_replaced", "ses_successors_shut_heir"
@@ -271,6 +276,7 @@ func TestTheSuccessorsRouteNamesNoneWhileTheKnownSessionBucketIsNotOpen(t *testi
 // stream read alone (the relay drops what follows the STREAM.INFO request), and the control is
 // the same read before that, which the same connection answers.
 func TestTheSuccessorsRouteAnswersAnUnansweredReadWith503(t *testing.T) {
+	t.Parallel()
 	relay := startListenerRelay(t, testnats.URL(t))
 	client, err := bus.ConnectOwningStream([]string{relay.relayed}, bus.WithReplicas(1))
 	if err != nil {
@@ -306,6 +312,7 @@ func TestTheSuccessorsRouteAnswersAnUnansweredReadWith503(t *testing.T) {
 // PRIV reader is told of the PRIV session that replaced a session and not of the INFRA one. The
 // control is the same read through the routes with no edge hold, which names both.
 func TestAnEdgeNamesOnlyTheSuccessorsOfTheTokensProjects(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRig(t)
 	const reader, priv, infra, replaced = "ses_edge_successors_reader", "ses_edge_successors_priv", "ses_edge_successors_infra", "ses_edge_successors_replaced"
 	token := rig.personToken(reader, "PRIV")

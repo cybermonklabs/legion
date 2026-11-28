@@ -147,7 +147,7 @@ func isTokenRequest(seen proxyrulestest.Request) bool {
 	return seen.Method == http.MethodPost && strings.HasSuffix(seen.Path, "/access_tokens")
 }
 
-// profileFixture is a broker on a schema of its own, with one live box session of checkOperator
+// profileFixture is a broker on a database of its own, with one live box session of checkOperator
 // and the stand-in behind a real github-app minter. Its secrets are four github-app secrets of
 // one App — APP_KEY and OTHER_APP_KEY, human tier, which the policy sends to their owner and whose
 // profiles are therefore checked; AUTO_APP_KEY, agent tier, which the policy grants at once; and
@@ -283,7 +283,7 @@ func (f *profileFixture) createWith(t *testing.T, details []record.Authorization
 }
 
 // heldRows counts the request rows, grant rows and credential-request records the broker holds.
-// storetest.Open gives each test a schema of its own, so these are this session's rows and
+// storetest.Open gives each test a database of its own, so these are this session's rows and
 // nobody else's.
 func heldRows(t *testing.T, machine *requests.Machine) (requestRows, grants, records int) {
 	t.Helper()
@@ -320,6 +320,7 @@ func everyMintGivenBack(t *testing.T, stand *gitHubStand) {
 // repository of its account is one it allows, and a check that minted the profile's own scope
 // instead of the target's would be served and send the request to its approver.
 func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
 		"APP_KEY": `{"accounts": ["ada"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
@@ -352,6 +353,7 @@ func TestAPendingRequestGetsTheCheckMintBeforeAPersonIsAsked(t *testing.T) {
 // before anybody is asked (secrets.ErrMintNoInstallation, naming the account). A target naming
 // one account of two that are both installed is minted on that account's installation alone.
 func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (policytest.CaptureLog, log.SetFlags).
 	for _, tc := range []struct {
 		name string
 		// installations are where the App is installed, accounts the profile's, as the
@@ -422,6 +424,7 @@ func TestAPendingRequestWithAnAccountTargetIsCheckedToo(t *testing.T) {
 // the shape GitHub lists: a cut that kept it would mint a token that does nothing the profile is
 // for, and the person asked would approve a grant of no use.
 func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
 		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/missing", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
@@ -457,6 +460,7 @@ func TestAPendingRequestWithAnEmptyCutIsRefusedBeforeAPersonIsAsked(t *testing.T
 // installations and no repository, since no repository of the profile is at fault, and GitHub
 // is asked for no token.
 func TestAPendingRequestForABareTokenOfAnAccountWithTwoInstallationsIsRefusedBeforeAPersonIsAsked(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7, "Ada": 8}, map[string]string{
 		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/lean", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}, "value": "token"}`,
 	})
@@ -487,6 +491,7 @@ func TestAPendingRequestForABareTokenOfAnAccountWithTwoInstallationsIsRefusedBef
 // straight back, so that string reaches nothing. A request that names no GitHub profile is not
 // checked at all.
 func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, map[string]string{
 		"APP_KEY": `{"accounts": ["ada"], "repositories": ["ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
 	})
@@ -522,6 +527,7 @@ func TestACheckMintGitHubServesLetsTheRequestThrough(t *testing.T) {
 // the release after the approval, which holds both accounts' tokens. Neither refuses it for want
 // of a target, which only a value-token profile of more than one account needs.
 func TestAProfileOfRepositoriesOfTwoAccountsIsCheckedAndReleasedWithNoTarget(t *testing.T) {
+	t.Parallel()
 	installations := map[string]int64{standInOwner: 7, otherOwner: 8}
 	f := newProfileFixture(t, installations, map[string]string{
 		"APP_KEY": `{"accounts": ["acme", "ada"], "repositories": ["acme/site", "ada/proofs"], "permissions": {"contents": "read", "metadata": "read"}}`,
@@ -568,6 +574,7 @@ func TestAProfileOfRepositoriesOfTwoAccountsIsCheckedAndReleasedWithNoTarget(t *
 // grant and reaches it for nothing either; and a request the policy denies is answered with its
 // denial, GitHub having been asked nothing about a profile no grant will ever release.
 func TestTheCheckMintAsksGitHubNothingWhereNobodyIsAsked(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, nil)
 
 	granted, err := f.create(t, "AUTO_APP_KEY")
@@ -597,6 +604,7 @@ func TestTheCheckMintAsksGitHubNothingWhereNobodyIsAsked(t *testing.T) {
 // same request again, for the same lifetime, gets that grant back with GitHub asked nothing — no
 // token, and not even the App's installations.
 func TestTheCheckMintAsksGitHubNothingForTheGrantAPersonApproved(t *testing.T) {
+	t.Parallel()
 	f := newProfileFixture(t, map[string]int64{standInOwner: 7}, nil)
 
 	pending, err := f.create(t, "APP_KEY")

@@ -157,6 +157,7 @@ func fakeSecret(path, owner, value string) string {
 // keep the credential-less path from being a way in for anyone else. It skips when
 // BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// Two issuers the test controls: the cluster's, which mints every service-account token here,
 	// and GitHub's, which mints none but is what the broker reports its second exchange issuer on.
@@ -263,7 +264,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 	})
 
 	t.Run("a lapsed token is renewed by the same standing pod token", func(t *testing.T) {
-		// Its own broker run, on a schema of its own, started with an access-token lifetime of a
+		// Its own broker run, on a database of its own, started with an access-token lifetime of a
 		// few seconds: the proof is that the first token lapses, not that the test waits.
 		renewalDB := storetest.URL(t)
 		renewalBroker := startBroker(t, brokerOptions{Env: exchangeEnv(t, renewalDB, cluster, github, shortAccessSeconds)})
@@ -426,6 +427,7 @@ func TestTheBinaryExchangesAPodsTokenIntrospectsItAndRenewsIt(t *testing.T) {
 // registered for nothing, is refused it, the refusal naming the session. Registering that third
 // pod is what then answers it.
 func TestAPodWritesOnlyUnderASessionRegisteredForIt(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -538,6 +540,7 @@ func startPairedRegistrar(t *testing.T, databaseURL string, cluster, github *oid
 // from and the account that took it. listedAccount, which no pair names, is refused the name by
 // both brokers.
 func TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -625,6 +628,7 @@ func TestAPairedAccountsPodExchangesUnderTheNameItsPairHolds(t *testing.T) {
 // holds one grant and one request for the name, on the moved pod's enrollment, so the grant
 // followed the name across the pair rather than the person being asked again.
 func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -673,6 +677,7 @@ func TestAPairedAccountsPodThatExchangedFirstEnrolsAndReadsItsPairsGrant(t *test
 // oauth.New sets from the exchange's reservations): the row itself is an ordinary claim, so
 // without that read the pair would take it.
 func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -707,6 +712,7 @@ func TestAPairIsRefusedANameAnExchangeEntryFixesThatItsPairHolds(t *testing.T) {
 // the pod, since the entry fixes the session. A trade that asks for read is
 // TestTheBinaryNarrowsATradeOnRequest's.
 func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -754,6 +760,7 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 // shared verifier, Dispatch, the listener and the NATS auth service are held to
 // (ciphertokentest.NarrowedAnswers), the read entry's with the cut beside it.
 func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -815,6 +822,7 @@ func TestTheBinaryNarrowsATradeOnRequest(t *testing.T) {
 // test's own key, and no person and no OAuth scope. Nothing was registered for the pod, since the
 // entry fixes the session.
 func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
+	t.Parallel()
 	const (
 		jobAccount = "system:serviceaccount:example-ns:example-sweeper"
 		jobSession = "example-sweeper"
@@ -885,6 +893,7 @@ func TestTheBinaryExchangesAJobPodTokenForOneThatNamesItsAccount(t *testing.T) {
 // verifier that serves none. The same pod naming a project is refused, as under any entry naming
 // none, and a broker whose entry names a project and no person refuses to start, naming the rule.
 func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
+	t.Parallel()
 	const (
 		personlessAccount = "system:serviceaccount:example-ns:example-public"
 		personlessSession = "example-public-session"
@@ -1027,6 +1036,7 @@ func introspected(t *testing.T, live *liveBroker, token, apiToken string) oauthw
 // binary: the project scope named, its project and person, the session the run names, no OAuth
 // scope and no run.
 func TestAnExactWorkflowTokenCarriesNoCI(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1077,6 +1087,7 @@ func TestAnExactWorkflowTokenCarriesNoCI(t *testing.T) {
 // is keyed on the key it holds, so one key cannot be two machines' credentials.
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestTheBinaryExchangesAMachinesGoogleIdentityToken(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// Three issuers the test controls: the cluster's, GitHub's, and the one standing in for
 	// Google, which BROKER_GOOGLE_OIDC_ISSUER points the broker at.
@@ -1513,6 +1524,7 @@ func projectsOf(t *testing.T, answer map[string]any) []string {
 // since the broker cannot tell a restricted member's machine from anyone else's without Dispatch's
 // answer (approverUnreachable).
 func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1623,6 +1635,7 @@ func TestATradeNamesOnlyProjectsItsPersonSees(t *testing.T) {
 // stored claim is a string because the session's extra claims return from the row as JSON, where a
 // list would read back as no projects at all.
 func TestTheProjectsClaimSurvivesTheStore(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	cluster, github := oidctest.New(t), oidctest.New(t)
 	clusterKey := cluster.PublishKey(t, "cluster-key")
@@ -1696,6 +1709,7 @@ func exchangeEnv(t *testing.T, databaseURL string, cluster, github *oidctest.Iss
 // under the named scope; against one that says they do not, the same trade is refused naming the
 // project and the person.
 func TestAPodsEntryNamingAPrivateProjectIsHeldToItsPerson(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		listed []string

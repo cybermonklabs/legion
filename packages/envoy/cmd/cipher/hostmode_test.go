@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -28,6 +29,8 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestBuildSignerSelectsMode covers the Signer abstraction's mode selection: file mode when
@@ -39,7 +42,7 @@ import (
 // to, cannot change the answer, and the state directory and the broker URL are the test's own, so
 // no sign-in, machine cache or broker of the machine running it can either.
 func TestBuildSignerSelectsMode(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:44); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:47); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -101,7 +104,7 @@ func isolateChain(t *testing.T) {
 // enrollment.error, so a caller sees why enrollment failed rather than a bare "no such file";
 // with no enrollment.error file, the message is the bare missing-file error.
 func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:109); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:112); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	dir := newKeyDir(t)
 	if err := os.Remove(filepath.Join(dir, "enrollment")); err != nil {
 		t.Fatal(err)
@@ -129,7 +132,7 @@ func TestBuildSignerNamesTheEnrollmentErrorDiagnostic(t *testing.T) {
 // socket at $XDG_RUNTIME_DIR/agent-secrets/helper.sock, and falls back to neither when its file
 // is not there.
 func TestBuildSignerFallsBackToTheRuntimeDirDefaults(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:134); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:137); it signals the test process or changes its signal handling (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	isolateChain(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -371,7 +374,7 @@ func TestHelperSignerSignsTheTargetAndRefusesAHelperThatDropsIt(t *testing.T) {
 // key dir, never a helper), register is a usage error at once, naming the variable and the path,
 // rather than waiting out the connect patience for a helper that is not there.
 func TestRegisterRefusesWithNoHelperSocket(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:376); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:379); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	runtimeDir := t.TempDir()
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -480,7 +483,7 @@ func TestWhoamiAlwaysPrintsJSON(t *testing.T) {
 // TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity proves sign's default path signs a real,
 // verifiable proof for the box's own enrollment id, without making a broker call.
 func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:485); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:488); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -522,7 +525,7 @@ func TestSignWithoutEnrollmentUsesTheBoxsOwnIdentity(t *testing.T) {
 // key for a caller-supplied id instead of the box's own — the deliberate cross-enrollment
 // substitution the broker must refuse.
 func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:527); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:530); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	keyDir := newKeyDir(t)
 	t.Setenv("AGENT_SECRETS_KEY_DIR", keyDir)
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
@@ -564,7 +567,7 @@ func TestSignWithEnrollmentOverridesTheEnrollmentID(t *testing.T) {
 // TestSignEnrollmentRefusedInHelperMode covers "--enrollment works only with a key dir; the
 // helper signs only its own enrollment".
 func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:568); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:571); it signals the test process or changes its signal handling (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdSign, main.buildSigner, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	t.Setenv("AGENT_SECRETS_KEY_DIR", "")
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "/x/h.sock")
 	var stdout, stderr bytes.Buffer
@@ -588,43 +591,38 @@ func TestSignEnrollmentRefusedInHelperMode(t *testing.T) {
 // whose stdout is the caller's.
 // Every case runs twice: once with the paths named by AGENT_SECRETS_KEY_DIR and
 // AGENT_SECRETS_HELPER_SOCK, once with both unset and the files at the $XDG_RUNTIME_DIR defaults.
+// identity runs on a fake clock that starts a day behind the wall clock (identityPaths), and
+// both verdicts that read the time read it: the marker stamped at its start is fresh and the one
+// stamped staleAge before it stale, whatever the wall clock says, and a helper that never answers
+// is given up on once the row moves the clock to the deadline the row expects, silentWait, which
+// the notice's "i/o timeout" says ended the read.
 func TestIdentity(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.identityCases, t.Setenv at hostmode_test.go:756); it signals the test process or changes its signal handling (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (main.runIdentityCase, main.identityCases, t.Setenv at hostmode_test.go:818); it signals the test process or changes its signal handling (main.runIdentityCase, main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.runIdentityCase, main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	for _, mode := range []string{"named", "defaults"} {
 		for _, tc := range identityCases() {
 			t.Run(mode+"/"+tc.name, func(t *testing.T) {
 				p := identityPaths(t, mode)
-				tc.setup(t, p)
-
-				var stdout, stderr bytes.Buffer
-				meter := startStallMeter(t)
-				start := time.Now()
-				code := cmdIdentity(nil, &stdout, &stderr)
-				// A helper that never answers is given up on after about 2 s; nothing else may hold
-				// identity up. Each is timed against that, allowing for the time this process was
-				// held up (requireOnTime); a silent helper's 2 s is a floor no load can shorten.
-				if tc.slow {
-					if elapsed := requireOnTime(t, meter, "identity against a helper that never answers", start, 2*time.Second); elapsed < 1500*time.Millisecond {
-						t.Fatalf("a helper that never answers is given up on after about 2 s, took %s", elapsed)
-					}
-				} else {
-					requireOnTime(t, meter, "identity, which only a silent helper may hold up", start, 0)
-				}
+				code, stdout, stderr := runIdentityCase(t, p, tc)
 				if code != tc.exit {
-					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
+					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr)
 				}
-				if stdout.Len() != 0 {
-					t.Fatalf("identity printed to stdout: %q", stdout.String())
+				if stdout != "" {
+					t.Fatalf("identity printed to stdout: %q", stdout)
 				}
 				want := ""
 				if tc.stderr != nil {
 					want = tc.stderr(mode, p)
 				}
-				if want != "" && !strings.Contains(stderr.String(), want) {
-					t.Fatalf("stderr %q, want the notice %q", stderr.String(), want)
+				if want != "" && !strings.Contains(stderr, want) {
+					t.Fatalf("stderr %q, want the notice %q", stderr, want)
 				}
-				if want == "" && stderr.Len() != 0 {
-					t.Fatalf("stderr %q, want nothing", stderr.String())
+				if want == "" && stderr != "" {
+					t.Fatalf("stderr %q, want nothing", stderr)
+				}
+				// The deadline ended the read, not a close of the helper's end, which reads as a
+				// reply that is not one JSON object.
+				if tc.silent && !strings.Contains(stderr, "i/o timeout") {
+					t.Fatalf("stderr %q, want the notice to say the read of the helper's answer ended at its deadline (i/o timeout)", stderr)
 				}
 			})
 		}
@@ -632,20 +630,20 @@ func TestIdentity(t *testing.T) {
 
 	t.Run("arguments", func(t *testing.T) {
 		var stdout, stderr bytes.Buffer
-		if code := cmdIdentity([]string{"extra"}, &stdout, &stderr); code != exitUsageError {
+		if code := cmdIdentity(clocktest.New(time.Now()), []string{"extra"}, &stdout, &stderr); code != exitUsageError {
 			t.Fatalf("identity with an argument: exit %d, want %d", code, exitUsageError)
 		}
 	})
 }
 
 // TestIdentityWithoutSourceAsksNothing: identity with no flag keeps its contract after the use
-// command became a chain of four sources. For every row of TestIdentity it answers the row's exit
-// code while a broker that names an exchange audience and a metadata server both stand by, and
-// neither is asked anything: it reads neither the sign-in, nor the machine cache, nor the network.
-// A process holding only a machine session, in the machine cache or in the key dir where a client
-// before #4143 kept one, answers 1.
+// command became a chain of four sources. For every row of TestIdentity, run as TestIdentity runs
+// it (runIdentityCase), it answers the row's exit code while a broker that names an exchange
+// audience and a metadata server both stand by, and neither is asked anything: it reads neither
+// the sign-in, nor the machine cache, nor the network. A process holding only a machine session,
+// in the machine cache or in the key dir where a client before #4143 kept one, answers 1.
 func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:665); it signals the test process or changes its signal handling (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at hostmode_test.go:663); it signals the test process or changes its signal handling (main.runIdentityCase, main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.runIdentityCase, main.cmdIdentity, main.identitySource, main.describeSource, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	cases := append(identityCases(),
 		identityCase{name: "only a machine cache", setup: func(t *testing.T, p identityRowPaths) {
 			writeSessionFiles(t, filepath.Join(p.state, "agent-secrets", "machine"), "cached-enrollment")
@@ -664,11 +662,8 @@ func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 				broker := newChainBroker(t, storeSettings("gcp", "agent-secrets-vm"))
 				t.Setenv("AGENT_SECRETS_URL", broker.URL())
 				metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
-				tc.setup(t, p)
-
-				var stdout, stderr bytes.Buffer
-				if code := cmdIdentity(nil, &stdout, &stderr); code != tc.exit {
-					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr.String())
+				if code, _, stderr := runIdentityCase(t, p, tc); code != tc.exit {
+					t.Fatalf("exit %d, want %d (stderr %q)", code, tc.exit, stderr)
 				}
 				if broker.callCount() != 0 || metadata.totalRequests() != 0 {
 					t.Fatalf("identity asked the broker %d times and the metadata server %d times; it asks neither", broker.callCount(), metadata.totalRequests())
@@ -678,28 +673,42 @@ func TestIdentityWithoutSourceAsksNothing(t *testing.T) {
 	}
 }
 
+// silentWait is how long identity waits for a helper that never answers, the dial included: the
+// rows' own 2 s, written here and never read from the code under test, so a changed
+// identityDeadline fails them.
+const silentWait = 2 * time.Second
+
+// staleAge is how long before a row's start its stale marker was written: past the 160 s a
+// launcher's marker is trusted for (pendingMarkerLife).
+const staleAge = 200 * time.Second
+
 // identityRowPaths is where one identity row's process keeps its state: its home, its key dir and
-// helper socket, as the row's mode names them, and its XDG state directory.
-type identityRowPaths struct{ home, keyDir, sock, state string }
+// helper socket, as the row's mode names them, and its XDG state directory; and start, the moment
+// the row's clock stands at as identity runs, which its markers are stamped against.
+type identityRowPaths struct {
+	home, keyDir, sock, state string
+	start                     time.Time
+}
 
 // identityCase is one row of TestIdentity: what it puts on disk, the exit code identity answers,
-// the notice it prints (nil for none; mode is "named" or "defaults"), and whether the row waits
-// out a helper that never answers.
+// the notice it prints (nil for none; mode is "named" or "defaults"), and whether its helper never
+// answers (silent), which runIdentityCase starts in place of a setup.
 type identityCase struct {
 	name   string
 	setup  func(t *testing.T, p identityRowPaths)
 	exit   int
 	stderr func(mode string, p identityRowPaths) string
-	slow   bool
+	silent bool
 }
 
 // identityPaths gives one row a home, a runtime directory and a state directory of its own, with
 // the key dir and the helper socket named by AGENT_SECRETS_KEY_DIR and AGENT_SECRETS_HELPER_SOCK
-// (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults").
+// (mode "named") or left at the $XDG_RUNTIME_DIR defaults with both unset (mode "defaults"), and
+// a start a day behind the wall clock, the moment its clock stands at.
 func identityPaths(t *testing.T, mode string) identityRowPaths {
 	t.Helper()
 	runtime := shortTempDir(t)
-	p := identityRowPaths{home: t.TempDir(), state: t.TempDir()}
+	p := identityRowPaths{home: t.TempDir(), state: t.TempDir(), start: time.Now().Add(-24 * time.Hour)}
 	t.Setenv("HOME", p.home)
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_RUNTIME_DIR", runtime)
@@ -718,6 +727,59 @@ func identityPaths(t *testing.T, mode string) identityRowPaths {
 	return p
 }
 
+// runIdentityCase sets tc up at p and runs `identity` with no arguments on a fake clock that
+// stands at p.start, on a goroutine of its own that stores the exit code and then closes done,
+// and answers the exit code, stdout and stderr once done has closed. Where tc's helper never
+// answers, the helper reads identity's request (op sign for identityProbeURL), identity has armed
+// one deadline on its clock, exactly silentWait after p.start, and has not returned, and only then
+// does the row move the clock there; every other case returns with the clock unmoved. Either way
+// identity leaves nothing armed. A cleanup, which runs before the silent helper's own, hangs that
+// helper up, moves the clock past the deadline and takes done, so a row that failed while identity
+// still waited ends identity, never the test binary's timeout.
+func runIdentityCase(t *testing.T, p identityRowPaths, tc identityCase) (int, string, string) {
+	t.Helper()
+	var requests <-chan helper.Request
+	hangUp := func() {}
+	if tc.silent {
+		requests, hangUp = silentHelperAt(t, p.sock)
+	} else {
+		tc.setup(t, p)
+	}
+	clk := clocktest.New(p.start)
+	var code int
+	var stdout, stderr bytes.Buffer
+	done := make(chan struct{})
+	go func() {
+		code = cmdIdentity(clk, nil, &stdout, &stderr)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		hangUp()
+		clk.Advance(silentWait)
+		testwait.Receive(t, "identity to return once its helper hung up and its clock passed the deadline", done)
+	})
+	if tc.silent {
+		if req := testwait.Receive(t, "the silent helper to read identity's request", requests); req.Op != "sign" || req.URL != identityProbeURL {
+			t.Fatalf("identity asked the helper %+v; want op sign for %s", req, identityProbeURL)
+		}
+		// probeHelper arms its deadline before it dials, so it is armed once the helper has read.
+		if armed, want := clk.Armed(), p.start.Add(silentWait); len(armed) != 1 || !armed[0].Equal(want) {
+			t.Fatalf("while the helper holds its request identity has armed %v on its clock; want only %s (%s after %s)", armed, want, silentWait, p.start)
+		}
+		select {
+		case <-done:
+			t.Fatalf("identity returned (exit %d, stderr %q) while the helper held its request, before its clock reached the deadline", code, stderr.String())
+		default:
+		}
+		clk.Advance(silentWait)
+	}
+	testwait.Receive(t, "identity to return", done)
+	if armed := clk.Armed(); len(armed) != 0 {
+		t.Fatalf("identity left %v armed on its clock after it returned; want nothing", armed)
+	}
+	return code, stdout.String(), stderr.String()
+}
+
 // identityCases is every row of TestIdentity.
 func identityCases() []identityCase {
 	type paths = identityRowPaths
@@ -734,8 +796,8 @@ func identityCases() []identityCase {
 	}
 	return []identityCase{
 		{name: "key.pem", setup: func(t *testing.T, p paths) { copyKeyDir(t, newKeyDir(t), p.keyDir) }, exit: 0},
-		{name: "fresh marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 0) }, exit: 0},
-		{name: "stale marker", setup: func(t *testing.T, p paths) { writePendingMarker(t, p.keyDir, 200*time.Second) }, exit: 1, stderr: namedOnly},
+		{name: "fresh marker", setup: func(t *testing.T, p paths) { writePendingMarkerAt(t, p.keyDir, p.start) }, exit: 0},
+		{name: "stale marker", setup: func(t *testing.T, p paths) { writePendingMarkerAt(t, p.keyDir, p.start.Add(-staleAge)) }, exit: 1, stderr: namedOnly},
 		{name: "helper OK", setup: func(t *testing.T, p paths) {
 			fakeHelperAt(t, p.sock, helper.Response{OK: true, Proof: "eyJ.fake.proof", EnrollmentID: "enr-h"})
 		}, exit: 0},
@@ -759,7 +821,7 @@ func identityCases() []identityCase {
 				t.Fatal(err)
 			}
 		}, exit: 1, stderr: unreachable},
-		{name: "helper never answers", setup: func(t *testing.T, p paths) { silentHelperAt(t, p.sock) }, exit: 1, stderr: unreachable, slow: true},
+		{name: "helper never answers", silent: true, exit: 1, stderr: unreachable},
 		{name: "nothing", setup: func(t *testing.T, p paths) {}, exit: 1, stderr: namedOnly},
 	}
 }
@@ -779,8 +841,12 @@ func staleSocketAt(t *testing.T, sock string) {
 	ln.Close()
 }
 
-// silentHelperAt accepts connections at sock and never answers one.
-func silentHelperAt(t *testing.T, sock string) {
+// silentHelperAt accepts connections at sock and never answers one. Its goroutine reads each
+// connection's request line, reports the request on the channel it answers, which has room for
+// more requests than a row makes, and keeps the connection open. hangUp closes every connection it
+// holds, as a helper that dies does; its cleanup closes the listener, takes the end of its accept
+// loop and closes them too.
+func silentHelperAt(t *testing.T, sock string) (requests <-chan helper.Request, hangUp func()) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(sock), 0o700); err != nil {
 		t.Fatal(err)
@@ -789,7 +855,16 @@ func silentHelperAt(t *testing.T, sock string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var mu sync.Mutex
 	var held []net.Conn
+	hangUp = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range held {
+			c.Close()
+		}
+	}
+	reqs := make(chan helper.Request, 8)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -798,16 +873,21 @@ func silentHelperAt(t *testing.T, sock string) {
 			if err != nil {
 				return
 			}
+			mu.Lock()
 			held = append(held, conn)
+			mu.Unlock()
+			line, _ := bufio.NewReader(conn).ReadBytes('\n')
+			var req helper.Request
+			_ = json.Unmarshal(line, &req)
+			reqs <- req
 		}
 	}()
 	t.Cleanup(func() {
 		ln.Close()
-		<-done
-		for _, c := range held {
-			c.Close()
-		}
+		testwait.Receive(t, "the silent helper's accept loop to end", done)
+		hangUp()
 	})
+	return reqs, hangUp
 }
 
 // installHelperUnit writes the helper's user unit where install writes it under home (the test

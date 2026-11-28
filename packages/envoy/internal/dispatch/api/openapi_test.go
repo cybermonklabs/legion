@@ -292,6 +292,7 @@ func committedOpenAPI(t testing.TB) []byte {
 // no route. So a client sends every other member, as_of among them, to the second path
 // (everyBuildReadsSearch in packages/contracts), and the second path declares as_of.
 func TestEveryAnswersRouteDeclaresAsOfInTheOpenAPIDocument(t *testing.T) {
+	t.Parallel()
 	type parameter struct {
 		Name string `json:"name"`
 		In   string `json:"in"`

@@ -57,6 +57,7 @@ func detailText(t *testing.T, raw json.RawMessage) string {
 // granted at once and one it left for a person to approve carry null: neither was refused, so
 // there is nothing to explain.
 func TestARefusedRequestNamesTheSecretAndTheRuleOnBothRoutes(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	listed := policytest.Secret("GCLOUD_DEMO", testApprover, policy.TierAgent, "listed-v1")
 	listed.Tags[policy.TagRequesters] = listedRequester

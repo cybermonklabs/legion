@@ -183,6 +183,7 @@ func grantOf(t *testing.T, m *Machine, enrollmentID string, key *ecdsa.PrivateKe
 // the placeholder and the hosts of its kind for the name it holds back, and records which of the
 // two went out as a placeholder.
 func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	retag(t, m, policytest.Secret("SECOND_TOKEN", fixtureOperator, policy.TierAgent, "second-v1"))
 	requestID, grantID := grantOf(t, m, enr, key, "read both", "AUTO_TOKEN", "SECOND_TOKEN")
@@ -225,6 +226,7 @@ func TestAReleaseHoldsBackTheAirlocksNameAndHandsOverTheRest(t *testing.T) {
 // for as long as it lives, so a session that releases twice — a retry, or a second process —
 // finds the strings already in its environment still working, and the table grows no row.
 func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AUTO_TOKEN", "example")))
 	_, grantID := grantOf(t, m, enr, key, "read it", "AUTO_TOKEN")
 
@@ -252,6 +254,7 @@ func TestASecondReleaseHandsBackTheSamePlaceholders(t *testing.T) {
 // wherever its secret was and every other field as it was read or minted, and no answer carries a
 // real value anywhere.
 func TestTheReleasedShapeOfEachKind(t *testing.T) {
+	t.Parallel()
 	const (
 		awsStored   = `{"acc` + `ess_key_id":"AKI` + `AREALKEYID","sec` + `ret_acc` + `ess_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
 		githubMint  = `{"installations":{"Acme":{"installation_id":42,"token":"ghs_realinstallationtoken","expires_at":"2100-01-01T00:00:00Z"}}}`
@@ -384,6 +387,7 @@ func TestTheReleasedShapeOfEachKind(t *testing.T) {
 // person's approval before its minter ever runs (release refuses an automatic one), so it cannot
 // share that table's automatic grant.
 func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
+	t.Parallel()
 	const azureMint = `{"tenant_id":"tenant","client_id":"client","federated_token":"real-federated-token","expires_at":"2100-01-01T00:00:00Z"}`
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AZURE_LOGIN", "example")))
 	retag(t, m, policytest.TypeSecret("AZURE_LOGIN", fixtureOperator, policy.TierHuman, policy.TypeAzureLogin, `{"tenant_id":"tenant","client_id":"client"}`))
@@ -425,6 +429,7 @@ func TestTheReleasedShapeOfAnAzureLogin(t *testing.T) {
 // ones the release mints placeholders for. The expiry a minter reported comes with them, which
 // is what the proxy mints again before.
 func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
+	t.Parallel()
 	const (
 		awsStored  = `{"acc` + `ess_key_id":"AKI` + `AREALKEYID","sec` + `ret_acc` + `ess_key":"real-secret-access-key","session_token":"real-session-token","region":"us-west-2"}`
 		githubMint = `{"installations":{"Acme":{"installation_id":42,"token":"ghs_acme_token","expires_at":"2100-01-01T00:00:00Z"},` +
@@ -542,6 +547,7 @@ func TestAirlockValuesAnswersEachSlotsRealValue(t *testing.T) {
 // slot, so the command and the proxy agree on which of the grant's equally powerful placeholders
 // is the password.
 func TestTheProxyPasswordIsTheFirstPairInSortedOrder(t *testing.T) {
+	t.Parallel()
 	m, enr, key, _ := newPlaceholderFixture(t, bound(rule("AWS_KEY", "aws"), rule("ZULU_TOKEN", "example")))
 	retag(t, m,
 		policytest.Secret("AWS_KEY", fixtureOperator, policy.TierAgent, `{"access_key_id":"AKIAONE","secret_access_key":"two"}`),

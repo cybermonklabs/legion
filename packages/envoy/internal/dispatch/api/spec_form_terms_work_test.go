@@ -92,6 +92,10 @@ func (emptyRows) Scan(...any) error             { return pgx.ErrNoRows }
 // the root, whose arrival walks back each move. Each walk answers what it found, and a row whose
 // walk finds nothing at either size reads nothing, so it fails.
 func TestTheWalksOfTheListGrowInProportionToWhatTheyRead(t *testing.T) {
+	// Not parallel: it holds each walk's CPU time to a growth ratio (cputest.MeasureThread in
+	// leastWork, under levelTwoWorkGrowth), which the package's parallel tests' load on the cores,
+	// their caches and their clock frequency moves, and leastWork collects the whole process's heap
+	// (runtime.GC) before each window.
 	const root = "ACME-1"
 	roots := []string{root}
 	for _, row := range []struct {
@@ -188,6 +192,10 @@ func TestTheWalksOfTheListGrowInProportionToWhatTheyRead(t *testing.T) {
 // definitions of each term (orderDefinitions). Each size has a root of its own, outside the roots
 // of the server's setting, so its approvals are not judged, and the walk reads that root alone.
 func TestTheListOfTwoDocumentsThatDefineTheSameTermsIsMadeInWorkInProportionToItsTerms(t *testing.T) {
+	// Not parallel: it holds the read's CPU time to a growth ratio (cputest.MeasureThread in
+	// leastWork, under levelTwoWorkGrowth), which the package's parallel tests' load on the cores,
+	// their caches and their clock frequency moves, and leastWork collects the whole process's heap
+	// (runtime.GC) before each window.
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	sizes := []int{250, 4 * 250}
 	form := tree.deps.SpecForm

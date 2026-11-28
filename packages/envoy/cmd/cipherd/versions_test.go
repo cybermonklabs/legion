@@ -17,6 +17,7 @@ import (
 // under a version reads REFUSED, exit 1, and stays as it was; an unmigrated database reads as
 // nothing checked, exit 1, and gains no table; and an argument is a usage error, exit 2.
 func TestTheBinaryVersionsJudgesTheRecordedMigrationsAndWritesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	binary := buildBroker(t)
 

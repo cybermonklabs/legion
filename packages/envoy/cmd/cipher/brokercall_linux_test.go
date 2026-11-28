@@ -15,37 +15,63 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown: the broker makes the enrollment
-// at once, and its answer would reach the helper an hour later, past the op's 2 s bound. `enroll
+// at once, and its answer would reach the helper an hour later, past the op's bound. `enroll
 // --helper` exits 1 naming ENROLL_OUTCOME_UNKNOWN and saying the outcome is unknown, and writes
-// no enrollment file, while the broker holds the row. The answer is the one the bound's end of the
-// request gives (requestReach.settle): its cause says the request may have reached the broker, not
-// the cause the helper's timer, a second after the bound, would give, and it comes at the bound,
-// allowing for the time this process was held up (requireOnTime). The same command again,
-// answered at once, exits 0 with that row's id, and the broker still holds that one live row.
+// no enrollment file, while the broker holds the row. The helper's two clocks are fakes the row
+// moves. On the broker's, the helper's first poll of the machine login waits exactly the device
+// authorization's 5 s interval. On the op's, the enroll arms its bound at exactly 20 s and the
+// helper's timer at 21 s, gives no answer before the row moves that clock, and answers once the
+// row moves it to the bound alone. The answer is the one the bound's end of the request gives
+// (requestReach.settle): its cause says the request may have reached the broker, not the cause
+// the helper's timer would give. The same command again, answered at once, exits 0 with that
+// row's id, and the broker still holds that one live row.
 func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireCommandOnTime, onTimeWithin at waits_test.go:245).
+	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// The row's own durations, never read from the code under test: the device authorization's
+	// poll interval (RFC 8628's 5 s, which the rig's broker sends), the helper's bound on one
+	// broker-call op, and how long after the bound the helper's timer answers.
+	const (
+		pollWait = 5 * time.Second
+		opBound  = 20 * time.Second
+		opSlack  = time.Second
+	)
+	start := time.Date(2026, time.November, 28, 9, 0, 0, 0, time.UTC)
+	opFake, loginFake := clocktest.New(start), clocktest.New(start)
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	slow := &slowEnrollments{base: http.DefaultTransport, hold: time.Hour}
-	srv, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow})
-	if code, exit, stderr := machineLoginThen(t, rig, binary, sock, "approve", nil); exit != 0 {
+	_, sock := serveRealHelperWith(t, rig.URL, rig.Operator, &http.Client{Transport: slow}, func(srv *helper.Server) {
+		srv.Clock = opFake
+		srv.Broker.Clock = loginFake
+	})
+	// Nothing moved loginFake before the approval, so the helper's first poll still waits on it:
+	// no poll reached the broker before the code was approved, and no slow_down lengthened the
+	// interval. One move to the interval is one poll, which the approved code answers.
+	firstPoll := func() {
+		armed := loginFake.AwaitArmed(t, "the helper's first poll of the machine login to arm its wait", 1)
+		if want := start.Add(pollWait); len(armed) != 1 || !armed[0].Equal(want) {
+			t.Fatalf("the helper's first poll of the machine login waits on its clock until %v; want only %s (%s after %s)", armed, want, pollWait, start)
+		}
+		loginFake.Advance(pollWait)
+	}
+	if code, exit, stderr := machineLoginAround(t, rig, binary, sock, "approve", nil, firstPoll); exit != 0 {
 		t.Fatalf("approved machine login (code %s): exit %d, stderr %q; want 0", code, exit, stderr)
 	}
-	// The helper reads the bound at each op. The enroll comes from another process, so this
-	// process's own call on the socket is what orders the write before the helper reads it.
-	const bound = 2 * time.Second
-	srv.BrokerCallBound = bound
-	if status, err := helper.Call(sock, helper.Request{Op: "login-status"}, untilGiveUp(t)); err != nil || status.LoginState != "issued" {
+	if status, err := helper.CallContext(testwait.Context(t), sock, helper.Request{Op: "login-status"}); err != nil || status.LoginState != "issued" {
 		t.Fatalf("login-status after the approved login: %+v %v; want issued", status, err)
 	}
 	runtimeID := "past-bound-box-" + t.Name()
@@ -54,10 +80,40 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	args := []string{"enroll", "--helper", "--runtime-id", runtimeID, "--thumbprint", freshThumbprint(t)}
 
 	slow.holds.Store(1)
-	meter := startStallMeter(t)
-	start := time.Now()
-	stdout, stderr, exit := runAgentSecrets(t, binary, rig.URL, keyDir, env, args...)
-	requireCommandOnTime(t, meter, "enroll --helper past the helper's bound", start, bound)
+	cmd := exec.Command(binary, args...)
+	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+rig.URL, "AGENT_SECRETS_KEY_DIR="+keyDir), env...)
+	c := startCall(t, cmd)
+	// brokerCall arms the op's bound before it starts the op and its timer after, so the transport
+	// can hold the answer before the timer is armed. The machine login's op left neither: brokerCall
+	// ends the one and stops the other as it returns.
+	type opState struct {
+		Held  int64
+		Armed []time.Time
+	}
+	// requireNoAnswer fails the row once enroll --helper has exited: no answer may come before the
+	// row moves the op's clock.
+	requireNoAnswer := func(state opState) {
+		if c.ended() {
+			t.Fatalf("enroll --helper exited before the row moved the helper's op to its bound (the op's clock holds %+v): exit %d, stdout %q, stderr %q", state, cmd.ProcessState.ExitCode(), c.stdout.String(), c.stderr.String())
+		}
+	}
+	held := testwait.Until(t, "the transport to hold the enrollment's answer while the helper's op arms its bound and its timer", func() (opState, bool) {
+		state := opState{Held: slow.held.Load(), Armed: opFake.Armed()}
+		requireNoAnswer(state)
+		return state, state.Held == 1 && len(state.Armed) == 2
+	})
+	requireNoAnswer(held)
+	now := opFake.Now()
+	if want := []time.Time{now.Add(opBound), now.Add(opBound + opSlack)}; !slices.EqualFunc(held.Armed, want, time.Time.Equal) {
+		t.Fatalf("while the transport holds the enrollment's answer the helper's op has armed %v on its clock; want only %v, its %s bound and its timer %s after that", held.Armed, want, opBound, opSlack)
+	}
+	opFake.Advance(opBound)
+	exit := c.end(t)
+	var exitErr *exec.ExitError
+	if c.err != nil && !errors.As(c.err, &exitErr) {
+		t.Fatalf("run enroll --helper: %v\nstdout: %s\nstderr: %s", c.err, c.stdout.String(), c.stderr.String())
+	}
+	stdout, stderr := c.stdout.String(), c.stderr.String()
 	rows := enrollmentsOf(t, rig, runtimeID)
 	outcome := fmt.Sprintf("exit %d, stdout %q, stderr %q; the broker's rows for %s: %+v", exit, stdout, stderr, runtimeID, rows)
 	if n := slow.held.Load(); n != 1 {

@@ -700,6 +700,7 @@ func withAsOfValue(t *testing.T, target, value string) string {
 // must show it to alice's caller and not to bob's, at the cut and as of it (hiddenShown), so a
 // search row cannot pass because the comment matched nothing or because no caller had it hidden.
 func TestEveryAnswersRouteAnswersAsOfTheCutWhatItAnsweredThen(t *testing.T) {
+	t.Parallel()
 	rig := newAsOfRig(t)
 	world := seedAsOfWorld(t, rig.handler)
 	world.seedHiddenComment(t, rig.handler, rig.database)
@@ -1434,6 +1435,7 @@ func abbreviateAnswer(body []byte) string {
 // their declarations state (declaredReads), both ways and each once: a route that answers as_of
 // with no row, and a row whose route does not answer as_of, each fail by name.
 func TestEveryAnswersRouteHasAnEqualityRow(t *testing.T) {
+	t.Parallel()
 	rows := map[string]bool{}
 	var problems []string
 	for _, row := range asOfEqualityRows {
@@ -1479,6 +1481,7 @@ func TestEveryAnswersRouteHasAnEqualityRow(t *testing.T) {
 // the cut 400; and it answers no items for a since after the cut, where the present read lists the
 // later message, since nothing after the cut exists at it.
 func TestAWindowCountsFromTheCut(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{envoyURL: newAsOfListener(t)})
 	const project = "ASOW"
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "The window"}, "alice")
@@ -1605,6 +1608,7 @@ func TestAWindowCountsFromTheCut(t *testing.T) {
 // and pinned at the present, and refuses each with a cut 400 AS_OF_NOT_SERVED naming the
 // parameter, since the route roster and a person's pins keep no history (decision 5).
 func TestThePastTimeIssueListingRefusesAFilterWithNoHistory(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	const project = "ASOL"
 	asOfWrite(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": project, "name": "The listing"}, "alice")
@@ -1638,6 +1642,7 @@ func TestThePastTimeIssueListingRefusesAFilterWithNoHistory(t *testing.T) {
 // and neither request at the cut runs a statement but the as_of gate's read of the database's
 // clock, so the list's handler read nothing. The same list at the cut with no order answers 200.
 func TestAPastTimeThreadListRefusesAPageOfThreads(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	counter := &roundTrips{}
 	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}

@@ -18,6 +18,7 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // cmdGrantList implements "grant list": every live grant of a session the operator runs, given
@@ -120,10 +121,10 @@ func orDashPtr(s *string) string {
 // is (OK, or NOT_ENROLLED while it is still enrolling). It asks the broker nothing. A process in
 // no session — the operator's own shell — is false, and takes the operator route below.
 func inSession(dir string) bool {
-	if launcherKeyDir(dir) {
+	if launcherKeyDir(clock.Real(), dir) {
 		return true
 	}
-	answer := probeHelper()
+	answer := probeHelper(clock.Real())
 	if !answer.answered() {
 		return false
 	}

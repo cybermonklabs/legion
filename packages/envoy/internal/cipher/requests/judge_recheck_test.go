@@ -28,6 +28,7 @@ func judgeRows(team projectaccesstest.Row) map[string]projectaccesstest.Row {
 // still of no private project is granted, and so is any request on a broker with no project-access
 // client, as at the merge base.
 func TestTheJudgesDecisionChecksTheProjectRuleAgain(t *testing.T) {
+	t.Parallel()
 	const reason = "TEAM-7: rotate the deploy key"
 	for _, c := range []struct {
 		name string

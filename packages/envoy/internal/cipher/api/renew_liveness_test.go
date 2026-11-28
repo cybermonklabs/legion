@@ -14,6 +14,7 @@ import (
 // stop on; a live enrollment whose proof iat is outside skew is still PROOF_INVALID, which it must
 // retry after the clock is corrected.
 func TestRenewDistinguishesAnEndedEnrollmentFromARecoverableProofFailure(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	id, key := ts.newSessionEnrollment(t, "renew-liveness", "ada@example.com")
 	path := "/v1/enrollments/" + id + "/renew"
@@ -44,6 +45,7 @@ func TestRenewDistinguishesAnEndedEnrollmentFromARecoverableProofFailure(t *test
 // is, has its grant's values released and renews; one whose lease ran out before the last beat is
 // still refused as ended.
 func TestAPodWhoseLeaseRanOutWhileNoBrokerServedRenewsAndReadsItsGrant(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	ctx := context.Background()
 	id, key := ts.newServicePod(t)

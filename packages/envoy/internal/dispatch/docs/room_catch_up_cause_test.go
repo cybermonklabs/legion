@@ -37,6 +37,7 @@ import (
 // own catch-up, it records none, and a wait for that head (cmd/dispatch's awaitNotifiedCatchUp)
 // gives up although the room holds every change.
 func TestANotifiedCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing.T) {
+	t.Parallel()
 	service, database, artifactID, room := newHookedResidentRoom(t)
 	notes := runCatchUps(t, service)
 	tx, version := holdOwnWrite(t, service, database, artifactID)
@@ -63,6 +64,7 @@ func TestANotifiedCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing
 // as the carrier of a write whose notification reached no listener of the process. Asked again
 // as this process's own catch-up, it records none.
 func TestASweptCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing.T) {
+	t.Parallel()
 	service, database, artifactID, room := newHookedResidentRoom(t)
 	tx, version := holdOwnWrite(t, service, database, artifactID)
 
@@ -89,6 +91,7 @@ func TestASweptCatchUpThatMeetsThisProcessesOwnWriteRecordsTheHead(t *testing.T)
 // retry finds the room at the head and records the head as the catch-up it retries would have
 // (RoomCounters.NotifiedHead, SweptHead).
 func TestARetryOfANotifiedOrSweptCatchUpRecordsTheHead(t *testing.T) {
+	t.Parallel()
 	for _, asked := range []struct {
 		name  string
 		cause catchUpCause
@@ -149,6 +152,7 @@ func TestARetryOfANotifiedOrSweptCatchUpRecordsTheHead(t *testing.T) {
 // fake the test moves only once the room is published, so no real moment brings the look again
 // or ends it (catchUpLoadingTimeout).
 func TestANotifiedCatchUpOfARoomStillLoadingRecordsTheHeadOnceTheRoomIsPublished(t *testing.T) {
+	t.Parallel()
 	service, database, artifactID := newHookedService(t)
 	fake := clocktest.New(time.Now())
 	catchUps := service.catchUps
@@ -294,6 +298,7 @@ func holdLoadPastANotification(t *testing.T) heldLoad {
 // change. The load is held at the start of its hook while the notification is decided
 // (holdLoadPastANotification).
 func TestANotifiedCatchUpBeforeALoadingRoomsInstanceStartsRecordsTheHead(t *testing.T) {
+	t.Parallel()
 	held := holdLoadPastANotification(t)
 	held.let()
 	if err := testwait.Receive(t, "the room's load to return once its hook was let go", held.loaded); err != nil {
@@ -319,6 +324,7 @@ func TestANotifiedCatchUpBeforeALoadingRoomsInstanceStartsRecordsTheHead(t *test
 // The held load is refused as a rebuild refuses it (refuseIfRebuilding): the load's own failure
 // path drops the record it began (onLoadDocument), and ygo drops the room.
 func TestACauseLeftToALoadThatFailsIsNotCreditedToTheNextLoad(t *testing.T) {
+	t.Parallel()
 	held := holdLoadPastANotification(t)
 	service, artifactID, hooks := held.service, held.artifactID, held.service.hooks
 	hooks.mu.Lock()
@@ -365,6 +371,7 @@ func TestACauseLeftToALoadThatFailsIsNotCreditedToTheNextLoad(t *testing.T) {
 // fails as a pool refuses a second connection under a transaction (store.ErrNestedAcquire), and
 // the catch-ups' clock stands still, so its retry never comes due.
 func TestANotifiedRetryAnsweredByASweptCatchUpRecordsBothHeads(t *testing.T) {
+	t.Parallel()
 	armNotifiedRetry := func(t *testing.T, service *Service, artifactID string) {
 		t.Helper()
 		catchUps := service.catchUps

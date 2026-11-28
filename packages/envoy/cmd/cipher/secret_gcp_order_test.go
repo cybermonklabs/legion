@@ -29,8 +29,9 @@ import (
 
 	"google.golang.org/grpc/codes"
 
-	"github.com/sjawhar/envoy/internal/googleidentity"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/testexec"
 )
 
@@ -117,7 +118,7 @@ func startMetadataServer(t *testing.T, email string) *metadataServer {
 	m := &metadataServer{requests: map[string]int{}}
 	answers := map[string]string{
 		metadataTokenPath: `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`,
-		"/computeMetadata/v1/instance/service-accounts/default/email":    email,
+		metadataEmailPath: email,
 		"/computeMetadata/v1/instance/service-accounts/default/identity": "metadata-identity-token",
 		"/computeMetadata/v1/project/project-id":                         "acme-deployment",
 	}
@@ -257,7 +258,7 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:290); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:292); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
 		gac          = "gac@example.iam.gserviceaccount.com"
@@ -311,7 +312,7 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // one refusal that names each of the six sources (the third by both its variables, the well-known
 // file by the setting that names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:317); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:319); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	fake := newFakeSecretManager()
 	startFakeSecretManager(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
@@ -349,7 +350,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:363); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:365); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
 	for _, row := range []struct {
 		name     string
 		use      func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager)
@@ -465,15 +466,22 @@ const (
 	answerNotGoogle
 )
 
+// metadataEmailPath is where the metadata server names the default service account.
+const metadataEmailPath = "/computeMetadata/v1/instance/service-accounts/default/email"
+
 // startPartialMetadataServer serves, at the address GCE_METADATA_HOST names for the rest of t, a
 // metadata server that answers the default service account's access token path (with
 // metadata-not-a-secret) as token says and its email path (with
 // machine@example.iam.gserviceaccount.com) as email says, and holds every other request open
-// until the test ends.
-func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *metadataServer {
+// until release is called or the test ends. Before it holds a request it reports the request's
+// path on the channel it answers, which has room for more requests than a command makes here
+// (each path at most once), so the report never holds the handler up. release lets every held
+// request go and every later one through at once, as an answer that is not Google's.
+func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) (*metadataServer, <-chan string, func()) {
 	t.Helper()
 	m := &metadataServer{requests: map[string]int{}}
-	held := make(chan struct{})
+	held, holding := make(chan struct{}), make(chan string, 8)
+	release := sync.OnceFunc(func() { close(held) })
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		m.mu.Lock()
 		m.requests[r.URL.Path]++
@@ -482,11 +490,12 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 		switch r.URL.Path {
 		case metadataTokenPath:
 			answer, body = token, `{"access_token":"metadata-not-a-secret","expires_in":3600,"token_type":"Bearer"}`
-		case "/computeMetadata/v1/instance/service-accounts/default/email":
+		case metadataEmailPath:
 			answer, body = email, "machine@example.iam.gserviceaccount.com"
 		}
 		switch answer {
 		case answerHeld:
+			holding <- r.URL.Path
 			select {
 			case <-held:
 			case <-r.Context().Done():
@@ -502,9 +511,26 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 		_, _ = w.Write([]byte(body))
 	}))
 	t.Cleanup(server.Close)
-	t.Cleanup(func() { close(held) })
+	t.Cleanup(release)
 	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(server.URL, "http://"))
-	return m
+	return m, holding, release
+}
+
+// requestsTo is how many times path was asked for.
+func (m *metadataServer) requestsTo(path string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.requests[path]
+}
+
+// useFakeGCPMetadataClock puts in gcpMetadataClock, for the rest of t, a fake clock that stands at
+// start until the test moves it, and answers it: no bound of a metadata read ends before that.
+func useFakeGCPMetadataClock(t *testing.T, start time.Time) *clocktest.Fake {
+	t.Helper()
+	restore, clk := gcpMetadataClock, clocktest.New(start)
+	gcpMetadataClock = clk
+	t.Cleanup(func() { gcpMetadataClock = restore })
+	return clk
 }
 
 // TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken: with no other source, the metadata
@@ -512,27 +538,36 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // a token with no answer to the email read signs in, naming the machine's identity generically; a
 // server that answers neither, and an answer that is not Google's, are no metadata server, so the
 // command lists every source; a Google server that answers the token read with an error is
-// present and broken, so that error stops the command. Each row is timed against the wait the
-// metadata client's own deadlines allow it (waits), less the time this process was held up
-// (requireOnTime).
+// present and broken, so that error stops the command. A read the server holds ends at the one
+// bound the metadata client arms for it on gcpMetadataClock, a fake the row moves there only once
+// the bound is armed and the command has not returned: the email read, after the token, at
+// probeWait, and the token read at tokenWait, with no email read after it.
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:542); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:578); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381; main.useFakeGCPMetadataClock, gcpMetadataClock set at secret_gcp_order_test.go:531).
+	const (
+		// probeWait and tokenWait are the bounds of the email read and of the token read, written
+		// here and never read from the code under test, so a changed bound fails the row.
+		probeWait = 1500 * time.Millisecond
+		tokenWait = 10 * time.Second
+	)
+	start := time.Date(2026, time.November, 28, 9, 0, 0, 0, time.UTC)
 	for _, row := range []struct {
 		name         string
 		token, email metadataAnswer
+		held         string        // the path of the read the server holds, "" where it holds none
+		endsAfter    time.Duration // the bound the code arms for the read the server holds
 		code         int
-		waits        time.Duration
 		says         []string
 		saysNot      string
 		onlyCall     string
 	}{
-		{"mints a token, never answers the email read", answerGoogle, answerHeld, 0, googleidentity.ProbeTimeout,
+		{"mints a token, never answers the email read", answerGoogle, answerHeld, metadataEmailPath, probeWait, 0,
 			[]string{"using the metadata server: this machine's or this pod's identity\n"}, "", "Bearer metadata-not-a-secret"},
-		{"answers neither", answerHeld, answerHeld, 1, 10 * time.Second,
+		{"answers neither", answerHeld, answerHeld, metadataTokenPath, tokenWait, 1,
 			[]string{"found no Google credential", "the metadata server: no metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, 1, 0,
+		{"answers, but not as Google", answerNotGoogle, answerNotGoogle, "", 0, 1,
 			[]string{"found no Google credential", "not a Google metadata server"}, "ask the metadata server for this machine's access token", ""},
-		{"answers the token read with an error", answerGoogleFault, answerGoogle, 1, 0,
+		{"answers the token read with an error", answerGoogleFault, answerGoogle, "", 0, 1,
 			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
@@ -541,14 +576,40 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			holdScratchTest(fake)
 			useGcloudConfigurations(t, "", nil)
 			t.Setenv("PATH", t.TempDir())
-			startPartialMetadataServer(t, row.token, row.email)
+			metadata, holding, release := startPartialMetadataServer(t, row.token, row.email)
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
-			meter := startStallMeter(t)
-			started := time.Now()
-			_, stderr, code := runSecret("show", "SCRATCH_TEST")
-			took := requireOnTime(t, meter, "the command against this metadata server", started, row.waits)
+			clk := useFakeGCPMetadataClock(t, start)
+			var stderr string
+			var code int
+			done := make(chan struct{})
+			go func() {
+				_, stderr, code = runSecret("show", "SCRATCH_TEST")
+				close(done)
+			}()
+			// A row that ends before the command returned lets every held read go, so the command
+			// returns before the server, the clock and the settings it reads are taken back.
+			t.Cleanup(func() {
+				release()
+				testwait.Receive(t, "the command to return once the metadata server let its reads go", done)
+			})
+			if row.held != "" {
+				if path := testwait.Receive(t, "the metadata server to hold a read of the command", holding); path != row.held {
+					t.Fatalf("the metadata server holds a read of %s, want %s", path, row.held)
+				}
+				// The code arms a read's bound before it sends the read, so the bound is armed now.
+				if armed, want := clk.Armed(), start.Add(row.endsAfter); len(armed) != 1 || !armed[0].Equal(want) {
+					t.Fatalf("while the server holds %s the metadata client has armed %v on its clock, want only %s (%s after %s)", row.held, armed, want, row.endsAfter, start)
+				}
+				select {
+				case <-done:
+					t.Fatalf("the command returned (exit %d, stderr %q) while the server held %s, before its clock reached the read's bound", code, stderr, row.held)
+				default:
+				}
+				clk.Advance(row.endsAfter)
+			}
+			testwait.Receive(t, "the command against this metadata server to return", done)
 			if code != row.code {
-				t.Fatalf("exit %d after %s, stderr %q; want %d", code, took, stderr, row.code)
+				t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.code)
 			}
 			for _, said := range row.says {
 				if !strings.Contains(stderr, said) {
@@ -564,6 +625,12 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 				t.Fatalf("Secret Manager saw %d calls under %q, want none", calls, got)
 			case row.onlyCall != "" && (got != row.onlyCall || calls == 0):
 				t.Fatalf("Secret Manager calls ran under %q (%d calls), want only %s", got, calls, row.onlyCall)
+			}
+			if n := metadata.requestsTo(metadataEmailPath); row.held == metadataTokenPath && n != 0 {
+				t.Fatalf("the metadata server was asked for the email %d times after it held the token read, want none", n)
+			}
+			if armed := clk.Armed(); len(armed) != 0 {
+				t.Fatalf("the metadata client left %v armed on its clock after the command returned, want none", armed)
 			}
 		})
 	}

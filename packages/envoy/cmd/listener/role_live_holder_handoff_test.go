@@ -15,6 +15,7 @@ import (
 // (TestADispatchSendMarkedWithAStoppedRoleIsHandedToItsDaemon); a live holder reads the message
 // itself.
 func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolder(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
@@ -45,6 +46,7 @@ func TestAMarkedSendToAFinishedRoleThatAnotherSessionHoldsLiveIsKeptForThatHolde
 // not answering, so the marked send is handed to the stopped session's daemon exactly as for a
 // role no one holds - 200 to that session, one hand-off on the role token, nothing kept.
 func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)
@@ -79,6 +81,7 @@ func TestAMarkedSendToAFinishedRoleWhoseOtherHolderLapsedIsHandedToItsDaemon(t *
 // bus-unavailable 503, with no hand-off and nothing on the role's kept lane, so the sender sends
 // again once the read answers.
 func TestAMarkedSendToAFinishedRoleWhoseHolderLookupFailsIsRefusedAndNotHandedOff(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const principal = "system:serviceaccount:dispatch:example-dispatch"
 	useDispatchPrincipal(rig.deps, principal)

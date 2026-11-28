@@ -51,6 +51,7 @@ func (s *abandoningCall) Describe(ctx context.Context, id string) (secretstore.L
 // The named revert: peerReread returns RefreshOne's error whole; the value-read row then answers
 // ErrValueUnchecked and this test fails.
 func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
+	t.Parallel()
 	driven := 0
 	for _, row := range []struct {
 		name string
@@ -110,6 +111,7 @@ func TestAPeersRereadThatMergedTheTagsItReadRan(t *testing.T) {
 // source is behind a kind (policytest.Proxied), so its profiles are behind it too, as the names the
 // proxy holds values of are.
 func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
+	t.Parallel()
 	local := memory.New(policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))
 	loader := policytest.Loader(local)
 	loader.Profiles = policytest.Profiles(t, policytest.KindsFile(
@@ -146,6 +148,7 @@ func TestAPeersRereadDropsEveryNameServedFromTheValueItRead(t *testing.T) {
 // The named revert: peerReread drops current.RereadNames(name) whatever the version did; the two
 // rows of an unmoved github-app source then drop its names and this test fails.
 func TestAPeersRereadDropsAMintedSourcesNamesOnlyWhenItMovedTheValueVersion(t *testing.T) {
+	t.Parallel()
 	local := memory.New(
 		policytest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp)),
 		policytest.Proxied(policytest.Secret("STORED_TOKEN", "ada@example.com", policy.TierAgent, "stored-v1"), "example"))

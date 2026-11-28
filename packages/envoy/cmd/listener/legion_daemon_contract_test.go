@@ -20,6 +20,7 @@ const daemonWritesFixture = "testdata/legion-daemon-writes.json"
 // taken by the routes as they are served, the project's answering record and both entry routes,
 // and what the entry routes answer is the entry the daemon sent.
 func TestTheLegionDaemonsRegistryWritesAreTakenByTheRealMux(t *testing.T) {
+	t.Parallel()
 	data, err := os.ReadFile(daemonWritesFixture)
 	if err != nil {
 		t.Fatalf("read %s: %v", daemonWritesFixture, err)

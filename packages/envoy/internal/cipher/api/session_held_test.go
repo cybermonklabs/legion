@@ -25,6 +25,7 @@ import (
 // is taken, and names no holder, since whose the name is, is not the refused caller's to learn.
 // What the refusal says beyond the session is nobody's to depend on, so none of it is pinned here.
 func TestEnrollingUnderANameAnotherPrincipalHoldsIs403SessionHeld(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	session := "role-" + t.Name()
 	hers, herKey := ts.mintLauncherCredential(t, testApprover, "example-host-devbox")
@@ -80,6 +81,7 @@ func TestEnrollingUnderANameAnotherPrincipalHoldsIs403SessionHeld(t *testing.T) 
 // the test writes what that revoke writes for the automatic grant, the grant ended and its name
 // withheld from the enrollment, as enroll's own carry tests write the withheld row.
 func TestAPairedAccountsEnrollmentTakesTheNameAndWhatItCarries(t *testing.T) {
+	t.Parallel()
 	const session = "implementer-session-1"
 	// replaced is one arm's server and what its replaced pod left dormant for the session: the
 	// daemon's login, which enrols both accounts' pods, the grant testApprover approved for

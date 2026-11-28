@@ -55,6 +55,7 @@ func resultsProfilesBinding(hosts string, extra ...string) string {
 // takes A's run placeholder (a grant serves only on a broker of its own results entry), and its
 // write reaches the stand-in of Dispatch, stored.
 func TestABrokerWithNoResultEntriesHoldsTheResultsEntryToTheDestinationsOneHost(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	// The stand-in listens on 127.0.0.2: BROKER_AIRLOCK_TEST_RESOLVE refuses one address given two
 	// ports, and Dispatch's stand-in has 127.0.0.1.

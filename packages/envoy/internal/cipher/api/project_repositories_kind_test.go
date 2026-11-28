@@ -13,6 +13,7 @@ import (
 // neither reaches Dispatch; each edge listener's own token is answered its list, so the refusal is
 // the kind's and not the caller's.
 func TestAnEdgeListenerIsKnownByItsAccountsKindToo(t *testing.T) {
+	t.Parallel()
 	ts, dispatch, googleToken := googleEdgeServer(t, "edge-listener/edge-a/PRIV="+edgeAccount+" edge-listener/edge-g/OTHER=google:"+edgeGoogleAccount)
 	for _, row := range []struct {
 		name, bearer, project string

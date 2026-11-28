@@ -33,6 +33,7 @@ var termContainers = append(formContainers[:len(formContainers):len(formContaine
 // code or in a table cell the line is no block, so it is no definition, and no finding names lease.
 // Each row goes through the approval request route.
 func TestASecondDefinitionIsRefusedInEachPlaceOfEachDocumentOfARequest(t *testing.T) {
+	t.Parallel()
 	if len(termContainers) < 21 {
 		t.Fatalf("%d places, want at least 21", len(termContainers))
 	}
@@ -115,6 +116,7 @@ func TestASecondDefinitionIsRefusedInEachPlaceOfEachDocumentOfARequest(t *testin
 // reads as "Terms:", which is a terms-heading finding, and the line under it is a term line that
 // is no definition. Each row goes through the approval request route.
 func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTermsOnTheRoute(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
@@ -133,6 +135,7 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTermsOnTheRoute(t *testing.T)
 // (Kind term_line) elsewhere: either way the request is refused, and each row names which. Each
 // row goes through the approval request route, and only the findings that name lease are compared.
 func TestASecondDefinitionFollowsThePartOfItsContainer(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	listed := createFormIssue(t, tree.handler, tree.root, "Defines lease", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, listed.PrimaryArtifactID)
@@ -176,6 +179,7 @@ func TestASecondDefinitionFollowsThePartOfItsContainer(t *testing.T) {
 // it (the first slice's skip). The control: with the same terms.md readable, the request that
 // defines session again gets the finding of a second definition.
 func TestAnUnreadableApprovedDocumentRefusesEachRequestThatHoldsADefinition(t *testing.T) {
+	t.Parallel()
 	lease := specWithTerms(termLine("lease", leaseDefinition))
 	again := specWithTerms(termLine("session", otherSession))
 	t.Run("control: a readable terms.md", func(t *testing.T) {
@@ -246,6 +250,7 @@ func olderUnreadLine(document string, version int, issue string) string {
 // there is a second definition too. The control of each row: before the first version is made
 // unreadable, A keeps lease.
 func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
+	t.Parallel()
 	const second, third = "The hold of one session on one work unit.", "The hold that one session keeps on one work unit."
 	for _, row := range []struct {
 		name       string
@@ -327,6 +332,7 @@ func TestAnUnreadableOlderApprovedVersionOnlyOrdersTheList(t *testing.T) {
 // clears both: Y's version with no definition opens and is approved, and then X's version with its
 // definition opens.
 func TestTheWayOutOfTwoUnreadableDocumentsIsAVersionWithNoDefinition(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	x := createFormIssue(t, tree.handler, tree.root, "X", specWithTerms(termLine("lease", leaseDefinition)))
 	approveFormDocument(t, tree.handler, x.PrimaryArtifactID)
@@ -384,6 +390,7 @@ func namesUnread(unread []specFormUnread, artifactID string, version int, line s
 // document with a definition opens. The control: the read of another document names that version
 // too.
 func TestEachAnswerThatGivesTheListNamesEachApprovedVersionThatDispatchCannotRead(t *testing.T) {
+	t.Parallel()
 	fault := formFaults[0]
 	spec := "# Spec\n\n" + formRequirement(fault.node, fault.clean) + "\n## Terms\n\n" + termList([]string{termLine("lease", leaseDefinition)})
 	session := specFormTerm{Term: "session", Definition: sessionDefinition, Document: "terms.md", Version: 1, Issue: "ACME-1"}
@@ -466,6 +473,7 @@ func TestEachAnswerThatGivesTheListNamesEachApprovedVersionThatDispatchCannotRea
 // under a heading Terms in bold opens, and a definition whose footnote gives a source has two
 // sentences, with a finding that names the footnote.
 func TestEachCandidateInputOfTheSecondReaderOnTheRoute(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	approveTermsMd(t, tree, tree.root, termsMd(termLine("session", "One conversation of an agent.")))
 	const footnoted = "the definition has 2 sentences with its footnote, and a definition has one. " +

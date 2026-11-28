@@ -16,12 +16,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/testparallel"
+
 	"github.com/sjawhar/legion/daemon/internal/clock"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/testparallel"
 )
 
 const testTimeout = 30 * time.Second

@@ -92,6 +92,7 @@ func refusedForDispatchPost(t *testing.T, what string, response *httptest.Respon
 // from Dispatch's principal with no post, naming no source session, is answered 404 and nothing is
 // kept.
 func TestADispatchDeliveryToARolesFirstHolderIsKeptOnDispatchsPrincipalAlone(t *testing.T) {
+	t.Parallel()
 	d, client := keptRoleDeps(t)
 	useDispatchPrincipal(d, rigDispatchPrincipal)
 	withLegionAgent(t, d, legionAgentEntry("ses_post_other_role", "INFRA-300", "reviewer"))
@@ -338,6 +339,7 @@ func assertDeliveryNoticeOf(t *testing.T, notices []storedNotice, role string, h
 // listener's own (kept_by listener). At this change's base the route answers such a publish 404,
 // keeping nothing, and a walk tells nobody of a listener copy that names no session.
 func TestADispatchDeliverysKeptCopyEndsWithANoticeToDispatch(t *testing.T) {
+	t.Parallel()
 	t.Run("a the copy's hour ends: one notice naming the post, and no dead letter", func(t *testing.T) {
 		rig := newHourRig(t)
 		const role = "hour-delivery-told"
@@ -459,6 +461,7 @@ func (r *hourRig) writeForwardClaim(role string, seq uint64) {
 // that takes it over reports no expired copy: nothing is counted on envoy_role_kept_expired_total
 // and no drop line names the keep window, though the copy's hour had not ended when it was refused.
 func TestADeliverysNoticeKeepsWhatItsClaimSaidWhenAnotherWalkTakesTheClaimOver(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// refused is whether the role's live holder, which takes btw alone, refuses the copy's

@@ -148,8 +148,8 @@ func ready(t testing.TB) {
 		t.Skip(DatabaseURLEnv + " must be set to run Postgres-backed Dispatch tests")
 	}
 	if _, err := url.Parse(raw); err != nil {
-		// url.Parse's own error quotes the URL it was given, which carries a credential.
-		t.Fatalf("parse %s: %v", DatabaseURLEnv, errors.Unwrap(err))
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatalf("%s does not parse", DatabaseURLEnv)
 	}
 	end, bounded := testdb.ConnectEnd(t)
 	shared.once.Do(func() { shared.err = openAdmin(raw, end, bounded) })
@@ -406,13 +406,16 @@ func Main(m *testing.M) int { return Run(m.Run) }
 // them. internal/dispatch/delivery shares one NATS server across its tests (testnats.Main):
 // func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }.
 //
-// Its wait for the drops is bounded, as testdb.Run's is and for its reasons
-// (testdb.TeardownDeadline: testdb.TeardownGrace past the -timeout, counted from the start of the
-// tests, and five minutes from their end under -timeout 0). go test's alarm stops when the tests
-// return, so a wait with no bound for a drop the server never answers held the binary until
-// cmd/go's kill ("ran too long", which names no drop and no database), and for ever under
-// -timeout 0 (TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered). No drop has a deadline of its
-// own: a cancelled drop leaves its database on the server, as testdb.Run says. The templates'
+// Its wait for the drops is bounded (testdb.TeardownDeadline: testdb.TeardownGrace past the
+// -timeout, counted from the start of the tests, and five minutes from their end under -timeout
+// 0). go test's alarm stops when the tests return, so a wait with no bound for a drop the server
+// never answers held the binary until cmd/go's kill ("ran too long", which names no drop and no
+// database), and for ever under -timeout 0 (TestTheTeardownEndsAtItsBoundWhileADropIsUnanswered).
+// No drop has a deadline of its own: a cancel request does end a drop's barrier wait, and ends the
+// drop with it, leaving the database on the server (measured on PostgreSQL 18.6 and 16), so each
+// drop runs to its end or to the process's exit, whose closed socket the server does not read
+// while a drop waits: the server finishes the drop once the backend it waits on accepts the
+// barrier. The templates'
 // drops start as soon as the tests return, beside the drops their cleanups started: a clone is a
 // database of its own, so no template's drop waits on one. One wait, under the one bound, covers
 // them all, so at the bound Run names every database whose drop is still in flight, templates
@@ -605,7 +608,8 @@ func dropDatabase(name string) {
 func openAdmin(raw string, end time.Time, bounded bool) error {
 	server, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", DatabaseURLEnv, err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		return fmt.Errorf("%s does not parse", DatabaseURLEnv)
 	}
 	shared.server = *server
 	ctx := context.Background()

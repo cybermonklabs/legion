@@ -205,6 +205,7 @@ func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
 // block, and the write is refused naming it (refuseCICheckText). No result is read: the run rule
 // decides first.
 func TestAChangeOfACheckMarkAloneDoesNotJudgeTheChecksCICheckAgain(t *testing.T) {
+	t.Parallel()
 	prior, err := pmdoc.Parse(ciCheckOf("c1", `run="go test ./..." `+ciCheckKept))
 	if err != nil {
 		t.Fatalf("parse the document before the write: %v", err)

@@ -92,6 +92,7 @@ func (f visibilityFront) States(ctx context.Context, projects []string) (map[str
 // (projectaccess.ErrUnknownVisibility); the last two hand the request machine the answer as a
 // client that kept it would, so the machine's own reading is held to the rule too.
 func TestAVisibilityDispatchDoesNotKnowReleasesNothing(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		access func(dispatch *projectaccesstest.Server) projectaccess.Access
@@ -137,6 +138,7 @@ func TestAVisibilityDispatchDoesNotKnowReleasesNothing(t *testing.T) {
 // PRIV_KEY, which is agent tier and so is granted at once and never pending; PRIV_HUMAN is the
 // human-tier secret of the same project.)
 func TestAnApprovalOfASecretWhoseProjectTurnedPrivateIsRecordedAsADenial(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	m, enr, key, _ := newProjectFixture(t, proxyrules.Rules{}, publicTeam)
 	publicPriv := dispatchRows(publicTeam)

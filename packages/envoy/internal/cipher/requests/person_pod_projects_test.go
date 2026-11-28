@@ -34,6 +34,7 @@ func personPodNaming(t *testing.T, podUID string, projects ...string) (*Machine,
 // for good, as it ends a session's. Sami's pod naming no project is denied PRIV_KEY
 // project-not-named, though PRIV's list names sami (control).
 func TestAPersonsPodNamingAPrivateProjectGetsItsSecretWhileItsPersonSeesIt(t *testing.T) {
+	t.Parallel()
 	m, pod, key := personPodNaming(t, "pod-sami-priv", privProject)
 	_, grantID := grantOf(t, m, pod, key, "read it", "PRIV_KEY")
 	if release, err := m.Values(t.Context(), grantID, pod, ReleaseCall{}); err != nil || release.Values["PRIV_KEY"] != "priv-v1" {
@@ -61,6 +62,7 @@ func TestAPersonsPodNamingAPrivateProjectGetsItsSecretWhileItsPersonSeesIt(t *te
 // it names what a pod of no person names: its operator entry's project, and here no entry maps
 // the account. The next release ends the grant for good.
 func TestAnUnmappedPersonsPodNamesNoListOfItsOwn(t *testing.T) {
+	t.Parallel()
 	m, pod, key := personPodNaming(t, "pod-sami-unmapped", privProject)
 	_, grantID := grantOf(t, m, pod, key, "read it", "PRIV_KEY")
 	delete(m.PodOperators, samisPod.account)

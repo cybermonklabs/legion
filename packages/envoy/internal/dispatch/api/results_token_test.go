@@ -225,11 +225,13 @@ func walkTheMountedServerWith(t *testing.T, token limitedToken) {
 // TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler: a results token
 // reaches the handler of the one row the results list names and of no other row, and no socket.
 func TestEveryRowTheResultsListDoesNotNameRefusesAResultsTokenBeforeItsHandler(t *testing.T) {
+	t.Parallel()
 	walkEveryChainWith(t, resultsLimitedToken())
 }
 
 // TestTheMountedServerServesAResultsTokenOnTheResultsListAlone: the mounted server answers a
 // results token 403 RESULTS_ONLY_TOKEN on every row but the listed one, whose handler answers it.
 func TestTheMountedServerServesAResultsTokenOnTheResultsListAlone(t *testing.T) {
+	t.Parallel()
 	walkTheMountedServerWith(t, resultsLimitedToken())
 }

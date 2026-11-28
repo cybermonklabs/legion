@@ -123,6 +123,7 @@ func tokensBoundTo(t *testing.T, databaseURL, thumbprint string) int {
 //   - Control: D, of A's profile and destination, stores A's write at Dispatch's stand-in (201),
 //     and the token it minted is found by the same count of D's key.
 func TestABrokerOfAnotherResultsEntryServesNoGrant(t *testing.T) {
+	t.Parallel()
 	e := newResultsEnvironment(t)
 	standIn := func(addr, host string) *proxyrulestest.Service {
 		t.Helper()
@@ -212,6 +213,7 @@ func TestABrokerOfAnotherResultsEntryServesNoGrant(t *testing.T) {
 // broker with no destination, with destinations of other hosts alone, or with no results profile
 // has none.
 func TestTheEntryDigestHoldsTheDestinationsSchemeHostAndPort(t *testing.T) {
+	t.Parallel()
 	profiles, err := policy.ParseProfiles([]byte(`{"profiles": [{"name": "DISPATCH_RESULTS_TOKEN", "proxy": {"hosts": ["dispatch.ci-results.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/projects/"}]}}]}`))
 	if err != nil {
 		t.Fatal(err)

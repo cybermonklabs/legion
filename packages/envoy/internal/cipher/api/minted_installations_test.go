@@ -62,6 +62,7 @@ func newMintedServer(t *testing.T) *profileServer {
 //
 // The named revert: answer the refusal as the TARGET_REFUSED it wraps, and this fails on the code.
 func TestATargetNamingRepositoriesOfAMintedInstallationsProfileIs400TargetRepositoriesRefused(t *testing.T) {
+	t.Parallel()
 	s := newMintedServer(t)
 	status, reply, body := s.askTargeted(t, "TOKENS_READ", "https://github.com/ada/proofs")
 	if status != http.StatusBadRequest || reply.Code != "TARGET_REPOSITORIES_REFUSED" || !strings.Contains(reply.Error, "--target ada") {
@@ -90,6 +91,7 @@ func TestATargetNamingRepositoriesOfAMintedInstallationsProfileIs400TargetReposi
 // nothing and answers 502 MINT_FAILED naming the token's expiry and never the token, as every mint
 // whose upstream gave no usable answer does.
 func TestAReleaseOfAStoredTokenWithinTheMarginOfItsExpiryIs502MintFailed(t *testing.T) {
+	t.Parallel()
 	s := newMintedServer(t)
 	status, body := s.request(t, "TOKENS_READ", map[string]any{"request": signTargetRequest(t, s.key, s.URL, "TOKENS_READ", "https://github.com/ada")})
 	created := decode[wireCreateRequestResponse](t, body)

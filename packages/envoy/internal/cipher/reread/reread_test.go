@@ -23,9 +23,9 @@ const delivered = 2 * time.Second
 // sender, returning that store and the channel its reread function reports each name on. The
 // database is deliberately unmigrated: the fan-out reads no table.
 //
-// Each test gets a database rather than a schema (storetest.DatabaseURL, not storetest.URL)
-// because Channel is one constant and a Postgres channel is database-wide: on a shared database
-// each of these tests would hear the others' sends.
+// It takes storetest.DatabaseURL, an empty database of its own, not storetest.URL's migrated copy
+// of the template. A database of its own also keeps each test from hearing the others' sends:
+// Channel is one constant, and a Postgres channel is database-wide.
 func listener(t *testing.T, sender string) (*store.Store, <-chan string) {
 	t.Helper()
 	st, err := store.Open(context.Background(), storetest.DatabaseURL(t))

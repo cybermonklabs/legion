@@ -54,6 +54,7 @@ func approvedVersions(t *testing.T, tree specFormTree, artifactID string) []int 
 // version breaks the form, and it stays unapproved. The control: the same block with a statement
 // of two sentences carries the approval, as it always did.
 func TestTheAnswerCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		statement string
 		breaks    bool
@@ -91,6 +92,7 @@ func TestTheAnswerCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 // the carry queued). The control: the same steps with a statement of two sentences carry the
 // approval, as they always did.
 func TestTheRestoreCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name          string
 		statement     string
@@ -141,6 +143,7 @@ func TestTheRestoreCarryApprovesNoVersionThatBreaksTheForm(t *testing.T) {
 // refused for the Verification document, and the same steps with a claim that keeps the form
 // carry the spec's approval and answer the request, as they always did.
 func TestTheCarryJudgesEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		claim  string
 		breaks bool
@@ -216,6 +219,7 @@ func requireNoCarryOver(t *testing.T, tree specFormTree, artifactID string, faul
 // so it stays unapproved. The control: a statement of two sentences of 25 words each, which no
 // rule refuses, is carried, so the carry runs in this tree and no fixture passes for want of it.
 func TestTheAnswerCarryApprovesNoVersionThatBreaksTheFormForEachFixture(t *testing.T) {
+	t.Parallel()
 	answered := func(t *testing.T, statement string) (specFormTree, string) {
 		t.Helper()
 		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})
@@ -248,6 +252,7 @@ func TestTheAnswerCarryApprovesNoVersionThatBreaksTheFormForEachFixture(t *testi
 // approved text again breaks the form, so it stays unapproved. The control: a statement of two
 // sentences of 25 words each is carried, as above.
 func TestTheRestoreCarryApprovesNoVersionThatBreaksTheFormForEachFixture(t *testing.T) {
+	t.Parallel()
 	restored := func(t *testing.T, fault formFault, approved string) (specFormTree, string) {
 		t.Helper()
 		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1", settle: 20 * time.Millisecond})

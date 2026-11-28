@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // TestLoginStatusFollowsTheCredentialTheHelperHolds: an approved machine login, then a re-login
@@ -121,12 +122,21 @@ func TestLoginStatusFollowsTheCredentialTheHelperHolds(t *testing.T) {
 	}
 }
 
-// machineLoginThen runs `agent-secrets machine login` against the helper at sock and reads the
+// machineLoginThen is machineLoginAround with nothing to run after the decision.
+func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action string, before func()) (code string, exit int, stderr string) {
+	t.Helper()
+	return machineLoginAround(t, rig, binary, sock, action, before, nil)
+}
+
+// machineLoginAround runs `agent-secrets machine login` against the helper at sock and reads the
 // code it prints. It runs before (when non-nil) while that login is still pending, then decides
 // the login on the broker as the operator does on Dispatch's machine-login page
-// (ciphertest.Rig.DecideMachineLogin; action is "approve" or "deny"), and returns the code with
-// the command's exit status and stderr once its poll has read the decision.
-func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action string, before func()) (code string, exit int, stderr string) {
+// (ciphertest.Rig.DecideMachineLogin; action is "approve" or "deny"), runs after (when non-nil)
+// as soon as the decision is made, and returns the code with the command's exit status and stderr
+// once its poll has read the decision. Each wait for the command is testwait's, so a command that
+// prints no code or never exits fails the test before the binary's deadline naming what it waited
+// for, and a command still running at the test's end is killed and its stderr logged.
+func machineLoginAround(t *testing.T, rig *ciphertest.Rig, binary, sock, action string, before, after func()) (code string, exit int, stderr string) {
 	t.Helper()
 	cmd := exec.Command(binary, "machine", "login")
 	cmd.Env = append(os.Environ(), "AGENT_SECRETS_HELPER_SOCK="+sock, "AGENT_SECRETS_URL="+rig.URL, "AGENT_SECRETS_KEY_DIR=", "AGENT_SECRETS_APPROVE_URL=")
@@ -145,31 +155,46 @@ func machineLoginThen(t *testing.T, rig *ciphertest.Rig, binary, sock, action st
 	var waitErr error
 	waited := make(chan struct{})
 	go func() { waitErr = cmd.Wait(); close(waited) }()
-	t.Cleanup(func() { _ = cmd.Process.Kill(); <-waited })
-	lines := bufio.NewScanner(out)
-	if !lines.Scan() {
-		<-waited
-		t.Fatalf("machine login printed no code; stderr %q", errOut.String())
-	}
-	code, ok := strings.CutPrefix(lines.Text(), "machine login code: ")
-	if !ok {
-		t.Fatalf("machine login's first line is %q, want the machine login code", lines.Text())
-	}
-	go func() { // the rest of stdout, so the command never blocks writing it
+	t.Cleanup(func() {
+		killed := cmd.Process.Kill() == nil
+		testwait.Receive(t, "the killed machine login to exit", waited)
+		if killed {
+			t.Logf("machine login still ran at the test's end and was killed; its stderr: %q", errOut.String())
+		}
+	})
+	// The first line of stdout, or that there was none, is stored before first closes; the rest
+	// is read on, so the command never blocks writing it.
+	var firstLine string
+	var printed bool
+	first := make(chan struct{})
+	go func() {
+		lines := bufio.NewScanner(out)
+		if printed = lines.Scan(); printed {
+			firstLine = lines.Text()
+		}
+		close(first)
 		for lines.Scan() {
 		}
 	}()
+	testwait.Receive(t, "machine login to print its first line", first)
+	if !printed {
+		testwait.Receive(t, "machine login to exit after it printed no code", waited)
+		t.Fatalf("machine login printed no code; stderr %q", errOut.String())
+	}
+	code, ok := strings.CutPrefix(firstLine, "machine login code: ")
+	if !ok {
+		t.Fatalf("machine login's first line is %q, want the machine login code", firstLine)
+	}
 	if before != nil {
 		before()
 	}
 
 	rig.DecideMachineLogin(t, code, action == "approve")
-
-	if _, ok := received(t, waited); !ok {
-		_ = cmd.Process.Kill()
-		<-waited
-		t.Fatalf("machine login never read the %s decision, %s before the test binary's deadline; stderr %q", action, waitMargin, errOut.String())
+	if after != nil {
+		after()
 	}
+
+	testwait.Receive(t, "machine login to read the "+action+" decision and exit", waited)
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {
 		t.Fatalf("machine login: %v", waitErr)

@@ -154,7 +154,7 @@ func startStallMeter(t *testing.T) *stallMeter {
 	}()
 	t.Cleanup(func() {
 		close(stop)
-		<-stopped
+		testwait.Receive(t, "the stall meter to stop", stopped)
 	})
 	return m
 }

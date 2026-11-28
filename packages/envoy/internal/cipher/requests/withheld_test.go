@@ -102,6 +102,7 @@ func retagUnrelated(t *testing.T, m *Machine) {
 // at once. The revoke's audit row names the withheld secret. Once approved, the session's later
 // requests reuse that approval.
 func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name, other, approver, decidedBy string
 	}{
@@ -173,6 +174,7 @@ func TestRevokingAnAutomaticGrantWithholdsItFromThatSessionAlone(t *testing.T) {
 // its own by the same person naming AUTO_TOKEN, while the third, which holds no withheld name,
 // stays live. The session's next AUTO_TOKEN request asks its owner.
 func TestAWithheldNameIsNotReleasedThroughAnotherLiveGrant(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -217,6 +219,7 @@ func TestAWithheldNameIsNotReleasedThroughAnotherLiveGrant(t *testing.T) {
 // (DEEL_API_KEY, which the request got by approval, is never withheld), and its audit row lists
 // nothing under withheld.
 func TestRevokingAGrantOfAnAlreadyWithheldNameSucceeds(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
@@ -251,6 +254,7 @@ func TestRevokingAGrantOfAnAlreadyWithheldNameSucceeds(t *testing.T) {
 // retagged to the operator's agent tier the operator alone may approve it for this session, so
 // carol's grant releases nothing and the next request asks the operator rather than reusing it.
 func TestAnAnyoneApprovalOfAWithheldSecretStopsOnceTheSecretIsTheOperators(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -284,6 +288,7 @@ func TestAnAnyoneApprovalOfAWithheldSecretStopsOnceTheSecretIsTheOperators(t *te
 // SHARED_KEY (shared, human tier)} waits on anyone, the operator withholds AUTO_TOKEN, and carol,
 // who does not own AUTO_TOKEN, is refused NOT_APPROVER; the operator, its owner, still approves it.
 func TestAnAnyoneApprovalAfterTheWithholdDoesNotReleaseAPersonsWithheldSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	single, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
@@ -319,6 +324,7 @@ func TestAnAnyoneApprovalAfterTheWithholdDoesNotReleaseAPersonsWithheldSecret(t 
 // it, and once another secret's tags change, the grant still releases AUTO_TOKEN and the same
 // request again reuses it.
 func TestTheOwnersApprovalOfAWithheldSecretOutlivesAnUnrelatedTagChange(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
@@ -352,6 +358,7 @@ func TestTheOwnersApprovalOfAWithheldSecretOutlivesAnUnrelatedTagChange(t *testi
 // change the grant still releases SHARED_TOKEN. Once SHARED_TOKEN is the operator's, only the
 // operator may approve it for this session, so carol's grant stops.
 func TestAnAnyoneApprovalOfAWithheldSharedSecretOutlivesAnUnrelatedTagChange(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -386,6 +393,7 @@ func TestAnAnyoneApprovalOfAWithheldSharedSecretOutlivesAnUnrelatedTagChange(t *
 // next request for it asks the operator. The session stays the grant's one revoker in the audit,
 // a grant.withheld row by the operator names AUTO_TOKEN, and revoking it again writes nothing.
 func TestTheOperatorsRevokeOfAGrantThatAlreadyEndedStillWithholds(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "one", "AUTO_TOKEN"), "")
@@ -426,6 +434,7 @@ func TestTheOperatorsRevokeOfAGrantThatAlreadyEndedStillWithholds(t *testing.T) 
 // automatic grant. Both are withheld, and the grant the operator approved still releases
 // DEEL_API_KEY.
 func TestTheWithholdLeavesTheSessionsApprovedGrantOfTheSecretLive(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	asked, err := m.Create(ctx, enr, signRequest(t, m, key, "deel", "DEEL_API_KEY"), "")
@@ -462,6 +471,7 @@ func TestTheWithholdLeavesTheSessionsApprovedGrantOfTheSecretLive(t *testing.T) 
 // approval, whose request got AUTO_TOKEN automatically but never SHARED_TOKEN, keeps releasing
 // AUTO_TOKEN through both.
 func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -515,6 +525,7 @@ func TestAnApprovalAfterTheWithholdOutlivesTheOperatorsLaterRevokes(t *testing.T
 // and then revokes her approval, which ends that grant and withholds nothing, so the session still
 // gets the operator's own AUTO_TOKEN at once.
 func TestAnotherPersonsRevokeDoesNotWithholdTheOperatorsOwnSecret(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "mixed", "AUTO_TOKEN", "SHARED_KEY"), "")
@@ -550,6 +561,7 @@ func TestAnotherPersonsRevokeDoesNotWithholdTheOperatorsOwnSecret(t *testing.T) 
 // (automatic), DEEL_API_KEY} and then revokes the grant, and the revoke, the operator's as much as
 // the approver's, withholds AUTO_TOKEN, so the session's next request for it asks the operator.
 func TestTheOperatorWhoApprovedAGrantWithholdsWhenRevokingIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "AUTO_TOKEN", "DEEL_API_KEY"), "")
@@ -599,6 +611,7 @@ var unserved = []struct {
 // release it; carol is still refused, the request still waits, and the operator, AUTO_TOKEN's
 // owner, approves it.
 func TestAnApprovalOfAWithheldSecretTheBrokerDoesNotServeIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, c := range unserved {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, operator := newFixture(t)
@@ -650,6 +663,7 @@ func TestAnApprovalOfAWithheldSecretTheBrokerDoesNotServeIsRefused(t *testing.T)
 // approver as for any name the policy names no approver for. The grant releases nothing: Values
 // refuses it at its first read.
 func TestAnUnservedNameTheSessionDoesNotWithholdIsLeftToTheRecordsApprover(t *testing.T) {
+	t.Parallel()
 	for _, c := range unserved {
 		t.Run(c.name, func(t *testing.T) {
 			m, enr, key, operator := newFixture(t)
@@ -683,6 +697,7 @@ func TestAnUnservedNameTheSessionDoesNotWithholdIsLeftToTheRecordsApprover(t *te
 // it is retagged to the operator's own agent tier only the operator may approve it there, so
 // carol's approval is refused NOT_APPROVER.
 func TestRetagToOwnersAgentTierLeavesAWithheldRequestToItsOwner(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -714,6 +729,7 @@ func TestRetagToOwnersAgentTierLeavesAWithheldRequestToItsOwner(t *testing.T) {
 // and withholding it) leaves the request an approval request, never an automatic grant written
 // after the revoke.
 func TestARequestRacingAWithholdingAsksForApproval(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	withSharedToken(t, m)
 	ctx := context.Background()
@@ -765,6 +781,7 @@ func TestARequestRacingAWithholdingAsksForApproval(t *testing.T) {
 // session (here, a transaction holding the row for share as Create's does) finishes first, and the
 // revoke and its withholding land after it.
 func TestRevokeByApproverWaitsForARequestDecidingOnItsSession(t *testing.T) {
+	t.Parallel()
 	m, enr, key, operator := newFixture(t)
 	ctx := context.Background()
 	auto, err := m.Create(ctx, enr, signRequest(t, m, key, "need it", "AUTO_TOKEN"), "")
@@ -819,6 +836,7 @@ func sourceFixture(t *testing.T) (*Machine, string, *ecdsa.PrivateKey) {
 // DEEL_API_KEY, and that the operator approves after the withhold, is an approval like any other:
 // it outlives an unrelated tag change.
 func TestWithholdingASourceWithholdsEachProfileOfIt(t *testing.T) {
+	t.Parallel()
 	m, enr, key := sourceFixture(t)
 	ctx := t.Context()
 	mixed, err := m.Create(ctx, enr, signRequest(t, m, key, "deploy", "APP_KEY_ADA", "DEEL_API_KEY"), "")
@@ -876,6 +894,7 @@ func TestWithholdingASourceWithholdsEachProfileOfIt(t *testing.T) {
 // next request for AUTO_TOKEN asks the owner rather than getting it without asking, and the judge
 // reads AUTO_TOKEN as withheld.
 func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
+	t.Parallel()
 	m, enr, key := proxiedProfileFixture(t)
 	ctx := t.Context()
 	_, narrow := grantOf(t, m, enr, key, "a profile of the source", "AUTO_TOKEN_PROXY")
@@ -914,6 +933,7 @@ func TestWithholdingAProfileWithholdsEachNameOfItsSource(t *testing.T) {
 // operator withheld, as it refuses a name withheld directly (TestTheJudgeSettlesNoWithheldName).
 // The judge tag is the source's, which its profile APP_KEY_ADA is decided by.
 func TestTheJudgeSettlesNoProfileOfAWithheldSource(t *testing.T) {
+	t.Parallel()
 	m, enr, key := sourceFixture(t)
 	policytest.JudgeTags(t, fixtureStore(m), m.Policy, "APP_KEY", 900, "")
 	m.Judge = func(PendingRequest) {}

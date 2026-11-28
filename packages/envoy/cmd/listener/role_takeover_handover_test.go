@@ -166,6 +166,7 @@ func (rig *copiesRig) requireNoneHandedOver(t *testing.T, received copiesReceive
 // The session relay's own copy of a role message whose role another session holds is held back
 // (copiesRelayCopyHeld), so what the new session receives is what the passes copied.
 func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
+	t.Parallel()
 	t.Run("1 the replaced session's claim still stands: it crashed and is past its live window", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: copiesRelayCopyHeld(handoverRole)})
@@ -245,6 +246,7 @@ func TestASessionThatReplacesAnotherReceivesItsUnreadMessages(t *testing.T) {
 // to no agent session on a credential of its own service, by design
 // (TestTheHandoverGateHandsOverOnlyBetweenSessionsOfOnePrincipal).
 func TestTheHandoverHoldsForEachRoleAndForTheMessagesAPersonSent(t *testing.T) {
+	t.Parallel()
 	t.Run("1 the replaced session held two roles, and the new session claims both", func(t *testing.T) {
 		rig := newCopiesRig(t)
 		setTakeoverFaults(t, rig.harness.config, takeoverFaultSet{relayCopy: func(role string, seq uint64) error {

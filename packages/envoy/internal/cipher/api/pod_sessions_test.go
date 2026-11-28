@@ -35,6 +35,7 @@ func (ts *testServer) registerPodSession(t *testing.T, bearer, podToken, session
 // lists for the routes Dispatch's server calls — and an expired one are each refused, and each
 // refusal names the list rather than the token.
 func TestThePodSessionRouteTakesOnlyARegistrarsOwnLogin(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	podToken := ts.accountToken(t, ciphertest.ExchangeAccount, "pod-uid-registrar", time.Hour)
 	for _, c := range []struct {
@@ -85,6 +86,7 @@ func TestThePodSessionRouteTakesOnlyARegistrarsOwnLogin(t *testing.T) {
 // configuration's name, so registering one of its pods would say something no exchange reads —
 // the one refusal that names the fixed name, so an operator reads why there is nothing to do.
 func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	for _, c := range []struct {
@@ -149,6 +151,7 @@ func TestThePodSessionRouteRefusesWhatNeedsNoRegistration(t *testing.T) {
 // the names their registrar gives them, and the registration is stored; one that fixes a session
 // is refused 409 SESSION_FIXED naming that session, and nothing is written for its pod.
 func TestThePodSessionRouteRegistersAJobAccountsPod(t *testing.T) {
+	t.Parallel()
 	job := func(text string) exchange.JobProjects {
 		t.Helper()
 		list, err := exchange.ParseJobProjects(text)
@@ -223,6 +226,7 @@ type wirePodSession struct {
 // TestARegistrationNamingNoKeyAndNoGenerationIsAnsweredAsBefore holds the whole answer); and a
 // negative generation is 400 GENERATION_INVALID and writes nothing.
 func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
@@ -262,6 +266,7 @@ func TestTheRegistrationRouteAnswersTheStoredGeneration(t *testing.T) {
 // SHA-256 thumbprint, 43 base64url characters, or the route refuses it 400 THUMBPRINT_INVALID
 // and writes nothing; one of that shape is stored and answered back.
 func TestTheRegistrationRouteHoldsTheThumbprintsShape(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	registrar := ts.accountToken(t, daemonAccount, "", time.Hour)
 	podToken := ts.accountToken(t, workerAccount, "pod-uid-issue", time.Hour)
@@ -366,6 +371,7 @@ func (r *registrationRig) loggedOnly(t *testing.T, what string, want map[string]
 // as registered, naming the registrar and the thumbprint and generation it sent beside those
 // stored, and no key replaced, since there was none to replace.
 func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	rig := newRegistrationRig(t, "pod-uid-fresh")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -383,6 +389,7 @@ func TestAFreshRegistrationLogsWhatWasSentAndStored(t *testing.T) {
 // neither, and is still logged naming the registrar beside the thumbprint it replaced, since the
 // line of a takeover is the one record of it.
 func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-relaunched")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kA, "generation": 1})
@@ -418,6 +425,7 @@ func TestARegistrationReplacingAKeyLogsTheKeyItReplaced(t *testing.T) {
 // own naming the registrar and the thumbprint and generation it sent beside the row's, which it
 // left as it was.
 func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
+	// Not parallel: it captures the process's default logger, whose records are every test's that logs meanwhile (api_test.newRegistrationRig, logtest.SetDefault, logtest.Swap, slog.SetDefault).
 	const kA, kB = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	rig := newRegistrationRig(t, "pod-uid-late")
 	rig.register(t, map[string]any{"session": "implementer-g1", "thumbprint": kB, "generation": 2})
@@ -439,6 +447,7 @@ func TestARegistrationTheGenerationRuleRefusesLogsALineOfItsOwn(t *testing.T) {
 // it starts, and a daemon of one account registering a sibling pod of that account across a
 // rollout — is unchanged, as is a registrar whose own token names no pod at all.
 func TestARegistrarRegistersAnyPodButTheOneItRunsIn(t *testing.T) {
+	t.Parallel()
 	ts := newTestServerWith(t, withExchangeAccounts(t, daemonAccount, workerAccount))
 	// The daemon's own token, which it presents as its login and which names the pod it runs in:
 	// an account BROKER_SERVICE_LOGINS and BROKER_EXCHANGE_ACCOUNTS both list.

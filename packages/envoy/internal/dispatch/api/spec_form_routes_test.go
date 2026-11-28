@@ -28,6 +28,7 @@ import (
 // the six paths to a person's approval, is refused with its node and rule, and leaves nothing
 // written (requireEveryApprovalRouteRefuses).
 func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
 		t.Run(fault.name, func(t *testing.T) { requireEveryApprovalRouteRefuses(t, tree, fault) })
@@ -141,6 +142,7 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 // beside a procedure of one instruction in 20 words, is restored open, and the person's Approve of
 // it is taken.
 func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
 	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
 	reopener := repairActor("session-reopener")
@@ -219,6 +221,7 @@ func withdrawnByAnOlderRelease(t *testing.T, f repairFixture, tree specFormTree,
 // author, who reads it as the answer to the request, or, with no request open, in the review's
 // reason, on the document's reviews and in the issue's artifact.changes_requested event.
 func TestARequestForChangesIsNotGated(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	fault := formFaults[0]
 	for _, path := range []string{"path 3", "path 5"} {
@@ -305,6 +308,7 @@ const twentyFiveWords = "Dispatch shows the person each question of each issue t
 
 // Every route takes the control of v-form: a statement of two sentences of 25 words each.
 func TestAnApprovalRouteTakesAStatementOfTwoSentencesOfTwentyFiveWords(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	statement := formFault{node: "show-person", kind: specform.KindStatement, clean: "Dispatch shows the person each question.", broken: twentyFiveWords}
 
@@ -372,6 +376,7 @@ func ptrText(value *string) string {
 // A server whose setting names no root covers nothing: a three-sentence spec is approved, and the
 // read says no root is named.
 func TestNoRootNamedCoversNothing(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{})
 	issue := createFormIssue(t, tree.handler, tree.root, "Under an unnamed root", formFaults[0].document(formFaults[0].broken))
 	if read := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)); read.SpecForm != nil {
@@ -386,6 +391,7 @@ func TestNoRootNamedCoversNothing(t *testing.T) {
 
 // A tree with a terms.md of its own is not The Spec: only the setting names a root.
 func TestAnUnrelatedTreeWithTermsMdIsNotRefused(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	terms := uploadFormDocument(t, tree.handler, tree.outside, "terms.md", "# Terms\n\n- **work unit**: A piece of work that one agent does.\n")
 	if response := reviewFormDocument(t, tree.handler, terms.ID, "approved", ""); response.Code != http.StatusCreated {
@@ -398,6 +404,7 @@ func TestAnUnrelatedTreeWithTermsMdIsNotRefused(t *testing.T) {
 
 // A covered issue's notes.md is not its spec or its Verification document, so it is not judged.
 func TestACoveredLevelsNotesAreNotRefused(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	level := createFormIssue(t, tree.handler, tree.root, "A level with notes", "# Level\n\nThe level.\n")
 	notes := uploadFormDocument(t, tree.handler, level.Key, "notes.md", formFaults[0].document(formFaults[0].broken))
@@ -411,6 +418,7 @@ func TestACoveredLevelsNotesAreNotRefused(t *testing.T) {
 
 // A root's own spec holds the design, which is not written in the form, so it is not judged.
 func TestTheRootsOwnDocumentsAreNotRefused(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{specRoots: "ACME-1"})
 	seedPeople(t, database, "ada.lovelace@example.com")
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACME", "name": "Acme"}, "alice"); response.Code != http.StatusCreated {
@@ -424,6 +432,7 @@ func TestTheRootsOwnDocumentsAreNotRefused(t *testing.T) {
 // The nearest named root decides: a named root inside another covers its own subtree, and its own
 // spec is not covered.
 func TestTheNearestNamedRootDecides(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1,ACME-5"})
 	for _, filler := range []string{"Third issue", "Fourth issue"} {
 		createFormIssue(t, tree.handler, "", filler, "# Filler\n\n"+filler+".\n")
@@ -441,6 +450,7 @@ func TestTheNearestNamedRootDecides(t *testing.T) {
 
 // A reparent out of the root takes the issue's documents out of scope, which the read shows.
 func TestAReparentOutOfTheRootShowsOnTheRead(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "Moved out of the root", formFaults[0].document(formFaults[0].broken))
 	requireScope(t, specFormReadOf(t, tree.handler, issue.PrimaryArtifactID), "covered", new("ACME-1"))
@@ -452,6 +462,7 @@ func TestAReparentOutOfTheRootShowsOnTheRead(t *testing.T) {
 // A version write moves an open request to the new version, and the person's Approve of it judges
 // that version: refused, with no review written and the request still open.
 func TestAMovedRequestIsRefusedAtTheApproval(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	fault := formFaults[0]
 	issue := createFormIssue(t, tree.handler, tree.root, "Moved before the approval", fault.document(fault.clean))
@@ -471,6 +482,7 @@ func TestAMovedRequestIsRefusedAtTheApproval(t *testing.T) {
 // A renewal hands back every document the open request names, at the version an edit moved it to,
 // so the gate judges them all, not only the document the renewal names.
 func TestARenewJudgesTheDocumentsTheHandBackGives(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	issue := createFormIssue(t, tree.handler, tree.root, "A spec and its checks", formFaults[0].document(formFaults[0].clean))
 	const cleanClaim = "Dispatch refuses a write that breaks the document schema."
@@ -495,6 +507,7 @@ func TestARenewJudgesTheDocumentsTheHandBackGives(t *testing.T) {
 // The read route answers the findings of any document with no side effect, and says whether the
 // form refuses its approval, which root covers it and the part it plays.
 func TestSpecFormReadNamesEachFinding(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	fault := formFaults[0]
 	issue := createFormIssue(t, tree.handler, tree.root, "Read before a request", fault.document(fault.broken))
@@ -544,6 +557,7 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 // The refusal lists 20 findings and counts the rest, with the command that lists them all at the
 // version that the refusal judged: the second version of the spec, whose first version is clean.
 func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	var spec strings.Builder
 	spec.WriteString("# Spec\n")
@@ -571,6 +585,7 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 // the agent's request, in the refusal of the person's approval and in the reason that Request
 // changes sends.
 func TestTheRefusalHeadCountsTheTextsAndTheTotalCountsTheFindings(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	const body = "Dispatch spins up a seamless lease; it starts. It ends."
 	issue := createFormIssue(t, tree.handler, tree.root, "One statement with three faults", "# Spec\n\n:::requirement{#lease}\n"+body+"\n:::\n")
@@ -605,6 +620,7 @@ func TestTheRefusalHeadCountsTheTextsAndTheTotalCountsTheFindings(t *testing.T) 
 // documents settle after an hour, so the browser's text stays live while the test runs, and the
 // document service knows people, so the browser's socket is let in.
 func TestTheGateReadsTheNamedVersion(t *testing.T) {
+	t.Parallel()
 	f := newRepairFixtureFrom(t, time.Hour, "ACME-1")
 	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
 	documentService := f.documents
@@ -622,6 +638,7 @@ func TestTheGateReadsTheNamedVersion(t *testing.T) {
 // noun of the system and one part of a name, which is no name. The control: before that spec is
 // approved, the same words name a person.
 func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	seedPeople(t, tree.database, "dispatch.admin@example.com")
 	component := createFormIssue(t, tree.handler, tree.root, "The components",
@@ -647,6 +664,7 @@ func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
 // graphstore.ProvesAuthor), as the tests of node_visibility_test.go write theirs. The control: the
 // same issue, not reserved, gives the name, and the same approval passes.
 func TestTheGateReadsTheIssuesUnderItsRootAsEveryReader(t *testing.T) {
+	t.Parallel()
 	user := formFault{node: "reach-owner", kind: specform.KindStatement, broken: "Each issue reaches Dispatch Admin before its owner starts work.",
 		rule: "person", detail: `it names a person: "Dispatch Admin"`}
 	for _, reserved := range []bool{true, false} {

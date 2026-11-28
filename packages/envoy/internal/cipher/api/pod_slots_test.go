@@ -88,6 +88,7 @@ func (s podSession) request(t *testing.T, ts *testServer, names ...string) wireC
 // service account, so a pod of any account is decided alike; and revoking one role leaves the
 // other's grant live.
 func TestRolesAndGenerationsOfOnePodEnrollRequestAndReleaseIndependently(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 	podUID := uuid.NewString()
@@ -258,6 +259,7 @@ func TestRolesAndGenerationsOfOnePodEnrollRequestAndReleaseIndependently(t *test
 // naming the token's expiry, so the launcher can tell a stale token, which the pod's current one
 // replaces, from POD_IDENTITY_MISMATCH, a token that is not this pod's.
 func TestAnExpiredPodTokenIsRefusedAsExpiredNamingItsExpiry(t *testing.T) {
+	t.Parallel()
 	ts := newTestServer(t)
 	credentialID, launcherKey := ts.mintServiceLauncherCredential(t)
 	podUID := uuid.NewString()

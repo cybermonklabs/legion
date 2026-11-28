@@ -26,6 +26,7 @@ import (
 // carries the queued copy whole, and nothing is woken. So the person's message is answered by the
 // daemon about one wait after it was queued, rather than waiting for a run that never comes.
 func TestDispatchsQueuedCopyForAStoppedLegionAgentIsHandedToItsDaemonAtTheGiveUp(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

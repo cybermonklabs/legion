@@ -17,7 +17,6 @@ import (
 
 	internal "github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
-	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 )
 
 // Rig is internal/cipher/ciphertest.Rig under a name a foreign module may import.
@@ -64,8 +63,7 @@ const (
 const ExchangeProject = internal.ExchangeProject
 
 // NewRig forwards to internal/cipher/ciphertest.NewRig, including its own skip when
-// BROKER_TEST_DATABASE_URL is unset, and its failure when the calling package's tests do not run
-// through Main or Run.
+// BROKER_TEST_DATABASE_URL is unset.
 func NewRig(t *testing.T, opts ...Option) *Rig {
 	return internal.NewRig(t, opts...)
 }
@@ -75,13 +73,3 @@ func NewRig(t *testing.T, opts ...Option) *Rig {
 func WithAccessLifetime(d time.Duration) Option {
 	return internal.WithAccessLifetime(d)
 }
-
-// Main runs the calling package's tests and then drops the test binary's own database that every
-// Rig makes its schema in (internal/cipher/store/storetest's Main). A package whose tests call
-// NewRig uses it as its TestMain: func TestMain(m *testing.M) { os.Exit(ciphertest.Main(m)) }.
-func Main(m *testing.M) int { return storetest.Main(m) }
-
-// Run is Main for a package whose TestMain also runs another harness's Main: run runs the
-// package's tests, and Run then drops the database every Rig made its schema in
-// (internal/cipher/store/storetest's Run).
-func Run(run func() int) int { return storetest.Run(run) }

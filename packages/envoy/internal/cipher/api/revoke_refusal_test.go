@@ -23,6 +23,7 @@ import (
 // revoke again, and a transaction that failed because its caller hung up (context.Canceled) is 503
 // REQUEST_ENDED, not the 500 INTERNAL every unnamed error gets; that one is the control.
 func TestARevokeRefusalAnswersItsOwnCode(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name   string
 		err    error

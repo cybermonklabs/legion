@@ -273,7 +273,8 @@ func openPool(t *testing.T, dsn string) *pgxpool.Pool {
 func schemaOf(t *testing.T, dsn string) string {
 	t.Helper()
 	parsed, err := url.Parse(dsn)
-	require.NoError(t, err)
+	// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+	require.True(t, err == nil, "the test database's URL does not parse")
 	return parsed.Query().Get("search_path")
 }
 

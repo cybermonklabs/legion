@@ -55,6 +55,10 @@ const levelTwoWorkGrowth = 6
 // covered document under it. Through the request route, the broken document of 301 statements is
 // refused, and the clean one opens.
 func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *testing.T) {
+	// Not parallel: it holds the judgment's CPU time to a growth ratio (cputest.Growth under
+	// levelTwoWorkGrowth), which the package's parallel tests' load on the cores, their caches and
+	// their clock frequency moves, and Growth collects the whole process's heap (runtime.GC) before
+	// each window.
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	served := tree.deps.SpecForm
 	const scale = 4
@@ -121,6 +125,7 @@ func TestALevelTwoSizedDocumentIsJudgedInWorkInProportionToItsStatements(t *test
 // a root of 1, and so does one under 7. Each approved document defines one component, and the
 // judgment reads the name of each.
 func TestAJudgmentReadsTheApprovedDocumentsUnderItsRootInOneStatement(t *testing.T) {
+	t.Parallel()
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	served := tree.deps.SpecForm
 	approved := 0

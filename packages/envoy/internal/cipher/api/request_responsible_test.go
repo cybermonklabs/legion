@@ -15,6 +15,7 @@ import (
 // the approval page, opens the record and approves; the request is granted, and its decision
 // names bob.
 func TestAnotherPersonDoesNotSeeACaseOneRequestButMayApproveIt(t *testing.T) {
+	t.Parallel()
 	const alice, bob = "alice@example.com", "bob@example.com"
 	ts := newTestServer(t)
 	session, key := ts.newSessionEnrollment(t, "session-"+t.Name(), alice)

@@ -89,6 +89,7 @@ func requireVersions(t *testing.T, got []postKeywordVersion, kind, id string, wa
 // the message's text, and the relation gives the text before the edit at a time before it and the
 // edited text from the edit on.
 func TestAnEditedIssueMessageStartsAKeywordVersion(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "KVME", "Count the waders", "The count's notes.")
 	message := w.message(t, "The tern count is due.")
 	w.edit(t, "/api/v1/messages/"+message, "The plover count is due.")
@@ -114,6 +115,7 @@ func TestAnEditedIssueMessageStartsAKeywordVersion(t *testing.T) {
 // row shows the later edit, so the body comes from the message's body history, the body the
 // later edit replaced (body_from history).
 func TestALongEditedIssueMessageKeepsItsWholeEarlierBody(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "KVLM", "Count the waders", "The count's notes.")
 	message := w.message(t, "The tern count is due.")
 	paragraph := strings.Repeat("shoreline ", 2000)
@@ -139,6 +141,7 @@ func TestALongEditedIssueMessageKeepsItsWholeEarlierBody(t *testing.T) {
 // before it keep their text. At and after the delete the relation gives the post no text, and at
 // every time it gives the post's deleted_at.
 func TestADeletedPostHasNoKeywordTextFromItsDelete(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "KVDL", "Count the shorebirds", "The count's notes.")
 	posts := map[string]string{
 		"comment": w.comment(t, "A note on the zebrafinch survey."),
@@ -175,6 +178,7 @@ func TestADeletedPostHasNoKeywordTextFromItsDelete(t *testing.T) {
 // right after a comment's and an issue message's deletes commit, before the fill reads them, each
 // version of each post carries the post's deleted_at.
 func TestADeletedPostCarriesItsDeletedAtBeforeTheFillReachesTheDelete(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "KVDB", "Count the shorebirds", "The count's notes.")
 	posts := map[string]string{
 		"comment": w.comment(t, "A note on the zebrafinch survey."),

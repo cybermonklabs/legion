@@ -68,6 +68,8 @@ func TestAnUnknownAPIPathWritesOneAccessLogLine(t *testing.T) {
 // A route's line names the Host the request was sent to, its case and its port as the client
 // wrote them, beside the caller.
 func TestARoutesLineNamesTheHostItWasSentTo(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// captureAccessLog).
 	handler, _ := newTestRouter(t)
 	logged := captureAccessLog(t)
 	request := httptest.NewRequest(http.MethodGet, "http://B.Example.Test:8443/auth/whoami", nil)
@@ -132,6 +134,8 @@ func TestASignInCallbackNamesThePersonItSignedIn(t *testing.T) {
 // any route reads it, and writes one line: the refused route, its Host, and the connection's own
 // address, never the entry the header names.
 func TestARequestTheRouterRefusesForItsForwardedForWritesOneLine(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault, through
+	// captureAccessLog).
 	handler, _ := newTestRouterWith(t, func(options *AppContextOptions) {
 		options.TrustedProxyRanges = []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}
 	})

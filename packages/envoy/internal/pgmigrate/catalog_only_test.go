@@ -123,7 +123,7 @@ func fixtureDatabase(t *testing.T, ctx context.Context, name, tests, fixture str
 		t.Fatal("DISPATCH_TEST_DATABASE_URL is not a URL")
 	}
 	adminURL.Path = "/postgres"
-	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), name))
+	conn := connect(t, ctx, testdb.DatabaseOn(t, adminURL.String(), "", name))
 	if _, err := conn.Exec(ctx, fixture); err != nil {
 		t.Fatalf("load the fixture: %v", err)
 	}

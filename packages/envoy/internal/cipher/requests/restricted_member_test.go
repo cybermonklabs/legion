@@ -47,6 +47,7 @@ import (
 // policy's denial, and a fresh ask is denied. The control is a full member of the same group,
 // minted the token once, granted and given its grant back.
 func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
+	t.Parallel()
 	const (
 		outsider = "outsider@outside.example"
 		unasked  = "uma@example.com"
@@ -419,6 +420,7 @@ func TestARestrictedOperatorGetsNoSecret(t *testing.T) {
 // same approval of a full member's request for the same name, which is granted, as an approval of
 // a name the policy no longer serves is (its release is then refused for the name).
 func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
+	t.Parallel()
 	const outsider = "outsider@outside.example"
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
@@ -501,6 +503,7 @@ func TestARestrictedMembersGrantEndsWhateverItsNames(t *testing.T) {
 // restricted-member, before it would spend a model call. The control is a full member's pending
 // request on the same machine, which the same approval grants.
 func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
+	t.Parallel()
 	const outsider = "outsider@outside.example"
 	ctx := context.Background()
 	m, _, _, _ := newFixture(t)
@@ -561,6 +564,7 @@ func TestAnApprovalOfARestrictedMembersOldRequestGrantsNothing(t *testing.T) {
 // say, the approval is refused, *projectaccess.MemberKindUncheckable, and nothing is granted; once
 // Dispatch answers, the same approval grants.
 func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
+	t.Parallel()
 	m, _, req := judgeHeldTeamRequest(t)
 	dispatch := answerFrom(t, m, dispatchRows(publicTeam))
 	dispatch.SetDown(true)
@@ -598,6 +602,7 @@ func TestAJudgesApprovalIsRefusedWhileTheMemberKindCannotBeRead(t *testing.T) {
 // what it was (as TestPersonPodGrantsFollowTheSetting has it), its airlock connection is carried,
 // and its pending request is granted.
 func TestARestrictedMembersPodGetsNoSecretAfterTheSettingChanges(t *testing.T) {
+	t.Parallel()
 	const outsider = "outsider@outside.example"
 	outsidersPod := personPod{person: outsider, service: "person-outsider", account: "system:serviceaccount:people:outsider"}
 	for _, change := range []struct {

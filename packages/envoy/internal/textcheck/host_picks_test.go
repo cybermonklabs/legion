@@ -36,6 +36,7 @@ var hostPickExclusions = map[string]string{
 // table does not. Each one fails here, named by its file and declaration, except the ones
 // hostPickExclusions names with their reason.
 func TestNoCodeOutsideTheOriginTablePicksByHost(t *testing.T) {
+	t.Parallel()
 	reads, read, err := hostReads(hostPickPackages...)
 	if err != nil {
 		t.Fatal(err)

@@ -56,6 +56,7 @@ func (e *emptyIDs) Read(p []byte) (int, error) {
 // The control (the pull request records the run): decodeCarriedBody decoding the whole body as
 // one value, as readJSON does, reads all six megabytes before it refuses.
 func TestTheCarriedBodyIsReadNoFurtherThanItsLongestList(t *testing.T) {
+	t.Parallel()
 	long := newEmptyIDs(2_000_000)
 	_, err := decodeCarriedBody(json.NewDecoder(long))
 	if !errors.Is(err, enroll.ErrInvalidSessionIDs) || !strings.Contains(err.Error(), "more than 4096") {

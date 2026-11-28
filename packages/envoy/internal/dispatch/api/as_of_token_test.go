@@ -103,6 +103,7 @@ const malformedAsOf = "yesterday"
 // cut lost to its as_of, whose as_of was read at all, or that was answered the present, answers
 // otherwise.
 func TestACutTokenIsAnsweredAsOfItsCutWhateverAsOfItSends(t *testing.T) {
+	t.Parallel()
 	rig := newAsOfRig(t)
 	world := seedAsOfWorld(t, rig.handler)
 	rig.settle(t)
@@ -232,6 +233,7 @@ func cutTokenAnswerDifference(want, got asOfAnswer) string {
 // A row is counted once its assertions have run, and the count is held to the rows the
 // registered server mounts, so a walk that skipped a row fails.
 func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRigOn(t, testServerOptions{testHooks: true})
 	caller := newBrokerCaller(t)
 	clock := databaseClock(t, rig)
@@ -341,6 +343,7 @@ func TestEveryReadRowThatHoldsNoPastAnswerRefusesACutToken(t *testing.T) {
 // what a client is answered. The control is the same token with no cut, the machine login's read
 // token: the same chain answers it 403 READ_ONLY_TOKEN, so the cut decides the code.
 func TestTheLiveSocketRefusesACutTokenNamingTheCut(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
 	cut := asof.CutAt(databaseClock(t, rig).Add(-time.Hour))

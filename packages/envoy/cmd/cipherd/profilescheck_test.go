@@ -46,6 +46,7 @@ func runCheck(t *testing.T, args ...string) (int, string, string) {
 // or profile are together. With no --secrets-json, GITHUB_ADMIN_PAT's kind is its source's tag,
 // which was not read: the report names it UNKNOWN, and the run exits 3 saying so on stderr.
 func TestProfilesCheckReportsAWholeFileAsAdded(t *testing.T) {
+	t.Parallel()
 	path := profilesFile(t, twoProfiles)
 	code, stdout, stderr := runCheck(t, path)
 	wantErr := "profiles check: " + path + ": UNKNOWN: not read (no --secrets-json): the kind of 1 profile, its source's proxy tag; nothing it read is refused\n"
@@ -213,6 +214,7 @@ func jsonNames(t *testing.T, typ reflect.Type) []string {
 // reads. An allow row is written as its method, its path prefix and its host, so a field added to
 // a row fails here until the report writes it.
 func TestProfilesCheckReportsEveryField(t *testing.T) {
+	t.Parallel()
 	if got, want := jsonNames(t, reflect.TypeFor[proxyrules.Allow]()), []string{"method", "pathPrefix", "host"}; !slices.Equal(got, want) {
 		t.Fatalf("an allow row's fields are %v, and the report writes %v of each row (rowText): write each field", got, want)
 	}
@@ -293,6 +295,7 @@ func TestProfilesCheckReportsEveryField(t *testing.T) {
 // policy load would refuse. Each refusal writes nothing on stdout: a report of a file the broker
 // would not serve would be read as a file it had agreed to.
 func TestProfilesCheckRefusesAFileTheBrokerWouldNotServe(t *testing.T) {
+	t.Parallel()
 	const dpop = `"hosts": ["dispatch.test"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"`
 	for _, c := range []struct {
 		name string
@@ -492,6 +495,7 @@ func profilesWithHosts(t *testing.T, name string, hosts ...string) string {
 // of the host as written. The control is a file of hosts the grammar serves in a spelling a reader
 // that folded case would change: it is valid.
 func TestProfilesCheckRefusesAHostTheProxyNeverCompares(t *testing.T) {
+	t.Parallel()
 	for _, c := range ruleHostRows {
 		t.Run(c.name, func(t *testing.T) {
 			path := profilesFile(t, profilesWithHosts(t, "GITHUB_ADMIN_PAT", "api.github.com", c.host))
@@ -555,6 +559,7 @@ func resultsProfileOf(name, hosts, headers, allow, kind string) string {
 // results profile prints no such line. A destination the setting's parser refuses is a usage
 // error that quotes no credential of its URL.
 func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T) {
+	t.Parallel()
 	const (
 		name     = "DISPATCH_RESULTS_TOKEN"
 		headers  = `["Authorization"]`
@@ -715,6 +720,7 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfTheResultsProfile(t *testing.T)
 // --cluster-ranges value the setting's parser refuses, and one given without --private-upstream,
 // are usage errors.
 func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
+	t.Parallel()
 	path := profilesFile(t, `{"profiles": [`+resultsProfileOf("DISPATCH_RESULTS_TOKEN", `"`+resultsBoundHost+`"`, `["Authorization"]`, `[{"method": "POST", "pathPrefix": "/api/v1/projects/"}]`, "dpop")+`]}`)
 	const (
 		notJudged = "it was not judged against the cluster ranges (no --cluster-ranges)"
@@ -843,6 +849,7 @@ func TestProfilesCheckHoldsTheDestinationsAddressToTheBootsRule(t *testing.T) {
 // which both files declare, is compared on its own, since a secret behind it by its own tag is
 // not named. So the run exits 3.
 func TestProfilesCheckReportsWhatChangedAgainstTheOldFile(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com"], "ways": ["swap"], "allow": [{"method": "GET", "pathPrefix": "/v1/"}]}],
  "profiles": [
   {"name": "GITHUB_READ", "source": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}, "proxy": "github"},
@@ -908,6 +915,7 @@ profiles check: the kinds both files declare were compared on their own (1 kind)
 // block added, with each of its fields, and one that loses a block as that block removed, with
 // each field it had, rather than as a run of fields changed from nothing.
 func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "LEGION_IMPLEMENT_APP", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}], "kind": "dpop"}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -943,6 +951,7 @@ func TestProfilesCheckReportsABlockAddedAndABlockRemoved(t *testing.T) {
 // the kind, compared on its own, lists nothing under widens; the run exits 3 all the same, since a
 // secret behind it by its own tag is not named.
 func TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com", "github.com"], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}]}`)
 	now := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com"], "headers": [], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -967,6 +976,7 @@ func TestProfilesCheckReportsAHostRemovedAndAHeaderRemoved(t *testing.T) {
 // airlock package itself, so a change to that default cannot leave the report saying a header was
 // added or removed that the swap says nothing about.
 func TestProfilesCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {
+	t.Parallel()
 	names := proxyrules.Kind{}.HeaderNames()
 	if len(names) != 1 {
 		t.Fatalf("a kind with no headers field names %v; this report reads it as one header", names)
@@ -986,6 +996,7 @@ func TestProfilesCheckReportsTheDefaultHeaderTheSwapApplies(t *testing.T) {
 // spells a profile another way, an account in upper case, changes nothing the broker serves, and
 // widens nothing.
 func TestProfilesCheckSaysWhenNothingChanged(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["Example-Org"], "permissions": {"contents": "read", "metadata": "read"}}}]}`)
 	now := profilesFile(t, `{"profiles": [{"name": "GITHUB_READ", "github": {"accounts": ["example-org"], "permissions": {"contents": "read", "metadata": "read"}, "value": "installations"}}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -1004,6 +1015,7 @@ func TestProfilesCheckSaysWhenNothingChanged(t *testing.T) {
 // report is the point of the run, so an old file that is not there is a failure and not a run
 // against nothing.
 func TestProfilesCheckRefusesAnOldFileItCannotRead(t *testing.T) {
+	t.Parallel()
 	now := profilesFile(t, twoProfiles)
 	missing := filepath.Join(t.TempDir(), "gone.json")
 	code, stdout, stderr := runCheck(t, now, "--against", missing)
@@ -1025,6 +1037,7 @@ func TestProfilesCheckRefusesAnOldFileItCannotRead(t *testing.T) {
 // file to kinds. The block is read, and its judge and guidance dropped, so the report says the
 // block went and the name is behind a kind now, with what that adds to it, and nothing of them.
 func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": {"hosts": ["api.github.com"], "judge": 1800, "guidance": "grant it for the release job"}}]}`)
 	now := profilesFile(t, `{"kinds": [{"name": "github", "hosts": ["api.github.com", "github.com"], "ways": ["swap"]}], "profiles": [{"name": "GITHUB_ADMIN_PAT", "proxy": "github"}]}`)
 	code, stdout, stderr := runCheck(t, now, "--against", old)
@@ -1056,6 +1069,7 @@ func TestProfilesCheckComparesAgainstAnOldFileTheBrokerWouldRefuse(t *testing.T)
 // UNKNOWN, and exits 0. The control is the same new file with the kind named bearer, which no old
 // block's kind is named.
 func TestProfilesCheckComparesTheKindsAFileDeclares(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`)
 	for _, kind := range []string{"token", "bearer"} {
 		t.Run(kind, func(t *testing.T) {
@@ -1090,6 +1104,7 @@ func TestProfilesCheckComparesTheKindsAFileDeclares(t *testing.T) {
 // block as behind the proxy there. Here TOKEN's block is behind the kind token, and OTHER's source
 // OTHER_SRC carries proxy=token, which the new file declares.
 func TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock(t *testing.T) {
+	t.Parallel()
 	old := profilesFile(t, `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
 	now := profilesFile(t, `{"kinds": [{"name": "token", "hosts": ["api.example.com"], "ways": ["swap", "mint"]}], "profiles": [{"name": "TOKEN", "proxy": "token"}, {"name": "OTHER", "source": "OTHER_SRC"}]}`)
 	tags := writeTempFile(t, "secrets.json", []byte(`[
@@ -1108,6 +1123,7 @@ func TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock(t *testing.T
 // TestProfilesCheckRefusesAUsageError keeps the usage errors apart from the file errors: exit 2
 // and the usage line, as the end-sessions subcommand answers its own.
 func TestProfilesCheckRefusesAUsageError(t *testing.T) {
+	t.Parallel()
 	path := profilesFile(t, twoProfiles)
 	for _, c := range []struct {
 		name string
@@ -1143,6 +1159,7 @@ func TestProfilesCheckRefusesAUsageError(t *testing.T) {
 // no file; and `end-sessions` and `revoke-dispatch-signins` still reach their own rather than
 // being swallowed by the new one.
 func TestTheBinaryRoutesEachSubcommandWord(t *testing.T) {
+	t.Parallel()
 	binPath := buildBroker(t)
 	path := profilesFile(t, twoProfiles)
 

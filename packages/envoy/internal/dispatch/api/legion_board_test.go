@@ -842,6 +842,7 @@ func TestARecordPostgresRefusesIsAFailedReadAndTheBoardKeepsTheLastGoodRead(t *t
 // header shows the failed whole read's failure over every batch after it. The next good whole read
 // clears the read owed, and a batch after it is a good read too, whatever its read_at.
 func TestTheBoardHeaderShowsAFailedWholeReadWhileTheReadIsOwed(t *testing.T) {
+	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)
 	seedLegionProjects(t, handler, "INFRA")
 	daemon := newFakeLegionDaemon(t, handler, "INFRA")

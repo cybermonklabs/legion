@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -542,24 +543,20 @@ func (k *proofKey) verify(r *http.Request, publicURL string) error {
 // stdout/stderr and exit code (0 for a clean exit). extraEnv, when non-nil, is appended after the
 // fixed AGENT_SECRETS_* variables, so a test can set an inherited variable the CLI must not let
 // leak into (or shadow) a granted secret. The binary runs in a world of its own (hostIsolation),
-// so a person's sign-in or settings file on the machine running the tests is not a source.
+// so a person's sign-in or settings file on the machine running the tests is not a source. It
+// runs as a call (startCall) whose exit end takes, so a binary that never exits fails the test
+// naming the command, and startCall's cleanup kills one still running when the test ends.
 func runAgentSecrets(t *testing.T, binary, broker, keyDir string, extraEnv []string, args ...string) (stdout, stderr string, exitCode int) {
 	t.Helper()
 	cmd := exec.Command(binary, args...)
 	cmd.Env = append(append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+broker, "AGENT_SECRETS_KEY_DIR="+keyDir), extraEnv...)
-	var out, errOut strings.Builder
-	cmd.Stdout = &out
-	cmd.Stderr = &errOut
-	err := cmd.Run()
-	if err == nil {
-		return out.String(), errOut.String(), 0
-	}
+	c := startCall(t, cmd)
+	exit := c.end(t)
 	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
-		return out.String(), errOut.String(), exitErr.ExitCode()
+	if c.err != nil && !errors.As(c.err, &exitErr) {
+		t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, c.err, c.stdout.String(), c.stderr.String())
 	}
-	t.Fatalf("run agent-secrets %v: %v\nstdout: %s\nstderr: %s", args, err, out.String(), errOut.String())
-	return "", "", -1
+	return c.stdout.String(), c.stderr.String(), exit
 }
 
 // hostIsolation is the environment a binary runAgentSecrets runs gets over the test process's own,
@@ -1217,15 +1214,17 @@ func TestReleasedValuesReachTheChildAsTheBrokerSentThem(t *testing.T) {
 }
 
 // call is a run of the built binary a test started (startCall), with what it has written to
-// stdout and stderr so far, so that the test can act on a line the call prints while it runs.
+// stdout and stderr so far, so that the test can act on a line the call prints while it runs, and
+// err, the error its Wait returned, set before exited closes.
 type call struct {
 	cmd            *exec.Cmd
 	stdout, stderr *cmdtest.LockedBuffer
 	exited         chan struct{}
+	err            error
 }
 
 // startCall starts cmd with its stdout and stderr kept apart, and kills it when the test ends if
-// it is still running.
+// it is still running, taking that exit through the shared wait (testwait.Receive).
 func startCall(t *testing.T, cmd *exec.Cmd) *call {
 	t.Helper()
 	c := &call{cmd: cmd, stdout: &cmdtest.LockedBuffer{}, stderr: &cmdtest.LockedBuffer{}, exited: make(chan struct{})}
@@ -1234,12 +1233,12 @@ func startCall(t *testing.T, cmd *exec.Cmd) *call {
 		t.Fatalf("start %s: %v", cmd.Path, err)
 	}
 	go func() {
-		_ = cmd.Wait()
+		c.err = cmd.Wait()
 		close(c.exited)
 	}()
 	t.Cleanup(func() {
 		_ = cmd.Process.Kill()
-		<-c.exited
+		testwait.Receive(t, "the killed "+filepath.Base(cmd.Path)+" to exit", c.exited)
 	})
 	return c
 }
@@ -1255,27 +1254,27 @@ func (c *call) ended() bool {
 	}
 }
 
-// says waits until the call's stderr holds line times times, and fails the test when the call
-// ends before that; when names the point the call ended at. The wait is the package's shared one
-// (testwait.Eventually): it guards against a call that hangs, and bounds nothing the row decides.
+// says waits until the call's stderr holds line times times, and fails the test when the call ends
+// before that; when names the point the call ended at. The wait is testwait.Until, with no bound.
 func (c *call) says(t *testing.T, line string, times int, when string) {
 	t.Helper()
-	testwait.Eventually(t, "the call to say "+line, func() bool {
-		return strings.Count(c.stderr.String(), line) >= times || c.ended()
+	testwait.Until(t, "the call to say "+line+" (the count of times it said it so far)", func() (int, bool) {
+		said := strings.Count(c.stderr.String(), line)
+		return said, said >= times || c.ended()
 	})
 	if strings.Count(c.stderr.String(), line) < times {
 		t.Fatalf("the call ended (exit %d) %s, and never said %q (%d times): stderr=%q", c.cmd.ProcessState.ExitCode(), when, line, times, c.stderr.String())
 	}
 }
 
-// end waits for the call to exit and returns its exit code. The wait is testwait.Receive on the
-// call's exit (docs/testing.md): it sets no span of its own, so a call that is merely slow on a
-// loaded machine still ends the row, and one that never exits fails it by name 30 s before the
-// test binary's deadline. A row whose verdict needs the call to end within a span waits for that
-// itself, before it calls end.
+// end waits for the call to exit and returns its exit code; c.err is then what its Wait returned.
+// The wait is testwait.Receive on the call's exit (docs/testing.md), named for the command: it
+// sets no span of its own, so a call that is merely slow on a loaded machine still ends the row,
+// and one that never exits fails it by name 30 s before the test binary's deadline. A row whose
+// verdict needs the call to end within a span waits for that itself, before it calls end.
 func (c *call) end(t *testing.T) int {
 	t.Helper()
-	testwait.Receive(t, "the call to end", c.exited)
+	testwait.Receive(t, strings.Join(append([]string{filepath.Base(c.cmd.Path)}, c.cmd.Args[1:]...), " ")+" to exit", c.exited)
 	return c.cmd.ProcessState.ExitCode()
 }
 
@@ -1299,8 +1298,15 @@ func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string
 }
 
 // writePendingMarker writes the launcher's enrollment.pending into dir (created if absent), aged
-// by age.
+// by age on the wall clock.
 func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
+	t.Helper()
+	return writePendingMarkerAt(t, dir, time.Now().Add(-age))
+}
+
+// writePendingMarkerAt writes the launcher's enrollment.pending into dir (created if absent) with
+// then as its mtime, for a row whose code reads the marker's age on a clock of the row's own.
+func writePendingMarkerAt(t *testing.T, dir string, then time.Time) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1309,7 +1315,6 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	then := time.Now().Add(-age)
 	if err := os.Chtimes(marker, then, then); err != nil {
 		t.Fatal(err)
 	}
@@ -1468,7 +1473,7 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	if spanned < 1*time.Second {
 		t.Fatalf("the call ended %s after the row started it, under its 1s bound, though it says it waited %s: stderr = %q", spanned, waited, stderr)
 	}
-	if !freshMarker(keyDir) {
+	if !freshMarker(clock.Real(), keyDir) {
 		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
 	}
 	if _, err := os.Stat(filepath.Join(keyDir, keyFile)); !errors.Is(err, os.ErrNotExist) {
@@ -1742,7 +1747,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1745).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1751).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -2029,7 +2034,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2048); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2053).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2054); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2059).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -2061,7 +2066,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2077).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2083).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string

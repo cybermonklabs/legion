@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 const (
@@ -177,19 +178,20 @@ func exists(path string) bool {
 }
 
 // freshMarker reports whether dir holds a launcher's enrollment.pending younger than
-// pendingMarkerLife.
-func freshMarker(dir string) bool {
+// pendingMarkerLife: its mtime less than that before clk's now.
+func freshMarker(clk clock.Clock, dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, pendingMarker))
-	return err == nil && time.Since(info.ModTime()) < pendingMarkerLife
+	return err == nil && clk.Now().Sub(info.ModTime()) < pendingMarkerLife
 }
 
 // launcherKeyDir reports whether dir is a launcher's key dir, which puts the process that reads
 // it inside a session: dir holds a key.pem with no machine-session marker beside it, or a fresh
-// enrollment.pending while the launcher is still enrolling it. A key.pem with the marker is a
-// machine's own session that a client before #4143 left there, not a launcher's key, so it
-// puts no process inside a session. identity and grant revoke both read the key dir by this rule.
-func launcherKeyDir(dir string) bool {
-	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(dir)
+// enrollment.pending (freshMarker, on clk) while the launcher is still enrolling it. A key.pem
+// with the marker is a machine's own session that a client before #4143 left there, not a
+// launcher's key, so it puts no process inside a session. identity and grant revoke both read the
+// key dir by this rule.
+func launcherKeyDir(clk clock.Clock, dir string) bool {
+	return (exists(filepath.Join(dir, keyFile)) && !exists(filepath.Join(dir, machineSessionMarker))) || freshMarker(clk, dir)
 }
 
 // enrollWait is AGENT_SECRETS_ENROLL_WAIT (a Go duration), else defaultEnrollWait. A value that is
@@ -220,7 +222,7 @@ func awaitEnrollment(stderr io.Writer, dir string, wait time.Duration) (waited t
 	begin := time.Now()
 	deadline := begin.Add(wait)
 	said := ""
-	for freshMarker(dir) {
+	for freshMarker(clock.Real(), dir) {
 		missing := missingSessionFiles(dir)
 		if missing == "" {
 			return 0, false
@@ -291,7 +293,10 @@ func helperInstalled() bool {
 // metadata server, and registers nothing: it prints the source it would use on stdout as
 // "<name>: <detail>", then "helper: <socket>" whenever the helper answered and is not that source,
 // and exits 0; with no source, stdout is empty, the chain's refusal is on stderr and it exits 1.
-func cmdIdentity(args []string, stdout, stderr io.Writer) int {
+//
+// clk is the clock identityDeadline runs on and the marker's age is read on: the wall clock
+// (clock.Real, which run passes), and a fake only in its tests (runIdentityCase), which move it.
+func cmdIdentity(clk clock.Clock, args []string, stdout, stderr io.Writer) int {
 	flagArgs, positional := splitArgs(args, nil)
 	flags := newFlagSet("identity", stderr)
 	source := flags.Bool("source", false, "print the source of this process's broker identity a use command would take, asking the broker and the metadata server where it must")
@@ -302,12 +307,12 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 		return refuseUnexpectedArgument(stderr, "identity")
 	}
 	if *source {
-		return identitySource(stdout, stderr)
+		return identitySource(clk, stdout, stderr)
 	}
-	if launcherKeyDir(keyDir()) {
+	if launcherKeyDir(clk, keyDir()) {
 		return 0
 	}
-	answer := probeHelper()
+	answer := probeHelper(clk)
 	if !answer.there {
 		if _, named := helperSocket(); named || helperInstalled() {
 			fmt.Fprintf(stderr, "agent-secrets: helper unreachable at %s; not an agent session (the socket is absent)\n", answer.sock)
@@ -333,8 +338,9 @@ func cmdIdentity(args []string, stdout, stderr io.Writer) int {
 }
 
 // identitySource is `identity --source`: the source the use command would take this process's
-// identity from, waiting out a launcher's enrollment as the use command does.
-func identitySource(stdout, stderr io.Writer) int {
+// identity from, waiting out a launcher's enrollment as the use command does. The helper's
+// answers it reads beyond the chain's own, the probe and the version, are bounded on clk.
+func identitySource(clk clock.Clock, stdout, stderr io.Writer) int {
 	wait, err := enrollWait()
 	if err != nil {
 		fmt.Fprintf(stderr, "agent-secrets identity: %v\n", err)
@@ -348,11 +354,11 @@ func identitySource(stdout, stderr io.Writer) int {
 		return 1
 	}
 	if name == "helper" {
-		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(detail))
+		fmt.Fprintf(stdout, "helper: %s%s\n", detail, helperVersionSuffix(clk, detail))
 	} else {
 		fmt.Fprintf(stdout, "%s: %s\n", name, detail)
-		if answer := probeHelper(); answer.answered() {
-			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(answer.sock))
+		if answer := probeHelper(clk); answer.answered() {
+			fmt.Fprintf(stdout, "helper: %s%s\n", answer.sock, helperVersionSuffix(clk, answer.sock))
 		}
 	}
 	return 0

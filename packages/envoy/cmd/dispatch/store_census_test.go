@@ -1405,7 +1405,8 @@ func readOnlySession(t *testing.T, ctx context.Context, databaseURL string) stri
 	t.Helper()
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
-		t.Fatalf("read the census database URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		t.Fatal("the census database URL does not parse")
 	}
 	query := parsed.Query()
 	query.Set("options", "-c default_transaction_read_only=on")

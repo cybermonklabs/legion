@@ -19,6 +19,7 @@ import (
 // Dispatch-As-Of-Absent: at a cut before the respelling, and at a cut after it, before a later
 // version rewords the check.
 func TestARespelledChecksDigestAtACutReadsAsItReadThen(t *testing.T) {
+	t.Parallel()
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	issue := issueInRepository(t, handler, "RSPD", "acme/widgets", "Respelled digest at a cut")
@@ -81,6 +82,7 @@ func TestARespelledChecksDigestAtACutReadsAsItReadThen(t *testing.T) {
 // version under that digest. A read of the results at the cut, after that later version, gives the
 // check's sha256 as the read taken then gave it, or names it in Dispatch-As-Of-Absent.
 func TestADigestAReindexChangedBeforeACutReadsAsItReadThenAfterALaterVersion(t *testing.T) {
+	t.Parallel()
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	issue := issueInRepository(t, handler, "RIDB", "acme/widgets", "Re-indexed before the cut")

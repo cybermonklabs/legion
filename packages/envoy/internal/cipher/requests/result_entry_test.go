@@ -65,6 +65,7 @@ func withResultGrants(m *Machine, tokens *mintedTokens) *Machine {
 // of its values mints the run's token for the pod's key, with no end of its own, since the grant's
 // end is the connection read's.
 func TestAResultPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
 	tokens := &mintedTokens{}
 	withResultGrants(m, tokens)
@@ -99,6 +100,7 @@ func TestAResultPlaceholderIsAnsweredFromItsGrant(t *testing.T) {
 // The grant is refused, not ended: a pod of its own entry serves it afterwards. The pod's own
 // grant, in the same database, opens its connection and is minted its token.
 func TestAResultGrantOfAnotherEntryIsNotLive(t *testing.T) {
+	t.Parallel()
 	m, _, _, _ := newPlaceholderFixture(t, proxyrules.Rules{})
 	tokens := &mintedTokens{}
 	withResultGrants(m, tokens)
@@ -157,6 +159,7 @@ var resultsProfiles = policytest.ProfilesFile(`{"name": "` + oauthwire.AirlockRe
 // a stored secret of that name is not served through the profile either. The airlock's entry of
 // the name is still the profile's block, of kind dpop.
 func TestARequestForTheResultsCapabilityIsRefusedBeforeAnyGrant(t *testing.T) {
+	t.Parallel()
 	for _, stored := range []bool{false, true} {
 		t.Run(map[bool]string{false: "no stored secret of its name", true: "a stored secret of its name"}[stored], func(t *testing.T) {
 			m, enr, key := newAirlockFixture(t, resultsProfiles)

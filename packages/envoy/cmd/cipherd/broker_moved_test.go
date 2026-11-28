@@ -88,6 +88,7 @@ var brokerMovedLogKeys = []string{"enrollment", "message", "new_request", "recor
 //
 // It skips when BROKER_TEST_DATABASE_URL is unset, as every Postgres-backed broker test does.
 func TestAPendingRequestFollowsItsSessionToTheNewBroker(t *testing.T) {
+	t.Parallel()
 	databaseURL := storetest.URL(t)
 	// The issuers TestASessionsGrantFollowsItToANewBox starts its broker with, one set shared by
 	// both brokers, as two brokers of one deployment trust the same issuers: the cluster's, which

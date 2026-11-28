@@ -35,9 +35,7 @@ func startServiceWith(t *testing.T, settings Settings, deps Deps, decide decideF
 	service, err := start(t.Context(), settings, deps, decide)
 	require.NoError(t, err)
 	t.Cleanup(service.Close)
-	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-	defer cancel()
-	require.NoError(t, service.Ready(ctx), "the auth service's subscription never reached the server")
+	require.NoError(t, service.Ready(testwait.Context(t)), "the auth service's subscription never reached the server")
 	return service
 }
 

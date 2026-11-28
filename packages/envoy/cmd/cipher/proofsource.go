@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // proofSigner signs one broker call and returns the compact JWS for its Proof header: all a call
@@ -135,13 +136,16 @@ func (a helperAnswer) answered() bool { return a.there && a.err == nil }
 // whether the caller is inside a session the helper registered and changes nothing: OK
 // (enrolled), NOT_ENROLLED (registered and still enrolling), NOT_A_SESSION, or NO_CREDENTIAL. The
 // socket is AGENT_SECRETS_HELPER_SOCK, else the helper's default, and a socket file that is not
-// there is asked nothing.
-func probeHelper() helperAnswer {
+// there is asked nothing. The dial, the write and the read together get identityDeadline on clk
+// (helper.CallContext), and a helper that has not answered by then fails as "i/o timeout".
+func probeHelper(clk clock.Clock) helperAnswer {
 	sock, _ := helperSocket()
 	if !exists(sock) {
 		return helperAnswer{sock: sock}
 	}
-	resp, err := helper.Call(sock, helper.Request{Op: "sign", Method: http.MethodGet, URL: identityProbeURL}, identityDeadline)
+	ctx, cancel := clk.WithTimeout(context.Background(), identityDeadline)
+	defer cancel()
+	resp, err := helper.CallContext(ctx, sock, helper.Request{Op: "sign", Method: http.MethodGet, URL: identityProbeURL})
 	return helperAnswer{sock: sock, there: true, resp: resp, err: err}
 }
 

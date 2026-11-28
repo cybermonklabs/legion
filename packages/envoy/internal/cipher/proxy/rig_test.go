@@ -40,7 +40,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
-	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -83,20 +82,16 @@ var suiteProtocol = protocolHTTP1
 // request handling whichever framing carried the request. A row that speaks to the proxy on a
 // socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
 // same bytes in both runs. The banner before each run names the protocol of the run below it.
-// Both runs go through storetest.Run, which drops the test binary's own database the rows'
-// schemas are made in once both have ended.
 func TestMain(m *testing.M) {
-	os.Exit(storetest.Run(func() int {
-		code := 0
-		for _, protocol := range []string{protocolHTTP1, protocolH2} {
-			suiteProtocol = protocol
-			fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
-			if run := m.Run(); run != 0 {
-				code = run
-			}
+	code := 0
+	for _, protocol := range []string{protocolHTTP1, protocolH2} {
+		suiteProtocol = protocol
+		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+		if run := m.Run(); run != 0 {
+			code = run
 		}
-		return code
-	}))
+	}
+	os.Exit(code)
 }
 
 // workerKind is the kind of the profiles file the rig's one name is served behind: its proxy tag
@@ -822,7 +817,8 @@ func (r *rig) clientAt(addr, password string) *http.Client {
 	r.t.Helper()
 	proxyURL, err := url.Parse("http://agent:" + password + "@" + addr)
 	if err != nil {
-		r.t.Fatalf("the proxy URL: %v", err)
+		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
+		r.t.Fatal("the proxy URL, which holds the grant's password, does not parse")
 	}
 	transport := &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
