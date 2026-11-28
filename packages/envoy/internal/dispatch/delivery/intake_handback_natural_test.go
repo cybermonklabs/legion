@@ -7,12 +7,37 @@ import (
 	"slices"
 	"sync"
 	"testing"
+	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// stalledWriteDeadline is the write deadline the two rows below connect their holder with
+// (bus.WithWriteDeadline): a day, past any run. Each row's stalled write (HoldStalledWrite) holds
+// nats.go's connection lock until something ends it. Under nats.go's default deadline of a minute
+// (DefaultFlusherTimeout) the write ended by itself within that minute, so a sever that waited behind
+// the lock still came and closed the connection, and the row passed its defect well inside the
+// shared wait's give-up. Under a day only the sever ends the write, so a sever that waits behind the
+// lock never comes, and the row fails by name at its wait for the sever (loseHoldUntilSevered). It is
+// the row's own value, a socket deadline nats.go keeps on the wall clock that no clock of this module
+// reaches (INFRA-3149's item 9,
+// dispatch://INFRA-3149/comment/cc01d314-cbbc-4990-b232-cb40ac523f86), and no verdict reads its
+// length; each row requires only that its holder's connection writes with it.
+const stalledWriteDeadline = 24 * time.Hour
+
+// requireStalledWriteDeadline fails the row unless conn, its holder's connection, writes with
+// stalledWriteDeadline (its Opts.FlusherTimeout, which bus.WithWriteDeadline sets): with nats.go's
+// default the stalled write would end by itself, and the row would pass the defect it is written for.
+func requireStalledWriteDeadline(t *testing.T, conn *natsgo.Conn) {
+	t.Helper()
+	if got := conn.Opts.FlusherTimeout; got != stalledWriteDeadline {
+		t.Fatalf("control: the holder's connection writes with a deadline of %s (Opts.FlusherTimeout), want stalledWriteDeadline (%s): its stalled write would end by itself rather than by the sever", got, stalledWriteDeadline)
+	}
+}
 
 // A lost hold ends the connection of a pending hand-back even while a read of that connection
 // waits for nats.go's lock. The holder's stop holds two messages of a pull request behind the one in
@@ -22,7 +47,9 @@ import (
 // take the durable over, and no -NAK may reach the server after the standby's creation of it. A
 // Sever that waited behind that read left the connection open. The read holds no lock of the bus
 // client's while it waits: Connected reads nats.go's status with the client's lock released
-// (bus.Client.Connected).
+// (bus.Client.Connected). The holder writes with a deadline of a day (stalledWriteDeadline), so only
+// the sever ends the held write: a Sever that waits behind the read never comes, and the row fails at
+// its wait for the connection to close.
 //
 // The stop's deadline is on the holder's stop clock (heldDurable.clock), a fake the row moves once
 // the write is held (passStop). The hold runs on a fake of its own (heldDurable.holdClock), which
@@ -53,9 +80,10 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 	row.recorded = watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	row.holderAndStandby = startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight)
+	row.holderAndStandby = startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight, bus.WithWriteDeadline(stalledWriteDeadline))
 	holder := row.holder
 	holderConn := holder.client.Connection()
+	requireStalledWriteDeadline(t, holderConn)
 	row.conn = holderConn
 
 	row.sequences = append(row.sequences, publishMergedPullRequest(t, publisher, inFlight))
@@ -138,7 +166,9 @@ func TestALostHoldSeversAPendingHandBackBehindAConnectedRead(t *testing.T) {
 // finalizer that read the lost hold only between its flushes, and severed from there, waited inside
 // that flush, and left the connection open. The row checks the connection and not the order of
 // events: what the frozen relay had already read of the socket before the sever is beyond the
-// client, and reaches the server once the relay thaws.
+// client, and reaches the server once the relay thaws. The holder writes with a deadline of a day
+// (stalledWriteDeadline), so only the sever ends the stalled write: a sever that waits behind the
+// finalizer's flush never comes, and the row fails at its wait for the connection to close.
 //
 // The stop's deadline is on the holder's stop clock (heldDurable.clock), and its flush's bound and
 // the finalizer's ticks on its hold clock (heldDurable.holdClock), fakes the row moves once the
@@ -167,9 +197,10 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	recorded := watchDurableEvents(t, natsURL)
 
 	const inFlight = 100
-	started := startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight)
+	started := startHolderAndStandby(t, pool, publisher, link.URL(), natsURL, inFlight, bus.WithWriteDeadline(stalledWriteDeadline))
 	holder, stopClock, holdClock, standby := started.holder, started.stopClock, started.holdClock, started.standby
 	holderConn := holder.client.Connection()
+	requireStalledWriteDeadline(t, holderConn)
 	publishMergedPullRequest(t, publisher, inFlight)
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
 		return "the holder never started on the first message: " + consumerState(publisher)
@@ -210,6 +241,12 @@ func TestALostHoldSeversAnUnconfirmedHandBackWhileTheFinalizersFlushWaits(t *tes
 	})
 	holder.release()
 	testwait.Receive(t, "the stop's hand-back to reach its publish (control)", frozen)
+	// frozen closes in the hook, before the hand-back is admitted and counted, and until then
+	// handBacksLanded answers an already closed channel: the row first waits for the hand-back to be
+	// published (handedBack), and only then for that publish to return.
+	waitFor(t, delivery.handedBack, func() string {
+		return "control: the stop's hand-back was never published after its hook: " + consumerState(publisher)
+	})
 	testwait.Receive(t, "the hand-back's publish to land in the frozen link's socket (control)", delivery.handBacksLanded())
 	passStopOn(t, stopClock, holdClock, started.callClock, stopped)
 	if !loggedMessage(logs(), intakeHoldFinalizing) || !holdLive(t, pool, holder.intake.holder) {

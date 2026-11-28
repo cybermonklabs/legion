@@ -205,6 +205,12 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	}
 	row.relay.AwaitParked(t)
 	release()
+	// The hook runs before the hand-back is admitted and counted, and until then handBacksLanded
+	// answers an already closed channel: the row first waits for the hand-back to be published
+	// (handedBack), and only then for that publish to return.
+	waitFor(t, delivery.handedBack, func() string {
+		return "control: the stop's hand-back was never published once the hook let it go: " + consumerState(row.publisher)
+	})
 	testwait.Receive(t, "the hand-back's publish to return on the stalled link (control)", delivery.handBacksLanded())
 	return row
 }
