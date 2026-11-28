@@ -16,7 +16,7 @@ import (
 // bang, and resolves its label from maps of the parse's definitions built once
 // (footnoteDefinitionsOf): a label equal byte for byte to a definition's resolves to the first such
 // definition, as goldmark's footnote parser resolves it, and one that matches a definition's only
-// up to case (FootnoteLabelKey) to the first definition with that key, as the browser editor's
+// up to case (footnoteLabelKey) to the first definition with that key, as the browser editor's
 // parser resolves it, where goldmark read `[^A]` as text beside `[^a]: `. Such a reference carries
 // its label as written (referenceLabelAttr), which the browser editor keeps on it. It is a parser
 // of its own, not goldmark's wrapped: goldmark's found the definition by walking every one of them
@@ -29,10 +29,10 @@ type footnoteReferenceParser struct{}
 // Trigger is the bytes a reference starts with: the label's opener, or an image's bang before it.
 func (footnoteReferenceParser) Trigger() []byte { return []byte{'!', '['} }
 
-// FootnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
+// footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
 // folding keeps apart.
-func FootnoteLabelKey(label string) string {
+func footnoteLabelKey(label string) string {
 	return cases.Upper(language.Und).String(cases.Lower(language.Und).String(label))
 }
 
@@ -61,7 +61,7 @@ func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc pa
 	written := block.Value(gmtext.NewSegment(segment.Start+start+1, segment.Start+start+1+closure))
 	definition, exact := definitions.byLabel[string(written)], true
 	if definition == nil {
-		definition, exact = definitions.byKey[FootnoteLabelKey(string(label))], false
+		definition, exact = definitions.byKey[footnoteLabelKey(string(label))], false
 	}
 	if definition == nil {
 		return nil
@@ -83,7 +83,7 @@ func (footnoteReferenceParser) Parse(parent ast.Node, block gmtext.Reader, pc pa
 }
 
 // footnoteDefinitions is each footnote definition in goldmark's list by its label as written
-// (byLabel) and by its label's key (byKey, FootnoteLabelKey), the first in the list where two share
+// (byLabel) and by its label's key (byKey, footnoteLabelKey), the first in the list where two share
 // one: goldmark's list holds them in the order they close, which is the order of their slots.
 type footnoteDefinitions struct {
 	byLabel, byKey map[string]*extensionast.Footnote
@@ -115,7 +115,7 @@ func footnoteDefinitionsOf(pc parser.Context) footnoteDefinitions {
 		if _, seen := definitions.byLabel[string(definition.Ref)]; !seen {
 			definitions.byLabel[string(definition.Ref)] = definition
 		}
-		key := FootnoteLabelKey(string(definition.Ref))
+		key := footnoteLabelKey(string(definition.Ref))
 		if _, seen := definitions.byKey[key]; !seen {
 			definitions.byKey[key] = definition
 		}

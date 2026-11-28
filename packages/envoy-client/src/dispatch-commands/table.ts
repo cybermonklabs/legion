@@ -69,7 +69,6 @@ import {
 } from "./reasoning";
 import { reviewCommand } from "./reviews";
 import { answersCommand, inboxCommand, limitsCommand, whoamiCommand } from "./session";
-import { specFormCommand } from "./spec-form";
 import { specImportLevelCommand, specSourceCommand } from "./spec-source";
 import { stepsCommand } from "./steps";
 
@@ -169,7 +168,6 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),
   dispatch_doc_read: acting(docReadCommand),
-  dispatch_spec_form: acting(specFormCommand),
   dispatch_request_approval: acting(requestApprovalCommand),
   dispatch_plan_approve: acting(planApproveCommand),
   dispatch_review: acting(reviewCommand),

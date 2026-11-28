@@ -164,7 +164,7 @@ test("Spec draws the requirements as rows, the issue as none, and the ask above 
   });
 });
 
-// R2: Spec draws the Spec query's own nodes, and block schema version 8 adds one to them: a
+// R2: Spec draws the Spec query's own nodes, and block schema version 10 adds one to them: a
 // `component` holds a part of the software, or an interface between two parts, that statements
 // of The Spec are about, and the server's Spec query takes it beside the criteria and the
 // requirements. So Spec draws each component as a row of its own, in its place among the

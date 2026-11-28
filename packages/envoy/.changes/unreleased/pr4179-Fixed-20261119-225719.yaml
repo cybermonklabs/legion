@@ -1,9 +1,0 @@
-kind: Fixed
-body: |-
-  The Envoy image's web build copies the dashboard pages table that contracts/src/dispatch-href.ts
-  imports. Before this copy, the image build could not resolve
-  ../../envoy/internal/dispatch/text/dashboard-pages.json and stopped before the listener smoke
-  test began.
-time: 2026-11-19T22:57:19Z
-custom:
-    Issue: pr4179

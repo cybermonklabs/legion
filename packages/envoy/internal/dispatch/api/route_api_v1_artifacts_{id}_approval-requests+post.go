@@ -16,7 +16,6 @@ var _ = declareRoute(routeDecl{
 		Status: http.StatusCreated, Response: approvalRequestResponse{}, Request: approvalRequestInput{}, OptionalRequest: true,
 		// An open request that already stood, or a document already approved throughout,
 		// answers the same shape at 200: nothing was appended (reviews.go).
-		Also:     []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
+		Also: []routeAnswer{{Status: http.StatusOK, Body: approvalRequestResponse{}}},
 	},
 })

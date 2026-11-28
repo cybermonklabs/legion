@@ -1539,7 +1539,7 @@ So for each surface the two builds share, this is what build N+1 may change whil
   Every write path refuses an element this build reads but may not create yet (`pmdoc`, `refuseUncreatable`), unless the document already holds it, and the editor offers only the elements it may create.
   This build reads and creates `decision`, `reading` and `ask`'s `shaped`, which version 7 reads and version 8 creates.
   A build of version 7 refuses a write that adds any of them to a document not already holding that element.
-  It reads `check`'s `subject` and `program`, which version 6 reads, and creates neither: their `creatable_since` is 10, and it moves with each block schema bump until the release after #5416 that records real deploys sets its final value.
+  It reads `check`'s `subject` and `program`, which version 6 reads, and creates neither: their `creatable_since` is 11, and it moves with each block schema bump until the release after #5416 that records real deploys sets its final value.
   An element stays readable while stored documents may hold it: no release removes a readable element from the manifest.
   A build that still meets an element it does not know answers `409 DOC_NEWER_CONTENT` for that document, and its document socket closes with `4425` (Document errors, below).
   No route repairs, replaces or rebuilds such a document, since each of those would delete the element;
@@ -1663,13 +1663,7 @@ The two-build test checks this rule (`cmd/dispatch/twobuild_*_test.go`, `go test
 ./cmd/dispatch`, CI job `dispatch-two-builds`).
 `packages/envoy/scripts/build-dispatch-build.sh` builds the previous release from its commit, and the test runs it beside this tree on one Postgres, cloned at this tree's schema, and one NATS.
 It drives each build's `dispatch` command against the other build's server, reads and edits each build's stored documents and opens their document socket on the other build, passes messages both ways while it checks that the stream and consumer settings stay as they are, races a write of each build on one issue, the previous build's committing first, boots the previous build, with its web app, while a write of this tree is between its owner lock and its write, and boots it with no web app while a write of this tree holds the gate longer than the registration's bound, which refuses that registration and keeps every heartbeat of this tree inside the live window.
-<<<<<<< ours
-On the previous build it makes a document again where this build removed one, and removes a document this build made, and holds the census to naming each document's node `gone` and `orphaned`, the backfill to leaving the `orphaned` one, and this build's own passes to curing both once the previous build stops (`twobuild_nodes_test.go`).
-||||||| base
-On the previous build it makes a document again where this build removed one, and removes a document this build made, and holds the census to naming each document's node `gone` and `orphaned` and the backfill and the printed erase to curing them (`twobuild_nodes_test.go`).
-=======
 On the previous build it makes a document again where this build removed one, and removes a document this build made, once it has read whether that build writes document nodes (`twobuild_nodes_test.go`): beside a build that writes none, it holds the census to naming the removed document's node `orphaned`, the backfill to leaving it, and this build's own passes, the block-index tick's object pass and the decisions step's phase 1, to curing every row the previous build left once that build stops; beside one that writes them, as this tree built as the previous build does (CI job `dispatch-two-builds-same`), it holds each node to that build's own statement and the census to naming none.
->>>>>>> theirs
 It also runs the page admission across the earlier build's departure.
 Beside the previous release, a page of this tree is admitted by that release's numbers, and it stays writable throughout when they are this tree's own.
 The first rollout of the fleet's numbers needs a release before the fleet columns, so `build-dispatch-build.sh` builds the first-rollout build as well, with `--commit edb69e0d7588ec037847182e74a04a343a0664c9` (the release tagged `legion-envoy-v30.20.2`), and the test runs it and holds a page of this tree read-only while that build's process is live and writable once that process has left.
@@ -1770,23 +1764,6 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
   the triggers of migration `20261109051232` notify `dispatch_block_schema`.
   A type is data, so a type added by a migration reaches a running server without a restart;
   a read that fails is tried again 30 s later and leaves the schema in use where it is, and so does a value the install refuses; `schemanodes.Installer` makes both checks, the read's (`schemanodes.Read`) and the install's (`pmdoc.Install`).
-<<<<<<< ours
-  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4.
-  Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5 (#4611).
-  It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
-  Migration `20261123174700` is the second, written the same way: it makes `decision` and `reading` block types, adds their attribute nodes and `ask`'s `shaped`, and moves every block type to version 6.
-  Migration `20261123174800` makes `criterion` a block type, adds the issue tree's attributes (`parent`, `requirement`'s `serves` and `plan_task`'s `size`, after main's `steps`) and moves every block type to version 7; migration `20261123174900` adds the change request's attributes and the `component` and `conclusion` block types and moves every block type to version 8, the version `pmdoc/schema/blocks.json` declares.
-||||||| base
-  Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4, the version `pmdoc/schema/blocks.json` declares.
-<<<<<<<<< Temporary merge branch 1
-  Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
-  A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
-  A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
-  The subcommands that parse or write documents (`backfill-block-ids`, `backfill-anchor-blocks`, `backfill-graph-store`, `rebuild-refs`, `erase`) install the store's schema too, after their migration run, so they hold documents to the store's types and not to the file this binary embeds.
-=========
-  Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5, the version `pmdoc/schema/blocks.json` declares since #4611.
-  It is the first type change written after the store's backfill (`backfill-graph-store`), which the releases from legion-envoy v34.11.0 on may have run over `graph_nodes` and `graph_tuples`, so it writes both tables by bounded writes alone (below): literal rows, and each block type's supertag node by its primary key, to the whole attributes the earlier type migrations left with the version moved (`TestATypeMigrationAfterTheBackfillIsAdmittedAndLeavesTheFilesSchema`).
-=======
 
   - Migration `20261113230000` is the first type change after `20261109051232` seeded the types: it adds `check`'s `ci_check` attribute node and moves every block type to version 4.
     Migration `20261123080000` adds `plan_task`'s `steps` attribute node and moves every block type to version 5 (#4611).
@@ -1799,10 +1776,11 @@ The four that run passes (`duty.RunWoken`) start two passes no closer together t
     It moves `check`'s `subject` and `program` to `creatable_since` 8, and moves every block type to version 7.
     Migration `20261126040700` moves every block type to version 8, so from this release a build creates `decision`, `reading` and `ask`'s `shaped`, and moves the `creatable_since` of `check`'s `subject` and `program` from 8 to 9.
     Migration `20261126050010` makes `criterion` a block type, adds the `parent` attribute nodes of `criterion`, `requirement`, `plan_task` and `check`, `requirement`'s `serves` and `plan_task`'s `size` (kind `minutes`), `skills` and `docs`, and widens `plan_task`'s `needs` to take an issue, each read and created from version 9.
-    It moves the `creatable_since` of `check`'s `subject` and `program` from 9 to 10, so no build of this release creates either, and moves every block type to version 9, the version `pmdoc/schema/blocks.json` declares.
-    Like `20261123080000`, all four use bounded writes alone.
+    It moves the `creatable_since` of `check`'s `subject` and `program` from 9 to 10, so no build of this release creates either, and moves every block type to version 9.
+    Migration `20261127232000` adds the change request's attribute nodes (`requirement`'s `kind`, `under`, `supports`, `about`, `base` and `removes`, `check`'s `statement`, `procedure`, `runner`, `selector`, `job`, `time_limit`, `base` and `removes`), makes `component` and `conclusion` block types and adds the supertags `spec_node` and `spec_import_hold`, each read and created from version 10.
+    It moves the `creatable_since` of `check`'s `subject` and `program` from 10 to 11, and moves every block type to version 10, the version `pmdoc/schema/blocks.json` declares.
+    Like `20261123080000`, all five use bounded writes alone.
 
->>>>>>> theirs
   Each read runs in one read-only transaction at repeatable read, so a migration that commits while it reads is read whole by the next read, never half.
   A store schema above the version this binary was built for is a store the next release migrated: the process installs it at its own version, with the elements whose `since` is at or below that version and nothing else, and keeps serving, its boot and `/healthz` unaffected, so a release that ships a type migration takes no process of the previous build out of service.
   A read that moved the schema the process serves first writes the numbers it serves now into its registry row (`processes.Registration.RefreshSchema`), then closes every document socket it holds (`docs.Service.CloseDocumentSockets`); the browser connects again presenting the schema its own build compiled, and that admission decides against the schema installed now.
@@ -1853,13 +1831,7 @@ A process that finds it held tries again
   Its tick records its period in `duty_passes`, so one process serves each period however many run, and `DISPATCH_TEST_CI_RECONCILE_INTERVAL` replaces the 5 minutes for an end-to-end test.
   That interval is the pass's own bound too: a pass that cannot cover every head within it ends there, logs its line and leaves the cursor for the pass after it, so the lease is free when the next pass is due (CI reconcile, above).
 
-<<<<<<< ours
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind whose `ends_at` passed within the last day and keeps every run, which no command removes (Answering a question, below; a process of the release before still deletes a run an hour old during a roll), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
-||||||| base
-- The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind whose `ends_at` passed within the last day and keeps every run, which `envoy-dispatch erase` alone removes (Answering a question, below; a process of the release before still deletes a run an hour old during a roll), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
-=======
 - The keyed writes' maintenance sweep (`api.RunMaintenanceSweep`, lease `suggestion-outcomes`, `api.MaintenanceSweepInterval`) deletes the `Idempotency-Key` rows past their 24 hours, ends the answer runs the going routes leave behind, states gone each run asked more than an hour ago and removes its rows (Answering a question, below), and then sends every delivery a process that died left owed (Keyed writes, below), once a minute across the processes:
->>>>>>> theirs
   its pass records its period in `duty_passes` like the timers above, so the other process's tick inside a period already served skips.
   Once it has ended the overdue runs, it reads the runs whose `going_requests` row is more than an hour old (`goingRunsPastTheHour`), and the `interaction` nodes of the source `going_requests`, not gone and more than an hour old, whose row a process of the release before deleted (`goingRowlessRuns`, through `graph_nodes_interaction_live`, migration `20261122230407`), each read at most 200 runs a pass (`goingGoneBatch`), and states each run's node gone and removes its rows in a transaction of its own (`goRunGone`).
   It logs `dispatch: the going sweep stated the runs past the hour gone` where it did anything, with how many runs of the first read it stated gone (`runs_stated_gone`), how many runs' rows it removed (`rows_removed`) and how many nodes of the second read it stated gone (`rowless_nodes_stated_gone`).
@@ -2336,14 +2308,10 @@ an open issue holding `withdrawn` asks gets them restored, attributed to the act
 and a closed issue that holds open asks, or whose documents owe a settlement marked since the last pass (at boot, the last 10 minutes;
 on the first interval pass, any), gets the close's final sweep in the same write of each document, which writes block `state` attributes only, never an ask row or a record.
 The sweep's write leaves the document owed, and the document's settlement saves that write whether or not the issue is closed.
-A restore leaves an approval request `resolved` when its covered document breaks the form of The Spec, as a reopen does (`PATCH /api/v1/issues/{key}`, below).
-Its reason names the findings.
 A document whose stored history does not load is logged and left as it is, as the close leaves it.
 Each record is dated when the pass writes it.
-Both passes run on the dependencies that the routes run on (`routes.AppContext.APIDeps`).
-So a pass reads the roots of The Spec (`DISPATCH_SPEC_ROOTS`) as a reopen does.
 A pass logs `dispatch: repaired the asks of closed and reopened issues` with `withdrawn=<n> restored=<n>
-swept=<n> left_resolved=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
+swept=<n>`; one that fails or runs out of time is logged, and the next pass repairs what it left:
 each interval pass that listed its candidates moves the bound to one interval before its own start, and carries every issue it did not repair, failed or not reached, into the next pass.
 The bound and the carried issues live in the memory of the process that ran the pass, not in the database:
 when the lease moves to another process, that process's pass starts from its own bound and its own carried issues (on its first interval pass, no bound, so it sweeps every closed issue whose documents owe a settlement), and never sees the issues the other process carried.
@@ -2684,35 +2652,11 @@ the release before this one reads `state = 'sent'`, and the wider index carries 
 Both censuses answer `0`: an index build and an index drop each refuse and rewrite no row.
 A failed concurrent build leaves an INVALID index of the new name on `message_deliveries`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
 
-<<<<<<< ours
-Migration `20261116232634_going_requests_ends_at_index` creates `going_requests_ends_at` on `going_requests (ends_at)`, the index the maintenance sweep reads the overdue answer runs through (Background loops, above; Answering a question, below).
-A run is kept, its row, its frames and its node, and no command removes one, where the release before deleted a run an hour old, so `going_requests` grows with every question asked, and the sweep reads it once a minute for the runs whose `ends_at` passed within the last day with no terminal frame stored (`goingSweepWindow`, `goingOverdueRuns`);
-without the index that read is a scan of every run ever kept.
-Keyed on `ends_at` alone, it serves the range the read's two bounds give and its order by `ends_at` (`api.TestTheOverdueReadsGoThroughTheEndsAtIndex` holds the read to it, in the plan Postgres builds for the sweep's values and in the generic plan a prepared statement settles on).
-The boot pass reads the same index once at each boot of a process, for every run past its `ends_at` with no terminal frame stored at any age (`goingEveryOverdueRun`, Background loops, above): its one bound, `ends_at` at or before now, is that index's range from its first entry, every run whose deadline has passed, so its cost grows with the runs kept and is paid once a boot rather than once a minute (the same test holds it to the index under both plans).
-The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
-`going_requests` holds rows by now, and a plain build holds `SHARE` on it, which blocks every write to it, each `POST /api/v1/going/requests` among them, for as long as one read of the table takes.
-No constraint and no later migration depends on the index, and the release before this one reads and writes `going_requests` as it did, so rolling back past it is an image rollback alone; `20261116232634_going_requests_ends_at_index.down.sql` is the by-hand script that drops it, with `drop index concurrently` outside a transaction, after which the sweep scans `going_requests` again.
-Its census answers `0`: an index build refuses and rewrites no row.
-A failed concurrent build leaves an INVALID index of the new name on `going_requests`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
-||||||| base
-Migration `20261116232634_going_requests_ends_at_index` creates `going_requests_ends_at` on `going_requests (ends_at)`, the index the maintenance sweep reads the overdue answer runs through (Background loops, above; Answering a question, below).
-A run is kept until `envoy-dispatch erase` removes it, where the release before deleted a run an hour old, so `going_requests` grows with every question asked, and the sweep reads it once a minute for the runs whose `ends_at` passed within the last day with no terminal frame stored (`goingSweepWindow`, `goingOverdueRuns`);
-without the index that read is a scan of every run ever kept.
-Keyed on `ends_at` alone, it serves the range the read's two bounds give and its order by `ends_at` (`api.TestTheOverdueReadsGoThroughTheEndsAtIndex` holds the read to it, in the plan Postgres builds for the sweep's values and in the generic plan a prepared statement settles on).
-The boot pass reads the same index once at each boot of a process, for every run past its `ends_at` with no terminal frame stored at any age (`goingEveryOverdueRun`, Background loops, above): its one bound, `ends_at` at or before now, is that index's range from its first entry, every run whose deadline has passed, so its cost grows with the runs kept and is paid once a boot rather than once a minute (the same test holds it to the index under both plans).
-The build runs `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`):
-`going_requests` holds rows by now, and a plain build holds `SHARE` on it, which blocks every write to it, each `POST /api/v1/going/requests` among them, for as long as one read of the table takes.
-No constraint and no later migration depends on the index, and the release before this one reads and writes `going_requests` as it did, so rolling back past it is an image rollback alone; `20261116232634_going_requests_ends_at_index.down.sql` is the by-hand script that drops it, with `drop index concurrently` outside a transaction, after which the sweep scans `going_requests` again.
-Its census answers `0`: an index build refuses and rewrites no row.
-A failed concurrent build leaves an INVALID index of the new name on `going_requests`, which the runner drops with `DROP INDEX CONCURRENTLY` and builds again on the next boot, so one failed build stops no later boot.
-=======
 Migration `20261122230407_graph_nodes_interaction_live_index` creates `graph_nodes_interaction_live` on `graph_nodes (made_at)`, partial on the `interaction` kind, on every state but `gone` and on the `source` `going_requests`, the index the maintenance sweep reads the runs past the hour whose row is gone through (`goingRowlessRuns`, Background loops, above).
 The gone nodes grow with every question asked, so without the index that read is a scan of every interaction ever written, each minute; the index holds the runs not gone, about an hour of them, and its key is the moment the run was asked, which the read bounds an hour back and orders by (`api.TestTheSweepReadsOfTheRunsPastTheHourAreBounded` holds the read to it, in the plan Postgres builds for the sweep's values and in the generic plan a prepared statement settles on).
 It is built `concurrently`, outside the runner's transaction (`-- pgmigrate:non-transactional`), as every later index on `graph_nodes` is, and nothing depends on it; `20261122230407_graph_nodes_interaction_live_index.down.sql` is the by-hand script that drops it, after which that read scans `graph_nodes` again.
 Its census answers `0`.
 Migration `20261122230406_interaction_source` writes the `attribute` node `interaction/source`, kind `string`, the fourth of the interaction type's attributes, with its tuples and its `attribute_of` tuple to the `interaction` supertag, as `20261123174710` writes `words`, `ends_at` and `frame`, in literal rows; its census answers `0`.
->>>>>>> theirs
 
 Migration `0142_item_blocks` creates the tables behind the blocks of a comment or message as graph nodes ("Reference graph" below):
 `comment_blocks`, `message_blocks`, `comment_block_texts`, `comment_block_state`, `message_block_state`, `comment_block_refs` and `message_block_refs`, each with a foreign key to `comments` or `messages` that cascades, with their indexes, among them the partial `comment_block_state_owed` and `message_block_state_owed` through which the block-index reconciliation reads what is owed.
@@ -3273,14 +3217,8 @@ This release also writes both again for every unpublished event a batch reads no
 
 Migration `20261120021308_search_text_versions` creates two new tables, which the keyword fill writes (Background loops, above) and a search at a past time reads (Search, below).
 `search_text_versions` holds one row for each version of the text that keyword search reads of an issue, a comment, an issue message or an ask.
-<<<<<<< ours
-Its key is `(kind, id, event_seq)`, and a row is never updated: a new version is a new row.
-||||||| base
-Its key is `(kind, id, event_seq)`, and a row is never updated, a new version being a new row, but for the erase, which deletes an erased comment's rows and writes again the vector of an issue's rows that name a version of its spec it deleted ("Erasing a node", below).
-=======
 Its key is `(kind, id, event_seq)`, and a new version is a new row.
 A row is updated in one case alone: the fill's re-read, below, writes again the rows a fill of a lower rules version decided otherwise than this build's rules.
->>>>>>> theirs
 `search_text_versions_fill` holds the fill's one cursor row, with the reach the fill stored, the holder that wrote the last batch, and the version of the event rules that wrote the rows up to the cursor.
 `search_text_versions_item_start` on `(kind, id, started_at)` serves the relation's test for a later version of the same item.
 `search_text_versions_search` is a GIN index on the vector with `fastupdate = off`, so a search never scans a pending list and an insert never empties one.
@@ -4088,24 +4026,6 @@ The kinds are:
   Every release appends that event for such a document, so no shared time makes an earlier row's statement read as a later one's.
   Every other document keeps its address while the store holds it, and a node not `gone` is enough for it; not all of them record an `artifact.created` of their own (`issue.created` records a spec, and a conversation's upload appends no event).
   A removal made to take another shape of document must add it to `graphcensus.removableDocument` in the same change, which `TestEveryDocumentARemovalCanTakeIsReadByItsCreateEvent` holds.
-<<<<<<< ours
-  This build's removal states the node gone as it deletes the row, and a build before this one writes no node, so during a roll or after a rollback each class can appear on a healthy database: `gone` is a document an earlier build created at an address this build's removal stated gone, which `backfill-graph-store` gives a live node, and `orphaned` is a document an earlier build removed after this build wrote its node, which this build's block-index tick states gone during the roll (`docs/block_index_roll.go`, `writeObjectNodesAnotherBuildWrote`); an orphaned node a delete outside the builds made has no in-band cure.
-  Any count of the five refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read), each ending with its cure:
-
-  - `; run envoy-dispatch backfill-graph-store` for `missing`, `gone` and `unscoped`, which the backfill writes, but for a row naming a party the store refuses (one empty or holding white space), which no writer and no pass of the backfill writes a node for and whose line says no command cures it;
-
-  - for `orphaned`, `; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`, since no backfill reads a node no row stands behind;
-
-  - and for `differs`, which a node in another project is at any state, that no command cures it: a node's project never moves, and a person must compare the row with its node.
-
-  The refusal line names the same cures.
-  An address past the store's bound is left out, as its writer leaves it out of the store.
-||||||| base
-  This build's removal states the node gone as it deletes the row, and a build before this one writes no node, so during a roll or after a rollback each class can appear on a healthy database: `gone` is a document an earlier build created at an address this build's removal stated gone, which `backfill-graph-store` gives a live node, and `orphaned` is a document an earlier build removed after this build wrote its node, which only `envoy-dispatch erase --node artifact:<ref_key>` removes (it erases a node of these kinds only once no row stands behind it).
-  Any count of the five refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read), each ending with its cure: `; run envoy-dispatch backfill-graph-store` for `missing`, `gone` and `unscoped`, which the backfill writes, but for a row naming a party the store refuses (one empty or holding white space), which no writer and no pass of the backfill writes a node for and whose line says no command cures it; for `orphaned`, `; remove it with: envoy-dispatch erase --node <kind>:<id>`, quoted for a POSIX shell where the node needs it, which lists the erase and the digest its `--confirm` takes; and for `differs`, which a node in another project is at any state, that no command cures it: a node's project never moves, and a person must compare the row with its node.
-  The refusal line names the same cures.
-  An address past the store's bound is left out, as its writer leaves it out of the store.
-=======
 
   - This build's removal states the node gone as it deletes the row, and a build before this one writes no node, so during a roll or after a rollback each class can appear on a healthy database: `gone` is a document an earlier build created at an address this build's removal stated gone, which `backfill-graph-store` gives a live node, and `orphaned` is a document an earlier build removed after this build wrote its node, which this build's block-index tick states gone during the roll; an orphaned node a delete outside the builds made has no in-band cure.
 
@@ -4114,7 +4034,6 @@ The kinds are:
   - Any count of the five refuses the census, and the first rows and nodes of them are named on `census: project incomplete <kind> <id>: <class>` lines (`graphcensus.ProjectComplete`, the same read), each ending with its cure: `; run envoy-dispatch backfill-graph-store` for `missing`, `gone` and `unscoped`, which the backfill writes, but for a row naming a party the store refuses (one empty or holding white space), which no writer and no pass of the backfill writes a node for and whose line says no command cures it; for `orphaned`, `; no in-band cure, unless an older build's removal made it during a two-build roll: this build's block-index tick then states that node gone`; and for `differs`, which a node in another project is at any state, that no command cures it: a node's project never moves, and a person must compare the row with its node.
     The refusal line names the same cures.
     An address past the store's bound is left out, as its writer leaves it out of the store.
->>>>>>> theirs
 
 - The tie kinds of decisions, readings and asks, each but `ask_answer` held triple by triple — the triple of holding node, tuple kind and far end — so a tuple that reaches the wrong node is a difference and not a count that still matches:
   `shaped`, `from_ask` and `decided_by` against `block_refs`, each row as the triple of the node it names (`node_kind`, `node_address`: a decision's block node, or for an ask block's `shaped` the ask's node), its kind and its far end, against every such tuple a node not `gone` states now;
@@ -4182,27 +4101,9 @@ Where a write states facts beyond its node, each such fact is a term of its own,
 
 - `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk; and a retired pre-mortem document's `moved_to` to the lens the pre-mortem conversion writes in its place (`document_move`, assumed, since the conversion writes it once a document over a backlog no table dates).
 
-<<<<<<< ours
 - `spec-store`, the change that holds the approved spec of each spec source of a project in the store, which is no child of the parent change and writes the same two tables: a statement's or a check's first version, its node with its visibility, state and project (`spec_node`), and each version and each removal an approval of a change request or a level's import appends to one (`spec_version`, `spec_removal`), each counted over the requirement blocks of an issue's spec and the check blocks of its Verification document that a person's approval inside the window covers (`artifact_reviews`): a block the version the document's approval before it named did not hold, a block whose text moved since that version, and a block dropped since, which over-states an approval of an issue whose repository no project names a spec source, every approval until an administrator names one, and over-states the removals, since this release removes a node only where its block asks for it (`removes`); and, assumed, since no table before this release records a level's import, a component's or an interface's node with its visibility, state and project and its first version (`spec_component`, at the 43 components and interfaces of level one, every one of which its import writes), a hold a level's import keeps of a statement it cannot resolve, its node with its visibility, state and project and its `hold` value (`spec_hold`, at the 59 statements of level one, every one of which its import holds where it reads notes no approval names), the hold stated `gone` once its statement is written (`spec_hold_cleared`) and the `repair_issue` the import's child issue names on each hold (`spec_repair_issue`), one of each for each assumed hold, every one of them taken as landing inside the window, which over-states a write made once.
 
 A backfill writes its rows once, beside the rate: `census: sizing backfill kind=version owed_rows=<n> nodes=<n> tuples=<n>` is the version nodes `backfill-graph-store` still owes the versions an older build stored, a node and six tuples each, and `census: sizing backfill-rows table=<table> rows=<n>` adds those rows to each store table's year projection.
-||||||| base
-A backfill writes its rows once, beside the rate: `census: sizing backfill kind=version owed_rows=<n> nodes=<n> tuples=<n>` is the version nodes `backfill-graph-store` still owes the versions an older build stored, a node and six tuples each, and `census: sizing backfill-rows table=<table> rows=<n>` adds those rows to each store table's year projection.
-=========
-- `this-change`, this change itself: a comment's node and two base attributes, and its `authored_by`, `anchored_to`, `owned_by` and aliases where its row names each; a comment delivery's `delivered_to`; a block a version inserts afresh, restores, drops (its `gone` state) or moves to another parent (the old parent's retraction and the new one's assertion); a block reference's assertion and the retraction that may end it; and a person, a session, a role and a role's page, each counted over the ones the window records for the first time.
-
-- `inbox-child`, the child that moves the inbox, the messages and the read state: a message's node and the tuples its target and its broadcast become; a reply's meaning tuple and its `part_of`; a comment's mentions; a person's part in a thread; the `delivered_to` of each write to every other participant of its thread and of an ask to the person it waits on, and the move of that person; the body blocks of a comment, a message and an ask, their links and their removal; a delivery attempt's node; and the message deliveries, read marks, clears, dismissals and snoozes.
-
-- `blocks-child`, the child that moves issues, their documents, a block's text and rank, results and components: the text and rank values of each block whose text a version wrote; an issue's node with its `child_of` and `needs`; an artifact's node and a document version's; a result's node with its values and tuples, its screenshots and its retraction; a component's node with its `part_of`, `depends_on` and `affects`; and a criterion's `authored_by`.
-
-- `asks-child`, the child that moves decisions, readings, asks and their answers: an ask's node and what its `ask.*` events state, an edit, an answer, a resolution and a follower; a Keep; and an agent's decision and its reading.
-
-- `lenses-child`, the child that moves interactions, lenses, lens kinds, constraints and risks: an interaction and its frames, a lens and its finding blocks, a lens kind, a constraint and a risk.
-
->>>>>>>>> Temporary merge branch 2
-=======
-A backfill writes its rows once, beside the rate: `census: sizing backfill kind=version owed_rows=<n> nodes=<n> tuples=<n>` is the version nodes `backfill-graph-store` still owes the versions an older build stored, a node and six tuples each, and `census: sizing backfill-rows table=<table> rows=<n>` adds those rows to each store table's year projection.
->>>>>>> theirs
 Each term a table can count is read from tables that exist before this branch's first migration, so the growth pass runs on a database the store does not exist in yet, which is where R4 takes its readings; there the census prints `census: store absent` and passes on the growth pass alone, which refuses nothing.
 No such table holds a block's parent, so the moved parents are counted by parsing each version the block index indexed in the window beside the one it indexed before, placing the blocks as `refs.PlaceBlocks` places them, and matching the two versions' blocks by their text, since a version's markdown names no paragraph's id; blocks of one document with equal text are matched in document order, so that term is exact except there, and its share line carries `versions_read=` and `versions_unreadable=`.
 Each version is parsed against the block schema the store's type nodes declare, read in the census's own transaction, and against the schema this binary embeds only where the store holds no type node, so a type the store holds and the file lacks does not read as unreadable.
@@ -4294,7 +4195,6 @@ An agent's write making the same change carries nothing by them, and neither doe
 An issue the third phase left for its block index prints `<command>: issue=<KEY> left: <reason>` and makes the command exit 1, since work is still owed.
 Where it touched no issue, left none and none failed, it prints one line saying so (`issues=0 project=<KEY> dry_run=…`), so a run that owed nothing reads apart from one that printed nothing; a `--project` that names no row of `projects` by its exact key is refused (exit 2, naming it) before any phase runs.
 `--dry-run` writes nothing: it applies no migration, refuses (exit 1) while the database has a migration of this build to apply or the first phase owes a row, runs no catch-up, and rolls back the rewrite of the gated steps and each issue's transaction.
-Each reads `DISPATCH_SPEC_ROOTS` as the server does (a value that is no list of issue keys is refused, exit 2): the approvals the restore and the conversion carry pass the same form gate of The Spec, and a document service with no gate would carry none.
 `census --store` prints what the phase still owes beside the store's lines: `census: decisions documents=<n> unconverted_sections=<n> specs_with_moved_answers=<n>`, and one `census: spec_with_moved_answers issue=<KEY> asks=<ids>` line for each such spec.
 The tick runs for as long as the process does.
 A tick with nothing owed and no other build live reads the live processes, the newest event and whether any block index is owed, each one probe of an index, and no table whole: the backfill's own probe of what it owes reads its tables to the end, so it runs at boot, on a tick that owes a catch-up and after a tick that saw another build live, and the count `/healthz` answers is read again only where it read something owed, another build was live, a phase ran, an event that can move the count was appended since it was read (an `artifact.version` counts only for an issue's spec: a count that stands at zero found no document `decisions_documents()` lists, and a document joins that list only as it is stored, under an `artifact.created` that counts of itself, since no write changes a stored document's slug or its issue or undoes its retirement, and the one write that gives a stored document a role gives the role its slug already names), or a block index is owed.
@@ -4537,7 +4437,6 @@ A paragraph whose text holds a `-protect` value (repeatable) is never edited, so
 
 Mentions (`dispatch://` references and same-origin dashboard URLs) in document versions, ask questions, comment bodies, and issue messages are indexed into `refs` on every write;
 migration `0032_refs_provenance` gives each edge a `kind`, `created_at`, and `source_seq` (the `events.id` that introduced it), and creates the `graph_edges` view, which unions those mentions with the structural relations already stored on the node tables (`child_of`, `attached_to`, `anchored_to`, `owned_by`, `replies_to`, `followed_by`).
-A tab of an issue that is a view of the issue, as the dashboard's pages file (`internal/dispatch/text/dashboard-pages.json`) names them, is a mention of the issue: its page (`/issues/<KEY>/activity`) and its reference (`dispatch://<KEY>/activity`, and `dispatch://<KEY>/log` for the Conversation tab) are each an edge to the issue, and a document's page by the singular `/issues/<KEY>/artifact/<slug>` names the document as the plural does.
 The name of a typed block's `block[]` attribute is an edge kind too:
 each block the attribute points at is an edge of that kind from the typed block (migration `20261101144855`, Database migrations above).
 `GET /api/v1/references?to=<ref>` lists everything that points at a node and `?from=<ref>` everything it points to, cross-project.
@@ -4928,21 +4827,6 @@ An answer is cut at 120 words with `cut`, one the model wrote no text for at all
 
 A run has 30 seconds, and that window belongs to the record:
 `going_requests.ends_at` is written by the `POST`, never held as a timer in the process running the answer.
-<<<<<<< ours
-A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads whose `ends_at` passed within the last day (Background loops, above).
-The sweep reads no run older than that day;
-a run whose `ends_at` passed longer ago with no terminal frame stored, one no maintenance pass ended in that day because every process was down for as long, is ended at the next boot of any process by the boot pass, which ends every such run at any age before the sweep's first tick (Background loops, above), or by its reader, if its stream is read first (`streamGoingAnswer`).
-A run is kept, its row, its frames and its node, and no command removes one, where the release before deleted a run an hour old;
-during a roll, and after a rollback, a process of that release still deletes a run an hour old, and `envoy-dispatch backfill-graph-store` states that run's node `gone`.
-At that moment the running answer, a reader, the sweep and the boot pass may each try to end one run, so the table settles which of them does rather than whichever is first:
-||||||| base
-A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads whose `ends_at` passed within the last day (Background loops, above).
-The sweep reads no run older than that day;
-a run whose `ends_at` passed longer ago with no terminal frame stored, one no maintenance pass ended in that day because every process was down for as long, is ended at the next boot of any process by the boot pass, which ends every such run at any age before the sweep's first tick (Background loops, above), or by its reader, if its stream is read first (`streamGoingAnswer`).
-A run is kept, its row, its frames and its node, until `envoy-dispatch erase --node interaction:<uuid>` erases all three (Erasing a node, above), where the release before deleted a run an hour old;
-during a roll, and after a rollback, a process of that release still deletes a run an hour old, and `envoy-dispatch backfill-graph-store` states that run's node `gone`.
-At that moment the running answer, a reader, the sweep and the boot pass may each try to end one run, so the table settles which of them does rather than whichever is first:
-=======
 A pod that dies mid-run therefore stores no terminal frame, and the next reader on any pod ends the stream itself with `error` `ANSWER_DID_NOT_ARRIVE`, as the maintenance sweep does for a run nobody reads (Background loops, above).
 A run is readable for one hour, by its `going_requests` row's `created_at` (`contracts.GoingRequestTTL`), as in the release before;
 then the maintenance sweep states its `interaction` node `gone` and removes its `going_requests` and `going_events` rows, and the node, its `words`, its `frame` values and every tuple into it, a `changed_by_run` among them, stay in the store, read by nobody: its address and its stream answer it as a run nobody holds, and no edge names it (`sweepGoingRequests`).
@@ -4950,7 +4834,6 @@ The sweep takes a run's interaction node row first and then its `going_requests`
 a run with no node yet gets its node from its row first and is stated `gone` with it, and the sweep states `gone` too the node of a run whose rows a process of the release before deleted an hour old during a roll or after a rollback, as `envoy-dispatch backfill-graph-store` does.
 A frame of a run the sweep removed finds no run and stores nothing.
 At that moment the running answer, a reader and the sweep may each try to end one run, so the table settles which of them does rather than whichever is first:
->>>>>>> theirs
 `going_events` carries a partial unique index over the run for a terminal frame name, every terminal write is an insert that does nothing on a conflict, and the writer that loses reads the stored frame and reports that one.
 So a reader sees exactly one ending, never two and never none.
 
@@ -6078,18 +5961,7 @@ Each item below names a path with its method and identity, then its purpose.
   it changes no ask, records no edit notice, carries no approval, and its repair events carry the settlement's own actor.
   An ask block that has no ask row gets no ask: the settlement saves it `state="resolved"` and records its author.
   An ask answered or resolved before the close is left as it was, and the close records no answer and no approval.
-  A reopening `status` (any but `done`) opens again the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
-
-  - The exception is an approval request a text of whose covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below):
-    it stays `resolved`, now with resolution kind `resolved`, the findings as its reason and the reopener as its actor, and gets one `ask.resolved` after the `ask.opened` events.
-    Dispatch judges the request at the versions that it names when the reopen ends.
-    A settlement or a version write after the reopen moves an open request with no judgment, as it moves each open request.
-    The request then waits on its agent.
-    Only a settlement's version that holds, byte for byte, the text of the version that the request names, while the request waits on the person, keeps the person's turn.
-    A named version and an upload of the same text leave the request with its agent.
-    And Dispatch refuses a person's approval of a version that breaks the form.
-    The reopen still answers `200`, and the repair pass treats an issue an older build reopened the same way.
-
+  A reopening `status` (any but `done`) opens again exactly the asks the close withdrew, each with one `ask.opened` before `issue.updated`, and they return to the Inbox.
   The reopen also marks owed each document whose ask blocks wait for it, and the settlement after the reopen opens the ask of a block that has none, credited to its recorded author, retracts a restored ask whose block left its document while the issue was closed, restores a retracted ask whose block came back, and takes into a restored ask the wording that a person gave its block while the issue was closed.
   For each document whose latest version holds every stored edit, the reopen moves the open approval request that names it to that version, so a request that the reopen restores names the version that a settlement wrote while the issue was closed.
   On a document of an issue Dispatch has not converted to one tree, it also carries an approval to that version, as that version's own write does on an open issue; on a converted issue's query document it carries none, and an approval stands at that version where the version leaves the digest of its query equal to the approved one.
@@ -6247,9 +6119,6 @@ Each item below names a path with its method and identity, then its purpose.
   A stale value, or one sent for an open ask, is `409 ASK_ANSWER_CHANGED`; a different person is `403 NOT_ANSWERER`; an approval is `409 ASK_APPROVAL_REVIEW`.
   A change appends another `ask.answered` with `previous_answer`.
   An approval ask is moved to each document version before the human sees it, and an `ASK_EDITED` response means the question changed after the human reviewed it, so they reload and answer the moved request.
-  `Approve` of a request is `409 SPEC_FORM` with nothing written when a text of a covered document breaks the form of The Spec (`POST /api/v1/artifacts/{id}/approval-requests`, below).
-  Its `changes_reason` is the text that `Request changes` sends to the author.
-  `Request changes` is never refused.
   On a block ask the answer is written into its block, and a changed answer without text removes the block's old `answer`.
   Its words and the options it chooses, whose labels are the asker's text, are weighed:
   where they would leave the document's markdown longer than 1 MiB and longer than it was, or making more than 65,536 elements and more than it did, the ask still takes the whole answer and the block is written without them, saying who answered and when.
@@ -7078,284 +6947,12 @@ Each item below names a path with its method and identity, then its purpose.
   - While the row waits on the human, the same summary or none is a repeat that answers `200` with no event, and a different one is `409 APPROVAL_WAITS_ON_HUMAN` and changes nothing, since it would rewrite the card the human is reading.
 
   It answers `201` when it wrote anything, with the document's `approval` as the call left it (`waiting_on` while awaiting).
-<<<<<<< ours
-  Two parts of the route have items of their own:
-
-  - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-    it is empty for a document that is not a spec.
-    It never names a missing plan task, since the plan comes after the approval;
-    a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
-
-  - The form of The Spec: `DISPATCH_SPEC_ROOTS` names the roots of The Spec, issue keys separated by commas.
-    A document is covered when its issue has a root as its nearest named ancestor and the document is the issue's spec or Verification document.
-    The `terms.md` (slug `terms-md`) of a root is covered too.
-    No other document of a root is covered, and an issue that is a root inside another root covers its own subtree.
-    Dispatch judges each covered document at the version that the request hands the person.
-    With no request open, these are the documents that the request names.
-    With a request open, they are the documents that the open request names.
-    These texts break the form: a statement of no sentence or of more than two, and a sentence of more than 25 words.
-    An instruction of the procedure of a check breaks it with more than 20 words, and a sentence of the procedure with two instructions (rule `instructions`), since ASD-STE100 writes a procedure as instructions.
-    Each hard finding of the ASD-STE100 program `ste-lint` also breaks it, with the rule `ste100-` and the name that `ste-lint` gives the rule.
-    R49 leaves what these rules cannot refuse to the reviewer of R25.
-
-    - Which texts Dispatch judges: a statement, the claim and the procedure of a check, the purpose of a component and the definition of a term.
-      A statement is a `requirement` block or an entry line, and a check is a `check` block with its `run` and its `negative_control`.
-      A component is a heading of a component or an interface with the paragraph under it.
-      It is also a row of the components table, by its Name and Purpose cells.
-      A term is a term line under a heading `Terms`.
-      Dispatch judges no other prose of a document, such as a paragraph outside a block, another heading, another table or the title of a callout.
-      R49 leaves that prose to the reviewer of R25.
-
-    - How Dispatch reads a document: it reads the blocks as each other reader does, also in a block quote, a list item or a callout.
-      A block in a code block or in a table cell is no block.
-      A heading opens or closes a part of `Terms` only among the blocks of its own block quote, list item, callout or footnote.
-      Each text is the text that a person reads: a character reference is its character, and a hard break is a space between two words.
-      A link is its words, and an image is its alternative text, so a stop or a `#` in an address breaks no rule of a sentence or of a name.
-      The rules that count sentences and words, and `ste-lint`, read code in code font, as `ste-lint` reads it.
-      The rules of links, of records and of people read the words as the page shows them, with no mark of code font.
-      So code font hides no name or link, also when it holds the whole name or a part of it.
-
-    - How the rules of links, of records and of people read a link: they also read each address and title of a link or an image.
-      An address names a record only as a link to Dispatch, as the address of a pull request or as an email address.
-      Dispatch reads the address of each link as an address, whatever stands beside the link.
-      A `mailto:` link whose words are one whole email address and whose address is `mailto:` and those words is the one other form.
-      Dispatch stores an email address in the words as such a link, such as the host in `git@github.com:owner/repo.git`.
-      So it reads that address in the words of the page, beside the words before and after it.
-      A `mailto:` link with other words, such as `[dispatch://ACME-1](mailto:dispatch://ACME-1)`, is read in its address too.
-      An address with no scheme opens a page of the server.
-      Dispatch reads it in each way that the dashboard reads it, with each `\` read as `/`.
-      Against the origin of the server, as the dashboard reads a link in a component's prose, `/projects/ACME/documents/terms-md`, `projects/ACME/documents/terms-md` and `../../projects/ACME/documents/terms-md` link to that document.
-      Against each page that draws the document that holds it, as the editor and the browser read it, `artifacts/notes-md`, `decisions`, `verification` and `#b-x1` in the spec of ACME-1 link to a document of ACME-1, to its decisions, to its Verification tab and to a block of the spec.
-      The dashboard draws a spec on the page of its issue, on the Spec tab (`/issues/<KEY>/spec`) and on its Artifacts page (`/issues/<KEY>/artifacts/spec`, where the version picker opens it).
-      So `notes-md`, `terms-md`, `verification-md`, `../decisions` and `../spec` in the spec of ACME-1 link to a record too.
-      The dashboard draws the Verification document on its tab (`/issues/<KEY>/verification`) and on its Artifacts page, so `terms-md` and `artifacts/terms-md` in the Verification document of ACME-1 link to the document `terms-md` of ACME-1.
-      A document of a role draws the same way on its own tab, another document of an issue on its Artifacts page, and a document of a project or of an agent on its one page.
-      The dashboard's pages file (`internal/dispatch/text/dashboard-pages.json`), which the dashboard's route table generates, lists these pages, and the server and the agent client read it.
-      The address links to a record when any reading opens the page of one.
-      So a fragment alone, such as `#s-form`, opens the document that holds it, which is a record, and breaks the form.
-      The dashboard's route table decides which paths are pages of a record: an issue and each tab of it, a document of an issue (by `artifacts/<slug>` and by the singular `artifact/<slug>`), of a project or of an agent, an ask, a comment, a message and a block.
-      A path that opens no such page from any base, such as `docs/guide` or `../docs/guide` in a spec, and an address of another host link to no record.
-      Where the address of a link and the words of the page name one record, the text has one finding for it, the address's.
-      The words name the record also by the key of its issue or by its id, wherever they stand in the text, as in `[ACME-1](dispatch://ACME-1/spec)`, and the finding names the words too.
-      So one link gives one finding, and two links to two records give two, also when one record is a part of the other, such as the spec of an issue and the issue.
-      A digit right after an autolink, as in `<dispatch://ACME-1>5`, makes the words name another record, so that text gives two findings.
-
-    - How Dispatch reads a footnote: a footnote that a text refers to is part of that text, and so is a footnote that such a footnote refers to.
-      Dispatch judges each footnote one time for each document.
-      Each finding of a footnote is in the refusal one time, under the first text that refers to the footnote and whose kind the rule reads.
-      That is the first in the order that Dispatch judges the texts: each text but a term line in the order of the document, then each term line.
-      Its words name the footnote and how many other texts refer to it, as in `in its footnote [^n] (2 other texts also refer to it)`.
-      The sentences of a footnote count in each statement that refers to it, and the finding names each footnote with its sentences, as in `[^1] adds 2`.
-      When Dispatch stops the count of a statement's footnotes, the finding says `at least`.
-      Two verbs for one action (rule `ste100-synonym-rotation`) are one finding, of the footnote or the text that holds both verbs when no footnote that it refers to holds both.
-      So a footnote with `It checks the size and confirms the type.` gives one finding, however many texts refer to it.
-      And `Check the file.[^1]` with the footnote `Then verify it.` gives one finding, of that text.
-      A definition can stand wholly in its footnote, as in `- **lease**: [^1]`.
-
-    - How the rules count sentences: a sentence holds a word with a letter, so a statement such as `42`, `...` or `12:30.` has no sentence.
-      A sentence ends at a `.`, `!` or `?` that white space or the end of the text follows, after any closing quotes or brackets.
-      So `"Start." Then` holds two sentences, and so does `(a year.) Then`.
-      A letter or a digit right after a stop ends no sentence, so `1.5` and `terms.md` are one word each.
-      An initialism of single letters, such as `U.S.`, `e.g.` or `i.e.`, is one word.
-      None of its stops ends a sentence, also the last one before a space.
-      So when a sentence ends with such an initialism, the rules count it and the next sentence as one: write the initialism in full there.
-      Nothing in code font ends a sentence.
-      A stop that an upper-case letter follows with no space, as in `Web.Config` or `comment.Dispatch`, breaks the form (rule `stop-no-space`).
-      Its finding names the word, and it tells the writer to put a space after the stop or to put the name in code font, each only where the text that it makes breaks no rule that the text does not break.
-      So in a statement of two sentences, where the space makes three, the finding tells the writer to put the name in code font.
-      A word that starts with a scheme and `//`, such as `https://`, or with `www.` is an address that the words show.
-      Such an address is one word, so no stop in it breaks this rule, and a stop after the address ends the sentence.
-      A stop that white space follows ends a sentence also inside a quote, so a quoted text with a stop goes in code font.
-      `ste-lint` ends no sentence at a stop before a closing quote, so it can count one long sentence where Dispatch counts two (rule `ste100-long-sentence`).
-      Put the stop after the closing quote, as in `answers "done". Then`, and both programs count two sentences.
-      Code font works only when at most 25 words stay outside it, because nothing in code font ends a sentence or counts as a word.
-      An abbreviation with a stop before a space, such as `etc.`, ends a sentence too, so write the word in full or in code font.
-      A numbered list inside one sentence, as in `1. it claims the issue, 2. it writes the plan`, counts a sentence at each number.
-      So write the steps with words.
-      The rules that count sentences and words read English text, and a text in another language is the reviewer's to name.
-
-    - How the rules read the procedure of a check: each sentence gives one instruction, an instruction has at most 20 words, and a sentence that describes has at most 25, as ASD-STE100 writes a procedure.
-      A sentence is an instruction when it starts with a verb of the rule's list, with no comma after it, and then the first word of the verb's object.
-      The list is `internal/dispatch/specform/instruction-verbs.txt`: a program writes it from the verbs that start the instructions of the repository's skills and of the live procedures of The Spec, keeps the sentences it read in `testdata/` beside it, and a test writes it again from those sentences in any clone and fails when the two differ.
-      The first word of the object is `the`, `a`, `an`, `each`, `every`, `all`, `any`, `both`, `no`, `its`, `their`, `this`, `these`, `those`, `it`, `them` or a span in code font.
-      After a condition at the start of the sentence, such as `If the run fails,`, the instruction starts after the comma that ends the condition.
-      A second instruction is the same two words after `and`, `or`, `then` or a comma, as in `Read each request and record its version`, which breaks the form (rule `instructions`).
-      Two verbs of one object, as in `Push and hold the switch`, are one instruction, as ASD-STE100 lets two actions at the same time be.
-      A word that the list does not name is no verb, so `Read the log, especially the last line` and `Count the rows, minus the header` give one instruction.
-      A listed verb that a noun phrase and then an auxiliary or a verb ending in -s or -ed follow is a noun of the object, as `output` in `Read the input and output the tool writes`, so that sentence gives one instruction.
-      A procedure that describes a program, such as `A test against a Dispatch server`, gives no instruction, and each of its sentences has at most 25 words.
-      Six forms are stated limits.
-      A verb that the list does not name starts no instruction, so `Seed the database and run the test` breaks no rule.
-      A second instruction after a relative clause, as in `Read each request that Dispatch opens and record its version`, breaks no rule, and R49 leaves it to the reviewer of R25.
-      A condition ends at its first comma, so a list of verbs in it, as in `Before you plan, file an issue or post a finding, run the search`, reads as two instructions: write the condition as a sentence of its own, as in `You plan, file an issue or post a finding. Before that, run the search`.
-      A listed verb that is a noun of the object with no clause of its own after it, as `name` in ``Run the test of the step, name `lint`, with the race detector``, reads as a second instruction: 43 verbs of the list are also nouns in the skills.
-      A listed verb before a clause whose verb is a plural or a past form with no -ed, as `output` in `Compare the input and output the tools write`, reads as a second instruction: write `that` before the clause.
-      A listed verb before a word that starts no object, such as `tests`, `go` or a name, as in `Run tests against the server` and `Start Dispatch with a fixture issue`, starts no instruction, so its sentence has at most 25 words and no second instruction is read in it.
-
-    - How a refusal gives its ways out: a refusal of the form gives a way out only where the text that the way out makes gives no finding that the text does not give, word for word.
-      Dispatch reads each way out in the sentence that it changes, as the rules read that sentence with what its code font holds, by every rule, with the other sentences of the text in the count of a statement.
-      The sentence is the one that the text holds, white space and all, so two spaces between two words change no way out.
-      A way out keeps where its sentence ends: the code font of a name that ends its sentence leaves the stop and the closing marks after it, as in ``Keep each record of `file1.Name`. If the run fails, read the log.``, and a way out that would run the sentence on into the next one, or end it where it did not end, is no way out.
-      One finding stands for each place of its words, so Dispatch reads its way out in the sentence of each place, and gives it only where it passes at each.
-      The writer changes the words wherever they stand, so Dispatch also reads the way out in each sentence that holds the words and not the finding, such as the sentence that `Foo.Validate.` ends beside the finding of `Foo.Validate`, where the way out must give no new finding.
-      It reads at most eight such sentences for one finding, so the work of a judgment stays in proportion to the text, as the bound of the findings of a sentence keeps it: a finding whose words stand in more is still refused and named, and says that Dispatch offers ways out of words that stand in at most eight other sentences only, so it offers none for this one, though one can exist.
-      It finds those sentences by the words of the text with the marks, stops and other characters at their two ends taken away, so a name inside a longer word, such as `Web.Config's`, is a stated limit: the way out is not read there.
-      It reads a way out of a finding of a footnote with the sentences of the largest statement that refers to the footnote, as the count of that statement holds them.
-      It reads each rule that reads more than one sentence in the whole text that the way out writes at each place: two verbs for one action, which ste-lint reads in the whole text and beside the verbs of its footnotes, a sentence of ste-lint, which runs on past a stop before a closing quote, and a list item that ends in `and` or `or`, whose finding quotes the item whole.
-      A way out that writes a backtick in a sentence after a backtick that nothing closes is no way out, as ste-lint would pair the two and read the sentences between as code font.
-      So in `Dispatch checks Foo.Validate at boot. It validated the file.` the code font of `Foo.Validate` is no way out, as the text's finding of two verbs for one action would then quote `validated`, and in a list item that ends in `and` no way out is offered until the item ends otherwise.
-
-    - How the ways out of a footnote and of a count are read: a way out of a finding of a footnote that changes the verbs of a synonym group that the footnote uses is no way out where, after it, a text or a footnote that holds the footnote gives a finding of two verbs for one action that it did not give, word for word; two verbs of that group in other texts that do not hold the footnote change nothing.
-      Footnotes that refer to each other in a loop give that finding once, in the first of them, and not again in a footnote that refers to the loop with the same verbs.
-      In the count of a statement each stop with no space after it but the finding's own ends a sentence, as the space that its own finding asks for makes it end one, so the ways out of one finding do not change with the space after another stop: in `The parser reads file.Name and file.Size at its start.`, each finding gives the code font alone, as a space after both makes three sentences.
-      So `that` before the clause of an instruction of 20 words is no way out, as it makes 21, and nor is a space after the stop of a footnote of one sentence under a statement of one, as it makes three.
-      Dispatch reads the ways out of at most eight findings of one sentence, so its work stays in proportion to the text: a ninth stop with no space after it, or a ninth email address, of one sentence is still refused and named, and its finding says that Dispatch offers ways out for the first eight findings of a sentence only, so it offers none for this one, though one can exist.
-      A text that ste-lint reads as more than one line, at a line break other than a line feed such as `\v` or U+2028, Dispatch reads whole for each way out, and so for the ways out of its first eight findings only: a ninth finding of such a text is still refused and named, and says that Dispatch offers ways out for the first eight findings of such a text only.
-
-    - How the refusal of two instructions gives its ways out: each instruction in a sentence of its own and, after a condition at the start, the condition as a sentence of its own, each as the sentence it makes, and `that` before the clause after a listed verb that is no verb there; a test applies each and holds the result to every rule.
-      It writes the instructions as sentences of their own only where that keeps what the sentence means, in one pass over the sentence.
-      Where `or` joins two of them, as in `Read the diff or run the tests`, two sentences are two steps where the sentence gives a choice of one, and where a condition stands outside the first instruction, before it as in `If the run fails, read the log and send the report` or after it as in `Read the log and send the report if the run fails`, with or without a comma, the split cannot keep the scope of the condition: there the refusal says to keep the choice or the condition, and shows no split.
-      A condition word inside the first instruction, as in `Read the log before the run ends and send the report`, governs that instruction alone, so the split stays.
-
-    A link to a record of Dispatch, and the name of an incident, a pull request or a person, also break it.
-
-    - How the rules read a name: `#<n>`, `pull request number <n>`, `<owner>/<repo>#<n>` and the address of a pull request name a pull request.
-      The host of that address is `github.com` or `www.github.com` in any case, and a host that only ends in `github.com` is another host.
-      `incident #<n>`, `incident number <n>`, a key such as `INC-<n>` and `incident <date>` name an incident.
-      A bare number after the words is a count and names nothing, so `each pull request 10 minutes after its checks pass` breaks no rule.
-      So `as pull request 12 shows` breaks no rule either, because a name needs a form that only a name has.
-      The finding of each rule lists the forms that it reads.
-
-    - How the rules read a person and a record: a person's name is the name of one person who signed in.
-      It is the parts of that person's email, in order, each with a capital letter.
-      A name has two parts or more, and each part has three letters or more, so the person `ada@example.com` has no name that the rules read.
-      So with the person `ada.lovelace@example.com`, `Ada Lovelace` names a person, and `Ada` alone does not.
-      Each part of a name is a whole word, as the next item says, so `Ada Lovelace2` names no person.
-      Parts of the emails of two people are no name.
-      A part that is a word of an approved component name or term is no part of a name.
-      Such a word is a whole word too, so the approved name `Dispatch_Admin` does not hide the name `Dispatch Admin`.
-      The way out is to write the name of the system as the person approved it.
-      To know those words, a judgment under a root reads the latest approved version of each other covered document under that root.
-      It reads them in one statement to the database, and its parse of them grows with their statements.
-      Under 1,000 approved documents of 100 statements each, one judgment took 0.8 s of CPU time on a loaded machine.
-      A letter such as `é` can be one character, or a letter and a combining mark.
-      Dispatch does not compare the two forms, so a name in one form names no person whose email holds the other form.
-      R49 leaves such a text to the reviewer of R25.
-      An email address names a person, and the last part of its domain is letters, so `checker@v1.2.3` is no address.
-      A word that starts with `@` is the handle of a person, also in code font, unless a `/` or an `@` follows it.
-      So `@media` and `@import` name a person, and the way out is to write a name of the system without `@`.
-      A bare key of a project of Dispatch, such as `ACME-12`, names a record of Dispatch, also when no record has that key.
-      A word of that form whose first part is no project of Dispatch, such as `UTF-8` or `SHA-256`, names nothing.
-      A bare id such as a UUID names a record of Dispatch too, also when no record has it.
-      Its rule is `dispatch-link`, so write such a value by its kind, as in "the UUID of the request", not by its characters.
-      The rules also read the name of a term (kind `term`).
-
-    - When a form is a whole word: each form of a name above, a key and an id among them, is a whole word.
-      A character of a word right before it or right after it makes it part of a longer word, which names nothing.
-      A character of a word is a letter, a mark, a decimal digit or connector punctuation such as `_`, of any script.
-      So `#12abcd` and `#12é` name no pull request.
-      Some forms also continue with other characters: `@` before a handle, and `/` or `@` after it.
-      So the package `@types/node` names no person.
-      `.`, `-` or `/` before `<owner>/<repo>#<n>`, and `.` or `-` before the host of a pull request's address, continue them too.
-      The owner of `<owner>/<repo>#<n>` starts with a letter or a digit, as an owner on GitHub does, so `-acme/widgets#12` and `.github/workflows#12` name no pull request.
-      An email address after a `/` is part of a longer address, which names nothing, so `ssh://git@github.com/owner/repo.git` names no person.
-      A `:` after an email address makes it part of a remote path, unless white space, a closing mark or `,;!?` follows, or the text ends.
-      A closing mark is a closing bracket, a closing curly quote, or a straight quote that no character of a path follows.
-      Such an address names no person, so `git@github.com:owner/repo.git` and `deploy@build.example.com:'/srv/my reports/'` name none.
-      But `(ada@example.com:)`, `ada@example.com: she` and `the field reads "ada@example.com:" each day` name a person.
-      A straight quote that a full stop follows is read as part of a path, so `the field reads "ada@example.com:".` names no person.
-      An address `user@host` with no path after it reads as the address of a person, also in a command that names a machine.
-      So `scp report.txt deploy@build.example.com:`, `rsync -a dist/ deploy@build.example.com:`, `ssh deploy@build.example.com` and the remote glob `deploy@build.example.com:?.log` break the form.
-      The finding gives the ways out: write the path after the colon, as in `deploy@build.example.com:~/` or `deploy@build.example.com:./?.log`.
-      Or write the user and the host apart, as in `ssh -l deploy build.example.com`.
-      It gives each only where the text that it makes breaks no rule that the text does not break, so in a sentence of 23 words, the user and the host apart, which make 26 words, are no way out.
-      An email address takes letters and marks beside it into its own parts, and a digit or connector punctuation before it too.
-      So `xada@example.com` is an email address too.
-      A digit or connector punctuation after its domain makes it no address, as in `ada@example.com5`.
-      A handle takes the characters of a word after it, and a character of a word before its `@` makes it no handle.
-      A key of Dispatch, an id, a number, and the owner and the repository on GitHub are ASCII.
-      So a letter of another script in one of them makes it no form.
-      A colour made only of digits, such as `#123` or `#000000`, has the form of a number of a pull request.
-      So write such a colour in words.
-      A form right beside a letter of a script that writes no space between words, as in `见#12`, is part of a longer word.
-      So it names nothing, and R49 leaves such a text to the reviewer of R25.
-
-    - How the rules read a term line: a term line is `- **<term>**: <definition>` under a heading `Terms`.
-      Each other paragraph, list item or table row under that heading breaks the form (rule `term-line`).
-      So a decision block under that heading breaks the form at its question line.
-      A decision block stands above the heading `Terms`, and after the person's answer, the chosen definition goes under the heading as a term line.
-      The finding names the line by its text, and it names two ways out.
-      A line that defines no term, such as an example or a note, moves out from under the heading `Terms`.
-      A decision block goes above the heading.
-
-    - When Dispatch cannot read a version: a browser edit through the socket of a document can store a version that today's parser refuses.
-      An earlier release can store one too.
-      Settlement stores the markdown of the editor's tree, and it does not read that markdown back.
-      An example is a footnote that the editor moves into a callout in a list item.
-      A judgment that names such a version refuses it with one finding of kind `document` and rule `unreadable`, which names the document and its version.
-      So the agent's request, the person's Approve on the page and `dispatch spec-form` each show that finding and its way out.
-      Another approved document under the root whose approved version Dispatch cannot read refuses nothing, and each answer names it in `unread`, one line for each.
-      Under a root, Dispatch refuses the approval of such a version.
-      So such an approved version comes from an approval outside a root or from an earlier release.
-      The page shows the `unread` lines only in a refusal, because the header and the cards of a request do not read the form.
-      No rule compares the texts of that version, so its component names are no nouns of the system.
-      The way out of both is a new version of that document, and for the approved document its approval.
-
-    - What a refusal holds: a request that holds a text that breaks the form is `409 SPEC_FORM` with nothing written, `{code, error, refusal, next_step, findings, findings_total}`, each finding `{document, artifact_id, version, node, kind, where, rule, detail, ways, excerpt}`.
-      A finding is its rule and its `detail`, the rule's words at its place.
-      `ways` holds the words of the ways out that the finding gives, or is empty.
-      So a way out that changes only what another finding offers changes no finding.
-      Each line of `error` writes a finding as its `detail`, then its `ways`.
-      `error` is `refusal`, then `next_step` on a line of its own, so a client with a next step of its own shows `refusal` beside that step.
-      `findings` holds at most 500 of them, `findings_total` counts them all, and `error` lists the first 20 and the `dispatch spec-form` command that lists the rest.
-      The first line of `error` counts the texts that break the form, and a text with more than one finding has one line for each finding.
-      A person's approval of a covered document gets the same refusal through three routes.
-      These are `POST /api/v1/artifacts/{id}/reviews`, `POST /api/v1/artifacts/{id}/versions/{number}/reviews` and `POST /api/v1/asks/{id}/answer`.
-      That refusal also carries `changes_reason`, the text that a request for changes sends to the author.
-      A request for changes is never refused.
-      When the document that a request names is covered, the answer carries `spec_form`, `{root, texts, terms, unread}`.
-      `texts` counts each kind of text that Dispatch read in the documents it judged, and `unread` is `{document, artifact_id, issue, version, line}`.
-      A refusal writes each `unread` line in `refusal`, after the findings.
-
-    A reopen and the repair pass judge a withdrawn request at the versions that it names when they end (`PATCH /api/v1/issues/{key}`, above).
-    They leave a request that breaks the form at those versions resolved, with the findings as its reason.
-    A carry of an approval to a new version passes the same gate, and it judges the same documents as the person's own Approve.
-    These are the carried version and each other document of the open request, at the version that the request names.
-    So Dispatch carries no approval to a version whose text breaks the form.
-    It answers no request that names a document whose text breaks the form either.
-    The person's own Approve then gets the refusal.
-    A document service that has no gate, such as the one that a backfill command builds, carries no approval.
-    An approval given outside a root was never judged, and it stays when its issue moves under the root.
-
-- `/api/v1/artifacts/{id}/spec-form?version=` (GET; cookie, trusted header, or bearer)
-
-  Read the form of The Spec in one version of a document, with no side effect.
-  The version is `?version=N`, or else the latest settled version, which an approval request would name.
-  It answers `{artifact_id, name, version, in_scope, scope, plays, root, texts, findings, findings_total, terms, unread, refuses_approval}`.
-  `scope` is `covered` or `list` when the document is in scope.
-  `no_root` means that the setting names no root, and `root` is a document of a root other than its `terms.md`.
-  `outside` means that no named root holds the issue, or that the document has no issue.
-  `not_spec` is a document under a root that is not the spec or the Verification document.
-  `plays` is `spec`, `verification` or empty, and `root` is the nearest named root above the document, or `null`.
-  The findings of a document out of scope are listed too, and `refuses_approval` is true only for a document in scope with a finding.
-  `terms` is empty: Dispatch does not read the list of terms yet.
-  A version that the document does not have is `404 VERSION_NOT_FOUND`.
-  A `version` that is not a whole number of 1 or more is `400 INVALID_QUERY`.
-  Without `version`, a document with no settled version is `409 NO_VERSION`.
-||||||| base
-  Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
-  it is empty for a document that is not a spec.
-
-  It never names a missing plan task, since the plan comes after the approval;
-  a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
-=======
 
   - Every answer carries `coverage`, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (`GET /api/v1/issues/{key}/coverage`), and no line at all for a covered spec;
     it is empty for a document that is not a spec.
     While a document of the issue owes its block index, it names no requirement with no check and carries in their place the coverage read's line for each such document, `<file name> version <n> is still being indexed; its coverage shows once that ends.`.
     It never names a missing plan task, since the plan comes after the approval;
     a spec with gaps still opens the request, and a coverage read that failed answers `coverage_unread: true` with no lines.
->>>>>>> theirs
 
 - `/api/v1/artifacts/{id}/plan-reviews` (POST; cookie, trusted header, or bearer)
 

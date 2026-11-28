@@ -305,8 +305,6 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 		return 1
 	}
 	defer database.Pool.Close()
-	// The service has no form gate, so no version it writes carries an approval in a person's name
-	// (docs.Service.SetFormGate).
 	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
@@ -402,16 +400,6 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 	defer database.Pool.Close()
 	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
 	defer documents.Shutdown(context.Background())
-	// The step's restore and conversion carry a person's approval across the versions they write,
-	// as its tick in the server does, and a carry asks the form gate of The Spec first: a service
-	// with no gate carries nothing (docs.Service.SetFormGate). The gate is the server's own, from
-	// DISPATCH_SPEC_ROOTS (api.FormGate).
-	gate, err := api.FormGate(strings.TrimSpace(env.get("DISPATCH_SPEC_ROOTS")), loadServerURL(env))
-	if err != nil {
-		fmt.Fprintf(stderr, "%s: read the roots of The Spec (DISPATCH_SPEC_ROOTS): %v\n", name, err)
-		return 2
-	}
-	documents.SetFormGate(gate)
 	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
 	step.UseDocuments(documents)
 	pass, err := step.RunByHand(ctx, key, convert, dryRun)
@@ -482,7 +470,6 @@ func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer
 		return 1
 	}
 	defer database.Pool.Close()
-	// No form gate either, so this service carries no approval (docs.Service.SetFormGate).
 	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)

@@ -159,11 +159,7 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 		if err := f.service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		versions, err := f.service.ClosedIssueVersions(ctx, "DOC-1")
-		if err != nil {
-			return err
-		}
-		return f.service.FollowClosedIssueVersions(ctx, "DOC-1", versions)
+		return f.service.FollowClosedIssueVersions(ctx, "DOC-1")
 	}); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
 	}

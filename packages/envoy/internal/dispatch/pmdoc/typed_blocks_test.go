@@ -531,7 +531,7 @@ func TestTypedBlockAttributeValuesCarryTheKindTheSchemaDeclares(t *testing.T) {
 	}
 }
 
-// A conclusion (D6 of the work-units plan, block schema version 8) holds the approved statement it
+// A conclusion (D6 of the work-units plan, block schema version 10) holds the approved statement it
 // concludes about and the kind of difference it found, or that it names no statement, each read
 // with the kind its type declares, and its evidence and outcomes as paragraphs of its body.
 func TestTheConclusionBlockHoldsItsStatementDifferenceAndEvidence(t *testing.T) {

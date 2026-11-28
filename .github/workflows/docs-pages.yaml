@@ -236,7 +236,6 @@ on:
       - 'packages/envoy/internal/dispatch/routes/**'
       - 'packages/envoy/internal/dispatch/sessionanswers/**'
       - 'packages/envoy/internal/dispatch/specchange/**'
-      - 'packages/envoy/internal/dispatch/specform/**'
       - 'packages/envoy/internal/dispatch/specgraph/**'
       - 'packages/envoy/internal/dispatch/specstore/**'
       - 'packages/envoy/internal/dispatch/startup/**'

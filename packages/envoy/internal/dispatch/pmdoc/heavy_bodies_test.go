@@ -160,7 +160,7 @@ const bytesPerCharacter = 64 << 10
 // Every shape a write stores parses in work proportional to its length, counted at an eighth of
 // what the shape grows and then at the whole of it: a shape whose statements or allocations grew
 // with the square of its length would grow growthStep² times where a linear one may grow
-// linearSlack*growthStep (growthStep, below).
+// linearSlack*growthStep (growthStep, linear_test.go).
 func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
 	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {
@@ -719,18 +719,6 @@ func workOf(t *testing.T, what string, op func()) callWork {
 	runtime.ReadMemStats(&after)
 	return callWork{bytes: after.TotalAlloc - before.TotalAlloc}
 }
-
-// growthStep is how many times the full size of each count row of this file is its smaller size,
-// and linearSlack how many times faster than the size its counted work may grow before
-// countGrowthVerdict calls it quadratic: work in proportion to the input grows about growthStep
-// times, inside the linearSlack*growthStep bound (24), and work for each pair of characters about
-// growthStep² (64) times, past it. A count is the work itself, which no load on the machine moves,
-// so these rows keep the eighth they were written at; linear_test.go's rows, which time the
-// thread that parses (cputest.Growth), step by growthScale and hold growthBound.
-const (
-	growthStep  = 8
-	linearSlack = 3
-)
 
 // workGrowsLinearly counts the work measure does at each of sizes in turn, once each, since a
 // count is the work itself and needs no sample, holds each to its bounds for each character

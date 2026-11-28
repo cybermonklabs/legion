@@ -85,7 +85,7 @@ func TestAnApprovalOfTheBaseStandsUnderASpecQueryThatTakesComponents(t *testing.
 	// No version of the base records the revision of the tree it was read at: version_renders has
 	// no writer in the base release, nor in this build. So the digest the approval pinned is the
 	// digest of the version's stored bytes, and the head, its migrations run - the block schema's
-	// version 7 and the spec query that takes components among them - answers the same digest for
+	// version 10 and the spec query that takes components among them - answers the same digest for
 	// the approved version (artifact_version_text_sha256), the one an approval is judged by.
 	var rendered int
 	if err := database.QueryRow(ctx, `select count(*) from version_renders where artifact_id = $1::uuid`, spec).Scan(&rendered); err != nil {

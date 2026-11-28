@@ -10,7 +10,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/asks/{id}/answer",
 	Auth:        authAny,
-	Description: "Answer an ask with selected options and/or text. An Approve of an approval request is 409 SPEC_FORM when a text of a covered document breaks the form of The Spec. " + specChangeRouteWords,
+	Description: "Answer an ask with selected options and/or text. " + specChangeRouteWords,
 	Handler:     (*server).answerAsk,
 	WriteClass:  scopeProject,
 	ID:          &idRoute{Kind: "ask", NotFound: "NOT_FOUND"},
@@ -19,8 +19,5 @@ var _ = declareRoute(routeDecl{
 	// the answer of every other ask, 403 APPROVE_ONLY_TOKEN, once the ask's kind is read
 	// (ask_transitions.go).
 	ApproveOnly: true,
-	Shape: routeShape{
-		Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{},
-		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: specFormError{}}},
-	},
+	Shape:       routeShape{Status: http.StatusOK, Response: shapedAsk{}, Request: answerAskInput{}},
 })

@@ -106,15 +106,15 @@ func versionDigest(ctx context.Context, q queryer, artifactID string, version in
 // applySpecChange writes the change request an approval of documents covers into the approved
 // spec (specstore.Apply), queued on ledger after what the approval queued before it, or refuses
 // the approval. It covers an approval only where documents name the spec of an issue of a spec
-// source; any other writes nothing here. A covered approval answers an open approval request
-// (APPROVAL_REQUEST_REQUIRED otherwise) and counts only for the text that request names: a
-// document whose text moved after the request handed it to the person (Version past
-// RequestedVersion) is refused the same way. The request is read from the versions it names, as
-// they are stored (specchange.FromVersions): the statements and components from the spec's, the
-// checks from the Verification document's where the request names it, else from that document's
-// latest settled version, so a request that changes a check its approval request leaves out is
-// refused (specstore.RefusalChecksNotIncluded).
-func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, request *model.AskApproval,
+// source; any other writes nothing here. A covered approval answers an open approval request,
+// whose ask askID names (APPROVAL_REQUEST_REQUIRED where askID is nil), and counts only for the
+// text that request names: a document whose text moved after the request handed it to the person
+// (Version past RequestedVersion) is refused the same way. The request is read from the versions
+// it names, as they are stored (specchange.FromVersions): the statements and components from the
+// spec's, the checks from the Verification document's where the request names it, else from that
+// document's latest settled version, so a request that changes a check its approval request leaves
+// out is refused (specstore.RefusalChecksNotIncluded).
+func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	documents []model.AskApprovalDocument, actor model.Actor, askID *string) error {
 	var spec, verification *model.Artifact
 	var specVersion, verificationVersion int
@@ -141,7 +141,7 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	if err != nil || !held {
 		return err
 	}
-	if request == nil {
+	if askID == nil {
 		return errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
 			"%s holds a change request of %s's approved spec, so its approval answers an open approval request; open one on its spec and approve that", issue.Key, repo)
 	}

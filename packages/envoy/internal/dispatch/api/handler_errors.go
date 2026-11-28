@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/specstore"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/specstore"
 )
 
 // How a handler's error becomes a response: one function, writeHandlerError, that every route's
@@ -170,13 +170,6 @@ func deletedPostError(kind refs.ItemKind) *apiError {
 }
 
 func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
-	// A refusal of the form of The Spec carries every finding beside its words, so it is written
-	// whole, at 409 SPEC_FORM (spec_form.go).
-	var formRefusal *specFormRefusal
-	if errors.As(err, &formRefusal) {
-		WriteJSON(w, http.StatusConflict, formRefusal.body())
-		return
-	}
 	// A refusal of the approved spec carries its stale nodes or its faults beside its words, at 409
 	// of its own code (spec_change.go).
 	var changeRefusal *specstore.Refusal

@@ -10,7 +10,7 @@ import (
 )
 
 // A footnote reference resolves to the first definition whose label it equals byte for byte, and
-// failing that to the first whose label matches it up to case (FootnoteLabelKey), carrying its
+// failing that to the first whose label matches it up to case (footnoteLabelKey), carrying its
 // label as written then; a reference that matches no definition stays text. That was goldmark's
 // walk of the definitions and this package's fallback together, before footnoteReferenceParser
 // resolved every reference from maps of its own: each case here but the last reads the same at
