@@ -517,6 +517,7 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
     // T1: the machine login prints its code.
     let code = "";
     await terminalSection("t1-login.cast", async (mark) => {
+      const typingAt = Date.now();
       mark("typing");
       await type("agent-secrets machine login");
       await enter();
@@ -526,7 +527,8 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
         /approve only if the code matches this terminal/,
         "where to enter the code"
       );
-      await sleep(2_500);
+      // The login's line, spoken from the typing, ends inside the cast however fast the code came.
+      await sleep(Math.max(2_500, typingAt + 6_500 - Date.now()));
     });
 
     // B1: the operator enters the code and approves the machine.
@@ -614,6 +616,7 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           await page.goto("/");
           const row = dispatch.inboxRequest(page);
           await expect(row).toBeVisible();
+          const inboxAt = Date.now();
           mark("inbox");
           // Long enough to name the Inbox's link and the sign-in it passes through.
           await sleep(3_500);
@@ -625,6 +628,9 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           await expect(broker.signedIn(tab)).toBeVisible();
           // Where the new tab draws its pointer, so the move to Approve sweeps from it.
           await tab.mouse.move(viewport.width / 2, viewport.height / 2);
+          // The Inbox's line and the sign-in's line both end before `record`, however fast the
+          // sign-in was: on a fast machine the page shows sooner than they are spoken.
+          await sleep(Math.max(0, inboxAt + 7_800 - Date.now()));
           mark("record");
           // Long enough to say what the broker's page shows before the pointer moves to Approve.
           await sleep(9_000);
