@@ -280,6 +280,84 @@ export async function stopProcess(child: Subprocess, signal: "SIGTERM" | "SIGINT
   clearTimeout(timer);
 }
 
+/** Every JSON record of a log's text, in order; a line that is no JSON object is left out. */
+export function records(text: string): Record<string, unknown>[] {
+  const out: Record<string, unknown>[] = [];
+  for (const line of text.split("\n")) {
+    try {
+      const record: unknown = JSON.parse(line);
+      if (typeof record === "object" && record !== null && !Array.isArray(record)) {
+        out.push(record as Record<string, unknown>);
+      }
+    } catch {
+      // A line of the log that is no record, such as the last one while it is being written.
+    }
+  }
+  return out;
+}
+
+/** The first record of the broker's JSON log whose message is `message` and whose fields hold
+ *  `fields`, or undefined while there is none. */
+export function loggedLine(
+  log: string,
+  message: string,
+  fields: Readonly<Record<string, unknown>> = {}
+): Record<string, unknown> | undefined {
+  let text: string;
+  try {
+    text = readFileSync(log, "utf8");
+  } catch {
+    return undefined;
+  }
+  return records(text).find(
+    (record) =>
+      record["message"] === message &&
+      Object.entries(fields).every(([name, value]) => record[name] === value)
+  );
+}
+
+/** A child process writing its output to `log`, or its standard output to `out` and its errors to
+ *  `log`, started with `env` and nothing else. */
+export function spawnLogged(
+  command: readonly string[],
+  env: Record<string, string>,
+  log: string,
+  out: string = log
+): Subprocess {
+  const errors = openSync(log, "a");
+  const output = out === log ? errors : openSync(out, "a");
+  try {
+    return Bun.spawn([...command], { cwd: ENVOY_MODULE, env, stdout: output, stderr: errors });
+  } finally {
+    closeSync(errors);
+    if (output !== errors) closeSync(output);
+  }
+}
+
+/** The byte offset after the last whole line of `file`, 0 for a file not there yet. */
+export function wholeLinesEnd(file: string): number {
+  let text: Buffer;
+  try {
+    text = readFileSync(file);
+  } catch {
+    return 0;
+  }
+  return text.lastIndexOf(0x0a) + 1;
+}
+
+/** The whole lines `file` gained after the byte offset `from`. */
+export function linesAfter(file: string, from: number): string[] {
+  let text: Buffer;
+  try {
+    text = readFileSync(file);
+  } catch {
+    return [];
+  }
+  const end = text.lastIndexOf(0x0a) + 1;
+  if (end <= from) return [];
+  return text.subarray(from, end).toString("utf8").split("\n").slice(0, -1);
+}
+
 /**
  * Starts natsd (JetStream on) and the listener on loopback ports, and resolves once the
  * listener's /healthz answers healthy and natsd holds the `ENVOY_NOTIFICATIONS` stream. Throws,

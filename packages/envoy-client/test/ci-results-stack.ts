@@ -1,14 +1,5 @@
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import {
-  closeSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
@@ -19,8 +10,13 @@ import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
+  linesAfter,
+  loggedLine,
   type ReadyBudget,
+  records,
+  spawnLogged,
   stopProcess,
+  wholeLinesEnd,
 } from "./envoy-stack";
 import {
   type FakeGitHubActions,
@@ -384,60 +380,6 @@ const BROKER_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 // dev-proxy-stands binds its sockets and writes its report before anything else.
 const FRONT_READY: ReadyBudget = { timeoutMs: 30_000, tailLines: 20 };
 
-/** Every JSON record of a log's text, in order; a line that is no JSON object is left out. */
-function records(text: string): Record<string, unknown>[] {
-  const out: Record<string, unknown>[] = [];
-  for (const line of text.split("\n")) {
-    try {
-      const record: unknown = JSON.parse(line);
-      if (typeof record === "object" && record !== null && !Array.isArray(record)) {
-        out.push(record as Record<string, unknown>);
-      }
-    } catch {
-      // A line of the log that is no record, such as the last one while it is being written.
-    }
-  }
-  return out;
-}
-
-/** The first record of the broker's JSON log whose message is `message` and whose fields hold
- *  `fields`, or undefined while there is none. */
-function loggedLine(
-  log: string,
-  message: string,
-  fields: Readonly<Record<string, unknown>> = {}
-): Record<string, unknown> | undefined {
-  let text: string;
-  try {
-    text = readFileSync(log, "utf8");
-  } catch {
-    return undefined;
-  }
-  return records(text).find(
-    (record) =>
-      record.message === message &&
-      Object.entries(fields).every(([name, value]) => record[name] === value)
-  );
-}
-
-/** A child process writing its output to `log`, or its standard output to `out` and its errors to
- *  `log`, started with `env` and nothing else. */
-function spawnLogged(
-  command: readonly string[],
-  env: Record<string, string>,
-  log: string,
-  out: string = log
-): Subprocess {
-  const errors = openSync(log, "a");
-  const output = out === log ? errors : openSync(out, "a");
-  try {
-    return Bun.spawn([...command], { cwd: ENVOY_MODULE, env, stdout: output, stderr: errors });
-  } finally {
-    closeSync(errors);
-    if (output !== errors) closeSync(output);
-  }
-}
-
 /** Builds `./cmd/cipher` as `<bin>/agent-secrets`, the name a job's step runs it by, and answers
  *  its path. */
 async function buildAgentSecrets(bin: string): Promise<string> {
@@ -454,30 +396,6 @@ async function buildAgentSecrets(bin: string): Promise<string> {
     );
   }
   return binary;
-}
-
-/** The byte offset after the last whole line of `file`, 0 for a file not there yet. */
-function wholeLinesEnd(file: string): number {
-  let text: Buffer;
-  try {
-    text = readFileSync(file);
-  } catch {
-    return 0;
-  }
-  return text.lastIndexOf(0x0a) + 1;
-}
-
-/** The whole lines `file` gained after the byte offset `from`. */
-function linesAfter(file: string, from: number): string[] {
-  let text: Buffer;
-  try {
-    text = readFileSync(file);
-  } catch {
-    return [];
-  }
-  const end = text.lastIndexOf(0x0a) + 1;
-  if (end <= from) return [];
-  return text.subarray(from, end).toString("utf8").split("\n").slice(0, -1);
 }
 
 /** One `dev-proxy-stands front` over the addresses its backends file will name. */
