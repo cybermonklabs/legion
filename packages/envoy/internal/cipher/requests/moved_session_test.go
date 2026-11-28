@@ -46,8 +46,8 @@ func nextBox(t *testing.T, m *Machine) (string, *ecdsa.PrivateKey) {
 }
 
 // heldRows counts the request rows, grant rows and credential-request records in the fixture's
-// schema. storetest.Open gives each test a schema of its own, so these are the one session's rows
-// and nobody else's.
+// schema. storetest.Open gives each test a database of its own, so these are the one session's
+// rows and nobody else's.
 func heldRows(t *testing.T, m *Machine) (requests, grants, records int) {
 	t.Helper()
 	if err := m.Store.Pool.QueryRow(context.Background(), `select (select count(*) from requests),

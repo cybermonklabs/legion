@@ -357,13 +357,12 @@ type schemaMigration struct {
 }
 
 // migrateAFreshSchema creates a fresh schema in databaseURL's database, opens a store whose
-// search_path is that schema, and starts its Migrate in a goroutine. The store is closed and the
-// schema dropped when t ends; the close waits for the migration to return.
+// search_path is that schema, and starts its Migrate in a goroutine. The store is closed when t
+// ends; the close waits for the migration to return.
 func migrateAFreshSchema(t *testing.T, databaseURL string) schemaMigration {
 	t.Helper()
 	schema := "broker_fresh_migration_" + randomSuffix(t)
 	adminExec(t, databaseURL, "create schema "+schema)
-	t.Cleanup(func() { adminExec(t, databaseURL, "drop schema "+schema+" cascade") })
 	parsed, err := url.Parse(databaseURL)
 	if err != nil {
 		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.

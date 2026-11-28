@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"net/url"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -20,12 +19,7 @@ import (
 func TestTheFleetReadPauseRoleLeavesNoRoleWhenItsGrantsCannotBeDroppedFirst(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	server, err := url.Parse(testDatabaseURL(t))
-	if err != nil {
-		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
-		t.Fatal("the test database URL does not parse")
-	}
-	server.Path = "/postgres"
+	server := adminDatabaseURL(t)
 	var role string
 	t.Cleanup(func() {
 		if role == "" {

@@ -146,7 +146,7 @@ func isTokenRequest(seen proxyrulestest.Request) bool {
 	return seen.Method == http.MethodPost && strings.HasSuffix(seen.Path, "/access_tokens")
 }
 
-// profileFixture is a broker on a schema of its own, with one live box session of checkOperator
+// profileFixture is a broker on a database of its own, with one live box session of checkOperator
 // and the stand-in behind a real github-app minter. Its secrets are four github-app secrets of
 // one App — APP_KEY and OTHER_APP_KEY, human tier, which the policy sends to their owner and whose
 // profiles are therefore checked; AUTO_APP_KEY, agent tier, which the policy grants at once; and
@@ -282,7 +282,7 @@ func (f *profileFixture) createWith(t *testing.T, details []record.Authorization
 }
 
 // heldRows counts the request rows, grant rows and credential-request records the broker holds.
-// storetest.Open gives each test a schema of its own, so these are this session's rows and
+// storetest.Open gives each test a database of its own, so these are this session's rows and
 // nobody else's.
 func heldRows(t *testing.T, machine *requests.Machine) (requestRows, grants, records int) {
 	t.Helper()

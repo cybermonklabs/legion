@@ -186,7 +186,7 @@ func requireRefusal(t *testing.T, who string, got readerRefusal, want readerWant
 // The token login spends its source address's bucket (a burst of 10) before it verifies the
 // token, and its account's (a burst of 5) once the token verifies, and each broker process holds
 // its own (api.DefaultLauncherLimits). So the broker of the readers makes two token logins, M1's,
-// and M3 runs on a further broker of the same settings on a schema of its own, which makes eight,
+// and M3 runs on a further broker of the same settings on a database of its own, which makes eight,
 // two of them accepted, so that its logins do not move the launcher credential M1's rows hold. A
 // 429 is a failure of the row that meets it (requireRefusal), never a pass or a refusal.
 func TestEveryPodTokenReaderTakesEachListedAudience(t *testing.T) {

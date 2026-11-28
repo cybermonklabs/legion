@@ -157,7 +157,7 @@ func TestTheCAStandIssuesUnderItsPolicy(t *testing.T) {
 	if got := fmt.Sprint(cert.ExtKeyUsage); got != "[serverAuth]" || len(cert.UnknownExtKeyUsage) > 0 {
 		t.Errorf("the certificate's extended key usage is %s (and %v); want serverAuth alone", got, cert.UnknownExtKeyUsage)
 	}
-	if start := now.Add(-caBackdate); !cert.NotBefore.Equal(start) || !cert.NotAfter.Equal(start.Add(caMaxLifetime)) {
+	if start := now.Add(-CABackdate); !cert.NotBefore.Equal(start) || !cert.NotAfter.Equal(start.Add(caMaxLifetime)) {
 		t.Errorf("the certificate runs %v to %v; want 5 minutes before the stand's clock and 7 days on", cert.NotBefore, cert.NotAfter)
 	}
 	if len(chain) != 1 || !chain[0].Equal(stand.Root().Certificate()) {
@@ -186,7 +186,7 @@ func TestTheCAStandTakesTheRequestsNamesWithNoPolicyNames(t *testing.T) {
 	if !slices.Equal(cert.PermittedDNSDomains, []string{"a.example", "b.example"}) {
 		t.Errorf("the certificate permits %v; want the request's two names", cert.PermittedDNSDomains)
 	}
-	if !cert.NotAfter.Equal(now.Add(-caBackdate).Add(time.Hour)) {
+	if !cert.NotAfter.Equal(now.Add(-CABackdate).Add(time.Hour)) {
 		t.Errorf("the certificate ends %v; want the hour the request asked for, from 5 minutes before its issue", cert.NotAfter)
 	}
 }

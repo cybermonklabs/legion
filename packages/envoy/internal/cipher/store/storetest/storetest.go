@@ -61,11 +61,11 @@ import (
 // DatabaseURLEnv names the Postgres server the broker's tests run against.
 const DatabaseURLEnv = "BROKER_TEST_DATABASE_URL"
 
-// serverURL is the DatabaseURLEnv server every schema and database here is made on, skipping t
-// when the variable is unset: a run with no server is skipped rather than failed, which is the
-// contract URL, Open and DatabaseURL all state. Every connect to it, and to each URL made from it,
-// waits until the test binary's deadline (testdb.WithConnectDeadline), not pgx's default, which is
-// two minutes in a pool and no bound through pgx.Connect.
+// serverURL is the DatabaseURLEnv server every database here is made on, skipping t when the
+// variable is unset: a run with no server is skipped rather than failed, which is the contract
+// URL, Open and DatabaseURL all state. Every connect to it, and to each URL made from it, waits
+// until the test binary's deadline (testdb.WithConnectDeadline), not pgx's default, which is two
+// minutes in a pool and no bound through pgx.Connect.
 func serverURL(t testing.TB) string {
 	t.Helper()
 	raw := os.Getenv(DatabaseURLEnv)
@@ -76,19 +76,13 @@ func serverURL(t testing.TB) string {
 }
 
 // testSchema is the schema the template's tables are migrated into, and every clone's connection
-// string names as its search_path, as each test's own schema was named before.
+// string names as its search_path.
 const testSchema = "broker_test"
 
-// templates is the template each server's migration set was found or made under, by the server's
-// URL less its connect bound (testdb.ServerKey), which each test's URL carries a value of its own
-// for, so a test process asks the server once.
+// templates holds, by the server's URL less its connect bound (testdb.ServerKey), which each
+// test's URL carries a value of its own for, the one call (sync.OnceValues) that finds or makes
+// the template of that server's migration set, so a test process asks the server once.
 var templates sync.Map
-
-type templateDatabase struct {
-	once sync.Once
-	name string
-	err  error
-}
 
 // templateLockKey is the session advisory lock under which a process looks for the template and
 // makes it when it is missing: every broker test binary of a run, and of every other run on the
@@ -113,13 +107,12 @@ const lockDatabase = "postgres"
 // the template's name is always a whole one.
 func template(t testing.TB, raw string) string {
 	t.Helper()
-	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), &templateDatabase{})
-	tmpl := entry.(*templateDatabase)
-	tmpl.once.Do(func() { tmpl.name, tmpl.err = makeTemplate(raw) })
-	if tmpl.err != nil {
-		t.Fatalf("broker test template database: %v", tmpl.err)
+	entry, _ := templates.LoadOrStore(testdb.ServerKey(raw), sync.OnceValues(func() (string, error) { return makeTemplate(raw) }))
+	name, err := entry.(func() (string, error))()
+	if err != nil {
+		t.Fatalf("broker test template database: %v", err)
 	}
-	return tmpl.name
+	return name
 }
 
 func makeTemplate(raw string) (string, error) {

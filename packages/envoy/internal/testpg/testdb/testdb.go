@@ -49,9 +49,11 @@ func DatabaseOn(t testing.TB, adminURL, template, prefix string, set ...string) 
 	adminURL = WithConnectDeadline(t, adminURL)
 	server, err := url.Parse(adminURL)
 	if err != nil {
-		// url.Parse's error quotes the URL, and even the error it wraps can: an invalid port's quotes
-		// what follows the authority's last colon, which for a password holding an unescaped '#',
-		// '/' or '?' is the password's first part. So no part of it is printed.
+		// WithConnectDeadline already parsed adminURL, failing the test on a URL that does not
+		// parse, so this parse of the URL it returned does not fail. Were it to, no part of it is
+		// printed: url.Parse's error quotes the URL, and even the error it wraps can (an invalid
+		// port's quotes what follows the authority's last colon, which for a password holding an
+		// unescaped '#', '/' or '?' is the password's first part).
 		t.Fatal("the admin URL of the Postgres server does not parse")
 	}
 	name, err := NewDatabaseName(prefix)

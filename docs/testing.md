@@ -671,8 +671,8 @@ says on its first line, in a `// Not parallel:` comment, why it cannot:
   packages of "A test in Dispatch's smaller packages runs beside the others" below, with
   `internal/dispatch/refs`;
 - in `packages/daemon`: `internal/intake`, and `internal/daemon`, `internal/workflow`,
-  `internal/store`, `internal/runtime/sandbox` and `cmd/legion` (#5660; "A test in a daemon
-  package that states the rule" below).
+  `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and `cmd/legion` (#5660; "A
+  test in a daemon package that states the rule" below).
 
 The reason names the call or the bound that makes the test serial (`logtest.SetDefault`,
 `t.Setenv`, `` `took >= time.Second` ``, `JudgeRowReserve`'s one second), never a line of a file

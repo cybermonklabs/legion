@@ -514,10 +514,7 @@ func buildBroker(t *testing.T) string {
 // sign in by password (config.databaseIAM), and the IAM refusals these tests read would not come.
 func runRefusedBroker(t *testing.T, binPath string, env ...string) string {
 	t.Helper()
-	noPassfile := filepath.Join(t.TempDir(), "pgpass")
-	if err := os.WriteFile(noPassfile, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
+	noPassfile := writeTempFile(t, "pgpass", nil)
 	cmd := exec.Command(binPath)
 	cmd.Env = append(append(append(append(os.Environ(), productionEnv(t)...), noAWSEnv(t)...),
 		"PGPASSWORD=", "PGPASSFILE="+noPassfile), env...)

@@ -128,6 +128,7 @@ func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
 			read++
 			at := foundTest{file: name, line: fset.Position(fn.Pos()).Line, name: fn.Name.Name}
 			reason, says, text := notParallelReason(file, fn.Body)
+			cited := citedLine.FindString(text)
 			switch {
 			case says && callsParallel(param, fn.Body):
 				at.note = contradicted
@@ -136,8 +137,8 @@ func serialTests(dir string) (read int, broken, marked []foundTest, err error) {
 			case reason == "":
 				at.note = forgetsBoth
 				broken = append(broken, at)
-			case citedLine.MatchString(text):
-				at.note = citesALine + " (" + strings.TrimSpace(citedLine.FindString(text)) + ")"
+			case cited != "":
+				at.note = citesALine + " (" + strings.TrimSpace(cited) + ")"
 				broken = append(broken, at)
 			default:
 				at.note = reason
@@ -209,8 +210,7 @@ func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 		return false
 	}
 	found := false
-	var visit func(ast.Node) bool
-	visit = func(n ast.Node) bool {
+	ast.Inspect(body, func(n ast.Node) bool {
 		// ast.Inspect visits a node's later siblings whatever this returns: once found, this guard
 		// ends the walk's work there.
 		if found {
@@ -225,8 +225,7 @@ func callsParallel(param *ast.Ident, body *ast.BlockStmt) bool {
 			}
 		}
 		return true
-	}
-	ast.Inspect(body, visit)
+	})
 	return found
 }
 

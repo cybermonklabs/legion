@@ -19,7 +19,7 @@ import (
 
 // recordRows counts the credential-request records the fixture's broker has written. A request
 // denied for want of a reason opens none: no person is to be asked about it, so there is no card
-// to answer, and the count is of the whole table because each fixture is a schema of its own.
+// to answer, and the count is of the whole table because each fixture is a database of its own.
 func recordRows(t *testing.T, m *Machine) int {
 	t.Helper()
 	var count int

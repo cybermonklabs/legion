@@ -118,11 +118,19 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 		databaseURL, app := builder(t)
 		holder := hold(t, databaseURL)
 		done := build(databaseURL)
-		if err := testwait.Receive(t, "the builder to return while a holder on its own database holds the lock", done); err != nil {
+		err := testwait.Until(t, "the builder to return while a holder on its own database holds the lock", func() (error, bool) {
+			select {
+			case err := <-done:
+				return err, true
+			default:
+			}
+			if waiting(t, holder, app) {
+				t.Fatal("the builder waits behind the holder on its own database: its lock is not the server's")
+			}
+			return nil, false
+		})
+		if err != nil {
 			t.Fatalf("the builder: %v", err)
-		}
-		if waiting(t, holder, app) {
-			t.Fatal("the builder's connection still waits behind the holder on its own database")
 		}
 	})
 }

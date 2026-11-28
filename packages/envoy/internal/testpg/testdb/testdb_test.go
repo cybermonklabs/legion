@@ -44,8 +44,9 @@ func (r *fatalRecorder) Fatalf(format string, args ...any) {
 }
 
 // A server URL that does not parse fails DatabaseOn with no part of the URL in the message: not
-// the password's first part, which even the error url.Parse wraps quotes. Control: that wrapped
-// error does quote it, so a DatabaseOn that printed it would fail this test.
+// the password's first part, which even the error url.Parse wraps quotes. The refusal it reads
+// comes from WithConnectDeadline, the first thing DatabaseOn does. Control: that wrapped error
+// does quote it, so a DatabaseOn that printed it would fail this test.
 func TestAServerURLThatDoesNotParseIsNeverPrinted(t *testing.T) {
 	t.Parallel()
 	_, err := url.Parse(unparsableDSN)
