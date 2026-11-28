@@ -26,7 +26,8 @@ from ci_workflow_rules import RACE_TEST
 # see. One such word passes: a word that bash fills in only inside double quotes, which it neither
 # splits nor matches to file names, as the value of a flag that takes one (-run "$pattern",
 # -run="$pattern"). go test gives that flag the word as its value whatever it holds, so the word is
-# never a flag of go test, a -v or -args among them.
+# never a flag of go test, a -v or -args among them. A go test that xargs runs is refused too:
+# xargs puts words of its input after the command's own, and no reading of the line sees them.
 RESULTS_ACTION = "./.github/actions/dispatch-results"
 VERBOSE = re.compile(r"--?(test\.)?v(?:=(.*))?")
 JSON = re.compile(r"--?json(?:=(?:1|t|T|TRUE|true|True))?")
@@ -225,25 +226,28 @@ def shell_tokens(line: str):
 
 def go_test_commands(script: str) -> list:
     """Each `go test` command of a run: script, as (its line, its arguments up to the end of the
-    command, what this check could not read), with a line a backslash continues read as one line
-    and comments aside. go may be written as a path, with a -C before test in any of CHDIR's
-    spellings, and a word bash fills in where go or test stands, as "$GO" test, counts as a go test
-    command too. The command ends at a pipe, a list operator or the ")" that closes it; a
-    redirection and its target are no arguments of it. What it could not read is None for a
-    command whose every argument it read, or that holds a word bash fills in only as the value of a
-    flag that takes one (go_test_reading's "value", or the value an = joins to such a flag); the
-    first word or operator it could not read past, for one whose go or test is a word bash fills
-    in, whose -C directory splits, or that holds a word that splits (a $ or a backtick outside
-    double quotes, a GitHub expression, in any quotes or none, or in the target of a redirection),
-    a word that expands anywhere else, or an operator that opens a subshell or a substitution,
-    since any of them can carry a -v past this check; and "" for a line that holds `go test`
-    (RACE_TEST's spelling of one, -race or not) and that shell_tokens cannot split."""
+    command, what this check could not read, the xargs that runs it), with a line a backslash
+    continues read as one line and comments aside. go may be written as a path, with a -C before
+    test in any of CHDIR's spellings, and a word bash fills in where go or test stands, as "$GO"
+    test, counts as a go test command too. The command ends at a pipe, a list operator or the ")"
+    that closes it; a redirection and its target are no arguments of it. What it could not read is
+    None for a command whose every argument it read, or that holds a word bash fills in only as the
+    value of a flag that takes one (go_test_reading's "value", or the value an = joins to such a
+    flag); the first word or operator it could not read past, for one whose go or test is a word
+    bash fills in, whose -C directory splits, or that holds a word that splits (a $ or a backtick
+    outside double quotes, a GitHub expression, in any quotes or none, or in the target of a
+    redirection), a word that expands anywhere else, or an operator that opens a subshell or a
+    substitution, since any of them can carry a -v past this check; and "" for a line that holds
+    `go test` (RACE_TEST's spelling of one, -race or not) and that shell_tokens cannot split. The
+    xargs that runs it is the word, named xargs, of the simple command that holds the go, before
+    it, or None: xargs puts words of its input after the command's own, whatever they are, a -v
+    among them, and no reading of the line sees them."""
     commands = []
     for line in script_lines(script.replace("\\\n", " ")):
         tokens = shell_tokens(line)
         if tokens is None:
             if RACE_TEST.search(line):
-                commands.append((line, [], ""))
+                commands.append((line, [], "", None))
             continue
         # A token that a go test command read is no start of another: the -C directory of
         # `go -C "$dir" test`, as a word bash fills in before test, would otherwise count again.
@@ -294,7 +298,13 @@ def go_test_commands(script: str) -> list:
                 if expands and role != "value" and not (role == "go test" and takes_a_value(text) == "joined"):
                     unread = text
                     break
-            commands.append((line, arguments, head if head is not None else unread))
+            # The simple command that holds the go starts after the last operator before it that
+            # ends a command or opens or closes a subshell or a substitution.
+            start = max((k + 1 for k, (t, operator, _, _) in enumerate(tokens[:i])
+                         if operator and (t in COMMAND_ENDS or "(" in t or ")" in t)), default=0)
+            xargs = next((t for t, operator, expands, _ in tokens[start:i]
+                          if not operator and not expands and t.rsplit("/", 1)[-1] == "xargs"), None)
+            commands.append((line, arguments, head if head is not None else unread, xargs))
     return commands
 
 
@@ -307,8 +317,9 @@ def check_report_steps(workflows: dict, problems: list) -> list:
     reads is one of them; a command whose flags it cannot read to the command's end - a line it
     cannot split, a word bash or GitHub expands but one that bash fills in inside double quotes as
     the value of a flag that takes one, a subshell or a substitution - is refused, since any of
-    them can carry such a flag. A job with no `go test -json` command where this rule reads
-    it is refused too. The rule does not tie a command to the report path the action is given: a
+    them can carry such a flag; so is a go test that xargs runs, which puts words of its input
+    after the command's own. A job with no `go test -json` command where this rule reads it is
+    refused too. The rule does not tie a command to the report path the action is given: a
     job that makes its report in a script or another job's artifact, and holds an unrelated
     `go test -json` of its own, passes, so the report is made in a run: step of the job. Returns
     its one report line, which says how many jobs and commands it read, so a run that read none
@@ -322,7 +333,7 @@ def check_report_steps(workflows: dict, problems: list) -> list:
             jobs += 1
             reports = False
             for step in steps:
-                for line, arguments, unread in go_test_commands(str(step.get("run", ""))):
+                for line, arguments, unread, xargs in go_test_commands(str(step.get("run", ""))):
                     commands += 1
                     where = f"{path} job {job_id} step \"{step_label(step)}\" runs `{line}`"
                     if unread == "":
@@ -330,6 +341,14 @@ def check_report_steps(workflows: dict, problems: list) -> list:
                         problems.append(error(path, f"{where}, which this check cannot split into words, so it "
                                                     f"cannot read whether its go test passes -v: the job runs "
                                                     f"{RESULTS_ACTION}, which reads the job's go test -json report"))
+                        continue
+                    if xargs is not None:
+                        reports = True
+                        problems.append(error(path, f"{where}, whose go test {json.dumps(xargs)} runs: xargs puts "
+                                                    f"words of its input after the command's own, which this check "
+                                                    f"cannot read and which can be a -v, and the job runs "
+                                                    f"{RESULTS_ACTION}, which reads the job's go test -json report. "
+                                                    f"Write each flag of the go test command as a word of the line"))
                         continue
                     reports = reports or makes_a_report(arguments)
                     if unread is not None:

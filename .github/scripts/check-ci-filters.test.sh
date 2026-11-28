@@ -6236,6 +6236,26 @@ for row in '$(go list ./mod/...)|$(' "${tick}go list ./mod/...${tick}|${tick}go"
     "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test holds \"$named\", which this check cannot read past")"
   replace "$root/.github/workflows/results.yaml" "$word -v |" "./mod/... |"
 done
+# xargs puts words of its input after the command's own, whatever they are, a -v among them, and
+# no reading of the line sees them, so a go test that xargs runs is refused, naming the xargs,
+# however the command reaches go after it. An xargs of another command on the line is no part of
+# the go test.
+for runner in "printf '%s\\n' -v | xargs" "printf '%s\\n' ./mod/... | xargs -r env GOFLAGS=-mod=mod" \
+  'find mod -name go.mod | /usr/bin/xargs -n1 timeout 600'; do
+  replace "$root/.github/workflows/results.yaml" "          go test -json -count=1" "          $runner go test -json -count=1"
+  run_check "$root"
+  check "fails with $runner go test -json, naming the xargs" \
+    "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test \"[^\"]*xargs\" runs: xargs puts words of its input after the command's own")"
+  replace "$root/.github/workflows/results.yaml" "          $runner go test -json -count=1" "          go test -json -count=1"
+done
+for other in "./mod/... | xargs echo | tee@./mod/... | tee" \
+  "printf '%s\\n' a | xargs echo; go test -json -count=1@go test -json -count=1"; do
+  honest=${other%@*} plain=${other##*@}
+  replace "$root/.github/workflows/results.yaml" "$plain" "$honest"
+  run_check "$root"
+  check "passes with $honest" "$(is "$status" 0)"
+  replace "$root/.github/workflows/results.yaml" "$honest" "$plain"
+done
 # A word that bash fills in inside double quotes is one word, which bash neither splits nor
 # matches to file names, and go test gives a flag that takes a value the word after it whatever it
 # holds. So such a word passes as that value, before -args, as a sharded job's -run of the pattern
