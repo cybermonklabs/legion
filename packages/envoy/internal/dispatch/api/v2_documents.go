@@ -9,8 +9,9 @@ package api
 // are filters of those lists (J7), and the edit and the named version of a slug are the writes of
 // the artifact the list answers. Every route with a /api/v1 route runs that route's work - the
 // list of a document's versions, which has none, reads the versions row 10 answered inside the
-// artifact - each object its path names that Dispatch stores checked first and answered with its
-// own 404 (R7): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and
+// artifact - each object its path names that Dispatch stores answered with its own 404 (R7),
+// checked before the route's work but on the edit, whose replace and actor checks come first
+// (applyEdits): ARTIFACT_NOT_FOUND, BLOCK_NOT_FOUND, VERSION_NOT_FOUND, ISSUE_NOT_FOUND and
 // PROJECT_NOT_FOUND, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
@@ -50,7 +51,8 @@ var (
 	documentPreconditionRefusal = apicode.Refusal{Condition: apicode.DocumentPreconditionUnmet, Code: apicode.PreconditionFailed}
 )
 
-// artifactRowText is what every description of a route answering artifacts says of the row.
+// artifactRowText is what the descriptions of GET /api/v2/artifacts/{id} and of the issue's, the
+// project's and the conversation's artifact lists say of the row.
 const artifactRowText = "Each artifact is one row: its own fields (id, issue_key, project, session_id, ref_key, slug, " +
 	"name, kind doc, image or file, primary, role, created_by, created_at), latest_version, the number of its newest " +
 	"version, latest_version_at, when that version was written, and latest_version_size, the bytes it stores (each " +
@@ -471,8 +473,9 @@ func (s *server) listIssueArtifactsV2(w http.ResponseWriter, r *http.Request) {
 }
 
 // listProjectArtifactsV2 answers GET /api/v2/projects/{key}/artifacts: a project's artifacts, as
-// GET /api/v1/projects/{key}/artifacts lists them, issue=none in place of unlinked=true, filtered
-// as its slug reads resolve one.
+// GET /api/v1/projects/{key}/artifacts lists them, issue=none in place of unlinked=true, and slug=
+// filtered as its slug reads resolve one, but over every owner the list holds: with issue=none the
+// project's own, as those reads, and without issue= each of its issues' too.
 func (s *server) listProjectArtifactsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -938,9 +941,10 @@ type artifactVersionsV2Query struct {
 }
 
 // listArtifactVersionsV2 answers GET /api/v2/artifacts/{id}/versions: one page of the versions GET
-// /api/v1/artifacts/{id} carried whole in its versions[] member (loadVersions), ordered by number.
-// A file's or a picture's versions carry their tokens, as every read of a version row states them
-// (model.StateFileTokens), so a replacement of the file names the token this list answers.
+// /api/v1/artifacts/{id} carried whole in its versions[] member (loadArtifactDetails,
+// artifactVersionsStatement), ordered by number. A file's or a picture's versions carry their
+// tokens, as every read of a version row states them (model.StateFileTokens), so a replacement of
+// the file names the token this list answers.
 func (s *server) listArtifactVersionsV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -1037,8 +1041,9 @@ type artifactChangesV2Query struct {
 // getArtifactChangesV2 answers GET /api/v2/artifacts/{id}/changes: the change set GET
 // /api/v1/artifacts/{id}/changes answers (writeArtifactChanges), of the document it reads
 // (changedDocument), between the decoded query's version_from and version_to. A query that leaves
-// either out, or names a version_from not below its version_to, is 400 INVALID_QUERY, as a window
-// whose from is not before its to is on every /api/v2 read.
+// either out, or names a version_from not below its version_to, is 400 INVALID_QUERY, the code
+// most /api/v2 reads answer a window whose from is not before its to with (an issue list's
+// inverted closed window is 400 INVALID_CLOSED_WINDOW, and GET /api/v2/asks refuses none).
 func (s *server) getArtifactChangesV2(w http.ResponseWriter, r *http.Request) {
 	artifact, ok := s.changedDocument(w, r)
 	if !ok {

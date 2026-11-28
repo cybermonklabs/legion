@@ -22,7 +22,8 @@ var _ = declareRow(func(s *server) routeRow {
 			"no text, and every mention attempt still pending is failed, 'ended by the post's delete', which says " +
 			"nothing of whether its frame had already reached the session. A mention attempt its own sender moves " +
 			"while the delete is being written is 409 DELETE_CONTENDED with Retry-After: 1 and nothing written: send " +
-			"the same delete again. A comment of a closed issue is deleted too; a second delete is 409 POST_DELETED. " +
+			"the delete again under a new Idempotency-Key, since the key keeps this 409. A comment of a closed issue " +
+			"is deleted too; a second delete is 409 POST_DELETED. " +
 			"Answers the comment as the delete leaves it and appends comment.deleted. 404 COMMENT_NOT_FOUND.",
 		Handler:  s.deleteCommentV2,
 		Resource: "comments", Kind: kindItem, Key: "{id}",

@@ -11,8 +11,8 @@ import (
 // page parses no result's text: the tree holds the text's words without its marks. A read without
 // the header carries none. The result's write stores that tree, as every write of a stored text
 // does, so the read copies the stored bytes rather than reading the markdown again. Both versions
-// of the read answer it alike, each in its own envelope: GET /api/v1/issues/{key}/results and GET
-// /api/v2/issues/{key}/checks, which the page reads, both read the checks through readIssueChecks.
+// of the read answer it alike, each in its own envelope: GET /api/v1/issues/{key}/results, which
+// the page reads, and GET /api/v2/issues/{key}/checks both read the checks through readIssueChecks.
 func TestTheResultsReadCarriesEachResultsObservedTree(t *testing.T) {
 	t.Parallel()
 	handler, database := newTestHandlerWithStore(t)

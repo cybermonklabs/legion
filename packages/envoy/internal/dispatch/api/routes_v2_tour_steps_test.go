@@ -137,7 +137,8 @@ func tourExperiment() map[string]any {
 
 // tourDefaultPlan is the plan of an issue's first run whose owner gave none, in the shape the
 // daemon writes it: the source default and the one task default, whose steps are four of the
-// daemon's five default steps (workflow.DefaultSteps), all but acceptance:owner.
+// daemon's five default steps of a project that names none (config.Project.RunsByDefault), all
+// but acceptance:owner.
 func tourDefaultPlan() map[string]any {
 	return map[string]any{
 		"generation": 1, "source": "default",
@@ -222,8 +223,9 @@ func refusalWithoutExperiment(_ *testing.T, _ *routeTour, request tourRequest) t
 	return request
 }
 
-// refusalStepOfAnotherIssue names in {id} a run the daemon recorded on another issue of the tour's
-// project, so the write's issue holds no record of that id and the store holds it as the other's.
+// refusalStepOfAnotherIssue names in {id} a run that another issue's daemon recorded on that
+// issue, made in a project of its own (tour.issue), so the write's issue holds no record of that
+// id and the store holds it as the other's.
 func refusalStepOfAnotherIssue(t *testing.T, tour *routeTour, request tourRequest) tourRequest {
 	t.Helper()
 	run := uuid.NewString()

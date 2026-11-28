@@ -10,12 +10,14 @@ package api
 // write of one, the tasks of those steps with the needs #4948 added, the rating of a retro's run
 // and the plan of a run #4488 added, the dry run of a result #4517 added, and the experiment and
 // the variant of a run #5014 added. Every route runs the work its /api/v1 route runs
-// (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs, claimIssueAs,
-// releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf, writeDecisionKeep,
-// issueClosure, readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom,
+// (readIssueListing, createIssueFrom, readIssueParts, patchIssueAs, changeIssueStatusFrom,
+// claimIssueAs, releaseIssueClaimAs, issueCollaboratorsOf, issueCoverage, issueDecisionsOf,
+// writeDecisionKeep, issueClosure, readIssueChecks, recordCheckResultFrom, dryRunCheckResultFrom,
 // retractCheckResultAs, subscribersOf, unsubscribeSession, issueStepTasks, putIssueStepFrom,
-// putIssueStepRatingFrom, putIssueStepExperimentFrom, putIssuePlanFrom), each path object checked
-// first and answered with its own 404, and a {session_id} keeps the answer /api/v1 gives it (R7).
+// putIssueStepRatingFrom, putIssueStepExperimentFrom, putIssuePlanFrom), the patch's status-change
+// form running POST /api/v1/issues/{key}/status-change's; each path object is answered with its
+// own 404 and checked first, but a decision's {block_id}, which PUT …/decisions/{block_id}/state
+// checks after the body's text_sha256, and a {session_id} keeps the answer /api/v1 gives it (R7).
 
 import (
 	"context"
@@ -185,7 +187,8 @@ var issueListText = fmt.Sprintf("status=, repeatable, keeps the issues standing 
 	"the person scope; moved=true adds moved_at and moved_by to each issue standing in backlog or icebox, when it was "+
 	"moved there and by whom. Issues come in lifecycle order of their status, then by rank, creation time and key. "+
 	"Each is one row: its own fields, its route's reach (route_status, route_holder, route_status_reason), "+
-	"closed_at, open_asks and progress {tasks, children}, each null when it has none. limit 1 to %d (default %d) and "+
+	"closed_at, null while it is open, open_asks, how many open asks it has, and progress {tasks, children}, "+
+	"tasks and children each null when it has none. limit 1 to %d (default %d) and "+
 	"offset; {items, total, limit, offset}, total counting every issue the filters match.",
 	contracts.MaxIssuePageLimit, contracts.DefaultIssuePageLimit)
 
@@ -808,7 +811,9 @@ func (s *server) openIssueAsksV2(ctx context.Context, r *http.Request, key, inDo
 
 // patchIssueV2 answers PATCH /api/v2/issues/{key}: the write PATCH /api/v1/issues/{key} makes
 // (patchIssueAs), with the design gates PUT /api/v1/issues/{key}/design-gates wrote stored in the
-// same transaction where the body names them.
+// same transaction where the body names them; a body setting a status option or dry_run to true
+// makes the status change POST /api/v1/issues/{key}/status-change makes (changeIssueStatusFrom)
+// instead.
 func (s *server) patchIssueV2(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !s.requireIssueV2(w, r, r.PathValue("key")) {
 		return

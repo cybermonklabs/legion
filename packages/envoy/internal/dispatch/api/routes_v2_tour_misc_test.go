@@ -18,9 +18,9 @@ import (
 
 func init() { addTourSteps("misc", miscTourSteps) }
 
-// miscTourSteps are the route tour's steps of the other routes: each route, a search
-// over several projects within a window beside the plain one, and a page of the going actions
-// beside the whole catalogue.
+// miscTourSteps are the route tour's steps of the other routes: each route, a search narrowed to
+// two kinds and one over several projects within a window beside the plain one, and a page of the
+// going actions beside the whole catalogue.
 func miscTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	asAlice := func(query url.Values) func(*testing.T, *routeTour) tourRequest {

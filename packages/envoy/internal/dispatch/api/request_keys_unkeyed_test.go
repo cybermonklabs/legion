@@ -161,7 +161,8 @@ func TestAKeyedWriteNeverRunsUnkeyed(t *testing.T) {
 	}
 
 	// Every write row of the table the keyed layer keys (keyedMethod: every POST and PATCH, and
-	// the PUT and DELETE of /api/v2), each through the chain register mounts it behind
+	// the PUT and DELETE of a /api/v2 route the rules of /api/v2 bind, not of the INFRA-979 tree
+	// or a test hook), each through the chain register mounts it behind
 	// (routeHandler), with its handler replaced by a recorder that resolves no caller, as the
 	// read-only walk builds them (read_only_token_test.go): a keyed write whose caller lookup fails
 	// runs no handler, whichever layer of the row looks first, and its resend under the key, once

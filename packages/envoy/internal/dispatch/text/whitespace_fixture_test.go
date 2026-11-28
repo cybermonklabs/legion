@@ -89,7 +89,7 @@ func TestUnicodeIsSpaceReportsTheCommittedScalars(t *testing.T) {
 		"regular expression: `dispatch artifact` and the `legion` tool read it to tell whether "+
 		"the Dispatch server or the daemon will call a text blank, and goTrimSpace trims a role's "+
 		"name as the Envoy listener trims a claim's, in packages/pi-envoy/extensions/envoy.ts's "+
-		"session-role read; "+
+		"session-role read and the Envoy plugin's listenerRoleName; "+
 		"those three servers read strings.TrimSpace, which trims what this test measured. Measure "+
 		"the two together: write what this test reports into "+
 		"the list, correct the pattern to the same characters, and run this test and `goBlankPattern` "+

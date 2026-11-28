@@ -151,11 +151,12 @@ func writingCallOf(functions []string) *regexp.Regexp {
 }
 
 // TestEveryKeyedWriteCommitsInsideATransactionTheMarkHooks enforces what KEY_COMMITTED rests on
-// (markRequestKeyCommitted): every write a keyed route makes (keyedMethod: a POST or a PATCH, and on
-// /api/v2 a PUT or a DELETE too) commits in a transaction the shared pool opens, so the commit step
-// marks the request's key committed with the write itself. A write made as a bare pool statement
-// commits on its own and marks nothing; the process dying after it, before the answer is kept,
-// leaves a key a repeat takes over, and the write is made twice.
+// (markRequestKeyCommitted): every write a keyed route makes (keyedMethod: a POST or a PATCH, and a
+// PUT or a DELETE of a route the rules of /api/v2 bind, apiRoute.v2Bound, which leaves out the
+// INFRA-979 tree's rows and the test hooks) commits in a transaction the shared pool opens, so the
+// commit step marks the request's key committed with the write itself. A write made as a bare pool
+// statement commits on its own and marks nothing; the process dying after it, before the answer is
+// kept, leaves a key a repeat takes over, and the write is made twice.
 //
 // It reads each route's handler from the routes table and follows it through the copy-lock guard's
 // graph (TestCopyLockComesBeforeEveryPendingRowAndEvent says how a call is resolved) through
@@ -293,7 +294,8 @@ func newKeyedWriteGuard(t *testing.T) *keyedWriteGuard {
 
 // keyedRouteNames is the "<method> <pattern>" of every route register keys (keyedMethod), its test
 // hooks in: what a guard over keyed writes reads. A row's mounts are judged one by one, since
-// /api/v2 keys the PUT and the DELETE of a row that /api/v1 serves unkeyed.
+// /api/v2 keys the PUT and the DELETE of a row outside the INFRA-979 tree that /api/v1 serves
+// unkeyed.
 func keyedRouteNames() map[string]bool {
 	keyed := map[string]bool{}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {

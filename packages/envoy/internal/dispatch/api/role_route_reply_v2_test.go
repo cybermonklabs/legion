@@ -28,13 +28,14 @@ func (rig *roleRouteReplies) replyCommentV2(t *testing.T, comment mentionedComme
 }
 
 // The /api/v2 reply routes answer an attempt sent for a route to a role as /api/v1's do
-// (TestAReplyToARoleRouteAttemptComesFromTheRolesHolder and the two tests after it): each hands
-// its body to the work the /api/v1 route runs (answerMessageDelivery, answerCommentDelivery),
-// which asks the listener who holds the role. A different session, B, that took role R from the
-// session the attempt names, A, has its reply and its error callback accepted while it is R's live
-// holder; a session nothing names, and B once it is not live, is refused 403 REPLY_FORBIDDEN; a
-// role lookup the listener does not answer is 503 ENVOY_UNAVAILABLE; and a failed read of the
-// attempt's route is 500, never a refusal.
+// (TestAReplyToARoleRouteAttemptComesFromTheRolesHolder,
+// TestAReplyWhoseRoleHolderTheListenerDoesNotNameIsAskedAgain and
+// TestAReplyWhoseRouteReadFailsIsNotRefused): each hands its body to the work the /api/v1 route
+// runs (answerMessageDelivery, answerCommentDelivery), which asks the listener who holds the role.
+// A different session, B, that took role R from the session the attempt names, A, has its reply
+// and its error callback accepted while it is R's live holder; a session nothing names, and B once
+// it is not live, is refused 403 REPLY_FORBIDDEN; a role lookup the listener does not answer is 503
+// ENVOY_UNAVAILABLE; and a failed read of the attempt's route is 500, never a refusal.
 func TestAV2ReplyToARoleRouteAttemptComesFromTheRolesHolder(t *testing.T) {
 	const holderA, holderB, other = "ses_role_a", "ses_role_b", "ses_role_other"
 

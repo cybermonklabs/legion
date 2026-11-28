@@ -1,12 +1,13 @@
 package api
 
-// v2_every_create_stores_its_node_test.go holds what #5569 gave the /api/v1 creates to their
-// /api/v2 successors: each /api/v2 route that answers for a row TestEveryCreateStoresItsNode makes
-// an issue, a document, an ask or a message through leaves that object's node in its project, or
-// between its parties, as the /api/v1 row does. Each runs the core its /api/v1 row runs
-// (createIssueFrom, storeUpload, openAsk, writeComment, changeIssueStatusFrom, postIssueMessage,
-// sendAgentMessage, sendBroadcast, answerCommentDelivery, answerMessageDelivery, requestApproval,
-// applyEdits, commentActionAs, rebuildDocument), and this test holds the /api/v2 route to it.
+// v2_every_create_stores_its_node_test.go holds what #5491 (dispatch://INFRA-5569) gave the
+// /api/v1 creates to their /api/v2 successors: each /api/v2 route that answers for a row
+// TestEveryCreateStoresItsNode makes an issue, a document, an ask or a message through leaves that
+// object's node in its project, or between its parties, as the /api/v1 row does. Each runs the
+// core its /api/v1 row runs (createIssueFrom, storeUpload, openAsk, writeComment,
+// changeIssueStatusFrom, postIssueMessage, sendAgentMessage, sendBroadcast, answerCommentDelivery,
+// answerMessageDelivery, requestApproval, applyEdits, nameVersion, commentActionAs,
+// rebuildDocument), and this test holds the /api/v2 route to it.
 
 import (
 	"context"

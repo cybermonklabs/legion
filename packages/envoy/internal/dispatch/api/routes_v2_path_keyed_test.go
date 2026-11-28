@@ -19,8 +19,9 @@ import (
 //   - an issue document read on an issue path, not a project's:
 //     TestEachV2ArtifactListAnswersTheDocumentItsV1SlugReadAnswers, beside the v1 slug reads whose
 //     owner is the row's DocumentOwner;
-//   - the session check of an agent mark, which /api/v2 holds as the person scope its row needs:
-//     TestV2DeclaredAuthority, "an agent mark by a broker token";
+//   - the session check of an agent mark, which /api/v2 holds as the person scope its row needs
+//     and as the session the credential proved (403 SESSION_SCOPE): TestV2DeclaredAuthority, "an
+//     agent mark by a broker token";
 //   - the replay of a keyed message, comment and broadcast create: TestV2RouteTour's replays, every
 //     write step sent twice under one key, each of those rows' Replay among them;
 //   - the agent token's KEY_COMMITTED and the upload's own body limit: TestV2Retries, "an agent
@@ -33,8 +34,8 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 	tour := newRouteTour(t)
 
 	t.Run("an upload to a closed issue is refused before its body is read", func(t *testing.T) {
-		// A body that is no JSON object: the route refuses it 400 once it reads it, so a 409
-		// ISSUE_CLOSED for it is an answer made before the body was read.
+		// A body that is no JSON object: the route refuses it 400 once it parses it, so a 409
+		// ISSUE_CLOSED for it is an answer made before the body was parsed.
 		const unreadable = `{"name": "late.md", "content": `
 		upload := func(key string) *httptest.ResponseRecorder {
 			request := httptest.NewRequest(http.MethodPost, "/api/v2/issues/"+key+"/artifacts", strings.NewReader(unreadable))
@@ -55,7 +56,7 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 		}
 		refused := upload(issue.Key)
 		if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "ISSUE_CLOSED" {
-			t.Fatalf("the unreadable upload to a closed issue answered %d %s, want 409 ISSUE_CLOSED, made before the body is read",
+			t.Fatalf("the unreadable upload to a closed issue answered %d %s, want 409 ISSUE_CLOSED, made before the body is parsed",
 				refused.Code, refused.Body.String())
 		}
 	})
@@ -95,9 +96,8 @@ func TestEveryPathKeyedBehaviourHoldsOnV2(t *testing.T) {
 				{"project", http.MethodPost, "/api/v2/projects/" + project + "/artifacts", map[string]any{"name": "scoped.md", "content": "# Scoped"}},
 				{"artifact", http.MethodPost, "/api/v2/artifacts/" + issue.Document + "/comments", map[string]any{"body": "A scoped remark."}},
 				{"ask", http.MethodPatch, "/api/v2/asks/" + tour.ask(t, issue), map[string]any{"question": "Which way now?"}},
-				// The comment's state, not PATCH /comments/{id}: that row needs the person scope,
-				// and its gate answers a broker token OAUTH_SCOPE_REQUIRED before this check is
-				// reached.
+				// The comment's state stands for the comment's resolver (projectPathComment),
+				// which PATCH /comments/{id} shares.
 				{"comment", http.MethodPut, "/api/v2/comments/" + tour.comment(t, issue) + "/state", map[string]any{"state": "resolved"}},
 				{"message", http.MethodPost, "/api/v2/messages/" + tour.targetedMessage(t, issue) + "/deliveries", map[string]any{"delivery": "btw"}},
 				{"result", http.MethodPut, "/api/v2/results/" + tour.result(t, issue) + "/state", map[string]any{"state": "retracted", "reason": "Scoped."}},

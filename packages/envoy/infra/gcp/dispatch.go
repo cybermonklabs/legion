@@ -2126,9 +2126,10 @@ func newDispatchPprofPort(args *DispatchArgs) (int, error) {
 }
 
 // newDispatchAPIV1End resolves apiV1End, the instant /api/v1 ends: "", rendering nothing, when it
-// is unset. It parses the value as Dispatch parses DISPATCH_API_V1_END, with time.RFC3339, so a
-// value the server would refuse at boot is refused here, before the app's pods roll onto it, and
-// returns it as written, since that is the text Dispatch reads.
+// is unset. It parses the value with time.RFC3339, as Dispatch parses DISPATCH_API_V1_END once it
+// has trimmed the whitespace at either end, so a value the server would refuse at boot is refused
+// here, before the app's pods roll onto it, and so is one with whitespace at either end; it
+// returns the value as written, since that is the text Dispatch reads.
 func newDispatchAPIV1End(args *DispatchArgs) (string, error) {
 	if args.ApiV1End == "" {
 		return "", nil

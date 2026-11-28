@@ -44,8 +44,9 @@ const (
 // cannot take from the route table because it is one socket serving every view — and the view
 // names its kind and a session uuid alone; a deployment with no relay (no NATS) has nothing to
 // watch. The refusal is the route gate's code (apicode.OAuthScopeRequired), by the name /api/v1
-// gives it, as every frame names a code apicode declares (liveRefusal); a frame carries no HTTP
-// header, so it carries no WWW-Authenticate challenge beside it.
+// gives it, as a frame names every code apicode declares (liveRefusal, which names the socket's own
+// INVALID_FRAME and TOO_MANY_SUBSCRIPTIONS, codes apicode does not declare, by their own names); a
+// frame carries no HTTP header, so it carries no WWW-Authenticate challenge beside it.
 func (s *server) startAgentView(ctx context.Context, stream liveStreamer, sub string, view LiveView, _ *EventsLiveResume) (liveSubscription, *LiveError) {
 	if !stream.Holds(model.ScopePerson) {
 		refusal := liveRefusal(sub, apicode.OAuthScopeRequired.V1Name(), "this socket's credential does not hold the "+

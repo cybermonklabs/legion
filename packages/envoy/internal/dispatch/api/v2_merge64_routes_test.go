@@ -123,10 +123,12 @@ func TestV2KnownSessionsAnswersWhatTheV1RouteAnswers(t *testing.T) {
 
 // TestV2PatchHoldsALegionIssuesStatusToTheLegionStatusScope: with DISPATCH_LEGION_STATUS_SCOPE on,
 // PATCH /api/v2/issues/{key} refuses a status write of a Legion issue from each credential of the
-// inventory that holds neither the person scope nor legion-status, 403
+// inventory that reaches the handler and holds neither the person scope nor legion-status, 403
 // LEGION_STATUS_SCOPE_REQUIRED, in its plain form and in its status-change form, and leaves the
 // issue as it was; it takes the same write from each credential that holds one of the two, as
-// PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change do (R26, #4601).
+// PATCH /api/v1/issues/{key} and POST /api/v1/issues/{key}/status-change do (R26, #4601). The
+// credentials a check in front of the handler refuses first, with a code of its own
+// (legionRefusedFirst), are left out.
 func TestV2PatchHoldsALegionIssuesStatusToTheLegionStatusScope(t *testing.T) {
 	t.Parallel()
 	rig := newLegionStatusRig(t, true)

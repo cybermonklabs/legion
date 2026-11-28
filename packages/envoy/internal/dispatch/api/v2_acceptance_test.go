@@ -17,8 +17,9 @@ import (
 func TestAV2AcceptanceWriteWaitsForAnOpenChildOfAnotherProject(t *testing.T) {
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	parent, child := createListedIssues(t, handler, "CORE", 1)[0], createListedIssues(t, handler, "SIDE", 1)[0]
-	// The routes of this build refuse a parent of another project, so the test writes the link
-	// itself, as main's own test of the check does.
+	// The test writes the link itself rather than through the route, as main's own test of the
+	// check does, so it reads the same at a build whose routes still refuse a parent of another
+	// project.
 	if _, err := database.Pool.Exec(context.Background(), `update issues set parent_key = $1 where key = $2`, parent, child); err != nil {
 		t.Fatalf("put %s under %s: %v", child, parent, err)
 	}

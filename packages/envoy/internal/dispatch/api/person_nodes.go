@@ -293,8 +293,8 @@ type personNodesV2Query struct {
 // listPersonNodesV2 answers GET /api/v2/nodes: the page GET /api/v1/people/{login}/nodes reads
 // (readPersonNodes), of the person the person filter names, in the envelope, kept to the projects
 // the query names. A person whose page the caller may not open, a login nobody holds among them,
-// names no node the caller may see, so the list is empty, as a filter value that names nothing
-// answers on every /api/v2 list (GET /api/v2/issues's project and ref).
+// names no node the caller may see, so the list is empty, as GET /api/v2/issues answers a project
+// or a ref that names nothing.
 func (s *server) listPersonNodesV2(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {

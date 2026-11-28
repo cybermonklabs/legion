@@ -113,8 +113,9 @@ func TestV2PatchSetsAndClearsAProjectsDefaultRepository(t *testing.T) {
 
 // A default_repository that is not a repository GitHub could hold, or no string and no null, is
 // refused 400 INVALID_PROJECT naming default_repository, the code PATCH /api/v2/projects/{key}
-// answers every bad value of its body with and the one PUT /api/v1/projects/{key}/default-repository
-// answers for the same values; the project keeps the default it had and no event is appended.
+// answers a body naming none of its fields, a blank default_assignee, a bad gated_steps and a bad
+// default_repository with, and the one PUT /api/v1/projects/{key}/default-repository answers for
+// the same values; the project keeps the default it had and no event is appended.
 func TestV2PatchRefusesADefaultRepositoryThatIsNoRepository(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "CORE")

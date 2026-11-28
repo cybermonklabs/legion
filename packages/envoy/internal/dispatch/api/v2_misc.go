@@ -4,16 +4,18 @@ package api
 // the agents and what people wrote to one of them, the block links, the reference targets (the
 // row #4178 added, which no row of the route map names) and the block schema, search
 // and its coverage, the going actions and requests, the limits, the users, the dashboard builds,
-// the session groups, one deploy run, the markdown round trip and the CI reconcile passes. Every
-// route runs the work its /api/v1 route runs (agentRows, sessionanswers.List, blockLinkDocuments,
+// the session groups, one deploy run, the markdown round trip and the CI reconcile passes; three
+// more no group holds are in the files of their /api/v1 routes: the deploys (results_deploys.go),
+// the known sessions (agents_known.go) and a person's nodes (person_nodes.go). Every route here
+// runs the work its /api/v1 route runs (agentRows, sessionanswers.List, blockLinkDocuments,
 // referenceTargets, searchAnswer, goingAsker, createGoingRequestFrom, signedInUsers,
 // liveDashboardEntries, createDeliverySessionGroupFrom, updateDeliverySessionGroupFrom,
 // deleteDeliverySessionGroupAs, markdownRoundTrip), or is that route's handler where it reads no
-// query and answers the same, but the CI reconcile passes, which /api/v1 reads as the last 24
-// hours whole
-// (cireconcile.RecentPasses) and /api/v2 within a window it names (cireconcile.Passes). A list
-// answers the envelope; a report, bytes, a stream and one object answer
-// none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND, of a
+// query and answers the same, but the going actions, which answer the /api/v2 catalogue
+// (goingToolRoutesV2) where /api/v1 answers its own, and the CI reconcile passes, which /api/v1
+// reads as the last 24 hours whole (cireconcile.RecentPasses) and /api/v2 within a window it names
+// (cireconcile.Passes). A list answers the envelope; a report, bytes, a stream and one object
+// answer none (R1.4's departure). The {id} of a session group answers SESSION_GROUP_NOT_FOUND, of a
 // going request GOING_REQUEST_NOT_FOUND and of a deploy run DEPLOY_RUN_NOT_FOUND (R7);
 // {session_id} keeps the answer /api/v1 gives it (R7). A deploy run's id is GitHub's and its
 // repository the deployment's, which is why its route is GET /api/v2/deploy-runs/{id} and no
@@ -241,7 +243,8 @@ var searchResultsV2Description = fmt.Sprintf("Full-text search q= across issues,
 	"the actor that wrote it. A q that is one issue key in any form a person writes it - "+
 	"INFRA-1042, infra-1042, INFRA 1042, or the number alone, which names that issue of the project the number is "+
 	"read in, or of every project at once, all of them then heading the list in project order - puts that issue "+
-	"first. The number is read in the project the search is narrowed to where it names one, and otherwise in "+
+	"first. The number is read in the project the search is narrowed to where it names one; where it names "+
+	"several, it names that number's issue of each of them; and otherwise it is read in "+
 	"number_project, the project of the page the search was made from, which narrows nothing. A q is searched as "+
 	"typed, websearch_to_tsquery's AND of its words; only a q that matches nothing at all is searched a second time "+
 	"for its %d rarest words ORed, and the answer's query {operators, broadened} names the forms it read and whether "+

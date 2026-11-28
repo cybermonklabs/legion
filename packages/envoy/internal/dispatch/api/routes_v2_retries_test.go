@@ -9,7 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestV2Retries is c-retry of dispatch://INFRA-4071: every /api/v2 write is keyed (R8), a repeat
+// TestV2Retries is c-retry of dispatch://INFRA-4071: every /api/v2 write the rules of /api/v2 bind
+// is keyed (R8, keyedMethod), the PUT and DELETE of the INFRA-979 rows staying unkeyed, a repeat
 // under one key answers the first answer marked a replay and writes nothing, and an equal PUT by
 // the caller who set what it sets is answered 200 and writes nothing (decision 8,
 // putChangesNothing), while a PUT that changes a field is a change. A case whose route /api/v2

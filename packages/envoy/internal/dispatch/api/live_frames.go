@@ -267,8 +267,8 @@ const (
 
 // refusal is the code and message a view's subscribers are refused with when its read answered
 // err, and refused false for an err that is a failed read, which the hub retries. A deployment
-// that configured nothing the view reads is told so, naming /api/v2's write of it as every refusal
-// of the socket does (deliveryNotConfigured, legionNotConfigured): DELIVERY_NOT_CONFIGURED to a
+// that configured nothing the view reads is told so, naming /api/v2's write of it, the version
+// that outlives /api/v1 (deliveryNotConfigured, legionNotConfigured): DELIVERY_NOT_CONFIGURED to a
 // delivery view, and LEGION_NOT_CONFIGURED only to a Legion board, the one Legion view whose read
 // answers legion.ErrNoSettings. An *apiError is refused as the matching GET route answers it: a
 // Legion board of a project that does not exist is loadProject's 404 PROJECT_NOT_FOUND, and a

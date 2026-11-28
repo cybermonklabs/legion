@@ -674,7 +674,7 @@ func Contended(err error) bool {
 
 // ParentContended is the code Dispatch answers an issue PATCH with when a concurrent reparent
 // moved the issue's parent at every attempt to lock it, applying nothing
-// (packages/envoy/internal/dispatch/api/issue_parent.go, lockPatchRowsAndParent, which answers
+// (packages/envoy/internal/dispatch/api/issue_parent.go, lockPatchOwnersAndParent, which answers
 // apicode.ParentContended). No mechanism shares a value between this module and Dispatch's, so
 // the two spellings change together.
 const ParentContended = "PARENT_CONTENDED"

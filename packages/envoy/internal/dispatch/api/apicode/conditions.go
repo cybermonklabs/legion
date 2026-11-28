@@ -1,9 +1,10 @@
 package apicode
 
-// Condition names one condition a request can be refused for. A v2 route declares each refusal
-// it answers as a Refusal, a (condition, code) pair, so one condition gets one code on every
-// route (dispatch://INFRA-4071/spec R7). Like a Code it is a struct with an unexported field, so
-// no package but this one names a condition and a string does not convert to one.
+// Condition names one condition a request can be refused for. A v2 route but a row of the
+// INFRA-979 tree, which keeps its /api/v1 answers, declares each refusal it answers as a Refusal, a
+// (condition, code) pair, so one condition gets one code on every route that declares it
+// (dispatch://INFRA-4071/spec R7). Like a Code it is a struct with an unexported field, so no
+// package but this one names a condition and a string does not convert to one.
 type Condition struct {
 	name string
 }
@@ -46,10 +47,10 @@ var (
 	// that names no thread's root: no ask, no root comment and no root message. A thread is one
 	// of the three by its root's id, so an id that names none of them names no thread.
 	ThreadMissing = Condition{"thread missing"}
-	// StepMissing is a step record's {id} (PUT /api/v2/issues/{key}/steps/{id} and its
-	// /rating) that no record holds, under a write that does not name the run's identity: the
-	// first write of a run makes its record, so only a write that cannot make it meets a missing
-	// step.
+	// StepMissing is a step record's {id} (PUT /api/v2/issues/{key}/steps/{id}, its /rating and
+	// its /experiment) that no record holds, under a write that does not name the run's identity:
+	// the first write of a run makes its record, so only a write that cannot make it meets a
+	// missing step.
 	StepMissing = Condition{"step missing"}
 	// ArchitectureSourceMissing is a repository a route names as one of a project's architecture
 	// sources (the {owner}/{repo} of DELETE /api/v2/projects/{key}/architecture-sources/{owner}/{repo},
@@ -208,8 +209,8 @@ var (
 	MarkStateInvalid = Condition{"mark state invalid"}
 	// SnoozeInvalid is an ask mark's snoozed_until left out or not in the future.
 	SnoozeInvalid = Condition{"snooze invalid"}
-	// RoleHoldersInvalid is a role-holder set the write refuses: no holders, a role that is none of
-	// the six, a session that is no session id, a role or a session named twice.
+	// RoleHoldersInvalid is a role-holder set the write refuses: holders left out, a role that is
+	// none of the six, a session that is no session id, a role or a session named twice.
 	RoleHoldersInvalid = Condition{"role holders invalid"}
 )
 
@@ -630,8 +631,9 @@ var (
 	DocumentOutsideSchema = Condition{"document outside the schema"}
 )
 
-// The conditions every v2 route can meet in its query or its loops (R4, R5 and R7 of
-// dispatch://INFRA-4071/spec).
+// The conditions many v2 routes share (R4, R5 and R7 of dispatch://INFRA-4071/spec): a path no
+// route serves, a query key, limit, offset or position the decoder refuses on a route it reads,
+// and the loops and the open foreign child an issue write refuses.
 var (
 	// PathUnknown is a path under /api/v2 that no route serves.
 	PathUnknown = Condition{"path unknown"}

@@ -99,9 +99,9 @@ func (s *server) putProjectGatedSteps(w http.ResponseWriter, r *http.Request) {
 
 // validGatedSteps is the list of design-gate steps a publish sent in member, or false once it has
 // written the refusal (400 INVALID_PROJECT): a body that names no list, a step that is none of
-// the three, and a step named twice. A null list and an empty one are the same publish, the empty
-// array. PUT /api/v1/projects/{key}/gated-steps (steps) and PATCH /api/v2/projects/{key}
-// (gated_steps) hold the list to it alike.
+// the three, and a step named twice. A nil list behind the pointer and an empty one are the same
+// publish, the empty array; a JSON null names no list. PUT /api/v1/projects/{key}/gated-steps
+// (steps) and PATCH /api/v2/projects/{key} (gated_steps) hold the list to it alike.
 func validGatedSteps(w http.ResponseWriter, r *http.Request, member string, sent *[]string) ([]string, bool) {
 	if sent == nil {
 		writeError(w, r, apicode.InvalidProject, fmt.Sprintf(

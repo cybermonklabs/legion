@@ -77,9 +77,9 @@ var specWriterExempt = map[string]string{
 // mount of each row, read from the source so that each row's handler is read with it, and held to
 // the table the server mounts. A row whose path reaches a sink (specWriterSinks) passes when its
 // path also calls the check (specWriterCheck), when the route declares the person scope as every
-// request's (apiRoute.OAuthScopes: routeScopes for a v1 row, a routeRow's own column), which no
-// worker's credential holds, or when specWriterExempt names it with its reason. Its failure names
-// each route and each sink it reaches, with the calls that reach it.
+// request's (apiRoute.OAuthScopes: its declaration's OAuthScopes for a v1 row, a routeRow's own
+// column), which no worker's credential holds, or when specWriterExempt names it with its reason.
+// Its failure names each route and each sink it reaches, with the calls that reach it.
 //
 // The walk is decisionBlockChecked's: every call of every function on the path inside package api,
 // followed as the copy-lock graph resolves it, plus every function handed to it as an argument. It
@@ -126,7 +126,7 @@ func TestEveryRouteThatWritesADocumentChecksItsWriter(t *testing.T) {
 	if unchecked := uncheckedSpecWriters(routes, scopes, specWriterExempt); len(unchecked) > 0 {
 		t.Errorf("a route writes a document and never checks its writer:\n\t%s\n"+
 			"Call refuseSpecWriter on the route's path before its first document call (spec_writer.go), "+
-			"declare model.ScopePerson for the route (routeScopes, or a routeRow's OAuthScopes), or name it in specWriterExempt with the reason it is left.",
+			"declare model.ScopePerson for the route (its declaration's OAuthScopes, or a routeRow's OAuthScopes), or name it in specWriterExempt with the reason it is left.",
 			strings.Join(unchecked, "\n\t"))
 	}
 }
@@ -261,8 +261,8 @@ func specWriterRouteHandlers(t *testing.T, graph *lockGraph) map[string][]*lockF
 }
 
 // mountedRouteScopes is the scopes every request to each route of the table needs, by "<method>
-// <pattern>", its test hooks in: apiRoute.OAuthScopes, which a v1 row takes from routeScopes
-// (v1Route) and a routeRow names in its own column.
+// <pattern>", its test hooks in: apiRoute.OAuthScopes, which a v1 row takes from its declaration's
+// OAuthScopes (v1Route) and a routeRow names in its own column.
 func mountedRouteScopes() map[string]routeScopeSet {
 	scopes := map[string]routeScopeSet{}
 	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {

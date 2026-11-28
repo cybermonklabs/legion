@@ -28,8 +28,9 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// tourRefusal is a refusal a route's handler answers that no other subtest of the tour sends: the
-// change to its step's request that draws it, and the code it is answered with.
+// tourRefusal is a refusal a route answers, its handler's or a layer's in front of it (the keyed
+// layer's, refusalKeyedStatusChange), that no other subtest of the tour sends: the change to its
+// step's request that draws it, and the code it is answered with.
 type tourRefusal struct {
 	Name   string
 	Change func(t *testing.T, tour *routeTour, request tourRequest) tourRequest

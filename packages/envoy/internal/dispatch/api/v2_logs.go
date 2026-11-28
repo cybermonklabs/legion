@@ -1,15 +1,18 @@
 package api
 
-// v2_logs.go is the five logs of /api/v2 (R5 of dispatch://INFRA-4071/spec): the
+// v2_logs.go is five of the seven logs of /api/v2 (R5 of dispatch://INFRA-4071/spec): the
 // global event log, an issue's and a project document's event logs, the reference graph's edges of
-// one node, and the caller's Inbox threads. Each is a list read in order by one position field,
-// which its row names (routeRow.Position) and its index entry and description carry: after and
-// before read that field, and a value that is no position of it, or an after above the last one
-// the log has written, is 400 POSITION_INVALID naming the parameter and the field. Each takes limit
-// and offset beside them, and answers the envelope with its exact total - but the global event log
-// and the caller's dismissed threads, whose total is null (logPage): counting the global log costs
-// about ten times its page for a reader near the oldest event, and counting the dismissed threads
-// is a count of every thread the caller has ever dismissed.
+// one node, and the caller's Inbox threads; a post's corrections, the other two, are
+// v2_threads.go's (correctionPosition). Each is a list with one position field, which its row
+// names (routeRow.Position) and its index entry and description carry: after and before read that
+// field (the references are in created_at order, newest first by default, and in source_seq order
+// only where sort names it; the caller's threads take a position under state=dismissed alone), and
+// a value that is no position of it, or an after above the last one the log has written, is 400
+// POSITION_INVALID naming the parameter and the field. Each takes limit and offset beside them,
+// and answers the envelope with its exact total - but the global event log and the caller's
+// dismissed threads, whose total is null (logPage): counting the global log costs about ten times
+// its page for a reader near the oldest event, and counting the dismissed threads is a count of
+// every thread the caller has ever dismissed.
 
 import (
 	"cmp"
@@ -45,9 +48,10 @@ func listRefusals(more ...apicode.Refusal) []apicode.Refusal {
 	return append([]apicode.Refusal{undeclaredKeyRefusal, limitRefusal, offsetRefusal}, more...)
 }
 
-// The position fields of the five logs (R5): an owner's events by seq, the global log by id, the
-// references by the source_seq of the event that introduced each mention, and the caller's
-// dismissed threads by when each was dismissed, ties broken by the thread's id.
+// The position fields of this file's five logs (R5; a post's corrections read correctionPosition,
+// v2_threads.go): an owner's events by seq, the global log by id, the references by the source_seq
+// of the event that introduced each mention, and the caller's dismissed threads by when each was
+// dismissed, ties broken by the thread's id.
 var (
 	seqPosition       = positionField{Field: "seq", Type: positionInteger}
 	eventIDPosition   = positionField{Field: "id", Type: positionInteger}

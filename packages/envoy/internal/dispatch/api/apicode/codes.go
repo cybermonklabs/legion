@@ -4,9 +4,11 @@
 // literal does not convert to one: the API's error writers take a Code, so a refusal whose code is
 // not on this list does not build. Each code carries the name and status it answers under /api/v2
 // and the name and status it answers under /api/v1, which is the literal and the status that site
-// wrote before this list existed (TestV1CodesAreTheCodesOfC8a44f97 holds the v1 pairs to the
-// codes of c8a44f97). Most codes answer alike in both versions; the ones that do not are in their
-// own blocks below, each saying why.
+// wrote before this list existed, but for the four v1 pairs new with it: API_V1_ENDED,
+// ORIGIN_REFUSED, QUERY_KEY_UNKNOWN and STATE_INVALID (TestV1CodesAreTheCodesOfC8a44f97 holds the
+// v1 pairs to the codes of c8a44f97, to those later merges on main added, and to the exceptions it
+// names, v1CodeExceptions). Most codes answer alike in both versions; the ones that do not are in
+// their own blocks below, each saying why.
 package apicode
 
 import (
@@ -240,9 +242,8 @@ var (
 	HandoffInput         = both("HANDOFF_INPUT", http.StatusBadRequest)
 	HandoffNotFound      = both("HANDOFF_NOT_FOUND", http.StatusNotFound)
 	// InternalError is INTERNAL. It is not named after the code alone: the leak guard's
-	// private-host rule (packages/daemon/internal/leakguard/private-names.toml, private_host_rule)
-	// reads a selector of that name followed by a method call as a host under the internal
-	// domain, and refuses the push.
+	// private-host rule (.github/private-names.toml, private_host_rule) reads a selector of that
+	// name followed by a method call as a host under the internal domain, and refuses the push.
 	InternalError        = both("INTERNAL", http.StatusInternalServerError)
 	InvalidAdvances      = both("INVALID_ADVANCES", http.StatusBadRequest)
 	InvalidAnchor        = both("INVALID_ANCHOR", http.StatusBadRequest)
@@ -508,8 +509,9 @@ var (
 	// other fault of the server.
 	DocSchemaInternal = renamed("DOC_SCHEMA", http.StatusInternalServerError, "INTERNAL")
 
-	// ParentInput is a parent the request names that cannot be the issue's parent: the issue
-	// itself, an issue that does not exist, or one of another project.
+	// ParentInput is a parent the request names that cannot be the issue's parent: a value that is
+	// no issue key or is blank, the issue itself, or an issue that does not exist, which is also
+	// how an issue of a private project answers a credential that names another project.
 	ParentInput = both("PARENT_INPUT", http.StatusBadRequest)
 	// ParentCycle is a parent that would make the issue its own ancestor (validateIssueParent).
 	// /api/v2 answers a loop through parents and a loop through dependencies with one code (R7).
@@ -546,9 +548,10 @@ var (
 )
 
 // The decoder's codes that no route of c8a44f97 answered (decode_v2.go). /api/v1 answers them only
-// at the /api/v1 path of a row served in both versions, which the decoder reads as it reads the
-// row's /api/v2 path (R2 of dispatch://INFRA-4071/spec: a new row is served in both versions by
-// one declaration); every other /api/v1 route ignores a key it does not read, as it always did.
+// at the /api/v1 path of a row served in both versions that the decoder reads, every such row but
+// those of the INFRA-979 tree (apiRoute.decoded), which it reads as it reads the row's /api/v2
+// path (R2 of dispatch://INFRA-4071/spec: a new row is served in both versions by one
+// declaration); every other /api/v1 route ignores a key it does not read, as it always did.
 var (
 	// QueryKeyUnknown is a query key the route does not declare.
 	QueryKeyUnknown = both("QUERY_KEY_UNKNOWN", http.StatusBadRequest)
@@ -585,9 +588,10 @@ var (
 )
 
 // The codes of the secrets broker's refusals on the routes Dispatch's /api/v2 credential routes
-// call (brokerCall in the api package), which /api/v2 answers through its one error writer with
-// the broker's message (dispatch://INFRA-4071/spec R7). /api/v1 names none of them: it relays the
-// broker's bytes, its code among them, as it always did.
+// call (brokerCall in the api package), which /api/v2 answers with the broker's message and the
+// members its refusal carries, under the name its one error writer gives the code
+// (relayBrokerRefusalV2, refusalPair; dispatch://INFRA-4071/spec R7). /api/v1 names none of them:
+// it relays the broker's bytes, its code among them, as it always did.
 var (
 	// AgentSecretsRefusalUndeclared is a refusal the broker answered a call with under a code, or
 	// at a status, that the call does not declare: a code a broker newer than this Dispatch added

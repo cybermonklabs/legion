@@ -1,7 +1,7 @@
 package api
 
 //ci:reads packages/contracts/schemas/dispatch-openapi.json committedOpenAPIOf (the path built runtime-relative ../../../../.., then read: the committed /api/v1 document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)
-//ci:reads packages/contracts/schemas/dispatch-openapi-v2.json committedOpenAPIOf, the same read of the committed /api/v2 document, which TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares too and TestTheV2DocumentRequiresWhatTheStructsTag and TestTheV2DocumentListsEveryCodeItCanAnswer hold to the Go types and the code list
+//ci:reads packages/contracts/schemas/dispatch-openapi-v2.json committedOpenAPIOf, the same read of the committed /api/v2 document, which TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares too and TestTheV2DocumentRequiresWhatTheStructsTag, TestTheV2DocumentListsEveryCodeItCanAnswer and TestTheV2CreateOfAProjectAnswersTheItemItsListPages hold to the Go types, the code list and the project item's members
 
 import (
 	"bytes"
@@ -581,14 +581,15 @@ func openAPITaggedRequired(goType reflect.Type) []string {
 }
 
 // R6 of dispatch://INFRA-4071: the /api/v2 document states what the server answers. A field of
-// an answer is required exactly when its json tag carries neither omitempty nor omitzero, a
-// pointer among them required and nullable and a value that is no pointer, slice, map or interface
-// never null; every other field is optional; and the object holds no member its type does not
-// declare. So every schema the committed document declares for an answer's Go type is walked
-// against that type's fields as encoding/json reads them, and a document that marks one required
-// field optional, or that drifts from its types any other way, fails here naming the schema and
-// the field. In the same document opened_event_id is required on every ask shape, and each
-// transition body (PUT …/state) is a union keyed by state.
+// an answer is required exactly when its json tag carries neither omitempty nor omitzero and no
+// embedded pointer carries it, a pointer among them required and nullable and a value that is no
+// pointer, slice, map or interface never null; every other field is optional; and the object holds
+// no member its type does not declare. So every schema the committed document declares for an
+// answer's Go type, but one whose type writes its own JSON, is walked against that type's fields as
+// encoding/json reads them, and a document that marks one required field optional, or that drifts
+// from its types any other way, fails here naming the schema and the field. In the same document
+// opened_event_id is required on every ask shape, and each transition body (PUT …/state) is a
+// union keyed by state.
 func TestTheV2DocumentRequiresWhatTheStructsTag(t *testing.T) {
 	documents, err := openAPIDocuments()
 	if err != nil {
@@ -692,8 +693,9 @@ func embedsAsk(goType reflect.Type) bool {
 
 // holdV2SchemaToFields holds one answer schema of the /api/v2 document to its Go type's fields as
 // encoding/json writes them (openAPIJSONFields): each a property, required exactly when its tag
-// carries neither omitempty nor omitzero, nullable where it is a pointer the marshaller always
-// writes and never null where it is a value; and no other property, the schema closed.
+// carries neither omitempty nor omitzero and no embedded pointer carries it, nullable where it is
+// a pointer the marshaller always writes and never null where it is a value; and no other
+// property, the schema closed.
 func holdV2SchemaToFields(t *testing.T, name string, goType reflect.Type, schema map[string]any) {
 	t.Helper()
 	if open, isBool := schema["additionalProperties"].(bool); !isBool || open {
@@ -840,8 +842,8 @@ func openAPIAt(node map[string]any, path ...string) map[string]any {
 // can answer, once, with its status, and it is the declared list of code constants, so a code
 // added to apicode reaches the document and the clients generated from it, and one the document
 // names cannot be a code nothing declares. ANSWER_NOT_KEPT's status is `*`, its call's; a code
-// only /api/v1 answers (API_V1_ENDED) is no code of the list. Each operation's own list is drawn
-// from it, at the same statuses.
+// only /api/v1 answers (API_V1_ENDED, and the refusals of POST /api/v1/projects/{key}/results) is
+// no code of the list. Each operation's own list is drawn from it, at the same statuses.
 func TestTheV2DocumentListsEveryCodeItCanAnswer(t *testing.T) {
 	var document openAPIDocumentForTest
 	if err := json.Unmarshal(committedOpenAPIOf(t, apiV2), &document); err != nil {

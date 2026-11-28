@@ -52,14 +52,14 @@ var v2BrokerCalls = map[string][]brokerCall{
 // handlers make of the secrets broker to the refusals the broker answers on its routes, as its
 // generated HTTP reference reads them from its source (readBrokerReference): each refusal the
 // broker answers there is one the call declares, by the broker's code at the broker's status -
-// its 404 NOT_FOUND as the object the path names, and its refusals of Dispatch's own token at
-// the 502 or 503 of apicode's constants - and the call declares no other. A code the broker
-// adds, renames or moves to another status fails it, until the call declares it as the broker
-// answers it. Each member a refusal's body carries there beside code and error is one
-// brokerRefusalV2 carries, so /api/v2 keeps it; answer_id, which the broker's answer middleware
-// adds to every 4xx refusal (internal/cipher/answer) rather than its route's writer, is outside
-// the reference and brokerRefusalV2 carries it too. Every /api/v2 route that relays to the broker
-// is listed in v2BrokerCalls.
+// its 404 NOT_FOUND as the object the path names, and its refusals of Dispatch's own call at the
+// 502 (its token's) or 503 (its RATE_LIMITED) of apicode's constants - and the call declares no
+// other. A code the broker adds, renames or moves to another status fails it, until the call
+// declares it as the broker answers it. Each member a refusal's body carries there beside code and
+// error is one brokerRefusalV2 carries, so /api/v2 keeps it; answer_id, which the broker's answer
+// middleware adds to every 4xx refusal (internal/cipher/answer) rather than its route's writer, is
+// outside the reference and brokerRefusalV2 carries it too. Every /api/v2 route that relays to the
+// broker is listed in v2BrokerCalls.
 func TestTheBrokerCallsDeclareEveryRefusalTheBrokerAnswers(t *testing.T) {
 	t.Parallel()
 	reference := readBrokerReference(t)
@@ -372,8 +372,8 @@ func brokerRouteOf(patterns []string, called string) bool {
 // through each /api/v2 credential route, each arm of the state route's, and the /api/v1 route it
 // stands beside. /api/v2 answers it brokerRefusalV2: under the code the route's call declares for
 // the broker's status and code - the broker's own, for its 404 NOT_FOUND the object's - at that
-// code's status, which is the broker's but for its refusals of Dispatch's own token (502, and 503
-// for RATE_LIMITED, carrying the broker's Retry-After), a code the route's operation lists in
+// code's status, which is the broker's but for its refusals of Dispatch's own token (502) and its
+// RATE_LIMITED (503, carrying the broker's Retry-After), a code the route's operation lists in
 // x-refusal-codes; with the broker's message, and the broker's answer_id and approve_url where its
 // refusal carries them, and no other member. A code, or a status, the call does not declare, and
 // an answer that names no code, are 502 AGENT_SECRETS_REFUSAL_UNDECLARED naming what the broker

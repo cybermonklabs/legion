@@ -1,10 +1,11 @@
 package api
 
-// v2_me.go is the caller's own things under /api/v2/me (R1 of dispatch://INFRA-4071/spec; the
-// route map's rule 10): who the caller is, in one shape where /api/v1/whoami
-// answers two; their personal agent tokens; their answers; and their marks, the person's own state
-// on one object, which eleven /api/v1 rows wrote and read one kind at a time and four routes
-// answer here (the route map's section (e)). Every route runs the work its /api/v1 route runs
+// v2_me.go is the caller's own things under /api/v2/me but their Inbox threads (v2_logs.go) and
+// their sign-ins (v2_credentials.go) (R1 of dispatch://INFRA-4071/spec; the route map's rule 10):
+// who the caller is, in one shape where /api/v1/whoami answers two; their personal agent tokens;
+// their answers; and their marks, the person's own state on one object, which eleven /api/v1 rows
+// wrote and read one kind at a time and four routes answer here (the route map's section (e)).
+// Every route runs the work its /api/v1 route runs
 // (agentTokensOf, createAgentTokenFrom, updateAgentTokenScopesFrom, revokeAgentTokenOf,
 // readMyAnswers, writeUserIssueStateIn, writeUserAgentStateIn, writeDocumentRead, moveThreadReadIn,
 // snoozeAskIn, unsnoozeAskIn, markInboxReadThreads, dismissInboxThreads), each path object checked
@@ -37,9 +38,10 @@ var (
 	threadMissingRefusal     = apicode.Refusal{Condition: apicode.ThreadMissing, Code: apicode.ThreadNotFound}
 )
 
-// markTargetRefusals are the refusals of a mark's {kind}/{id}: a kind that is none of the six, and
-// the 404s of its target, by kind, which must exist, but for an agent mark's session, which keeps
-// the answer /api/v1 gives it (dispatch://INFRA-4071/spec R7).
+// markTargetRefusals are the refusals of a mark's {kind}/{id}, beside a query key the route does
+// not declare: a kind that is none of the six, and the 404s of its target, by kind, which must
+// exist, but for an agent mark's session, which keeps the answer /api/v1 gives it
+// (dispatch://INFRA-4071/spec R7).
 func markTargetRefusals() []apicode.Refusal {
 	return []apicode.Refusal{
 		undeclaredKeyRefusal, issueMissingRefusal, documentMissingRefusal, threadMissingRefusal,
@@ -95,15 +97,16 @@ const markWriteText = "issue {pinned?, last_read_seq?, pinned_items?, seq?, acto
 	"at least one: cleared_before replaces, read_through moves forward only, each RFC3339 and no more than a minute " +
 	"ahead of the server, read_replies marks the session's own replies read by id, and pinned pins the session to the " +
 	"caller's sidebar or unpins it. document {read_version}: replaces, from 0 to 2147483647 (the largest version " +
-	"number the store holds). thread {read_through?, " +
-	"dismissed?, version?}, at least one: read_through moves forward only, and dismissed true, which takes the version " +
+	"number the store holds). thread {read_through?, dismissed?, version?}, at least one of " +
+	"read_through and dismissed: read_through moves forward only, and dismissed true, which takes the version " +
 	"GET /api/v2/me/threads answered for the thread, takes it out of the Inbox and marks it read only while that " +
 	"version is still the thread's, so a dismissal buries no write nobody has read; dismissed false puts it back. " +
 	"message {dismissed, newest_reply?, unread_replies?}: dismissed true, which takes the newest session reply and the " +
 	"unread replies the page drew in the thread, takes it out of the Inbox only while those are still the thread's; " +
 	"dismissed false puts it back. ask {snoozed_until}: an RFC3339 time in the future replaces the snooze, and null " +
-	"un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, and " +
-	"a malformed snooze 400 SNOOZE_INPUT."
+	"un-snoozes. A field of the wrong JSON type is 400 INVALID_JSON, a value its field refuses 400 INVALID_STATE, but " +
+	"an issue mark's actor naming a session other than the one the credential proved 403 " +
+	"ACTOR_SESSION_MISMATCH, and a snooze that is missing, malformed or not in the future 400 SNOOZE_INPUT."
 
 func v2TokenIDs() *idRoute { return &idRoute{Reason: "a personal agent token id"} }
 
@@ -927,11 +930,12 @@ func (s *server) writeMarksIn(ctx context.Context, actor model.Actor, steps []ma
 
 // lockMarkThreads takes steps 1 to 3 of the Inbox's lock order (markInboxReadThreads) over the
 // threads a request of the caller's marks names, sorted, and over the Agent threads it dismisses,
-// sorted: each thread's owner `for share`, documents then issues (lockInboxReadOwners); the root
-// of each Agent thread still in the caller's Inbox `for update` (inboxDismissLockAgentRoots), read
-// as the dismissal reads its roots so that no root of another person's is ever taken; and the
-// caller's user_threads row of each thread `for no key update` (inboxReadLockThreads). A thread the
-// caller has no row for takes nothing, as it is written nothing.
+// sorted: each thread's owner's lock in shared mode, documents then issues (lockInboxReadOwners,
+// store.LockOwnersShared); the root of each Agent thread still in the caller's Inbox `for update`
+// (inboxDismissLockAgentRoots), read as the dismissal reads its roots so that no root of another
+// person's is ever taken; and the caller's user_threads row of each thread `for no key update`
+// (inboxReadLockThreads). A thread the caller has no row for takes nothing, as it is written
+// nothing.
 func lockMarkThreads(ctx context.Context, tx pgx.Tx, actor model.Actor, login string, threads, roots []string) error {
 	read := newInboxReadThreads()
 	if len(threads) > 0 {

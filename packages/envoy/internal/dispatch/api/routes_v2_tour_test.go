@@ -5,8 +5,8 @@ package api
 // routes_v2_tour_test.go is the route tour of dispatch://INFRA-4071: one step per /api/v2 route
 // the rules of /api/v2 bind - every route but the rows of the INFRA-979 tree and the test hooks -
 // each a request the route answers with a status the step names, on a server of its own
-// (newRouteTour), and subtests that send every step again in the ways R1, R4, R7 and R8 say every
-// route answers alike.
+// (newRouteTour), and subtests that send every step again in the ways R1, R4, R6, R7 and R8 say
+// every route answers alike.
 //
 // Each group of routes registers its steps in a file of its own, routes_v2_tour_<group>_test.go,
 // with an init function:
@@ -73,7 +73,8 @@ type tourStep struct {
 	// app-installation read's {owner}/{repo}, which keep today's answer (ruling A).
 	Missing []tourMissing
 	// NoCredential is the 401 code the route answers a request with no credential, where it is
-	// not the identity layer's NO_IDENTITY: a route only a bearer may call answers its own.
+	// not the identity layer's NO_IDENTITY; empty where it is, as on every route today, a
+	// bearer-only one included, which resolves its caller before it refuses one that is no bearer.
 	NoCredential apicode.Code
 	// ReplayMoves are the members a route whose Replay answers the resource afresh answers as they
 	// stand at the repeat rather than as its first answer gave them, which the replays subtest

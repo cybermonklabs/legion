@@ -66,10 +66,11 @@ const docsCompactionNote = "Writes nothing itself. A cold read of a document who
 // v2ReadClasses is the read class of every GET routeRow, keyed "GET /api/v2<pattern>", for each
 // version the row is served in: a routeRow states no class of its own, and one served in both
 // versions has one class at both paths (stampV2ReadClasses). It records each mounted GET
-// explicitly, so a new GET needs a review even when it resembles an existing read. A row that
-// shares a core with a /api/v1 route copies that route's class and note from its declaration
-// (declaredRead), and the rows no route file declares (the INFRA-979 rows served in both
-// versions) state their own.
+// explicitly, so a new GET needs a review even when it resembles an existing read. Most rows copy
+// the class and note of the /api/v1 route they share a core with, from its declaration
+// (declaredRead); the INFRA-979 rows served in both versions, and each row whose read is not its
+// /api/v1 route's or that has none (GET /api/v2/issues/{key}, /artifacts/{id}, /asks, /me/marks,
+// /references and others), state their own.
 func v2ReadClasses() map[string]readEntry {
 	read := readEntry{Writes: readWritesNothing}
 	withNote := func(note string) readEntry { return readEntry{Writes: readWritesNothing, WriteNote: note} }

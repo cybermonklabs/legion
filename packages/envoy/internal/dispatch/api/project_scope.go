@@ -543,9 +543,12 @@ func (s *server) refusesSessionOtherThanProved(w http.ResponseWriter, r *http.Re
 
 // addressesOneSession answers whether route is a write to the rows of the one session its path
 // names: the scopeSession rows whose path names a session (routeRow.SessionPath; a v1 route's
-// {session_id}). The other scopeSession rows address no session of their own — the `me` token rows
-// are the calling person's, and the two message rows are held to the session their delivery
-// attempt names.
+// {session_id}). The other scopeSession rows name no session by their path alone: the caller's own
+// `me` rows (its tokens, snoozes, read marks, Inbox and issue states) write the person's rows, the
+// message rows (the accept and the reply, and /api/v2's delivery state and replies) are held to the
+// session their delivery attempt names, and the agent marks of PATCH /api/v2/me/marks and
+// /me/marks/{kind}/{id} are held to the proved session by gateV2Authorities (sessionAddressing),
+// as withinSessionScope's comment says.
 func addressesOneSession(route apiRoute) bool {
 	return route.Scope == scopeSession && route.SessionPath != ""
 }

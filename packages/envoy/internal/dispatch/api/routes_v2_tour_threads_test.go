@@ -18,8 +18,8 @@ import (
 func init() { addTourSteps("threads", threadsTourSteps) }
 
 // threadsTourSteps are the route tour's steps of the comments, messages, broadcasts and handoffs:
-// each route, each of the four states of PUT /api/v2/comments/{id}/state, and the
-// reads with what include= and the filters add.
+// each route, each of the four states of PUT /api/v2/comments/{id}/state, a follow-up reply, and
+// the reads with what include= and the filters add.
 func threadsTourSteps() []tourStep {
 	alice := tourPerson("alice")
 	// The session the tour's listener delivers to, writing under the shared agent token as an

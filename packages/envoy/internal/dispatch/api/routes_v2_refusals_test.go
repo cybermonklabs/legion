@@ -16,10 +16,10 @@ import (
 // whose path names a session, and the app-installation read, answer as /api/v1 does; and a parent
 // loop and a dependency loop are declared with one code and answer it, each sent to PATCH
 // /api/v2/issues/{key}. The document's code list equalling the declared codes is
-// TestTheV2DocumentListsEveryCodeItCanAnswer (openapi_test.go), which leaves out API_V1_ENDED
-// because only /api/v1 answers it; one condition with one code is TestOneConditionOneCode; the
-// unknown path, /auth/callback and the origin guard are TestAuthAndOriginRefusalsCarryACode in the
-// routes package.
+// TestTheV2DocumentListsEveryCodeItCanAnswer (openapi_test.go), which leaves out every code only
+// /api/v1 answers, API_V1_ENDED and the refusals of POST /api/v1/projects/{key}/results; one
+// condition with one code is TestOneConditionOneCode; the unknown path, /auth/callback and the
+// origin guard are TestAuthAndOriginRefusalsCarryACode in the routes package.
 func TestV2Refusals(t *testing.T) {
 	tour := newRouteTour(t)
 

@@ -31,7 +31,9 @@ func unfilledLinkOf(route string) string {
 // from the request's own path values, the successor's query where the v1 route became a filter of
 // it (row 87), a binding's literal and the v1 value it names, a both-version row's own /api/v2
 // path, and the index's /api/v2; whether the answer is a success or a refusal, a route whose link
-// needs nothing its handler resolves links its route. No /api/v2 answer carries a Link.
+// needs nothing its handler resolves links its route, but where the request leaves out a query
+// value its link reads, which links /api/v2 and names the route in its title (successorLink's
+// unfilled). No /api/v2 answer carries a Link.
 func TestAV1AnswerLinksTheV2RouteThatAnswersForIt(t *testing.T) {
 	handler := newTestHandler(t)
 	key := createTestIssue(t, handler, "LINK", "Linked")
@@ -119,7 +121,8 @@ func TestASlugRowLinksTheValueItsHandlerResolved(t *testing.T) {
 
 // A keyed write whose successor its handler resolves keeps that value with its stored answer, so
 // a replay under its key, which runs no handler, links what the first answer linked rather than
-// /api/v2 with the route in its title, and carries no other header than the first answer did.
+// /api/v2 with the route in its title, and carries none of the values its stored answer keeps
+// (storedSuccessorValue) as a header.
 func TestAKeyedReplayOfASlugWriteLinksWhatItsFirstAnswerLinked(t *testing.T) {
 	handler := newTestHandler(t)
 	key := createTestIssue(t, handler, "REPLAY", "Replayed")

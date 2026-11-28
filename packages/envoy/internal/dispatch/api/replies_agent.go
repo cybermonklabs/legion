@@ -15,8 +15,9 @@ import (
 
 // The Agent rows of GET /api/v1/me/replies and GET /api/v2/me/threads: the statements each state
 // reads them through, the statement picker, the row read and the session names the page shows. The
-// routes themselves, the Reply rows and everything both halves share - the kinds, the states, the
-// paging, the cursor and readMyReplies, which merges the two - are api/replies.go's.
+// /api/v1 route's handler (v2_logs.go holds the /api/v2 one's), the Reply rows and everything both
+// halves share - the kinds, the states, the paging, the cursor and readMyReplies, which merges the
+// two - are api/replies.go's.
 //
 // It is a file of its own because the two halves share nothing but that read. A Reply row is a
 // user_threads row read through one of three partial indexes; an Agent row is built from the

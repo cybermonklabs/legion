@@ -76,8 +76,9 @@ func RenderOpenAPI() ([]OpenAPIFile, error) {
 		var rendered bytes.Buffer
 		encoder := json.NewEncoder(&rendered)
 		encoder.SetIndent("", "  ")
-		// A description quoting `<owner>/<slug>` or an `&` is written as it stands: this document
-		// is read by people as well as by generators.
+		// SetEscapeHTML(false) leaves what the encoder writes itself unescaped, but the spec writes
+		// its own JSON (its MarshalJSON), which escapes `<`, `>` and `&` in a description as
+		// \u003c, \u003e and \u0026, so the documents carry those escapes.
 		encoder.SetEscapeHTML(false)
 		if err := encoder.Encode(documents[version].spec); err != nil {
 			return nil, fmt.Errorf("write the /api/v%d document: %w", version, err)
@@ -103,7 +104,7 @@ type openAPIEmitter struct {
 	// version is the version of the API the document describes. The /api/v2 document states
 	// what R6 of dispatch://INFRA-4071 asks of it beside what the /api/v1 one states (each
 	// operation's refusal codes, its row's declarations, its unions, the object schemas closed),
-	// and the /api/v1 document stays the bytes it was.
+	// and the /api/v1 document states none of these.
 	version   apiVersion
 	reflector *openapi31.Reflector
 	// schemas is the schema of each Go type already reflected. Reflect builds a fresh context
@@ -242,7 +243,8 @@ func openAPIDocument(version apiVersion) (*openAPIEmitter, *openapi31.Spec, erro
 				"/api/v1 shape, so their operations list no x-refusal-codes, a query key they do not " +
 				"declare is not refused, and their PUT and DELETE take no Idempotency-Key. " +
 				"components.x-refusal-codes lists every code /api/v2 can answer, once; every object a " +
-				"Go struct answers declares each member it can hold and no other.")
+				"Go struct answers declares each member it can hold and, unless its type writes its own " +
+				"JSON (such as AskApproval), no other.")
 	default:
 		spec.Info.WithVersion("1")
 		spec.Info.WithDescription(
@@ -1143,11 +1145,12 @@ func openAPICodeStatus(code apicode.Code) any {
 }
 
 // writeCodeList writes components.x-refusal-codes, every code /api/v2 can answer by its /api/v2
-// name, once, with its status (dispatch://INFRA-4071/spec R7): a code /api/v1 alone answers
-// (API_V1_ENDED) has no /api/v2 name and is left out, and two codes sharing a name
-// (ISSUE_CYCLE, a loop through parents and one through dependencies) share its status, or the
-// emit fails. openapi31.Components has no member for an extension, so the document's components
-// are written as a map of their own, the reflected schemas beside the list.
+// name, once, with its status (dispatch://INFRA-4071/spec R7): a code only /api/v1 answers
+// (API_V1_ENDED, and the refusals of POST /api/v1/projects/{key}/results) has no /api/v2 name and
+// is left out, and two codes sharing a name (ISSUE_CYCLE, a loop through parents and one through
+// dependencies) share its status, or the emit fails. openapi31.Components has no member for an
+// extension, so the document's components are written as a map of their own, the reflected
+// schemas beside the list.
 func (e *openAPIEmitter) writeCodeList(spec *openapi31.Spec) {
 	codes := map[string]any{}
 	for _, code := range apicode.All() {

@@ -825,7 +825,8 @@ func undeclaredTraversal(route apiRoute) string {
 // declaredQueryOf is every query key route declares: for a route the /api/v2 decoder reads
 // (decoded), the keys its refusal of an undeclared one names, session among them
 // (declaredQueryKeys); for every other - a route of the /api/v1 table, a row of the INFRA-979
-// tree - the query tags of its shape (routeShapes for the /api/v1 table), as it reads them.
+// tree - the query tags of its shape (its declaration's Shape for the /api/v1 table), as it reads
+// them.
 func declaredQueryOf(route apiRoute) []string {
 	if route.decoded() {
 		return declaredQueryKeys(route.Query)
@@ -1050,8 +1051,8 @@ func crossProjectPath(t *testing.T, route apiRoute, owned crossProject) (string,
 		return "", false
 	}
 	// The source write's {owner}/{repo} is the repository it adds as a source of the key's own
-	// project (putArchitectureSource, an upsert on the key and the repository, at /api/v1 and
-	// /api/v2 alike), so under another project's key it writes a source of that project and
+	// project (putArchitectureSourceFrom, an upsert on the key and the repository, which both
+	// versions' PUT runs), so under another project's key it writes a source of that project and
 	// addresses no object of this one.
 	if unversionedRoute(route) == "PUT /projects/{key}/architecture-sources/{owner}/{repo}" {
 		return "", false

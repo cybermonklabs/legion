@@ -429,8 +429,8 @@ func TestTheProjectCreateRouteNamesItsDefaultAssigneeFieldAndRefusal(t *testing.
 // descriptions of the default assignee's create, list and write state their side of the rule; and
 // none of the five descriptions the rule narrowed says what the rule makes false. This is a test of
 // its own because the two route tests above read every description and assert no word of one: the
-// index leaves descriptions out (routeIndexLines) and the pin only holds each row to having one, so
-// nothing else fails when a description outlives the code it describes.
+// index test reads one description alone and the pin only holds each row to having one, so nothing
+// else fails when a description outlives the code it describes.
 func TestTheInboxRouteDescriptionStatesTheRule(t *testing.T) {
 	t.Parallel()
 	descriptions := map[string]string{}
@@ -613,8 +613,8 @@ func routeProbePath(pattern string) string {
 // document, so its probe is an approval; a reply route answers REPLY_FORBIDDEN to a malformed
 // reply as well as to the wrong caller, so its probe must be a complete reply to reach the caller
 // check; and a /api/v2 route whose body is a union is decoded before its handler runs, and its
-// decoder refuses a body naming no arm 400 before any credential is judged, so its probe is an arm
-// its decoder reads that no scope gates (unionProbe).
+// decoder refuses a body naming no arm 400 before the authority gate judges the scope an arm needs
+// (gateV2Authorities), so its probe is an arm its decoder reads that no scope gates (unionProbe).
 func routeProbeBody(route apiRoute) string {
 	switch route.Method + " " + route.Pattern {
 	case "POST /api/v1/artifacts/{id}/reviews", "POST /api/v1/artifacts/{id}/versions/{number}/reviews":
@@ -782,11 +782,11 @@ func TestRoutesTableAuthCellsMatchHandlers(t *testing.T) {
 }
 
 // Every route Dispatch refused a bearer token on before INFRA-1017 names the `person` scope now,
-// and the scope map names no route the table does not mount: the two halves register's panic
-// protects (scopedRoutesNotMounted), proved from the table alone with nothing mounted. The one
-// exception is `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's
-// comment has an author of kind session, so a person scope would shut every author of one out
-// of its own edit, and the route holds the caller to that author instead (editComment).
+// and no other route of the /api/v1 table declares a scope: the routes that declare one are
+// exactly those, read from the declarations alone with nothing mounted. The one exception is
+// `PATCH /api/v1/comments/{id}`, which names no scope since INFRA-1523: an agent's comment has an
+// author of kind session, so a person scope would shut every author of one out of its own edit, and
+// the route holds the caller to that author instead (editComment).
 func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	t.Parallel()
 	browserOnly := []string{

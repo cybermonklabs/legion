@@ -490,8 +490,9 @@ func TestV2ArchitectureSyncAnswersAnAccessFailureOnTheSourcesRow(t *testing.T) {
 
 // TestV2PrioritiesAtLimitZeroAnswerTheirCountsAlone: GET /api/v2/priorities?limit=0 is /api/v1's
 // summary=true, the navigation rail's read: no priority, the total of the live ones, and the two
-// fault counts with no counts by project or priority and no rows, while include=fault_issues adds
-// the rows at limit 0 too and a page of one answers one priority of the same total.
+// fault counts with no counts by project or priority and no rows, while include=fault_issues at
+// limit 0 adds the rows and the counts by project and by priority, and a page of one answers one
+// priority of the same total.
 func TestV2PrioritiesAtLimitZeroAnswerTheirCountsAlone(t *testing.T) {
 	tour := newRouteTour(t)
 	route := tour.requireMounted(t, http.MethodGet, "/priorities")

@@ -19,13 +19,14 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// v2SpecWriterRoutes are the /api/v2 routes whose write the check judges and may refuse, each with
-// the /api/v1 route it answers for: the upload, the edit and the named version of a document, the
-// reword and the resolution of a block ask, the create of an issue under a parent, and the issue
-// patch, which closes, reopens, moves and takes an issue out of Legion, its status-change options
-// among them. The accept and the reject of a suggestion, the answer and the decline of an ask, the
-// rebuild and the decision's Keep need the person scope, which the check passes at once, so they
-// declare no such refusal, as their /api/v1 routes need it too.
+// v2SpecWriterRoutes are the /api/v2 routes whose write the check judges and may refuse: the
+// upload, the edit and the named version of a document, the reword and the resolution of a block
+// ask, the create of an issue under a parent, and the issue patch, which closes, reopens, moves
+// and takes an issue out of Legion, its status-change options among them. The accept and the
+// reject of a suggestion, the rebuild and the decision's Keep need the person scope, which the
+// check passes at once, so their routes declare no such refusal, as their /api/v1 routes need it
+// too; so do the answer and the decline of an ask, arms of PUT /api/v2/asks/{id}/state, which
+// declares the refusal for its resolved and retracted arms.
 var v2SpecWriterRoutes = []string{
 	"POST /api/v2/issues/{key}/artifacts",
 	"POST /api/v2/artifacts/{id}/edits",
