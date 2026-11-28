@@ -27,10 +27,10 @@
 # `ssh -N -i <key> -L ...` a step runs on the load machine, and which refuses the forward with
 # ssh's own `Permission denied (publickey)` when the command names no identity, as the
 # deployment's ssh did.
-# `jq`, `ssh-keygen` and `sudo`'s own commands are the real ones, and `rm` is
-# the real one but for a path a case registers as another user's directory at mode 700, which it
-# refuses to remove unless the removal came through `sudo`: this pod is not root, so no fake can
-# make a file of another user.
+# `jq`, `ssh-keygen`, `rm` and `sudo`'s own commands are the real ones, but for case (w) alone,
+# which puts a fake `rm` on PATH that refuses to remove a path the case registers as another
+# user's directory at mode 700 unless the removal came through `sudo`: this pod is not root, so no
+# fake can make a file of another user.
 #
 # Asserts that: (a) every subcommand refuses a missing --config, and refuses one that is not
 # readable JSON, before it reaches a VM; (b) up starts every container of the specification, in
@@ -236,8 +236,15 @@ mkdir -p "$fake" "$bin" "$tmp/root"
 
 # ---- the fakes -------------------------------------------------------------------------------
 
-cat >"$bin/ssh" <<'EOF'
-#!/usr/bin/env bash
+# Each fake names its interpreter by path, the bash that runs this test, rather than through
+# `/usr/bin/env bash`: env would be one program more on every call of a fake, and an up makes well
+# over a hundred of them. For the same reason the fakes read the files an up and a step have them
+# read most -- their answers, their counters, their tables -- with bash's own read and loops rather
+# than a cat, an awk or a grep, and make a directory only when it is missing. A fake written from a
+# quoted heredoc has its interpreter line written first.
+
+printf '#!%s\n' "$BASH" >"$bin/ssh"
+cat >>"$bin/ssh" <<'EOF'
 # The fake ssh: records the call and runs the command here, so a machine's file system is this
 # test's own directories. vm.sh runs `ssh <options> <user@host> <one word>` and the options
 # carry the run's own OS Login key and the run's own known_hosts file, so the target is the
@@ -289,8 +296,8 @@ fi
 exec setsid -f -w "$@"
 EOF
 
-cat >"$bin/docker" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/docker"
+cat >>"$bin/docker" <<'EOF'
 # The fake docker: one registry per ssh target under FAKE_DIR/docker. `run` records what docker
 # itself would record of the arguments it was given -- NanoCpus, Memory, the image, the network
 # mode and the entrypoint -- and `inspect` answers the five formats vm.sh reads. A container is
@@ -298,11 +305,18 @@ cat >"$bin/docker" <<'EOF'
 # `exited` into its .state file and its last words into its .log, which `logs` prints, as the
 # deployment's own Dispatch did when it refused to start.
 set -u
+# print_file FILE: FILE's bytes, as cat prints them, by the read builtin, which reads to the end
+# of the file and answers 1 there.
+print_file() {
+  local answer
+  IFS= read -r -d '' answer <"$1"
+  printf '%s' "$answer"
+}
 target=${FAKE_SSH_TARGET:-local}
 printf 'docker\t%s\t%s\n' "$target" "$*" >>"$FAKE_DIR/actions.log"
 printf '%s %s\n' "$target" "$*" >>"$FAKE_DIR/docker.log"
 dir=$FAKE_DIR/docker/$target
-mkdir -p "$dir"
+[ -d "$dir" ] || mkdir -p "$dir"
 verb=${1:-}
 shift || true
 case $verb in
@@ -329,7 +343,17 @@ case $verb in
     done
     [ -n "$name" ] || { echo 'docker run without --name' >&2; exit 2; }
     [ -n "$image" ] || { echo 'docker run without an image' >&2; exit 2; }
-    nano=$(awk -v c="$cpus" 'BEGIN { if (c == "-") print 0; else printf "%d", c * 1000000000 }')
+    # NanoCpus is --cpus in billionths of a CPU, exactly, as docker reads it: a decimal with at
+    # most nine digits after the point, and 0 for a container run without --cpus.
+    if [ "$cpus" = - ]; then
+      nano=0
+    elif [[ $cpus =~ ^([0-9]+)(\.([0-9]{1,9}))?$ ]]; then
+      fraction=${BASH_REMATCH[3]}000000000
+      nano=$((10#${BASH_REMATCH[1]} * 1000000000 + 10#${fraction:0:9}))
+    else
+      echo "docker run: cpus $cpus" >&2
+      exit 2
+    fi
     case $memory in
       -) bytes=0 ;;
       *m) bytes=$(( ${memory%m} * 1024 * 1024 )) ;;
@@ -342,8 +366,10 @@ case $verb in
     printf 'running\n' >"$dir/$name.state"
     : >"$dir/$name.env"
     [ -z "$envfile" ] || cat -- "$envfile" >"$dir/$name.env"
-    printf '%s\n' "$(printf '%s%s' "$target" "$name" | sha256sum | cut -c1-64)" >"$dir/$name.id"
-    cat "$dir/$name.id"
+    id=$(printf '%s%s' "$target" "$name" | sha256sum)
+    id=${id%% *}
+    printf '%s\n' "$id" >"$dir/$name.id"
+    printf '%s\n' "$id"
     ;;
   inspect)
     fmt="" name=""
@@ -362,12 +388,12 @@ case $verb in
       *) echo "fake docker: no answer for format $fmt" >&2; exit 2 ;;
     esac
     [ -f "$file" ] || { echo "Error: No such object: $name" >&2; exit 1; }
-    cat -- "$file"
+    print_file "$file"
     ;;
   logs)
     name=${!#}
     [ -f "$dir/$name.main" ] || { echo "Error: No such object: $name" >&2; exit 1; }
-    [ ! -f "$dir/$name.log" ] || cat -- "$dir/$name.log"
+    [ ! -f "$dir/$name.log" ] || print_file "$dir/$name.log"
     ;;
   *)
     echo "fake docker: no subcommand $verb" >&2
@@ -378,7 +404,7 @@ exit 0
 EOF
 
 cat >"$bin/curl" <<EOF
-#!/usr/bin/env bash
+#!$BASH
 REAL_SLEEP=$REAL_SLEEP
 EOF
 cat >>"$bin/curl" <<'EOF'
@@ -386,6 +412,13 @@ cat >>"$bin/curl" <<'EOF'
 # curl.argv as well, which is where the OS Login cases prove that no minted token reached a
 # command line: vm.sh gives curl the Authorization header over its standard input.
 set -u
+# print_file FILE: FILE's bytes, as cat prints them, by the read builtin, which reads to the end
+# of the file and answers 1 there.
+print_file() {
+  local answer
+  IFS= read -r -d '' answer <"$1"
+  printf '%s' "$answer"
+}
 url=${!#}
 printf 'curl\t%s\n' "$url" >>"$FAKE_DIR/actions.log"
 printf '%s\n' "$*" >>"$FAKE_DIR/curl.argv"
@@ -405,24 +438,24 @@ case $url in
   *loginProfile*)
     [ ! -f "$FAKE_DIR/profile-refuses" ] ||
       { printf 'curl: (22) The requested URL returned error: 404\n' >&2; exit 22; }
-    cat "$FAKE_DIR/loginprofile.json"
+    print_file "$FAKE_DIR/loginprofile.json"
     ;;
-  *sqladmin*) cat "$FAKE_DIR/cloudsql.json" ;;
+  *sqladmin*) print_file "$FAKE_DIR/cloudsql.json" ;;
   *compute*/instances/*)
     name=${url##*/}
     n=0
-    [ ! -f "$FAKE_DIR/compute-reads" ] || n=$(cat "$FAKE_DIR/compute-reads")
+    [ ! -f "$FAKE_DIR/compute-reads" ] || read -r n <"$FAKE_DIR/compute-reads"
     n=$((n + 1))
     printf '%s\n' "$n" >"$FAKE_DIR/compute-reads"
     stop_after=""
-    [ ! -f "$FAKE_DIR/compute-stop-after" ] || stop_after=$(cat "$FAKE_DIR/compute-stop-after")
+    [ ! -f "$FAKE_DIR/compute-stop-after" ] || read -r stop_after <"$FAKE_DIR/compute-stop-after"
     if [ -n "$stop_after" ] && [ "$n" -gt "$stop_after" ]; then
       jq '.status = "TERMINATED"' "$FAKE_DIR/compute-$name.json"
     else
-      cat "$FAKE_DIR/compute-$name.json"
+      print_file "$FAKE_DIR/compute-$name.json"
     fi
     ;;
-  */healthz) cat "$FAKE_DIR/healthz" ;;
+  */healthz) print_file "$FAKE_DIR/healthz" ;;
   *debug/pprof/*)
     # A read of the profiling port on Dispatch's own machine always answers. A read of any other
     # port is one through the step's tunnel, and answers only while the fake tunnel that forwards
@@ -430,17 +463,21 @@ case $url in
     # how a test proves the tunnel was opened before the step and closed when it ended.
     port=${url#http://127.0.0.1:}
     port=${port%%/*}
-    if [ "$port" != "$(cat "$FAKE_DIR/pprof-port")" ]; then
+    pprof_port=""
+    read -r pprof_port <"$FAKE_DIR/pprof-port"
+    if [ "$port" != "$pprof_port" ]; then
       up=$FAKE_DIR/tunnel-up
       [ -f "$up" ] || { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
-      kill -0 "$(awk '{print $1}' "$up")" 2>/dev/null && [ "$(awk '{print $2}' "$up")" = "$port" ] ||
+      tunnel_pid="" tunnel_port=""
+      read -r tunnel_pid tunnel_port _ <"$up"
+      kill -0 "$tunnel_pid" 2>/dev/null && [ "$tunnel_port" = "$port" ] ||
         { printf 'fake curl: connection refused on %s\n' "$url" >&2; exit 7; }
     fi
     # A read of Dispatch's own profiling port is recorded here. vm.sh asks that port for
     # nothing of its own (vm.sh PPROF_FILES): every profile of a step's window is `loadgen
     # run`'s, taken from inside the run through the step's tunnel, so this file is how a case
     # sees that the driver asked for nothing.
-    if [ "$port" = "$(cat "$FAKE_DIR/pprof-port")" ]; then
+    if [ "$port" = "$pprof_port" ]; then
       printf '%s\n' "${url#*/debug/pprof/}" >>"$FAKE_DIR/pprof-reads"
     fi
     printf 'fake profile of %s\n' "$url"
@@ -450,8 +487,8 @@ esac
 exit 0
 EOF
 
-cat >"$bin/psql" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/psql"
+cat >>"$bin/psql" <<'EOF'
 # The fake psql: records each statement and keeps a database list under FAKE_DIR/db, each
 # database a file holding one line per relation a write of the fake loadgen left in it
 # ("issues 1000"). The whole argv goes to psql.argv as well, which is where the credential case
@@ -491,33 +528,55 @@ if [ -f "$FAKE_DIR/psql-refuses" ]; then
 fi
 db=$FAKE_DIR/db
 sessions=$FAKE_DIR/sessions
-mkdir -p "$db" "$sessions"
+[ -d "$db" ] && [ -d "$sessions" ] || mkdir -p "$db" "$sessions"
 
-# tick: one statement of the clock above, run when this call ends however it ends.
+# tick: one statement of the clock above, run when this call ends however it ends. Each file is
+# written again in place, so one whose sessions have all gone stays behind empty.
 tick() {
-  local f
+  local f line pid left after kept
   for f in "$sessions"/*; do
     [ -f "$f" ] || continue
-    awk '{ if ($2 == "-") { print; next } if ($2 - 1 > 0) print $1, $2 - 1, $3 }' "$f" >"$f.tick"
-    mv -- "$f.tick" "$f"
+    kept=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      read -r pid left after _ <<<"$line"
+      if [ "$left" = - ]; then
+        kept+=$line$'\n'
+      elif ((left - 1 > 0)); then
+        kept+="$pid $((left - 1)) $after"$'\n'
+      fi
+    done <"$f"
+    printf '%s' "$kept" >"$f"
   done
 }
 trap tick EXIT
 
 # session_count DATABASE: the sessions pg_stat_activity shows on DATABASE, this call's own apart.
+# A session is a line that holds at least one character.
 session_count() {
-  local f=$sessions/$1
-  if [ -f "$f" ]; then grep -c . "$f" || true; else echo 0; fi
+  local f=$sessions/$1 line n=0
+  if [ -f "$f" ]; then
+    while IFS= read -r line || [ -n "$line" ]; do
+      [ -z "$line" ] || n=$((n + 1))
+    done <"$f"
+  fi
+  printf '%s\n' "$n"
 }
 
 # signal_backends DATABASE: every session of DATABASE signalled, as pg_terminate_backend does
 # and as the FORCE option's own pass does: what each one has left becomes what it takes to go
 # after a signal, and a backend that goes at once leaves no line behind.
 signal_backends() {
-  local f=$sessions/$1
+  local f=$sessions/$1 line pid left after kept=""
   [ -f "$f" ] || return 0
-  awk '{ if ($3 == "-") { print; next } if ($3 == 0) next; print $1, $3, $3 }' "$f" >"$f.signal"
-  mv -- "$f.signal" "$f"
+  while IFS= read -r line || [ -n "$line" ]; do
+    read -r pid left after _ <<<"$line"
+    if [ "$after" = - ]; then
+      kept+=$line$'\n'
+    elif [ "$after" != 0 ]; then
+      kept+="$pid $after $after"$'\n'
+    fi
+  done <"$f"
+  printf '%s' "$kept" >"$f"
 }
 
 # busy DATABASE [PREFIX]: the server's own refusal of a statement that needs DATABASE to itself,
@@ -540,10 +599,13 @@ for a in "$@"; do
   case $a in postgres://*) dbname=${a%%\?*}; dbname=${dbname##*/} ;; esac
 done
 count_in() {
-  local relation=$1 marker=$2 file=$db/$dbname n
+  local relation=$1 marker=$2 file=$db/$dbname n="" key value
   [ -e "$file" ] ||
     { printf 'psql: error: connection to server failed: FATAL:  database "%s" does not exist\n' "$dbname" >&2; exit 2; }
-  n=$(awk -v k="$marker" '$1 == k { v = $2 } END { if (v != "") print v }' "$file")
+  # The count is the second word of the last line whose first word is the relation's marker.
+  while read -r key value _ || [ -n "$key" ]; do
+    [ "$key" != "$marker" ] || n=$value
+  done <"$file"
   [ -n "$n" ] || { printf 'ERROR:  relation "public.%s" does not exist\n' "$relation" >&2; exit 1; }
   printf '%s\n' "$n"
 }
@@ -557,9 +619,14 @@ elif [[ $sql =~ ^select\ pg_terminate_backend\(pid\)\ from\ pg_stat_activity\ wh
   # reads what the reset did about the sessions rather than how it spelt a statement.
   name=${BASH_REMATCH[1]}
   if [ -f "$sessions/$name" ]; then
-    printf '%s\t%s\t%s\n' "$name" "$(session_count "$name")" \
-      "$(awk '{ print $1 }' "$sessions/$name" | tr '\n' ' ')" >>"$FAKE_DIR/terminate.log"
-    awk '{ print "t" }' "$sessions/$name"
+    pids="" rows=""
+    while IFS= read -r line || [ -n "$line" ]; do
+      read -r pid _ <<<"$line"
+      pids+="$pid "
+      rows+=$'t\n'
+    done <"$sessions/$name"
+    printf '%s\t%s\t%s\n' "$name" "$(session_count "$name")" "$pids" >>"$FAKE_DIR/terminate.log"
+    printf '%s' "$rows"
     signal_backends "$name"
   fi
 elif [[ $sql =~ ^drop\ database\ if\ exists\ ([A-Za-z0-9_]+)(\ with\ \(force\))?$ ]]; then
@@ -591,8 +658,8 @@ fi
 exit 0
 EOF
 
-cat >"$bin/nc" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/nc"
+cat >>"$bin/nc" <<'EOF'
 # The fake nc: every address is refused (exit 1) unless FAKE_DIR/nc/<host>-<port> says otherwise.
 set -u
 port=${!#}
@@ -600,11 +667,12 @@ host=${@: -2:1}
 printf 'nc\t%s\t%s:%s\n' "${FAKE_SSH_TARGET:-local}" "$host" "$port" >>"$FAKE_DIR/actions.log"
 f=$FAKE_DIR/nc/$host-$port
 [ -f "$f" ] || exit 1
-exit "$(cat "$f")"
+read -r code <"$f"
+exit "$code"
 EOF
 
 cat >"$bin/loadgen" <<EOF
-#!/usr/bin/env bash
+#!$BASH
 # The fake loadgen: records its argv and writes the files the next step reads.
 set -u
 REAL_SLEEP=$REAL_SLEEP
@@ -640,12 +708,18 @@ tail_dirs() {
 # subcommand, the flag, the path, the file's mode and its content. The copy up puts on the load
 # machine is this same script, so the line says what that machine held too. It is how the
 # credential case proves a command was given the credential it needs while no value of one
-# reached any command line.
+# reached any command line. The content is read by the read builtin: the file's bytes less the
+# newlines at its end, as $(cat) gave them, and "unreadable" for a file loadgen could not open.
 for credflag in key-file pg-file token-file listener-token-file; do
   credpath=$(flag "$credflag") || continue
+  credtext=unreadable
+  if [ -r "$credpath" ] && [ ! -d "$credpath" ]; then
+    IFS= read -r -d '' credtext <"$credpath"
+    while [[ $credtext == *$'\n' ]]; do credtext=${credtext%$'\n'}; done
+  fi
   printf '%s\t-%s\t%s\t%s\t%s\n' "$cmd" "$credflag" "$credpath" \
     "$(stat -c %a "$credpath" 2>/dev/null || echo none)" \
-    "$(cat "$credpath" 2>/dev/null || echo unreadable)" >>"$FAKE_DIR/credentials.log"
+    "$credtext" >>"$FAKE_DIR/credentials.log"
 done
 # mark_db RELATION COUNT: what a write of this loadgen leaves in the database it was given, as
 # one line of FAKE_DIR/db/<database>, read off its own -pg-file. The fake psql answers a count
@@ -853,8 +927,8 @@ esac
 exit 0
 EOF
 
-cat >"$bin/sleep" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/sleep"
+cat >>"$bin/sleep" <<'EOF'
 # The fake sleep: it records the wait and returns at once, so a poll's naps cost the test no
 # wall clock. No order a case reads rests on a wait of vm.sh's: the driver reads nothing of
 # Dispatch, so every wait it makes is for something of its own to end.
@@ -864,7 +938,7 @@ exit 0
 EOF
 
 cat >"$bin/pprof-tunnel" <<EOF
-#!/usr/bin/env bash
+#!$BASH
 REAL_SLEEP=$REAL_SLEEP
 EOF
 cat >>"$bin/pprof-tunnel" <<'EOF'
@@ -915,8 +989,8 @@ while :; do
 done
 EOF
 
-cat >"$bin/sudo" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/sudo"
+cat >>"$bin/sudo" <<'EOF'
 # The fake sudo: records the call and runs it here. This pod is not root and has no
 # /mnt/stateful_partition, so a path under the stateful partition is made under FAKE_DIR/stateful
 # instead; the log keeps the path vm.sh asked for, which is what the cases read. What it runs is
@@ -935,8 +1009,8 @@ export FAKE_SUDO=1
 exec "${args[@]}"
 EOF
 
-cat >"$bin/mount" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/mount"
+cat >>"$bin/mount" <<'EOF'
 # The fake mount: a mount table of its own for each ssh target, under FAKE_DIR/mounts. With no
 # argument it prints that target's table in the form mount itself prints it, `SRC on DIR type
 # TYPE (OPTS)`; `--bind SRC DIR` adds a line and `-o remount,... SRC DIR` rewrites DIR's. A line
@@ -946,10 +1020,10 @@ cat >"$bin/mount" <<'EOF'
 # every mount noexec whatever it was asked for, which is a VM where the remount does not take.
 set -u
 printf 'mount\t%s\t%s\n' "${FAKE_SSH_TARGET:-local}" "$*" >>"$FAKE_DIR/actions.log"
-mkdir -p "$FAKE_DIR/mounts"
+[ -d "$FAKE_DIR/mounts" ] || mkdir -p "$FAKE_DIR/mounts"
 table=$FAKE_DIR/mounts/${FAKE_SSH_TARGET:-local}
 [ -f "$table" ] || : >"$table"
-[ $# -gt 0 ] || { cat "$table"; exit 0; }
+[ $# -gt 0 ] || { IFS= read -r -d '' answer <"$table"; printf '%s' "$answer"; exit 0; }
 [ ! -f "$FAKE_DIR/mount-refuses" ] || { echo 'fake mount: operation not permitted' >&2; exit 32; }
 opts="" args=()
 while [ $# -gt 0 ]; do
@@ -969,17 +1043,18 @@ for o in ${opts//,/ }; do
   esac
 done
 [ ! -f "$FAKE_DIR/mount-noexec" ] || kept="$kept,noexec"
-left=$(grep -vF -- " on ${args[1]} type " "$table" || true)
-{
-  [ -z "$left" ] || printf '%s\n' "$left"
-  printf '%s on %s type none (%s)\n' "${args[0]}" "${args[1]}" "$kept"
-} >"$table.new"
-mv -- "$table.new" "$table"
+# The table less DIR's line, every other line kept as `grep -vF` keeps it, and the new line after
+# them, written back in one go.
+left=""
+while IFS= read -r line || [ -n "$line" ]; do
+  [[ $line == *" on ${args[1]} type "* ]] || left+=$line$'\n'
+done <"$table"
+printf '%s%s on %s type none (%s)\n' "$left" "${args[0]}" "${args[1]}" "$kept" >"$table"
 exit 0
 EOF
 
-cat >"$bin/chown" <<'EOF'
-#!/usr/bin/env bash
+printf '#!%s\n' "$BASH" >"$bin/chown"
+cat >>"$bin/chown" <<'EOF'
 # The fake chown: records the call. This pod is not root and the directories a VM's file system
 # stands for are its own already, so what a case reads is that up asked, and for which user.
 set -u
@@ -987,18 +1062,22 @@ printf 'chown\t%s\t%s\n' "${FAKE_SSH_TARGET:-local}" "$*" >>"$FAKE_DIR/actions.l
 exit 0
 EOF
 
-cat >"$bin/rm" <<EOF
-#!/usr/bin/env bash
+# The fake rm is written beside $bin, not into it: it is on PATH for case (w) alone, which copies
+# it into $bin before its up and removes it after its last assertion. Everywhere else rm is the
+# real one, with no bash started in front of it.
+cat >"$tmp/fake-rm" <<EOF
+#!$BASH
 REAL_RM=$REAL_RM
 EOF
-cat >>"$bin/rm" <<'EOF'
-# The fake rm: the real rm, but for the one thing the real one cannot do in this pod. A path
-# listed in FAKE_DIR/root-owned stands for a directory another user made at mode 700 -- what the
-# NATS container, running as root, leaves inside the JetStream store. This pod is not root and
-# cannot make a directory of another user, so the fake refuses to remove such a path, in the
-# words the real rm uses, unless the call came through the fake sudo (FAKE_SUDO), which stands
-# for root removing it. Only a command running on a machine meets the refusal
-# (FAKE_SSH_TARGET), so this test's own removals are the real rm's whatever a case has listed.
+cat >>"$tmp/fake-rm" <<'EOF'
+# The fake rm, on PATH for case (w) alone: the real rm, but for the one thing the real one cannot
+# do in this pod. A path listed in FAKE_DIR/root-owned, which that case alone writes, stands for a
+# directory another user made at mode 700 -- what the NATS container, running as root, leaves
+# inside the JetStream store. This pod is not root and cannot make a directory of another user,
+# so the fake refuses to remove such a path, in the words the real rm uses, unless the call came
+# through the fake sudo (FAKE_SUDO), which stands for root removing it. Only a command running on
+# a machine meets the refusal (FAKE_SSH_TARGET), so this test's own removals are the real rm's
+# whatever a case has listed.
 set -u
 if [ -n "${FAKE_SSH_TARGET:-}" ] && [ "${FAKE_SUDO:-}" != 1 ] && [ -f "${FAKE_DIR:-}/root-owned" ]; then
   while IFS= read -r guarded; do
@@ -1016,7 +1095,7 @@ fi
 exec "$REAL_RM" "$@"
 EOF
 
-chmod +x "$bin"/*
+chmod +x "$bin"/* "$tmp/fake-rm"
 export PATH="$bin:$PATH"
 
 # ---- the deployment the fakes stand for ---------------------------------------------------------
@@ -3454,6 +3533,10 @@ pass "every path up hands a container is reachable by the reader that reads it: 
 # reset meet what the first one met.
 
 reset_fake
+# The fake rm is on PATH for this case alone, under its up, its reset and every assertion of it,
+# and hash -r has this shell look rm up again rather than run the real one it found before.
+cp -- "$tmp/fake-rm" "$bin/rm"
+hash -r
 # The machines' own umask, as in case (v) above: the store's mode follows the shell the ssh ran
 # in, and the mkdir of up and the mkdir of reset must both be under it.
 saved_umask=$(umask)
@@ -3495,6 +3578,8 @@ grep -q -- "mkdir -p -- $store" <<<"$nats_sudo" &&
 reset_actions=$(actions || true)
 grep -qx wipe-jetstream <<<"$reset_actions" ||
   fail "reset's own record of the emptied store is gone from the action log: $reset_actions"
+"$REAL_RM" -f -- "$bin/rm"
+hash -r
 pass "reset empties a JetStream store the NATS container wrote in as root -- the removal with sudo, the store made again as the ssh user -- and leaves it there, empty, at the owner and mode up leaves it at"
 }
 
