@@ -22,7 +22,13 @@
 # under the job's own.
 # Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
 #
-# The cases of `go-cpu-runner.py`, R1-R5, go below the W cases, before the summary.
+# The cases of `go-cpu-runner.py`, R1-R6, go below the W cases, before the summary. `start` prints
+# the runner's facts and the raw text it read them from, and leaves a detached sampler of
+# /proc/stat behind it, or with --no-sampler no process at all; `report` stops that sampler, sums
+# the rows it finds by class, reads each Postgres container's cpu.stat through docker and prints
+# the CPU /proc/stat counted between the two. These cases point RUNNER_TEMP and HOME at scratch
+# directories, so they neither read nor write the CI job's own, and put a stand-in docker on PATH.
+# `start` hashes 256 MiB on one CPU and again on each, so they run it twice in all.
 #
 # Run from anywhere: .github/scripts/go-cpu.test.sh
 set -euo pipefail
@@ -595,6 +601,236 @@ check "go test of a package whose test fails still exits 1 with the wrapper" "$(
 check "and prints the test's FAIL and the package's" "$(is "$(contains "$(cat "$work/stdout")" '^--- FAIL: TestFails')$(contains "$(cat "$work/stdout")" '^FAIL'$'\t''example.com/f')" truetrue)"
 check "and the row of f.test has exit 1" "$(is "$(row "$d/rows-fail" '[r["binary"], r["exit"]]')" '["f.test", 1]')"
 
-# R1-R5, the cases of go-cpu-runner.py, go here, after the wrapper's cases and before the summary.
+# The cases of go-cpu-runner.py.
+runner="$script_dir/go-cpu-runner.py"
 
-summary "go-cpu-exec.py"
+# matches <text> <extended regex>: true/false for check; the regex is bash's own.
+matches() { [[ $1 =~ $2 ]] && echo true || echo false; }
+
+# lines_in <file>: the number of lines in <file>, 0 when there is none.
+lines_in() { { wc -l < "$1"; } 2> /dev/null || echo 0; }
+
+# session_of <pid>: the session of <pid>, or nothing when there is no process <pid>.
+session_of() {
+  local stat session
+  { read -r stat < "/proc/$1/stat"; } 2> /dev/null || return 0
+  read -r _ _ _ session _ <<< "${stat##*) }"
+  echo "$session"
+}
+
+# R1, which parses files captured from real runners, goes here, before R2.
+
+echo "case R2: report sums the rows of each class, reads each Postgres container's cpu.stat and counts the new cache entries"
+d="$work/r2"
+cpu="$d/temp/go-test-events/cpu"
+mkdir -p "$cpu/runner" "$d/home/.cache/go-build/00" "$d/home/.cache/go-build/01" "$d/bin" "$d/empty-temp"
+# Five entries in the Go build cache now, of which start counted two.
+for entry in 00/a-d 00/b-d 01/c-d 01/d-a README; do
+  printf 'x' > "$d/home/.cache/go-build/$entry"
+done
+printf '{"cache_entries": 2}\n' > "$cpu/runner/runner.json"
+# Each field differs from every other, so a sum that reads a wrong field, or adds guest and
+# guest_nice, comes out different from the one this case works out.
+printf 'cpu  1 2 3 4 5 6 7 8 9 10\ncpu0 1 2 3 4 5 6 7 8 9 10\n' > "$cpu/runner/stat-start.txt"
+# put_row <id> <parent, as JSON> <cwd> <binary> <args, as JSON> <user_s> <sys_s> <wall_s>: writes a
+# row of the wrapper's schema by hand into the record directory.
+put_row() {
+  printf '{"v": 1, "id": "%s", "parent": %s, "go_pid": 100, "job": "envoy-go", "step": "__run_3", "cwd": "%s", "binary": "%s", "args": %s, "start": 1.5, "wall_s": %s, "user_s": %s, "sys_s": %s, "self_user_s": 0.0, "self_sys_s": 0.0, "children_user_s": 0.0, "children_sys_s": 0.0, "maxrss_kib": 1024, "exit": 0, "signal": null}\n' \
+    "$1" "$2" "$3" "$4" "$5" "$8" "$6" "$7" > "$cpu/$1.json"
+}
+# Two test rows of one package, a list row, an outside row and a run row, whose sums report adds,
+# but for the run row's; and a nested row under the first test row, which its parent's numbers
+# already hold. The outside row's binary is no .test and the nested row's cwd is absolute and its
+# args list, so a report that tests the classes in another order counts them in another class.
+put_row 1-101 null pkg/a a.test '["-test.paniconexit0", "-test.timeout=10m0s"]' 1.2 0.3 2.0
+put_row 2-102 null pkg/a a.test '["-test.paniconexit0", "-test.run=^TestB$"]' 2.4 0.6 3.5
+put_row 3-103 null pkg/a a.test '["-test.list=^Test"]' 0.1 0.05 0.25
+put_row 4-104 null /elsewhere/cmd/tool tool '[]' 3.0 1.0 4.0
+put_row 5-105 null cmd/x x '["serve"]' 50.0 50.0 50.0
+put_row 6-106 '"1-101"' /tmp/inner c.test '["-test.list=."]' 100.0 100.0 100.0
+job_line='go-cpu job: envoy-go binaries=4 nested=1 runs=1 user=6.70 sys=1.95 cpu=8.65 wall=9.75'
+# A docker that appends its arguments to docker.calls, one call to a line, and prints the
+# cpu.stat beside that file.
+program "$d/bin/docker" << 'EOF'
+#!/usr/bin/env bash
+here=$(dirname "$0")/..
+echo "$*" >> "$here/docker.calls"
+cat "$here/cpu.stat"
+EOF
+printf 'usage_usec 1234567\nuser_usec 1000000\nsystem_usec 234567\nnr_periods 0\nnr_throttled 0\nthrottled_usec 0\n' > "$d/cpu.stat"
+cp "$d/cpu.stat" "$d/cpu.stat.with-usage"
+in_r2=(env -u GITHUB_JOB RUNNER_TEMP="$d/temp" HOME="$d/home" PATH="$d/bin:$PATH")
+number='-?[0-9]+\.[0-9]{2}'
+usage_sums="busy=$number user=$number sys=$number iowait=$number steal=$number idle=$number"
+
+run "${in_r2[@]}" GITHUB_JOB=envoy-go "$runner" report --postgres service=pg-one
+usage=$(sed -n 2p "$work/stdout")
+check "report exits 0, writes nothing to stderr and prints two lines" "$(is "$status:$(cat "$work/stderr"):$(lines_in "$work/stdout")" 0::2)"
+check "the job line counts the test, list and outside rows as binaries and the nested and run rows apart, and sums the four" "$(is "$(sed -n 1p "$work/stdout")" "$job_line")"
+check "the usage line names the /proc/stat sums, the 3 new cache entries and the 1.23 s of usage_usec, in that order" "$(matches "$usage" "^go-cpu usage: $usage_sums new_cache_entries=3 postgres_cpu=1\\.23\$")"
+check "each sum is stat-end.txt's first cpu line less stat-start.txt's, in seconds, with guest and guest_nice in none" "$(python3 -c '
+import os, sys
+def ticks(path):
+    with open(path, encoding="utf-8") as f:
+        return [int(x) for x in f.readline().split()[1:9]]
+t = [b - a for a, b in zip(ticks(sys.argv[2]), ticks(sys.argv[3]))]
+s = lambda n: "%.2f" % (n / os.sysconf("SC_CLK_TCK"))
+want = "busy=%s user=%s sys=%s iowait=%s steal=%s idle=%s" % (
+    s(t[0] + t[1] + t[2] + t[5] + t[6] + t[7]), s(t[0] + t[1]), s(t[2] + t[5] + t[6]), s(t[4]), s(t[7]), s(t[3]))
+print("true" if sys.argv[1].startswith("go-cpu usage: " + want + " ") else "false")
+' "$usage" "$cpu/runner/stat-start.txt" "$cpu/runner/stat-end.txt" 2> /dev/null || echo false)"
+check "stat-end.txt is a copy of /proc/stat, which begins with its cpu line" "$(matches "$(sed -n 1p "$cpu/runner/stat-end.txt" 2> /dev/null || true)" '^cpu +[0-9]')"
+check "it ran docker exec <container> cat /sys/fs/cgroup/cpu.stat once" "$(holds "$d/docker.calls" 'exec pg-one cat /sys/fs/cgroup/cpu.stat\n')"
+check "and kept what that printed as postgres-service.cpu.stat" "$(same "$cpu/runner/postgres-service.cpu.stat" "$d/cpu.stat")"
+
+printf 'user_usec 1000000\nsystem_usec 234567\n' > "$d/cpu.stat"
+printf '{"v": 1, "id": "7-107", ' > "$cpu/7-107.json"
+run "${in_r2[@]}" GITHUB_JOB=envoy-go "$runner" report --postgres service=pg-one
+check "with a cpu.stat that holds no usage_usec line, report exits 0 and postgres_cpu is UNKNOWN" "$(is "$status:$(matches "$(sed -n 2p "$work/stdout")" ' new_cache_entries=3 postgres_cpu=UNKNOWN$')" 0:true)"
+check "a row file that is no JSON is counted as bad=1 at the end of the job line, the other rows as before" "$(is "$(sed -n 1p "$work/stdout")" "$job_line bad=1")"
+rm -f "$cpu/7-107.json" "$d/docker.calls"
+
+run "${in_r2[@]}" GITHUB_JOB=envoy-go "$runner" report
+check "with no --postgres, report exits 0, postgres_cpu is NONE and docker is not run" "$(is "$status:$(matches "$(sed -n 2p "$work/stdout")" ' postgres_cpu=NONE$'):$([ -e "$d/docker.calls" ] && echo run || echo none)" 0:true:none)"
+
+cp "$d/cpu.stat.with-usage" "$d/cpu.stat"
+run "${in_r2[@]}" GITHUB_JOB=envoy-go "$runner" report --no-rows --postgres service=pg-one
+check "report --no-rows exits 0 and prints the usage line alone, with no new_cache_entries and no postgres_cpu" "$(is "$status:$(lines_in "$work/stdout"):$(matches "$(cat "$work/stdout")" "^go-cpu usage: $usage_sums\$")" 0:1:true)"
+check "and no job line" "$(is "$(contains "$(cat "$work/stdout")" '^go-cpu job:')" false)"
+check "and reads no container" "$(is "$([ -e "$d/docker.calls" ] && echo run || echo none)" none)"
+
+run env -u GITHUB_JOB RUNNER_TEMP="$d/empty-temp" HOME="$d/home" PATH="$d/bin:$PATH" "$runner" report
+check "with no start before it, no row and no GITHUB_JOB, report exits 0" "$(is "$status" 0)"
+check "and prints UNKNOWN for the job, zeros for the rows, UNKNOWN for each /proc/stat sum and the cache, and NONE" "$(holds "$work/stdout" 'go-cpu job: UNKNOWN binaries=0 nested=0 runs=0 user=0.00 sys=0.00 cpu=0.00 wall=0.00\ngo-cpu usage: busy=UNKNOWN user=UNKNOWN sys=UNKNOWN iowait=UNKNOWN steal=UNKNOWN idle=UNKNOWN new_cache_entries=UNKNOWN postgres_cpu=NONE\n')"
+
+run "${in_r2[@]}" "$runner" report --postgres pg-one
+check "a --postgres with no NAME= is a usage error: exit 2" "$(is "$status" 2)"
+
+# R3 and R4, which parse files captured from real runners, go here, before R5.
+
+echo "case R5: start --no-sampler leaves no process running; start leaves one detached sampler, which report stops"
+d="$work/r5"
+mkdir -p "$d/home/.cache/go-build/00" "$d/alone" "$d/sampled"
+for entry in 00/a-d 00/b-d README; do
+  printf 'x' > "$d/home/.cache/go-build/$entry"
+done
+# reaper <left> <command...>: runs <command> as a child subreaper (prctl(2)'s
+# PR_SET_CHILD_SUBREAPER), so each process <command> leaves running, in a session of its own or
+# not, becomes the reaper's child when its parent ends, rather than init's. Once <command> has
+# ended it writes the pids of its children that still run into <left>, nothing for none, and
+# exits as <command> did.
+reaper="$d/reaper"
+program "$reaper" << 'EOF'
+#!/usr/bin/env python3
+import ctypes, os, subprocess, sys
+PR_SET_CHILD_SUBREAPER = 36
+left = sys.argv[1]
+if ctypes.CDLL(None, use_errno=True).prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0:
+    with open(left, "w") as f:
+        f.write("unreadable: no subreaper\n")
+    sys.exit(125)
+code = subprocess.run(sys.argv[2:]).returncode
+running = []
+for name in os.listdir("/proc"):
+    if not name.isdigit():
+        continue
+    try:
+        with open(f"/proc/{name}/stat", "rb") as f:
+            stat = f.read()
+    except OSError:
+        continue
+    state, ppid = stat[stat.rindex(b")") + 2 :].split()[:2]
+    if int(ppid) == os.getpid() and state != b"Z":
+        running.append(int(name))
+with open(left, "w") as f:
+    f.write(" ".join(str(pid) for pid in sorted(running)))
+sys.exit(code if code >= 0 else 128 - code)
+EOF
+
+alone="$d/alone/go-test-events/cpu/runner"
+before=$(date +%s.%N)
+run "$reaper" "$d/left-alone" env RUNNER_TEMP="$d/alone" HOME="$d/home" GOFLAGS=-exec=/x/y "$runner" start --no-sampler
+after=$(date +%s.%N)
+# R6 reads this run's output.
+cp "$work/stdout" "$d/alone.out"
+check "start --no-sampler exits 0 and writes nothing to stderr" "$(is "$status:$(cat "$work/stderr")" 0:)"
+check "it leaves no process running that it started" "$(is "$(cat "$d/left-alone" 2> /dev/null || echo missing)" "")"
+check "it writes runner.json, stat-start.txt, lscpu.txt and cpuinfo.txt, and no sampler.pid and no proc-stat.tsv" "$(is "$(ls -A "$alone" 2> /dev/null | tr '\n' ' ')" 'cpuinfo.txt lscpu.txt runner.json stat-start.txt ')"
+check "stat-start.txt is a copy of /proc/stat, which begins with its cpu line" "$(matches "$(sed -n 1p "$alone/stat-start.txt" 2> /dev/null || true)" '^cpu +[0-9]')"
+
+sampled="$d/sampled/go-test-events/cpu/runner"
+sampled_before=$(date +%s.%N)
+run "$reaper" "$d/left-sampled" env RUNNER_TEMP="$d/sampled" HOME="$d/home" "$runner" start
+started=$(now_us)
+sampler=$(cat "$sampled/sampler.pid" 2> /dev/null || true)
+check "start exits 0 and writes a pid to sampler.pid" "$(is "$status:$(matches "$sampler" '^[0-9]+$')" 0:true)"
+check "the one process it leaves running is the sampler that sampler.pid names" "$(is "$(cat "$d/left-sampled" 2> /dev/null || echo missing)" "${sampler:-none}")"
+check "which runs" "$([ -n "$sampler" ] && ! gone "$sampler" && echo true || echo false)"
+check "with /dev/null as its stdin, stdout and stderr, so it holds none of the step's pipes" "$(is "$(readlink "/proc/${sampler:-0}/fd/0" "/proc/${sampler:-0}/fd/1" "/proc/${sampler:-0}/fd/2" 2> /dev/null | tr '\n' ' ' || true)" '/dev/null /dev/null /dev/null ')"
+check "and leads a session of its own" "$(is "$(session_of "${sampler:-0}")" "${sampler:-none}")"
+# Two ticks of the 2 s sampler, with room for a loaded runner: the harness pool runs this harness
+# beside others, and a check that waits only one tick's slack would fail on load, not on a fault.
+while [ "$(lines_in "$sampled/proc-stat.tsv")" -lt 2 ] && [ "$(($(now_us) - started))" -lt 10000000 ]; do
+  sleep 0.1
+done
+check "within 10 s of start it has appended two lines to proc-stat.tsv" "$([ "$(lines_in "$sampled/proc-stat.tsv")" -ge 2 ] && echo true || echo false)"
+check "each the epoch seconds of its tick, a tab and the first line of /proc/stat, the second 1.5 s or more after the first" "$(python3 -c '
+import re, sys, time
+with open(sys.argv[1], encoding="utf-8") as f:
+    lines = f.read().splitlines()
+stamps = [float(line.split("\t")[0]) for line in lines]
+print("true" if len(lines) >= 2
+      and all(re.fullmatch(r"[0-9]+\.[0-9]{3}\tcpu +[0-9]+( [0-9]+){6,}", line) for line in lines)
+      and all(float(sys.argv[2]) <= stamp <= time.time() for stamp in stamps)
+      and stamps[1] - stamps[0] >= 1.5 else "false")
+' "$sampled/proc-stat.tsv" "$sampled_before" 2> /dev/null || echo false)"
+run env RUNNER_TEMP="$d/sampled" HOME="$d/home" "$runner" report --no-rows
+check "report exits 0" "$(is "$status" 0)"
+check "and the sampler is gone when it returns" "$([ -n "$sampler" ] && gone "$sampler" && echo true || echo false)"
+check "it wrote stat-end.txt beside stat-start.txt" "$([ -s "$sampled/stat-end.txt" ] && [ -s "$sampled/stat-start.txt" ] && echo true || echo false)"
+# A process either start left, and report did not stop, must not outlive this script.
+for pid in $(cat "$d/left-alone" "$d/left-sampled" 2> /dev/null || true) $sampler; do
+  if [[ $pid =~ ^[0-9]+$ ]] && ! gone "$pid"; then
+    kill -KILL "$pid" 2> /dev/null || true
+  fi
+done
+
+echo "case R6: start prints its line in the documented order and quoting, then the raw facts it read in a group"
+# This reads the output of R5's start --no-sampler, so the harness pays for the probe twice only.
+out="$d/alone.out"
+line=$(sed -n 1p "$out")
+check "its first line is the go-cpu runner: line, and it prints no other" "$(is "$(matches "$line" '^go-cpu runner: '):$(grep -c '^go-cpu runner: ' "$out" || true)" true:1)"
+check "the line holds part, cpus, mem_kib, kernel, probe_one, probe_all, cache_entries, goflags and model, in that order and quoting" "$(matches "$line" '^go-cpu runner: part=(0x[0-9a-f]+:[0-9]+(,0x[0-9a-f]+:[0-9]+)*)? cpus=[0-9]+ mem_kib=[0-9]+ kernel=[^ ]+ probe_one=[0-9]+\.[0-9] probe_all=[0-9]+\.[0-9] cache_entries=[0-9]+ goflags="[^"]*" model="[^"]+"$')"
+# field <name>: the value <name>= holds in the line, up to the next space.
+field() { sed -n "s/.* $1=\\([^ ]*\\).*/\\1/p" <<< "$line"; }
+check "goflags is the environment's GOFLAGS, in quotes" "$(contains "$line" ' goflags="-exec=/x/y" ')"
+check "cpus is what nproc prints" "$(is "$(field cpus)" "$(env -u OMP_NUM_THREADS -u OMP_THREAD_LIMIT nproc)")"
+check "mem_kib is /proc/meminfo's MemTotal" "$(is "$(field mem_kib)" "$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo)")"
+check "kernel is what uname -r prints" "$(is "$(field kernel)" "$(uname -r)")"
+check "cache_entries counts the three files under ~/.cache/go-build" "$(is "$(field cache_entries)" 3)"
+check "part is each CPU part of /proc/cpuinfo with its count, in order of first appearance" "$(is "$(field part)" "$(awk -F: '
+$1 ~ /^CPU part[ \t]*$/ { v = $2; gsub(/^[ \t]+|[ \t]+$/, "", v); if (!(v in n)) order[++k] = v; n[v]++ }
+END { for (i = 1; i <= k; i++) printf "%s%s:%d", (i > 1 ? "," : ""), order[i], n[order[i]] }' /proc/cpuinfo)")"
+check "model is lscpu's Model name, the last field" "$(is "${line#* model=\"}" "$(LC_ALL=C lscpu | sed -n 's/^Model name:[[:space:]]*//p' | sed 's/[[:space:]]*$//' | awk '!seen[$0]++ { printf "%s%s", (n++ ? ", " : ""), $0 }')\"")"
+check "both probe rates are above 0 MB/s" "$(awk -v one="$(field probe_one)" -v all="$(field probe_all)" 'BEGIN { print (one + 0 > 0 && all + 0 > 0) ? "true" : "false" }')"
+{
+  printf '%s\n' "$line" '::group::go-cpu raw runner facts'
+  cat "$alone/lscpu.txt" "$alone/cpuinfo.txt"
+  printf '::endgroup::\n'
+} > "$d/alone.expected" 2> /dev/null || true
+check "after the line it prints lscpu's output and /proc/cpuinfo, as it kept them in lscpu.txt and cpuinfo.txt, between ::group::go-cpu raw runner facts and ::endgroup::" "$(same "$out" "$d/alone.expected")"
+check "lscpu.txt is lscpu's output, with its Model name line" "$(contains "$(cat "$alone/lscpu.txt" 2> /dev/null || true)" '^Model name:')"
+check "cpuinfo.txt is /proc/cpuinfo whole: as many lines, and the same processor lines" "$(is "$(lines_in "$alone/cpuinfo.txt"):$(grep '^processor' "$alone/cpuinfo.txt" 2> /dev/null | tr '\n' ' ' || true)" "$(lines_in /proc/cpuinfo):$(grep '^processor' /proc/cpuinfo | tr '\n' ' ')")"
+check "runner.json holds the line's facts, and the start time, in epoch seconds, within the run" "$(python3 -c '
+import json, sys
+with open(sys.argv[1], encoding="utf-8") as f:
+    j = json.load(f)
+shown = lambda v, spelled="%s": "UNKNOWN" if v is None else spelled % v
+line = "go-cpu runner: part=%s cpus=%s mem_kib=%s kernel=%s probe_one=%s probe_all=%s cache_entries=%s goflags=\"%s\" model=\"%s\"" % (
+    shown(j["part"]), shown(j["cpus"]), shown(j["mem_kib"]), shown(j["kernel"]), shown(j["probe_one"], "%.1f"),
+    shown(j["probe_all"], "%.1f"), shown(j["cache_entries"]), j["goflags"], shown(j["model"]))
+print("true" if sorted(j) == sorted(["part", "cpus", "mem_kib", "kernel", "probe_one", "probe_all", "cache_entries", "goflags", "model", "start_time"])
+      and line == sys.argv[2] and float(sys.argv[3]) <= j["start_time"] <= float(sys.argv[4]) else "false")
+' "$alone/runner.json" "$line" "$before" "$after" 2> /dev/null || echo false)"
+
+summary "go-cpu-exec.py and go-cpu-runner.py"
