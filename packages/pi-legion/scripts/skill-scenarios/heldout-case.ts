@@ -17,6 +17,9 @@
 //       stages it. A devcase file, a development set of a few cases and no population, has none.
 //   heldout-case.ts parse <file>
 //       validates one case file, its `set` choosing the shape, and prints its set and case count.
+//   heldout-case.ts traces <file>...
+//       prints the number of traces `teardown-effects.sh --controls` replays of the files' cases
+//       (controlTraces), which its driver's deadline counts.
 // A file that does not parse exits 2, with its error on stderr.
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
@@ -1027,6 +1030,15 @@ export function parseOutcome(text: string): OutcomeRecord {
   return parsed(text, OutcomeRecord);
 }
 
+/** The number of traces `teardown-effects.sh --controls` replays of `file`'s cases: each case's
+ * known-good trace and its known-bad trace where it has one, and neither trace of an A case, which
+ * runs under no daemon (teardown_effects_record_test.go's teardownEffectsTraces). */
+export function controlTraces(file: HeldoutFile): number {
+  return file.cases
+    .filter((each) => each.kind !== "A")
+    .reduce((sum, each) => sum + (each.traces.bad === undefined ? 1 : 2), 0);
+}
+
 // The inventory.
 
 /** What the held-out population lacks, one line per gap, in this order: each role with no S or no
@@ -1088,7 +1100,7 @@ export function caseFileGaps(file: HeldoutFile | SkillUseFile): string[] {
 // The command line.
 
 const USAGE =
-  "usage: heldout-case.ts gaps <heldout or devcase file> [<skilluse file>] | parse <file>";
+  "usage: heldout-case.ts gaps <heldout or devcase file> [<skilluse file>] | parse <file> | traces <file>...";
 
 /** `parse(file's text)`, its error lines each prefixed with the file. */
 function load<T>(file: string, parse: (text: string) => T): T {
@@ -1133,6 +1145,12 @@ function main(argv: string[]): number {
       console.log(`${file}: ${gaps.length} gaps`);
     }
     return counted.some(([, gaps]) => gaps.length > 0) ? 1 : 0;
+  }
+  if (command === "traces" && first !== undefined) {
+    let traces = 0;
+    for (const file of files) traces += controlTraces(load(file, parseHeldoutFile));
+    console.log(String(traces));
+    return 0;
   }
   console.error(USAGE);
   return 2;

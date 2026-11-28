@@ -2,6 +2,7 @@ import { beforeAll, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { batchGaps } from "./case-world";
 import {
   HELDOUT_ROLES,
@@ -199,6 +200,55 @@ describe("heldout-case.ts gaps", () => {
         stderr: counted.map((gap) => `${file}: ${gap}\n`).join(""),
       });
     }
+  });
+});
+
+describe("the deadline of teardown-effects.sh --controls", () => {
+  const dir = temporaryDirectory("heldout-case-deadline");
+  const root = path.resolve(import.meta.dir, "../../../..");
+  const controlsTimeout = scriptFunctions(path.join(root, "scripts/e2e/teardown-effects.sh"))(
+    "controls_timeout"
+  );
+
+  // Catches: a fixed deadline that a run of a large case file beside a supplemental file outlasts,
+  // so its last cases never start; and a count that misses one file, or gives a case with no
+  // known-bad trace two traces.
+  test("is ten minutes, and one more for each trace of both files and for the completion before its publish", () => {
+    const short = path.join(dir, "short.json");
+    const json = heldoutJson();
+    delete json.cases[1].traces.bad;
+    writeFileSync(short, JSON.stringify(json));
+    const traces = Bun.spawnSync([
+      process.execPath,
+      path.join(import.meta.dir, "heldout-case.ts"),
+      "traces",
+      HELDOUT_EXAMPLE,
+      short,
+    ]);
+    expect({ code: traces.exitCode, stdout: traces.stdout.toString() }).toEqual({
+      code: 0,
+      stdout: "7\n",
+    });
+    const run = Bun.spawnSync(
+      [
+        "bash",
+        "-c",
+        `set -euo pipefail\n${controlsTimeout}\ncontrols_timeout "$@"`,
+        "bash",
+        HELDOUT_EXAMPLE,
+        short,
+      ],
+      { env: { PATH: `${path.dirname(process.execPath)}:${process.env.PATH}`, root } }
+    );
+    expect({
+      code: run.exitCode,
+      stdout: run.stdout.toString(),
+      stderr: run.stderr.toString(),
+    }).toEqual({
+      code: 0,
+      stdout: "18m\n",
+      stderr: "",
+    });
   });
 });
 

@@ -16,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -191,6 +192,90 @@ func teardownEffectsClaimOf(world teardownEffectsWorld) (issue, tree, session st
 		return c.Issue, c.Tree, c.Session
 	}
 	return issue, tree, ""
+}
+
+// teardownEffectsTaskPhase is the phase the replay's task for the role's claim names: the daemon
+// drops a task unsent once the claim's issue has left the phase it names (supervise's
+// phaseHolds). An architect's task names none, as every start of an architect the daemon makes
+// names none (record.SuperviseRequest.Phase: it serves every phase of its tree), so a root
+// architect whose claim is on another issue than the case's is not dropped for the phase of the
+// case's issue. The controller's names none either, since its claim holds no issue. Every other
+// role's names the phase of the case's issue, on which its claim is.
+func teardownEffectsTaskPhase(role claim.Role, world teardownEffectsWorld) phase.Phase {
+	if role == claim.RoleArchitect || role == claim.RoleController || world.Daemon == nil {
+		return ""
+	}
+	return world.Daemon.Phase
+}
+
+// teardownEffectsUnreadLink is a parent link of the world's Dispatch that the daemon holding the
+// world has not read: Child stands under Parent in Dispatch, and the boot's listing shows it
+// under Boot instead ("" for no parent).
+type teardownEffectsUnreadLink struct{ Child, Parent, Boot string }
+
+// teardownEffectsUnread is each parent link of the world's Dispatch that the daemon holding the
+// world has not read. The daemon's boot reads Dispatch's whole listing (its reconcile), so a boot
+// on the world's Dispatch would read each of them, and the replay writes each link only once the
+// daemon is up (start). The daemon reads no Dispatch event in the replay: the scratch Dispatch
+// publishes none. Two links are such:
+//   - the case's issue's Dispatch parent, where the daemon's record of the issue (daemon.issue)
+//     names another parent: the move under the Dispatch parent has not reached the daemon. The
+//     boot shows the issue under the recorded parent where the replay's Dispatch holds that issue,
+//     and under none otherwise;
+//   - the Dispatch parent of another issue of the world, in triage or backlog, that the daemon
+//     records nothing of, where the world states that parent in a phase an open child holds
+//     (planning through accepting, record.OpenChildHolds). The daemon reads such a child from a
+//     listing alone (record.ChildOpen), and its first admission pass after that moves the parent
+//     to awaiting_children (workflow's StopForChildren), so a daemon that holds the parent in its
+//     phase has not listed since the child was filed. The boot shows the child under no parent.
+func teardownEffectsUnread(world teardownEffectsWorld) []teardownEffectsUnreadLink {
+	if world.Daemon == nil {
+		return nil
+	}
+	parts := world.Daemon.teardownEffectsDaemonParts
+	issue := world.Dispatch.Issue
+	held := map[string]bool{}
+	for _, other := range world.Dispatch.Issues {
+		held[other.Key] = true
+	}
+	var unread []teardownEffectsUnreadLink
+	if stated := parts.Issue; stated != nil && issue.Parent != "" && (stated.Parent == nil || *stated.Parent != issue.Parent) {
+		link := teardownEffectsUnreadLink{Child: issue.Key, Parent: issue.Parent}
+		if stated.Parent != nil && held[*stated.Parent] {
+			link.Boot = *stated.Parent
+		}
+		unread = append(unread, link)
+	}
+	phases := map[string]phase.Phase{issue.Key: world.Daemon.Phase}
+	for _, each := range parts.Records {
+		phases[each.Key] = each.Phase
+	}
+	for _, other := range world.Dispatch.Issues {
+		_, recorded := phases[other.Key]
+		if recorded || other.Key == issue.Parent || other.Parent == nil || other.Status != "triage" && other.Status != "backlog" {
+			continue
+		}
+		if at, ok := phases[*other.Parent]; ok && record.OpenChildHolds(at) {
+			unread = append(unread, teardownEffectsUnreadLink{Child: other.Key, Parent: *other.Parent})
+		}
+	}
+	return unread
+}
+
+// teardownEffectsSeededProcess is the process the seed records for the architect claim token of
+// the issue key, which the world states in state and which is not the role's own claim: a
+// locator for a claim in a live state (supervise.LiveStates), and none for any other. The daemon's
+// boot keeps a live claim's state only where the claim records a process: its supervisor's
+// restore puts a live claim that records none back to launch_uncertain and launches it again, and
+// the claim the world states idle then answers working. The locator is one of the replay's runtime
+// (localRuntime's shape), on pid 0, which names no process; the seed holds that runtime over the
+// claim, so the runtime answers nothing about the process, as no runtime does for a process it has
+// not yet read (localRuntime's hold), and the daemon keeps the claim in the state the world states.
+func teardownEffectsSeededProcess(token claim.Token, key string, state supervise.ClaimState) *runtime.Locator {
+	if !slices.Contains(supervise.LiveStates(), state) {
+		return nil
+	}
+	return &runtime.Locator{Runtime: runtime.RuntimeTmux, Claim: token, Incarnation: "0:0", Tmux: &runtime.TmuxLocator{Window: strings.ToLower(key), Pane: "%0"}}
 }
 
 // teardownEffectsOwnWrite says whether author, the writer a record of the world names, is the role's
@@ -633,6 +718,117 @@ func TestTeardownEffectsOwnWrite(t *testing.T) {
 	}
 	if issue, tree, session := teardownEffectsClaimOf(plain); issue != "ACME-12" || tree != "ACME-10" || session != "" {
 		t.Fatalf("the default claim is %s in %s (%q), want ACME-12 in ACME-10", issue, tree, session)
+	}
+}
+
+// Catches: an architect's task that names the phase of the case's issue, which the daemon drops
+// unsent once the architect's own issue stands in another phase (supervise's phaseHolds), so the
+// pane waits out its whole start for a first turn that never comes; and a phase worker's task that
+// names no phase, which the daemon would send after its issue has left the phase.
+func TestTeardownEffectsTaskPhase(t *testing.T) {
+	t.Parallel()
+	world := teardownEffectsExampleWorld(t, "P05", func(map[string]any) {})
+	for role, want := range map[claim.Role]phase.Phase{claim.RoleImplementer: phase.Implementing, claim.RoleArchitect: "", claim.RoleController: ""} {
+		if got := teardownEffectsTaskPhase(role, world); got != want {
+			t.Errorf("the %s's task names the phase %q, want %q", role, got, want)
+		}
+	}
+}
+
+// Catches: a boot whose listing reads a Dispatch link that the world states the daemon has not
+// read, so the daemon acts on it before the first call: a queued root that a person moved under a
+// live tree is adopted, or a started parent stops for a child filed under it. Neither may hold
+// back a link that the daemon reads at every boot.
+func TestTeardownEffectsUnread(t *testing.T) {
+	t.Parallel()
+	child := func(key, status, parent string) map[string]any {
+		return map[string]any{"key": key, "title": key, "status": status, "parent": parent, "rank": nil, "labels": []any{}, "blockedBy": []any{}, "claimedBy": nil}
+	}
+	recorded := func(parent any) func(map[string]any) {
+		return func(world map[string]any) {
+			world["daemon"].(map[string]any)["issue"] = map[string]any{"tree": "ACME-12", "parent": parent, "generation": 1, "lingerUntil": nil}
+		}
+	}
+	under := func(status string, edits ...func(map[string]any)) func(map[string]any) {
+		return func(world map[string]any) {
+			world["dispatch"].(map[string]any)["issues"] = []any{child("ACME-14", status, "ACME-12")}
+			for _, edit := range edits {
+				edit(world)
+			}
+		}
+	}
+	for _, row := range []struct {
+		name string
+		edit func(map[string]any)
+		want []teardownEffectsUnreadLink
+	}{
+		{"a child whose Dispatch parent is its recorded parent", func(map[string]any) {}, nil},
+		{"a recorded root under a Dispatch parent", recorded(nil), []teardownEffectsUnreadLink{{Child: "ACME-12", Parent: "ACME-10"}}},
+		{"a record under another parent that Dispatch holds", func(world map[string]any) {
+			recorded("ACME-11")(world)
+			world["dispatch"].(map[string]any)["issues"] = []any{child("ACME-11", "todo", "ACME-10")}
+		}, []teardownEffectsUnreadLink{{Child: "ACME-12", Parent: "ACME-10", Boot: "ACME-11"}}},
+		{"a record under another parent that Dispatch does not hold", recorded("ACME-9"), []teardownEffectsUnreadLink{{Child: "ACME-12", Parent: "ACME-10"}}},
+		{"an unrecorded triage child of a started issue", under("triage"), []teardownEffectsUnreadLink{{Child: "ACME-14", Parent: "ACME-12"}}},
+		{"an unrecorded backlog child of a started issue", under("backlog"), []teardownEffectsUnreadLink{{Child: "ACME-14", Parent: "ACME-12"}}},
+		{"a todo child, which events bring the daemon", under("todo"), nil},
+		{"a child the daemon records", under("triage", func(world map[string]any) {
+			world["daemon"].(map[string]any)["records"] = []any{map[string]any{"key": "ACME-14", "tree": "ACME-10", "parent": "ACME-12", "phase": "admitted", "status": "todo", "generation": 1, "architect": nil}}
+		}), nil},
+		{"a child of an issue whose first phase has not started", under("triage", func(world map[string]any) {
+			world["daemon"].(map[string]any)["phase"] = "admitted"
+		}), nil},
+		{"a child of an issue waiting on its children", under("triage", func(world map[string]any) {
+			world["daemon"].(map[string]any)["phase"] = "awaiting_children"
+		}), nil},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			if got := teardownEffectsUnread(teardownEffectsExampleWorld(t, "P05", row.edit)); !slices.Equal(got, row.want) {
+				t.Fatalf("the links the boot does not read are %+v, want %+v", got, row.want)
+			}
+		})
+	}
+}
+
+// Catches: another issue's architect claim that the world states idle, or in another live state,
+// seeded with no process, which the daemon's boot puts back to launch_uncertain and launches
+// again (its supervisor's restore of a live claim with no locator), so the daemon answers working
+// where the world states idle; and a claim in a state that runs no process seeded with one. The
+// seeded process is a locator the daemon's store takes (runtime.Locator's Validate), of the claim.
+func TestTeardownEffectsSeededProcess(t *testing.T) {
+	t.Parallel()
+	world := teardownEffectsExampleWorld(t, "P05", teardownEffectsEveryPart)
+	project, err := claim.ProjectToken("ACME")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The fixture's two architect claims of other issues than the role's own claim: the case's
+	// issue's, suspended, and its parent's, idle.
+	for key, held := range map[string]*teardownEffectsArchitect{"ACME-12": world.Daemon.Architect, "ACME-10": world.Daemon.Records[0].Architect} {
+		token, err := claim.NewToken(project, key, claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if process := teardownEffectsSeededProcess(token, key, supervise.ClaimState(held.State)); (process != nil) != (held.State == "idle") {
+			t.Errorf("the architect claim of %s, %s, is seeded with the process %+v", key, held.State, process)
+		}
+	}
+	for _, state := range teardownEffectsClaimStates {
+		token, err := claim.NewToken(project, "ACME-10", claim.RoleArchitect)
+		if err != nil {
+			t.Fatal(err)
+		}
+		process := teardownEffectsSeededProcess(token, "ACME-10", state)
+		live := slices.Contains(supervise.LiveStates(), state)
+		switch {
+		case live && process == nil:
+			t.Errorf("an architect claim seeded %s records no process, and the daemon's boot launches it again", state)
+		case live && (process.Validate() != nil || process.Claim != token):
+			t.Errorf("the process seeded for a claim %s is %+v, which the store refuses or which names another claim (%v)", state, process, process.Validate())
+		case !live && process != nil:
+			t.Errorf("an architect claim seeded %s, a state that runs no process, records one", state)
+		}
 	}
 }
 

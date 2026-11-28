@@ -3414,6 +3414,21 @@ describe.skipIf(withoutPython || withoutLibpq)("a batch given its Postgres and N
     const logins = seen.filter((line) => line.startsWith("pg_url "));
     expect(logins).toEqual([`pg_url ${url}`, `pg_url ${url}`]);
 
+    // The batch builds daemon-pane.go for the runs' daemon stand-ins once, before any run starts,
+    // so a stand-in's 30-second start counts no compile; a build that fails fails the batch before
+    // any run.
+    const build = `bun ${root}/packages/pi-legion/scripts/skill-scenarios/daemon-pane.ts build`;
+    expect(seen.filter((line) => line.endsWith("daemon-pane.ts build"))).toEqual([build]);
+    expect(seen.indexOf(build)).toBeLessThan(
+      seen.findIndex((line) => line.startsWith("start_dispatch "))
+    );
+    stub("bun", 'case "$*" in *"daemon-pane.ts build") exit 1 ;; esac\n');
+    const brokenDir = freshDir("given-broken");
+    const broken = bash(script, [pgUrl, loopbackDsn, root, brokenDir, "1"], env);
+    expect(broken.code).toBe(1);
+    expect(broken.stderr).toContain("daemon-pane.go did not build");
+    expect(readFileSync(path.join(brokenDir, "calls"), "utf8")).not.toContain("start_dispatch ");
+
     // The same server sized for SKILL_SCENARIOS_PARALLEL's default of 5 runs at once is refused
     // before any run, since it admits one; and one of the two URLs alone gives no servers.
     const five = bash(script, [pgUrl, loopbackDsn, root, freshDir("given-five")], env);
