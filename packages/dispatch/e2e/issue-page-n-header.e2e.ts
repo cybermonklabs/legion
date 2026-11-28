@@ -359,17 +359,18 @@ function expectLinkAddsNothing(
 // 1440 px, 6 lines and 180 px at 390 px. The harness runs with NATS off and serves no webhook, so
 // the row writes the `pull_request_heads` rows an issue's pull requests would have left, an open
 // one and a newer merged one, and reads the answer of `GET /api/v1/issues/{key}` as the server
-// gives it. An issue with none carries no `pull_request` and draws no link. Then the header with
-// the 115-character title and 20 labels is read without the link and with it, twice: with only
-// the two questions waiting on the reader, where the line of the count and the labels has the
+// gives it. An issue with none carries no `pull_request` and draws no link. The row reads the
+// plain seed at each width without the link and with it. Then it reads the header with the
+// 115-character title and 20 labels without the link and with it, twice: with only the two
+// questions waiting on the reader, where the line of the count and the labels has the
 // least room left, and with an approval request waiting too, the worst header. Each is at 1440 px
 // inside R13's sizes and at 390 px inside `WORST_HEADER_AT_390`, and the link takes no line and
 // no pixel of the header the issue draws without it. A pass does not show a state change while
 // the page stays open (the field comes with the issue's read).
 // SLOW(>=2s): 14.1 s on chromium and 8.2 s on iphone (one worker, the pod): a project and
 // the header's seed, four pull request rows written and deleted, a title, 20 labels and an
-// approval request written, and six loads of the issue at each of the row's widths, each read
-// for its header's size.
+// approval request written, and six loads at each width: the plain seed and both long-title
+// seeds, each read for its header's size without the link and with it.
 test("the header links the issue's pull request @phone", async ({ browser }) => {
   test.setTimeout(180_000);
   await phase(browser, seedHeader, async (page, seeded) => {
@@ -450,9 +451,13 @@ test("the header links the issue's pull request @phone", async ({ browser }) => 
       Object.hasOwn(await getIssue(seeded.key), "pull_request"),
       "an issue with no pull request carries a pull_request"
     ).toBe(false);
+    const without = new Map<number, HeaderSize>();
     for (const width of widths) {
       await loadAt(width);
       await expect(link(), "an issue with no pull request draws a link").toHaveCount(0);
+      const reading = await readHeader(page, width, "on the seeded issue, no pull request");
+      without.set(width, reading);
+      expectHeaderWithinItsLimit(reading, width, "on the seeded issue, no pull request", false);
     }
 
     // An open pull request and a newer merged one: the server names the open one, and the header
@@ -476,9 +481,13 @@ test("the header links the issue's pull request @phone", async ({ browser }) => 
       "the issue names another pull request"
     ).toEqual({ number: 101, repo: PULL_REQUEST_REPOSITORY, state: "open", url: openUrl });
     const seededIssue = "on the seeded issue";
-    await expectOpenLinked(seededIssue, (reading, width) =>
-      expectHeaderWithinItsLimit(reading, width, seededIssue, false)
-    );
+    await expectOpenLinked(seededIssue, (reading, width) => {
+      const bare = without.get(width);
+      if (bare === undefined)
+        throw new Error(`no reading of the header without the link at ${width} px`);
+      expectHeaderWithinItsLimit(reading, width, seededIssue, false);
+      expectLinkAddsNothing(reading, bare, width, seededIssue);
+    });
 
     // The pull requests gone, the field and the link go with them.
     await sql(`DELETE FROM pull_request_heads WHERE issue_key = '${seeded.key}'`);
