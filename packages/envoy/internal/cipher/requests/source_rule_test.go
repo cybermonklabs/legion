@@ -126,45 +126,35 @@ func TestSourceRuleOnMemorySources(t *testing.T) {
 	}
 }
 
-// memoryRule is the rule a broker on the memory store holds frozen sources to, for the prefix
-// BROKER_SECRETS_PREFIX and the second prefix second ("" for none): the store's configuration
-// parsed as the broker parses it, and its source prefixes, as cmd/cipherd hands them the machine.
-func memoryRule(t *testing.T, prefix, second string) sourceRule {
+// storeRule is the rule a broker on store b holds frozen sources to, for the prefix
+// BROKER_SECRETS_PREFIX and the second prefix second ("" for none): b's configuration parsed as the
+// broker parses it, from vars and second, and its source prefixes, as cmd/cipherd hands them the
+// machine.
+func storeRule(t *testing.T, b secretstore.Backend, prefix, second string, vars map[string]string) sourceRule {
 	t.Helper()
-	cfg, err := memory.Backend{}.ParseConfig(prefix, func(name string) string {
-		switch name {
-		case secretstore.SecondPrefixVariable:
+	cfg, err := b.ParseConfig(prefix, func(name string) string {
+		if name == secretstore.SecondPrefixVariable {
 			return second
-		case "BROKER_MEMORY_SECRETS_FILE":
-			return "memory-secrets.json"
 		}
-		return ""
+		return vars[name]
 	})
 	if err != nil {
-		t.Fatalf("the memory store's ParseConfig(%q, second %q): %v", prefix, second, err)
+		t.Fatalf("the %s store's ParseConfig(%q, second %q): %v", b.ID(), prefix, second, err)
 	}
 	configured, moved := cfg.SourcePrefixes()
 	return sourceRule{prefix: configured, second: moved}
 }
 
-// gcpRule is the rule a broker on Google Cloud Secret Manager holds frozen sources to, for the
-// prefix BROKER_SECRETS_PREFIX and the second prefix second ("" for none): the GCP store's
-// configuration parsed as the broker parses it, and its source prefixes, as cmd/cipherd hands them
-// the machine.
+// memoryRule is storeRule on the memory store.
+func memoryRule(t *testing.T, prefix, second string) sourceRule {
+	t.Helper()
+	return storeRule(t, memory.Backend{}, prefix, second, map[string]string{"BROKER_MEMORY_SECRETS_FILE": "memory-secrets.json"})
+}
+
+// gcpRule is storeRule on Google Cloud Secret Manager.
 func gcpRule(t *testing.T, prefix, second string) sourceRule {
 	t.Helper()
-	cfg, err := gcp.Backend{}.ParseConfig(prefix, func(name string) string {
-		switch name {
-		case secretstore.SecondPrefixVariable:
-			return second
-		case "BROKER_SECRETS_KMS_KEY_NAME":
-			return "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
-		}
-		return ""
+	return storeRule(t, gcp.Backend{}, prefix, second, map[string]string{
+		"BROKER_SECRETS_KMS_KEY_NAME": "projects/example/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets",
 	})
-	if err != nil {
-		t.Fatalf("the GCP store's ParseConfig(%q, second %q): %v", prefix, second, err)
-	}
-	configured, moved := cfg.SourcePrefixes()
-	return sourceRule{prefix: configured, second: moved}
 }
