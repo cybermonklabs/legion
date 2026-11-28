@@ -14,28 +14,22 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legionfacts"
 )
 
-// plainLegionBoardFacts and plainLegionBoardGrowth are the two entry types' shapes with no method
-// of their own: what encoding/json writes of them by reflection, field by field. A defined type
-// takes its fields from the type it is defined on and none of its methods, so a field added to
-// either type is a field of its copy as well, and the marshal comparisons of
-// TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields fail when the entry's hand-written
-// encoder leaves it out.
-type (
-	plainLegionBoardFacts  legionBoardFacts
-	plainLegionBoardGrowth legionBoardGrowth
-)
+// plainLegionBoardFacts is the issues entry's shape with no method of its own: what encoding/json
+// writes of it by reflection, field by field, its growth among them, which has no method either.
+// A defined type takes its fields from the type it is defined on and none of its methods, so a
+// field added to the entry or to its growth is a field of its copy as well, and the marshal
+// comparisons of TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields fail when the entry's
+// hand-written encoder leaves it out.
+type plainLegionBoardFacts legionBoardFacts
 
-// marshalPlainLegionEntry shadows the embedded copy's Growth field with the plain growth type.
-// This keeps encoding/json from calling either custom encoder to produce the expected bytes.
+// marshalPlainLegionEntry is what encoding/json writes of the entry by reflection, so the
+// expected bytes owe nothing to the entry's own encoder.
 func marshalPlainLegionEntry(entry legionBoardFacts) ([]byte, error) {
-	return json.Marshal(struct {
-		plainLegionBoardFacts
-		Growth *plainLegionBoardGrowth `json:"growth"`
-	}{plainLegionBoardFacts(entry), (*plainLegionBoardGrowth)(entry.Growth)})
+	return json.Marshal(plainLegionBoardFacts(entry))
 }
 
 // TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields: the issues entry's own encoder
-// (legionBoardFacts' and legionBoardGrowth's MarshalJSON) writes, byte for byte, what
+// (legionBoardFacts' MarshalJSON, which writes the growth inside it) writes, byte for byte, what
 // encoding/json writes by reflection for a struct of the same shape with no method, both through
 // json.Marshal, which the GET route's encoder and the live hub's encodeDeliveryBody call, and as
 // the method's own bytes, which encoding/json copies as they stand. The table takes every field
@@ -45,8 +39,8 @@ func marshalPlainLegionEntry(entry legionBoardFacts) ([]byte, error) {
 // strings that need escaping or hold invalid UTF-8, and times with and without nanoseconds, at
 // the zero time and the ends of the four-digit years, and in a location other than UTC.
 //
-// The reference entry also uses a plain growth field so neither custom encoder contributes to
-// its expected bytes. A seeded history exercises every entry alongside the hand-written cases.
+// The reference entry is the plain copy, so the entry's own encoder contributes nothing to its
+// expected bytes. A seeded history exercises every entry alongside the hand-written cases.
 //
 // No stored value is NaN or infinite: the facts consumer computes every value from lengths of
 // time and counts, the JSON columns cannot hold either, and a read grows a value by a finite rate
@@ -158,25 +152,6 @@ func TestAnIssuesEntryIsWrittenAsEncodingJSONWritesItsFields(t *testing.T) {
 			t.Errorf("%s: the entry's MarshalJSON: %v", row.name, err)
 		} else if !bytes.Equal(own, want) {
 			t.Errorf("%s: the entry's MarshalJSON writes\n%s\nwhere encoding/json writes its fields\n%s", row.name, own, want)
-		}
-		if row.entry.Growth == nil {
-			continue
-		}
-		wantGrowth, err := json.Marshal(plainLegionBoardGrowth(*row.entry.Growth))
-		if err != nil {
-			t.Fatalf("%s: encoding/json refuses the growth's copy type: %v", row.name, err)
-		}
-		gotGrowth, err := json.Marshal(*row.entry.Growth)
-		if err != nil {
-			t.Errorf("%s: json.Marshal of the growth: %v", row.name, err)
-		} else if !bytes.Equal(gotGrowth, wantGrowth) {
-			t.Errorf("%s: json.Marshal of the growth writes\n%s\nwhere encoding/json writes its fields\n%s", row.name, gotGrowth, wantGrowth)
-		}
-		ownGrowth, err := row.entry.Growth.MarshalJSON()
-		if err != nil {
-			t.Errorf("%s: the growth's MarshalJSON: %v", row.name, err)
-		} else if !bytes.Equal(ownGrowth, wantGrowth) {
-			t.Errorf("%s: the growth's MarshalJSON writes\n%s\nwhere encoding/json writes its fields\n%s", row.name, ownGrowth, wantGrowth)
 		}
 	}
 

@@ -30,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The two commits this row's binaries are stamped with, which stand for two releases of one
@@ -109,17 +110,17 @@ func TestASecondReleaseReadsTheProjectWholeAndRecordsItsOwnCommit(t *testing.T) 
 // than a scan error it stops on.
 func waitForComputedBuild(t *testing.T, database *store.Store, process *dispatchProcess, project, want string) time.Time {
 	t.Helper()
-	deadline := time.Now().Add(factsRecordWait)
-	for {
-		build := "no record at all"
-		var at time.Time
+	var build string
+	var at time.Time
+	if !testwait.Holds(factsRecordWait, 100*time.Millisecond, func() bool {
+		build = "no record at all"
 		err := database.Pool.QueryRow(t.Context(), `
 			select coalesce(computed_build, 'null'), computed_at
 			from issue_facts_computed where project_key = $1
 		`, project).Scan(&build, &at)
 		switch {
 		case err == nil && build == want:
-			return at
+			return true
 		case err != nil && !errors.Is(err, pgx.ErrNoRows):
 			t.Fatalf("read the record of %s's last whole read: %v", project, err)
 		}
@@ -129,12 +130,12 @@ func waitForComputedBuild(t *testing.T, database *store.Store, process *dispatch
 				want, project, build, process.Output.String())
 		default:
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("%s after the process stamped %s started serving, the record of %s names %q, want %q:\n%s",
-				factsRecordWait, want, project, build, want, process.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
+		return false
+	}) {
+		t.Fatalf("%s after the process stamped %s started serving, the record of %s names %q, want %q:\n%s",
+			factsRecordWait, want, project, build, want, process.Output.String())
 	}
+	return at
 }
 
 // storedFactRows is how many stored Legion facts rows the project holds, which says that the

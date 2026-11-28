@@ -69,14 +69,7 @@ func (f legionBoardFacts) MarshalJSON() ([]byte, error) {
 	return w.done()
 }
 
-// MarshalJSON writes the growth as encoding/json writes its fields (legion_board_json.go).
-func (g legionBoardGrowth) MarshalJSON() ([]byte, error) {
-	w := entryJSON{out: make([]byte, 0, 128)}
-	g.write(&w)
-	return w.done()
-}
-
-// write appends the growth's encoding to w: its own encoding, and the growth field of its entry's.
+// write appends the growth's encoding to w, as the growth field of its entry's.
 func (g legionBoardGrowth) write(w *entryJSON) {
 	w.out = append(w.out, `{"hours_by_phase":`...)
 	w.hours(g.HoursByPhase)

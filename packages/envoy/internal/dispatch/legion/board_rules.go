@@ -208,9 +208,8 @@ const (
 // heldForChildren are the phases in which a slot holder holds its slot for its children alone:
 // its own work is done until they answer.
 var heldForChildren = map[string]bool{
-	PhaseAccepting:      true,
-	PhaseAwaitingMerge:  true,
-	PhaseAwaitingPerson: true,
+	PhaseAccepting:     true,
+	PhaseAwaitingMerge: true,
 }
 
 // ChildWork are the phases of a child that keep its root's held slot busy. A reader of SlotUse

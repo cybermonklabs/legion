@@ -25,9 +25,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legionbench"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -202,21 +205,17 @@ func drive(args []string) error {
 		return errors.New("no card to append an event on")
 	}
 	r.result("board cards=%d", len(cards))
-	parents, err := readParents(ctx, pool, o.project, cards)
-	if err != nil {
-		return err
-	}
 	order := slices.Clone(cards)
 	rng := rand.New(rand.NewPCG(o.seed, 5577))
 	rng.Shuffle(len(order), func(i, j int) { order[i], order[j] = order[j], order[i] })
 	total := int(o.rate * o.duration.Seconds())
-	watched := map[string]bool{}
+	edited := map[string]bool{}
 	for index := range total {
-		key := order[index%len(order)].Key
-		watched[key] = true
-		if parent := parents[key]; parent != "" {
-			watched[parent] = true
-		}
+		edited[order[index%len(order)].Key] = true
+	}
+	watched, err := readWatched(ctx, pool, o.project, slices.Sorted(maps.Keys(edited)))
+	if err != nil {
+		return err
 	}
 	logStart, err := fileSize(o.serverLog)
 	if err != nil {
@@ -228,7 +227,7 @@ func drive(args []string) error {
 	watchCtx, stopWatch := context.WithCancel(ctx)
 	if o.facts {
 		watcher.Go(func() {
-			changes = watchFacts(watchCtx, pool, o.project, slices.Sorted(maps.Keys(watched)), windowStart)
+			changes = watchFacts(watchCtx, pool, o.project, watched, windowStart)
 		})
 	}
 	events := appendEvents(ctx, r, o, token, order, total, windowStart)
@@ -499,26 +498,30 @@ func readCards(ctx context.Context, o driveOptions, token string) ([]card, error
 	return cards, nil
 }
 
-// readParents is the parent of each card's issue that has one.
-func readParents(ctx context.Context, pool *store.Pool, project string, cards []card) (map[string]string, error) {
-	keys := make([]string, len(cards))
-	for i, one := range cards {
-		keys[i] = one.Key
-	}
-	rows, err := pool.Query(ctx, `select key, parent_key from issues where project_key = $1 and key = any($2) and parent_key is not null`, project, keys)
+// readWatched is the keys whose stored rows the drive watches, sorted: each issue of edited and
+// every issue above it in its tree, which are the rows one event on it changes, read in one walk
+// of all their chains. Each step climbs from an issue of project to the parent its row names, so
+// the walk climbs no further than a parent in another project, whose row the drive does not read
+// (watchFacts reads project's rows alone). It stops at refs.IssueDepthCap links, the bound of
+// every recursive issue walk, so a parent chain that loops ends.
+func readWatched(ctx context.Context, pool *store.Pool, project string, edited []string) ([]string, error) {
+	rows, err := pool.Query(ctx, `
+		with recursive chain as (
+			select edited.key, 0 as depth from unnest($2::text[]) as edited(key)
+			union
+			select i.parent_key, chain.depth + 1
+			from chain join issues i on i.key = chain.key
+			where i.project_key = $1 and i.parent_key is not null and chain.depth < $3
+		)
+		select distinct key from chain order by key`, project, edited, refs.IssueDepthCap)
 	if err != nil {
-		return nil, fmt.Errorf("read the cards' parents: %w", err)
+		return nil, fmt.Errorf("read the chains above the %d edited issues: %w", len(edited), err)
 	}
-	defer rows.Close()
-	parents := map[string]string{}
-	for rows.Next() {
-		var key, parent string
-		if err := rows.Scan(&key, &parent); err != nil {
-			return nil, err
-		}
-		parents[key] = parent
+	watched, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the chains above the %d edited issues: %w", len(edited), err)
 	}
-	return parents, rows.Err()
+	return watched, nil
 }
 
 // phaseRoles is the Legion role whose session works an issue in each phase the stand-in reports.
