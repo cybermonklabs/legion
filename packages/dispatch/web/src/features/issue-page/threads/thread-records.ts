@@ -148,7 +148,9 @@ export function quoteOf(post: {
  * reply joins the part of the entry it answers, so each entry whose answers lead to a reply with a
  * quote is in that reply's part, and no entry is in two. A reply is read after the entry it
  * answers, so the replies are read oldest first, and one that answers an entry this thread does
- * not hold joins the root's part.
+ * not hold is placed as if it answered the root: it joins the root's part, or, where it quotes
+ * while the root's part is on no text, begins a part of its own that answers no entry
+ * (`Part.answers`), so that part is on no node.
  */
 function partsOf<P extends Post>(
   root: Part<P>,
