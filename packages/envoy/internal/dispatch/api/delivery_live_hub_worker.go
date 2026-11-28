@@ -186,7 +186,8 @@ func (h *deliveryHub) nextWakeLocked(g *hubGeneration, now time.Time) (time.Time
 	return next, !next.IsZero()
 }
 
-// deliveryViewRead is one recompute's read and compute.
+// deliveryViewRead is one recompute's read and compute. p0 is the open P0 issues it read
+// (delivery.OpenP0Keys), nil for a view that shows no unowned P0 list, which reads none.
 type deliveryViewRead struct {
 	seq               int64
 	changedAt         *time.Time
@@ -199,6 +200,7 @@ type deliveryViewRead struct {
 	expiry            time.Time
 	issues, ancestors map[string]struct{}
 	sessions          map[string]string
+	p0                map[string]struct{}
 	prs, runs         int
 	unfetchable       int
 	// ageStep is an evals read's coarse refresher age (refresherAgeStep), which its body's
@@ -280,11 +282,13 @@ func logMillis(took time.Duration) float64 {
 
 // recompute answers one dirty view from a fresh read: the newest change position first, which
 // takes over every mark made until then (read), so a change committed during the read lands past
-// it and marks the view again; then the GET route's population read, the ancestors of the issues
-// it names, and the pure compute. It sends each sub the delta against what it holds (a snapshot to
-// a sub with none), or the refusal its read answered (viewReads.refusal) to a sub not yet told.
-// Where the server logs at slog's debug level, it logs how long each step took, and when the
-// worker picked it (picked, runDue; recomputeTrace).
+// it and marks the view again; then, for a view that shows the unowned P0 list, the open P0
+// issues, which it installs as the generation's set with what the events heard since the
+// position decided applied over them (installP0Locked); then the GET route's population read, the
+// ancestors of the issues it names, and the pure compute. It sends each sub the delta against
+// what it holds (a snapshot to a sub with none), or the refusal its read answered
+// (viewReads.refusal) to a sub not yet told. Where the server logs at slog's debug level, it logs
+// how long each step took, and when the worker picked it (picked, runDue; recomputeTrace).
 func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause string, picked time.Time) {
 	started := time.Now()
 	h.mu.Lock()
@@ -302,6 +306,17 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 	code, message, refused := classes.reads.refusal(err)
 	h.mu.Lock()
 	view.computing, view.readingSeq = false, 0
+	if classes.unownedP0 {
+		// The open P0 issues the read found stand whatever its later reads answered, with what
+		// the events heard since its position decided over them; their record ends here either
+		// way. Only a view that shows the unowned P0 list keeps the record (read), and those run
+		// on the serial lane one at a time (runDue), so an evals view's recompute that ends
+		// meanwhile leaves it alone.
+		if read.p0 != nil {
+			g.installP0Locked(read.p0)
+		}
+		g.p0Heard = nil
+	}
 	sent := 0
 	switch {
 	case g.views[spec.key] != view:
@@ -377,14 +392,24 @@ func (h *deliveryHub) recompute(g *hubGeneration, view *deliveryView, cause stri
 // began leaves dirty set: the position may name the old log, so the marks are taken over only
 // while the generation stands at the epoch the recompute read. Where trace is not nil, it records
 // there how long each step took.
+//
+// A view that shows the unowned P0 list then reads the open P0 issues (delivery.OpenP0Keys), which
+// recompute installs as the generation's set, so an issue whose priority, or that of an issue
+// above it, a write moved with no event the hub heard (direct SQL, or a process of a build before
+// dispatch://INFRA-5793 while a release rolls) is in the set or out of it from the next fresh read
+// of such a view on, as it is on that view's unowned P0 list. From the position on, the P0 state
+// each issue event decides is recorded (p0Heard) and applied over what the read finds, since the
+// read may have passed an issue's row before its event committed. A view that shows no such list
+// reads none: the set decides the marks of those views alone (showsIssue).
 func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLiveSpec, epoch int64, trace *recomputeTrace) (deliveryViewRead, error) {
-	ctx := g.readContext()
+	ctx, pool := g.readContext(), h.server.deps.Store.Pool
+	classes := spec.classes()
 	var read deliveryViewRead
 	var began time.Time
 	if trace != nil {
 		began = time.Now()
 	}
-	head, err := delivery.ChangesHead(ctx, h.server.deps.Store.Pool)
+	head, err := delivery.ChangesHead(ctx, pool)
 	if err != nil {
 		return read, err
 	}
@@ -402,12 +427,20 @@ func (h *deliveryHub) read(g *hubGeneration, view *deliveryView, spec deliveryLi
 		// the position may name the old log, and the reset's own mark recomputes the view again.
 		view.dirty, view.immediate = false, false
 	}
+	if classes.unownedP0 {
+		g.p0Heard = map[string]bool{}
+	}
 	h.mu.Unlock()
 	now := h.clock.Now()
 	if trace != nil {
 		began = time.Now()
 	}
-	body, err := spec.classes().read(h, ctx, spec, now, &read)
+	if classes.unownedP0 {
+		if read.p0, err = delivery.OpenP0Keys(ctx, pool); err != nil {
+			return read, err
+		}
+	}
+	body, err := classes.read(h, ctx, spec, now, &read)
 	if err != nil {
 		return read, err
 	}

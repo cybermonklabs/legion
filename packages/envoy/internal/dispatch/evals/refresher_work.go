@@ -1408,7 +1408,7 @@ func (r *refresh) readDays(ctx context.Context, days []time.Time, applies map[st
 		for _, window := range read.refused {
 			slog.Warn("dispatch: the eval day-row refresher drops a delivery day's rows of the evals a window past the bound decides",
 				"day", read.Day.Format(time.DateOnly), "window", window.Window(), "repo", window.Repo, "bound", window.Bound,
-				"evals", strings.Join(refusedEvals(window), ","), "reason", window.String())
+				"evals", strings.Join(window.evals, ","), "reason", window.String())
 		}
 		r.noteOwners(read.owners())
 		r.reads[unread[i]] = read

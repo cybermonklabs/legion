@@ -365,14 +365,14 @@ func TestTheDaysRunsReadBuildsEachDaysListOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	args := []any{"acme/deploy", from, to, []string{"production"}, (*string)(nil), MaxRunsPerWindow * len(days)}
+	args := []any{"acme/deploy", from, to, []string{"production"}, (*string)(nil), MaxRunsPerWindow + 1}
 	control := `
-		select ` + RunColumns + `
+		select ` + RunColumns + `, null::integer[], null::integer[]
 		from delivery_runs r
-		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.run_id in (` + daysRunsListed + `
+		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main' and r.run_id in (
+			select run_id from (` + daysRunsListed + `) listed
 		)
-		order by ` + runCreatedAt + `, r.run_id
-		limit $6`
+		order by ` + runCreatedAt + `, r.run_id`
 	// readsAgain is each read of statement's plan under mode that ran more often than once a day:
 	// the scan of the days more than once, or the jobs probed more than once a day for each run.
 	readsAgain := func(statement, mode string) (again []string, outline string) {
@@ -402,11 +402,20 @@ func TestTheDaysRunsReadBuildsEachDaysListOnce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read the days' runs: %v", err)
 		}
-		read, err := collectRuns(rows)
-		if err != nil {
+		defer rows.Close()
+		var ids []int64
+		for rows.Next() {
+			var applyDays, startedDays []int32
+			run, err := scanRun(rows, &applyDays, &startedDays)
+			if err != nil {
+				t.Fatalf("read the days' runs: %v", err)
+			}
+			ids = append(ids, run.RunID)
+		}
+		if err := rows.Err(); err != nil {
 			t.Fatalf("read the days' runs: %v", err)
 		}
-		return runIDsOf(read)
+		return ids
 	}
 	if got, want := answered(daysRunsQuery), answered(control); len(got) != runs || !slices.Equal(got, want) {
 		t.Errorf("the read answers runs %v; its control answers %v, of %d runs", got, want, runs)

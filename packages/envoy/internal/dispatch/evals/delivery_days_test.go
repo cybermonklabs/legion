@@ -903,6 +903,100 @@ func TestTheZeroDayIsTheBuildersDayWithNoRow(t *testing.T) {
 	}
 }
 
+// TestEachRefusalOfADaysReadDropsTheEvalsItDecides: a window of a day's read past the bound of a
+// window's read drops from the day's zero rows the evals it decides, and the day's read names it
+// with those evals (deliveryReadOf, DeliveryDay.refuse, refuseCI): the day's own window every eval
+// but pr-ci; the window of the earlier rows of a repository's deploys that repository's
+// deploy-frequency, deploy-run-success and deploy cards; the day's own deploy runs or apply runs
+// of a repository every eval of that repository but pr-ci (delivery.DaysDeploys.Refused, Rows
+// set); and the read of a repository's CI runs refusing the day (delivery.CIDay.Refused) that
+// repository's pr-ci and deploy cards.
+func TestEachRefusalOfADaysReadDropsTheEvalsItDecides(t *testing.T) {
+	t.Parallel()
+	day := attributionDay
+	settings := delivery.DeliverySettings{DeployRepo: alphaRepo, ProductionJobNames: []string{"production / apply"}, StagingE2EJobName: new("staging-e2e / run")}
+	repos := []keptRepo{{name: alphaRepo, deploys: true, rule: settings}}
+	window := func(repo string, rows delivery.RefusedRows) *delivery.RefusedWindow {
+		return &delivery.RefusedWindow{From: day, To: day.AddDate(0, 0, 1), Repo: repo, Bound: delivery.MaxRunsPerWindow, Rows: rows}
+	}
+	keyOf := func(row DayRow) string { return strings.TrimPrefix(row.EvalID, "ALPHA/") + "@" + row.DeployRepo }
+	zeros := ZeroDeliveryDay("ALPHA", day, []delivery.DeliverySettings{settings}).Rows
+	ofRepo := func(slugs ...string) []string {
+		keys := make([]string, len(slugs))
+		for i, slug := range slugs {
+			keys[i] = slug + "@" + alphaRepo
+		}
+		return keys
+	}
+	everyButPRCI := ofRepo(SlugDeployFrequency, SlugDeployRunSuccess, SlugFirstCommitToProduction, SlugMergeToProduction,
+		SlugOpenToProduction, SlugProductionDeploy, SlugStagingE2E)
+	cards := ofRepo(SlugProductionDeploy, SlugStagingE2E)
+	for _, test := range []struct {
+		name             string
+		own, deploys, ci *delivery.RefusedWindow
+		dropped          []string
+		named            [][]string
+	}{
+		{name: "every window answered"},
+		{
+			name: "the day's own window", own: window("", ""),
+			dropped: slices.Concat(everyButPRCI, []string{SlugPROpenToMerge + "@", SlugReworkShare + "@"}),
+			named:   [][]string{refusedEvals(*window("", ""))},
+		},
+		{
+			name: "the window of the earlier rows of the repository's deploys", deploys: &delivery.RefusedWindow{To: day, Repo: alphaRepo, Bound: delivery.MaxPullRequestsPerWindow},
+			dropped: slices.Concat(ofRepo(SlugDeployFrequency, SlugDeployRunSuccess), cards),
+			named:   [][]string{{SlugDeployFrequency, SlugDeployRunSuccess, SlugStagingE2E, SlugStagingDeploy, SlugProductionDeploy}},
+		},
+		{
+			name: "the day's own deploy runs of the repository", deploys: window(alphaRepo, delivery.RefusedDeployRuns),
+			dropped: everyButPRCI, named: [][]string{refusedEvals(*window(alphaRepo, delivery.RefusedDeployRuns))},
+		},
+		{
+			name: "the day's own apply runs of the repository", deploys: window(alphaRepo, delivery.RefusedApplyRuns),
+			dropped: everyButPRCI, named: [][]string{refusedEvals(*window(alphaRepo, delivery.RefusedApplyRuns))},
+		},
+		{
+			name: "the day's own PR-checks runs of the repository", ci: window(alphaRepo, delivery.RefusedPRChecksRuns),
+			dropped: slices.Concat(ofRepo(SlugPRCI), cards),
+			named:   [][]string{{SlugPRCI, SlugStagingE2E, SlugStagingDeploy, SlugProductionDeploy}},
+		},
+		{
+			name: "the day's own push runs of the repository, which are among its deploy runs on main", deploys: window(alphaRepo, delivery.RefusedDeployRuns),
+			ci:      window(alphaRepo, delivery.RefusedDeployRuns),
+			dropped: slices.Concat(everyButPRCI, ofRepo(SlugPRCI)),
+			named:   [][]string{refusedEvals(*window(alphaRepo, delivery.RefusedDeployRuns)), ciRefusedEvals()},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reads := []repoReads{{settings: settings, refused: test.deploys, ciRefused: test.ci}}
+			read := deliveryReadOf(day, repos, nil, test.own, reads, attribution{})
+			kept := map[string]bool{}
+			for _, row := range read.zeros("ALPHA") {
+				kept[keyOf(row)] = true
+			}
+			var dropped []string
+			for _, row := range zeros {
+				if !kept[keyOf(row)] {
+					dropped = append(dropped, keyOf(row))
+				}
+			}
+			slices.Sort(dropped)
+			want := slices.Sorted(slices.Values(test.dropped))
+			if !slices.Equal(dropped, want) {
+				t.Errorf("the refusal drops the zero rows %v, want %v", dropped, want)
+			}
+			named := make([][]string, len(read.refused))
+			for i, refusal := range read.refused {
+				named[i] = refusal.evals
+			}
+			if !slices.EqualFunc(named, test.named, slices.Equal) {
+				t.Errorf("the day's read names its refusals with the evals %v, want %v", named, test.named)
+			}
+		})
+	}
+}
+
 // TestTheUnownedP0RowIsTheCountAtItsLastWrite: WriteUnownedP0Day writes the project's count of open
 // P0 issues with no claim and no route as the day row's last value, at the write's time; a second
 // write after one more such issue opens moves the value and the time; and a third write, which

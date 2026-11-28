@@ -105,6 +105,9 @@ The window, the compare range, the repositories, the search box and every filter
 Dragging across the timeline sets the target cards to the whole UTC days of the stretch you dragged over, and the cards name those days; the timeline itself keeps the whole window.
 **clear brush window** puts the cards back.
 
+The **Priority** filter reads the priority that a pull request's Dispatch issue works at: its own, or the one it inherits from the nearest issue above it that has one (see [Priority](/legion/dispatch/issues-and-projects/#priority)).
+The merge timeline and the details show an inherited priority with the issue it comes from, such as `ACME-2 · P0 · from ACME-1`.
+
 ## Live updates
 
 An open Evals tab keeps itself current over one connection to Dispatch.
@@ -167,7 +170,7 @@ A card's or a chart's title opens that number's panel, with the rows behind it.
 - **Deploy runs reaching production**: runs that reached the production job, over runs that concluded success or failure.
   A cancelled run is not an attempt, and the card counts it apart.
 
-- **P0 issues with no owner**: the project's open issues of priority P0 with neither a claim nor a route.
+- **P0 issues with no owner**: the project's open issues that work at P0, by a priority of their own or one they inherit from an issue above them, with neither a claim nor a route.
   Pressing its count opens the project's issue list with those issues alone.
 
 The merge timeline's search and filters narrow every figure drawn from pull requests: lead time and rework share.

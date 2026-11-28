@@ -13,6 +13,7 @@ import {
   isDocumentSchemaError,
   isReferencesTimeout,
   isRetryableQueryError,
+  isSearchTimeout,
   isUnauthorized,
   NetworkError,
   REQUEST_DEADLINE_MS,
@@ -981,6 +982,18 @@ test(
         )
       ).fetch
     );
+    const searchTimeout = createApiClient(
+      stubFetch(() =>
+        Response.json(
+          {
+            error:
+              "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query",
+            code: "SEARCH_TIMEOUT",
+          },
+          { status: 503 }
+        )
+      ).fetch
+    );
 
     const [
       unauthorizedError,
@@ -988,12 +1001,14 @@ test(
       documentSchemaError,
       serverErrorResult,
       referencesTimeoutError,
+      searchTimeoutError,
     ] = await Promise.all([
       unauthorized.whoAmI().catch((error: unknown) => error),
       featureOff.getCredentialGrants().catch((error: unknown) => error),
       documentSchema.getArtifactText("artifact-1").catch((error: unknown) => error),
       serverError.whoAmI().catch((error: unknown) => error),
       referencesTimeout.getIssueReferences("CORE-1").catch((error: unknown) => error),
+      searchTimeout.search("astrolabe").catch((error: unknown) => error),
     ]);
 
     expect(isRetryableQueryError(unauthorizedError)).toBe(false);
@@ -1006,6 +1021,10 @@ test(
     // A references walk cut at its bound costs the database the bound again on each retry.
     expect(isReferencesTimeout(referencesTimeoutError)).toBe(true);
     expect(isRetryableQueryError(referencesTimeoutError)).toBe(false);
+    // So does a search whose statement ran past its bound; any other 503 is still retried.
+    expect(isSearchTimeout(searchTimeoutError)).toBe(true);
+    expect(isRetryableQueryError(searchTimeoutError)).toBe(false);
+    expect(isSearchTimeout(serverErrorResult)).toBe(false);
   }
 );
 

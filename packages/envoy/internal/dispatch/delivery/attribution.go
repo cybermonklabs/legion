@@ -63,6 +63,8 @@ import (
 // offers each merged row stored before once more, and that refresh stores both from GitHub's
 // answer (RefreshPullRequestHead, headRow). It is 6, not 3, because cybermonklabs/legion#4230
 // numbers its own rules 3 to 5.
+// 8 is the rule of 6 with a tie between candidates broken by issue key in byte order
+// (collate "C"). It is 8, not 7, because cybermonklabs/legion#4230 numbers its own rule 7.
 //
 // Raising this is how a later change to the attribution, or to what a merged row stores, reaches
 // the merged rows already stored. Nothing else revisits one — an open row comes round at every
@@ -70,7 +72,7 @@ import (
 // ended (PullRequestHeadStaleAfter), but a merged row is read again only by that arm — so a
 // change made without raising it leaves every pull request merged before it judged by the rule
 // of its day for good.
-const AttributionRuleVersion = 6
+const AttributionRuleVersion = 8
 
 // attributionSource names the source a pull request's issue came from.
 type attributionSource string

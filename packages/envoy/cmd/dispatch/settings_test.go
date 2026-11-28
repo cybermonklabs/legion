@@ -2198,6 +2198,48 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT unset: CoverageFillTimeout = %v, want 0 (embedqueue's own)", boot.CoverageFillTimeout)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"})
+			if boot.CoverageFillTimeout != time.Second {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT: CoverageFillTimeout = %v, want 1s", boot.CoverageFillTimeout)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageStatementTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT unset: CoverageStatementTimeout = %v, want 0 (embedqueue's 10 s)", boot.CoverageStatementTimeout)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": "200ms"})
+			if boot.CoverageStatementTimeout != 200*time.Millisecond {
+				t.Errorf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT: CoverageStatementTimeout = %v, want 200ms", boot.CoverageStatementTimeout)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT": "200ms"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
+		"DISPATCH_TEST_COVERAGE_FILL_FAILURES": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillFailures != 0 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_FAILURES unset: CoverageFillFailures = %d, want 0", boot.CoverageFillFailures)
+			}
+			boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_FAILURES": "2"})
+			if boot.CoverageFillFailures != 2 {
+				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_FAILURES: CoverageFillFailures = %d, want 2", boot.CoverageFillFailures)
+			}
+			for _, invalid := range []string{"two", "-1", "0", "1.5"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_COVERAGE_FILL_FAILURES": invalid},
+					fmt.Sprintf("DISPATCH_TEST_COVERAGE_FILL_FAILURES=%q (expected a positive integer)", invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_COVERAGE_FILL_FAILURES": "1"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": func(t *testing.T) {
 			boot := resolveWith(t, map[string]string{})
 			if boot.SearchFillLockTimeout != 0 {

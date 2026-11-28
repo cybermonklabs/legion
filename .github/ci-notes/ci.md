@@ -689,6 +689,14 @@ fallen behind Playwright: those two jobs run in the image this repository builds
 now, which carries the browsers and their host packages, so all four files are
 gone (dispatch://INFRA-1443).
 
+## dispatch_browser: The file store's one-collection rule, which the shard job's wait script and its check step run
+
+The file store's one-collection rule: .github/scripts/dispatch-browser-wait-for-store.sh,
+which the shard job's step "Wait for the S3-compatible server" runs, runs its prepare and its
+check, and the step "Check that no write grew the file store" after the browser step runs its
+check again. internal/tests3 embeds the same file for the Go tests' server, which envoy_go's
+'packages/envoy/**' already selects.
+
 ## dispatch_browser: The container image the shard and alone jobs run in and
 
 The container image the shard and alone jobs run in and everything that decides
@@ -808,7 +816,7 @@ The text checks of the three Go modules, the Dispatch API's eleven static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' twenty-three tests
+which the three Go lanes leave out of their own runs, those checks' twenty-four tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -2996,7 +3004,7 @@ The checks whose subject is text: each module's internal/textcheck package, the 
 eleven static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those twenty-three tests and those two pins out of their own runs
+packages, those twenty-four tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
@@ -3372,6 +3380,9 @@ into the runner's empty cache: 236 modules, 368 MB of zips and 17 s on a devbox.
 no cache. It also holds every workflow file to 64,000 bytes and to what GitHub's own parser reads
 (.github/scripts/check-workflow-files.sh), which .github/workflows/workflow-files.yaml runs a second
 time, in a file small enough to start when this one is too large to.
+
+It also holds every step a filter gates that names a declared script to a Run that cites it: rule
+4's script half in .github/scripts/check-ci-filters.sh's header says how a step names a script.
 
 ## What the proof editor's offline proof shows
 

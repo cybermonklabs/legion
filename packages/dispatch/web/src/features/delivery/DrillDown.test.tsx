@@ -34,6 +34,7 @@ const pr: DeliveryPR = {
   parent_agent: "Planner one",
   partial: false,
   priority: null,
+  priority_from: null,
   repo: "acme/widgets",
   rework: false,
   sessions: ["sess-planner-1", "sess-helper-2", "sess-untitled-3"],
@@ -56,7 +57,7 @@ const helper: Agent = {
   title: "Helper",
 };
 
-function renderDrillDown(sessions: readonly string[]) {
+function renderDrillDown(sessions: readonly string[], row = pr) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   // The agent registry, as the shell's poller last read it: only the helper is running.
   queryClient.setQueryData(["agents"], [helper]);
@@ -68,9 +69,9 @@ function renderDrillDown(sessions: readonly string[]) {
             components={{}}
             onClose={() => {}}
             project="ACME"
-            prs={[{ ...pr, sessions: [...sessions] }]}
+            prs={[{ ...row, sessions: [...sessions] }]}
             runs={[]}
-            selection={{ id: pr.id, kind: "pr" }}
+            selection={{ id: row.id, kind: "pr" }}
             sessionGroups={[]}
             sessionTitles={{
               "sess-planner-1": "Planner one",
@@ -618,4 +619,21 @@ const controlRows: [string, () => Promise<void>][] = [
 
 test.each(controlRows)("%s", async (_row, run) => {
   await run();
+});
+
+test("the PR drill-down names the issue, its resolved P0, and its source as text", () => {
+  const inherited = { ...pr, issue: "ACME-2", priority: "P0", priority_from: "ACME-1" } as const;
+  renderDrillDown([], inherited);
+  try {
+    const dialog = screen.getByRole("dialog", { name: "Details" });
+    expect(dialog, "PR drill-down issue and priority").toHaveTextContent(
+      "ACME-2 · P0 · from ACME-1"
+    );
+    expect(
+      within(dialog).queryByRole("link", { name: "ACME-1" }),
+      "PR drill-down priority source is text"
+    ).toBeNull();
+  } finally {
+    cleanup();
+  }
 });

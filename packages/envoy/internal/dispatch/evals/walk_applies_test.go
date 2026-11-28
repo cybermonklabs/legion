@@ -134,9 +134,9 @@ func TestAReadOfSeveralDaysAnswersEachDaysOwnReads(t *testing.T) {
 			if err != nil {
 				t.Fatalf("%s: read the CI runs: %v", what, err)
 			}
-			if !reflect.DeepEqual(ci[i], ownCI) {
-				t.Errorf("%s: the read of %d days holds %d PR-checks and %d push runs of the day, the day's own read %d and %d, and they differ",
-					what, len(days), len(ci[i].Checks.Runs), len(ci[i].Deploys.Runs), len(ownCI.Checks.Runs), len(ownCI.Deploys.Runs))
+			if ci[i].Refused != nil || !reflect.DeepEqual(ci[i].CIRows, ownCI) {
+				t.Errorf("%s: the read of %d days holds %d PR-checks and %d push runs of the day (refused: %v), the day's own read %d and %d, and they differ",
+					what, len(days), len(ci[i].Checks.Runs), len(ci[i].Deploys.Runs), ci[i].Refused, len(ownCI.Checks.Runs), len(ownCI.Deploys.Runs))
 			}
 			walked := map[string]*delivery.ApplyRows{}
 			for _, repo := range repos {

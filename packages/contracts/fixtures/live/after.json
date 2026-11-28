@@ -26,6 +26,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -55,6 +56,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -323,8 +325,8 @@
   "revs": {
     "items": {
       "prs": {
-        "acme/widgets#3": "c85f28be7fff3df0",
-        "acme/widgets#4": "269739e4cabde7df"
+        "acme/widgets#3": "c0551d656d6706d2",
+        "acme/widgets#4": "85eebd33d252ad65"
       },
       "runs": {
         "41": "37091c3d62324786",
