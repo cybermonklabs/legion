@@ -1,4 +1,5 @@
 import { beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
+import { existsSync } from "node:fs"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
@@ -8,6 +9,7 @@ import { forgetBrokerClients } from "@legion/envoy-client/broker-credential"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer"
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer"
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret"
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories"
@@ -734,24 +736,28 @@ const rejectedCommentFrameRaw = JSON.stringify({
   trace_id: "dispatch-malformed-comment",
 })
 
+// The reply is Dispatch's own answer, which names the call's key back, so the channel reports it
+// as made: it writes no line saying it could not report the rejected delivery.
 test("answers a rejected targeted frame on Dispatch instead of notifying the model", async () => {
   let server: Server<undefined> | undefined
+  const stderr = spyOn(process.stderr, "write")
   try {
     const replies: Array<{
       readonly path: string
       readonly auth: string | null
       readonly body: unknown
     }> = []
+    // Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -766,6 +772,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
     // Not handed to Claude Code, so the forwarder releases its claim: Dispatch records the attempt
     // failed, and a same-mode Retry is answered again rather than dropped as a repeat.
     expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+    const lines = stderr.mock.calls.map(([chunk]) => String(chunk))
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
 
     expect(notifier.notifications).toEqual([])
     expect(replies).toEqual([
@@ -780,12 +788,14 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
       },
     ])
   } finally {
+    stderr.mockRestore()
     server?.stop(true)
   }
 })
 
-// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
-// attempt: its line says it landed, never that it could not be reported.
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`, behind the keyed
+// layer, which names the report's key back on it) answered the attempt: its line says it landed,
+// never that it could not be reported.
 test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
   let server: Server<undefined> | undefined
   const written = spyOn(process.stderr, "write").mockImplementation(() => true)
@@ -793,13 +803,16 @@ test("a rejected frame's report that landed with no answer back is not said to b
     const replies: string[] = []
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
-        replies.push(new URL(request.url).pathname)
-        return Response.json(
-          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
-          { status: 409 },
-        )
-      },
+      fetch: keyedLayer(
+        (request: Request) => {
+          replies.push(new URL(request.url).pathname)
+          return Response.json(
+            { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+            { status: 409 },
+          )
+        },
+        { judged: () => true },
+      ),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -844,10 +857,10 @@ test("a Dispatch frame the channel answered with an error is answered again when
     const replied: string[] = []
     server = Bun.serve({
       port: 0,
-      fetch: (request) => {
+      fetch: keyedLayer((request: Request) => {
         replied.push(new URL(request.url).pathname)
         return Response.json({})
-      },
+      }),
     })
     const answersTo = (id: string) => replied.filter((path) => path.includes(id)).length
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
@@ -904,14 +917,14 @@ test("answers a malformed targeted comment through its supplied comment reply ad
     }> = []
     server = Bun.serve({
       port: 0,
-      fetch: async (request) => {
+      fetch: keyedLayer(async (request: Request) => {
         replies.push({
           path: new URL(request.url).pathname,
           auth: request.headers.get("authorization"),
           body: await request.json(),
         })
         return Response.json({})
-      },
+      }),
     })
     process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
     process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
@@ -1180,6 +1193,21 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
+})
+
+// The row's folder is the server's HOME, and the file's afterEach removes it under Bun's 5 s hook
+// limit, which no row's own limit covers: what the server leaves there is all that removal reads.
+test("the channel server leaves no Bun cache in its HOME", async () => {
+  const home = temporaryHome("cache")
+  const configDirectory = join(home, "claude-config")
+  await mkdir(configDirectory)
+  const { exitCode } = await runChannelServer({
+    HOME: home,
+    CLAUDE_CONFIG_DIR: configDirectory,
+    CLAUDE_CODE_SESSION_ID: "ses_cache",
+    CLAUDE_PLUGIN_DATA: home,
+  })
+  expect({ exitCode, cache: existsSync(join(home, ".bun")) }).toEqual({ exitCode: 0, cache: false })
 })
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {

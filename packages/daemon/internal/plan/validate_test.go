@@ -16,6 +16,13 @@ import (
 // yet ends each refusal of something a later release carries out.
 const yet = " This release of Legion does not carry it out yet."
 
+// builtin is the deployment of Legion's own roles alone.
+var builtin = Deployment{Roles: BuiltinRoles()}
+
+// planDocument is the plan document of these tests, ACME-1's plan.md, as a reference to one of its
+// blocks names it (FromBlocks, ParentOf).
+const planDocument = "dispatch://ACME-1/artifact/plan-md"
+
 // What no release carries out, as this release checks it: a step that names a role neither the
 // deployment nor the plan defines is refused, naming the step, its task and the role. Validate
 // refuses no plan for a step that it lacks, so each plan of Legion's own roles passes it whatever
@@ -63,7 +70,7 @@ func TestValidateRefusesARoleThatNobodyDefines(t *testing.T) {
 // control: a plan of one block with no `steps` is taken.
 func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	d := Deployment{Roles: BuiltinRoles()}
-	empty, err := FromBlocks("plan-md", 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
+	empty, err := FromBlocks("plan-md", planDocument, 1, []Block{{ID: "intro", Type: "paragraph", Text: "No task here."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(no task block): %v", err)
 	}
@@ -77,7 +84,7 @@ func TestValidateRefusesAPlanWithNoTask(t *testing.T) {
 	if r := Supported(empty); len(r) != 0 {
 		t.Fatalf("Supported(no task) = %+v, want none: the cause is Validate's alone", r)
 	}
-	taken, err := FromBlocks("plan-md", 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
+	taken, err := FromBlocks("plan-md", planDocument, 1, []Block{{ID: "a", Type: "plan_task", Text: "Do the change."}})
 	if err != nil {
 		t.Fatalf("FromBlocks(one block): %v", err)
 	}
@@ -103,7 +110,9 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
 			{Task: "", Reason: "the plan has 3 tasks that no task needs (a, b, c), and the work of each would merge by itself." + yet},
 		}},
-		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-2/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
+		// c is needed by a reference to its block in the plan's own document (planDocument): a
+		// reference into another document or issue names no task of this plan (resolveNeeds).
+		{name: "needs", plan: planOf(t, 1, taskNeeding("a", "b", "dispatch://ACME-1/artifact/plan-md#b-c"), taskNeeding("b"), taskNeeding("c")),
 			want: []Refusal{
 				{Task: "", Reason: "the plan has 3 tasks (a, b, c), and this release runs one task for each issue." + yet},
 				{Task: "a", Reason: "task a needs b, c." + yet},
@@ -131,8 +140,8 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 			want: []Refusal{{Task: "a", Reason: "task a names merges." + yet}}},
 		{name: "owner", plan: withTask(Task{ID: "f", Owner: "architect"}),
 			want: []Refusal{{Task: "f", Reason: "task f names owner." + yet}}},
-		{name: "part_of", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
-			want: []Refusal{{Task: "f1", Reason: "task f1 names part_of." + yet}}},
+		{name: "a part of a task", plan: withTask(Task{ID: "f1", PartOf: "f", Steps: implementer}),
+			want: []Refusal{{Task: "f1", Reason: "task f1 is a part of task f." + yet}}},
 		{name: "two causes in one task", plan: oneTask("a", "reviewer implementer reviewer"), want: []Refusal{
 			{Task: "a", Reason: "task a names the role reviewer at steps 1 and 3." + yet},
 			{Task: "a", Reason: "step 1 of task a names reviewer, and no step before it names the role implementer, whose pull request reviewer reads." + yet},
@@ -162,6 +171,62 @@ func TestSupportedRefusesWhatThisReleaseDoesNotCarryOut(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("two tasks and prober =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// Legion does not carry out an element, so Validate refuses an element that names what only a task
+// carries out, `steps`, `owner` or `merges`, and a task that needs an element. It refuses a task
+// block whose Parent names an id that no typed block of the version holds. Each reason names the
+// block and the cause, and none says "yet": no release carries any of them out. An element that
+// names none of the three is taken, and so is a part that needs a part of its own task, a sibling.
+//
+// The faults are an element with steps taken, whose steps Legion never runs though the block
+// names them, and a task that waits for an element, which never ends. The controls: Places with
+// no answer of an element, where a block under a task with no sub-owner stands at the top, makes
+// the element with steps a task of the plan, and its row fails; and a FromBlocks that leaves
+// MissingParent empty fails the row of that parent.
+func TestValidateRefusesWhatAnElementCannotBe(t *testing.T) {
+	// block is a task block id under the block parent, with the attributes named in pairs.
+	block := func(id, parent string, attributes ...string) Block {
+		named := map[string]string{}
+		for i := 0; i+1 < len(attributes); i += 2 {
+			named[attributes[i]] = attributes[i+1]
+		}
+		return withParent(Block{ID: id, Type: TaskBlockType, Attributes: named, Text: "What block " + id + " says."}, parent)
+	}
+	a := block("a", "", "steps", "implementer")
+	element := func(id, names string) string {
+		return "task block " + id + " is an element of task a: it stands under a, which names no sub-owner. " +
+			"Legion does not carry out an element, so an element names no steps, owner or merges, and " + id + " names " + names + "."
+	}
+	for _, tc := range []struct {
+		name   string
+		blocks []Block
+		want   []Refusal
+	}{
+		{name: "an element that names steps", blocks: []Block{a, block("e1", "a", "steps", "implementer")},
+			want: []Refusal{{Task: "e1", Reason: element("e1", "steps")}}},
+		{name: "an element under an element that names owner", blocks: []Block{a, block("e1", "a"), block("e2", "e1", "owner", "architect")},
+			want: []Refusal{{Task: "e2", Reason: "task block e2 is an element of task a: it stands under e1, an element of a. " +
+				"Legion does not carry out an element, so an element names no steps, owner or merges, and e2 names owner."}}},
+		{name: "an element that names merges", blocks: []Block{a, block("e1", "a", "merges", "false")},
+			want: []Refusal{{Task: "e1", Reason: element("e1", "merges")}}},
+		{name: "an element that names all three", blocks: []Block{a, block("e1", "a", "steps", "tester", "owner", "architect", "merges", "true")},
+			want: []Refusal{{Task: "e1", Reason: element("e1", "steps, owner and merges")}}},
+		{name: "a task that needs an element", blocks: []Block{a, block("e1", "a"), block("h", "", "steps", "implementer", "needs", needWord("a")+" "+needWord("e1"))},
+			want: []Refusal{{Task: "h", Reason: "task h needs " + needWord("e1") + ", which is an element of task a. Legion does not carry out an element, so a task cannot need one."}}},
+		{name: "a parent that names an id the version does not hold", blocks: []Block{a, block("b", "gone", "steps", "implementer", "needs", needWord("a"))},
+			want: []Refusal{{Task: "b", Reason: "task block b names gone as its parent, which no typed block of version 1 of the plan holds. " +
+				"Name a typed block of this version in parent, or leave parent out."}}},
+		{name: "an element that names none of the three", blocks: []Block{a, block("e1", "a", "needs", needWord("a"))}},
+		{name: "a part that needs a sibling part", blocks: []Block{block("f", "", "owner", "architect"), block("f1", "f", "steps", "implementer"),
+			block("f2", "f", "steps", "implementer", "needs", needWord("f1"))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Validate(planOf(t, 1, tc.blocks...), builtin); !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("Validate =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -450,7 +515,7 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"a step of 301 bytes outside the grammar", []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": "implementer " + strings.ToUpper(role)}}}, cut(strings.ToUpper(role))},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := FromBlocks("plan-md", 1, tc.blocks)
+			_, err := FromBlocks("plan-md", planDocument, 1, tc.blocks)
 			if err == nil || !strings.Contains(err.Error(), tc.quote) || len(err.Error()) > 300+len(tc.quote) {
 				t.Fatalf("FromBlocks = %.600v, want one error within 300 bytes of the quote %.200q", err, tc.quote)
 			}
@@ -468,7 +533,7 @@ func TestAReasonQuotesAWordOfThePlanWithinABound(t *testing.T) {
 		{"an id of 900 KB", strings.Repeat("a", 900<<10), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := FromBlocks("plan-md", 1, []Block{taskNeeding(tc.id)})
+			_, err := FromBlocks("plan-md", planDocument, 1, []Block{taskNeeding(tc.id)})
 			if tc.taken != (err == nil) || err != nil && (len(err.Error()) > 500 ||
 				!strings.Contains(err.Error(), "the task "+quoted(tc.id)+" has an id") || !strings.Contains(err.Error(), "lowercase letters, digits and hyphens")) {
 				t.Fatalf("FromBlocks(an id of %d bytes) = %.600v, want taken %v, or one reason within 500 bytes stating the form", len(tc.id), err, tc.taken)
@@ -554,7 +619,7 @@ func TestFromBlocksHoldsATaskIDToDispatchsForm(t *testing.T) {
 		strings.Repeat("a", steprecord.TaskIDMax), strings.Repeat("a", steprecord.TaskIDMax+1),
 		"a.b", "A", "-a", "a b", "a_b", ""} {
 		t.Run(fmt.Sprintf("%.32q of %d bytes", id, len(id)), func(t *testing.T) {
-			_, err := FromBlocks("plan-md", 1, []Block{taskNeeding(id)})
+			_, err := FromBlocks("plan-md", planDocument, 1, []Block{taskNeeding(id)})
 			if want := steprecord.TaskIDHolds(id); want != (err == nil) {
 				t.Fatalf("FromBlocks(%.64q) = %.300v, and steprecord.TaskIDHolds says %t", id, err, want)
 			}
@@ -647,7 +712,7 @@ func TestAReasonQuotesNoByteOfAURLsCredential(t *testing.T) {
 		{"a step outside the grammar", []Block{{ID: "a", Type: TaskBlockType, Attributes: map[string]string{"steps": plantedURL}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := FromBlocks("plan-md", 1, tc.blocks)
+			_, err := FromBlocks("plan-md", planDocument, 1, tc.blocks)
 			if err == nil || !strings.Contains(err.Error(), quote) {
 				t.Fatalf("FromBlocks = %.1000v, want an error quoting %.300q", err, quote)
 			}

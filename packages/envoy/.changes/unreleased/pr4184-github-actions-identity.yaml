@@ -1,0 +1,3 @@
+kind: Added
+body: |-
+  `AGENT_SECRETS_MACHINE_IDENTITY=github-actions` is a GitHub Actions job's own identity: the Go broker client (`cipherclient.MachineIdentity`) asks the runner's endpoint, `ACTIONS_ID_TOKEN_REQUEST_URL` with the bearer `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, for an OIDC token of `AGENT_SECRETS_MACHINE_AUDIENCE` at every trade, and presents it as a workflow run's token. A job with no runner endpoint reads the token from `AGENT_SECRETS_MACHINE_TOKEN_FILE`. A missing variable is refused by name, and no refusal names the bearer or the token. The request follows no redirect, since it carries the runner's bearer: a 3xx is the endpoint's refusal, named by its status.

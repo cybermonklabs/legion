@@ -138,7 +138,7 @@ type comparisonReader struct {
 	server *server
 	// readOnly is whether the request the reader reads for was made with a read-only credential
 	// (model.Credential.ReadOnly), read once when the reader is made from the caller the read-only
-	// gate put on the request's context (refuseReadOnlyToken): the gate puts every caller that can
+	// gate put on the request's context (refuseLimitedToken): the gate puts every caller that can
 	// be read-only there, a broker-issued token and a personal token alike, and a cookie, the
 	// shared token and a service-account token never are. optionalActor answers the handler the
 	// same caller, and it cannot change within one read.

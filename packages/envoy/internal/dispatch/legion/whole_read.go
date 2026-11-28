@@ -12,7 +12,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -95,7 +94,7 @@ const wholeReadLine = "legion intake: whole read"
 // readRefused call it.
 func (in *Intake) makeRead(ctx context.Context, attempt *messageAttempt, read owedRead) (outcome, error) {
 	// A read takes up to RequestTimeout: the message is still in hand.
-	inProgress(attempt.msg)
+	in.inProgress(attempt.msg)
 	recorded, err := in.readWhole(ctx, read, &attempt.pending)
 	if err != nil {
 		return outcomeDone, err
@@ -140,10 +139,11 @@ type wholeRead struct {
 // serves: it commits no state event, so it serves stateSeq 0 too. The read's start is started, the
 // intake's clock before the call, and its time now's once the daemon has answered. A call presents
 // no credential: `GET /legion/v1/state` authenticates nobody. Every Client shares the default
-// transport, so a client per read still reuses the connection the last read left.
-func fetchWhole(ctx context.Context, setting Settings, started time.Time, now func() time.Time) *wholeRead {
+// transport, so a client per read still reuses the connection the last read left; options are the
+// Client's (Intake.stateOptions), none in a program.
+func fetchWhole(ctx context.Context, setting Settings, started time.Time, now func() time.Time, options ...Option) *wholeRead {
 	call := time.Now()
-	state, bytes, err := New(setting.StateURL).State(ctx)
+	state, bytes, err := New(setting.StateURL, options...).State(ctx)
 	read := &wholeRead{stateURL: setting.StateURL, bytes: bytes, started: started, at: now().UTC(), took: time.Since(call)}
 	if state.Daemon != nil {
 		read.stateSeq, read.schemaVersion = state.Daemon.StateSeq, state.Daemon.SchemaVersion
@@ -234,7 +234,7 @@ func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeR
 		}
 		in.reads(owed.setting.Project, &started)
 		defer in.reads(owed.setting.Project, nil)
-		read = fetchWhole(ctx, owed.setting, started, in.now)
+		read = fetchWhole(ctx, owed.setting, started, in.now, in.stateOptions...)
 		if err := ctx.Err(); err != nil {
 			// The read was cut short by the stop, not by the daemon: nothing is recorded but its
 			// start, written above, which the next read waits ReadRetryAfter after (row 7.6).
@@ -242,7 +242,7 @@ func (in *Intake) readWhole(ctx context.Context, owed owedRead, pending **wholeR
 		}
 		*pending = read
 	}
-	recorded, err := finishWhole(ctx, in.pool, owed, read)
+	recorded, err := in.finishWhole(ctx, owed, read)
 	if err != nil {
 		return nil, err
 	}
@@ -263,28 +263,28 @@ func (in *Intake) reads(project string, started *time.Time) {
 }
 
 // finishWhole records read, made for owed (recordWhole, which announces it on StateChannel), then
-// logs it (wholeReadLine), naming owed's recorded reason as its reason and every reason it joined
-// as its reasons, comma-separated, and answers the read as it was recorded. A read it does not
-// record, its setting moved or gone, it logs with a line of its own and answers as nil. A record
-// Postgres refused is recorded as a failed read instead, its failure `record: <why>` and none of
-// its observations, so the last good observations stand and the read is owed rather than its
-// project's runner held on a value the database will never take. An error is answered only when
-// that record is refused too: the database itself is failing, and the caller tries the record
-// again in place.
-func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *wholeRead) (*wholeRead, error) {
+// logs it on the intake's logger (wholeReadLine), naming owed's recorded reason as its reason and
+// every reason it joined as its reasons, comma-separated, and answers the read as it was recorded.
+// A read it does not record, its setting moved or gone, it logs with a line of its own and answers
+// as nil. A record Postgres refused is recorded as a failed read instead, its failure
+// `record: <why>` and none of its observations, so the last good observations stand and the read
+// is owed rather than its project's runner held on a value the database will never take. An error
+// is answered only when that record is refused too: the database itself is failing, and the caller
+// tries the record again in place.
+func (in *Intake) finishWhole(ctx context.Context, owed owedRead, read *wholeRead) (*wholeRead, error) {
 	project := owed.setting.Project
-	recorded, written, err := recordWhole(ctx, pool, owed, read)
+	recorded, written, err := recordWhole(ctx, in.pool, owed, read)
 	if err != nil && ctx.Err() == nil {
-		slog.Warn("legion intake: record a whole read; recording it as a failed read", "project", project, "reason", owed.reason, "error", err)
+		in.logger().Warn("legion intake: record a whole read; recording it as a failed read", "project", project, "reason", owed.reason, "error", err)
 		refused := *read
 		refused.failure, refused.observed = fmt.Errorf("record: %w", err), false
-		if recorded, written, err = recordWhole(ctx, pool, owed, &refused); err == nil {
+		if recorded, written, err = recordWhole(ctx, in.pool, owed, &refused); err == nil {
 			read = &refused
 		}
 	}
 	if err != nil || !recorded {
 		if err == nil {
-			slog.Info("legion intake: the Legion setting changed during a whole read; it is not recorded", "project", project, "reason", owed.reason)
+			in.logger().Info("legion intake: the Legion setting changed during a whole read; it is not recorded", "project", project, "reason", owed.reason)
 		}
 		return nil, err
 	}
@@ -294,7 +294,7 @@ func finishWhole(ctx context.Context, pool *store.Pool, owed owedRead, read *who
 	if read.failure != nil {
 		attributes = append(attributes, "error", read.failure.Error())
 	}
-	slog.Info(wholeReadLine, attributes...)
+	in.logger().Info(wholeReadLine, attributes...)
 	return read, nil
 }
 

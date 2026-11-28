@@ -226,8 +226,8 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 // and names that message as the holder, gone back once.
 func startingReadHeld(t *testing.T, left time.Duration) (rig *intakeRig, daemon *fakeDaemon, holder uint64, from, due time.Time) {
 	t.Helper()
-	windowed(t, 200*time.Millisecond)
 	rig = newIntakeRig(t)
+	rig.windowed(200 * time.Millisecond)
 	daemon = newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
 	rig.start()
