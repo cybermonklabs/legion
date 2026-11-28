@@ -25,19 +25,30 @@ import (
 )
 
 // testnatsTestParallelism is how many of this package's tests, and of a test's parallel subtests,
-// run at once when the command line names no -parallel. The tests wait on servers and clusters of
-// their own, on child test binaries and on the waits they test, not on a core: a serial run of the
-// package alone on 4 CPUs used 3.6 s of them over its 148 s (build-cluster Job
-// legion-ci-testnatspar-lllr2, 2026-11-25). go test's default would be GOMAXPROCS, 4 on CI's
-// runner. On 4 CPUs the package took 39-53 s at -parallel 4, 28-33 s at 8, and 17-31 s at 12, 16,
-// 24 and 32, against 132-135 s serially, where its longest tests, each on a cluster of its own and
-// 18-20 s long, set its time (build-cluster Jobs infra-6300-testnats-tvxvz and
-// infra-6300-testnats-nk8bm, 2026-11-28, two or three runs each). Every test of the untagged build
-// calls t.Parallel except those whose first line says why in a `// Not parallel:` comment: one
-// replaces the shared server's start (startShared), which every other test's URL reads, and one
-// holds a wall-clock bound close to what it waits for. The natslive build's tests, which
-// envoy-go-natslive runs on their own, call none. A test that needs a server has an account of its
-// own on the shared one (URL) or a server of its own.
+// run at once when the command line names no -parallel.
+//
+// The tests wait on servers and clusters of their own, on child test binaries and on the waits
+// they test, not on a core. On #5604's tree (main at b38d7da9, before #5898 rebuilt the package's
+// waits), a serial run of the package alone on 4 CPUs used 3.6 s of CPU time over 148 s of wall
+// time (build-cluster Job legion-ci-testnatspar-lllr2, 2026-11-25). The go test default would be
+// GOMAXPROCS, 4 on CI's runner.
+//
+// On 4 CPUs the package took 39-53 s at -parallel 4, 28-33 s at 8, and 17-31 s at 12, 16, 24
+// and 32 (build-cluster Job infra-6300-testnats-tvxvz, 2026-11-28, two or three runs each), against
+// 132-135 s serially (Job infra-6300-testnats-nk8bm, 2026-11-28). At 12 and above, the longest
+// test in each run had a cluster of its own and took 14.8-28.2 s, accounting for most of the
+// package's time.
+//
+// Every top-level test of the untagged build calls t.Parallel unless it writes state every other
+// test can read (the shared server and its cleanup, shared and sharedCleanup, or its start,
+// startShared), takes internal/testwait's process-wide clock (testwait.SetUpDone) outside a child
+// test binary, sets the environment, or has a wall-clock bound close to what it waits for. Each
+// exception says why in a `// Not parallel:` comment on its first line.
+//
+// A child-only test calls t.Parallel. It takes testwait's clock only after the child's environment
+// check, in the child binary its parent starts, where it is the only test that runs. The tests
+// behind the natslive tag, which envoy-go-natslive runs on their own, do not call t.Parallel. A
+// test that needs a server has an account of its own on the shared one (URL) or a server of its own.
 //
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const testnatsTestParallelism = 16

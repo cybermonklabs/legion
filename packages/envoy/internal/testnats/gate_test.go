@@ -112,7 +112,13 @@ func TestAClosedGateKeepsItsPort(t *testing.T) {
 		t.Errorf("a dial of the closed gate at %s: %v, want connection refused", gate.address, err)
 	}
 
+	// A parallel test may start a child binary while the socket is open.
+	syscall.ForkLock.RLock()
 	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, syscall.IPPROTO_TCP)
+	if err == nil {
+		syscall.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		t.Fatalf("open the other program's socket: %v", err)
 	}
