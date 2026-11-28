@@ -132,6 +132,7 @@ func TestTheRefusalBodyHoldsAtMost500Findings(t *testing.T) {
 // each write that set its parent. A move inside the root, a move of the root itself and an issue
 // made under the root are no arrival; a move in, a move back in and a move of an ancestor are.
 func TestAnArrivalIsReadFromTheParentsAsTheyWereAtEachMove(t *testing.T) {
+	t.Parallel()
 	base := parentHistory{
 		"R": {{1, ""}}, "O": {{2, ""}}, "L1": {{3, "R"}}, "L2": {{4, "R"}}, "R2": {{5, "L1"}}, "P": {{6, "O"}},
 	}

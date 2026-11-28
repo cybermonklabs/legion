@@ -71,6 +71,7 @@ func requireNoCarryOverATerm(t *testing.T, tree specFormTree, issue formIssue, w
 // under Terms, and under "## Wind", where the terms rule alone refuses it. The control: under
 // "## Wind", the same answer with a new name, sirocco, carries the approval as before.
 func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		why, term, definition string
 		wind, carries         bool
@@ -111,6 +112,7 @@ func TestTheAnswerCarryLetsNoSecondDefinitionOfAListedTermThrough(t *testing.T) 
 // "## Wind", two options of one name that nothing defines are prose, and two options of two names,
 // carry the approval as before.
 func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
+	t.Parallel()
 	cold := termLine("bora", "The cold wind that falls from one mountain.")
 	for _, c := range []struct {
 		why, term     string
@@ -145,6 +147,7 @@ func TestTheAnswerCarryApprovesNoVersionThatDefinesATermTwice(t *testing.T) {
 // the person's own Approve of the request is refused for the Verification document, and the same
 // steps with a new term, sirocco, carry the spec's approval and answer the request.
 func TestTheCarryJudgesTheTermsOfEachDocumentOfTheRequestItWouldAnswer(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		term   string
 		breaks bool
