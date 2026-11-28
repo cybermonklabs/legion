@@ -38,12 +38,14 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -120,6 +122,16 @@ type workflowRuntime struct {
 	// step's agent reaches the supervisor through it too (stepAgent), and reads nothing before.
 	outboxWake atomic.Pointer[outbox]
 	catchUps   *catchUpPacing
+	// totalsClock is the clock of each read of an agent's totals before a fact (readTotals):
+	// plan.totalsClock, which run sets before any fact applies. nil, in a runtime a test builds by
+	// hand, is the wall clock.
+	totalsClock supervise.Clock
+	// totalsRead is overrides.totalsRead, a test's seam after each fact's reads (readTotals). nil
+	// runs nothing.
+	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// taskConfirmedApplied is overrides.taskConfirmedApplied, a test's seam after each
+	// confirmation of a task has been applied (taskConfirmed). nil runs nothing.
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit
 	// steps the machines and the service call. run builds it once this runtime is open and before
@@ -854,6 +866,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.FollowIssue = w.requestFollowOf
 	engineCfg.ReadBaseMergeStates = w.queueBaseMergeStates
 	engineCfg.StepAgent = w.stepAgent
+	engineCfg.ReadTotals = w.readTotals
 	// The one wake the engine causes is the catch-up a start writes in place of a launch
 	// (workflow's claimReady), and it is paced with the launches it stands among, in the one
 	// pacer run built for both lanes. A deployment that paces nothing gives the engine no hold at
@@ -1168,6 +1181,118 @@ func (w *workflowRuntime) stepAgent(ctx context.Context, tx pgx.Tx, token claim.
 	return workflow.StepAgent{Session: w.agentText(token, "session", session), Model: w.agentText(token, "model", model)}
 }
 
+// errTotalsBound is the cause that ends a fact's reads of its agents' totals at streamDrainBound
+// (readTotals).
+var errTotalsBound = errors.New("the read of an agent's calls ran out its bound")
+
+// noTotalsLine is the message of the log line of a read of an agent's totals that gave none.
+const noTotalsLine = "workflow: a read of an agent's calls gave no totals"
+
+// readTotals is the engine's read, before a fact's transaction, of the totals of each live launch
+// of agents (workflow.Config.ReadTotals). It reaches the supervisor through the outbox attach
+// stored, so a fact the boot applies before attach reads nothing.
+//
+// A claim the daemon does not supervise, or whose machine records no process, is skipped. A launch
+// with no connection fails at once. Every other launch is read on a goroutine of its own, and all
+// of them share one context. The read's clock (totalsClock) ends that context at streamDrainBound,
+// and the timer is stopped once every read has returned. So the whole fact waits at most that
+// bound, however many agents it reads.
+//
+// A read answered by a launch other than the one the machine records is dropped. Each read that
+// gives no totals writes one line at once, with its reason and how long it waited on the read's
+// clock. Each answer is stamped with that clock's time. It answers the reads that gave totals.
+func (w *workflowRuntime) readTotals(ctx context.Context, agents []claim.Token) workflow.FactReads {
+	r := w.outboxWake.Load()
+	if r == nil || r.supervisor == nil {
+		return nil
+	}
+	clock := w.totalsClock
+	if clock == nil {
+		clock = supervise.RealClock{}
+	}
+	started := clock.Now()
+	type launchRead struct {
+		token      claim.Token
+		generation uint64
+		conn       runtime.Conn
+		totals     runtime.LaunchTotals
+		err        error
+		at         time.Time
+	}
+	var launches []*launchRead
+	for _, agent := range agents {
+		machine, ok := r.supervisor.supervisedMachine(agent)
+		if !ok {
+			continue
+		}
+		view := machine.View()
+		if view.Locator == nil {
+			continue
+		}
+		conn, ok := r.supervisor.deps.Conns.Conn(agent)
+		if !ok {
+			w.logNoTotals(agent, view.Generation, "no connection", clock.Now().Sub(started))
+			continue
+		}
+		launches = append(launches, &launchRead{token: agent, generation: view.Generation, conn: conn})
+	}
+	reads := workflow.FactReads{}
+	if len(launches) > 0 {
+		bounded, cancel := context.WithCancelCause(ctx)
+		defer cancel(nil)
+		bound := clock.AfterFunc(streamDrainBound, func() { cancel(errTotalsBound) })
+		var read sync.WaitGroup
+		for _, launch := range launches {
+			read.Go(func() {
+				launch.totals, launch.err = launch.conn.ModelTotals(bounded)
+				launch.at = clock.Now()
+			})
+		}
+		read.Wait()
+		bound.Stop()
+		for _, launch := range launches {
+			switch {
+			case launch.err != nil:
+				w.logNoTotals(launch.token, launch.generation, totalsFailure(launch.err), launch.at.Sub(started))
+			case launch.totals.Generation != launch.generation:
+				w.logNoTotals(launch.token, launch.generation, "another launch answered", launch.at.Sub(started))
+			default:
+				reads[record.LaunchKey{Claim: launch.token, Generation: launch.generation}] = record.LaunchRead{Totals: launch.totals.Totals, At: launch.at}
+			}
+		}
+	}
+	if w.totalsRead != nil {
+		w.totalsRead(agents, reads)
+	}
+	return reads
+}
+
+// totalsFailure is the reason a read of a launch's totals that failed with err gave none. A shim
+// whose hello did not offer them does not count. A refusal names its words. A read its bound or its
+// fact's own context ended had no answer within the bound. That holds for a write the bound cut,
+// whose error wraps stream.ErrClosed too (stream's connWriter). Any other closed connection is no
+// connection. Any other failed answer is a refusal naming the error.
+func totalsFailure(err error) string {
+	var refused *stream.RefusedError
+	switch {
+	case errors.Is(err, stream.ErrNoModelTotals):
+		return "the shim does not count"
+	case errors.As(err, &refused):
+		return "refused: " + refused.Reason
+	case errors.Is(err, errTotalsBound), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return "no answer within the bound"
+	case errors.Is(err, stream.ErrClosed):
+		return "no connection"
+	}
+	return "refused: " + err.Error()
+}
+
+// logNoTotals writes the line of a read of agent's launch at generation that gave no totals, for
+// reason, after waited on the read's clock.
+func (w *workflowRuntime) logNoTotals(agent claim.Token, generation uint64, reason string, waited time.Duration) {
+	w.log.Info(noTotalsLine, "claim", string(agent), "generation", generation, "reason", reason, "waited", waited)
+}
+
 // sessionHeld is stepAgent's read of whether c holds the session it records, in the fact's
 // transaction tx (record.SessionHeld); false for no transaction and for a read that failed, which
 // is logged.
@@ -1297,17 +1422,30 @@ func engineHooks(hooks []config.Hook, prompts map[string]string) []workflow.Hook
 // connect opens Envoy's JetStream and this project's durable consumers, so a missing
 // notification stream refuses boot rather than leaving a daemon that reads no events. Boot runs it
 // before reconcile, whose Dispatch listing covers only what precedes a consumer created now. It
-// connects as nc, the user readBoot chose (natsConnection), and logs what the server reports about
-// the connection: every permission it refuses at error, every disconnect at warn and every
-// reconnect at info (natsauth.LogEvents), under natsauth.ReconnectForever so a reconnect never
-// gives up: a NATS outage mid-run never closes the connection for good. A failed attempt here
-// closes whatever it opened and clears it, so a later call — this one retried after an unreachable
-// NATS — starts clean rather than leaking the connection this one could not finish setting up.
-// Close comes before natsauth.WithLastError on both failure paths, never after: WithLastError only
-// looks once the connection reports itself closed, and Close does not clear what the connection
-// last recorded.
+// connects with nc, the credential readBoot chose (natsConnection): the daemon's service token
+// through natsauth.ConnectService, which presents user service and the token the file holds at
+// each CONNECT, tries a refused reconnect again rather than closing, and reports those refusals at
+// most once a minute; else its seed, or no credential, through natsauth.Connect. Either way it logs
+// what the server reports about the connection: every permission it refuses at error, every
+// disconnect at warn and every reconnect at info (natsauth.LogEvents), under
+// natsauth.ReconnectForever so a reconnect never gives up: a NATS outage mid-run never closes the
+// connection for good. A failed attempt here closes whatever it opened and clears it, so a later
+// call — this one retried after an unreachable NATS, or after the NATS auth service refused the
+// service token (natsauth.Credential.WaitsOut) — starts clean rather than leaking the connection
+// this one could not finish setting up. Close comes before natsauth.WithLastError on both failure
+// paths, never after: WithLastError only looks once the connection reports itself closed, and
+// Close does not clear what the connection last recorded.
 func (w *workflowRuntime) connect(ctx context.Context, cfg config.Config, nc natsConnection) error {
-	conn, err := natsauth.Connect(cfg.NatsURLs, nc.seed, natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision), natsauth.LogEvents(w.log), natsauth.ReconnectForever())
+	name := natsauth.ConnectionName("legion-daemon "+cfg.Project, cfg.Revision)
+	options := []nats.Option{natsauth.LogEvents(w.log), natsauth.ReconnectForever()}
+	var conn *nats.Conn
+	var err error
+	if nc.credential.Source() == natsauth.SourceServiceToken {
+		file, setting, _ := nc.credential.ServiceToken()
+		conn, err = natsauth.ConnectService(cfg.NatsURLs, file, setting, name, options...)
+	} else {
+		conn, err = natsauth.Connect(cfg.NatsURLs, nc.seed, name, options...)
+	}
 	if err != nil {
 		return fmt.Errorf("connect Envoy NATS: %w", err)
 	}
@@ -2231,6 +2369,11 @@ func idleRelease(cfg config.Config) (config.IdleReleaseConfig, bool) {
 // (podRepositoryDrifted), which reads the pod through the runtime and the record through the
 // plan's own reader (plan.recordedRepository), set before supervision was built, so the hold is
 // never left reading an issue whose record nothing can answer for.
+//
+// The idle view's record half — what the record holds of each claim's role, which the reminder
+// hold asks of a claim that works the open phase (record.PhaseOwed) — is the workflow's record
+// read in the view's own transaction (record.FillIdleClaims), handed to the store here since the
+// store cannot import record (store.IdleRecords).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	release, ok := idleRelease(supervision.cfg)
 	if !ok {
@@ -2242,6 +2385,9 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		return
 	}
 	w.idlePeriod, w.idleStore, w.idleRuntime = release.Idle(), supervision.supervisor.store, podRuntime
+	w.idleStore.ReadIdleRecordsWith(func(ctx context.Context, tx pgx.Tx, issue string, at phase.Phase, claims []pods.IdleClaim) error {
+		return record.FillIdleClaims(ctx, w.records, tx, issue, at, claims)
+	})
 	w.idleRepositoryDrifted = supervision.podRepositoryDrifted
 	w.outbox.backstop = releaseBackstop(supervision.cfg)
 }
@@ -2784,10 +2930,15 @@ const defaultReconnectPollInterval = 10 * time.Second
 // disconnect and a reconnect once each, so a non-auth failure that keeps repeating — a server
 // that accepts the TCP connection but never completes the protocol handshake, say — retries
 // silently behind that one "NATS connection lost" line, in RECONNECTING, with nothing further to
-// say so. A fatal server -ERR or a repeated authorization failure still closes the connection
-// and exits loud (natsauth.LogEvents' ClosedCB, workflow.connect's own failure path); this
-// watchdog covers only the case ReconnectForever otherwise leaves silent: forever retrying,
-// never closing, never reconnecting.
+// say so. A fatal server -ERR still closes the connection and exits loud (natsauth.LogEvents'
+// ClosedCB, workflow.connect's own failure path), and so does a seed's, or no credential's,
+// repeated authorization failure. The service token's connection retries a repeated authorization
+// failure instead (natsauth.ConnectService: natscred.Service sets nats.go's IgnoreAuthErrorAbort),
+// since the NATS auth service refuses a token while it cannot read the key set of the token's
+// issuer, so it too can go on forever retrying, never closing, never reconnecting, with only its
+// refusal report, at most once a minute, to say so. This watchdog covers the case
+// ReconnectForever otherwise leaves silent, forever retrying, never closing, never reconnecting,
+// and reports the token's refused reconnects while they last as well.
 const defaultReconnectWarnEvery = 3 * time.Minute
 
 // connStatus is reconnectWatchdog's only dependency on *nats.Conn: a test substitutes a fake that
@@ -3017,12 +3168,16 @@ func (w *workflowRuntime) taskConfirmed(c supervise.Claim) {
 		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(context.Background()), readyReleaseTimeout)
 		defer cancel()
 		fact := intake.TaskConfirmed{Issue: c.Issue, Role: c.Role, Generation: c.Generation}
-		id := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation)
+		id, delivery := fmt.Sprintf("task-confirmed:%s:%d", c.Token, c.Generation), ""
 		if p := c.Pending; p != nil {
-			id = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID)
+			id, delivery = fmt.Sprintf("task-confirmed:%s:%s", c.Token, p.ID), p.ID
 		}
-		if _, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...); err != nil {
+		_, err := intake.ApplyFact(ctx, w.pool, "supervise", id, fact, w.handlers...)
+		if err != nil {
 			w.log.Warn("apply the confirmation of a task", "claim", c.Token, "error", err)
+		}
+		if w.taskConfirmedApplied != nil {
+			w.taskConfirmedApplied(c.Token, delivery, err)
 		}
 	}()
 }

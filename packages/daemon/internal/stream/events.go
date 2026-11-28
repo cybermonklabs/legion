@@ -5,16 +5,17 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // Event is one agent fact the stream observed. The set is sealed: a connection arriving
 // (Hello), OMP starting and ending a turn (TurnStart, TurnEnd), one tool call of a turn
 // starting or ending (ToolStep), OMP saying how one prompt's work ended (PromptResult), OMP
-// taking back a prompt it had acknowledged (LateRefusal), the model that answered (Answered), and
-// the connection going away (Closed); and one mark that is no agent fact, the place in the queue
-// a consumer asked for (Drained). The acknowledgement of a prompt is not one of them — it is
-// Conn.Prompt's return, so the one goroutine that sent the prompt is the one that learns it was
-// taken (B4).
+// taking back a prompt it had acknowledged (LateRefusal), the model that answered (Answered), a
+// launch's last model totals (FinalTotals), and the connection going away (Closed); and one mark
+// that is no agent fact, the place in the queue a consumer asked for (Drained). The
+// acknowledgement of a prompt is not one of them — it is Conn.Prompt's return, so the one
+// goroutine that sent the prompt is the one that learns it was taken (B4).
 type Event interface{ isEvent() }
 
 // AgentSecretsIdentity is the pod's session identity a hello2 carried (shimwire.AgentSecretsHello):
@@ -151,6 +152,15 @@ type Answered struct {
 	Generation      uint64
 }
 
+// FinalTotals is the shim's model_totals_final: what it counted of its launch's calls, by model,
+// once the launch's harness exited. Generation is the launch that the connection's hello was
+// registered for. The shim sends the frame unasked, so no read of the totals waits for it.
+type FinalTotals struct {
+	Claim      claim.Token
+	Generation uint64
+	Totals     shimwire.Totals
+}
+
 // Closed is a registered connection gone, whichever side ended it. It is emitted exactly once
 // per Hello, after every other event of that connection and before the Hello of any connection
 // that replaces it.
@@ -173,6 +183,7 @@ func (ToolStep) isEvent()     {}
 func (PromptResult) isEvent() {}
 func (LateRefusal) isEvent()  {}
 func (Answered) isEvent()     {}
+func (FinalTotals) isEvent()  {}
 func (Closed) isEvent()       {}
 func (Drained) isEvent()      {}
 
