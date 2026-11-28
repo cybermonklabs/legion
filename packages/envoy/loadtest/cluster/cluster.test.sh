@@ -216,9 +216,12 @@ fi
 
 # A forked subshell's /proc/<pid>/environ shows what its process was exec'd with.
 # FAKE_DIR is exported after this shell starts, so it cannot identify those subshells.
+# Pass on xtrace alone so a `bash -x` run traces the part without changing its children's options.
 if [ ! -v CLUSTER_TEST_MARK ]; then
   export CLUSTER_TEST_MARK=$$.$EPOCHREALTIME
-  exec bash "$0" "$@"
+  reexec_bash_opts=()
+  [[ $- != *x* ]] || reexec_bash_opts=(-x)
+  exec bash "${reexec_bash_opts[@]}" "$0" "$@"
 fi
 
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -226,6 +229,10 @@ readonly cluster=$here/cluster.sh
 readonly real_path=$PATH
 # Not readonly: cluster.sh's functions, which (e) to (g) source, declare a local tmp.
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/cluster-test.XXXXXX")
+readonly outer_tmpdir=${TMPDIR:-/tmp} part_tmpdir=$tmp/scratch
+# A killed cluster.sh can leave temporary files behind; keep them where the part's cleanup removes them.
+mkdir -m 700 -- "$part_tmpdir"
+export TMPDIR=$part_tmpdir
 readonly fake=$tmp/fake bin=$tmp/bin
 readonly ns=loadtest-test
 
@@ -4423,6 +4430,11 @@ stop_watchdog_end() {
   # Only the fast 1 s naps after those advance the fake clock.
   rm -f -- "$fake/lock-get-fails" "$fake/lock-get-oks" "$fake/lock-get-started" "$fake/lock-get-go" "$oneread_dir/step-failed.json"
   df_seq "$pg_size $pg_used_high $pg_free_high"
+  # Keep both sets of existing files so only files left by this sub-case count.
+  declare -A lock_reads_before=()
+  for lock_read_file in "$outer_tmpdir"/lock-read.* "$part_tmpdir"/lock-read.*; do
+    [ ! -f "$lock_read_file" ] || lock_reads_before["$lock_read_file"]=1
+  done
   pg_disk_watch pgbound "$oneread_dir" step-pgbound "$oneread_dir/.pg-disk.jsonl" "$self" "$self_start" 2>"$oneread_out" &
   PG_DISK_WATCHER=$! PG_DISK_WATCH_STEP=pgbound
   watcher=$PG_DISK_WATCHER
@@ -4447,6 +4459,22 @@ stop_watchdog_end() {
     fail "pg_disk_watch_stop did not name the step whose watcher it killed at its bound: $(cat "$oneread_stop")"
   ! kill -0 "$watcher" 2>/dev/null ||
     fail "the disk watcher still runs after pg_disk_watch_stop reached its bound: $(cat "$oneread_out")"
+  new_outer_lock_reads=()
+  for lock_read_file in "$outer_tmpdir"/lock-read.*; do
+    if [ -f "$lock_read_file" ] && [[ ! ${lock_reads_before["$lock_read_file"]+seen} ]]; then
+      new_outer_lock_reads+=("$lock_read_file")
+    fi
+  done
+  ((${#new_outer_lock_reads[@]} == 0)) ||
+    fail "pgbound left lock-read files in the outer TMPDIR: ${new_outer_lock_reads[*]}"
+  new_part_lock_reads=()
+  for lock_read_file in "$part_tmpdir"/lock-read.*; do
+    if [ -f "$lock_read_file" ] && [[ ! ${lock_reads_before["$lock_read_file"]+seen} ]]; then
+      new_part_lock_reads+=("$lock_read_file")
+    fi
+  done
+  ((${#new_part_lock_reads[@]} == 1)) ||
+    fail "pgbound should leave one new lock-read file in $part_tmpdir after it is killed inside copy_is_ours; found ${#new_part_lock_reads[@]}: ${new_part_lock_reads[*]:-none}"
   [ ! -f "$oneread_dir/step-failed.json" ] ||
     fail "the watcher recorded a failure although no read of the lock answered: $(cat "$oneread_dir/step-failed.json")"
 )
