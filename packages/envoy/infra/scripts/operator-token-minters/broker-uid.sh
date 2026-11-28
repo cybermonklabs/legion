@@ -74,6 +74,6 @@ if [ -n "$BROKER_WORKLOAD" ]; then
     CHECK_WITNESS[broker]+="$US$BROKER_UID_MEMBER"
     BROKER_NOTE="the broker's ServiceAccount $BROKER_WORKLOAD is allowed as $BROKER_WI_MEMBER and, by its UID on cluster $CLUSTER, as $BROKER_UID_MEMBER"
   else
-    BROKER_NOTE="the broker's ServiceAccount $BROKER_WORKLOAD is allowed as $BROKER_WI_MEMBER; its member by UID is not known ($BROKER_UID_UNREAD), so a member by UID that may be it is UNKNOWN"
+    BROKER_NOTE="the broker's ServiceAccount $BROKER_WORKLOAD is allowed as $BROKER_WI_MEMBER; its member by UID is not known ($BROKER_UID_UNREAD), so a member by UID that may be it cannot be told from it and is never allowed"
   fi
 fi
