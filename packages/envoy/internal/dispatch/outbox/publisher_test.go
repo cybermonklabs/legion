@@ -2214,14 +2214,12 @@ func publishedAt(t *testing.T, database *store.Store, eventID int64) *time.Time 
 //   - TestTheOutboxDoesNotScanWhileIdle: backOffDue, 10 s, inside which the insert's
 //     notification and the scan it wakes must arm the back-off's timer, millisecond work;
 //   - TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold: its client must read connected
-//     before natsLossGrace (3 s) after serve began, and the test sets it 200 ms in, so 2.8 s of
-//     slack; natsLossGrace is a constant of the package, not a field a test can lengthen, and
-//     the test's subject is the holder's reading at the grace's end;
+//     before natsLossGrace (3 s) after serve began. The test uses the real clock and sets the
+//     client to connected 200 ms in, leaving 2.8 s of slack;
 //   - TestAnExpiryPassThatReturnsAfterAnAnsweredProbeIsProbedAgain: the pass's return, sent half
 //     a second after the watcher's first probe answered, probeTimeout (2 s) after the pass began,
 //     must come after the watcher read that answer, microsecond work, and before the next probe
-//     is due, probeTimeout after the first: 1.5 s of slack; probeTimeout is a constant of the
-//     package, and the test's subject is the watcher's reading of a return between two probes;
+//     is due, probeTimeout after the first. The test uses the real clock, leaving 1.5 s of slack;
 //   - a mention attempt's claim a test writes as this moment's (claimed_at = now()):
 //     agedUnnamedAttempts in TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound
 //     and TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents, and the rows

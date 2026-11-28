@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/retry"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -80,6 +81,13 @@ const (
 // holds it to the take-over bound rather than to nothing.
 var publisherHoldOptions = duty.HoldOptions{TTL: 6 * time.Second, Renew: time.Second, Margin: 2 * time.Second}
 
+// timerClock is the part of clock.Clock the outbox uses for its timers and kept-lane reads.
+type timerClock interface {
+	NewTimer(time.Duration) clock.Timer
+	WithTimeout(context.Context, time.Duration) (context.Context, context.CancelFunc)
+	Now() time.Time
+}
+
 // holdEnd is why a holder stopped publishing.
 type holdEnd string
 
@@ -103,6 +111,8 @@ const (
 // by to take the hold over.
 type Outbox struct {
 	deps Deps
+	// clock defaults to the real clock. A test can replace it before Run starts.
+	clock timerClock
 	// instance names this process in the hold's row and in every log line about the hold and its
 	// batches; token is the hold's token, the host and process id.
 	instance uuid.UUID
@@ -138,6 +148,11 @@ type Outbox struct {
 	// disconnected waits here without having scanned, and says nothing about what is due. Set it
 	// only before Run starts, so nothing races it.
 	afterServeWait func()
+	// afterStandbyWait runs just before the standby waits, after any try of the hold.
+	// afterGateWait runs when a scan statement has to wait for another batch's statement.
+	// Both are nil in production and can be set only before Run starts.
+	afterStandbyWait func()
+	afterGateWait    func()
 	// probeBeforeHold is set when this process gave the publisher hold up for NATS lost, and
 	// cleared once a probe of its connection is answered (answering). Only Run's goroutine reads
 	// and writes it.
@@ -157,19 +172,21 @@ func New(deps Deps) *Outbox {
 		host = "unknown-host"
 	}
 	if deps.held == nil {
-		deps.held = newHeldCopies()
+		deps.held = newHeldCopies(clock.Real())
 	}
 	deps.held.register(deps.Metrics)
-	if deps.KeptLanes != nil {
-		deps.KeptLanes = boundedKeptLanes{reader: deps.KeptLanes}
-	}
-	return &Outbox{
+	o := &Outbox{
 		deps:        deps,
 		instance:    uuid.New(),
 		token:       fmt.Sprintf("%s/%d", host, os.Getpid()),
 		wake:        make(chan struct{}, 1),
 		standbyWake: make(chan struct{}, 1),
+		clock:       clock.Real(),
 	}
+	if deps.KeptLanes != nil {
+		o.deps.KeptLanes = boundedKeptLanes{reader: deps.KeptLanes, outbox: o}
+	}
+	return o
 }
 
 // Publishing reports whether this process publishes the outbox now: it holds the publisher hold
@@ -317,7 +334,7 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 		if ctx.Err() != nil {
 			return nil
 		}
-		var lapse *time.Timer
+		var lapse clock.Timer
 		var lapsed <-chan time.Time
 		if o.deps.Publisher.Connected() {
 			wait := holdRetry
@@ -331,8 +348,11 @@ func (o *Outbox) standby(ctx context.Context) *duty.Hold {
 					continue
 				}
 			}
-			lapse = time.NewTimer(wait)
-			lapsed = lapse.C
+			lapse = o.clock.NewTimer(wait)
+			lapsed = lapse.C()
+		}
+		if o.afterStandbyWait != nil {
+			o.afterStandbyWait()
 		}
 		select {
 		case <-ctx.Done():
@@ -527,7 +547,15 @@ func (o *Outbox) publish(ctx context.Context, hold *duty.Hold) holdEnd {
 // failure, probes the connection and ends as NATS lost when the probe fails
 // (passKeptExpiriesWhileNATSAnswers, in lease_expiry_pass.go, whose doc holds why).
 func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
-	var disconnected, retryTimer *time.Timer
+	var disconnected, retryTimer clock.Timer
+	defer func() {
+		if disconnected != nil {
+			disconnected.Stop()
+		}
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+	}()
 	var disconnectedFor, retryDue <-chan time.Time
 	expiries := time.NewTicker(keptExpiryReadEvery)
 	defer expiries.Stop()
@@ -535,8 +563,8 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 	for {
 		if !o.deps.Publisher.Connected() {
 			if disconnected == nil {
-				disconnected = time.NewTimer(natsLossGrace)
-				disconnectedFor = disconnected.C
+				disconnected = o.clock.NewTimer(natsLossGrace)
+				disconnectedFor = disconnected.C()
 			}
 		} else {
 			if disconnected != nil {
@@ -575,8 +603,8 @@ func (o *Outbox) serve(ctx context.Context, hold *duty.Hold) holdEnd {
 					retryTimer, retryDue = nil, nil
 				}
 				if wait, ok := o.nextRetry(ctx, end.failed || failedPass); ok {
-					retryTimer = time.NewTimer(wait)
-					retryDue = retryTimer.C
+					retryTimer = o.clock.NewTimer(wait)
+					retryDue = retryTimer.C()
 					if o.afterRetryArmed != nil {
 						o.afterRetryArmed(wait)
 					}
@@ -658,6 +686,7 @@ type scanEnd struct {
 func (o *Outbox) scan(ctx context.Context, hold fence) scanEnd {
 	deps := o.deps
 	deps.lanes = newLanes(o.signal)
+	deps.lanes.afterGateWait = o.afterGateWait
 	// The batches' own context: a hard stop ends the ones still running at once, while ctx, which
 	// is the process's, still tells a stop from an end of this scan's own making.
 	batches, endBatches := context.WithCancel(ctx)
@@ -765,7 +794,8 @@ type lanes struct {
 	// comment owner's lock - every use of the pool a batch makes, since the batches of one scan
 	// share one mark of its one-connection-per-caller rule (store.ErrNestedAcquire) - and never
 	// across a send.
-	statements sync.Mutex
+	statements    sync.Mutex
+	afterGateWait func()
 	// wake is the scan's wake (Outbox.signal), given when an owner is released, so its next events
 	// and the owners a full batch left behind are read at once.
 	wake func()
@@ -828,9 +858,16 @@ func (l *lanes) releaseEarly(owner string) {
 // holding it: a batch's read takes mu first and this second, and every other statement takes this
 // alone, so the two orders never cross.
 func (l *lanes) lock() {
-	if l != nil {
-		l.statements.Lock()
+	if l == nil {
+		return
 	}
+	if l.afterGateWait != nil {
+		if l.statements.TryLock() {
+			return
+		}
+		l.afterGateWait()
+	}
+	l.statements.Lock()
 }
 
 func (l *lanes) unlock() {
