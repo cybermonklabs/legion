@@ -380,7 +380,7 @@ func (e *Engine) acceptancePart(ctx context.Context, tx pgx.Tx, s TaskScope, own
 	if err != nil {
 		return "", err
 	}
-	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, s.issue.Key)
 	if err != nil {
 		return "", err
 	}

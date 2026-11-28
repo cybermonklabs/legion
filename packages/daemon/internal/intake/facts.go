@@ -1303,18 +1303,21 @@ func (f ConflictConfirmDone) namedIssue() (string, bool) { return f.Issue, true 
 // the repository as the link names it (PullRequestLink), which need not be the issue's. A read
 // GitHub answered gives the pull request as GitHub shows it (LinkRead): State, open, merged or
 // closed unmerged; its head commit (HeadSHA); the repository its head lives in (HeadRepo, GitHub's
-// head.repo.full_name, "" once GitHub no longer has a fork), which is another than Repo for a
-// fork's head (record.LinkRefusedFork); its head branch (Branch), which the decoder's index of the
-// links takes at the read's commit (Consumers.SetLinkHead); its base; its merge commit (MergeSHA),
-// only where it merged; its page (URL); and GitHub's updated_at. NotFound is a read GitHub
-// answered 404 (record.LinkRefusedUnreadable). Unserved is why the daemon read nothing: Repo fails
-// the checks the daemon makes of a recorded repository (record.LinkRefusedUnserved), and it names
-// the App that is not installed on it, as the architect is told. Each of the two leaves GitHub's
-// fields empty. The workflow's handler applies it (workflow's pullRequestLinkRead): it records the
-// linked pull request, or holds the link refused, and moves no phase of its own. The outbox's
-// executor of record.PullRequestLinkRead applies it for a link read after the link came, and the
-// boot's fact carries the reads the boot made (DaemonBooted.Links). Like every fact, it applies
-// under the one fact lock (ApplyFact, SerializeFacts).
+// head.repo.full_name, "" once GitHub no longer has a fork); the repository it merges into
+// (BaseRepo, GitHub's base.repo.full_name), the pull request's own repository under the name GitHub
+// holds it under now, which a link that names a repository by a name GitHub renamed spells
+// otherwise; a HeadRepo another than BaseRepo is a fork's head (record.LinkRefusedFork); its head
+// branch (Branch), which the decoder's index of the links takes at the read's commit
+// (Consumers.SetLinkHead); its base; its merge commit (MergeSHA), only where it merged; its page
+// (URL); and GitHub's updated_at. NotFound is a read GitHub answered 404
+// (record.LinkRefusedUnreadable). Unserved is why the daemon read nothing: Repo fails the checks the
+// daemon makes of a recorded repository (record.LinkRefusedUnserved), and it names the App that is
+// not installed on it, as the architect is told. Each of the two leaves GitHub's fields empty. The
+// workflow's handler applies it (workflow's pullRequestLinkRead): it records the linked pull
+// request, or holds the link refused, and moves no phase of its own. The outbox's executor of
+// record.PullRequestLinkRead applies it for a link read after the link came, and the boot's fact
+// carries the reads the boot made (DaemonBooted.Links). Like every fact, it applies under the one
+// fact lock (ApplyFact, SerializeFacts).
 type PullRequestLinkReadDone struct {
 	Issue     string
 	Repo      string
@@ -1322,6 +1325,7 @@ type PullRequestLinkReadDone struct {
 	State     record.PullRequestState
 	HeadSHA   string
 	HeadRepo  string
+	BaseRepo  string
 	Branch    string
 	Base      string
 	MergeSHA  string
@@ -1350,7 +1354,7 @@ func LinkRead(project, issue, repo string, pull githubrest.PullRequest) (PullReq
 		state = record.PullRequestOpen
 	}
 	fact := PullRequestLinkReadDone{Issue: issue, Repo: repo, Number: pull.Number, State: state, HeadSHA: pull.Head.SHA, HeadRepo: pull.HeadRepository(),
-		Branch: pull.Head.Ref, Base: pull.Base.Ref, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt}
+		BaseRepo: pull.BaseRepository(), Branch: pull.Head.Ref, Base: pull.Base.Ref, URL: pull.HTMLURL, UpdatedAt: pull.UpdatedAt}
 	if state == record.PullRequestMerged {
 		fact.MergeSHA = pull.MergeCommitSHA
 	}

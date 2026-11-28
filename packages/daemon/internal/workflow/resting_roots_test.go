@@ -466,7 +466,7 @@ func TestRestingRootsHoldTheAncestorSignOff(t *testing.T) {
 		// written again from the record as it stands then, and still names R.
 		var narrowed string
 		seedRecord(t, pool, func(tx pgx.Tx) error {
-			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.GatedSteps(), ancestor)
+			read, err := ArchitectStartOf(t.Context(), tx, engine.store, engine.RepositoryRenames(), engine.GatedSteps(), ancestor)
 			narrowed = NarrowRootTask(read, start.Entry, "")
 			return err
 		})

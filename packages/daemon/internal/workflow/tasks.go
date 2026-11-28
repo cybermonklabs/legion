@@ -96,7 +96,7 @@ func (e *Engine) lastMergeHeld(ctx context.Context, tx pgx.Tx, s TaskScope) (boo
 	if err != nil || !last {
 		return false, err
 	}
-	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, s.issue.Key)
 	return len(holds) > 0, err
 }
 

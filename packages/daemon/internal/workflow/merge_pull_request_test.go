@@ -60,7 +60,7 @@ func TestTheMergeOfAnIssueIsItsMergingTasksPullRequest(t *testing.T) {
 		t.Helper()
 		var got bool
 		onStored(t, pool, engine, "LEGION-209", func(ctx context.Context, tx pgx.Tx, issue record.Issue) (err error) {
-			got, err = PhaseFinished(ctx, engine.store, tx, issue)
+			got, err = PhaseFinished(ctx, engine.store, engine.RepositoryRenames(), tx, issue)
 			return err
 		})
 		return got

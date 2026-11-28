@@ -334,19 +334,26 @@ func (p renamePass) write(ctx context.Context, issue, from, to string) (record.R
 	return written, err
 }
 
-// renamePass is the rename pass over the project's stored records under keep, for the pairs the
-// deployment configures (repositories.renames), each written once GitHub shows its transfer
-// (renameTransfer).
-func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
-	var renames ghrepo.Renames
-	if w.repositories != nil {
-		renames = w.repositories.renames
+// renames is the deployment's repository equivalence (repositories.renames, which is
+// cfg.RepositoryRenames), the zero value, which configures none, for a runtime that holds no
+// repository state, as a test that builds a runtime by hand leaves it: the rename pass's pairs
+// (renamePass), and the renames the reads of the record outside the engine take
+// (workflow.ArchitectStartOf, at the narrowing of a held task, rootTask).
+func (w *workflowRuntime) renames() ghrepo.Renames {
+	if w.repositories == nil {
+		return ghrepo.Renames{}
 	}
+	return w.repositories.renames
+}
+
+// renamePass is the rename pass over the project's stored records under keep, for the pairs the
+// deployment configures (renames), each written once GitHub shows its transfer (renameTransfer).
+func (w *workflowRuntime) renamePass(keep renameKeep) renamePass {
 	log := w.log
 	if log == nil {
 		log = slog.Default()
 	}
-	return renamePass{pool: w.pool, project: w.dispatchProject, renames: renames, transferred: w.renameTransfer, keep: keep, written: w.wakeLive, log: log}
+	return renamePass{pool: w.pool, project: w.dispatchProject, renames: w.renames(), transferred: w.renameTransfer, keep: keep, written: w.wakeLive, log: log}
 }
 
 // renameTransfer is whether GitHub shows that pair's transfer has happened, the rename pass's

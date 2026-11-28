@@ -274,6 +274,12 @@ func (e *Engine) now() time.Time { return e.cfg.Clock().UTC() }
 // tree and issue it records, which reads it here rather than holding a second one.
 func (e *Engine) ExperimentSource() func(uint64) (uint64, error) { return e.cfg.ExperimentSource }
 
+// RepositoryRenames is the deployment's repository equivalence (Config.RepositoryRenames), which
+// admission hands the reads of the record it makes outside the engine (PhaseFinished,
+// PhaseWorkerOwedTurn), so a link and the row it names under the two names of a configured pair
+// are one pull request there as they are here.
+func (e *Engine) RepositoryRenames() ghrepo.Renames { return e.cfg.RepositoryRenames }
+
 // byReviewApp says whether login is the review App's bot (Config.ReviewAppLogin). With no login
 // configured, it is no one's.
 func (e *Engine) byReviewApp(login string) bool {
@@ -3455,7 +3461,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, s TaskScope, trigger
 	// holdForPullRequests). It is read before the move writes anything, since the move's arrival
 	// would post the status done.
 	if trigger != TriggerPullRequestMerged && w.Stored && row.To == phase.Done && arrivedPhase(s, row.To, row.ToPlace, record.TaskDone, nil) == phase.Done {
-		holds, err := setHolds(ctx, e.store, tx, issue.Key)
+		holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue.Key)
 		if err != nil {
 			return err
 		}

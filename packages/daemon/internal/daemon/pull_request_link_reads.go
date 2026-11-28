@@ -39,8 +39,8 @@ type linkRead struct {
 // in its own repository, with the implement App of that repository's owner (implementClient), and
 // answers what it comes to as the fact the workflow applies (workflow's pullRequestLinkRead):
 //
-//   - the state GitHub shows, open, merged or closed, and its head, base and head repository
-//     (intake.LinkRead);
+//   - the state GitHub shows, open, merged or closed, and its head, base, head repository and the
+//     repository it merges into, under the name GitHub holds it under now (intake.LinkRead);
 //   - NotFound, where GitHub answers 404: the pull request is not there to Legion's Apps;
 //   - Unserved, where the repository fails the checks the daemon makes of a recorded repository
 //     (linkUnserved): nothing is read then, and the fact names what is missing, in a clause that

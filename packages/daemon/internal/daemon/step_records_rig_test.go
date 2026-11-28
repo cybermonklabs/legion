@@ -1291,6 +1291,6 @@ func (p stepRecordsPull) answer() string {
 	if p.base != "" {
 		base = p.base
 	}
-	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q},"updated_at":"2026-11-17T00:00:00Z"}`,
-		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, repo, base)
+	return fmt.Sprintf(`{"number":%d,"state":%q,"merged":%t,"merge_commit_sha":%q,"mergeable":true,"mergeable_state":%q,"head":{"ref":%q,"sha":%q,"repo":{"full_name":%q}},"base":{"ref":%q,"repo":{"full_name":%q}},"updated_at":"2026-11-17T00:00:00Z"}`,
+		p.number, state, merged, "merge-"+stepRecordsHead, mergeable, p.branch, stepRecordsHead, repo, base, repo)
 }

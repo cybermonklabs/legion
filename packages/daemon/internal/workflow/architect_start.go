@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
@@ -98,11 +99,12 @@ type ArchitectStart struct {
 // ArchitectStartOf reads from the record what the first task of root's architect is derived from
 // (ArchitectStart), all but Decided: whether a hand-over carried the root in at its generation
 // and whether it brought a design gate with it (ArchitectCarried) and, for such a root, whether
-// its phase is over by its own terminating fact (PhaseFinished), the design gate rows it holds
-// under steps, the design-gate steps the deployment gates, the run and the phase entry its tree's
-// architect claim last served, the roots that rest on its approval (restingRootsTask) and, for a
-// root at phase.Admitted, whether a member of its tree runs. It is the one reader of them, which
-// every derivation of a root architect's task reads them through.
+// its phase is over by its own terminating fact (PhaseFinished, under renames, the deployment's
+// repository equivalence), the design gate rows it holds under steps, the design-gate steps the
+// deployment gates, the run and the phase entry its tree's architect claim last served, the roots
+// that rest on its approval (restingRootsTask) and, for a root at phase.Admitted, whether a member
+// of its tree runs. It is the one reader of them, which every derivation of a root architect's
+// task reads them through.
 //
 // Decided is the caller's because it is what tells a task composed now from a held task narrowed.
 // A task composed now names what its tree is owed and nothing claims (ParkedDecisionTask, which
@@ -131,7 +133,7 @@ type ArchitectStart struct {
 // send of an entry the derivation raised (SendArchitectStart) and the daemon's narrowing of a
 // held task at its send (NarrowRootTask, the daemon's rootTask) each read the members as they
 // stand when that send is made.
-func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep,
+func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, renames ghrepo.Renames, steps []record.DesignStep,
 	root record.Issue,
 ) (ArchitectStart, error) {
 	start := ArchitectStart{Root: root, Gate: record.TreeGate{Steps: steps}}
@@ -157,7 +159,7 @@ func ArchitectStartOf(ctx context.Context, tx pgx.Tx, store record.Store, steps 
 	}
 	if handed != nil {
 		start.Carried, start.GateCarried = true, handed.GateCarried
-		if start.PhaseFinished, err = PhaseFinished(ctx, store, tx, root); err != nil {
+		if start.PhaseFinished, err = PhaseFinished(ctx, store, renames, tx, root); err != nil {
 			return ArchitectStart{}, err
 		}
 	}

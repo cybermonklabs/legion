@@ -95,7 +95,7 @@ func (e *Engine) leaveWhereDone(ctx context.Context, tx pgx.Tx, key string) erro
 	if at, _ := issuePhaseOfTasks(walks); walks == nil || at != phase.Done {
 		return nil
 	}
-	holds, err := setHolds(ctx, e.store, tx, key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, key)
 	if err != nil {
 		return err
 	}

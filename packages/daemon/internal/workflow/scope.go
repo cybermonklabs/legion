@@ -749,7 +749,7 @@ type scopedPulls struct {
 // task pull requests (record.TaskPullRequestsClose) closes it at the issue's last merge. The rows
 // are rows alone (record.Store.PullRequestRowByNumber), for a reader that writes none of them back.
 func (e *Engine) scopePullRequests(ctx context.Context, tx pgx.Tx, s TaskScope, own *record.PullRequest) (scopedPulls, error) {
-	holds, err := setHolds(ctx, e.store, tx, s.issue.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, s.issue.Key)
 	if err != nil {
 		return scopedPulls{}, err
 	}

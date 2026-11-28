@@ -28,10 +28,10 @@ func linksOf(key string, seq int64, status string, links ...intake.PullRequestLi
 }
 
 // linkRead is the daemon's read of pull request number of repo that key links, which GitHub
-// answered state at a head of repo itself on branch onto main.
+// answered state at a head of repo itself on branch onto main, repo the base it merges into.
 func linkRead(key, repo string, number int, state record.PullRequestState, branch string) intake.PullRequestLinkReadDone {
 	read := intake.PullRequestLinkReadDone{Issue: key, Repo: repo, Number: number, State: state, HeadSHA: fmt.Sprintf("head-%d", number), HeadRepo: repo,
-		Branch: branch, Base: "main", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), UpdatedAt: linkedAt}
+		BaseRepo: repo, Branch: branch, Base: "main", URL: fmt.Sprintf("https://github.com/%s/pull/%d", repo, number), UpdatedAt: linkedAt}
 	if state == record.PullRequestMerged {
 		read.MergeSHA = fmt.Sprintf("merge-%d", number)
 	}
@@ -74,6 +74,10 @@ func planRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 //     the issue does not link, is in no set;
 //   - a linked pull request whose head is in a fork is refused as a fork's, with one pr-link-refused
 //     however often it is read, and is in no set;
+//   - a link that names a repository by a name GitHub renamed, acme/deploy-legacy, which no
+//     configured rename names, to a pull request whose head is in its own repository, acme/deploy
+//     as GitHub answers it for the base and the head, is in the set under the link's name and
+//     refused as nothing: the fork test compares the head with the base GitHub answers;
 //   - a link to a pull request the record holds for another issue is refused as that issue's, with
 //     one pr-link-refused however often the link is named, and the row stays with its issue;
 //   - a pull request linked after the retro began joins the set;
@@ -90,11 +94,12 @@ func planRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // The faults it catches: a set taken from the branch name or the body, which fails the rows of the
 // linked pull request of another repository and of the unlinked one; a set that keeps a removed
 // task's pull request, or that drops a linked one with the task, which fails the removed task's
-// row; a set that takes a fork's pull request; a link that moves another issue's row; a set read
-// once and never again, which fails the row of the link after the retro began; a moved link
-// refused as the issue's that held it, whose close nothing judges again, which fails the rows of
-// the move where LEGION-207's link comes first and at the boot; and links unknown read as links
-// none, which fails the last row.
+// row; a set that takes a fork's pull request; a fork test that compares the head's repository
+// with the link's name, which refuses the renamed repository's own pull request as a fork's and
+// fails its row; a link that moves another issue's row; a set read once and never again, which
+// fails the row of the link after the retro began; a moved link refused as the issue's that held
+// it, whose close nothing judges again, which fails the rows of the move where LEGION-207's link
+// comes first and at the boot; and links unknown read as links none, which fails the last row.
 func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 	t.Parallel()
 	const status = "in_progress"
@@ -184,6 +189,24 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 			t.Errorf("a fork's pull request is recorded as %+v, want no row", pr)
 		}
 		assertSet(t, pool, root.Key, "the reads of a fork's linked pull request")
+	})
+
+	t.Run("a link under a name GitHub renamed, with no configured rename, is in the set: its head is in the base's repository", func(t *testing.T) {
+		pool := migratedPool(t)
+		root := tasksRoot(t, pool)
+		apply := applyFacts(t, pool, stepEngine(nil))
+		legacy := intake.PullRequestLink{Repo: "acme/deploy-legacy", Number: 7001}
+		mustSpend(t, "the link of acme/deploy-legacy#7001", apply("linked-7001", linksOf(root.Key, 2, status, legacy)))
+		read := linkRead(root.Key, legacy.Repo, legacy.Number, record.PullRequestOpen, "fix/renamed")
+		read.HeadRepo, read.BaseRepo = "acme/deploy", "acme/deploy"
+		mustSpend(t, "the read of #7001", apply("read-7001", read))
+		if links := storedLinks(t, pool, root.Key); len(links) != 1 || links[0].Refused != "" {
+			t.Errorf("the links of %s are %+v, want acme/deploy-legacy#7001 refused as nothing: its head is in the repository GitHub answers as its base", root.Key, links)
+		}
+		if told := noticesOf(t, pool, root.Key, "pr-link-refused"); len(told) != 0 {
+			t.Errorf("the read of #7001 sent pr-link-refused %+v, want none", told)
+		}
+		assertSet(t, pool, root.Key, "the read of a link under the name GitHub renamed", "acme/deploy-legacy#7001")
 	})
 
 	t.Run("a link to another issue's pull request is refused, told once, and the row stays with its issue", func(t *testing.T) {

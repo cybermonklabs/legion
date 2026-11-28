@@ -157,12 +157,42 @@ func (e *Engine) linkOf(ctx context.Context, tx pgx.Tx, repo string, number int)
 	})
 }
 
+// readUnrecordedLink queues the read of the link of pull request number of repo
+// (record.PullRequestLinkRead, for the issue that links it, under the link's own name), whose
+// event, a merge or a close without one (what), names a pull request the record holds no row of
+// (merged, closed): a pull request an issue links is recorded by the read of its link, which a new
+// link queues (linkAdded), and the read can ask GitHub before the merge or the close and land after
+// its event, its answer then recording the pull request as it stood before. The read queued here
+// asks after the event, so its answer records what GitHub holds (pullRequestLinkRead), and a merge
+// is told and checked then as its event would have done. A pull request no issue links, and a link
+// refused as a fork's or another issue's, whose read records nothing, queue nothing; and so does a
+// pull request the record holds a row of under either name of its pair (linkedRow) that the event's
+// read of its issue's pull request did not take (ownPullRequest), since a read would apply to that
+// row the very fact that came here, and ask again.
+func (e *Engine) readUnrecordedLink(ctx context.Context, tx pgx.Tx, repo string, number int, what string) error {
+	link, err := e.linkOf(ctx, tx, repo, number)
+	if err != nil || link == nil || link.Refused.OutOfSet() {
+		return err
+	}
+	row, err := linkedRow(ctx, e.store, e.cfg.RepositoryRenames, tx, repo, number)
+	if err != nil || row != nil {
+		return err
+	}
+	e.logOnCommit(ctx, "workflow: a linked pull request the record holds no row of yet is reported "+what+", and its link is read again",
+		"issue", link.Issue, "pullRequest", prName(link.Repo, link.Number))
+	return e.enqueue(ctx, tx, link.Issue, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number})
+}
+
 // linkedRow is the row the record holds of pull request number of repo, whatever its issue, read
 // under the name a link or a fact carries and then under the other name of its configured pair
-// (ghrepo.Under), as a row alone (record.Store.PullRequestRowByNumber), nil for none.
-func (e *Engine) linkedRow(ctx context.Context, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
-	return ghrepo.Under(e.cfg.RepositoryRenames, repo, func(name string) (*record.PullRequest, error) {
-		return e.store.PullRequestRowByNumber(ctx, tx, name, number)
+// (ghrepo.Under, renames: the engine's Config.RepositoryRenames), as a row alone
+// (record.Store.PullRequestRowByNumber), nil for none. It is the one read of the row a link names,
+// for the engine's own handling of a link (linkAdded, linkRemoved, takeBootLinks) and for the
+// statement of which links hold a close (setHolds), so a link under one name of a pair finds the
+// row the record holds under the other wherever a link's row is read.
+func linkedRow(ctx context.Context, store record.Store, renames ghrepo.Renames, tx pgx.Tx, repo string, number int) (*record.PullRequest, error) {
+	return ghrepo.Under(renames, repo, func(name string) (*record.PullRequest, error) {
+		return store.PullRequestRowByNumber(ctx, tx, name, number)
 	})
 }
 
@@ -177,7 +207,7 @@ func (e *Engine) linkedRow(ctx context.Context, tx pgx.Tx, repo string, number i
 // open and runs: a check is the issue's, not the pull request's. A link the daemon refused as a
 // fork's or as another issue's held no row of the issue, and its removal deletes nothing.
 func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink) error {
-	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
+	pr, err := linkedRow(ctx, e.store, e.cfg.RepositoryRenames, tx, link.Repo, link.Number)
 	if err != nil || pr == nil || pr.Issue != issue.Key {
 		return err
 	}
@@ -206,7 +236,7 @@ func (e *Engine) linkRemoved(ctx context.Context, tx pgx.Tx, issue record.Issue,
 // pull request the record holds for issue already, a task's, is in its set now as linked too. One
 // the record holds no row of is a link whose read is owed.
 func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink, queueRead bool) error {
-	pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
+	pr, err := linkedRow(ctx, e.store, e.cfg.RepositoryRenames, tx, link.Repo, link.Number)
 	if err != nil {
 		return err
 	}
@@ -224,11 +254,9 @@ func (e *Engine) linkAdded(ctx context.Context, tx pgx.Tx, issue record.Issue, l
 
 // refuseLinkOfAnotherIssue refuses the link another issue holds to pr, a pull request the record
 // has just recorded for its own issue as a task's (pullRequestOpened), as another issue's
-// (refuseLink, record.LinkRefusedOtherIssue, dispatch://INFRA-5910 decision 8): the record holds
-// the pull request for the issue that recorded it first, and the link of any other issue to it
-// takes it into no set. That link held the linking issue's close while its read was owed
-// (setHolds), and holds nothing once refused, so that close is judged again (judgeClose). A link of
-// pr's own issue, a link already refused, and no link refuse nothing.
+// (refuseLinkAsOf): the record holds the pull request for the issue that recorded it first, and the
+// link of any other issue to it takes it into no set. A link of pr's own issue, a link already
+// refused, and no link refuse nothing.
 func (e *Engine) refuseLinkOfAnotherIssue(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
 	link, err := e.linkOf(ctx, tx, pr.Repo, pr.Number)
 	if err != nil || link == nil || link.Issue == pr.Issue || link.Refused != "" {
@@ -238,10 +266,21 @@ func (e *Engine) refuseLinkOfAnotherIssue(ctx context.Context, tx pgx.Tx, pr rec
 	if err != nil || linking == nil {
 		return err
 	}
-	if err := e.refuseLink(ctx, tx, *linking, *link, record.LinkRefusedOtherIssue, pr.Issue); err != nil {
+	return e.refuseLinkAsOf(ctx, tx, *linking, *link, pr.Issue)
+}
+
+// refuseLinkAsOf refuses link, a link of issue to a pull request that is the issue keyed other's,
+// as that issue's (refuseLink, record.LinkRefusedOtherIssue, dispatch://INFRA-5910 decision 8): a
+// pull request is one issue's. The link held issue's close while its read was owed (setHolds), and
+// holds nothing once refused, so that close is judged again (judgeClose). The open of other's pull
+// request refuses so the link of an issue that read it first (refuseLinkOfAnotherIssue), and the
+// read of a link refuses so a link to a pull request the record holds for other, or that stands on
+// a branch of other's task (pullRequestLinkRead).
+func (e *Engine) refuseLinkAsOf(ctx context.Context, tx pgx.Tx, issue record.Issue, link record.PullRequestLink, other string) error {
+	if err := e.refuseLink(ctx, tx, issue, link, record.LinkRefusedOtherIssue, other); err != nil {
 		return err
 	}
-	_, err = e.judgeClose(ctx, tx, linking.Key, nil, fmt.Sprintf("its link of %s is refused as %s's", prName(pr.Repo, pr.Number), pr.Issue))
+	_, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("its link of %s is refused as %s's", prName(link.Repo, link.Number), other))
 	return err
 }
 
@@ -308,23 +347,35 @@ func (e *Engine) refuseLink(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // request is held refused: unserved where the daemon reads nothing in the repository
 // (record.LinkRefusedUnserved), unreadable where GitHub answered 404 (record.LinkRefusedUnreadable);
 // either is read again at the next boot and at the next change of the issue's links. A pull
-// request whose head is in a fork, or whose fork GitHub no longer has, is refused as a fork's (D2),
-// by the rule the open of a pull request reads (pullRequestOpened). One the record holds for
-// another issue is refused as that issue's. A read that found the pull request takes back an
-// unserved or unreadable refusal, and the told mark of the notice that told it, which named the
-// refusal and not the pull request the read found (refuseLink), and records it: a pull request the
-// record holds no row of yet as a new row of the issue, at the state, head, branch, base and merge
-// commit GitHub showed, and one it holds already through the facts a webhook of it would apply
-// (linkReadOf), so each fence of a late or repeated fact holds for a read too. It moves no phase of
-// its own. A read that refuses the link as a fork's or another issue's, or that records a new row,
-// changes which links hold the issue's close (setHolds): a link whose read is owed holds it, and
-// once read it holds it only while its pull request is open. So the close is judged again
-// (judgeClose, decision 9), as each fact judges it that changes the set; the facts linkReadOf
-// applies judge it themselves where they change it (merged, and closed through the read of the
-// branches that it queues, pullRequestBranchRead). A read that takes back a refusal of a pull
-// request the record holds merged or closed, and shows it as the record holds it, judges the close
-// itself: the link held the close while it was refused and holds it no longer, and linkReadOf
-// applies no fact of the pull request that would judge it.
+// request whose head is in a fork, or whose fork GitHub no longer has, is refused as a fork's (D2):
+// its head's repository is compared with the repository GitHub answers it merges into
+// (intake.PullRequestLinkReadDone.BaseRepo), as the open of a pull request compares it with the
+// repository its event names (pullRequestOpened), and never with the name the link carries, which
+// for a repository GitHub renamed, with no configured rename, is the name it had. One the record
+// holds for another issue is refused as that issue's, and so is one the record holds no row of
+// that stands on a branch a task of another issue holds in that issue's repository
+// (issueForBranch, the rule by which the open of a pull request records it as that issue's): the
+// read can land before that issue's own open of it, which then records it for that issue. A read
+// that found the pull request takes back an unserved or unreadable refusal, and the told mark of
+// the notice that told it, which named the refusal and not the pull request the read found
+// (refuseLink), and records it: a pull request the record holds no row of yet as a new row of the
+// issue, at the state, head, branch and base GitHub showed, and one it holds already through the
+// facts a webhook of it would apply (linkReadOf), so each fence of a late or repeated fact holds
+// for a read too. A new row GitHub shows merged is written as it stood before its merge, open at
+// its head, and the merge then applies through the merge's own handler (linkReadOf, merged), as a
+// read of a row the record holds open does: the first read of a link whose pull request merged
+// before it records the merge and its commit, tells the architect and opens the production check
+// of that merge as the merge's event would (mergedNotOwn), and the merge's event delivered after
+// it finds the row merged and does nothing again. It moves no phase of its own. A read that refuses
+// the link as a fork's or another issue's, or that records a new row open or closed, changes which
+// links hold the issue's close (setHolds): a link whose read is owed holds it, and once read it
+// holds it only while its pull request is open. So the close is judged again (judgeClose, decision
+// 9), as each fact judges it that changes the set; the facts linkReadOf applies judge it themselves
+// where they change it (merged, and closed through the read of the branches that it queues,
+// pullRequestBranchRead). A read that takes back a refusal of a pull request the record holds
+// merged or closed, and shows it as the record holds it, judges the close itself: the link held the
+// close while it was refused and holds it no longer, and linkReadOf applies no fact of the pull
+// request that would judge it.
 func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake.PullRequestLinkReadDone) (intake.Result, error) {
 	link, err := e.linkOf(ctx, tx, fact.Repo, fact.Number)
 	if err != nil {
@@ -345,7 +396,7 @@ func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake
 		return intake.Result{}, e.refuseLink(ctx, tx, *issue, *link, record.LinkRefusedUnserved, fact.Unserved)
 	case fact.NotFound:
 		return intake.Result{}, e.refuseLink(ctx, tx, *issue, *link, record.LinkRefusedUnreadable, "GitHub answered 404")
-	case !e.sameRepository(fact.HeadRepo, fact.Repo):
+	case fact.HeadRepo == "" || !e.sameRepository(fact.HeadRepo, fact.BaseRepo):
 		if err := e.refuseLink(ctx, tx, *issue, *link, record.LinkRefusedFork, fact.HeadRepo); err != nil {
 			return intake.Result{}, err
 		}
@@ -357,11 +408,16 @@ func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake
 		return intake.Result{}, err
 	}
 	if recorded != nil && recorded.Issue != issue.Key {
-		if err := e.refuseLink(ctx, tx, *issue, *link, record.LinkRefusedOtherIssue, recorded.Issue); err != nil {
+		return intake.Result{}, e.refuseLinkAsOf(ctx, tx, *issue, *link, recorded.Issue)
+	}
+	if recorded == nil {
+		owner, err := e.issueForBranch(ctx, tx, fact.BaseRepo, fact.Branch)
+		if err != nil {
 			return intake.Result{}, err
 		}
-		_, err := e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("its link of %s is refused as %s's", name, recorded.Issue))
-		return intake.Result{}, err
+		if owner != nil && owner.Key != issue.Key {
+			return intake.Result{}, e.refuseLinkAsOf(ctx, tx, *issue, *link, owner.Key)
+		}
 	}
 	if link.Refused != "" {
 		if err := e.store.SetPullRequestLinkRefused(ctx, tx, link.Repo, link.Number, ""); err != nil {
@@ -391,17 +447,19 @@ func (e *Engine) pullRequestLinkRead(ctx context.Context, tx pgx.Tx, fact intake
 		spelled = fact.HeadRepo
 	}
 	pr := record.PullRequest{Issue: issue.Key, Repo: spelled, Number: fact.Number, Branch: fact.Branch, Base: fact.Base, HeadSHA: fact.HeadSHA,
-		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: fact.State, MergeSHA: fact.MergeSHA}
+		HeadUpdatedAt: fact.UpdatedAt, Failing: []string{}, State: fact.State}
+	if fact.State == record.PullRequestMerged {
+		pr.State = record.PullRequestOpen
+	}
 	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
 	}
 	e.logOnCommit(ctx, "workflow: a pull request the issue links is recorded", "issue", issue.Key, "pullRequest", prName(pr.Repo, pr.Number),
-		"branch", pr.Branch, "base", pr.Base, "state", pr.State, "head", pr.HeadSHA)
-	var merge *record.PullRequest
-	if pr.State == record.PullRequestMerged {
-		merge = &pr
+		"branch", pr.Branch, "base", pr.Base, "state", fact.State, "head", pr.HeadSHA)
+	if fact.State == record.PullRequestMerged {
+		return e.linkReadOf(ctx, tx, fact, pr)
 	}
-	_, err = e.judgeClose(ctx, tx, issue.Key, merge, fmt.Sprintf("its linked %s is read %s", name, pr.State))
+	_, err = e.judgeClose(ctx, tx, issue.Key, nil, fmt.Sprintf("its linked %s is read %s", name, pr.State))
 	return intake.Result{}, err
 }
 
@@ -440,7 +498,10 @@ func (e *Engine) linkReadOf(ctx context.Context, tx pgx.Tx, fact intake.PullRequ
 // links that hold the issue's close lose one where pr is linked (setHolds), so the close is judged
 // again (judgeClose), with pr the merge it follows. scope is the task pr is of (issueOfPullRequest),
 // nil where it is no one task's; such a pull request that the issue does not link either is none of
-// its set, and its merge tells nobody.
+// its set, and its merge tells nobody. The merge's event reaches it, and so does the first read of
+// a link whose pull request merged before the read, through the same handler (pullRequestLinkRead,
+// linkReadOf, merged), so the two tell and check one merge alike; whichever comes second finds the
+// row merged and reaches nothing (merged).
 func (e *Engine) mergedNotOwn(ctx context.Context, tx pgx.Tx, scope *TaskScope, pr *record.PullRequest, prior record.PullRequest) error {
 	if scope == nil && !pr.Linked {
 		return nil
@@ -528,11 +589,14 @@ func (h heldLink) named() string {
 // holds nothing, since the close of the task pull requests reaches it at the issue's last merge,
 // and neither does a merged or a closed pull request, which the architect left closed (D5), nor a
 // link refused as a fork's or another issue's, which takes its pull request into no set. It is the
-// one statement of which pull requests hold a close, a read of the store alone, as PhaseFinished
-// reads it outside the engine: the issue's links (record.Store.PullRequestLinksOf) and the row of
-// each, read under the link's own name as rows alone (record.Store.PullRequestRowByNumber), the
-// repository compared without case.
-func setHolds(ctx context.Context, store record.Store, tx pgx.Tx, issue string) ([]heldLink, error) {
+// one statement of which pull requests hold a close, a read of the store alone under the
+// deployment's renames (renames, the engine's Config.RepositoryRenames), as PhaseFinished reads it
+// outside the engine: the issue's links (record.Store.PullRequestLinksOf) and the row of each, read
+// as linkAdded reads it (linkedRow): under the link's own name, the repository compared without
+// case, and then under the other name of its configured pair, so a link under the name GitHub shows
+// now of a pull request the record holds under the name it was recorded under holds the close only
+// while that pull request is open, as it would under the record's own name.
+func setHolds(ctx context.Context, store record.Store, renames ghrepo.Renames, tx pgx.Tx, issue string) ([]heldLink, error) {
 	links, err := store.PullRequestLinksOf(ctx, tx, issue)
 	if err != nil {
 		return nil, err
@@ -546,7 +610,7 @@ func setHolds(ctx context.Context, store record.Store, tx pgx.Tx, issue string) 
 			holds = append(holds, heldLink{link: link})
 			continue
 		}
-		row, err := store.PullRequestRowByNumber(ctx, tx, link.Repo, link.Number)
+		row, err := linkedRow(ctx, store, renames, tx, link.Repo, link.Number)
 		if err != nil {
 			return nil, err
 		}

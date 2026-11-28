@@ -175,7 +175,7 @@ func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.Daemo
 			case link.Refused.OutOfSet():
 				continue
 			case !link.Refused.HoldsClose():
-				pr, err := e.linkedRow(ctx, tx, link.Repo, link.Number)
+				pr, err := linkedRow(ctx, e.store, e.cfg.RepositoryRenames, tx, link.Repo, link.Number)
 				if err != nil {
 					return err
 				}

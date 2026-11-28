@@ -583,7 +583,12 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, s TaskScope, pr *rec
 // the pull requests whose work the merge holds (closeHeldPullRequests). A merge before merging is
 // the architect's to act on, as the shipped daemon routes it: it is told, and the merge closes the
 // task's merge, and queues that close, once it reaches merging (transition). A redelivered merge
-// changes nothing.
+// changes nothing, and so does the merge of a pull request whose row the record holds merged
+// already, which the first read of its link may have recorded (pullRequestLinkRead, through this
+// handler): the merge was told and its check opened then. A merge of a pull request an issue links
+// that the record holds no row of yet, whose event lands before the read its link queued has
+// answered, records nothing and queues that link's read again (readUnrecordedLink), so the answer
+// read after the merge records what GitHub holds.
 //
 // It records the head the merge names, as a close does (closed). A synchronize or a push of that
 // head can be lost or wait behind a backlog, and after the merge nothing else moves the record's
@@ -616,8 +621,14 @@ func (e *Engine) reaskRound(ctx context.Context, tx pgx.Tx, s TaskScope, pr *rec
 // (judgeClose, decision 9), after its notice.
 func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestMerged) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil || pr.State == record.PullRequestMerged {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if pr == nil {
+		return intake.Result{}, e.readUnrecordedLink(ctx, tx, fact.Repo, fact.Number, "merged")
+	}
+	if pr.State == record.PullRequestMerged {
+		return intake.Result{}, nil
 	}
 	prior := *pr
 	if fact.HeadSHA != "" {
@@ -845,7 +856,7 @@ func (e *Engine) closeWaitOf(ctx context.Context, tx pgx.Tx, issue record.Issue,
 			return closeWait{beneath: beneath}, err
 		}
 	}
-	holds, err := setHolds(ctx, e.store, tx, issue.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue.Key)
 	return closeWait{holds: holds}, err
 }
 
@@ -992,7 +1003,9 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 // whose reopen has not been delivered yet, and the architect is told; at the record's clock or with
 // no clock it is a redelivery, and it tells the architect nothing more. A close of a merged pull
 // request changes nothing: GitHub never closes one, so the close is older than the merge, which
-// carries no clock to fence it.
+// carries no clock to fence it. A close of a pull request an issue links that the record holds no
+// row of yet records nothing and queues that link's read again (readUnrecordedLink), as a merge of
+// one does (merged): the read its link queued may have asked GitHub before the close.
 //
 // What the architect is told turns on the rest of the issue's set (dispatch://INFRA-5910 D5,
 // decisions 9 and 12). While another pull request of the set is open (openOthers: an open one, or
@@ -1012,8 +1025,14 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, s TaskScope, pr *re
 // holds nothing (setHolds).
 func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestClosed) (intake.Result, error) {
 	pr, err := e.pullRequest(ctx, tx, fact.Repo, fact.Number)
-	if err != nil || pr == nil || pr.State == record.PullRequestMerged || classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
+	if err != nil {
 		return intake.Result{}, err
+	}
+	if pr == nil {
+		return intake.Result{}, e.readUnrecordedLink(ctx, tx, fact.Repo, fact.Number, "closed")
+	}
+	if pr.State == record.PullRequestMerged || classify.LateLifecycle(fact.UpdatedAt, pr.HeadUpdatedAt) {
+		return intake.Result{}, nil
 	}
 	repeated := classify.RepeatedClose(*pr, fact.UpdatedAt)
 	if fact.HeadSHA != "" && fact.HeadSHA != pr.HeadSHA {
@@ -1219,7 +1238,7 @@ func (e *Engine) openOthers(ctx context.Context, tx pgx.Tx, issue string, closed
 			others = append(others, prName(pr.Repo, pr.Number))
 		}
 	}
-	holds, err := setHolds(ctx, e.store, tx, issue)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue)
 	if err != nil {
 		return nil, err
 	}

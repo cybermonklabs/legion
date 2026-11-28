@@ -15,7 +15,8 @@ import (
 // a merged or closed pull request, the last generation's reading of a still-open one, its design
 // gates, and each role's handoff, review rounds, verdict and summary. If the clear deletes gate
 // rows of issue, the empty set of design-gate documents is queued for it, due at now
-// (publishEmptied). issue is the record as tx holds it.
+// (publishEmptied). The links of issue stay, and the new run reads each linked pull request again
+// (rereadLinks). issue is the record as tx holds it.
 //
 // It and ClearTreeGeneration are the only callers that clear a generation: one issue's, for an
 // adopted member and a re-entered child, or a whole tree's, for a re-admitted root. The record
@@ -37,13 +38,17 @@ func (e *Engine) ClearGeneration(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err := e.publishEmptied(ctx, tx, emptied, now); err != nil {
 		return fmt.Errorf("clear the generation of %s: %w", issue.Key, err)
 	}
+	if err := e.rereadLinks(ctx, tx, issue.Key); err != nil {
+		return fmt.Errorf("clear the generation of %s: %w", issue.Key, err)
+	}
 	return nil
 }
 
 // ClearTreeGeneration empties them for every issue of tree, and forgets first as ClearGeneration
 // says. A root set back to todo starts a new generation of the whole tree, and its children
 // carried the old one's pull request, gate and handoffs into it — a child re-entered at the new
-// generation read a handoff of the last.
+// generation read a handoff of the last. Each issue of tree reads its linked pull requests again
+// (rereadLinks).
 func (e *Engine) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error {
 	emptied, err := e.store.ClearTreeGeneration(ctx, tx, tree, e.forgetSuperseded)
 	if err != nil {
@@ -51,6 +56,41 @@ func (e *Engine) ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string
 	}
 	if err := e.publishEmptied(ctx, tx, emptied, now); err != nil {
 		return fmt.Errorf("clear the generation of tree %s: %w", tree, err)
+	}
+	members, err := e.store.TreeIssues(ctx, tx, tree)
+	if err != nil {
+		return fmt.Errorf("clear the generation of tree %s: %w", tree, err)
+	}
+	for _, member := range members {
+		if err := e.rereadLinks(ctx, tx, member.Key); err != nil {
+			return fmt.Errorf("clear the generation of tree %s: %w", tree, err)
+		}
+	}
+	return nil
+}
+
+// rereadLinks queues, in the transaction of the clear of issue's generation, the read of each pull
+// request issue links (record.PullRequestLinkRead), in its own repository, as a new link queues it
+// (linkAdded): the clear deletes the row of each linked pull request that merged or closed in the
+// old run and keeps its link (dispatch://INFRA-5910 decision 23), and a link whose pull request the
+// record holds no row of is a read still owed, which holds the close (setHolds). The read records
+// the pull request as GitHub shows it now, for the new run (pullRequestLinkRead), so a link whose
+// pull request merged in an earlier run holds nothing of the next run's close. A link refused as a
+// fork's or another issue's is read again by nothing, since its read records nothing (it stays
+// refused); one held refused as unserved or unreadable is read again, as at each change of the
+// issue's links.
+func (e *Engine) rereadLinks(ctx context.Context, tx pgx.Tx, issue string) error {
+	links, err := e.store.PullRequestLinksOf(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	for _, link := range links {
+		if link.Refused.OutOfSet() {
+			continue
+		}
+		if err := e.enqueue(ctx, tx, issue, record.PullRequestLinkRead{Repo: link.Repo, Number: link.Number}); err != nil {
+			return err
+		}
 	}
 	return nil
 }

@@ -575,7 +575,7 @@ func (e *Engine) judgeClose(ctx context.Context, tx pgx.Tx, key string, merge *r
 // holds the close, the architect is told of each such link no notice named yet (tellHolds), and the
 // hold stands.
 func (e *Engine) releaseHeldClose(ctx context.Context, tx pgx.Tx, issue record.Issue, merge *record.PullRequest, why string) (judgedClose, error) {
-	holds, err := setHolds(ctx, e.store, tx, issue.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, issue.Key)
 	if err != nil {
 		return judgedClose{}, err
 	}
@@ -883,7 +883,7 @@ func (e *Engine) mergeToLand(ctx context.Context, tx pgx.Tx, member record.Issue
 	if !inHand && !heldForPulls {
 		return false, nil
 	}
-	holds, err := setHolds(ctx, e.store, tx, member.Key)
+	holds, err := setHolds(ctx, e.store, e.cfg.RepositoryRenames, tx, member.Key)
 	return len(holds) > 0, err
 }
 

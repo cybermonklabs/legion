@@ -102,7 +102,7 @@ func holdToldOnce(t *testing.T, pool *pgxpool.Pool, key, name, after string) {
 func mergerKeepsWorking(t *testing.T, pool *pgxpool.Pool, engine *Engine, key, task string) {
 	t.Helper()
 	onStored(t, pool, engine, key, func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
-		finished, err := PhaseFinished(ctx, engine.store, tx, issue)
+		finished, err := PhaseFinished(ctx, engine.store, engine.RepositoryRenames(), tx, issue)
 		if err != nil {
 			return err
 		}

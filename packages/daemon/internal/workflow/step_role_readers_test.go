@@ -12,6 +12,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
@@ -249,7 +250,7 @@ func TestTheWorkflowsOtherReadersNameTheRunningDeploymentRole(t *testing.T) {
 		var start ArchitectStart
 		if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 			var err error
-			start, err = ArchitectStartOf(ctx, tx, record.NewStore(), specGated, root)
+			start, err = ArchitectStartOf(ctx, tx, record.NewStore(), ghrepo.Renames{}, specGated, root)
 			return err
 		}); err != nil {
 			t.Fatalf("read what the architect's first task is derived from: %v", err)

@@ -87,13 +87,16 @@ var (
 // branch or a commit message, is in no set and decodes to no fact of it, and its event costs the
 // consumer no transaction. The index is loaded whole, one issue's links replaced and a link's
 // head branch set, and it is read under both names of a configured rename. A read of a linked
-// pull request is the fact of what GitHub answered for it.
+// pull request is the fact of what GitHub answered for it, the repository the pull request merges
+// into among it, under the name GitHub holds it under now, beside the name the link carries.
 //
 // The faults: the decode reads no external_links, or reads an absent field as no links; it takes
 // a URL of any shape, or one into the issue's own repository not at all; it decodes every pull
 // request of a heard repository, or none off legion/<KEY>; a push of a linked head is a base push;
 // the fork check is skipped for a linked pull request; an unlinked pull request's event opens a
-// transaction. The controls: the linked pull request's own events, which decode and are applied.
+// transaction; a read's fact that carries no base repository, under which the workflow's fork test
+// has only the link's name to compare the head with. The controls: the linked pull request's own
+// events, which decode and are applied.
 func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 	t.Parallel()
 	ownLink := PullRequestLink{Repo: "acme/widgets", Number: 5481}
@@ -341,30 +344,37 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 			return pull
 		}
 		const answer = `{"number":6990,"state":%q,"merged":%t,"merge_commit_sha":"merge-6990","html_url":"https://github.com/acme/deploy/pull/6990",` +
-			`"base":{"ref":"main"},"head":{"ref":"fix/several-pull-requests","sha":"head-6990","repo":{"full_name":%q}},"updated_at":"2026-11-25T03:50:00Z"}`
+			`"base":{"ref":"main","repo":{"full_name":%q}},"head":{"ref":"fix/several-pull-requests","sha":"head-6990","repo":{"full_name":%q}},"updated_at":"2026-11-25T03:50:00Z"}`
 		updatedAt := time.Date(2026, 11, 25, 3, 50, 0, 0, time.UTC)
 		for _, tc := range []struct {
-			name, state, headRepo string
-			merged                bool
-			want                  PullRequestLinkReadDone
+			name, state, baseRepo, headRepo string
+			merged                          bool
+			want                            PullRequestLinkReadDone
 		}{
 			// GitHub's merge_commit_sha of an open pull request is its test merge, no merge.
-			{name: "open", state: "open", headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy", Number: 6990,
-				State: record.PullRequestOpen, HeadSHA: "head-6990", HeadRepo: "acme/deploy", Branch: linkedHead, Base: "main",
+			{name: "open", state: "open", baseRepo: "acme/deploy", headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy", Number: 6990,
+				State: record.PullRequestOpen, HeadSHA: "head-6990", HeadRepo: "acme/deploy", BaseRepo: "acme/deploy", Branch: linkedHead, Base: "main",
 				URL: "https://github.com/acme/deploy/pull/6990", UpdatedAt: updatedAt}},
-			{name: "merged", state: "closed", merged: true, headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy",
-				Number: 6990, State: record.PullRequestMerged, HeadSHA: "head-6990", HeadRepo: "acme/deploy", Branch: linkedHead, Base: "main",
+			{name: "merged", state: "closed", merged: true, baseRepo: "acme/deploy", headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy",
+				Number: 6990, State: record.PullRequestMerged, HeadSHA: "head-6990", HeadRepo: "acme/deploy", BaseRepo: "acme/deploy", Branch: linkedHead, Base: "main",
 				MergeSHA: "merge-6990", URL: "https://github.com/acme/deploy/pull/6990", UpdatedAt: updatedAt}},
-			{name: "closed unmerged", state: "closed", headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy",
-				Number: 6990, State: record.PullRequestClosed, HeadSHA: "head-6990", HeadRepo: "acme/deploy", Branch: linkedHead, Base: "main",
+			{name: "closed unmerged", state: "closed", baseRepo: "acme/deploy", headRepo: "acme/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy",
+				Number: 6990, State: record.PullRequestClosed, HeadSHA: "head-6990", HeadRepo: "acme/deploy", BaseRepo: "acme/deploy", Branch: linkedHead, Base: "main",
 				URL: "https://github.com/acme/deploy/pull/6990", UpdatedAt: updatedAt}},
 			// The head of a fork, which the workflow refuses the link for (record.LinkRefusedFork).
-			{name: "a fork's", state: "open", headRepo: "stranger/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy", Number: 6990,
-				State: record.PullRequestOpen, HeadSHA: "head-6990", HeadRepo: "stranger/deploy", Branch: linkedHead, Base: "main",
+			{name: "a fork's", state: "open", baseRepo: "acme/deploy", headRepo: "stranger/deploy", want: PullRequestLinkReadDone{Issue: linkedIssue, Repo: "acme/deploy", Number: 6990,
+				State: record.PullRequestOpen, HeadSHA: "head-6990", HeadRepo: "stranger/deploy", BaseRepo: "acme/deploy", Branch: linkedHead, Base: "main",
 				URL: "https://github.com/acme/deploy/pull/6990", UpdatedAt: updatedAt}},
+			// A repository GitHub renamed from acme/deploy to acme/deployments, which no configured
+			// rename names: GitHub answers the read asked under the name the link carries with the
+			// repository under its new name, as the base and the head, and the fact keeps the link's
+			// name beside them, so the workflow's fork test compares the head with the base.
+			{name: "a repository GitHub renamed", state: "open", baseRepo: "acme/deployments", headRepo: "acme/deployments", want: PullRequestLinkReadDone{Issue: linkedIssue,
+				Repo: "acme/deploy", Number: 6990, State: record.PullRequestOpen, HeadSHA: "head-6990", HeadRepo: "acme/deployments", BaseRepo: "acme/deployments",
+				Branch: linkedHead, Base: "main", URL: "https://github.com/acme/deploy/pull/6990", UpdatedAt: updatedAt}},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				pull := read(t, fmt.Sprintf(answer, tc.state, tc.merged, tc.headRepo))
+				pull := read(t, fmt.Sprintf(answer, tc.state, tc.merged, tc.baseRepo, tc.headRepo))
 				fact, id := LinkRead("ACME", linkedIssue, "acme/deploy", pull)
 				if !reflect.DeepEqual(fact, tc.want) {
 					t.Fatalf("the read's fact = %#v, want %#v", fact, tc.want)

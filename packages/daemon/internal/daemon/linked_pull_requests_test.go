@@ -105,7 +105,7 @@ func (g *linkedGitHub) pullAnswer(p linkedPull) map[string]any {
 		mergeable, state = false, "dirty"
 	}
 	answer := map[string]any{"number": p.number, "state": p.state, "html_url": fmt.Sprintf("https://github.com/%s/pull/%d", p.repo, p.number),
-		"body": "", "base": map[string]any{"ref": p.base},
+		"body": "", "base": map[string]any{"ref": p.base, "repo": map[string]any{"full_name": p.repo}},
 		"head":       map[string]any{"ref": p.branch, "sha": p.head, "repo": map[string]any{"full_name": p.repo}},
 		"updated_at": "2026-11-27T00:00:00Z", "mergeable": mergeable, "mergeable_state": state, "merged": p.merged,
 		"requested_reviewers": []any{}, "requested_teams": []any{}}

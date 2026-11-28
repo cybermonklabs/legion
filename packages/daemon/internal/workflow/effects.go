@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -24,15 +25,16 @@ import (
 // of the pull request of each task that stands at its merge (mergesAwaited, read on issue as the
 // store holds it, with no copy for a task; for an issue with no plan rows its one pull request),
 // with at least one such task, while no link of the issue's set holds its close (setHolds,
-// dispatch://INFRA-5910 decision 9): the merger merges, the daemon merges nothing, and a merged
-// root then stands in merging until the rest of its tree leaves the workflow (closeMerged), which
-// can be days; while an open pull request of the set holds the close, the merger still has it to
-// merge, and the phase is not over. Accepting's is the architect's sign-off, which moves the issue
-// on in the transaction that records it, so an issue standing in accepting is always still waiting
-// for it; every other phase ends with its worker's completion, which moves the issue too. A
-// recorded completion answers nothing here: the merger's is recorded and moves no issue. The start
-// of one task's merge reads its own task's pull request instead (startAgent).
-func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
+// dispatch://INFRA-5910 decision 9, which reads a link's row under both names of a pair renames,
+// the deployment's repository equivalence, configures): the merger merges, the daemon merges
+// nothing, and a merged root then stands in merging until the rest of its tree leaves the workflow
+// (closeMerged), which can be days; while an open pull request of the set holds the close, the
+// merger still has it to merge, and the phase is not over. Accepting's is the architect's sign-off,
+// which moves the issue on in the transaction that records it, so an issue standing in accepting
+// is always still waiting for it; every other phase ends with its worker's completion, which moves
+// the issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
+// issue. The start of one task's merge reads its own task's pull request instead (startAgent).
+func PhaseFinished(ctx context.Context, store record.Store, renames ghrepo.Renames, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
 		return false, nil
 	}
@@ -43,7 +45,7 @@ func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue rec
 	if slices.ContainsFunc(awaited, func(at awaitedMerge) bool { return !finishedBy(issue, &at.pr) }) {
 		return false, nil
 	}
-	holds, err := setHolds(ctx, store, tx, issue.Key)
+	holds, err := setHolds(ctx, store, renames, tx, issue.Key)
 	if err != nil {
 		return false, err
 	}
@@ -86,7 +88,7 @@ func RoleFor(p phase.Phase) claim.Role {
 }
 
 func (e *Engine) phaseFinished(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
-	return PhaseFinished(ctx, e.store, tx, issue)
+	return PhaseFinished(ctx, e.store, e.cfg.RepositoryRenames, tx, issue)
 }
 
 // PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
@@ -171,12 +173,12 @@ func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role 
 
 // PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
 // a silence only the store can answer: false for a phase its terminating fact has met
-// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
-// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
-// role's phase row too, an empty row naming the issue and role where the record holds none, so
-// the silence repair reads it once.
-func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
-	finished, err := PhaseFinished(ctx, store, tx, issue)
+// (PhaseFinished, under renames) and for a role whose completion of this phase entry the workflow
+// accepted (the phase row's CompletedAt, which the next phase's start clears in clearHandoff). It
+// answers the role's phase row too, an empty row naming the issue and role where the record holds
+// none, so the silence repair reads it once.
+func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, renames ghrepo.Renames, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
+	finished, err := PhaseFinished(ctx, store, renames, tx, issue)
 	if err != nil || finished {
 		return record.PhaseRow{}, false, err
 	}

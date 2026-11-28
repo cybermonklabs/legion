@@ -10,17 +10,21 @@ import (
 )
 
 // PullRequest is one pull request as GitHub answers GET /pulls/{number} and lists it in GET
-// /pulls: its number, state (open or closed), page, body, base branch, head branch, commit and the
-// repository the head lives in (nil when GitHub no longer has it, a deleted fork), when it last
-// changed, whether and when it merged and its merge commit, and its nullable, lazily computed
-// `mergeable`, which the list leaves out, as it leaves out `merged` (merged_at says it there).
+// /pulls: its number, state (open or closed), page, body, base branch and the repository it merges
+// into, head branch, commit and the repository the head lives in (nil when GitHub no longer has
+// it, a deleted fork), when it last changed, whether and when it merged and its merge commit, and
+// its nullable, lazily computed `mergeable`, which the list leaves out, as it leaves out `merged`
+// (merged_at says it there).
 type PullRequest struct {
 	Number  int    `json:"number"`
 	State   string `json:"state"`
 	HTMLURL string `json:"html_url"`
 	Body    string `json:"body"`
 	Base    struct {
-		Ref string `json:"ref"`
+		Ref  string `json:"ref"`
+		Repo *struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
 	} `json:"base"`
 	Head struct {
 		Ref  string `json:"ref"`
@@ -56,6 +60,17 @@ func (p PullRequest) HeadRepository() string {
 		return ""
 	}
 	return p.Head.Repo.FullName
+}
+
+// BaseRepository is the repository the pull request merges into, as GitHub names it now
+// (base.repo.full_name): the pull request's own repository, under the name GitHub holds it under,
+// whatever name the request that read it asked under, since GitHub answers a request made under a
+// repository's earlier name with the repository it renamed it to. "" where the answer names none.
+func (p PullRequest) BaseRepository() string {
+	if p.Base.Repo == nil {
+		return ""
+	}
+	return p.Base.Repo.FullName
 }
 
 // OpenPullRequestsOn is each open pull request on branch of the client's repository, repository

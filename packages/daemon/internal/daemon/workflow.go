@@ -1588,7 +1588,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 				return err
 			}
 			if root != nil {
-				if start, err = workflow.ArchitectStartOf(ctx, tx, w.records, w.gatedSteps, *root); err != nil {
+				if start, err = workflow.ArchitectStartOf(ctx, tx, w.records, w.renames(), w.gatedSteps, *root); err != nil {
 					return err
 				}
 			}

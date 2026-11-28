@@ -363,7 +363,7 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 	if err != nil {
 		return "", nil, err
 	}
-	start, err := ArchitectStartOf(ctx, tx, e.store, e.cfg.Steps, root)
+	start, err := ArchitectStartOf(ctx, tx, e.store, e.cfg.RepositoryRenames, e.cfg.Steps, root)
 	if err != nil {
 		return "", nil, err
 	}

@@ -361,13 +361,20 @@ func TestEachOpenPullRequestIsReviewedAndMerged(t *testing.T) {
 // number and merge commit, the first not replaced by the second; the check of the linked merge is
 // a's, claimed by the agent of a's tester (checkClaim over the scope's task); and each check's first
 // look's task names its own merge, as owner/name#number with its merge commit, and not the other's.
+// A last row links acme/deploy#6990 after it merged, before the daemon read the link: the first
+// read of the link records the merge, tells the architect (`pr-merged`) and opens the check of that
+// merge, of a, as the merge's event does (pullRequestLinkRead, through merged); the merge's event,
+// delivered after that read, opens no second check and tells the architect nothing more.
 //
 // The fault it catches is a linked merge that opens no check, as in the release before this one,
 // whose intake recorded no pull request of another repository (its control: mergedNotOwn with no
 // openCheck, under which one check stands after both merges), and a linked merge's check claimed
 // by the checking role's own claim on the issue rather than by its scope's agent (its control:
 // openCheck keeping the pull
-// request's own task, "" for a linked pull request).
+// request's own task, "" for a linked pull request). The last row catches a link read that records
+// a merged pull request and only judges the close, under which the merge before the read tells
+// nobody and opens no check, and a merge event that opens a check and tells the architect whatever
+// the read recorded, under which two checks and two notices stand.
 func TestEachMergeOpensItsOwnProductionCheck(t *testing.T) {
 	t.Parallel()
 	ownMerge := intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-a", HeadSHA: "head"}
@@ -442,4 +449,37 @@ func TestEachMergeOpensItsOwnProductionCheck(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("the first read of a link whose pull request merged before it opens the check of that merge", func(t *testing.T) {
+		t.Parallel()
+		pool := migratedPool(t)
+		engine := returnEngine()
+		clock := &checkClock{now: stepClock}
+		engine.cfg.Clock, engine.cfg.ProductionCheckBound = clock.Now, checkBound
+		root := stepRoot(t, pool, phase.Merging)
+		seedTasks(t, pool, root.Key, root.Generation,
+			planTask{id: "a", steps: []string{"implementer", "tester"}, agents: []claim.Agent{"implementer", "tester"}, state: record.TaskRunning, place: atMerge})
+		markMerges(t, pool, root.Key, "a")
+		seedTaskBranch(t, pool, root.Key, "a", claim.IssueBranch(root.Key))
+		apply := applyFacts(t, pool, engine)
+		mustSpend(t, "the link of "+linkedPR, apply("linked-6990", linkEvent(t, pool, root.Key, "", 2, deployLink)))
+		mustSpend(t, "the first read of "+linkedPR+", which merged before it", apply("read-6990",
+			linkRead(root.Key, deployLink.Repo, deployLink.Number, record.PullRequestMerged, "fix/deploy")))
+		oneCheckOneNotice := func(after string) {
+			t.Helper()
+			checks := checksOfIssue(t, checkRig{pool: pool}, root.Key)
+			if len(checks) != 1 || !checks[0].Open() || checks[0].Repo != deployLink.Repo || checks[0].Number != deployLink.Number ||
+				checks[0].MergeSHA != deployMerged.MergeSHA || checks[0].Task != "a" {
+				t.Fatalf("the checks of %s after %s = %+v, want one open, of %s at %s and of task a", root.Key, after, checks, linkedPR, deployMerged.MergeSHA)
+			}
+			if told := noticesOf(t, pool, root.Key, "pr-merged"); len(told) != 1 || !strings.Contains(told[0].Reason, linkedPR) {
+				t.Fatalf("after %s the architect of %s holds %+v, want one pr-merged that names %s", after, root.Key, told, linkedPR)
+			}
+		}
+		oneCheckOneNotice("the first read of the link")
+		clock.now = clock.now.Add(time.Minute)
+		mustSpend(t, "the merge's event after the read", apply("merged-6990", deployMerged))
+		oneCheckOneNotice("the merge's event after the read")
+		stillOpen(t, pool, root.Key, phase.Merging, "the merge of "+linkedPR+" with "+ownPR+" open")
+	})
 }
