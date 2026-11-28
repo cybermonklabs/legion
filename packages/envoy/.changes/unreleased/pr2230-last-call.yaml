@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  `agentloop.Request` gains `LastCall`, the caller's sentence for the run's last allowed call, the
+  one that offers no tool. That call alone carries it, as a user message after everything else it
+  is sent: after the tool results of the call before it, after the check's sentence when the last
+  call asks again, and after `Input` when `Bounds.Calls` is 1. It is the caller's instruction to
+  that call, like `System`, and no part of the conversation: no `Step` and nothing else in the
+  `Result` holds it, and on the Anthropic kinds it takes no cache mark, so the marks stay where
+  they would be without it and within the four Anthropic allows. An empty `LastCall` sends
+  nothing, and every request is byte for byte what it was before the field existed.
+time: 2026-11-18T04:43:34.000000000Z
+custom:
+    Issue: pr2230
