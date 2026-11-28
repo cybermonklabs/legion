@@ -677,8 +677,8 @@ test("the approval entries stay in the header and read the document each step ap
 
     // A request of the Verification document waits on the reader: its own entry carries Approve
     // and Request changes, and the spec's, whose request was answered, carries neither. The
-    // count's press puts the focus on the entry of the document that waits, and its Approve
-    // answers that document's request.
+    // count's press opens Dashboard with the focus on the item of the request that waits, and the
+    // document's own entry still carries Approve, which answers that request.
     const verification = await createIssueArtifact(root.key, {
       content: "# Verification\n\nOne check.\n",
       name: "verification.md",

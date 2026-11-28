@@ -37,6 +37,7 @@ import { editWords, NoteOwnAct, noteAfterDraw, type OwnAct } from "./own-act";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
+import { abortOnReaderAct } from "./reader-acts";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { useFollowing } from "./slots/following";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
@@ -51,7 +52,7 @@ import {
   zoomBreadcrumb,
 } from "./tree-fold";
 import { everythingOpened, nodesInOrder, rowKeyOf } from "./tree-keys";
-import { abortOnReaderAct, type OnEditing, useNodeEditing } from "./useNodeEditing";
+import { type OnEditing, useNodeEditing } from "./useNodeEditing";
 import { moveToRow, useTreeKeymap } from "./useTreeKeymap";
 
 /**

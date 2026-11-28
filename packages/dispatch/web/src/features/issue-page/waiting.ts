@@ -4,7 +4,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { parseIssuePath } from "../refs/routes";
 import { bringOnScreen } from "./identity-block";
 import { issueAddress, presetPath } from "./issue-address";
-import { abortOnReaderAct } from "./useNodeEditing";
+import { abortOnReaderAct } from "./reader-acts";
 
 /**
  * The presses of the header's count of what waits on the reader (dispatch://INFRA-3940 R5, the

@@ -11,11 +11,7 @@
  * draws no opened document, so the row starts from `/issues/<key>/conversation`.
  */
 
-import {
-  DASHBOARD_WORDS,
-  PRESET_NAMES,
-  type Preset,
-} from "../web/src/features/issue-page/page-words";
+import { PRESET_NAMES, type Preset } from "../web/src/features/issue-page/page-words";
 import {
   createAsk,
   createComment,
@@ -31,8 +27,9 @@ import {
   reviewArtifact,
 } from "./api";
 import { mainHolds } from "./dashboard-seed";
+import { countOf, drawnItems, itemsOf, nextFive, waitingOf } from "./dashboard-support";
 import { asPlanner, PROJECT, pause } from "./issue-layout-seed-support";
-import { gotoIssue, phase, presetChooser, presetToolbar } from "./issue-page";
+import { gotoIssue, issuePage, phase, presetChooser, presetToolbar } from "./issue-page";
 import { DESKTOP, PHONE } from "./issue-page-g";
 import { waitingCount } from "./issue-page-p";
 import { settledState } from "./settled";
@@ -244,12 +241,9 @@ test("the count of what waits on the reader opens the first thing that waits @ph
   test.setTimeout(150_000);
   await phase(browser, seedWaitingWalk, async (page, seeded) => {
     const desktopProject = test.info().project.name !== "iphone";
-    const items = page.locator('[data-testid^="dashboard-item-"]');
-    const nextFive = page.getByRole("button", {
-      name: new RegExp(`^${DASHBOARD_WORDS.next_five}`),
-    });
-    const drawn = () =>
-      items.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-testid") ?? ""));
+    const waiting = waitingOf(issuePage(page));
+    const items = itemsOf(waiting);
+    const showMore = nextFive(waiting);
     const focused = () =>
       page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? "");
     const pressCount = async (key: "click" | "Enter") => {
@@ -279,10 +273,10 @@ test("the count of what waits on the reader opens the first thing that waits @ph
       );
       await expectActiveControl(page, "dashboard");
       await expect(
-        page.getByTestId("dashboard-waiting-count"),
+        countOf(waiting),
         "the header's count is not the length of Dashboard's list"
       ).toHaveText(String(seeded.items));
-      const first = (await drawn())[0];
+      const first = (await drawnItems(waiting))[0];
       expect(await focused(), `the focus is off Dashboard's first item at ${width} px`).toBe(first);
       expect(await items.count(), "Dashboard did not draw its first five").toBe(5);
 
@@ -303,10 +297,11 @@ test("the count of what waits on the reader opens the first thing that waits @ph
           .toBe(true);
         walked.push(next);
       }
-      expect(await drawn(), `the presses did not walk the list's order at ${width} px`).toEqual(
-        walked
-      );
-      expect(await nextFive.count(), "the next five were drawn and their control stayed").toBe(0);
+      expect(
+        await drawnItems(waiting),
+        `the presses did not walk the list's order at ${width} px`
+      ).toEqual(walked);
+      expect(await showMore.count(), "the next five were drawn and their control stayed").toBe(0);
       const kinds = new Set(walked.map((id) => id.replace(/^dashboard-item-/, "").split("-")[0]));
       expect(kinds, "the presses reached no item of one of the five kinds").toEqual(
         new Set(["approval", "decision", "question", "stale", "thread"])
@@ -318,7 +313,7 @@ test("the count of what waits on the reader opens the first thing that waits @ph
         .poll(focused, { message: `the focus did not come round at ${width} px` })
         .toBe(first);
       await expect(items, "the list did not show its first five again").toHaveCount(5);
-      await expect(nextFive, "the control for the next five did not come back").toHaveCount(1);
+      await expect(showMore, "the control for the next five did not come back").toHaveCount(1);
     }
 
     // An approval request is all that waits: at the bare address, which draws Dashboard, the press
