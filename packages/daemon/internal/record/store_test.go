@@ -3415,6 +3415,46 @@ func TestEveryClearKeepsTheMergeSnapshot(t *testing.T) {
 	}
 }
 
+// The current pull request's merge replaces a snapshot of another pull request whatever its time,
+// because only the current generation's pull request has a merged row (PutMergeSnapshot's one
+// case). The row is the issue's own (pull_requests has one row per issue), so the repository the
+// merge names decides nothing: under a configured rename the fact spells the repository's new name
+// while the row still holds the old one. Compared by repository, the snapshot was refused there,
+// merged returned the refusal as an error, and the GitHub fact retried until it was given up,
+// though GitHub never sends a merge again.
+func TestTheCurrentPullRequestsMergeIsTakenUnderARenamedRepository(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	mergedAt := time.Date(2026, 11, 24, 8, 0, 0, 0, time.UTC)
+	issue := issueFixture("ACME-1")
+	issue.Parent = nil
+	earlier := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "main", Repo: issue.Repo, MergedAt: mergedAt}
+	renamed := Merge{Number: 42, Head: strings.Repeat("c", 40), SHA: strings.Repeat("d", 40), Base: "main", Repo: "acme/renamed-widgets"}
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+		written, err := records.PutMergeSnapshot(ctx, tx, issue.Key, earlier)
+		if err != nil || !written {
+			t.Fatalf("record the earlier merge = %t, %v, want it written", written, err)
+		}
+		must(t, records.PutPullRequest(ctx, tx, PullRequest{Issue: issue.Key, Repo: issue.Repo, Number: 42, Branch: "legion/ACME-1",
+			HeadSHA: renamed.Head, MergeSHA: renamed.SHA, Base: "main", State: PullRequestMerged}))
+		written, err = records.PutMergeSnapshot(ctx, tx, issue.Key, renamed)
+		if err != nil || !written {
+			t.Fatalf("record the current pull request's merge under the renamed repository = %t, %v, want it written", written, err)
+		}
+	})
+	var got *Issue
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		got, err = records.Issue(ctx, tx, issue.Key)
+		must(t, err)
+	})
+	if got.Merge.Number != 42 || got.Merge.SHA != renamed.SHA {
+		t.Fatalf("the issue's snapshot = %+v, want #42 at %s", got.Merge, renamed.SHA)
+	}
+}
+
 // A path that deletes or replaces a merged pull request row saves the row's merge first, so the
 // issue's evidence of its merge outlives the row. A closed issue holds a retained merged row and no
 // snapshot, as an issue a release before the snapshot merged does. Each clear of a generation, on
