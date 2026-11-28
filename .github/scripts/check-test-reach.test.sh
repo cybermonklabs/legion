@@ -1830,4 +1830,187 @@ check "runs-none: the same step with a -run that selects a test fails" "$(is "$s
 check "runs-none: and names the workflow and the step" \
   "$(contains "$out" '^check-test-reach: outside: .github/workflows/caches.yaml:[0-9]*: Start every test binary, running no test: ')"
 
+# Gates and test steps that dispatch://INFRA-3411/artifact/devbox-tests-md's search, parts 2 to 5,
+# and dispatch://INFRA-3411/spec#b-r3 name and the search at cab8a563 passes: an early return or a
+# TestMain exit on a variable ("each assertion that runs only when such a variable is set"), a read
+# in a package-level declaration or in a helper of the package's non-test source ("directly or in a
+# helper"), a Bun test chosen between test and test.skip ("each test.skip"), a *.test.sh harness
+# whose header uses none of the four words, a scheduled gotestsum step (a go test command under the
+# wrapper this change runs every Go test step with), and a release step that runs a check script
+# that no list of release checks names.
+echo "case: 3 - an early return on a variable no job sets"
+root=$(fixture go-early-return)
+cat > "$root/packages/envoy/unit/early_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+func TestReturnsWithoutTheServer(t *testing.T) {
+	if os.Getenv("FIXTURE_EARLY") == "" {
+		return
+	}
+	if 1+1 != 2 {
+		t.Fatal("arithmetic")
+	}
+}
+GO
+run_check "$root"
+check "go-early-return: fails" "$(is "$status" 1)"
+check "go-early-return: names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/early_test.go:9: FIXTURE_EARLY: ')"
+
+echo "case: 3 - a Bun test chosen between test and test.skip on a variable no job sets"
+root=$(fixture bun-ternary)
+cat > "$root/packages/web/ternary.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+const maybe = process.env.FIXTURE_TERNARY ? test : test.skip;
+
+maybe("runs only where FIXTURE_TERNARY is set", () => {
+  expect(1 + 1).toBe(2);
+});
+TS
+run_check "$root"
+check "bun-ternary: fails" "$(is "$status" 1)"
+check "bun-ternary: names the file and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/web/ternary.test.ts:[0-9]*: FIXTURE_TERNARY: ')"
+
+echo "case: 3 - a gate on a function of the package's own non-test source"
+root=$(fixture go-source-helper)
+cat > "$root/packages/envoy/unit/live.go" <<'GO'
+package unit
+
+import "os"
+
+func liveEnabled() bool {
+	return os.Getenv("FIXTURE_SOURCE_LIVE") != ""
+}
+GO
+cat > "$root/packages/envoy/unit/source_helper_test.go" <<'GO'
+package unit
+
+import "testing"
+
+func TestNeedsTheLiveServer(t *testing.T) {
+	if !liveEnabled() {
+		t.Skip("FIXTURE_SOURCE_LIVE names no server")
+	}
+}
+GO
+run_check "$root"
+check "go-source-helper: fails" "$(is "$status" 1)"
+check "go-source-helper: names the variable" "$(contains "$out" '^check-test-reach: variable: .*FIXTURE_SOURCE_LIVE: ')"
+
+echo "case: 3 - a gate on a package-level variable a declaration initialises"
+root=$(fixture go-package-initialiser)
+cat > "$root/packages/envoy/unit/initialiser_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+var initialisedDSN = os.Getenv("FIXTURE_INITIALISED")
+
+func TestNeedsTheInitialisedServer(t *testing.T) {
+	if initialisedDSN == "" {
+		t.Skip("FIXTURE_INITIALISED names no server")
+	}
+}
+GO
+run_check "$root"
+check "go-package-initialiser: fails" "$(is "$status" 1)"
+check "go-package-initialiser: names the file and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/initialiser_test.go:[0-9]*: FIXTURE_INITIALISED: ')"
+
+echo "case: 3 - a TestMain that exits before m.Run on a variable no job sets"
+root=$(fixture go-test-main-exit)
+cat > "$root/packages/envoy/unit/main_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+func TestMain(m *testing.M) {
+	if os.Getenv("FIXTURE_MAIN") == "" {
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
+GO
+run_check "$root"
+check "go-test-main-exit: fails" "$(is "$status" 1)"
+check "go-test-main-exit: names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/main_test.go:9: FIXTURE_MAIN: ')"
+
+echo "case: 4 - a *.test.sh harness whose header uses none of the words, that no job runs"
+root=$(fixture harness-no-words)
+cat > "$root/scripts/drive.test.sh" <<'SH'
+#!/usr/bin/env bash
+# Drives the stack through a restart and asserts it answers afterwards.
+set -euo pipefail
+[ "$(echo answered)" = answered ]
+SH
+chmod +x "$root/scripts/drive.test.sh"
+run_check "$root"
+check "harness-no-words: fails" "$(is "$status" 1)"
+check "harness-no-words: names the harness" "$(contains "$out" '^check-test-reach: script: scripts/drive.test.sh:')"
+
+echo "case: 5 - a scheduled gotestsum step no required job runs"
+root=$(fixture schedule-gotestsum)
+cat > "$root/.github/workflows/nightly.yaml" <<'YAML'
+name: Nightly
+on:
+  schedule:
+    - cron: "0 3 * * *"
+jobs:
+  soak:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Soak the unit tests
+        run: gotestsum --format testname -- -count=50 ./unit/
+        working-directory: packages/envoy
+YAML
+run_check "$root"
+check "schedule-gotestsum: fails" "$(is "$status" 1)"
+check "schedule-gotestsum: names the workflow and the step" \
+  "$(contains "$out" '^check-test-reach: schedule: .github/workflows/nightly.yaml:[0-9]*: Soak the unit tests: ')"
+
+echo "case: 8 - a release step that runs a check script, unlisted"
+root=$(fixture release-script)
+cat > "$root/scripts/check-packed.sh" <<'SH'
+#!/usr/bin/env bash
+# Checks the packed tarball before the publish job is handed it.
+test -s tarball
+SH
+chmod +x "$root/scripts/check-packed.sh"
+required_job "$root" packed '    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the check script on a fixture tarball
+        run: scripts/check-packed.sh'
+cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pack
+        run: echo packed > tarball
+      - name: Check the packed tarball
+        run: scripts/check-packed.sh
+YAML
+run_check "$root"
+check "release-script: fails" "$(is "$status" 1)"
+check "release-script: names the workflow and the step" \
+  "$(contains "$out" '^check-test-reach: release: .github/workflows/release.yaml:[0-9]*: Check the packed tarball: ')"
+
 summary "check-test-reach.sh"
