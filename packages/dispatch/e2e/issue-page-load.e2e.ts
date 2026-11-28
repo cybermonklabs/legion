@@ -251,11 +251,26 @@ for (const view of LOAD_VIEWS) {
     printShifts(`${prefix}.layout-shift`, loads);
     // Whether the typeface landed before the first screen was painted: a swap after it moves
     // the rows it wraps again (dispatch://INFRA-5939/comment/82020255-8eaf-4d3d-841e-bdb51d0bf410).
+    // Beside it, the font file's request and the new page's lazy chunk, each `start-end`, and the
+    // end of the last script before the paint, so a later paint shows whether the font's fetch
+    // stood in the chunks' way.
     for (const [at, load] of loads.entries()) {
       const fonts = load.record.fontsDone.map((time) => time.toFixed(0)).join(",");
+      const paint = paints[at]?.reading ?? null;
+      const spans = (name: RegExp) =>
+        load.record.resource
+          .filter((entry) => name.test(entry.name))
+          .map((entry) => `${entry.startTime.toFixed(0)}-${entry.responseEnd.toFixed(0)}`)
+          .join(",") || "none";
+      const scriptEnds = load.record.resource
+        .filter((entry) => /\.js(\?|$)/.test(entry.name))
+        .map((entry) => entry.responseEnd)
+        .filter((end) => paint === null || end <= paint);
       printReading(
         `${prefix}.typeface rate=${rate} load=${at + 1} fonts-done=${fonts || "none"} ` +
-          `first-screen-paint=${paints[at]?.reading ?? "none"}`
+          `first-screen-paint=${paint ?? "none"} font=${spans(/\.woff2?(\?|$)/)} ` +
+          `outline-chunk=${spans(/\/IssueOutlinePage-[^/]*\.js(\?|$)/)} ` +
+          `scripts-done=${scriptEnds.length === 0 ? "none" : Math.max(...scriptEnds).toFixed(0)}`
       );
     }
     for (const [at, load] of loads.entries()) {
