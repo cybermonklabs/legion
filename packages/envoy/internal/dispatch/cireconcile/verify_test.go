@@ -578,13 +578,31 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	if err != nil {
 		t.Fatalf("read the request: %v", err)
 	}
+	// held reports whether the bucket still holds the request at revision: the newest message on
+	// requestKey, read from the stream's leader through the harness's handle. That is the fact a
+	// listing shows, read at its source: VerifyRequests lists requestKey at revision exactly when
+	// the key's newest message is a put at that revision, since asked.Value() names its own key,
+	// and the delete marker DoneVerifying leaves reads as nats.ErrKeyNotFound. The listing is not
+	// what this test is about, and each one opens a KV watch (bus.KeyValue.HeldEntries), which a
+	// listing after each of the loop's 62 passes would pay again.
+	held := func(revision uint64) bool {
+		t.Helper()
+		entry, err := h.ci.GetFromLeader(h.giveUp, requestKey)
+		if errors.Is(err, nats.ErrKeyNotFound) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read the request %s from the stream's leader: %v", requestKey, err)
+		}
+		return entry.Revision() == revision
+	}
 	h.github.answerStatus(checkRunsPath, http.StatusNotFound)
 
 	h.verifyPass()
 	if lines := h.lines(verifyGaveUp); len(lines) != 1 {
 		t.Fatalf("a read GitHub answered 404 logged %d give-ups, want 1", len(lines))
 	}
-	if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == request.Revision }) {
+	if held(request.Revision) {
 		t.Fatalf("the request at revision %d is still held after a failure no read mends", request.Revision)
 	}
 	if state, _, _ := h.record(); state.VerifiedRev != 0 {
@@ -601,7 +619,7 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 			t.Fatalf("write the request again: %v", err)
 		}
 		h.verifyPass()
-		if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == rewritten }) {
+		if held(rewritten) {
 			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, elapsed())
 		}
 	}
