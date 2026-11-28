@@ -472,8 +472,7 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 		firstStep(t, pool, engine, root.Key)
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
-		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningB(root.Key) +
-			" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
+		want := stopNotTakenIn(inPlanningB(root.Key))
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}
@@ -498,35 +497,22 @@ func TestTheGroupDefaultStopsNoTask(t *testing.T) {
 	})
 }
 
+// stopNotTakenIn is the answer to the owner's stop of a task of an issue of a group that takes no
+// plan from its owner, which group names (inPlanningB, inPlanningC).
+func stopNotTakenIn(group string) *intake.Refusal {
+	return &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: group + " Legion takes no stop of its tasks from its owner. This stop changed nothing."}
+}
+
 // ownerAloneStoredSteps is the one step of an issue whose group is owner-alone
 // (plan.OwnerAloneSteps), as the walk stores it.
 var ownerAloneStoredSteps = []string{"implementer:owner/implementation"}
 
 // assertOwnerAlonePlan fails unless key's run at generation holds the plan of the group owner-alone
-// alone: version 0 of the source default, with no document and no giver, and one task, default,
-// whose block text says that its owner does the whole issue, run by default on the one step
-// implementer:owner.
+// alone (assertChosenPlan): one task, default, whose block text says that its owner does the whole
+// issue, run by default on the one step implementer:owner.
 func assertOwnerAlonePlan(t *testing.T, stored *record.StoredPlan, key string, generation uint64) {
 	t.Helper()
-	if stored == nil {
-		t.Fatalf("%s at generation %d holds no plan rows, want the owner's one step", key, generation)
-	}
-	if v := stored.Version; v.Issue != key || v.Generation != generation || v.Version != 0 || v.Source != record.PlanSourceDefault ||
-		v.ArtifactID != "" || v.GivenBy != "" {
-		t.Fatalf("the version in force of %s = %+v, want version 0 of the source default with no document and no giver", key, v)
-	}
-	if len(stored.Tasks) != 1 {
-		t.Fatalf("the tasks of %s = %+v, want the one task default", key, stored.Tasks)
-	}
-	if task := stored.Tasks[0]; task.Task != plan.DefaultTask || task.PlanVersion != 0 ||
-		task.BlockText != "The owner does the whole issue itself, in one step." || !task.StepsByDefault {
-		t.Fatalf("the one task of %s = %+v, want default of version 0, its text the owner's one step, run by default", key, task)
-	}
-	step := []record.PlanStep{{Issue: key, Generation: generation, Task: plan.DefaultTask, Position: 1, Role: "implementer",
-		Type: plan.TypeImplementation, AgentKey: "owner"}}
-	if got := stored.Steps[plan.DefaultTask]; !reflect.DeepEqual(got, step) {
-		t.Fatalf("the steps of default = %+v, want %+v alone", got, step)
-	}
+	assertChosenPlan(t, stored, key, generation, "The owner does the whole issue itself, in one step.", ownerAloneStoredSteps)
 }
 
 // An issue whose group is owner-alone runs one step, its owner's. Its first step writes version 0
@@ -631,8 +617,7 @@ func TestTheGroupOwnerAloneRunsOneStepOfItsOwner(t *testing.T) {
 		firstStep(t, pool, engine, root.Key)
 
 		result := applyFacts(t, pool, engine)("stop", ownersStop(t, root, plan.DefaultTask))
-		want := &intake.Refusal{Status: 409, Code: "PLAN_NOT_TAKEN", Message: inPlanningC(root.Key) +
-			" Legion takes no stop of its tasks from its owner. This stop changed nothing."}
+		want := stopNotTakenIn(inPlanningC(root.Key))
 		if !reflect.DeepEqual(result.Refusal, want) {
 			t.Fatalf("the owner's stop of default = %+v, want the refusal %+v", result.Refusal, want)
 		}

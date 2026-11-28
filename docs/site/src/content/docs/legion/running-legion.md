@@ -1737,9 +1737,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   `settings.projects.<KEY>.memory` for the block's experiment and
   `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
   tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was
-  made, `plan` is the group the arm set at the draw (`owner` or `default`), which the issue keeps
-  whatever the file says later, and is absent where the arm set none, and the key itself is absent
-  from an issue no experiment holds an answer for. The three
+  made, `plan` is the group the arm set at the draw (`owner`, `default` or `owner-alone`), which
+  the issue keeps whatever the file says later, and is absent where the arm set none, and the key
+  itself is absent from an issue no experiment holds an answer for. The three
   fields the `memory` experiment fills — `memoryGroup` (`memory` or `none`), `memoryDrawMode`
   (the mode in force at the draw) and `memoryDrawnAt` — are still on every issue and answer
   exactly as they did, absent together where nothing was drawn for that tree. Read

@@ -811,10 +811,10 @@ const legionWakeWaiting = z.object({
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
  * daemon adds must be read rather than refuse the whole state. The daemon always writes
  * `experiment`, `variant` and `mode`; the reader takes them as optional, since no plugin code reads
- * them (LEGION_ANSWER_READS). `plan` (contract 220) is the group the arm set at the draw, `owner`
- * or `default`, which the issue runs on for its whole life whatever the settings say later; it is
- * absent where the arm named none, and a string rather than an enum, so a group a later daemon
- * carries out is read rather than refuse the state. */
+ * them (LEGION_ANSWER_READS). `plan` (contract 220) is the group the arm set at the draw, `owner`,
+ * `default` or `owner-alone`, which the issue runs on for its whole life whatever the settings say
+ * later; it is absent where the arm named none, and a string rather than an enum, so a group a
+ * later daemon carries out is read rather than refuse the state. */
 const legionAssignment = z.object({
   experiment: nonEmptyString.optional(),
   variant: z.string().optional(),

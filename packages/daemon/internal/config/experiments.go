@@ -496,7 +496,8 @@ func readVariants(value *yaml.Node, key string) ([]Variant, error) {
 		if err != nil {
 			return nil, err
 		}
-		if variant.Plan = PlanGroup(plan); plan != "" && !slices.Contains(planGroups, variant.Plan) {
+		variant.Plan = PlanGroup(plan)
+		if plan != "" && !slices.Contains(planGroups, variant.Plan) {
 			return nil, fmt.Errorf("%s.plan must be %s (got %q)", field, orList(planGroups), plan)
 		}
 		variants = append(variants, variant)

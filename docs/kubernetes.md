@@ -3212,7 +3212,7 @@ It adds no migration, since `experiment_assignments.plan` already takes the word
 The earlier release's loader refuses the word, naming the arm (`projects.<KEY>.experiments.<NAME>.variants.<ARM>.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet.`), so that daemon does not start while one arm names it.
 Take out the arm whose `plan` is `owner-alone`, or change its word to `owner` or `default`.
 Keep `plan` in the other arms: the earlier release takes `owner` and `default`, and refuses an experiment that names `plan` in one arm and not in another.
-Where taking the arm out would leave the experiment one arm under a mode other than `off`, which the loader refuses, change the word instead.
+Where taking the arm out would leave the experiment one arm under a mode other than `off`, or the experiment's `on_variant` names that arm, which the loader refuses either way, change the word instead.
 `legion config check` on the earlier image then reads the file clean.
 A rollback below the release whose experiment sets how each issue is done takes that release's step instead, which takes `plan` out of every arm ([Rolling back the release whose experiment sets how each issue is done](#rolling-back-the-release-whose-experiment-sets-how-each-issue-is-done)).
 
