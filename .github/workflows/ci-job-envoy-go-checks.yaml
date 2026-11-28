@@ -90,11 +90,9 @@ jobs:
       # each other, no more at once than the runner has cores, in the order queued (the longest
       # first, so the shorter ones fill the other cores around them), and "Wait for the script
       # harnesses and judge them" is their verdict and prints each one's log.
-      # The operator-token-minters check's harness is queued first: it is the longest, 706 s in its
-      # last whole run on a developer box (2026-11-25), so the shorter ones fill the other cores.
-      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
-        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
-        working-directory: packages/envoy
+      # The steps are queued longest first, by each harness's wall in merge-group job 140927396087
+      # (2026-11-28) and each vm part's in pull-request job 140965312130 (2026-11-28), so the
+      # shorter ones fill the other cores around the longest.
       - name: Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl; no cluster) and compare nats.yaml with a fresh render
         # The suite's own bound, --minutes 15, which its waits end 30 s before: the pool hands the
         # harness HARNESS_POOL_DEADLINE_MS, its start plus the bound less 30 s, and the command passes
@@ -107,58 +105,8 @@ jobs:
         # deadline falls inside the job's 30 min.
         run: ../../.github/scripts/harness-pool.sh start --minutes 15 loadtest/cluster/cluster.test.sh bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh'
         working-directory: packages/envoy
-      # The vm harness runs as fourteen parts, `vm.test.sh <part>`, each a pool entry of its own with
-      # a temporary directory of its own, so they run beside the other harnesses and beside each
-      # other. As one serial entry it took 337.2 s and 129.6 CPU-seconds in merge-group job
-      # 140927396087 (268.0 to 586.7 s over 11 green merge-group runs of 2026-11-27 and 2026-11-28);
-      # as parts, in pull-request job 140965312130 (2026-11-28), each took 14.3 to 59.0 s, and all
-      # fourteen 128.4 CPU-seconds. Part series is queued first: its one case had the widest spread
-      # at main, 18.3 to 72.2 s over those 11 runs, and it took 42.4 s. The rest follow, longest first
-      # by the forecast of dispatch://INFRA-6358's plan.
-      - name: Test loadtest/vm/vm.sh, part series (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh series' bash loadtest/vm/vm.test.sh series
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part step (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh step' bash loadtest/vm/vm.test.sh step
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part check-reset (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh check-reset' bash loadtest/vm/vm.test.sh check-reset
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part defects-credentials (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh defects-credentials' bash loadtest/vm/vm.test.sh defects-credentials
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part sessions (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh sessions' bash loadtest/vm/vm.test.sh sessions
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part oslogin (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh oslogin' bash loadtest/vm/vm.test.sh oslogin
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part example (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh example' bash loadtest/vm/vm.test.sh example
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part pg-interrupt (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh pg-interrupt' bash loadtest/vm/vm.test.sh pg-interrupt
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part mounts (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh mounts' bash loadtest/vm/vm.test.sh mounts
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part discard-seed-collect (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh discard-seed-collect' bash loadtest/vm/vm.test.sh discard-seed-collect
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part tunnel (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh tunnel' bash loadtest/vm/vm.test.sh tunnel
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part placement (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh placement' bash loadtest/vm/vm.test.sh placement
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part up (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh up' bash loadtest/vm/vm.test.sh up
-        working-directory: packages/envoy
-      - name: Test loadtest/vm/vm.sh, part modes-store (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh modes-store' bash loadtest/vm/vm.test.sh modes-store
-        working-directory: packages/envoy
-      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
-        run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
+      - name: Verdict test for infra/scripts/operator-token-minters.sh (fakes kubectl, gcloud and agent-secrets; no cluster or cloud)
+        run: ../../.github/scripts/harness-pool.sh start infra/scripts/operator-token-minters.test.sh bash infra/scripts/operator-token-minters.test.sh
         working-directory: packages/envoy
       # The test runs its URL cases under en_US.UTF-8, where bash's [[ =~ ]] ranges reach past ASCII,
       # to hold the deployer's URL grammar to ASCII; it refuses to run without that locale, so the
@@ -166,62 +114,98 @@ jobs:
       - name: Rollback and credential test for deploy/scripts/autodeploy.sh (fakes docker/jj/curl and a libpq client; the runner's docker compose resolves the compose file; no Postgres)
         run: ../../.github/scripts/harness-pool.sh start deploy/scripts/autodeploy_test.sh bash -c 'sudo locale-gen en_US.UTF-8 && bash deploy/scripts/autodeploy_test.sh'
         working-directory: packages/envoy
-      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
-        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
-        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
+      - name: Verdict test for daemon-release-gate.sh (fakes gh and docker; no registry or GitHub)
+        run: ../../.github/scripts/harness-pool.sh start scripts/daemon-release-gate.test.sh bash scripts/daemon-release-gate.test.sh
         working-directory: packages/envoy
       - name: Verdict test for legacy-subjects-gate.sh (fakes kubectl, curl and nats; no cluster or bus)
         run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-gate.test.sh bash scripts/legacy-subjects-gate.test.sh
         working-directory: packages/envoy
-      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
-        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh
+      - name: Isolation test for dev-stack.sh (fakes go/psql/curl/python3/docker; no real Postgres or network)
+        run: ../../.github/scripts/harness-pool.sh start scripts/dev-stack.test.sh bash scripts/dev-stack.test.sh
         working-directory: packages/envoy
-      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
-        run: ../../.github/scripts/harness-pool.sh start loadtest/common.test.sh bash loadtest/common.test.sh
+      # The vm harness runs as fourteen parts, `vm.test.sh <part>`, each a pool entry of its own with
+      # a temporary directory of its own, so they run beside the other harnesses and beside each
+      # other. As one serial entry it took 337.2 s and 129.6 CPU-seconds in merge-group job
+      # 140927396087 (268.0 to 586.7 s over 11 green merge-group runs of 2026-11-27 and 2026-11-28);
+      # as parts, in pull-request job 140965312130 (2026-11-28), each took 14.3 to 59.0 s, and all
+      # fourteen 128.4 CPU-seconds. Each part is queued by its own wall there, as every step is.
+      - name: Test loadtest/vm/vm.sh, part discard-seed-collect (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh discard-seed-collect' bash loadtest/vm/vm.test.sh discard-seed-collect
         working-directory: packages/envoy
-      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
-        run: ../../.github/scripts/harness-pool.sh start scripts/callout-check.test.sh bash scripts/callout-check.test.sh
+      - name: Test loadtest/vm/vm.sh, part tunnel (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh tunnel' bash loadtest/vm/vm.test.sh tunnel
         working-directory: packages/envoy
-      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
-        run: ../../.github/scripts/harness-pool.sh start scripts/project-secrets-check.test.sh bash scripts/project-secrets-check.test.sh
+      - name: Test loadtest/vm/vm.sh, part series (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh series' bash loadtest/vm/vm.test.sh series
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part step (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh step' bash loadtest/vm/vm.test.sh step
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part placement (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh placement' bash loadtest/vm/vm.test.sh placement
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part oslogin (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh oslogin' bash loadtest/vm/vm.test.sh oslogin
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part pg-interrupt (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh pg-interrupt' bash loadtest/vm/vm.test.sh pg-interrupt
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part defects-credentials (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh defects-credentials' bash loadtest/vm/vm.test.sh defects-credentials
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part mounts (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh mounts' bash loadtest/vm/vm.test.sh mounts
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part example (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh example' bash loadtest/vm/vm.test.sh example
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part sessions (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh sessions' bash loadtest/vm/vm.test.sh sessions
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part check-reset (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh check-reset' bash loadtest/vm/vm.test.sh check-reset
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part modes-store (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh modes-store' bash loadtest/vm/vm.test.sh modes-store
         working-directory: packages/envoy
       - name: Isolation test for dev-broker.sh (fakes docker/go/curl; no real Postgres or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-broker.test.sh bash scripts/dev-broker.test.sh
         working-directory: packages/envoy
+      - name: Test loadtest/vm/vm.sh, part up (fakes ssh, docker, curl, psql, nc and loadgen; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start 'loadtest/vm/vm.test.sh up' bash loadtest/vm/vm.test.sh up
+        working-directory: packages/envoy
+      - name: Lock test for loadtest/common.sh (inherited lock, refusals, holders in another PID namespace; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/common.test.sh bash loadtest/common.test.sh
+        working-directory: packages/envoy
+      - name: Verdict test for listener-deploy-probe.sh (two fake listener tasks on 127.0.0.1 and 127.0.0.2)
+        run: ../../.github/scripts/harness-pool.sh start scripts/listener-deploy-probe.test.sh bash scripts/listener-deploy-probe.test.sh
+        working-directory: packages/envoy
+      - name: Isolation test for project-secrets-check.sh (fakes the stack, curl, agent-secrets, bun and psql)
+        run: ../../.github/scripts/harness-pool.sh start scripts/project-secrets-check.test.sh bash scripts/project-secrets-check.test.sh
+        working-directory: packages/envoy
       - name: Isolation test for dev-airlock.sh (fakes psql/go/curl; no real Postgres, network or Go build)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-airlock.test.sh bash scripts/dev-airlock.test.sh
-        working-directory: packages/envoy
-      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
-        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh
         working-directory: packages/envoy
       - name: Reuse test for dev-postgres.sh (a fake docker; refuses a dispatch-pg off the pinned image)
         run: ../../.github/scripts/harness-pool.sh start scripts/dev-postgres.test.sh bash scripts/dev-postgres.test.sh
         working-directory: packages/envoy
+      - name: Verdict test for callout-check.sh (fakes natsprobe and curl; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/callout-check.test.sh bash scripts/callout-check.test.sh
+        working-directory: packages/envoy
+      - name: Identity check test for deploy/scripts/up-dispatch.sh (fakes docker but for the runner's docker compose, which resolves the compose file)
+        run: ../../.github/scripts/harness-pool.sh start deploy/scripts/up-dispatch_test.sh bash deploy/scripts/up-dispatch_test.sh
+        working-directory: packages/envoy
       - name: Required-input and result test for airlock-check.sh (no stack or network)
         run: ../../.github/scripts/harness-pool.sh start scripts/airlock-check.test.sh bash scripts/airlock-check.test.sh
-        working-directory: packages/envoy
-      - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
-        run: ../../.github/scripts/harness-pool.sh start scripts/proxy-chain-check.test.sh bash scripts/proxy-chain-check.test.sh
-        working-directory: packages/envoy
-      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
-        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
-        working-directory: packages/envoy
-      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
-        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
-        working-directory: packages/envoy
-      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
-        run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
         working-directory: packages/envoy
       - name: Stack and broker-start test for lib/check-stack.sh and lib/exec-env.sh, which judge-check.sh and proxy-chain-check.sh share, and judge-check.sh's result (a stand-in broker; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/judge-check.test.sh bash scripts/judge-check.test.sh
         working-directory: packages/envoy
-      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
-        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/sample.test.sh bash loadtest/vm/sample.test.sh
+      - name: Verdict test for legacy-subjects-purge.sh (fakes kubectl and nats; no cluster or bus)
+        run: ../../.github/scripts/harness-pool.sh start scripts/legacy-subjects-purge.test.sh bash scripts/legacy-subjects-purge.test.sh
         working-directory: packages/envoy
-      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
-        run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
+      - name: Verdict test for proxy-chain-check.sh (its arguments, call's reading of an s_client-shaped transcript, the clock file, the report; no stack)
+        run: ../../.github/scripts/harness-pool.sh start scripts/proxy-chain-check.test.sh bash scripts/proxy-chain-check.test.sh
         working-directory: packages/envoy
       # approve-check.sh's scan of its session (scripts/approve/scan.ts), k31's step (e): it finds a
       # logged binding's key as bare PEM and as PEM inside a JSON string, finds a token of the
@@ -229,6 +213,21 @@ jobs:
       # exit 3, when it compared nothing.
       - name: Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/approve/ bun test scripts/approve/
+        working-directory: packages/envoy
+      - name: One-run-at-a-time test for loadtest/run-step.sh and run-series.sh (fakes go and uv; no stack)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/run-step.test.sh bash loadtest/run-step.test.sh
+        working-directory: packages/envoy
+      - name: Count test for airlock-mutants.sh (a fixture tree and a stand-in go; no database or model)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants.test.sh bash scripts/airlock-mutants.test.sh
+        working-directory: packages/envoy
+      - name: Apply test for airlock-mutants.sh's patches (git apply --check of each; no database, model or Lean)
+        run: ../../.github/scripts/harness-pool.sh start scripts/airlock-mutants-apply.test.sh bash scripts/airlock-mutants-apply.test.sh
+        working-directory: packages/envoy
+      - name: Test loadtest/vm/sample.sh, the VM sampler's reader (a prepared cgroup tree and /proc; no VMs)
+        run: ../../.github/scripts/harness-pool.sh start loadtest/vm/sample.test.sh bash loadtest/vm/sample.test.sh
+        working-directory: packages/envoy
+      - name: Password test for restore-dispatch-dump.sh (fakes psql and pg_restore; no real Postgres)
+        run: ../../.github/scripts/harness-pool.sh start scripts/restore-dispatch-dump.test.sh bash scripts/restore-dispatch-dump.test.sh
         working-directory: packages/envoy
       - name: Exit test for approve-check.sh (its steps library alone; no stack)
         run: ../../.github/scripts/harness-pool.sh start scripts/approve-check.test.sh bash scripts/approve-check.test.sh
