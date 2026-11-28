@@ -318,6 +318,8 @@ test("ProofDocument opens a hover card for a dispatch:// link in the live editor
     resolved_repo: null,
     status: "testing",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     rank: "U",
     title: "Ship the release",
     open_asks: [],

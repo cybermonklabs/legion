@@ -691,7 +691,7 @@ var wholeTextOwners = func() []wholeTextOwner {
 // and its limit bounds it, the cursor it leaves naming where the next pass starts; no choice
 // of the planner's does.
 //
-// The window kind is written as a literal, as refs.windowKinds explains for every read and
+// The window kind is written as a literal, as refs.WindowKinds explains for every read and
 // write of a window (migration 20261102233630): embeddings_window_owner is partial
 // over the four window kinds, and the planner can prove a literal kind satisfies that
 // predicate where it can prove nothing of a parameter, so only a literal reaches the owners

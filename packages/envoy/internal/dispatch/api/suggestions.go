@@ -638,14 +638,15 @@ func (s *server) runRelatedCheck(
 // that found nothing leaves that response whole, with no reason recorded and no cross-project
 // item.
 //
-// A meaning search this stage's own context ended, and one the server ended itself at
-// searchMeaningScan's statement bound, are the same thing to the caller: the meaning search did
-// not answer, so the check answers by keywords alone and says so (INFRA-148). Which of the two
-// clocks ran out first is not the caller's business, and only one of them shows in ctx: a
-// statement Postgres ended arrives as SQLSTATE 57014 (meaningStatementEnded) and may arrive
-// while this stage's own context is still live, so the reason is read from the error too. Were
-// it not, the bound this server holds on its own query would reach the writer as "meaning search
-// failed", which is what the check says when something broke.
+// A meaning search this stage's own context ended, and one the server ended itself at the bound
+// beginSearchScan sets on each search statement (searchStatementBound), are the same thing to
+// the caller: the meaning search did not answer, so the check answers by keywords alone and says
+// so. Which of the two clocks ran out first is not the caller's business, and only
+// one of them shows in ctx: a statement Postgres ended arrives as SQLSTATE 57014
+// (searchStatementEnded) and may arrive while this stage's own context is still live, so the
+// reason is read from the error too. Were it not, the bound this server holds on its own query
+// would reach the writer as "meaning search failed", which is what the check says when something
+// broke.
 //
 // trees says the check's caller asked for the display trees (relatedInput.trees). The leg makes
 // a reader of its own from it rather than registering with the caller's: it runs on a goroutine
@@ -657,7 +658,7 @@ func (s *server) relatedMeaningStage(
 	ctx, crossRead context.Context, project, text string, pick *relatedPick, excluded []string, trees bool,
 ) relatedStage {
 	failed := func(reason string, err error) relatedStage {
-		if ctx.Err() != nil || meaningStatementEnded(err) {
+		if ctx.Err() != nil || searchStatementEnded(err) {
 			reason = relatedReasonMeaningTimeout
 		}
 		if err != nil {
@@ -732,9 +733,10 @@ func (s *server) awaitCrossProject(meaningCtx context.Context, cross <-chan []mo
 // relatedMeaningSearch runs the check's meaning statement in a read transaction of its own
 // (beginMeaningScan), so that the check's meaning query reads the index as search's own does: it
 // runs the same arms, and searchMeaningScan, which that transaction sets, is what either of them
-// needs of the index scan (searchMeaningScan says what each setting is for) - the bound the
-// server holds on the statement included, which its caller reports as the meaning search not
-// answering (relatedMeaningStage).
+// needs of the index scan (searchMeaningScan says what each setting is for). beginSearchScan
+// sets the bound the server holds on the statement (searchStatementBound) ahead of those
+// settings, and relatedMeaningStage, the caller, reports a statement that bound ends as the
+// meaning search not answering.
 func (s *server) relatedMeaningSearch(
 	ctx context.Context, project string, picked relatedTerms, vector []float32, excluded []string,
 ) (model.SearchResponse, error) {

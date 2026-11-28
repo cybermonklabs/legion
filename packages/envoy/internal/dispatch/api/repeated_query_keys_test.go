@@ -88,7 +88,7 @@ func TestEverySingleValueQueryKeyRefusesARepeat(t *testing.T) {
 	t.Parallel()
 	served := register(http.NewServeMux(), t.Context(), Deps{
 		TestHooksEnabled: true,
-		Identity:         identity.HeaderIdentity{Header: "X-Dispatch-User", People: unrecordedPeople{}},
+		Identity:         identity.HeaderIdentity{People: unrecordedPeople{}},
 	})
 	contract := contractQueryKeys(t)
 	replays := served.keyedReplays()

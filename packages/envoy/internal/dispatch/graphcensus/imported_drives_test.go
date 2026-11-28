@@ -146,7 +146,7 @@ func newWritersRig(t *testing.T) *writersRig {
 	}
 	deps, err := api.NewDeps(api.DepsInput{
 		Store:       rig.database,
-		Identity:    identity.HeaderIdentity{Header: "X-Dispatch-User", People: people},
+		Identity:    identity.HeaderIdentity{People: people},
 		AgentTokens: tokens,
 		ServerURL:   writersServerURL,
 		EnvoyURL:    listener.URL,
@@ -287,7 +287,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "docs/new_document.go#QueueNewArtifact", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
