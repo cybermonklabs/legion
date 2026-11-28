@@ -54,7 +54,7 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 	msg := next(t, pull)
 	// A context of the caller's own, as the listener opens its spent-proof bucket through one
 	// (cmd/listener/brokerauth.go): nothing names its requests until a bucket call is handed it.
-	handed, err := owner.Conn.JetStream()
+	handed, err := owner.Conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open a JetStream context of the test's own: %v", err)
 	}
@@ -63,8 +63,9 @@ func TestAJetStreamSendWhileNATSReconnectsFailsByName(t *testing.T) {
 	}
 
 	srv.Stop(t)
-	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "both connections to start reconnecting", func() bool {
-		return owner.Conn.IsReconnecting() && consumers.client.Connection().IsReconnecting()
+	testwait.Until(t, "both connections to start reconnecting (last read: owner, consumers)", func() ([2]nats.Status, bool) {
+		o, c := owner.Conn.Status(), consumers.client.Connection().Status()
+		return [2]nats.Status{o, c}, o == nats.RECONNECTING && c == nats.RECONNECTING
 	})
 
 	for _, row := range []struct {
@@ -162,7 +163,7 @@ func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T
 		want string
 	}{
 		{what: "a deadline that has passed", ctx: func() (context.Context, context.CancelFunc) {
-			return context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			return context.WithDeadline(context.Background(), time.Unix(1, 0)) // a moment long past, read from no clock
 		}, err: context.DeadlineExceeded, want: "bus: NATS is reconnecting: context deadline exceeded"},
 		{what: "a cancel", ctx: func() (context.Context, context.CancelFunc) {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -189,8 +190,7 @@ func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T
 
 	for _, end := range ends {
 		t.Run("connected, "+end.what, func(t *testing.T) {
-			live, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			live := testwait.Context(t)
 			started := false
 			_, answered, err := Bounded(live, conn, func() (struct{}, error) {
 				started = true
@@ -206,7 +206,10 @@ func TestABucketCallWhoseContextEndedWhileNATSReconnectsFailsByName(t *testing.T
 	}
 
 	srv.Stop(t)
-	testwait.WithinPolling(t, 15*time.Second, 50*time.Millisecond, "the connection to start reconnecting", conn.IsReconnecting)
+	testwait.Until(t, "the connection to start reconnecting", func() (nats.Status, bool) {
+		status := conn.Status()
+		return status, status == nats.RECONNECTING
+	})
 
 	for _, end := range ends {
 		t.Run("reconnecting, "+end.what, func(t *testing.T) {

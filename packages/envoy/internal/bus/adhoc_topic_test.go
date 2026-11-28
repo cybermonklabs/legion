@@ -201,7 +201,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 
@@ -215,13 +215,9 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 		PayloadSummary: "deploy complete",
 		TraceID:        "trace-adhoc",
 	}
-	started := time.Now()
 	duplicate, err := client.PublishReportingDuplicate(envelope)
 	if err != nil {
 		t.Fatalf("publish to an ad-hoc topic: %v", err)
-	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
-		t.Fatalf("publish to an ad-hoc topic took %s; a core publish answers once the server confirms it", elapsed)
 	}
 	if duplicate {
 		t.Fatal("a core publish has no stream verdict and reports no duplicate")

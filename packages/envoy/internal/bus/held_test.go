@@ -20,10 +20,7 @@ import (
 func TestAnotherSubscriptionOnOneTransportIsRefused(t *testing.T) {
 	t.Parallel()
 	uri := testnats.URL(t)
-	publisher, err := nats.Connect(uri)
-	if err != nil {
-		t.Fatalf("connect the publisher: %v", err)
-	}
+	publisher := testnats.Connect(t, uri)
 	t.Cleanup(publisher.Close)
 
 	const held = "notifications.role.held"
@@ -56,7 +53,7 @@ func TestAnotherSubscriptionOnOneTransportIsRefused(t *testing.T) {
 			}
 			// A SUB is asynchronous on the wire: flush it, so the server holds it before the
 			// publisher's message arrives from another connection.
-			if err := client.Conn.Flush(); err != nil {
+			if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush the subscription: %v", err)
 			}
 			if _, err := subscribe(refused.otherSubject, refused.otherQueue, func(*nats.Msg) {}); !errors.Is(err, bus.ErrSubscriptionHeld) {
