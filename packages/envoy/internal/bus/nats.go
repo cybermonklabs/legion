@@ -2804,7 +2804,7 @@ type StoredAck struct {
 // and PublishRetained refuse by (publishPathOf), which this function reads once, after
 // checkSubject: a hub move's quiesce narrows a role's kept lane so, and the same publish made again
 // is stored once the stream captures the subject again and the client has read that. Its other
-// refusals are checkSubject's and those of every stored publish, which publishJetStream describes
+// refusals are checkSubject's and those of every stored publish
 // (ErrTooLarge, ErrRefused, ErrPublishDenied, ErrStreamFull), and ErrDuplicateInProcess while a
 // clustered stream is still storing an earlier publish under the same id. Any other subject is sent
 // over JetStream, so it must be one the deployed stream captures, or nothing answers the publish. A

@@ -247,7 +247,7 @@ nothing and answers the `503` with `Retry-After: 1` that says the message was no
 sent again later, which costs the sender nothing. It asks before it raises the role's wake report,
 so a refusal it finds then raises none. A send that Dispatch marks with a role, which the listener
 would keep, is answered the same way. The same message sent again is kept once the stream captures
-the kept lane again and the listener has read that. A dead letter the stream refuses so is sent
+the kept lane again and the listener has read that. A dead letter refused so is sent
 again by a later walk, and a repeated wake report by the next sweep. If the holder does not take
 the message's delivery mode, the refusal is
 `403`; and if the stream has not stored the forward to a live holder within four seconds, it is

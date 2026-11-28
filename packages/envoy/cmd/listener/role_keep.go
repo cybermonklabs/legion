@@ -710,11 +710,9 @@ func keepsNothing(cfg listenerDeliveryHandlerConfig, role string) error {
 // publish route's (roleSend.noHolder) and a role-marked send's (handOffOrKeepRoleSend), ask it
 // before they report the role's wake, and answer a refusal with the not-sent 503 recorded
 // subject_not_deployed (requestRecord.refuseBusUnavailable), with no wake reported and no charge
-// to the sender: a sender sends the message again at Retry-After: 1 for as long as a narrowing
-// lasts, and a wake for each of those sends would bring a pod back for a message nothing kept. A
-// narrowing the client reads after this question and before the keep's publish is refused by the
-// publish itself, which each give-up answers with the same 503 and no charge, though its wake has
-// gone out.
+// to the sender. A narrowing the client reads after this question and before the keep's publish is
+// refused by the publish itself, which each give-up answers with the same 503 and no charge, though
+// its wake has gone out.
 func keptLaneRefusal(cfg listenerDeliveryHandlerConfig, role string) error {
 	if keepsNothing(cfg, role) != nil {
 		return nil

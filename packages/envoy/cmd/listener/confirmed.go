@@ -46,8 +46,9 @@ const (
 	// sendSkipped is a role send from the role's own holder, the role lane's echo skip.
 	sendSkipped sendOutcome = "skipped"
 	// sendUnclaimed and sendHolderLapsed are a role send with no live holder that kept nothing -
-	// keep: false, a role token no claim can name, or a keep that failed other than one the bus
-	// refused before it sent anything (keepNotSent) - answered 404 (roleSend.noHolder).
+	// keep: false, a role token no claim can name, a keep that would tell nobody (keepTellsNobody),
+	// or a keep that failed other than one the bus refused before it sent anything (keepNotSent) -
+	// answered 404 (roleSend.noHolder).
 	sendUnclaimed    sendOutcome = sendOutcome(roles.Unclaimed)
 	sendHolderLapsed sendOutcome = sendOutcome(roles.Lapsed)
 	// sendDeliveryFailed is a recipient the stream stored no forward for: none live to forward to,
@@ -158,9 +159,9 @@ func forwardRequest(item contracts.Envelope) string {
 // The mark of a forward that may have been stored stands whatever the send answers next
 // (senderCharge.stored): a forward refused, an echo, a repeat the route's own record or the kept
 // lane answers, and a 403. A repeat the kept lane answers is forgiven, which cancels the wake's
-// mark alone, and so is a keep the bus refused before it sent anything (keepNotSent); every other
-// answer marks nothing, so where no forward may have been stored the route's deferred settle gives
-// the take back.
+// mark alone, and so is a keep whose own publish the bus refused before it sent anything
+// (senderCharge.published); every other answer marks nothing, so where no forward may have been
+// stored the route's deferred settle gives the take back.
 type roleSend struct {
 	w      http.ResponseWriter
 	record *requestRecord

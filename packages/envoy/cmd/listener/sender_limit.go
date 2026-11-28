@@ -214,10 +214,10 @@ func (c *senderCharge) forgive() {
 // captures the topic must not meet a 429 for a message nothing took. The send route asks the bus
 // before it reports a stopped target's wake (bus.Client.UndeployedRefusal), and both role give-ups
 // ask it before they report a role's wake (keptLaneRefusal); each answers such a refusal then,
-// with no wake, so a wake reaches this rule only when a narrowing began between that question and
-// the publish. Any other failure stored nothing and marks nothing: a refusal of the server's, a
-// failure before anything was sent, such as a wait for NATS to reconnect that outlasted the
-// route's deadline, and a request that ended while an earlier publish under its message id was
+// with no wake, so a wake reaches this rule only when the client reads a narrowing between that
+// question and the publish. Any other failure stored nothing and marks nothing: a refusal of the
+// server's, a failure before anything was sent, such as a wait for NATS to reconnect that outlasted
+// the route's deadline, and a request that ended while an earlier publish under its message id was
 // still in process (earlierAttemptInProcess), with no send of its own unanswered, whose copy is
 // that earlier publish's. A duplicate verdict names a copy the stream already held, which costs
 // nothing, also after a wake report, unless it answers a resend of this request's own

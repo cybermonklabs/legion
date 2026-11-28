@@ -425,8 +425,7 @@ func mayHaveStored(err error) bool {
 
 // notSent reports whether a send or publish that failed with err sent nothing: the bus refused its
 // message before anything went out (bus.ErrSubjectNotDeployed) and no earlier send of it went out
-// unanswered (mayHaveStored). It is the one rule the answer's prefix (writeBusUnavailable) and the
-// request record's outcome (requestRecord.refuseBusUnavailable) read.
+// unanswered (mayHaveStored).
 func notSent(err error) bool {
 	return errors.Is(err, bus.ErrSubjectNotDeployed) && !mayHaveStored(err)
 }
