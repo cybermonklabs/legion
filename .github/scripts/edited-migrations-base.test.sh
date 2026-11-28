@@ -361,3 +361,4 @@ check "it names the base and why" \
 check "the base is in the checkout" "$(holds "$dir" "$early")"
 
 summary "the base the edited-migrations check compares each run's tree with"
+# (merge-base control.)

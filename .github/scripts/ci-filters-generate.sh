@@ -224,3 +224,4 @@ if changed:
     open(out_path, "w").write("\n".join(out) + "\n")
 PY
 exit 0
+# (merge-base control.)
