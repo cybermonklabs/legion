@@ -247,10 +247,11 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 // It returns an error only when the census itself could not be taken: a Locking whose Timeout
 // Postgres cannot take as lock_timeout (timeoutRefusal), which it refuses before it begins its
 // transaction, since it would read under no bound at all, or under another than the one its
-// refusals name; a connection whose search_path names no schema that exists among them, where
-// current_schema() is null, so neither versionTable nor any table is found, and a populated
-// database would read as fresh, while the runner can create nothing on that connection; or a
-// catalog read of the classifier that fails with an error that is not Postgres's
+// refusals name, or, above 2147483647 ms, not at all, as Postgres refuses that lock_timeout;
+// a connection whose search_path names no schema that exists among them, where current_schema()
+// is null, so neither versionTable nor any table is found, and a populated database would read
+// as fresh, while the runner can create nothing on that connection; or a catalog read of the
+// classifier that fails with an error that is not Postgres's
 // (tableSizeExemption). It writes nothing: the transaction is read-only, and a migration's census
 // is sent through the extended protocol, so it cannot end that transaction with a statement of
 // its own (readCensus). What the report holds is counts, sizes, versions, file names, session
