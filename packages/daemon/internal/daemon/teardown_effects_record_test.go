@@ -18,6 +18,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"regexp"
@@ -28,6 +29,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 )
 
@@ -753,10 +755,190 @@ func (c teardownEffectsCase) trace(name string) teardownEffectsTrace {
 }
 
 // teardownEffectsControlDir is where --controls writes the two records of a trace's replay that a
-// run's replay writes, replay.json and effects.json: <out>/<case id>/<good or bad>. The
-// heldout-reader.ts function controlAt reads them there.
+// run's replay writes, replay.json and effects.json: <out>/<case id>/<good or bad>. out is the
+// evidence directory for a case of the case file (--cases), and its supplemental directory
+// (teardownEffectsSupplementalDir) for a case of the supplemental file (--supplemental). The
+// heldout-reader.ts function controlAt reads the case file's records at the evidence directory.
 func teardownEffectsControlDir(out, caseID, trace string) string {
 	return filepath.Join(out, caseID, trace)
+}
+
+// teardownEffectsSupplementalDir is the directory of the evidence directory that holds the records
+// of the supplemental file's cases and the answers their checks capture. A supplemental case is a
+// control, not a case: heldout-reader.ts reads only the case file's ids, at the evidence directory
+// itself, and a held-out stand-in overlay reads only the evidence directory's daemon-answers.json.
+const teardownEffectsSupplementalDir = "supplemental"
+
+// teardownEffectsCapture is a daemon-answers.json: the answers the checks of one case file capture
+// (fixture row F3), with the command, the time and the commit that captured them.
+type teardownEffectsCapture struct {
+	Version  int `json:"version"`
+	Captured struct {
+		Command string    `json:"command"`
+		At      time.Time `json:"at"`
+		Commit  string    `json:"commit"`
+	} `json:"captured"`
+	Answers []teardownEffectsFixtureAnswer `json:"answers"`
+}
+type teardownEffectsFixtureAnswer struct {
+	Name   string          `json:"name"`
+	Method string          `json:"method"`
+	Path   string          `json:"path"`
+	Match  map[string]any  `json:"match"`
+	Status int             `json:"status"`
+	Body   json.RawMessage `json:"body"`
+}
+
+// take adds to the captured answers the answer control's check shows, with the request fields
+// daemon-standin.ts matches it by: the check report's verdict, wake and look, or the completion's
+// commit and handoff record. A check that shows no answer of the daemon adds none.
+func (capture *teardownEffectsCapture) take(control teardownEffectsControl, c teardownEffectsCase, turned teardownEffectsTurned) {
+	a := c.trace(control.Trace).action(control.Seq)
+	found := teardownEffectsCompletions(turned.replies)
+	if len(found) != 1 {
+		return
+	}
+	var request struct {
+		Commit    string `json:"commit"`
+		HandoffID string `json:"handoffId"`
+	}
+	_ = json.Unmarshal(found[0].Body, &request)
+	switch control.Check {
+	case teardownEffectsWakeRefused:
+		capture.add("check-wake-required", found[0], map[string]any{"verdict": "pending", "wakeAt": nil, "checkOpenedAt": a.Args["check_opened_at"]})
+	case teardownEffectsWakeAccepted:
+		capture.add("pending-accepted", found[0], map[string]any{"verdict": "pending", "wakeAt": a.Args["wake_at"], "checkOpenedAt": a.Args["check_opened_at"]})
+	case teardownEffectsAccepted:
+		capture.add("implementer-accepted", found[0], map[string]any{"commit": request.Commit, "handoffId": request.HandoffID})
+	case teardownEffectsNoPullRequest:
+		capture.add("implementer-no-pull-request", found[0], map[string]any{"commit": request.Commit, "handoffId": request.HandoffID})
+	}
+}
+func (capture *teardownEffectsCapture) add(name string, res teardownEffectsHTTP, match map[string]any) {
+	capture.Answers = append(capture.Answers, teardownEffectsFixtureAnswer{Name: name, Path: res.Path, Method: res.Method, Match: match, Status: res.Status, Body: res.Answer})
+}
+
+// teardownEffectsControlRun is what one --controls run makes controls of: the cases of its case
+// file, then those of its supplemental file where it is given one; every control
+// teardownEffectsPromised promises of both together, so the coverage check counts both files; and
+// the answers the checks capture, each case file's in a daemon-answers.json of its own (answers,
+// by its path).
+type teardownEffectsControlRun struct {
+	out          string
+	cases        []teardownEffectsCase
+	supplemental map[string]bool
+	promised     []teardownEffectsControl
+	answers      map[string]*teardownEffectsCapture
+}
+
+// teardownEffectsNewControlRun is the run, with the evidence directory out, of the case file's
+// cases and the supplemental file's (none where it is given none). It returns, with the run, the
+// error of teardownEffectsPromised on both files' cases together.
+func teardownEffectsNewControlRun(out string, cases, supplemental []teardownEffectsCase) (*teardownEffectsControlRun, error) {
+	run := &teardownEffectsControlRun{out: out, cases: slices.Concat(cases, supplemental), supplemental: map[string]bool{}, answers: map[string]*teardownEffectsCapture{}}
+	for _, c := range supplemental {
+		run.supplemental[c.ID] = true
+	}
+	for _, c := range run.cases {
+		if run.answers[run.answersFile(c.ID)] == nil {
+			run.answers[run.answersFile(c.ID)] = &teardownEffectsCapture{Version: 1}
+		}
+	}
+	promised, err := teardownEffectsPromised(run.cases)
+	run.promised = promised
+	return run, err
+}
+
+// dir is the directory below which the run writes the records of case id: the evidence directory,
+// or its supplemental directory for a supplemental case.
+func (run *teardownEffectsControlRun) dir(id string) string {
+	if run.supplemental[id] {
+		return filepath.Join(run.out, teardownEffectsSupplementalDir)
+	}
+	return run.out
+}
+
+// answersFile is the daemon-answers.json that holds the answers the checks of case id capture.
+func (run *teardownEffectsControlRun) answersFile(id string) string {
+	return filepath.Join(run.dir(id), "daemon-answers.json")
+}
+
+// capture is where the answers the checks of case id capture go.
+func (run *teardownEffectsControlRun) capture(id string) *teardownEffectsCapture {
+	return run.answers[run.answersFile(id)]
+}
+
+// named is control as the run's report names it: a control of a supplemental case says so.
+func (run *teardownEffectsControlRun) named(control teardownEffectsControl) string {
+	if run.supplemental[control.Case] {
+		return teardownEffectsSupplementalDir + " " + control.String()
+	}
+	return control.String()
+}
+
+// teardownEffectsSupplemental reads the supplemental case file at path (--supplemental), whose
+// cases a --controls run makes controls of beside the cases of its case file (cases). It answers
+// the file's path in the checkout root and its cases. commit is the commit the run records
+// (daemon-answers.json's captured.commit). It refuses, before any replay and naming the cause, a
+// file that is not public, a file that does not parse or holds no case, a case id that both files
+// hold, and a case of the case file whose id is teardownEffectsSupplementalDir, whose records
+// would lie among the supplemental ones.
+//
+// A file is public where commit holds it at its path in root, with the bytes the run reads. So a
+// file outside root (a copy under $TMPDIR among them), a file no commit holds and a file changed
+// since commit are not. The repository is public, so anyone can read what its commit holds.
+func teardownEffectsSupplemental(root, commit, path string, cases []teardownEffectsCase) (string, []teardownEffectsCase, error) {
+	file, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", nil, err
+	}
+	checkout, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", nil, err
+	}
+	rel, err := filepath.Rel(checkout, file)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", nil, fmt.Errorf("%s is not public: it is no file of the checkout %s, so no commit of the repository holds it", path, root)
+	}
+	name := filepath.ToSlash(rel)
+	if commit == "" {
+		return "", nil, fmt.Errorf("%s is not public: the run names no commit that holds it", name)
+	}
+	data, err := os.ReadFile(file)
+	if err != nil {
+		return "", nil, err
+	}
+	committed, err := exec.Command("git", "-C", checkout, "cat-file", "blob", commit+":"+name).Output()
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			err = errors.New(string(bytes.TrimSpace(exit.Stderr)))
+		}
+		return "", nil, fmt.Errorf("%s is not public: the commit %s holds no such file (%v)", name, commit, err)
+	}
+	if !bytes.Equal(committed, data) {
+		return "", nil, fmt.Errorf("%s is not public: it differs from the file the commit %s holds", name, commit)
+	}
+	var supplemental struct{ Cases []teardownEffectsCase }
+	if err := json.Unmarshal(data, &supplemental); err != nil {
+		return "", nil, fmt.Errorf("%s does not parse: %w", name, err)
+	}
+	if len(supplemental.Cases) == 0 {
+		return "", nil, fmt.Errorf("%s holds no case", name)
+	}
+	var problems []string
+	for _, c := range supplemental.Cases {
+		if slices.ContainsFunc(cases, func(each teardownEffectsCase) bool { return each.ID == c.ID }) {
+			problems = append(problems, fmt.Sprintf("the case file and %s both hold the case %s", name, c.ID))
+		}
+	}
+	if slices.ContainsFunc(cases, func(each teardownEffectsCase) bool { return each.ID == teardownEffectsSupplementalDir }) {
+		problems = append(problems, fmt.Sprintf("the case file holds a case %s, and the records of %s go to the directory of that name", teardownEffectsSupplementalDir, name))
+	}
+	if len(problems) > 0 {
+		return "", nil, errors.New(strings.Join(problems, "; "))
+	}
+	return name, supplemental.Cases, nil
 }
 
 // The checks of a control (teardownEffectsControl). A trace's own check, replayed, holds when the
@@ -1911,13 +2093,13 @@ func teardownEffectsSameCheck(a, b *teardownEffectsCheck) bool {
 	return same(a.WakeAt, b.WakeAt) && same(rowA, rowB)
 }
 
-// teardownEffectsMissed names each control of promised that did not execute (executed holds the ones
-// that did), in promised's order.
-func teardownEffectsMissed(promised []teardownEffectsControl, executed map[teardownEffectsControl]bool) []string {
+// missed names each control the run promised that did not execute (executed holds the ones that
+// did), in the order it promised them.
+func (run *teardownEffectsControlRun) missed(executed map[teardownEffectsControl]bool) []string {
 	var missed []string
-	for _, control := range promised {
+	for _, control := range run.promised {
 		if !executed[control] {
-			missed = append(missed, control.String())
+			missed = append(missed, run.named(control))
 		}
 	}
 	return missed
@@ -2582,15 +2764,17 @@ func TestTeardownEffectsShows(t *testing.T) {
 	}
 }
 
-// --controls names each control it promised that did not execute, in the order it promised them.
+// --controls names each control it promised that did not execute, in the order it promised them,
+// and a supplemental case's control that did not execute fails the run as any other does.
 func TestTeardownEffectsMissed(t *testing.T) {
 	t.Parallel()
-	promised, err := teardownEffectsPromised(teardownEffectsExampleCases(t, nil))
+	example := teardownEffectsExampleCases(t, nil)
+	run, err := teardownEffectsNewControlRun(t.TempDir(), example, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	executed := map[teardownEffectsControl]bool{}
-	for _, control := range promised {
+	for _, control := range run.promised {
 		executed[control] = control.Case == "P10"
 	}
 	executed[teardownEffectsControl{Case: "P10", Trace: "good", Check: teardownEffectsReplayed}] = false
@@ -2603,11 +2787,220 @@ func TestTeardownEffectsMissed(t *testing.T) {
 		"P05 good trace, action 5: pushed-without-pull-request-refused",
 		"P10 good trace: replayed",
 	}
-	if got := teardownEffectsMissed(promised, executed); !slices.Equal(got, want) {
+	if got := run.missed(executed); !slices.Equal(got, want) {
 		t.Fatalf("named %q, want %q", got, want)
 	}
-	if got := teardownEffectsMissed(promised, map[teardownEffectsControl]bool{}); len(got) != len(promised) {
-		t.Fatalf("with none executed, named %d of %d", len(got), len(promised))
+	if got := run.missed(map[teardownEffectsControl]bool{}); len(got) != len(run.promised) {
+		t.Fatalf("with none executed, named %d of %d", len(got), len(run.promised))
+	}
+
+	// P10 as a supplemental case: its control that did not execute is missed, and none other.
+	supplemented, err := teardownEffectsNewControlRun(t.TempDir(), example[:1], example[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, control := range supplemented.promised {
+		executed[control] = true
+	}
+	executed[teardownEffectsControl{Case: "P10", Trace: "good", Check: teardownEffectsReplayed}] = false
+	if got := supplemented.missed(executed); len(got) != 1 || !strings.HasSuffix(got[0], "P10 good trace: replayed") {
+		t.Fatalf("with every control but the supplemental P10's replay executed, named %q", got)
+	}
+}
+
+// teardownEffectsLookedAtNoComment is T0's example as a case file that shows no Dispatch comment on
+// a production-check look that is not the last: P05, and P10 renamed L10 with no action in its
+// known-bad trace.
+func teardownEffectsLookedAtNoComment(t *testing.T) []teardownEffectsCase {
+	t.Helper()
+	return teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		cases[1]["id"] = "L10"
+		teardownEffectsMember(cases[1], "traces", "bad").(map[string]any)["actions"] = []any{}
+		return cases
+	})
+}
+
+// The coverage check counts the controls of the case file and of the supplemental file together.
+// A case file that shows no Dispatch comment on a look that is not the last is refused alone, and
+// with a supplemental file that shows one (T0's P10) it is promised every control of both files:
+// each of its own, then each of P10's, its known-bad comment among them.
+func TestTeardownEffectsSupplementalCoverage(t *testing.T) {
+	t.Parallel()
+	locked := teardownEffectsLookedAtNoComment(t)
+	if _, err := teardownEffectsPromised(locked); err == nil || !strings.Contains(err.Error(), teardownEffectsCommentNoWake) {
+		t.Fatalf("the case file alone was promised its controls with %v, and it shows no %s", err, teardownEffectsCommentNoWake)
+	}
+	run, err := teardownEffectsNewControlRun(t.TempDir(), locked, teardownEffectsExampleCases(t, nil)[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, control := range run.promised {
+		got = append(got, control.String())
+	}
+	want := []string{
+		"P05 good trace: replayed",
+		"P05 good trace, action 5: pushed-with-open-pull-request-accepted",
+		"P05 good trace, action 5: the effect of complete",
+		"P05 bad trace: replayed",
+		"P05 good trace, action 5: local-only-implementer-refused",
+		"P05 good trace, action 5: pushed-without-pull-request-refused",
+		"L10 good trace: replayed",
+		"L10 good trace, action 2: pending-without-wake-refused",
+		"L10 good trace, action 3: valid-pending-names-wake",
+		"L10 good trace, action 3: the effect of report-pending",
+		"L10 bad trace: replayed",
+		"P10 good trace: replayed",
+		"P10 good trace, action 2: pending-without-wake-refused",
+		"P10 good trace, action 3: valid-pending-names-wake",
+		"P10 good trace, action 3: the effect of report-pending",
+		"P10 bad trace: replayed",
+		"P10 bad trace, action 1: dispatch-comment-names-no-wake",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("promised\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A check that neither the case file nor the supplemental file shows is refused, naming the check.
+func TestTeardownEffectsSupplementalCoverageRefused(t *testing.T) {
+	t.Parallel()
+	supplemental := teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		teardownEffectsMember(cases[1], "traces", "bad").(map[string]any)["actions"] = []any{}
+		return cases[1:]
+	})
+	_, err := teardownEffectsNewControlRun(t.TempDir(), teardownEffectsLookedAtNoComment(t), supplemental)
+	if err == nil || !strings.Contains(err.Error(), "no case shows the check "+teardownEffectsCommentNoWake) {
+		t.Fatalf("two files that show no %s were refused with %v", teardownEffectsCommentNoWake, err)
+	}
+}
+
+// No supplemental record reaches the reader. A supplemental case's records go to
+// supplemental/<case id>/<good or bad> and its answers to supplemental/daemon-answers.json, so the
+// evidence directory's daemon-answers.json, which a held-out stand-in overlay reads, holds the case
+// file's answers alone, and heldout-reader.ts's controlAt, given a case file's id, reaches no
+// supplemental record (heldout-reader.test.ts reads such a directory with readControls). Each check
+// here takes the one answer its replay showed, a completion whose body names its case.
+func TestTeardownEffectsSupplementalLayout(t *testing.T) {
+	t.Parallel()
+	const out = "/evidence"
+	example := teardownEffectsExampleCases(t, nil)
+	run, err := teardownEffectsNewControlRun(out, example[:1], example[1:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	records := map[string]string{}
+	for _, control := range run.promised {
+		c := example[slices.IndexFunc(example, func(each teardownEffectsCase) bool { return each.ID == control.Case })]
+		if control.Check == teardownEffectsReplayed {
+			records[control.Case+" "+control.Trace] = teardownEffectsControlDir(run.dir(c.ID), c.ID, control.Trace)
+		}
+		reply := teardownEffectsHTTP{Method: http.MethodPost, Path: teardownEffectsComplete, Status: http.StatusOK, Answer: json.RawMessage(`{"case":"` + c.ID + `"}`)}
+		run.capture(c.ID).take(control, c, teardownEffectsTurned{replies: []teardownEffectsHTTP{reply}})
+	}
+	if want := map[string]string{
+		"P05 good": "/evidence/P05/good",
+		"P05 bad":  "/evidence/P05/bad",
+		"P10 good": "/evidence/supplemental/P10/good",
+		"P10 bad":  "/evidence/supplemental/P10/bad",
+	}; !maps.Equal(records, want) {
+		t.Fatalf("the records go to %v, want %v", records, want)
+	}
+	answers := map[string][]string{}
+	for file, capture := range run.answers {
+		for _, answer := range capture.Answers {
+			answers[file] = append(answers[file], answer.Name+" "+string(answer.Body))
+		}
+	}
+	if want := map[string][]string{
+		"/evidence/daemon-answers.json":              {`implementer-accepted {"case":"P05"}`, `implementer-no-pull-request {"case":"P05"}`},
+		"/evidence/supplemental/daemon-answers.json": {`check-wake-required {"case":"P10"}`, `pending-accepted {"case":"P10"}`},
+	}; !reflect.DeepEqual(answers, want) {
+		t.Fatalf("the answers files hold %v, want %v", answers, want)
+	}
+	// With no supplemental file, the run writes one answers file, at the evidence directory.
+	alone, err := teardownEffectsNewControlRun(out, example, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := slices.Collect(maps.Keys(alone.answers)); !slices.Equal(got, []string{"/evidence/daemon-answers.json"}) {
+		t.Fatalf("with no supplemental file, the answers files are %q", got)
+	}
+}
+
+// --supplemental refuses, before any replay and naming the cause, a supplemental case file that
+// is not public (outside the checkout, held by no commit, or changed since the commit the run
+// records), one that does not parse or holds no case, a case id that both files hold, and a case
+// of the case file named as the supplemental directory. A public file reads as its path in the
+// checkout and its cases.
+func TestTeardownEffectsSupplementalRefusals(t *testing.T) {
+	t.Parallel()
+	example, err := os.ReadFile(teardownEffectsExample)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	git := fixturegit.Isolated(t, t.TempDir())
+	git.Run(root, fixturegit.InitWorkTree("", "main")...)
+	write := func(dir, name, text string) string {
+		t.Helper()
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	public := write(root, "cases/public.json", string(example))
+	changed := write(root, "cases/changed.json", string(example))
+	broken := write(root, "cases/broken.json", `{"cases": [`)
+	empty := write(root, "cases/empty.json", `{"cases": []}`)
+	git.Run(root, "git", "add", ".")
+	git.Run(root, "git", "commit", "-q", "-m", "cases")
+	commit := git.Run(root, "git", "rev-parse", "HEAD")
+	write(root, "cases/changed.json", strings.Replace(string(example), "P10", "P11", 1))
+	untracked := write(root, "cases/untracked.json", string(example))
+	outside := write(t.TempDir(), "P10.json", string(example))
+	locked := teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		cases[0]["id"], cases[1]["id"] = "L05", "L10"
+		return cases
+	})
+
+	name, cases, err := teardownEffectsSupplemental(root, commit, public, locked)
+	if err != nil || name != "cases/public.json" || len(cases) != 2 || cases[0].ID != "P05" || cases[1].ID != "P10" {
+		t.Fatalf("the public file reads as %q with %d cases, %v", name, len(cases), err)
+	}
+	named := teardownEffectsExampleCases(t, func(cases []map[string]any) []map[string]any {
+		cases[0]["id"], cases[1]["id"] = "L05", teardownEffectsSupplementalDir
+		return cases
+	})
+	for _, row := range []struct {
+		name, path string
+		cases      []teardownEffectsCase
+		names      []string
+	}{
+		{"a file outside the checkout", outside, locked, []string{outside}},
+		{"a file no commit holds", untracked, locked, []string{"cases/untracked.json", commit}},
+		{"a file changed since the commit", changed, locked, []string{"cases/changed.json", commit}},
+		{"a file that does not parse", broken, locked, []string{"cases/broken.json"}},
+		{"a file that holds no case", empty, locked, []string{"cases/empty.json"}},
+		{"a case id both files hold", public, teardownEffectsExampleCases(t, nil), []string{"P05", "P10"}},
+		{"a case of the case file named as the supplemental directory", public, named, []string{teardownEffectsSupplementalDir}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := teardownEffectsSupplemental(root, commit, row.path, row.cases)
+			if err == nil {
+				t.Fatal("read the supplemental file with no refusal")
+			}
+			for _, want := range row.names {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("%v does not name %s", err, want)
+				}
+			}
+		})
 	}
 }
 

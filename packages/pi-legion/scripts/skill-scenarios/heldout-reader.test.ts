@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -1672,6 +1673,37 @@ test("a lane D batch whose control has no effect record, or one at odds with its
     "lane D does not replay a skilluse set"
   );
   expect(sent).toEqual([]);
+});
+
+// A --controls run with --supplemental writes each supplemental case's records below the evidence
+// directory's supplemental/ (teardown_effects_record_test.go's teardownEffectsSupplementalDir), and
+// readControls reads the records of the case file's ids alone, at the evidence directory. So the
+// reader gets none of a supplemental case's records: here P10's, from a run of P05 with P10
+// supplemental. A case file that names P10 itself finds no record of it, and its batch is refused.
+test("readControls reads no record of a supplemental case, even under its own id", () => {
+  const evidence = controlsCopy("controls-supplemental", (at) => {
+    mkdirSync(path.join(at, "supplemental"));
+    renameSync(path.join(at, "P10"), path.join(at, "supplemental", "P10"));
+  });
+  const runs = readRuns(world("controls-supplemental-runs").records, cases);
+  const locked = readControls(evidence, { ...cases, cases: [P05] });
+  expect(
+    locked.cases.map((each) => [each.id, each.records?.good?.verdict, each.records?.bad?.verdict])
+  ).toEqual([["P05", "ok", "ok"]]);
+  const p05Runs = runs.filter((each) => each.case === "P05");
+  expect(buildBatch(RUBRIC, locked, p05Runs, 7).controls.size).toBe(2);
+  const named = readControls(evidence, cases);
+  expect(named.cases.find((each) => each.id === "P10")?.records).toEqual({});
+  expect(() =>
+    buildBatch(
+      RUBRIC,
+      named,
+      runs.filter((each) => each.case === "P10"),
+      7
+    )
+  ).toThrow(
+    "P10 good (lane D wrote no replay.json of it); P10 bad (lane D wrote no replay.json of it)"
+  );
 });
 
 test("a bad argument, a missing rubric case, a skilluse file or a bad seed stops the run before any call", async () => {

@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -69,17 +70,27 @@ type composedRole struct {
 
 // composedParts is, for each role a live proof holds a launch's role prompt to, the parts of the
 // composer's snapshot that prompts.Composer.Compose gives that role, in its order, as paths below
-// the state directory's prompts/: at boot prompts.New writes shared/ from the role prompts the
-// daemon embeds, and go/ from the daemon's own parts. It is this package's one copy of the
-// composer's lists. role_prompt_rule_live_test.go reads its three roles from it, and
-// conflict_merger_live_test.go its merger; the unit tests of internal/prompts hold the composer to
-// their own.
-var composedParts = map[composedRole][]string{
-	{claim.RoleArchitect, true}:  {"shared/architect-root.md", "go/architect-root.md", "go/architect-common.md"},
-	{claim.RoleArchitect, false}: {"shared/architect.md", "go/architect.md", "go/architect-common.md"},
-	{claim.RolePlanner, false}:   {"shared/core/common.md", "shared/core/planner.md", "shared/mechanics/headless.md", "shared/planner.md", "go/planner.md", "go/worker-common.md"},
-	{claim.RoleMerger, false}:    {"shared/mechanics/headless.md", "shared/merger.md", "go/merger.md", "go/worker-common.md"},
-}
+// the state directory's prompts/ (promptSnapshotPart): at boot prompts.New writes shared/ from the
+// role prompts the daemon embeds, and go/ from the daemon's own parts. It is derived from the omp
+// backend's launches of promptInputsLaunches (prompt_inputs_launches_test.go), this package's one
+// copy of the composer's lists, which TestThePromptInputsProofLaunchesEveryLaunch holds to the
+// code; an omp launch is given the composer's parts alone. The controller's launches are left out:
+// Compose composes no controller. role_prompt_rule_live_test.go reads its three roles from it, and
+// conflict_merger_live_test.go its merger.
+var composedParts = func() map[composedRole][]string {
+	parts := map[composedRole][]string{}
+	for _, launch := range promptInputsLaunches {
+		if launch.Backend != runtime.BackendOmp || launch.Role == claim.RoleController {
+			continue
+		}
+		shape, _, _ := strings.Cut(launch.Name, "/")
+		role := composedRole{launch.Role, shape == "architect-root"}
+		for _, part := range launch.Parts {
+			parts[role] = append(parts[role], promptSnapshotPart(part))
+		}
+	}
+	return parts
+}()
 
 // composerPartIsEmpty is whether the daemon's own part, as prompts.New writes it below a fresh
 // state directory's prompts/, holds no byte. A part can be empty (docs/kubernetes.md): the
