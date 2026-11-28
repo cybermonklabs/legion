@@ -90,16 +90,17 @@ node_modules/typescript/lib/lib.es5.d.ts
 LIST
   cat > "$root/bin/bunx" <<'SH'
 #!/usr/bin/env bash
-# A stand-in bunx for the fixtures: `bunx tsc -p <project> --noEmit --listFilesOnly` prints the
-# lines of <project>/listed, each made absolute against the fixture root unless it already starts
-# with / or ./, as tsc prints absolute paths and the script must read either. With a <project>/fails
-# file it prints that file and exits 2, as tsc does on a project it cannot read.
+# A stand-in bunx for the fixtures: `bunx --no-install tsc -p <project> --noEmit --listFilesOnly`
+# prints the lines of <project>/listed, each made absolute against the fixture root unless it
+# already starts with / or ./, as tsc prints absolute paths and the script must read either. With a
+# <project>/fails file it prints that file and exits 2, as tsc does on a project it cannot read. It
+# refuses any other argv, a listing without --no-install among them.
 set -euo pipefail
-if [ "$1" != tsc ] || [ "$2" != -p ]; then
+if [ "$1" != --no-install ] || [ "$2" != tsc ] || [ "$3" != -p ]; then
   echo "stand-in bunx: unexpected argv: $*" >&2
   exit 64
 fi
-project=$3
+project=$4
 if [ -f "$project/fails" ]; then
   cat "$project/fails" >&2
   exit 2
@@ -251,7 +252,7 @@ printf 'error TS5083: cannot read file tsconfig.json\n' > "$root/pkg/app/fails"
 run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "names the command and what it printed" \
-  "$(contains "$out" '::error file=pkg/app::`bunx tsc -p pkg/app --noEmit --listFilesOnly` failed (exit 2), so the files its program holds are unknown: error / TS5083')"
+  "$(contains "$out" '::error file=pkg/app::`bunx --no-install tsc -p pkg/app --noEmit --listFilesOnly` failed (exit 2), so the files its program holds are unknown: error / TS5083')"
 
 echo "case: a pair naming a filter the changes job does not have"
 root=$(fixture unknown-filter)

@@ -72,6 +72,16 @@ func (o Origins) base(page *url.URL) *url.URL {
 	return nil
 }
 
+// Canonical is the first origin of the list, the canonical one, written as a URL with its base
+// path, or empty for the zero value. A reader that resolves an address with no scheme resolves it
+// against this origin (specform).
+func (o Origins) Canonical() string {
+	if len(o.urls) == 0 {
+		return ""
+	}
+	return o.urls[0].String()
+}
+
 // Hosts is each origin's host name in lower case, the canonical one first.
 func (o Origins) Hosts() []string {
 	hosts := make([]string, 0, len(o.urls))

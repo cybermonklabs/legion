@@ -1073,12 +1073,13 @@ func (s *server) storeArtifact(
 		}
 		// It carries the document's newest approval when its text is the approved text again and
 		// its decision blocks are as their rows have them, as every version the document service
-		// writes does (docs.carryApproval): an exact undo uploaded is the approved document. It
-		// runs where the route's other document work runs, so the open approval request and the
-		// ask rows it reads are as this transaction's own queued writes leave them, its own
-		// writes join the queue, and its events reach the ledger beside the move's.
+		// writes does (docs.carryApproval): an exact undo uploaded is the approved document,
+		// unless its text breaks the form of The Spec (carryBreaksForm). It runs where the route's
+		// other document work runs, so the open approval request and the ask rows it reads are as
+		// this transaction's own queued writes leave them, its own writes join the queue, and its
+		// events reach the ledger beside the move's.
 		if err := docs.CarryRestoredApproval(
-			documentCtx, tx, s.deps.Events, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.Origins,
+			documentCtx, tx, s.deps.Events, s.deps.SpecForm.carryBreaksForm, artifact.ID, version.Number, documentMarkdown, documentReadBack, s.deps.Origins,
 		); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1535,7 +1536,6 @@ func (s *server) getArtifactVersion(w http.ResponseWriter, r *http.Request) {
 			// The download is the Markdown file itself, not the JSON that wraps it: the text the
 			// JSON's `markdown` field holds, with no display tree read.
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			w.Header().Set("X-Content-Type-Options", "nosniff")
 			w.Header().Set("Content-Disposition", attachmentDisposition(filename))
 			w.Header().Set("Cache-Control", downloadCacheControl)
 			w.Header().Set("Content-Length", strconv.Itoa(len(markdown)))

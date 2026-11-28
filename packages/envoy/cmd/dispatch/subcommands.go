@@ -38,10 +38,20 @@ type subcommand struct {
 // dispatches on this table and names it, in this order, when it refuses an argument.
 var subcommands = []subcommand{
 	{"backfill-block-ids", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), stdout)
+		origins, err := rebuildRefsOrigins(env, loadServerURL(env))
+		if err != nil {
+			fmt.Fprintf(stdout, "backfill-block-ids: %v\n", err)
+			return 1
+		}
+		return backfillBlockIDs(ctx, env.get("DATABASE_URL"), specRootsSetting(env), origins, stdout)
 	}},
 	{"backfill-anchor-blocks", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
-		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), stdout)
+		origins, err := rebuildRefsOrigins(env, loadServerURL(env))
+		if err != nil {
+			fmt.Fprintf(stdout, "backfill-anchor-blocks: %v\n", err)
+			return 1
+		}
+		return backfillAnchorBlocks(ctx, env.get("DATABASE_URL"), specRootsSetting(env), origins, stdout)
 	}},
 	{"backfill-graph-store", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillGraphStore(ctx, env.get("DATABASE_URL"), stdout)
@@ -243,13 +253,32 @@ func openMigratedWithoutBlockSchema(ctx context.Context, label, databaseURL stri
 	return database, true
 }
 
-func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) int {
+// gatedDocumentService is the document service a backfill command writes through: a store and a
+// broker, the server's origins (rebuildRefsOrigins), and the form gate of The Spec that specRoots
+// names (api.NewSpecForm), the same gate the server sets on its own. A settlement the command
+// runs, of a document a server left owing one, so carries a person's approval as the server's
+// settlement would, and carries none over a text that breaks the form. A value of specRoots that
+// is no list of issue keys is reported on out under label, and the service is shut down.
+func gatedDocumentService(database *store.Store, specRoots string, origins text.Origins, label string, out io.Writer) (*docs.Service, bool) {
+	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), Origins: origins})
+	if _, err := api.NewSpecForm(specRoots, origins, service); err != nil {
+		fmt.Fprintf(out, "%s: %v\n", label, err)
+		_ = service.Shutdown(context.Background())
+		return nil, false
+	}
+	return service, true
+}
+
+func backfillBlockIDs(ctx context.Context, databaseURL, specRoots string, origins text.Origins, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-block-ids", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	service, ok := gatedDocumentService(database, specRoots, origins, "backfill-block-ids", out)
+	if !ok {
+		return 1
+	}
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
 	if err != nil {
@@ -297,13 +326,16 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 	return 0
 }
 
-func backfillAnchorBlocks(ctx context.Context, databaseURL string, out io.Writer) int {
+func backfillAnchorBlocks(ctx context.Context, databaseURL, specRoots string, origins text.Origins, out io.Writer) int {
 	database, ok := openMigrated(ctx, "backfill-anchor-blocks", databaseURL, out)
 	if !ok {
 		return 1
 	}
 	defer database.Pool.Close()
-	service := docs.New(docs.Deps{Store: database, Events: events.NewBroker()})
+	service, ok := gatedDocumentService(database, specRoots, origins, "backfill-anchor-blocks", out)
+	if !ok {
+		return 1
+	}
 	defer service.Shutdown(context.Background())
 	reports, err := service.BackfillBlockIDs(ctx)
 	if err != nil {
@@ -441,7 +473,9 @@ func loadServerURL(env settingValues) string {
 // DISPATCH_FORMER_ORIGINS as the server takes them beside it. A link at any of them is a
 // reference, so a rebuild that read fewer would drop every link written at the others. A value
 // the server would refuse is refused here too (parseAddressLists, proofOriginEntries,
-// checkServedOrigins), so rebuild-refs stops before it opens the database.
+// checkServedOrigins), so rebuild-refs stops before it opens the database. backfill-block-ids
+// and backfill-anchor-blocks read their document service's origins here too
+// (gatedDocumentService).
 func rebuildRefsOrigins(env settingValues, serverURL string) (text.Origins, error) {
 	boot := bootConfig{DevSignIn: env.get("DISPATCH_DEV_SIGNIN") == "1"}
 	var err error

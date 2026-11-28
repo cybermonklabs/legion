@@ -64,6 +64,7 @@ func testServiceDeps(database *store.Store) Deps {
 }
 
 // newTestServiceOn builds a document service on database and shuts it down when the test ends.
+// Its form gate finds no break (formKept), so its carry decides by the carry's rules alone.
 // Where that shutdown runs among the test's other cleanups matters to a test that swaps the
 // schema manifest: pmdoc's readers do not lock it, so the swap's restore must run after this
 // shutdown has stopped the service's room, settlement and flush goroutines, which read it.
@@ -71,6 +72,7 @@ func testServiceDeps(database *store.Store) Deps {
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
 	service := New(testServiceDeps(database))
+	service.SetFormGate(formKept)
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
 			t.Errorf("shutdown document service: %v", err)

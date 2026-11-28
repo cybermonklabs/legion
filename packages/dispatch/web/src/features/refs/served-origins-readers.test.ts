@@ -10,6 +10,7 @@ import { graphNode } from "../../__tests__/graph-fixture";
 import { api } from "../../api/client";
 import { hereHref, setDispatchOrigins } from "../../api/origins";
 import type { IssueReferenceSummary } from "../../api/types";
+import { joinSplitLinks } from "../issue-page/joined-links";
 import { RowText } from "../issue-page/RowText";
 import { citedReferences as rowCitedReferences } from "../issue-page/row-references";
 import { headRefs } from "./head-refs";
@@ -27,10 +28,10 @@ import { useTextReferences } from "./useTextReferences";
  * served before, and `/auth/whoami` names all three, canonical first, which the page holds
  * through `setDispatchOrigins`. A person on the served address reads links people wrote at any
  * of them, so each reader below - every one `grep -rn 'dispatchOrigins\|hereHref' web/src` finds,
- * and the readers that take the list by default (`markdown-engine.ts`) - reads a link at each as
- * Dispatch's: a reference, or an address it opens on the page's own origin with its path, query
- * and fragment kept. A link at a host the deployment does not name stays the link its author
- * wrote. Each reader is driven as its own test drives it.
+ * and the readers that take the list by default (`markdown-engine.ts`, `joined-links.ts`) - reads a
+ * link at each as Dispatch's: a reference, or an address it opens on the page's own origin with its
+ * path, query and fragment kept. A link at a host the deployment does not name stays the link its
+ * author wrote. Each reader is driven as its own test drives it.
  */
 
 /** The test DOM is happy-dom's window (`__tests__/register-dom.ts` registers it), which
@@ -233,6 +234,20 @@ async function rowClick(origin: string) {
   }
 }
 
+/** The words of each anchor `joined-links.ts`'s `joinSplitLinks` leaves of a link to CORE-1 at
+ *  `origin` that the painter drew as three pieces, the middle one bold. A link the reference pass
+ *  reads keeps its three anchors, which that pass's portals draw into; any other is joined into
+ *  one. */
+function joinedPieces(origin: string): string[] {
+  const address = `${origin}/issues/CORE-1`;
+  const body = document.createElement("div");
+  body.innerHTML =
+    `<p><a href="${address}">the </a><strong><a href="${address}">issue</a></strong>` +
+    `<a href="${address}"> page</a></p>`;
+  joinSplitLinks(body);
+  return [...body.querySelectorAll("a")].map((anchor) => anchor.textContent ?? "");
+}
+
 /** Each reader of the list: its name, how a link at one origin is read through it, what it reads
  *  a link at each address whoami names as, and what it reads one at `OTHER` as. */
 const readers: readonly (readonly [string, (origin: string) => unknown, unknown, unknown])[] = [
@@ -297,6 +312,12 @@ const readers: readonly (readonly [string, (origin: string) => unknown, unknown,
     rowClick,
     { at: "/projects/CORE?view=board#top", leftToTheBrowser: false },
     { at: "/issues/CORE-1", leftToTheBrowser: true },
+  ],
+  [
+    "joined-links.ts's joinSplitLinks, which leaves a link the reference pass reads in its pieces",
+    joinedPieces,
+    ["the ", "issue", " page"],
+    ["the issue page"],
   ],
 ];
 

@@ -16,13 +16,14 @@ import { useIssueHeaderWrites } from "../useIssueHeaderWrites";
  * `NoTooltips`, so each shared control in it draws the page's words and no tooltip.
  *
  * The primary document and the reader's state of the issue are the reads today's page makes
- * (`useIssueDetail`, `stateForIssue`). The header makes its own set of the issue's writes;
- * Details makes another, and each write goes in the issue's one line of the keyed store
- * (`issue:<key>`), so the two keep their order. The picker, the digits and the palette's Set
- * priority rows share one priority write, so a refusal is said once, here.
+ * (`useIssueDetail`, whose `drawn.spec` is the document the Spec tab draws, and `stateForIssue`).
+ * The header makes its own set of the issue's writes; Details makes another, and each write goes
+ * in the issue's one line of the keyed store (`issue:<key>`), so the two keep their order. The
+ * picker, the digits and the palette's Set priority rows share one priority write, so a refusal
+ * is said once, here.
  */
 export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
-  const { primaryArtifact, state } = useIssueDetail(route);
+  const { drawn, state } = useIssueDetail(route);
   const issueState = stateForIssue(state.data, issue.key);
   const writes = useIssueHeaderWrites(issue, issueState);
   const priorityWrite = useIssuePriority(issue.key, issuePriority(issue.priority));
@@ -31,7 +32,7 @@ export function HeaderSlot({ issue, route }: SlotProps): ReactNode {
   return (
     <NoTooltips>
       <IssueHeader
-        documentArtifact={primaryArtifact}
+        documentArtifact={drawn.spec}
         isClosed={issue.closed_at !== null}
         issue={issue}
         onOpenField={(field) => openDetailsAt(field, true)}

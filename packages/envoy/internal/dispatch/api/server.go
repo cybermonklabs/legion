@@ -102,6 +102,11 @@ type Deps struct {
 	// NewIssueSession empty is an issue made with no conversation started on it.
 	NewIssueLabel   string
 	NewIssueSession string
+	// SpecForm is the form of The Spec the API judges with (spec_form.go): the roots that
+	// DISPATCH_SPEC_ROOTS names, under which the form gate judges the spec and the Verification
+	// document of each issue, and each root's terms.md. The zero SpecForm names no root and covers
+	// no document.
+	SpecForm SpecForm
 	// Origins is the server's web origins, canonical first (text.ServerOrigins of DepsInput's
 	// ServerURL, ServedOrigins and FormerOrigins): a dashboard URL of any of them that a text or a
 	// request writes is read as the reference its page names.
@@ -282,7 +287,10 @@ type DepsInput struct {
 	// than one an issue may carry, or a session id that is no session id, refuses startup.
 	NewIssueLabel   string
 	NewIssueSession string
-	ServerURL       string
+	// SpecForm is the form of The Spec the process built (NewSpecForm), which set the gate of Docs.
+	// Nil builds one that names no root, through NewSpecForm, on Docs.
+	SpecForm  *SpecForm
+	ServerURL string
 	// ServedOrigins are the other addresses the server serves beside ServerURL
 	// (DISPATCH_SERVED_ORIGINS), and FormerOrigins the addresses it served before
 	// (DISPATCH_FORMER_ORIGINS): Deps.Origins reads dashboard URLs of both, so a link written at a
@@ -404,6 +412,16 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if input.Docs == nil {
 		return Deps{}, errors.New("api.NewDeps: Docs is required: the caller builds the document service and shuts it down once its server is done with it")
 	}
+	// The API and the form of The Spec read links against this one list of origins.
+	origins := text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins)
+	specForm := input.SpecForm
+	if specForm == nil {
+		built, err := NewSpecForm("", origins, input.Docs)
+		if err != nil {
+			return Deps{}, err
+		}
+		specForm = &built
+	}
 	if input.Events == nil {
 		input.Events = events.NewBroker()
 	}
@@ -443,13 +461,14 @@ func NewDeps(input DepsInput) (Deps, error) {
 	if heartbeat == 0 {
 		heartbeat = defaultStreamHeartbeat
 	}
-	return Deps{
+	deps := Deps{
 		Store:                  input.Store,
 		Identity:               input.Identity,
 		AgentTokens:            input.AgentTokens,
 		NewIssueLabel:          newIssue.Label,
 		NewIssueSession:        newIssue.Session,
-		Origins:                text.ServerOrigins(input.ServerURL, input.ServedOrigins, input.FormerOrigins),
+		SpecForm:               *specForm,
+		Origins:                origins,
 		WhoamiOrigins:          input.WhoamiOrigins,
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
@@ -482,7 +501,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		BuildCommit:            input.BuildCommit,
 		Clock:                  input.Clock,
 		ParentStatusRule:       input.ParentStatusRule,
-	}, nil
+	}
+	return deps, nil
 }
 
 type server struct {
