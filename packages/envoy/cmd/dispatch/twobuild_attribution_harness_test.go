@@ -180,8 +180,9 @@ func wantPassCounts(t *testing.T, step string, line map[string]string, want map[
 // previousReconcilePeriod is the period of the previous build's delivery reconcile lease:
 // duty.LeasePeriod of its delivery.ReconcileInterval, 0.9 of 5 minutes, as no test setting shortens
 // the interval there. The previous build is the newest release in the history of this tree's merge
-// base with main (build-dispatch-build.sh --previous-release), and every release from
-// legion-envoy-v32.33.0 on leases a reconcile pass for that period, not for the whole interval.
+// base with main (build-dispatch-build.sh --previous-release) in dispatch-two-builds, and this
+// tree's own build in dispatch-two-builds-same. This tree and every release from
+// legion-envoy-v32.33.0 on lease a reconcile pass for that period, not for the whole interval.
 const previousReconcilePeriod = 4*time.Minute + 30*time.Second
 
 // holdThePreviousBuildsPasses records a pass of the previous build's period that ends in the year
@@ -349,8 +350,8 @@ func describeAnswer(answer delivery.PullRequestAttribution, found bool) string {
 	return fmt.Sprintf("%s from %s, has_facts %v, known %v", issue, answer.Source, answer.HasFacts, answer.Known)
 }
 
-// wantStoredIsStatement fails the test for each results row whose stored issue, which the
-// previous build reads, is not the statement's answer.
+// wantStoredIsStatement fails the test for each results row whose stored issue, which a build
+// before the statement reads (verdictWriter), is not the statement's answer.
 func wantStoredIsStatement(t *testing.T, database *store.Store, answers map[int]delivery.PullRequestAttribution, when string) {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), `select number, issue_key from pull_request_heads`)
@@ -400,6 +401,52 @@ func storedPullRequest(t *testing.T, database *store.Store, repo string, number 
 		t.Fatalf("read the results row of %s#%d: %v", repo, number, err)
 	}
 	return head, nobodyOr(stored), textsHead
+}
+
+// attributionWriter is which of two writers of a results row the previous build is
+// (previousAttributionWriter).
+type attributionWriter int
+
+const (
+	// verdictWriter is a build before the statement, such as the newest release that
+	// dispatch-two-builds pairs this tree with. Its read-through of a result writes the pull
+	// request's head and the result's issue as the row's stored issue, and no texts. It reads a pull
+	// request's issue from the row's stored issue.
+	verdictWriter attributionWriter = iota + 1
+	// textsWriter is a build that reads the statement, such as this tree's own build, which
+	// dispatch-two-builds-same pairs it with. Its read-through writes the pull request's head and the
+	// texts it read from GitHub, and no issue: only a pass writes the statement's answer to the row,
+	// for the release before. It reads a pull request's issue from the statement over the stored
+	// facts, as this build does.
+	textsWriter
+)
+
+func (w attributionWriter) String() string {
+	switch w {
+	case verdictWriter:
+		return "a build before the statement"
+	case textsWriter:
+		return "a build that reads the statement"
+	}
+	return fmt.Sprintf("attributionWriter(%d)", int(w))
+}
+
+// previousAttributionWriter answers which writer the previous build is, from what its read-through
+// of a result of issue at head wrote to the results row of number of repo, of which the database
+// held no row before: the head and issue, and no texts, from a verdictWriter; the head, no issue
+// and texts of the head, from a textsWriter. Any other row is neither writer's, and fails the test.
+func previousAttributionWriter(t *testing.T, database *store.Store, name, repo string, number int, issue, head string) attributionWriter {
+	t.Helper()
+	storedHead, storedIssue, texts := storedPullRequest(t, database, repo, number)
+	switch {
+	case storedHead == head && storedIssue == issue && texts == "":
+		return verdictWriter
+	case storedHead == head && storedIssue == nobodyOr(nil) && texts == head:
+		return textsWriter
+	}
+	t.Fatalf("the %s's read-through of a result of %s at %s wrote #%d with the head %s, the issue %s and texts of %q; want the head %s, the issue %s and no texts from %s, or the head %s, no issue and texts of %s from %s",
+		name, issue, head, number, storedHead, storedIssue, texts, head, issue, verdictWriter, head, head, textsWriter)
+	return 0
 }
 
 // attributionCount runs one count statement over the builds' database.

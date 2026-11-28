@@ -61,9 +61,15 @@ var (
 )
 
 // Two builds on one database give a pull request one issue from one set of facts, through a
-// backlog and a stop of this tree's build. The previous build reads the issue that a results row
-// stores. This tree's build reads the statement over the stored facts, and its pass writes that
-// answer to each stored row.
+// backlog and a stop of this tree's build. This tree's build reads the statement over the stored
+// facts, and its pass writes that answer to each stored row. The previous build is one of two
+// writers of a results row, and the test reads which from what it writes at step 1
+// (previousAttributionWriter). A build before the statement, such as the newest release that
+// dispatch-two-builds pairs this tree with, reads the issue a results row stores, and its
+// read-through writes its verdict there and no texts. A build that reads the statement, such as
+// this tree's own build, which dispatch-two-builds-same pairs it with, reads the statement as this
+// build does, and its read-through writes the texts it read and no issue. Each step holds the
+// previous build to its writer's case.
 //
 // The test holds the delivery reconcile's lease (reconcileGate), so no pass runs until the test
 // lets exactly one run. It records the previous build's period as served, so the previous build
@@ -72,16 +78,20 @@ var (
 //
 //  1. Issues TB-1 and TB-2 have a check. Open pull request #81 has the branch work/no-key, the
 //     title "TB-1: the change" and the head C1. The previous build records a result of TB-1 at
-//     C1. Its read-through writes #81 with no texts and with its verdict TB-1.
-//  2. Before a pass, this tree's build compares TB-1 with #81: R4, the stored answer.
-//  3. After one pass, #81 has texts. Both builds compare TB-1 with #81.
+//     C1. Its read-through writes #81 with no texts and with its verdict TB-1, or, from a build
+//     that reads the statement, with texts of C1 and no issue. Any other row fails the test.
+//  2. Before a pass, this tree's build compares TB-1 with #81: R4, the stored answer, beside a
+//     build before the statement, and the statement over the texts of C1 beside one that reads it.
+//  3. After one pass, #81 has texts and stores TB-1. Both builds compare TB-1 with #81.
 //  4. The stand-in moves #81 to head C2, the title "TB-2: the change" and a later update time. The
 //     previous build records a result of TB-2 at C2, and writes the new head and its verdict and no
-//     texts. This tree's build compares TB-2 with #81 at once, because texts of C1 are no facts of
-//     C2. After one pass, #81 has texts of C2, and the answer stays TB-2.
-//  5. The backlog: 1,200 rows of backlogRepo with texts, each storing an older answer. After one
-//     pass, the previous build gives the statement's answer for each of them, each side of the
-//     moves carries 500 events, and 700 moves stay queued.
+//     texts, or, from a build that reads the statement, the new head and texts of C2 and no issue.
+//     This tree's build compares TB-2 with #81 at once, because texts of C1 are no facts of C2.
+//     After one pass, #81 has texts of C2, and the answer stays TB-2.
+//  5. The backlog: 1,200 rows of backlogRepo with texts, each storing an older answer. Before the
+//     pass, a build before the statement gives each row's older answer, and a build that reads the
+//     statement the statement's. After one pass, the previous build gives the statement's answer
+//     for each of them, each side of the moves carries 500 events, and 700 moves stay queued.
 //  6. The stop: 600 merged rows with no facts are stored after the pass of step 5. Then this tree's
 //     build gets SIGTERM, and no pass runs between that pass and the stop. The previous build
 //     alone then gives, for each row, the issue that this tree's build gave before the stop. The
@@ -89,8 +99,10 @@ var (
 //     fewer moves, and the facts line has read 500 of the 600. Each answer is the statement's.
 //
 // The control of step 4 is a build of this tree whose statement reads texts of another head as
-// facts (ENVOY_TEST_GO_OVERLAY). It fails the test: this tree's build then gives TB-1 from the
-// texts of C1.
+// facts (ENVOY_TEST_GO_OVERLAY). Beside a build before the statement it fails the test: this
+// tree's build then gives TB-1 from the texts of C1. Beside a build that reads the statement, that
+// build's read-through has stored texts of C2 at the move, so no texts of another head are left to
+// read.
 func TestTwoBuildsAttributeAPullRequestFromOneSetOfFacts(t *testing.T) {
 	builds := newTwoBuilds(t)
 	database := builds.database
@@ -120,22 +132,23 @@ func TestTwoBuildsAttributeAPullRequestFromOneSetOfFacts(t *testing.T) {
 	issueWithCheck(t, current, "ACME", "The rule's answer", "ACME-2")
 	previousName, currentName := builds.previousName(), builds.currentName()
 
-	// 1. The previous build's read-through writes #81 with its verdict and no texts.
+	// 1. The previous build's read-through writes #81 with its verdict and no texts, or with the
+	// texts of C1 and no issue: which of the two decides each step's case below.
 	recordPass(t, previous, "TB-1", firstHead)
-	if head, issue, texts := storedPullRequest(t, database, attributionRepo, attributionNumber); head != firstHead || issue != "TB-1" || texts != "" {
-		t.Fatalf("step 1: #81 stores the head %s, the issue %s and texts of %q, want %s, TB-1 and no texts", head, issue, texts, firstHead)
-	}
+	writer := previousAttributionWriter(t, database, previousName, attributionRepo, attributionNumber, "TB-1", firstHead)
+	t.Logf("the %s is %s", previousName, writer)
 	wantBases(t, previous, previousName, "TB-1", []int{attributionNumber}, "step 1")
 
-	// 2. Before any pass, this tree's build gives the stored answer (R4).
+	// 2. Before any pass, this tree's build gives TB-1: the stored answer (R4) beside a build before
+	// the statement, and the statement over the texts of C1 beside one that reads it.
 	if passes := current.logLines(headPassLine); len(passes) != 0 {
 		t.Fatalf("step 2: the %s ran %d passes while the test held the lease:\n%s", currentName, len(passes), strings.Join(passes, "\n"))
 	}
-	wantStatement(t, statementAnswers(t, database), attributionNumber, "TB-1", false, "step 2")
+	wantStatement(t, statementAnswers(t, database), attributionNumber, "TB-1", writer == textsWriter, "step 2")
 	wantBases(t, current, currentName, "TB-1", []int{attributionNumber}, "step 2")
 	wantBases(t, current, currentName, "TB-2", nil, "step 2")
 
-	// 3. One pass reads the facts of #81. Both builds give TB-1.
+	// 3. After one pass, #81 has the texts of C1 and stores TB-1. Both builds give TB-1.
 	gate.onePass(t, current, "step 3")
 	if head, issue, texts := storedPullRequest(t, database, attributionRepo, attributionNumber); head != firstHead || issue != "TB-1" || texts != firstHead {
 		t.Fatalf("step 3: #81 stores the head %s, the issue %s and texts of %q, want %s, TB-1 and texts of %s", head, issue, texts, firstHead, firstHead)
@@ -145,13 +158,20 @@ func TestTwoBuildsAttributeAPullRequestFromOneSetOfFacts(t *testing.T) {
 		wantBases(t, p, builds.buildName(p), "TB-1", []int{attributionNumber}, "step 3")
 	}
 
-	// 4. The move. The previous build writes the new head and its verdict, and no texts.
+	// 4. The move. A build before the statement writes the new head and its verdict, and no texts,
+	// so #81 keeps the texts of C1. A build that reads the statement writes the new head and the
+	// texts of C2, and no issue, so #81 keeps TB-1, which the pass of step 3 stored.
 	fake.move(attributionRepo, attributionNumber, secondHead, "TB-2: the change", secondUpdate)
 	recordPass(t, previous, "TB-2", secondHead)
-	if head, issue, texts := storedPullRequest(t, database, attributionRepo, attributionNumber); head != secondHead || issue != "TB-2" || texts != firstHead {
-		t.Fatalf("step 4: #81 stores the head %s, the issue %s and texts of %q, want %s, TB-2 and texts of %s", head, issue, texts, secondHead, firstHead)
+	wantIssue, wantTexts := "TB-2", firstHead
+	if writer == textsWriter {
+		wantIssue, wantTexts = "TB-1", secondHead
 	}
-	wantStatement(t, statementAnswers(t, database), attributionNumber, "TB-2", false, "step 4, before the pass")
+	if head, issue, texts := storedPullRequest(t, database, attributionRepo, attributionNumber); head != secondHead || issue != wantIssue || texts != wantTexts {
+		t.Fatalf("step 4: #81 stores the head %s, the issue %s and texts of %q, want %s, %s and texts of %s from the %s, %s",
+			head, issue, texts, secondHead, wantIssue, wantTexts, previousName, writer)
+	}
+	wantStatement(t, statementAnswers(t, database), attributionNumber, "TB-2", writer == textsWriter, "step 4, before the pass")
 	// Only TB-2 is read here. A result of TB-1 is at C1, which heads no row now, so a read of
 	// TB-1 reads #81 through from GitHub and stores texts of C2 before the pass.
 	if bases := basesOf(t, current, "TB-2"); bases[attributionNumber] != secondHead {
@@ -168,12 +188,17 @@ func TestTwoBuildsAttributeAPullRequestFromOneSetOfFacts(t *testing.T) {
 		wantBases(t, p, builds.buildName(p), "TB-1", nil, "step 4, after the pass")
 	}
 
-	// 5. The backlog. Before the pass, the previous build gives each row's older answer: the
-	// reader can fail. One pass writes the statement's answer to each row.
+	// 5. The backlog. Before the pass, a build before the statement gives each row's older answer,
+	// which the row stores: the reader can fail. A build that reads the statement gives the
+	// statement's answer already. One pass writes the statement's answer to each row.
 	storeBacklog(t, database, fake)
 	backlog := numbersFrom(backlogFirst, backlogRows)
-	wantBases(t, previous, previousName, "ACME-1", backlog, "step 5, before the pass")
-	wantBases(t, previous, previousName, "ACME-2", nil, "step 5, before the pass")
+	before, notBefore := "ACME-1", "ACME-2"
+	if writer == textsWriter {
+		before, notBefore = notBefore, before
+	}
+	wantBases(t, previous, previousName, before, backlog, "step 5, before the pass")
+	wantBases(t, previous, previousName, notBefore, nil, "step 5, before the pass")
 	wantPassCounts(t, "step 5", gate.onePass(t, current, "step 5"),
 		map[string]int{"facts_left_before": 0, "changes": backlogRows, "events": 2 * delivery.AttributionMovesPerPass, "moves_queued": backlogRows - delivery.AttributionMovesPerPass})
 	answers := statementAnswers(t, database)
