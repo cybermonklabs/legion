@@ -628,6 +628,17 @@ wait "$waiter" || status=$?
 out=$(cat "$m/term.out")
 check "a TERM alone stops the wait, which exits 143, 128 plus the TERM's number" "$(is "$status" 143)"
 check "naming the harness still running" "$(contains "$out" '^::error title=hung::was still running after [0-9.]* s when the wait was stopped; ')"
+# A TERM to the wait's own pid, as the runner signals a step (actions/runner's ProcessInvoker
+# kills the step's process, not its group, so the poll's sleep does not end), and an INT 0.2 s
+# later, as a runner cancel can follow the TERM of a machine's shutdown: the TERM stopped the
+# wait first, so its status is 143, which .github/scripts/runner-shutdown.sh reads a shutdown by.
+start_waiter "$m/term-int.out"
+kill -TERM "$waiter"
+sleep 0.2
+kill -INT "$waiter" 2> /dev/null || true
+status=0
+wait "$waiter" || status=$?
+check "a TERM to the wait's pid and an INT 0.2 s later exit 143, for the TERM that stopped it first" "$(is "$status" 143)"
 # Then an INT followed by TERMs, as the runner sends one 7.5 s after the INT, here one every 10 ms
 # until the wait has ended, so some land while it writes its report.
 start_waiter "$m/wait.out"
