@@ -1771,8 +1771,13 @@ func queuedRoots(issues []Issue, facts LineFacts) []Issue {
 // either: a root arriving from another tree in a phase that keeps a slot may carry the row it
 // held there while the tree of its own has still to be opened, which Waiting's queued-root loop
 // states at the skip it guards.
+//
+// A root at done is no queued root, whatever its status: every re-admission and every next
+// change moves a root off done before it waits here, so a root that stands at done with the status
+// todo is a request that waits for its merge read (D17), and a promotion would open its tree at
+// done on nothing. The read's answer or a person's confirmation places it first.
 func QueuedRoot(issue Issue, lifecycle treelifecycle.Lifecycle, gate TreeGate) bool {
-	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || ran(issue, lifecycle, gate) {
+	if !issue.HandedOver || !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Phase == phase.Done || ran(issue, lifecycle, gate) {
 		return false
 	}
 	return !issue.AwaitingPerson() && issue.Status == "todo"
