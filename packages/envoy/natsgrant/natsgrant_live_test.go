@@ -41,21 +41,35 @@ func grantedConnection(t *testing.T, uri, seed string, options ...natsgo.Option)
 	return conn, errs
 }
 
-// refusedNaming waits up to 10 s for the server's permissions violation naming what, a fragment of
-// its text such as `Publish to "x"`, among errs, and fails the test without one.
+// refusedNaming waits for the server's permissions violation naming what, a fragment of its text
+// such as `Publish to "x"`, among errs, passing over every other error, and fails the test at
+// testwait's bound (testwait.Receive) when none comes.
 func refusedNaming(t *testing.T, errs <-chan error, what string) {
 	t.Helper()
-	deadline := time.After(10 * time.Second)
 	for {
-		select {
-		case err := <-errs:
-			if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), what) {
-				return
-			}
-		case <-deadline:
-			t.Fatalf("the server sent no permissions violation for %s within 10s", what)
+		err := testwait.Receive(t, "the server's permissions violation naming "+what, errs)
+		if errors.Is(err, natsgo.ErrPermissionViolation) && strings.Contains(err.Error(), what) {
+			return
 		}
 	}
+}
+
+// refusedRequest runs request on a goroutine of its own with a context, waits for the server's
+// permissions violation naming what among errs (refusedNaming), then cancels the context and returns
+// request's error. request makes a request the server refuses as a publish, and a refused publish
+// gets no reply, so the violation, not a timeout of the request's own, is the event that ends it. A
+// request the server accepted is sent no violation, however late its answer, so the wait for one
+// fails and the request never reads as refused. request runs off the test goroutine, so it calls no
+// method of t.
+func refusedRequest(t *testing.T, errs <-chan error, what string, request func(ctx context.Context) error) error {
+	t.Helper()
+	ctx, cancel := context.WithCancel(testwait.Context(t))
+	defer cancel()
+	returned := make(chan error, 1)
+	go func() { returned <- request(ctx) }()
+	refusedNaming(t, errs, what)
+	cancel()
+	return testwait.Receive(t, "the refused request to return once its context was cancelled", returned)
 }
 
 // present reports whether the stream name exists on admin, failing the test on any read error but a
@@ -254,22 +268,24 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		_, err := admin.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bucket, Storage: natsgo.MemoryStorage})
 		require.NoError(t, err)
 	}
-	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool) error {
-		info, err := js.StreamInfo("KV_" + bucket)
+	republishInto := func(js natsgo.JetStreamContext, bucket, victim string, headersOnly bool, opts ...natsgo.JSOpt) error {
+		info, err := js.StreamInfo("KV_"+bucket, opts...)
 		if err != nil {
 			return err
 		}
 		config := info.Config
 		config.RePublish = &natsgo.RePublish{Source: "$KV." + bucket + ".rp", Destination: "$JS.API.STREAM.DELETE." + victim, HeadersOnly: headersOnly}
-		_, err = js.UpdateStream(&config)
+		_, err = js.UpdateStream(&config, opts...)
 		return err
 	}
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
 	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
 	require.NoError(t, err)
 
-	require.Error(t, republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM", false), "the edge set a republish on KV_%s", bus.InterestBucket)
-	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`)
+	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`, func(ctx context.Context) error {
+		return republishInto(edgeJS, bus.InterestBucket, "SCRATCH_VICTIM", false, natsgo.Context(ctx))
+	})
+	require.Error(t, err, "the edge set a republish on KV_%s", bus.InterestBucket)
 	info, err := admin.StreamInfo("KV_" + bus.InterestBucket)
 	require.NoError(t, err)
 	require.Nil(t, info.Config.RePublish, "KV_%s carries a republish after the edge's refused update", bus.InterestBucket)
@@ -617,9 +633,11 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 	}
 
 	t.Run("controls", func(t *testing.T) {
-		_, err := edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
+		err := refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`, func(ctx context.Context) error {
+			_, err := edgeConn.RequestWithContext(ctx, "$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil)
+			return err
+		})
 		require.Error(t, err, "the edge's direct request of a stream delete was answered")
-		refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
 		require.Equal(t, kept, streamState("SCRATCH_CONTROL"), "the edge's direct request changed SCRATCH_CONTROL")
 		require.NoError(t, admin.DeleteStream("SCRATCH_ADMIN"))
 		require.Equal(t, "deleted", streamState("SCRATCH_ADMIN"), "the probe does not see a stream the administrator deleted")
@@ -667,8 +685,12 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 	edgeConn, _ := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
 	edgeJS, err := edgeConn.JetStream()
 	require.NoError(t, err)
+	// heartbeat is the shortest idle heartbeat nats-server takes: it refuses a push consumer's under
+	// 100 ms (NewJSConsumerSmallHeartbeatError). A consumer with nothing to deliver sends its first
+	// heartbeat that long after it starts.
+	const heartbeat = 100 * time.Millisecond
 	for name, deliver := range map[string]string{"edge-hb": target, "edge-hb-unsubscribed": "$JS.API.STREAM.DELETE.SCRATCH_HB_UNSUBSCRIBED"} {
-		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: time.Second})
+		_, err := edgeJS.AddConsumer(bus.Stream, &natsgo.ConsumerConfig{Name: name, FilterSubject: "notifications.agent.ses_edge_hb_" + name, DeliverSubject: deliver, AckPolicy: natsgo.AckNonePolicy, Heartbeat: heartbeat})
 		require.NoError(t, err, "the edge creates a push consumer with a heartbeat delivering on %s", deliver)
 	}
 
@@ -724,9 +746,11 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, edgeConn.Flush())
 
 	// Control: the edge's own direct stream delete is refused, and SCRATCH_CONTROL stays.
-	_, err = edgeConn.Request("$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil, 2*time.Second)
+	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`, func(ctx context.Context) error {
+		_, err := edgeConn.RequestWithContext(ctx, "$JS.API.STREAM.DELETE.SCRATCH_CONTROL", nil)
+		return err
+	})
 	require.Error(t, err, "the edge's direct request of a stream delete was answered")
-	refusedNaming(t, edgeErrs, `Publish to "$JS.API.STREAM.DELETE.SCRATCH_CONTROL"`)
 	require.True(t, present(t, admin, "SCRATCH_CONTROL"), "the edge's direct delete removed SCRATCH_CONTROL")
 
 	// The pull route: a consumer on a subject that holds no message.
@@ -786,8 +810,13 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 // event never reaches a subscriber, the connection is told of the violation naming the subject,
 // and the server logs it. The same publish under the listener's grant is accepted and reaches the
 // subscriber, which shows the subscriber would have seen the edge's had the server let it through.
+// That the edge's event reached no subscriber is read off a marker the edge publishes after it on
+// its own agent subject: a connection's messages reach a subscriber in the order they were
+// published (publishOutcome), so the subscriber, which takes every notification topic, receives
+// the marker with nothing before it.
 func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	const subject = "notifications.dispatch.issue.PRIV.PRIV-1.comment.created"
+	const marker = "notifications.agent.marker"
 	edgeSeed, edgeKey := testnats.User(t)
 	listenerSeed, listenerKey := testnats.User(t)
 	readerSeed, readerKey := testnats.User(t)
@@ -795,11 +824,11 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	server, uri := testnats.StartImageConfig(t, testnats.HubImage, testnats.GrantedUsersConfig(
 		testnats.StaticUser{NKey: edgeKey, Publish: edge.Publish, Subscribe: edge.Subscribe},
 		testnats.StaticUser{NKey: listenerKey, Publish: listener.Publish, Subscribe: listener.Subscribe},
-		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{"notifications.dispatch.>"}},
+		testnats.StaticUser{NKey: readerKey, Publish: []string{"example.unused"}, Subscribe: []string{"notifications.>"}},
 	), []string{"-js"}, false)
 
 	reader, _ := grantedConnection(t, uri, readerSeed)
-	events, err := reader.SubscribeSync(subject)
+	events, err := reader.SubscribeSync("notifications.>")
 	require.NoError(t, err)
 	require.NoError(t, reader.Flush())
 
@@ -808,6 +837,7 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	require.NoError(t, accepted.Flush())
 	msg, err := events.NextMsg(5 * time.Second)
 	require.NoError(t, err, "the listener's publish of %s did not reach the subscriber", subject)
+	require.Equal(t, subject, msg.Subject, "the subscriber's first message")
 	require.Equal(t, "from the listener", string(msg.Data))
 	select {
 	case err := <-acceptedErrs:
@@ -817,6 +847,7 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 
 	refused, refusedErrs := grantedConnection(t, uri, edgeSeed)
 	require.NoError(t, refused.Publish(subject, []byte("from the edge")))
+	require.NoError(t, refused.Publish(marker, []byte("the edge's marker")))
 	require.NoError(t, refused.Flush())
 	select {
 	case err := <-refusedErrs:
@@ -825,16 +856,22 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatalf("the server did not refuse the edge's publish of %s within 5s", subject)
 	}
-	if msg, err := events.NextMsg(time.Second); err == nil {
-		t.Fatalf("the edge's publish reached the subscriber: %q", msg.Data)
+	next, err := events.NextMsgWithContext(testwait.Context(t))
+	require.NoError(t, err, "the edge's marker on %s did not reach the subscriber, so nothing shows its publish of %s did not", marker, subject)
+	if next.Subject != marker {
+		t.Fatalf("the edge's publish reached the subscriber before its marker: %s %q", next.Subject, next.Data)
 	}
-	logs, err := server.Logs(context.Background())
-	require.NoError(t, err)
-	defer logs.Close()
-	logged, err := io.ReadAll(logs)
-	require.NoError(t, err)
-	require.True(t, strings.Contains(string(logged), `Publish Violation`) && strings.Contains(string(logged), `Subject "`+subject+`"`),
-		"the server logged no publish violation naming %s:\n%s", subject, logged)
+	// nats-server writes the violation's log line as it refuses the publish, before it reads the
+	// marker, but the line reaches the docker daemon the log is read from through the container's
+	// output, which the marker's delivery does not wait for, so the read waits for the line.
+	testwait.Until(t, "the server's log line of a publish violation naming "+subject, func() (string, bool) {
+		logs, err := server.Logs(context.Background())
+		require.NoError(t, err)
+		defer logs.Close()
+		logged, err := io.ReadAll(logs)
+		require.NoError(t, err)
+		return string(logged), strings.Contains(string(logged), `Publish Violation`) && strings.Contains(string(logged), `Subject "`+subject+`"`)
+	})
 }
 
 // edgeOwnLanes is one subject of each lane natsgrant.Edge("m", ["PRIV"]) publishes among the
