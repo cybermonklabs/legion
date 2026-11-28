@@ -3612,10 +3612,10 @@ The act reads its run list through retry_fetch's ladder (.github/scripts/ci-retr
 attempts at 30 s each run through gh-read.sh's gh_wait_reset, so a refusal GitHub lifts by itself
 is read again: merge-group run 45467602844 (pull request #5331's second group) went red whole
 when that list answered HTTP 500 once, in job 138706588845. Main's #5448 gave the list that retry
-as gh-read.sh's three-attempt gh_read, which this branch's gh-read.sh does not hold
-(dispatch://INFRA-1545, R2); the merge of main at b44c810e keeps the list's one retry_fetch
-ladder in its place. A list still refused after the five attempts fails the job as before. That
-is the whole of the protection, on purpose: from 2026-11-24T22:00Z to 2026-11-27, 1,212
+as gh-read.sh's three-attempt gh_read, which gh-read.sh no longer holds, since retry_fetch is
+the one ladder (dispatch://INFRA-1545); the merge of main at b44c810e keeps the list's one
+retry_fetch ladder in its place. A list still refused after the five attempts fails the job as
+before. That is the whole of the protection, on purpose: from 2026-11-24T22:00Z to 2026-11-27, 1,212
 merge-group runs ran, 90 failed, and cancel-started succeeded in all 90, so the act's refusals
 are not told apart by status, and dequeued.yaml's cancel act keeps its own reads.
 
