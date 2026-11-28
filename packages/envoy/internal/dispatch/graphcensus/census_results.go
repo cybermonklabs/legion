@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -86,8 +87,8 @@ func screenshotRefKeySQL(reference string) string {
 // bound, and one screenshot to each image its screenshots name, each once.
 var resultRowLinks = `(select coalesce(string_agg(stated.link, ',' order by stated.link), '') from (
 		select named.link from (values
-			('` + graphstore.TuplePartOf + `>block:' || ` + resultCheckAddress + `),
-			('` + graphstore.TupleResultOf + `>block:' || ` + resultCheckAddress + `),
+			('` + graphstore.TuplePartOf + `>` + refs.BlockNodeKind + `:' || ` + resultCheckAddress + `),
+			('` + graphstore.TupleResultOf + `>` + refs.BlockNodeKind + `:' || ` + resultCheckAddress + `),
 			(` + authoredLink("r.actor") + `),
 			(case when r.session <> '' and octet_length(r.session) <= ` + addressBound + `
 			      then '` + graphstore.TupleRunSession + `>` + graphstore.KindSession + `:' || r.session end)
@@ -104,7 +105,7 @@ var resultRowLinks = `(select coalesce(string_agg(stated.link, ',' order by stat
 // kind of step is no node of this projection.
 var resultHoldsACheck = `exists (select 1 from (
 		` + graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.asserted`,
-	`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleResultOf+`' and t.to_kind = 'block'`) + `
+	`t.from_kind = n.kind and t.from_id = n.id and t.kind = '`+graphstore.TupleResultOf+`' and t.to_kind = '`+refs.BlockNodeKind+`'`) + `
 	) held where held.asserted)`
 
 // resultRowInBound and resultRowPastBound hold the check_results row aliased r to its check's
@@ -116,7 +117,7 @@ var (
 )
 
 // resultProjections are the census's kinds of the results recorded against a check (projections;
-// T11 of this branch's plan, R12): check_results against the result nodes whose far end is a check
+// T11 of the issue-tree plan, R12): check_results against the result nodes whose far end is a check
 // block, and check_result_retractions against the retracted value of each, in both directions.
 //
 // A result is one node per row, keyed by the row's id. Its digest is the row's twelve values, its
@@ -210,23 +211,36 @@ type resultKey struct {
 	id, issue string
 }
 
-// readResultKeys reads the next batch of ids after after, of the rows shape names with key the
-// id column of the rows, and the check's issue beside each, in id order.
-func readResultKeys(ctx context.Context, database *store.Store, shape, key, after string) ([]resultKey, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select `+key+`::text, r.check_issue_key `+shape+`
-		  and `+key+` > $1::uuid
-		order by `+key+`
-		limit $2
-	`, after, backfillBatch)
-	if err != nil {
-		return nil, err
-	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (resultKey, error) {
+// resultKeysStatement is the selection of a result pass's walk: at most $2 ids past the id $1, of
+// the rows shape names with key the id column of the rows, and the check's issue beside each, in
+// id order. Each batch reads the primary key key is the column of from the id on, so a run reads
+// each row once however many batches it takes (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+func resultKeysStatement(shape, key string) string {
+	return `
+		select ` + key + `::text, r.check_issue_key ` + shape + `
+		  and ` + key + ` > $1::uuid
+		order by ` + key + `
+		limit $2`
+}
+
+// missingResultKeysStatement is backfillResults' walk (resultKeysStatement) over the results whose
+// node the store does not hold (missingResults), through check_results_pkey, and
+// owedRetractionKeysStatement backfillResultRetractions' over the retractions their results do not
+// state (owedRetractions), through check_result_retractions_pkey.
+var (
+	missingResultKeysStatement  = resultKeysStatement(missingResults, "r.id")
+	owedRetractionKeysStatement = resultKeysStatement(owedRetractions, "x.result_id")
+)
+
+// eachResultBatch walks statement, a walk of resultKeysStatement, from the first id on
+// (walkBatches), and hands each batch that holds a row to write. what names the rows in the error
+// of a read that fails.
+func eachResultBatch(ctx context.Context, database *store.Store, statement, what string, write func([]resultKey) error) error {
+	return walkBatches(ctx, database, statement, what, zeroUUID, func(row pgx.CollectableRow) (resultKey, error) {
 		var key resultKey
 		err := row.Scan(&key.id, &key.issue)
 		return key, err
-	})
+	}, func(key resultKey) string { return key.id }, write)
 }
 
 // lockResultOwners takes, in tx, the owner row of each issue a batch's results record a check of,
@@ -252,26 +266,17 @@ func lockResultOwners(ctx context.Context, tx pgx.Tx, batch []resultKey) ([]stri
 // caused its row, and no tuple may be updated to name it.
 func backfillResults(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: resultProjectionKind}
-	after := zeroUUID
-	for {
-		batch, err := readResultKeys(ctx, database, missingResults, "r.id", after)
-		if err != nil {
-			return done, fmt.Errorf("read the results with no node: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].id
+	if err := eachResultBatch(ctx, database, missingResultKeysStatement, "the results with no node", func(batch []resultKey) error {
 		written, nodes, tuples, err := writeResultBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += written
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+missingResults).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the results still with no node: %w", err)
@@ -283,7 +288,7 @@ func backfillResults(ctx context.Context, database *store.Store) (KindBackfill, 
 // writeResultBatch writes one batch's result nodes in one transaction, in the store's lock order
 // (api/inbox_read.go's markInboxReadThreads): the owner rows of the issues whose checks the batch's
 // results record first (lockResultOwners), then the batch's rows read again under them, then every
-// node and every tuple in one graphstore.Write, which takes the node rows in ascending (kind, id).
+// node and every tuple in one graphstore.QueueWrite, which takes the node rows in ascending (kind, id).
 // The record route writes a result's row and its node in one transaction under that same row, so
 // a row read again here with no node is one no route will give one, and a row the route wrote
 // meanwhile names its node and is not written again. A result's row is no projection row naming its
@@ -362,7 +367,11 @@ func writeResultBatch(ctx context.Context, database *store.Store, batch []result
 		if len(batchNodes) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, batchNodes, stated); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, batchNodes, stated)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(batchNodes, stated))
+			return nil
+		}); err != nil {
 			return err
 		}
 		nodes, tuples = int64(len(batchNodes)), statedOf(batchNodes)+int64(len(stated))
@@ -397,25 +406,16 @@ func screenshotRefKeys(references []string) []string {
 // the row's actor and caused by no event (NoEvent).
 func backfillResultRetractions(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: resultRetractionProjectionKind}
-	after := zeroUUID
-	for {
-		batch, err := readResultKeys(ctx, database, owedRetractions, "x.result_id", after)
-		if err != nil {
-			return done, fmt.Errorf("read the retractions their results do not state: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].id
+	if err := eachResultBatch(ctx, database, owedRetractionKeysStatement, "the retractions their results do not state", func(batch []resultKey) error {
 		written, err := writeResultRetractionBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += written
 		done.Tuples += written
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+owedRetractions).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the retractions their results do not state: %w", err)
@@ -427,7 +427,7 @@ func backfillResultRetractions(ctx context.Context, database *store.Store) (Kind
 // writeResultRetractionBatch states one batch's retracted values in one transaction, in the
 // store's lock order: the owner rows of the issues whose checks the batch's results record first
 // (lockResultOwners), then the batch's retractions read again under them, then their values
-// through graphstore.Write, which writes no node: each result's node is its writer's or
+// through graphstore.QueueWrite, which writes no node: each result's node is its writer's or
 // backfillResults'. The retract route takes that same row, through its event, before it writes the
 // retraction's row and its value in one transaction, so a retraction read again here owing its
 // value is one no route will state, and one the route stated meanwhile is not read again. It
@@ -470,7 +470,11 @@ func writeResultRetractionBatch(ctx context.Context, database *store.Store, batc
 		if len(tuples) == 0 {
 			return nil
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(tuples))

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The out and the in statement of an issue's references read
+  (`GET /api/v1/issues/{key}/references`) left the issue's own nodes out by testing each link row
+  against an array of them, which Postgres could not hash, so that filter cost the link rows times
+  the own nodes. They now leave them out by an anti-join, so the filter costs the link rows plus
+  the own nodes. The answer is the same. The case measured: in production, the read of an issue
+  with about 3,840 own nodes answered `503 REFERENCES_TIMEOUT` on 7 of 10 reads.
+time: 2026-11-24T13:03:44Z
+custom:
+    Issue: INFRA-5685

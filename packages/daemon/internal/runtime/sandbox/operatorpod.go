@@ -10,17 +10,20 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/sjawhar/envoy/natsurl"
 	"github.com/sjawhar/legion/daemon/internal/claudelaunch"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
 	"github.com/sjawhar/legion/daemon/internal/ompsessions"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // ImageEnv are the variables the worker image's final stage sets (packages/daemon/docker/
 // worker.Dockerfile, ENV), which every container inherits, and which a pod's env therefore may not
-// override: AWS_CA_BUNDLE holds the AWS CLI to the system root bundle the image probe verifies;
+// override: AWS_CA_BUNDLE points the AWS CLI at Debian's system root bundle (the Dockerfile's ENV
+// comment says why);
 // CGO_ENABLED=0 keeps cgo off by default in every process that inherits the image's environment,
 // the image's gcc on PATH notwithstanding, so a role opts in per command (`CGO_ENABLED=1 go test
 // -race …`) rather than a deployment for every build; COREPACK_DEFAULT_TO_LATEST=0 keeps the
@@ -33,8 +36,7 @@ import (
 // (launchers.serveLeakCheck); it is the image's pin and no deployment's to move;
 // PATH, which the runtime sets as well; and USER, the runtime user's name, legion, which the
 // skill-scenario rig's scripts read. TestImageEnvIsWhatTheWorkerImageSets holds the list to
-// the Dockerfile. cmd/legion's TLS probe keeps these variables, but gives each client a HOME of
-// its own (tls_probe.go).
+// the Dockerfile.
 var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LATEST", "DO_NOT_TRACK", "HOME", "LEGION_LEAK_CHECK_TAG", "LEGION_OMP_PATH", "OMP_PROFILE", "PATH", "USER"}
 
 // setter is who sets a variable a worker's Oh My Pi starts with, and whether the operator's pod
@@ -43,6 +45,44 @@ var ImageEnv = []string{"AWS_CA_BUNDLE", "CGO_ENABLED", "COREPACK_DEFAULT_TO_LAT
 type setter struct {
 	who         string
 	operatorMay bool
+}
+
+// PodExchange is what a deployment's pods trade at the secrets broker, which decides what of a
+// pod Legion reserves (CheckPod, Runtime.specOwned): nothing, where the deployment names no
+// exchange audience (NoExchange); the exchange identity, where it names one
+// (runtime.kubernetes.agent_secrets.exchange_audience), whose variables (exchangeOwned), volume
+// and mount path are then Legion's (ExchangeIdentity); or that identity and, under
+// dispatch_token_broker, DISPATCH_TOKEN_BROKER (brokerOwned) beside it (ExchangeAndBroker). The
+// broker without the audience is none of them: configure and the configuration's loader refuse
+// it, since no pod would carry an identity to trade.
+type PodExchange int
+
+const (
+	NoExchange PodExchange = iota
+	ExchangeIdentity
+	ExchangeAndBroker
+)
+
+// ExchangeOf is the PodExchange of a deployment that names exchangeAudience ("" for none) and sets
+// dispatch_token_broker where broker is true. A broker beside no audience is NoExchange, which is
+// what a pod carrying no identity to trade reserves.
+func ExchangeOf(exchangeAudience string, broker bool) PodExchange {
+	switch {
+	case exchangeAudience == "":
+		return NoExchange
+	case broker:
+		return ExchangeAndBroker
+	}
+	return ExchangeIdentity
+}
+
+// exchangeOf is ExchangeOf over the agent-secrets block agentSecrets, nil where the deployment
+// names none.
+func exchangeOf(agentSecrets *AgentSecrets, broker bool) PodExchange {
+	if agentSecrets == nil {
+		return NoExchange
+	}
+	return ExchangeOf(agentSecrets.ExchangeAudience, broker)
 }
 
 // podVariables maps every variable a worker's Oh My Pi finds set before the shim exports a
@@ -54,18 +94,22 @@ type setter struct {
 // session it resumes (runtime.SessionExclusiveVariable), which it tells a launch that resumes a
 // recorded Oh My Pi session alone, in its start command, and the name the
 // providers volume mounts the session database's URL under, ompsessions.DSNFileName), the worker
-// image (ImageEnv), every launch's spec (the role App's git identity, and each launch secret's
-// `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes for each role out
-// of the operator's own value (roleOperatorEnv: the settings overlays, which are hand-added here
-// since `composed` deliberately leaves them out, and every name of `composed`, the spend
-// attributes alone today), and the operator's own pod env. The exchange identity's two variables
-// (exchangeOwned) are the runtime's only where exchange says the deployment names an exchange
-// audience; otherwise nothing of Legion's sets them, and the operator's pod env may, as it could
-// before the key existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the session
-// store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it replaces the
-// config root the agent directory and a session's path key sit under, so it is refused like them.
-// The first setter of a name is the one named.
-func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]setter {
+// image (ImageEnv), every launch's spec (the role App's git identity, the table of every role's
+// identity, runtime.RoleIdentitiesVariable, which a workflow role's launch alone carries, and each
+// launch secret's `<NAME>_FILE` pointer), the pod baseline, the two names this runtime composes
+// for each role out of the operator's own value (roleOperatorEnv: the settings overlays, which are
+// hand-added here since `composed` deliberately leaves them out, and every name of `composed`, the
+// spend attributes alone today), and the operator's own pod env. The exchange identity's two
+// variables (exchangeOwned) are the runtime's only where exchange carries that identity
+// (ExchangeIdentity or ExchangeAndBroker); otherwise nothing of Legion's sets them, and the
+// operator's pod env may, as it could before the key existed. DISPATCH_TOKEN_BROKER (brokerOwned)
+// is the runtime's in the same way, only under ExchangeAndBroker, where the deployment sets
+// dispatch_token_broker: a deployment that does not keeps the name the operator's, as it was
+// before the setting existed. OMP_CONFIG_ROOT (ompdirs.ConfigRootVariable) is named beside the
+// session store's variables though nothing of Legion's sets it: from the pinned Oh My Pi on it
+// replaces the config root the agent directory and a session's path key sit under, so it is
+// refused like them. The first setter of a name is the one named.
+func podVariables(pod Pod, launchSecrets []string, exchange PodExchange) map[string]setter {
 	set := map[string]setter{}
 	add := func(name, who string, operatorMay bool) {
 		if _, taken := set[name]; !taken {
@@ -100,9 +144,14 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 	for _, name := range slices.Sorted(maps.Keys(runtimeOwned)) {
 		add(name, "Legion's runtime sets in every pod", false)
 	}
-	if exchange {
+	if exchange != NoExchange {
 		for _, name := range slices.Sorted(maps.Keys(exchangeOwned)) {
 			add(name, "Legion's runtime sets in every enrolled pod under runtime.kubernetes.agent_secrets.exchange_audience", false)
+		}
+	}
+	if exchange == ExchangeAndBroker {
+		for _, name := range slices.Sorted(maps.Keys(brokerOwned)) {
+			add(name, "Legion's runtime sets in every pod that carries an exchange identity under dispatch_token_broker", false)
 		}
 	}
 	for _, name := range ImageEnv {
@@ -111,6 +160,7 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 	for name := range (runtime.GitIdentity{}).Env() {
 		add(name, "every launch sets (the git identity the role's GitHub App commits as)", false)
 	}
+	add(runtime.RoleIdentitiesVariable, "every launch sets (the identities of the issue's roles, which the push step reads)", false)
 	for _, name := range launchSecrets {
 		add(name+"_FILE", "every launch sets (the pointer to the launch secret "+name+")", false)
 	}
@@ -153,12 +203,19 @@ func podVariables(pod Pod, launchSecrets []string, exchange bool) map[string]set
 // account it impersonates, and mounts no session key at all), which the shim would export into Oh
 // My Pi's environment under the provider key's name. launchSecrets are the secrets every launch's
 // spec carries, by name, and providersSecrets those of them the providers Secret carries, none of
-// which may be the session database's URL key. exchange is whether the deployment names an
-// exchange audience (runtime.kubernetes.agent_secrets.exchange_audience): only then are the
-// exchange identity's variables (exchangeOwned), volume and mount path Legion's, and refused; a
-// deployment that names none keeps them the operator's, as before the key existed. configure runs
-// it, and the daemon before its boot and for `legion config check`.
-func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange bool) error {
+// which may be the session database's URL key. exchange is what the deployment's pods trade
+// (PodExchange): only where they carry the exchange identity are its variables (exchangeOwned),
+// volume and mount path Legion's, and refused; a deployment that names no exchange audience keeps
+// them the operator's, as before the key existed. Only under ExchangeAndBroker, where it sets
+// dispatch_token_broker, is DISPATCH_TOKEN_BROKER (brokerOwned) Legion's and refused in the same
+// way. CheckPod refuses a provider key DISPATCH_TOKEN or DISPATCH_TOKEN_FILE whatever the
+// exchange, since the runtime owns DISPATCH_TOKEN_FILE, the token's pointer. Under
+// ExchangeAndBroker it gives the broker's own reason for the two keys: each role trades its pod's
+// identity for its own Dispatch token, so the providers Secret may hold no shared one. The shim
+// refuses the two keys at each start under DISPATCH_TOKEN_BROKER=1 as well
+// (shim.ReadProviderEnv), as the last check. configure runs it, and the daemon before its boot
+// and for `legion config check`.
+func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecrets, providersSecrets []string, store ompsessions.Store, exchange PodExchange) error {
 	sessionDSNKey := store.DSNSecretKey()
 	if slices.Contains(providersSecrets, sessionDSNKey) {
 		return fmt.Errorf("runtime.kubernetes.session_dsn_secret %s is the providers Secret's key the pod mounts as the launch secret %s: name a key of its own for the session database's URL",
@@ -176,9 +233,10 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 	// stop every agent's Dispatch writes. Both sides hold to
 	// packages/contracts/fixtures/dispatch-public-url.json.
 	if value, set := pod.Env["DISPATCH_PUBLIC_URL"]; set && !dashboardURL(value) {
-		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %+q, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", value)
+		return fmt.Errorf("runtime.kubernetes.pod.env sets DISPATCH_PUBLIC_URL to %s, which is not an http or https URL with no userinfo, a host that is a DNS name of ASCII letters, digits and hyphens, a dotted-quad IPv4 address or a bracketed IPv6 address, and any port from 1 to 65535: boot accepts only a dashboard address every agent's dispatch command reads", dashboardShown(value))
 	}
-	volumes := legionVolumeNames(exchange)
+	carriesIdentity := exchange != NoExchange
+	volumes := legionVolumeNames(carriesIdentity)
 	for i, volume := range pod.Volumes {
 		if slices.Contains(volumes, volume.Name) {
 			return fmt.Errorf("runtime.kubernetes.pod.volumes[%d].name %s is a volume Legion puts in every pod", i, volume.Name)
@@ -197,7 +255,7 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 		paths           []string
 		owns, forbidden string
 	}{
-		{legionMountPaths(exchange), "Legion mounts in every pod", "one of Legion's"},
+		{legionMountPaths(carriesIdentity), "Legion mounts in every pod", "one of Legion's"},
 		{imageOwned, "the worker image owns", "one of the image's"},
 		{[]string{xdgStateHome}, "Legion reserves in the image's home directory", "Legion's reserved state home"},
 	}
@@ -224,6 +282,9 @@ func CheckPod(pod Pod, providerKeys map[string]string, tools Tools, launchSecret
 		}
 	}
 	for _, name := range slices.Sorted(maps.Keys(providerKeys)) {
+		if exchange == ExchangeAndBroker && (name == dispatchTokenKey || name == dispatchTokenKey+"_FILE") {
+			return fmt.Errorf("provider_keys names %s, a Dispatch credential, under dispatch_token_broker: each role trades its pod's identity for its own Dispatch token, so the providers Secret may hold no shared one; remove the key", name)
+		}
 		if name == ompsessions.DSNFileName {
 			return fmt.Errorf("provider_keys names %s, the file the providers volume mounts the session database's URL as (runtime.kubernetes.session_store): two of the volume's items would share that path", name)
 		}
@@ -290,17 +351,33 @@ func legionClaim(claim string) bool {
 	return strings.HasPrefix(claim, "legion-") && strings.HasSuffix(claim, "-"+issueVolume)
 }
 
+// dashboardShown is a refused DISPATCH_PUBLIC_URL as the refusal prints it: quoted whole when it can
+// hold no userinfo, query or fragment (none of "@", "?" or "#"), so a typo shows as written, and
+// otherwise through redact.URL, which reads it as a URL and prints none of the three, a password
+// holding a "'" included, which ends a URL for the rule on text.
+func dashboardShown(value string) string {
+	if !strings.ContainsAny(value, "@?#") {
+		return fmt.Sprintf("%+q", value)
+	}
+	return redact.URL(value)
+}
+
 // dashboardURL is whether value is a DISPATCH_PUBLIC_URL boot lets through: a rule narrower than
 // the URL standard's parser the agents' dispatch command reads the value with (envoy-client's
 // dispatchSettings), so boot accepts only values the agents accept, and refuses some they would
 // take (userinfo, a trailing dot, IPv4 shorthand, an internationalized name). It is http or https
-// with no userinfo; a plain host, which is a DNS name of ASCII letters, digits and hyphens (no
-// label empty, longer than 63 or starting `xn--`, and a last label neither all digits nor `0x`,
-// which the agents read as an IPv4 address), a four-octet dotted IPv4 address, or a bracketed
-// IPv6 address with no zone; and, when it names one, a port from 1 to 65535.
+// with no userinfo and no "@" past its host (natsurl.UserinfoPastHost: a credential holding a "/",
+// "?" or "#" written as the user lands there, its head read as the host every dashboard link the
+// agents build would name); a plain host, which is a DNS name of ASCII letters, digits and
+// hyphens (no label empty, longer than 63 or starting `xn--`, and a last label neither all digits
+// nor `0x`, which the agents read as an IPv4 address), a four-octet dotted IPv4 address, or a
+// bracketed IPv6 address with no zone; and, when it names one, a port from 1 to 65535. A query or
+// a fragment is let through: the agents' links refuse such a base (linkBaseOf, through isCleanUrl)
+// and print dispatch:// references instead, and the one reader that resolves a link against it
+// (claude-envoy's codex hook) drops the base's query and fragment.
 func dashboardURL(value string) bool {
 	parsed, err := url.Parse(value)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil {
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Opaque != "" || parsed.User != nil || natsurl.UserinfoPastHost(parsed) {
 		return false
 	}
 	if port := parsed.Port(); port != "" {

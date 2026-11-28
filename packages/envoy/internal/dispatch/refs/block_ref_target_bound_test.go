@@ -21,6 +21,7 @@ import (
 // version write goes on: the block's node and its in_document tuple are written, the row keeps
 // its null node columns for the old `block_refs` arm, and no mention tuple is appended.
 func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	tx, err := database.Pool.Begin(ctx)
@@ -56,7 +57,7 @@ func TestAMentionWhoseFarEndIsPastTheBoundLeavesOutItsTuple(t *testing.T) {
 	}
 
 	blocks := []model.ArtifactBlock{{ID: blockID, Type: "paragraph", From: 0, To: len(markdown)}}
-	_, won, write, _, err := IndexBlocks(ctx, tx, citer, OneVersion(citer, 1, time.Now()), markdown, blocks, located, nil, TypedFacts{})
+	_, won, write, _, err := IndexBlocks(ctx, tx, citer, OneVersion(citer, 1, time.Now()), markdown, blocks, located, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index the version (won %v): %v", won, err)
 	}

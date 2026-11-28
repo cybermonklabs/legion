@@ -14,7 +14,7 @@ import (
 
 // issueProjections are the census's kinds of the relations between issues (projections), each
 // held triple by triple (projection.tuples) against the tuples the issue's node states now
-// (dispatch://INFRA-1253 R9, R10): issues.parent_key against the issue's child_of, and each
+// (R9, R10 of the issue-tree spec): issues.parent_key against the issue's child_of, and each
 // issue_links row against the needs of its pair. A row that names no node is a row a process of
 // the release before wrote, which graph_edges' old arm answers until the backfill names its node
 // (the object pass for an issue's own row, backfillIssueLinks for a link), and which the census
@@ -63,29 +63,27 @@ type issueLinkRow struct {
 	createdAt     time.Time
 }
 
+// scanIssueLinkRow reads one issueLinkRow off a row of (issue_key, target_key, created_at).
+func scanIssueLinkRow(row pgx.CollectableRow) (issueLinkRow, error) {
+	var link issueLinkRow
+	err := row.Scan(&link.issue, &link.target, &link.createdAt)
+	return link, err
+}
+
 // backfillIssueLinks states, for every issue_links row naming no node, the needs tuple it is the
 // projection of, dated at the row's own created_at and at the sentinel, as graph_edges' old arm
 // dates the edge, and names the issue's node on the row in the transaction that states the tuple,
-// so a second run reads no row the first one wrote (dispatch://INFRA-1149's r-view-end contract).
+// so a second run reads no row the first one wrote (the graph-store spec's r-view-end contract).
 // It walks the rows in their primary key's order, one batch a transaction (writeIssueLinkBatch).
 func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "issue_link"}
 	var afterIssue, afterTarget string
 	for {
-		rows, err := database.Pool.Query(ctx, `
-			select issue_key, target_key, created_at from issue_links
-			where kind = 'blocked_by' and node_kind is null and (issue_key, target_key) > ($1, $2)
-			order by issue_key, target_key
-			limit $3
-		`, afterIssue, afterTarget, backfillBatch)
+		rows, err := database.Pool.Query(ctx, issueLinkRowsStatement, afterIssue, afterTarget, backfillBatch)
 		if err != nil {
 			return done, fmt.Errorf("read the issue links naming no node: %w", err)
 		}
-		batch, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueLinkRow, error) {
-			var link issueLinkRow
-			err := row.Scan(&link.issue, &link.target, &link.createdAt)
-			return link, err
-		})
+		batch, err := pgx.CollectRows(rows, scanIssueLinkRow)
 		if err != nil {
 			return done, fmt.Errorf("read the issue links naming no node: %w", err)
 		}
@@ -112,11 +110,21 @@ func backfillIssueLinks(ctx context.Context, database *store.Store) (KindBackfil
 	return done, nil
 }
 
+// issueLinkRowsStatement is backfillIssueLinks' selection: at most $3 of the issue_links rows of
+// kind blocked_by naming no node, past the key ($1, $2), in key order. Each batch reads
+// issue_links_pkey from the key on, so a run reads each row once however many batches it takes
+// (TestEveryTopicPassWalksOneBatchThroughAnIndex).
+const issueLinkRowsStatement = `
+	select issue_key, target_key, created_at from issue_links
+	where kind = 'blocked_by' and node_kind is null and (issue_key, target_key) > ($1, $2)
+	order by issue_key, target_key
+	limit $3`
+
 // writeIssueLinkBatch states one batch's needs tuples and names their issue's node on each row,
 // in one transaction and in the store's lock order (api/inbox_read.go's markInboxReadThreads):
 // the issue rows the batch's links stand under first, each once, in ascending key
 // (events.LockOwnerRows), then the batch's rows read again under them, then the tuples
-// (graphstore.Write, which writes no node: each issue's node is the object pass's), then the rows
+// (graphstore.QueueWrite, which writes no node: each issue's node is the object pass's), then the rows
 // that name the node. The batch was read outside this transaction, so a link the issue's own
 // write deleted or named meanwhile, under the issue's row, is not read again and states nothing;
 // nor is a link of an issue whose own row names no node yet, which the object pass reaches first
@@ -146,11 +154,7 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 		if err != nil {
 			return fmt.Errorf("read a batch of issue links again under their issues: %w", err)
 		}
-		held, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (issueLinkRow, error) {
-			var link issueLinkRow
-			err := row.Scan(&link.issue, &link.target, &link.createdAt)
-			return link, err
-		})
+		held, err := pgx.CollectRows(rows, scanIssueLinkRow)
 		if err != nil {
 			return fmt.Errorf("read a batch of issue links again under their issues: %w", err)
 		}
@@ -164,14 +168,16 @@ func writeIssueLinkBatch(ctx context.Context, database *store.Store, batch []iss
 			tuples[index] = graphstore.IssueNeeds(link.issue, link.target, true, backfillActor, link.createdAt)
 			heldIssues[index], heldTargets[index] = link.issue, link.target
 		}
-		if err := graphstore.Write(ctx, tx, nil, tuples); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(ctx, `
-			update issue_links l set node_kind = $3, node_address = l.issue_key
-			from unnest($1::text[], $2::text[]) as batch (issue_key, target_key)
-			where l.issue_key = batch.issue_key and l.target_key = batch.target_key and l.kind = 'blocked_by'
-		`, heldIssues, heldTargets, graphstore.KindIssue); err != nil {
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nil, tuples)
+			b.Queue("", `
+				update issue_links l set node_kind = $3, node_address = l.issue_key
+				from unnest($1::text[], $2::text[]) as batch (issue_key, target_key)
+				where l.issue_key = batch.issue_key and l.target_key = batch.target_key and l.kind = 'blocked_by'
+			`, heldIssues, heldTargets, graphstore.KindIssue)
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
+			return nil
+		}); err != nil {
 			return err
 		}
 		written = int64(len(held))

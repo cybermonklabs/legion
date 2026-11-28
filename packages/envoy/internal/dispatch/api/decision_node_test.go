@@ -25,7 +25,7 @@ import (
 // its id and its ref_key, which a pointer at one of its blocks spells (`<ref_key>#<block>`, a
 // shaped tuple's far end), and the id and ref_key of the artifact its blocks' rows and nodes are
 // keyed under - the document itself, or for a document converted into its issue's room the room's
-// tree artifact (T12a of this branch's plan).
+// tree artifact (T12a of the issue-tree plan).
 type decisionDocument struct {
 	id, refKey, room, nodeKey string
 }
@@ -205,6 +205,7 @@ func decisionNode(id, text string, attributes pmdoc.Attrs) *pmdoc.Node {
 // browser's settlement - and a later write, by the same writer or another, moves nothing of it.
 // An answered ask holds no uncertainty: a write giving it one is refused, naming the attribute.
 func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -347,8 +348,10 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 		}
 		requireCaused(t, "a shaped tuple of d1", tuple, "alice", uploaded)
 	}
-	if parents := currentTies(t, database, d1, graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToKind != "artifact" || parents[0].ToID != decisions.refKey {
-		t.Errorf("d1 states the part_of %+v, want one, to its document %s: its placement and its shaped stay apart", parents, decisions.refKey)
+	// d1's from_ask names the ask of an ask block of asks.md, a document of its issue, so d1 stands
+	// under that ask's node (R2 of the issue-tree spec), while its shaped stays a relation of its own.
+	if parents := currentTies(t, database, d1, graphstore.TuplePartOf); len(parents) != 1 || parents[0].ToKind != graphstore.KindAsk || parents[0].ToID != askID {
+		t.Errorf("d1 states the part_of %+v, want one, to the ask %s it settles: its placement and its shaped stay apart", parents, askID)
 	}
 	fromAsk := currentTies(t, database, d1, refs.TupleFromAsk)
 	if len(fromAsk) != 1 || fromAsk[0].ToKind != graphstore.KindAsk || fromAsk[0].ToID != askID {
@@ -514,7 +517,7 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireValue(t, database, browser.address("b1"), refs.ValueUncertainty, "")
 	// The store held no author, Keep or kept sum of b1 when the settlement read it, so none of the
 	// forged values stands in the live tree.
-	requireLiveDecision(t, database, peer, browser.id, "b1", map[string]any{})
+	requireLiveDecisionAttributes(t, database, peer, browser.id, "b1", map[string]any{})
 	before := latestVersion(t, database, browser.id).Number
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		for index, child := range tree.Children {
@@ -532,13 +535,13 @@ func TestDecisionNodeCarriesItsTuplesAndItsCertainty(t *testing.T) {
 	requireDecidedBy(t, database, "a browser's settlement claiming carol", browser.address("b1"), "alice")
 	// The store holds alice as b1's author and no Keep, so the live tree reads alice and no
 	// kept_by.
-	requireLiveDecision(t, database, peer, browser.id, "b1", map[string]any{"decided_by": "alice"})
+	requireLiveDecisionAttributes(t, database, peer, browser.id, "b1", map[string]any{"decided_by": "alice"})
 }
 
-// requireLiveDecision fails unless the decision block id carries exactly want of its
+// requireLiveDecisionAttributes fails unless the decision block id carries exactly want of its
 // server-owned attributes, decided_by, kept_by and kept_text_sum, in the live document: as its
 // stored history holds it (docs.StoredTreeForTest) and as the browser's editor holds it.
-func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, artifactID, id string, want map[string]any) {
+func requireLiveDecisionAttributes(t *testing.T, database *store.Store, peer *syncedPeer, artifactID, id string, want map[string]any) {
 	t.Helper()
 	stored, err := docs.StoredTreeForTest(context.Background(), database, artifactID)
 	if err != nil {
@@ -578,6 +581,7 @@ func requireLiveDecision(t *testing.T, database *store.Store, peer *syncedPeer, 
 // naming a block of another issue. A browser's write is never refused, and settlement stores it
 // with no tie to the other issue stated, while a tie of the same write inside the issue stands.
 func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -651,8 +655,8 @@ func TestATieToAnotherIssueIsRefusedOnEveryWritePath(t *testing.T) {
 	requireDecidedBy(t, database, "the browser's tied decision", address, "alice")
 }
 
-// connectPeerAs connects login's browser to artifactID's room, as connectBrowserPeer connects
-// alice's, binding the fragment the artifact read through handler answers.
+// connectPeerAs connects login's browser to artifactID's room, through a document server of its
+// own over documentService, binding the fragment the artifact read through handler answers.
 func connectPeerAs(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, login string) *syncedPeer {
 	t.Helper()
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}
@@ -684,6 +688,7 @@ func requireTypedNode(t *testing.T, database *store.Store, what, address, want, 
 // never alice, whom the version lists first. The author is the one the room's update observer
 // recorded for the update that introduced the block (docs' askBlockSources.author).
 func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -733,6 +738,7 @@ func TestADecisionInASettlementOfSeveralWritersNamesTheOneWhoWroteIt(t *testing.
 // ask block holding a reading shows no ask at all - no row, no source - and settlement flags it
 // invalid, so the reading in it is a block like any other: supertag block, placed in the ask block.
 func TestAReadingInAnAskBlockStandsUnderTheAskTheBlockShows(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour, browserPeers: true})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")

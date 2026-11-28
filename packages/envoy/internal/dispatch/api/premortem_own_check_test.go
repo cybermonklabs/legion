@@ -17,6 +17,7 @@ import (
 // answers risk 0 prevented by the check while its own retirement retracts that tuple tells its
 // caller of a pointer the store does not hold.
 func TestAConversionMapNamingACheckOfTheDocumentItRetiresWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newPremortemRig(t)
 	held := uploadDocument(t, rig.handler, "/api/v1/issues/"+rig.issue, "premortem-with-a-check.md",
 		rig.capture.Document.Markdown+"\n## The check this pre-mortem asks for\n\n:::check{#pm9}\nA check the pre-mortem document holds.\n:::\n")

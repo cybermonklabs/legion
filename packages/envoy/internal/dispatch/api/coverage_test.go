@@ -2,14 +2,17 @@ package api
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"slices"
-	"sync"
+	"strings"
+	"sync/atomic"
 	"testing"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // twoRequirements is a spec marking two requirements, r1 and r2.
@@ -44,7 +47,7 @@ func requirementOf(t *testing.T, coverage model.IssueCoverage, blockID string) m
 			return requirement
 		}
 	}
-	t.Fatalf("the coverage read holds no requirement %s: %+v", blockID, coverage.Requirements)
+	t.Fatalf("the coverage read of %s holds no requirement %s: %+v", coverage.Issue, blockID, coverage.Requirements)
 	return model.RequirementCoverage{}
 }
 
@@ -236,66 +239,60 @@ func TestApprovalRequestSaysWhenTheSpecMarksNoRequirements(t *testing.T) {
 	}
 }
 
-// unreadableSpecDocs is the document service with one document's rendering unreadable while it
-// is armed: every Text of that document fails, and counts as a read it failed. The fault sits on
-// the read the coverage folds (typedBlocksIn), not below the document service: once the room is
-// resident, a few milliseconds after the creating write, Text serves the document from memory
-// (heldTree) and never reaches the stored state, so a fault on the store raced that and was
-// left unconsumed in the runs the room won.
-type unreadableSpecDocs struct {
-	docs.API
-	mu sync.Mutex
-	// broken is the artifact whose rendering fails; "" while disarmed.
-	broken string
-	failed int
+// coverageReadFirstStatement is words of the coverage read's first statement alone: the read of
+// the issue's spec and of whether it has a plan, which opens the batch issueCoverageOverTuplesAndOwedGaps
+// sends first.
+const coverageReadFirstStatement = "from artifacts a where a.issue_key = $1 and a.is_primary), '')"
+
+// coverageReadFault ends the coverage read's first statement, the batch that opens with
+// coverageReadFirstStatement, while armed, as a statement timeout or a reset pooled connection
+// ends it: that one batch is sent with a context already ended, and every other statement of the
+// approval request runs.
+type coverageReadFault struct {
+	armed  atomic.Bool
+	failed atomic.Int64
 }
 
-// failReads arms every read of artifactID's rendering to fail until restoreReads.
-func (d *unreadableSpecDocs) failReads(artifactID string) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.broken = artifactID
+func (*coverageReadFault) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryStartData) context.Context {
+	return ctx
 }
 
-// restoreReads disarms the fault and answers how many reads it failed while armed.
-func (d *unreadableSpecDocs) restoreReads() int {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	d.broken = ""
-	return d.failed
-}
+func (*coverageReadFault) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-func (d *unreadableSpecDocs) Text(ctx context.Context, artifactID string) (string, error) {
-	d.mu.Lock()
-	broken := d.broken != "" && artifactID == d.broken
-	if broken {
-		d.failed++
+func (f *coverageReadFault) TraceBatchStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceBatchStartData) context.Context {
+	if !f.armed.Load() || data.Batch == nil || len(data.Batch.QueuedQueries) == 0 ||
+		!strings.Contains(data.Batch.QueuedQueries[0].SQL, coverageReadFirstStatement) {
+		return ctx
 	}
-	d.mu.Unlock()
-	if broken {
-		return "", errors.New("the document this test stands on is unreadable")
-	}
-	return d.API.Text(ctx, artifactID)
+	f.failed.Add(1)
+	ended, cancel := context.WithCancel(ctx)
+	cancel()
+	return ended
 }
 
-// A coverage read that fails refuses nothing: the request is recorded as it always was — it
-// never read the live spec before the answer carried coverage — and the answer says the
-// coverage was not read rather than naming gaps it could not count.
+func (*coverageReadFault) TraceBatchQuery(context.Context, *pgx.Conn, pgx.TraceBatchQueryData) {}
+
+func (*coverageReadFault) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
+
+// A coverage read that fails refuses nothing: the request is recorded as it always was — it never
+// read the issue's coverage before the answer carried coverage — and the answer says the coverage
+// was not read rather than naming gaps it could not count.
 func TestApprovalRequestGoesThroughWhenTheCoverageReadFails(t *testing.T) {
 	t.Parallel()
-	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
-	// Swapped in before the first request, so every handler reads the wrapper.
-	broken := &unreadableSpecDocs{API: served.deps.Docs}
-	served.deps.Docs = broken
+	database := storetest.Open(t)
+	fault := &coverageReadFault{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, fault, nil)}
+	handler, _, _ := newTestServer(t, testServerOptions{store: traced})
 	issue := createInteractionIssue(t, handler, "COVF", "Unread coverage", twoRequirements)
 
-	// Every read of the spec's rendering fails until the request has answered, whether the
-	// document service would have served it from the resident room or from the stored state.
-	broken.failReads(issue.PrimaryArtifactID)
+	// The coverage read fails until the request has answered, while the approval request's own
+	// transaction runs untouched.
+	fault.armed.Store(true)
 	answer := requestSpecApproval(t, handler, issue.PrimaryArtifactID)
+	fault.armed.Store(false)
 	// A fault the request never met proves nothing about a failed read.
-	if failed := broken.restoreReads(); failed == 0 {
-		t.Fatalf("the request never read the spec's rendering, so no coverage read failed: %+v", answer)
+	if fault.failed.Load() == 0 {
+		t.Fatalf("the request never entered the coverage read, so no coverage read failed: %+v", answer)
 	}
 	if answer.Ask == nil {
 		t.Fatalf("the request opened no ask when the coverage read failed: %+v", answer)

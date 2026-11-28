@@ -52,6 +52,7 @@ import (
 // person and an author-only one is not, a lens kind takes no author-only node, and the registry's
 // author flag is on for exactly those kinds.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if SeedStoreThroughItsWriters == nil {
@@ -163,7 +164,10 @@ func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
 // answers no reader, or it answers no node at all, or it reads one node its caller has already
 // read through a read that binds that node's predicate and answers nothing of any other node. A
 // read whose answer reaches a reader and names a node is none of these: it takes the acting
-// person instead, and the census above holds it to the registry.
+// person instead, and the census above holds it to the registry. The one other reason is a rule
+// of a write that must hold over every node, seen or not (IssueAncestors, IssueDescendantRows):
+// such a read binds no predicate, because a rule that skipped a node would let the write break
+// it, and its entry says which nodes the write names to the caller who asked for it.
 const (
 	serverWork = "the server's own work: a pass or a write calls it, and its answer reaches no reader"
 	noNode     = "it answers no node: a fact about one row the caller names, never a node's id or text"
@@ -181,14 +185,27 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
+	"BlockRefKinds": serverWork + " - a version write's block index reads the names of the block[] attributes the " +
+		"store's type nodes declare, which only a migration writes, to bind them as a parameter of its own read of the store's tuples",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
+	"CommentsNamingNoNode": serverWork + " - the block-index tick's write of the comments the events after its cursor name " +
+		"reads, under those comments' owner locks, which of their rows name no node",
+	"CommentsOffPage":      treeWalk + " - which comments a walk of the skeleton's loaders name as a parent are of another page of the issue's conversation (WalkIssueSkeleton); it answers ids of comments the walk was given, and no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits is answered the same",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",
 	"CurrentBlockText":     nodeDetail,
 	"CurrentItemBlockText": nodeDetail,
+	"DaemonThreadParents":  serverWork + " - R2's daemon-thread step re-places under its issue each block it answers (docs.DaemonThreadStep), and the pre-deploy census, which a deployment runs as a one-off task under the service's own database credentials, prints them as that step's dry run (graphcensus.ReadDaemonThreadCensus)",
 	"DecisionFacts":        serverWork + " - a version write's read phase reads what the store and the asks rows hold of the version's decisions, readings and ask blocks",
+	"DecisionIndexing.PlanAuthored": serverWork + " - a write that leaves a version's blocks to the reconciliation reads what the store " +
+		"holds of the requirements, checks and plan tasks it writes at once, and of the blocks above them",
+	"DocumentCopiedFrom": serverWork + " - a settlement's read phase reads which blocks of the room it settles hold a " +
+		"copied_from now, to retract it from each that is no longer an ask block (docs' claimCopies)",
 	"DocumentIsCited":      noNode,
 	"DocumentMentioning":   serverWork + " - rebuild-refs reads the document whose references it reconciles, to sign the mentions it states",
+	"DocumentWindowOwner":  "it answers a node id and nothing of any node: the key the windows of the one document its caller names are written and read under, the room that document is edited in (DocumentRoomSQL), which the write of its windows writes under (WriteDocumentWindows) and the read of its blocks reads their embedding states by (api's describeBlocks, BlockEmbeddingStates), so no reader is answered the key",
 	"DocumentsOwedWindows": serverWork,
 	"DriftedExcerpts":      serverWork,
 	"ExcerptsMoved":        serverWork + " - a write's read phase works out which of its document's excerpts the update it queues moves",
@@ -198,31 +215,47 @@ var readsWithoutAViewer = map[string]string{
 		"not what a reader sees: the nodes of a conversation reach a reader through nodeRegistry's loaders, which bind the " +
 		"reader's predicate (ConversationNodes)",
 	"IssueAncestors": "every caller is a rule of a write - a reparent's cycle refusal, an issue event's ancestors, the near-copy " +
-		"gate's exclusion, a block pointer's ancestor rule and the scope a result's check resolves in - and a rule that " +
-		"skipped an issue it may not see would let a cycle through that issue or route an event short of its root",
+		"gate's exclusion, a block pointer's ancestor rule, the scope a result's check resolves in and a status change's " +
+		"include_parent plan, which moves each ancestor that is not in work into work so that the parent status rule (R24) " +
+		"holds - and a rule that skipped an issue it may not see would let a cycle through that issue, route an event short " +
+		"of its root or leave an ancestor out of work above an issue in work; the status change's plan names the ancestors " +
+		"it will move to the caller who asked to move them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+	"IssueDescendantRows": "every caller is a rule of a write - a status change's plan, which moves or unlinks every open " +
+		"issue under the parent so that the parent status rule (R24) holds, and the move check of who writes a Legion-run " +
+		"issue's spec, which judges each issue of the moved subtree that Legion runs - and a plan that skipped an issue it " +
+		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
+		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
+		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,
 	"ListOwed":         serverWork,
+	"ListOwedAfter":    serverWork + " - the forms drain walks its queue by a keyset cursor, a batch a pass",
 	"NamedBlock": "it answers a node id and nothing of any node: the pinned read of a block names the node an address " +
 		"names, which it then reads through Node and holds to the block's predicate at that node, so a block who may not " +
 		"see answers what an address nobody holds answers",
 	"NextExcerptRetry": serverWork,
 	"OwedItemBlocks":   serverWork,
+	"OwedQueue.Count": serverWork + " - each pass of the forms drain counts the rows its queue of owed reference forms " +
+		"still holds, for its log line and to end the bootstrap queue's drain, and the count names no node",
 	"PartOfChains": serverWork + " - the block index climbs the part_of chain of each block an authored node may hang under, " +
 		"to keep a cycle out of where it places that node (placeAuthored), and the chain reaches no reader",
 	"PendingDocument.Scope": serverWork + " - the document a source whose row is only queued belongs to, which the index-time " +
 		"resolver reads for no person",
 	"PinnedParent": nodeDetail + " - the lens read names the lenses on a document, a block of one, a block of a comment or a part of an ask " +
 		"it read through Node by the address a lens names that node at, its own pinned to a version of its document or a revision of its item",
-	"PlanBlocks":         serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
-	"PlanDecisionNodes":  serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
-	"PlanItemIfOwed":     serverWork + " - a write's read phase plans the index an item it writes beside is owed",
-	"PlanOpenedAskTies":  serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
-	"PlanReplace":        serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PlanBlocks":        serverWork + " - a version write's read phase plans its block index against what the store holds of the document",
+	"PlanDecisionNodes": serverWork + " - a deferred version write's read phase plans its typed-node pass against what the store holds of the document",
+	"PlanItemIfOwed":    serverWork + " - a write's read phase plans the index an item it writes beside is owed",
+	"PlanOpenedAskTies": serverWork + " - a settlement's read phase plans the ties of the ask blocks it opened against the document's block index",
+	"PlanReplace":       serverWork + " - a write's read phase plans the reconciliation of a source's references against its edges",
+	"PreventionRetractions": serverWork + " - the index pass, a retirement and the backfill read the prevented_by tuples at the checks " +
+		"they end, under those checks' owner lock, to retract each; its writer signs the retractions and views nothing",
 	"QueueAskPartIDs":    nodeDetail,
+	"QueueHeadCut":       treeWalk + " - HeadCut queued on a batch the caller already sends (the approval request's), the cut of the store its ask pins",
+	"ReadBlockIDCensus":  "it answers no reader: `envoy-dispatch census --block-ids` reads the block ids an issue's spec, Verification and plan share, for the whole instance, as a one-off task a deployment runs under the server's own identity",
 	"ReadBlockIndex":     serverWork + " - a version write's read phase reads the document's block index it plans against",
-	"ReadBlockRefKinds":  serverWork + " - a version write's block index plan and the erase's blockers read bind the tuple kinds the block index writes into block_refs, which name no node",
+	"ReadCommentPage":    treeWalk + " - the page of the issue's conversation comments a walk of the skeleton takes (WalkIssueSkeleton), and the position of its oldest; no comment is a node the store takes reserved for its author (graphstore.AdmitAuthorOnly), so every reader the issue's read admits may see each comment of the page, and each is answered the same page",
 	"ReadIndexedVersion": serverWork + " - a version write's read phase reads the document's address and the version's writer",
 	"ReadItemIndex":      serverWork + " - a write's read phase reads the item's block index it plans against",
 	"RecordExcerpts":     serverWork,
@@ -234,6 +267,9 @@ var readsWithoutAViewer = map[string]string{
 		"which binds each one's predicate, so a node who may not see is absent from what a reader is shown",
 	"ScopeSources": serverWork,
 	"SourceText":   serverWork,
+	"StaleLensesOn": serverWork + " - a document's removal reads the stale lenses on the removed document to take each " +
+		"gone with all that stands beneath it, those its caller may not see included",
+	"StillOwed":    serverWork + " - a drain's read phase checks the queue row it listed is still owed under the source's owner lock",
 	"TreeChildren": treeWalk + " - the children of each node the walk reaches",
 	"TreeFactsOf":  treeWalk + " - what each node the walk reaches states at its cut",
 	"TreeMovedTo":  treeWalk + " - the nodes the address a comment's anchor names resolves to at the walk's cut",
@@ -241,6 +277,8 @@ var readsWithoutAViewer = map[string]string{
 		"(docs.RenderAt) takes: a version renders as one set of bytes for every reader, as its stored markdown does",
 	"TreeNodeRows":    treeWalk + " - the row of each node the walk reaches",
 	"TreePlacedAbove": treeWalk + " - the nodes of the issue that stand under a node of an issue above it",
+	"TreeSubtrees":    treeWalk + " - every level of the children under the walk's frontier, read in one statement",
+	"TurnJITOff":      treeWalk + " - it answers nothing: it turns JIT off for the rest of the transaction the walk reads in",
 }
 
 // SeedStoreThroughItsWriters writes the people and agents a running deployment's store holds, as
@@ -362,7 +400,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 	}
 	for _, kind := range nodeKinds {
 		record("TargetNames", "TargetNames of kind "+kind, func() error {
-			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}})
+			_, err := TargetNames(ctx, recorder, who, []Target{{Kind: kind, ID: "no-such-node"}}, "")
 			return err
 		})
 		record("Node", "Node of kind "+kind, func() error {
@@ -398,15 +436,27 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		everyKind[index] = Target{Kind: kind, ID: "no-such-node"}
 	}
 	record("Nodes", "Nodes of every kind at once", func() error {
-		_, err := Nodes(ctx, recorder, who, true, everyKind)
+		_, err := Nodes(ctx, recorder, who, everyKind)
 		return err
 	})
 	record("ExcerptedNodes", "ExcerptedNodes of every kind at once", func() error {
-		_, err := ExcerptedNodes(ctx, recorder, who, true, everyKind)
+		_, err := ExcerptedNodes(ctx, recorder, who, everyKind, "")
+		return err
+	})
+	record("BlockNodesAndRows", "BlockNodesAndRows of a block", func() error {
+		_, _, err := BlockNodesAndRows(ctx, recorder, who, []string{"no-such-node"})
+		return err
+	})
+	record("HeadRows", "HeadRows of CORE-1", func() error {
+		_, _, err := HeadRows(ctx, recorder, who, "CORE-1", nil)
+		return err
+	})
+	record("HeadRows", "HeadRows of the skeleton of CORE-1", func() error {
+		_, _, err := HeadRows(ctx, recorder, who, "CORE-1", &HeadSkeleton{Documents: []string{"CORE-1/spec"}})
 		return err
 	})
 	record("TargetNames", "TargetNames of every kind at once", func() error {
-		_, err := TargetNames(ctx, recorder, who, everyKind)
+		_, err := TargetNames(ctx, recorder, who, everyKind, "")
 		return err
 	})
 	record("BlockTexts", "BlockTexts of every kind at once", func() error {
@@ -414,7 +464,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("ReferencedBy", "ReferencedBy of CORE-1/spec", func() error {
-		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec")
+		_, err := ReferencedBy(ctx, recorder, who, "CORE-1/spec", "")
 		return err
 	})
 	// A message's blocks record no revisions, so no block of one is ever removed and
@@ -438,7 +488,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		return err
 	})
 	record("Closure", "Closure of CORE-1", func() error {
-		_, err := Closure(ctx, recorder, who, "CORE-1")
+		_, err := Closure(ctx, recorder, who, "CORE-1", "")
 		return err
 	})
 	record("Outgoing", "Outgoing of a document", func() error {
@@ -472,7 +522,7 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
 	} {
 		record("ResolvePrefixes", fmt.Sprintf("ResolvePrefixes of kind %s in %+v", asked.Kind, asked.Scope), func() error {
-			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked})
+			_, _, err := ResolvePrefixes(ctx, recorder, &who, []ShortID{asked}, "")
 			return err
 		})
 	}
@@ -485,11 +535,11 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 			{Kind: "message", Scope: Scope{IssueKey: "CORE-1"}, Prefix: "00000000"}, {Kind: "artifact", Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec"}, Prefix: "00000000"},
 			{Kind: "block", Scope: Scope{Document: "CORE-1/spec", Version: 1}, Prefix: "00000000"},
-		})
+		}, "")
 		return err
 	})
 	record("TargetNames", "TargetNames of an issue and a document", func() error {
-		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}})
+		_, err := TargetNames(ctx, recorder, who, []Target{{Kind: "issue", ID: "CORE-1"}, {Kind: "artifact", ID: "CORE-1/spec"}}, "")
 		return err
 	})
 	// The index-time resolver resolves the short ids a text writes for that text's writer
@@ -520,6 +570,12 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := StoredExcerpts(ctx, recorder, who, "issue", "CORE-1")
 		return err
 	})
+	// The name of a decision's ask reaches the caller a move refuses, so the read binds the ask's
+	// predicate in its one statement, whatever the decision holds.
+	record("DecisionFromAsk", "DecisionFromAsk of a decision", func() error {
+		_, _, err := DecisionFromAsk(ctx, recorder, who, "CORE-1/spec#no-such-decision")
+		return err
+	})
 	for _, kind := range []ItemKind{ItemComment, ItemAsk, ItemMessage} {
 		record("ReplyBlocks", "ReplyBlocks of kind "+string(kind), func() error {
 			_, err := ReplyBlocks(ctx, recorder, who, kind, []string{"00000000-0000-4000-8000-000000000002"})
@@ -534,15 +590,50 @@ func graphReads(t *testing.T, ctx context.Context, database *store.Store) []grap
 		_, err := IssueDescendants(ctx, recorder, who, "CORE-1")
 		return err
 	})
+	record("IssueNeighbours", "IssueNeighbours of CORE-1", func() error {
+		_, err := IssueNeighbours(ctx, recorder, who, "CORE-1", 5)
+		return err
+	})
 	record("LensCatalogue", "LensCatalogue", func() error {
 		_, err := LensCatalogue(ctx, recorder, who)
 		return err
 	})
 	conversed := seedConversation(t, ctx, database)
 	record("ConversationNodes", "ConversationNodes of "+conversed, func() error {
-		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now())
+		nodes, err := ConversationNodes(ctx, recorder, who, conversed, time.Now(), "")
 		if err == nil && len(nodes) == 0 {
 			err = fmt.Errorf("the conversation of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
+		}
+		return err
+	})
+	// The page is read off the pool rather than the recorder: it binds no predicate
+	// (readsWithoutAViewer), and the census judges the statements ConversationPageNodes sends.
+	record("ConversationPageNodes", "ConversationPageNodes of "+conversed, func() error {
+		page, err := ReadCommentPage(ctx, database.Pool, conversed, time.Now(), nil, 200)
+		if err != nil {
+			return err
+		}
+		nodes, err := ConversationPageNodes(ctx, recorder, who, conversed, time.Now(), page, "")
+		if err == nil && len(nodes) == 0 {
+			err = fmt.Errorf("the conversation page of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
+		}
+		return err
+	})
+	// The same page read off head rows that hold none of its comments: the asks and the messages
+	// go through the loaders, which bind their predicates, and the comments' nodes are built from
+	// their rows, which bind none.
+	record("ConversationPageNodesOfHeads", "ConversationPageNodesOfHeads of "+conversed, func() error {
+		page, err := ReadCommentPage(ctx, database.Pool, conversed, time.Now(), nil, 200)
+		if err != nil {
+			return err
+		}
+		nodes, held, err := ConversationPageNodesOfHeads(ctx, recorder, who, conversed, time.Now(), page, newHeadTree(map[Target]*HeadRow{}, nil), "")
+		switch {
+		case err != nil:
+		case !held:
+			err = fmt.Errorf("the conversation page of %s, which holds no comment, is not read off the head rows", conversed)
+		case len(nodes) == 0:
+			err = fmt.Errorf("the conversation page of %s lists no node: with no item that passes R2's test the read never reaches the loaders that bind their predicates", conversed)
 		}
 		return err
 	})
@@ -586,7 +677,7 @@ func seedBlockLink(t *testing.T, ctx context.Context, database *store.Store) str
 		{ID: "target", Type: "paragraph", From: len(source), To: len(markdown)},
 	}
 	located := text.ExtractAt(markdown, "https://dispatch.example")
-	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, TypedFacts{})
+	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, time.Now()), markdown, blocks, located, nil, "", TypedFacts{})
 	if err != nil {
 		t.Fatalf("index the linked document: %v", err)
 	}
@@ -648,24 +739,26 @@ func seedPlanOrder(t *testing.T, ctx context.Context, database *store.Store) str
 	at := writeAuthoredVersion(t, tx, artifact, 1, markdown, privateAuthor)
 	pointers := []Pointer{{Block: "t1", BlockType: planTaskType, Kind: "needs",
 		Target: text.Ref{Kind: graphstore.KindIssue, IssueKey: "PLAN-2", ID: "PLAN-2"}, Targets: []string{planTaskType}}}
-	_, _, write, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, nil, pointers, TypedFacts{})
-	if err != nil {
-		t.Fatalf("index the plan of %s: %v", root, err)
-	}
-	if err := graphstore.Caused(ctx, tx, write, graphstore.NoEvent); err != nil {
-		t.Fatalf("append what the plan of %s stated: %v", root, err)
-	}
+	indexAndCause(t, tx, artifact, OneVersion(artifact, 1, at), markdown, blocks, pointers...)
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the plan order seed: %v", err)
 	}
 	return root
 }
 
+// writerSigned names each exported read of the store whose model.Actor is the writer that signs
+// the facts it answers for a write to append, not a viewer: PreventionRetractions answers the
+// retractions a writer appends, each signed by that writer, and answers them to no reader.
+// storeReads counts such a read among the reads that take no acting person, so
+// readsWithoutAViewer must name it with its reason.
+var writerSigned = []string{"PreventionRetractions"}
+
 // storeReads is every exported function of this package that reads the store, read out of the
 // package's own source rather than kept as a list: one that takes the Queryer it reads on, or
 // the *pgx.Batch it queues its statement in. viewing is those that take a model.Actor beside it,
 // or a *model.Actor where nil is no person (ResolvePrefixes), the reads of the graph for a
-// viewer, and without is the rest. A method is named by its receiver's type and its own name.
+// viewer, and without is the rest, a read of writerSigned among them. A method is named by its
+// receiver's type and its own name.
 func storeReads(t *testing.T) (viewing, without []string) {
 	t.Helper()
 	files, err := filepath.Glob("*.go")
@@ -691,7 +784,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 				switch types.ExprString(parameter.Type) {
 				case "model.Actor", "*model.Actor":
 					viewer = true
-				case "Queryer", "*pgx.Batch":
+				case "Queryer", "graphstore.Queryer", "*pgx.Batch":
 					queries = true
 				}
 			}
@@ -702,7 +795,7 @@ func storeReads(t *testing.T) (viewing, without []string) {
 			if function.Recv != nil {
 				name = strings.TrimPrefix(types.ExprString(function.Recv.List[0].Type), "*") + "." + name
 			}
-			if viewer {
+			if viewer && !slices.Contains(writerSigned, name) {
 				viewing = append(viewing, name)
 			} else {
 				without = append(without, name)

@@ -1,9 +1,11 @@
 package refs
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -80,6 +82,40 @@ func HeadCut(ctx context.Context, q Queryer) (TreeCut, error) {
 	return cut, nil
 }
 
+// QueueHeadCut queues the read of the head's cut (HeadCut) on b, for a caller that reads it in a
+// batch it sends anyway, and fills cut once b has run.
+func QueueHeadCut(b *pgx.Batch, cut *TreeCut) {
+	b.Queue(headCutStatement).QueryRow(func(row pgx.Row) error {
+		if err := row.Scan(&cut.ReadSeq, &cut.At); err != nil {
+			return fmt.Errorf("read the head's cut of the tuple log: %w", err)
+		}
+		return nil
+	})
+}
+
+// jitOffStatement turns Postgres' JIT compiler off for the rest of the transaction it is sent in,
+// and is allowed in a read-only one. The walk's reads probe the tuple table once a node, and
+// Postgres costs a custom plan of such a read over a tree of thousands of nodes in the millions -
+// it costs the relations read's probe of graph_tuples_as_of_out at about 8,650 a node - far above
+// jit_above_cost, so with JIT on it compiled 70 to 460 ms of code for 50 to 130 ms of work, and a
+// new connection plans its first executions of a statement that way.
+const jitOffStatement = `set local jit = off`
+
+// TurnJITOff sends jitOffStatement through q: the first statement of each transaction whose reads
+// walk an issue's tree - the tree read, the coverage read over the tuples and the readers of a
+// query's record. Sent outside a transaction it changes nothing, as Postgres warns.
+func TurnJITOff(ctx context.Context, q Queryer) error {
+	rows, err := q.Query(ctx, jitOffStatement)
+	if err != nil {
+		return fmt.Errorf("turn the JIT compiler off for the walk of a tree: %w", err)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("turn the JIT compiler off for the walk of a tree: %w", err)
+	}
+	return nil
+}
+
 // asOfValue is a lateral's body reading, at the cut the SQL predicate bound names (cutBound), the
 // value of attribute out of the node whose kind and id the SQL kind and id name: the newest value
 // tuple of that name, by its time and then its seq, as held where it asserts and null where it
@@ -138,29 +174,157 @@ func asOfNodeJoins(kind, id, bound string) string {
 // a tree, depends on no workflow writer.
 var workflowKinds = []string{"step", "plan", "handoff"}
 
-// treeChildrenStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
-// whose bounds $3 and $4 are: each node whose part_of names the parent there - read into the
-// parent through graph_tuples_as_of_in - and whose newest standing part_of out of it, read through
-// graph_tuples_as_of_out, is that one, unless its state there is gone or its kind is one of
-// workflowKinds. It answers each parent's children by the parent's position, the ranked ones
-// first by rank and then the unranked, a tie by the lower address, `<kind>:<id>`, each compared
-// byte for byte (collate "C"), since a rank is a base-62 string of mixed case.
-var treeChildrenStatement = `
-	select parent.position, child.from_kind, child.from_id, ` + treeNodeColumns + `
-	from unnest($1::text[], $2::text[]) with ordinality as parent (kind, id, position)
-	cross join lateral (
+// treeChildJoins are the joins of the children read under the parent whose kind and id the SQL kind
+// and id name, at the cut whose bounds $3 and $4 are: each node whose part_of names the parent
+// there - read into the parent through graph_tuples_as_of_in - unless its kind is one of
+// workflowKinds, as child, with its newest standing part_of, read through graph_tuples_as_of_out,
+// as placed, and the columns treeNodeColumns reads (asOfNodeJoins). treeChildStands keeps the
+// children that stand under the parent there, and treeChildOrder orders one parent's.
+func treeChildJoins(kind, id string) string {
+	return `cross join lateral (
 		select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
 		from graph_tuples t
-		where t.to_kind = parent.kind and t.to_id = parent.id and t.kind = '` + graphstore.TuplePartOf + `'
-		  and t.from_kind not in ('` + strings.Join(workflowKinds, `', '`) + `')
+		where t.to_kind = ` + kind + ` and t.to_id = ` + id + ` and t.kind = '` + graphstore.TuplePartOf + `'
+		  and t.from_kind not in (` + store.QuoteLiterals(workflowKinds) + `)
 		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
 		order by t.from_kind, t.from_id, t.at desc, t.seq desc
 	) child
 	cross join lateral (` + asOfPlacement(`child.from_kind`, `child.from_id`, cutBound(`$3`, `$4`)) + `) placed
-	` + asOfNodeJoins(`child.from_kind`, `child.from_id`, cutBound(`$3`, `$4`)) + `
-	where child.asserted and placed.to_kind = parent.kind and placed.to_id = parent.id
-	  and state.held is distinct from '` + graphstore.StateGone + `'
-	order by parent.position, rank.held is null, rank.held collate "C", (child.from_kind || ':' || child.from_id) collate "C"`
+	` + asOfNodeJoins(`child.from_kind`, `child.from_id`, cutBound(`$3`, `$4`))
+}
+
+// treeChildStands is the condition a node treeChildJoins reads stands under the parent whose kind
+// and id the SQL kind and id name: its part_of into the parent asserts, its newest standing part_of
+// is that one, and its state is not gone.
+func treeChildStands(kind, id string) string {
+	return `child.asserted and placed.to_kind = ` + kind + ` and placed.to_id = ` + id + `
+	  and state.held is distinct from '` + graphstore.StateGone + `'`
+}
+
+// conversationKinds are the kinds of the nodes the tree orders as its conversation - an ask, a
+// comment, a message, a lens and a risk - which stand first among a node's children
+// (CompareSiblings, R8 of the issue-tree spec). The list is wider than the items of R2's
+// conversation test (IsConversationNode): a lens and a risk are discussion too.
+var conversationKinds = []string{graphstore.KindAsk, graphstore.KindComment, graphstore.KindMessage, graphstore.KindLens, graphstore.KindRisk}
+
+// OrderedAsConversation reports whether a node of kind kind stands among the conversation nodes a
+// parent's children begin with (conversationKinds).
+func OrderedAsConversation(kind string) bool { return slices.Contains(conversationKinds, kind) }
+
+// The classes of a node's children, in the order they stand among their siblings (siblingClass).
+const (
+	siblingConversation = iota
+	siblingRanked
+	siblingUnranked
+)
+
+// siblingClass is where a child of kind kind stands among its parent's children (R8 of the
+// issue-tree spec): a conversation node first, then a child that holds a rank, then the rest - a
+// block with no rank yet, new in a deferred version before the reconciliation ranks it, a result
+// under its check, a child issue.
+func siblingClass(kind string, ranked bool) int {
+	switch {
+	case OrderedAsConversation(kind):
+		return siblingConversation
+	case ranked:
+		return siblingRanked
+	}
+	return siblingUnranked
+}
+
+// CompareSiblings orders two children of one parent in the tree's order, which the tree read
+// answers (R8 of the issue-tree spec) and the record of every query follows (R14 at spec v247: "the
+// conversation nodes by the time each was made, then by address, then the children that hold a
+// rank in increasing rank, the lower address first on a tie, and then the other children that hold
+// no rank by the time each was made, then by address"). The conversation nodes come first because
+// their ids are random, so a read answers the discussion in the order it was written. Every
+// comparison is byte for byte (CompareAddresses; a rank is a base-62 string of mixed case). A child
+// the store holds no row of was made at the zero time, and stands first of its class.
+// treeChildOrder is the same order in SQL.
+func CompareSiblings(left, right TreeChild) int {
+	class := siblingClass(left.Node.Kind, left.Ranked)
+	if other := siblingClass(right.Node.Kind, right.Ranked); class != other {
+		return cmp.Compare(class, other)
+	}
+	if class == siblingRanked {
+		return cmp.Or(strings.Compare(left.Rank, right.Rank), CompareAddresses(left.Node, right.Node))
+	}
+	return cmp.Or(left.MadeAt.Compare(right.MadeAt), CompareAddresses(left.Node, right.Node))
+}
+
+// treeChildOrder is the order of one parent's children, CompareSiblings in SQL, over the SQL rank,
+// made_at, kind and id of a child: its class - a conversation node, then a ranked child, then the
+// rest - then a ranked child's rank, then any other's made_at, a child with no row first, as the
+// zero time stands first, then its address, `<kind>:<id>`, each text compared byte for byte
+// (collate "C").
+func treeChildOrder(rank, madeAt, kind, id string) string {
+	conversation := kind + ` in (` + store.QuoteLiterals(conversationKinds) + `)`
+	return `case when ` + conversation + ` then 0 when ` + rank + ` is not null then 1 else 2 end, ` +
+		`(case when not ` + conversation + ` then ` + rank + ` end) collate "C", ` +
+		`case when ` + conversation + ` or ` + rank + ` is null then ` + madeAt + ` end nulls first, ` +
+		`(` + kind + ` || ':' || ` + id + `) collate "C"`
+}
+
+// treeChildrenStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
+// whose bounds $3 and $4 are (treeChildJoins, treeChildStands), by the parent's position and then
+// in each parent's order (treeChildOrder).
+var treeChildrenStatement = `
+	select parent.position, child.from_kind, child.from_id, ` + treeNodeColumns + `
+	from unnest($1::text[], $2::text[]) with ordinality as parent (kind, id, position)
+	` + treeChildJoins(`parent.kind`, `parent.id`) + `
+	where ` + treeChildStands(`parent.kind`, `parent.id`) + `
+	order by parent.position, ` + treeChildOrder(`rank.held`, `node.made_at`, `child.from_kind`, `child.from_id`)
+
+// treeSubtreesStatement is the children of each parent $1 and $2 name, kinds and ids, at the cut
+// whose bounds $3 and $4 are, as treeChildrenStatement reads them, and the children of each child
+// the walk of the tree of the issue $5 enters (TreeOwns, treeOwnsSQL), level by level down to the
+// leaves, in one recursive statement: each row a parent and one of its children, in each parent's
+// order (treeChildOrder). A union keeps each row once, so a node reached twice - a node of the
+// walk's conversation that part_of also places under another node - is read under once, and a
+// cycle of part_of tuples, which no writer leaves, ends rather than recursing for ever.
+var treeSubtreesStatement = `
+	with recursive under (parent_kind, parent_id, kind, id, held_rank, supertag, made_at, opening) as (
+		select parent.kind, parent.id, child.from_kind, child.from_id, ` + treeNodeColumns + `
+		from unnest($1::text[], $2::text[]) as parent (kind, id)
+		` + treeChildJoins(`parent.kind`, `parent.id`) + `
+		where ` + treeChildStands(`parent.kind`, `parent.id`) + `
+		union
+		select entered.kind, entered.id, child.from_kind, child.from_id, ` + treeNodeColumns + `
+		from under entered
+		` + treeChildJoins(`entered.kind`, `entered.id`) + `
+		where ` + treeOwnsSQL(`$5::text`, `entered.kind`, `entered.id`) + `
+		  and ` + treeChildStands(`entered.kind`, `entered.id`) + `
+	)
+	select parent_kind, parent_id, kind, id, held_rank, supertag, made_at, opening from under
+	order by ` + treeChildOrder(`held_rank`, `made_at`, `kind`, `id`)
+
+// TreeOwns reports whether node is a node of the tree of the issue owner as its address tells,
+// which the walk of that tree (docs' WalkIssueTree) takes and enters: an issue's node is never one,
+// and a document's, a version's or a document block's is one where the issue's key, owner, is the
+// first part of its address, its document's ref_key (graphstore.ArtifactRefKey). A finding of a lens
+// (graphstore.ParseFindingID) and every node whose address names no issue - an ask, a comment, a
+// message, a lens, a risk, a result - is one where the walk reaches it. treeOwnsSQL is the same
+// rule in SQL, which the subtrees read enters by (TreeSubtrees).
+func TreeOwns(owner string, node Target) bool {
+	switch node.Kind {
+	case graphstore.KindIssue:
+		return false
+	case graphstore.KindArtifact, graphstore.KindVersion, BlockNodeKind:
+		if _, _, finding := graphstore.ParseFindingID(node.ID); finding {
+			return true
+		}
+		key, _, _ := strings.Cut(node.ID, "/")
+		return key == owner
+	}
+	return true
+}
+
+// treeOwnsSQL is TreeOwns over the node whose kind and id the SQL kind and id name, owner the SQL
+// issue key.
+func treeOwnsSQL(owner, kind, id string) string {
+	return `(` + kind + ` <> '` + graphstore.KindIssue + `' and (` + kind + ` not in ('` + graphstore.KindArtifact + `', '` +
+		graphstore.KindVersion + `', '` + BlockNodeKind + `') or ` + graphstore.FindingIDSQL(id) + ` or split_part(` + id + `, '/', 1) = ` + owner + `))`
+}
 
 // TreeChild is one node a walk's read answers under a parent at a cut: the parent and the node;
 // its rank, and whether it holds one; its supertag and when it was made, off its row (the zero
@@ -207,6 +371,41 @@ func TreeChildren(ctx context.Context, q Queryer, parents []Target, cut TreeCut)
 	return children, nil
 }
 
+// TreeSubtrees is the children of each of parents at cut, and of each node under them the walk of
+// the tree of the issue owner enters (TreeOwns), down to the leaves, keyed by the parent, each
+// parent's in the order TreeChildren answers them: the reads TreeChildren makes level by level,
+// read in one statement (treeSubtreesStatement), so the walk's statements do not grow with the
+// tree's depth. A child the walk does not enter - an issue's node, a node of another issue - is
+// answered under its parent, as TreeChildren answers it, and nothing under it is read.
+func TreeSubtrees(ctx context.Context, q Queryer, parents []Target, owner string, cut TreeCut) (map[Target][]TreeChild, error) {
+	under := map[Target][]TreeChild{}
+	if len(parents) == 0 {
+		return under, nil
+	}
+	kinds, ids := targetColumns(parents)
+	seq, at := cut.bounds()
+	rows, err := q.Query(ctx, treeSubtreesStatement, kinds, ids, seq, at, owner)
+	if err != nil {
+		return nil, fmt.Errorf("read the subtrees of %d nodes %s: %w", len(parents), cut, err)
+	}
+	defer rows.Close()
+	var child TreeChild
+	var row treeNodeRow
+	targets := append([]any{&child.Parent.Kind, &child.Parent.ID, &child.Node.Kind, &child.Node.ID}, row.targets()...)
+	for rows.Next() {
+		child, row = TreeChild{}, treeNodeRow{}
+		if err := rows.Scan(targets...); err != nil {
+			return nil, fmt.Errorf("read a child %s: %w", cut, err)
+		}
+		row.fill(&child)
+		under[child.Parent] = append(under[child.Parent], child)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the subtrees of %d nodes %s: %w", len(parents), cut, err)
+	}
+	return under, nil
+}
+
 // treeNodeRow is what treeNodeColumns answers of one node, as scanned.
 type treeNodeRow struct {
 	rank     *string
@@ -229,21 +428,23 @@ func (row treeNodeRow) fill(child *TreeChild) {
 		child.MadeAt = *row.madeAt
 	}
 	child.Supertag = row.supertag
-	child.Type = TreeNodeType(child.Node.Kind, row.supertag, row.opening)
+	child.Type = TreeNodeType(child.Node.Kind, child.Node.ID, row.supertag, row.opening)
 }
 
-// TreeNodeType is the type a node of the tree is taken by. A block's is the typed block its text
-// opens (pmdoc's grammar of a typed block's opening line), read off its text value as of the walk's
-// cut, whatever supertag its row holds: the store keeps no history of a node's supertag -
+// TreeNodeType is the type the node of kind and id is taken by. A block's is the typed block its
+// text opens (pmdoc's grammar of a typed block's opening line), read off its text value as of the
+// walk's cut, whatever supertag its row holds: the store keeps no history of a node's supertag -
 // graphstore.Write moves the column of its row in place, and no tuple states it - so the text value
 // at the cut is the one record of a block's type at that cut, and a version is typed as it stood,
-// before a later supertag change and after one alike. A block whose text opens no typed block the
-// schema declares - a paragraph, a finding of a lens - is taken by its supertag, and every other
-// node by its supertag too: a result, an ask, a comment. A node the store holds no row of is taken
-// by its kind.
-func TreeNodeType(kind, supertag, opening string) string {
+// before a later supertag change and after one alike. The opening types the block only where its
+// directive's id is the block's own (opensOwnTypedBlock): a quote, a list or a list item whose
+// first block is a typed block opens with that block's line, and is no block of its type. A block
+// whose text opens no typed block of its own the schema declares - a paragraph, a quote, a finding
+// of a lens - is taken by its supertag, and every other node by its supertag too: a result, an ask,
+// a comment. A node the store holds no row of is taken by its kind.
+func TreeNodeType(kind, id, supertag, opening string) string {
 	if kind == BlockNodeKind {
-		if name, _, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(trimContainerMarkers(opening), "\r")); ok && pmdoc.IsTypedBlock(name) {
+		if name, ok := opensOwnTypedBlock(id, opening); ok {
 			return name
 		}
 	}
@@ -251,6 +452,59 @@ func TreeNodeType(kind, supertag, opening string) string {
 		return kind
 	}
 	return supertag
+}
+
+// opensOwnTypedBlock is the typed block the opening line of the text of the block node at address
+// opens, where that block is the node's own: the line, after the markers a nested block is written
+// after (trimContainerMarkers), is a typed block's opening line of a type the schema declares
+// (pmdoc.ParseTypedDirectiveOpen), and the id it writes is the node's own, the part of its address
+// after the first '#', since neither a ref_key nor an item's address holds one, as the block index
+// keys it (storedBlockID). The text of a quote, a list or a list item whose first block is a typed
+// block opens with that block's line, which names that block's id and not the container's, so it
+// opens no typed block of its own, even where the container's id ends in '#' and that id.
+func opensOwnTypedBlock(address, opening string) (string, bool) {
+	name, attrs, ok := pmdoc.ParseTypedDirectiveOpen(strings.TrimRight(trimContainerMarkers(opening), "\r"))
+	if !ok || !pmdoc.IsTypedBlock(name) {
+		return "", false
+	}
+	written, _ := attrs[pmdoc.BlockIDAttr].(string)
+	if _, own, _ := strings.Cut(address, "#"); written == "" || own != storedBlockID(written) {
+		return "", false
+	}
+	return name, true
+}
+
+// trimContainerMarkers drops the indentation, quote markers (`>`), list markers (`-`, `*`, `+`, or
+// a number and `.` or `)`, each followed by a space or a tab) and footnote labels (`[^label]:` with
+// a label that is not blank), each with the spaces and tabs after it, that a block nested in a
+// quote, a list item or a footnote is written after. The renderer writes the first block of a list
+// item or of a footnote's definition on the marker's or the label's line, so a typed block's
+// opening line can start with them.
+func trimContainerMarkers(line string) string {
+	for {
+		line = strings.TrimLeft(line, " \t")
+		switch {
+		case strings.HasPrefix(line, ">"):
+			line = line[1:]
+		case len(line) > 1 && (line[0] == '-' || line[0] == '*' || line[0] == '+') && (line[1] == ' ' || line[1] == '\t'):
+			line = line[2:]
+		case strings.HasPrefix(line, "[^"):
+			label, rest, closed := strings.Cut(line[2:], "]")
+			if !closed || !strings.HasPrefix(rest, ":") || strings.TrimSpace(label) == "" {
+				return line
+			}
+			line = rest[1:]
+		default:
+			digits := 0
+			for digits < len(line) && line[digits] >= '0' && line[digits] <= '9' {
+				digits++
+			}
+			if digits == 0 || digits+1 >= len(line) || (line[digits] != '.' && line[digits] != ')') || (line[digits+1] != ' ' && line[digits+1] != '\t') {
+				return line
+			}
+			line = line[digits+2:]
+		}
+	}
 }
 
 // documentMembers is a lateral's body reading, at the cut the SQL predicate bound names, the
@@ -307,7 +561,7 @@ var treePlacedAboveStatement = `
 // one of the issues the SQL text array issues names, read off the item's row by its key.
 func itemOfIssuesSQL(kind ItemKind, table, issues string) string {
 	id := `case when placed.to_kind = '` + string(kind) + `' then placed.to_id
-		else split_part(split_part(placed.to_id, '#', 1), '/', 2) end`
+		else ` + graphstore.ItemOfBlockNodeSQL(`placed.to_id`) + ` end`
 	return `placed.to_kind in ('` + string(kind) + `', '` + kind.BlockKind() + `') and exists (
 		select 1 from ` + table + ` item where item.id = ` + store.CastableUUID(id) + ` and item.issue_key = any(` + issues + `::text[]))`
 }
@@ -352,7 +606,7 @@ var treeMembersStatement = `
 	order by member.from_id`
 
 // TreeMembers is every block of the document whose ref_key is refKey at cut: the nodes a render
-// of that document takes (D6 of this branch's plan), by their address.
+// of that document takes (D6 of the issue-tree plan), by their address.
 func TreeMembers(ctx context.Context, q Queryer, refKey string, cut TreeCut) ([]Target, error) {
 	seq, at := cut.bounds()
 	rows, err := q.Query(ctx, treeMembersStatement, refKey, seq, at)
@@ -370,33 +624,30 @@ func TreeMembers(ctx context.Context, q Queryer, refKey string, cut TreeCut) ([]
 	return members, nil
 }
 
-// treeValuesStatement is, at the cut whose bounds $3 and $4 are, every value out of each node $1
-// and $2 name: the newest value tuple of each attribute, kept while it asserts.
-var treeValuesStatement = `
-	select node.position, newest.kind, newest.to_id
-	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
-	cross join lateral (
-		select distinct on (t.kind) t.kind, t.to_id, t.asserted
-		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind = '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
-		order by t.kind, t.at desc, t.seq desc
-	) newest
-	where newest.asserted
-	order by node.position`
+// treeFactFarEnd is what tells two tuples of one kind out of a node apart in the facts read
+// (treeFactsStatement): the far end, its kind and its id, of a relation, and nothing of a value,
+// whose newest tuple of its attribute is its value, compared byte for byte.
+const treeFactFarEnd = `t.to_kind collate "C", (case when t.to_kind = '` + graphstore.KindValue + `' then '' else t.to_id end) collate "C"`
 
-// treeRelationsStatement is, at the cut whose bounds $3 and $4 are, every relation out of each
-// node $1 and $2 name: the newest tuple of each kind and far end, kept while it asserts.
-var treeRelationsStatement = `
-	select node.position, newest.kind, newest.to_kind, newest.to_id
+// treeFactsStatement is, at the cut whose bounds $3 and $4 are, every value and every relation out
+// of each node $1 and $2 name, in one read of the tuples out of each node through
+// graph_tuples_as_of_out: the newest tuple of each attribute's values and of each relation, its
+// kind and its far end (treeFactFarEnd), kept while it asserts, a value marked as one. The read of
+// one node groups its tuples byte for byte, which makes the groups the database's own collation
+// makes at less cost, so the answer is ordered by the node's position and then by kind, far end
+// kind and far end id in the database's collation: the order the relations of a node have always
+// been answered in, which a read that keeps the last part_of in order relies on.
+var treeFactsStatement = `
+	select node.position, newest.to_kind = '` + graphstore.KindValue + `', newest.kind, newest.to_kind, newest.to_id
 	from unnest($1::text[], $2::text[]) with ordinality as node (kind, id, position)
 	cross join lateral (
-		select distinct on (t.kind, t.to_kind, t.to_id) t.kind, t.to_kind, t.to_id, t.asserted
+		select distinct on (t.kind, ` + treeFactFarEnd + `) t.kind, t.to_kind, t.to_id, t.asserted
 		from graph_tuples t
-		where t.from_kind = node.kind and t.from_id = node.id and t.to_kind <> '` + graphstore.KindValue + `' and ` + cutBound(`$3`, `$4`) + `
-		order by t.kind, t.to_kind, t.to_id, t.at desc, t.seq desc
+		where t.from_kind = node.kind and t.from_id = node.id and ` + cutBound(`$3`, `$4`) + `
+		order by t.kind, ` + treeFactFarEnd + `, t.at desc, t.seq desc
 	) newest
 	where newest.asserted
-	order by node.position`
+	order by node.position, newest.kind, newest.to_kind, newest.to_id`
 
 // TreeRelation is one relation out of a node: its kind and its far end.
 type TreeRelation struct {
@@ -405,14 +656,19 @@ type TreeRelation struct {
 }
 
 // TreeFacts is what a node states at a cut: each attribute's value, by its name, and each
-// relation, in the order the read answers them.
+// relation, by its kind and then its far end's kind and id, in the database's collation.
 type TreeFacts struct {
 	Values    map[string]string
 	Relations []TreeRelation
 }
 
-// TreeFactsOf is what each of nodes states at cut, keyed by the node: a node that states nothing
-// has no entry.
+// TreeFactsOf is what each of nodes states at cut, keyed by the node, read in one statement
+// (treeFactsStatement): a node that states nothing has no entry. The statement is planned with its
+// values on every call (QueryExecModeDescribeExec), never under the generic plan Postgres takes
+// for a statement a connection has prepared from its sixth execution on: that plan, which knows
+// neither the cut's seq nor the nodes, reads graph_tuples by its primary key over every seq at or
+// below the cut once a node, and read the 2,009 nodes of the read-cost corpus's tree in 31.5 s
+// against 144 ms for the plan made with the values, through graph_tuples_as_of_out.
 func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, cut TreeCut) (map[Target]TreeFacts, error) {
 	facts := make(map[Target]TreeFacts, len(nodes))
 	if len(nodes) == 0 {
@@ -420,47 +676,32 @@ func TreeFactsOf(ctx context.Context, q Queryer, nodes []Target, cut TreeCut) (m
 	}
 	kinds, ids := targetColumns(nodes)
 	seq, at := cut.bounds()
-	rows, err := q.Query(ctx, treeValuesStatement, kinds, ids, seq, at)
+	rows, err := q.Query(ctx, treeFactsStatement, pgx.QueryExecModeDescribeExec, kinds, ids, seq, at)
 	if err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
-	}
-	for rows.Next() {
-		var position int
-		var attribute, value string
-		if err := rows.Scan(&position, &attribute, &value); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("read a value %s: %w", cut, err)
-		}
-		node := nodes[position-1]
-		held := facts[node]
-		if held.Values == nil {
-			held.Values = map[string]string{}
-		}
-		held.Values[attribute] = value
-		facts[node] = held
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the values of %d nodes %s: %w", len(nodes), cut, err)
-	}
-	rows, err = q.Query(ctx, treeRelationsStatement, kinds, ids, seq, at)
-	if err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
+		return nil, fmt.Errorf("read the values and relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var position int
+		var valued bool
 		var relation TreeRelation
-		if err := rows.Scan(&position, &relation.Kind, &relation.To.Kind, &relation.To.ID); err != nil {
-			return nil, fmt.Errorf("read a relation %s: %w", cut, err)
+		if err := rows.Scan(&position, &valued, &relation.Kind, &relation.To.Kind, &relation.To.ID); err != nil {
+			return nil, fmt.Errorf("read a value or a relation %s: %w", cut, err)
 		}
 		node := nodes[position-1]
 		held := facts[node]
-		held.Relations = append(held.Relations, relation)
+		switch {
+		case !valued:
+			held.Relations = append(held.Relations, relation)
+		case held.Values == nil:
+			held.Values = map[string]string{relation.Kind: relation.To.ID}
+		default:
+			held.Values[relation.Kind] = relation.To.ID
+		}
 		facts[node] = held
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read the relations of %d nodes %s: %w", len(nodes), cut, err)
+		return nil, fmt.Errorf("read the values and relations of %d nodes %s: %w", len(nodes), cut, err)
 	}
 	return facts, nil
 }

@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -141,9 +142,6 @@ func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 	for _, kind := range report.Kinds {
 		t.Logf("%s: kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
 			what, kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
-		}
 	}
 	for _, name := range seededKinds {
 		if kind := censusKind(t, report, name); kind.Rows == 0 || kind.Nodes == 0 {
@@ -151,9 +149,7 @@ func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 				what, kind.Rows, kind.Nodes, name)
 		}
 	}
-	if report.Differences() != 0 || report.Refused() {
-		t.Fatalf("%s read %d difference(s) and refused=%t, want none and a pass", what, report.Differences(), report.Refused())
-	}
+	requireNoCensusDifference(t, what, report)
 }
 
 // censusKind is the report's line for one kind.
@@ -166,6 +162,20 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 	}
 	t.Fatalf("the census reported no kind %s", name)
 	return KindReport{}
+}
+
+// differencesOf is every difference kind reports, its rows' and then its nodes'.
+func differencesOf(kind KindReport) []Difference {
+	return slices.Concat(kind.ReportedRows, kind.ReportedNodes)
+}
+
+// censusDifferences is the census kind name as the store census reads it over database: how many
+// differences it reads, in both directions together, the ones it reports and how many rows it
+// checked.
+func censusDifferences(t *testing.T, database *store.Store, name string) (found int64, reported []Difference, rows int64) {
+	t.Helper()
+	kind := censusKind(t, storeCensusOf(t, database), name)
+	return kind.RowDifferences + kind.NodeDifferences, differencesOf(kind), kind.Rows
 }
 
 // The census passes only where it checked more than zero rows of every kind it covers and found

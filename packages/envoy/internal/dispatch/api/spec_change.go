@@ -91,8 +91,9 @@ func issueSpecSource(ctx context.Context, q queryer, issue model.Issue) (string,
 	return repo, held, nil
 }
 
-// versionDigest is the digest a person's approval of version of the document artifactID covers.
-func versionDigest(ctx context.Context, q queryer, artifactID string, version int) (string, error) {
+// storedVersionDigest is the digest a person's approval of version of the document artifactID
+// covers (versionDigest, read for one version).
+func storedVersionDigest(ctx context.Context, q queryer, artifactID string, version int) (string, error) {
 	var digest *string
 	if err := q.QueryRow(ctx, `select artifact_version_text_sha256($1::uuid, $2)`, artifactID, version).Scan(&digest); err != nil {
 		return "", fmt.Errorf("read the digest of version %d of %s: %w", version, artifactID, err)
@@ -106,15 +107,15 @@ func versionDigest(ctx context.Context, q queryer, artifactID string, version in
 // applySpecChange writes the change request an approval of documents covers into the approved
 // spec (specstore.Apply), queued on ledger after what the approval queued before it, or refuses
 // the approval. It covers an approval only where documents name the spec of an issue of a spec
-// source; any other writes nothing here. A covered approval answers an open approval request
-// (APPROVAL_REQUEST_REQUIRED otherwise) and counts only for the text that request names: a
-// document whose text moved after the request handed it to the person (Version past
-// RequestedVersion) is refused the same way. The request is read from the versions it names, as
-// they are stored (specchange.FromVersions): the statements and components from the spec's, the
-// checks from the Verification document's where the request names it, else from that document's
-// latest settled version, so a request that changes a check its approval request leaves out is
-// refused (specstore.RefusalChecksNotIncluded).
-func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, request *model.AskApproval,
+// source; any other writes nothing here. A covered approval answers an open approval request,
+// whose ask askID names (APPROVAL_REQUEST_REQUIRED where askID is nil), and counts only for the
+// text that request names: a document whose text moved after the request handed it to the person
+// (Version past RequestedVersion) is refused the same way. The request is read from the versions
+// it names, as they are stored (specchange.FromVersions): the statements and components from the
+// spec's, the checks from the Verification document's where the request names it, else from that
+// document's latest settled version, so a request that changes a check its approval request leaves
+// out is refused (specstore.RefusalChecksNotIncluded).
+func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger,
 	documents []model.AskApprovalDocument, actor model.Actor, askID *string) error {
 	var spec, verification *model.Artifact
 	var specVersion, verificationVersion int
@@ -141,7 +142,7 @@ func (s *server) applySpecChange(ctx context.Context, tx pgx.Tx, ledger *docs.Le
 	if err != nil || !held {
 		return err
 	}
-	if request == nil {
+	if askID == nil {
 		return errorf(http.StatusConflict, "APPROVAL_REQUEST_REQUIRED",
 			"%s holds a change request of %s's approved spec, so its approval answers an open approval request; open one on its spec and approve that", issue.Key, repo)
 	}
@@ -218,7 +219,7 @@ func specVersionText(ctx context.Context, q queryer, artifact model.Artifact, ve
 
 // specDocumentOf is version of artifact as an act of the approved spec names it, with its digest.
 func specDocumentOf(ctx context.Context, q queryer, artifact model.Artifact, version int) (*specstore.Document, error) {
-	digest, err := versionDigest(ctx, q, artifact.ID, version)
+	digest, err := storedVersionDigest(ctx, q, artifact.ID, version)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +298,7 @@ func (s *server) specProvenanceRead(ctx context.Context, q queryer, provenance s
 		err := q.QueryRow(ctx, `
 			select id::text from artifact_reviews
 			where ask_id = $1::uuid and artifact_id = $2::uuid and version = $3 and state = 'approved'
-			order by `+docs.ReviewOrder+` limit 1
+			order by `+model.ReviewOrder+` limit 1
 		`, *provenance.Ask, provenance.Spec.ArtifactID, provenance.Spec.Version).Scan(&review)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

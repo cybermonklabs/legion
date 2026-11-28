@@ -14,11 +14,11 @@ import (
 // History is the paths whose content differs between the trees of two commits, both paths of a
 // move included, as `git diff --no-renames --name-only -z from to --` gives them with no setting of
 // the clone or of the machine (GitHistory); ok is false only when the history does not hold one of
-// the two commits, which R8 reads as a tie that is not known, so no result carries. err is a fault
-// of the history itself, such as a directory that is no clone: a history that could list nothing
-// has not read two equal trees, and the derivation then gives no state. It reads trees, never
-// ancestry: main's commits are squash commits, so the commit of a result on a branch is no ancestor
-// of the main commit that holds its change.
+// the two commits, which the derivation reads as a tie that is not known, so no failing example
+// counts across them. err is a fault of the history itself, such as a directory that is no clone: a
+// history that could list nothing has not read two equal trees, and the derivation then gives no
+// state. It reads trees, never ancestry: main's commits are squash commits, so the commit of a
+// result on a branch is no ancestor of the main commit that holds its change.
 type History interface {
 	Changed(from, to string) (paths []string, ok bool, err error)
 }
@@ -30,7 +30,7 @@ type History interface {
 // Commits is nil when it is not set, which check refuses, and an empty list for a history of no
 // commit. Files is the whole tree of each commit, as a label of each path's content: a path that
 // the commit does not hold is no key. It is set at each commit and has each label nonzero, as its
-// mark says for a map (memberMark), and by its own rule each label has a letter or a digit
+// tag input says for a map (members.go), and by its own rule each label has a letter or a digit
 // (hasWord), since one of none names no content: two commits with "" or " " at a path would read
 // as one content, and a change of a label to " " would read as a change of the file. By its own
 // rule, a tree also holds at least one path, and each path is a repository path
@@ -73,9 +73,9 @@ func ReadFixtureHistory(r io.Reader) (FixtureHistory, error) {
 // files, whose tree holds no path, or whose tree has a path that is no repository path
 // (isRepoPath) or a content label of no letter and no digit (hasWord), which names no content,
 // the least such path by its order being the one named. Each would read as a tree or a content
-// that another such commit shares, or as a change that no tie covers, so a result would carry
-// between them (R8); and a history that does not set its commits is not one that knows that it
-// has none.
+// that another such commit shares, or as a change that no tie covers, so a failing example would
+// count across them (deriveChecks, step 7); and a history that does not set its commits is not one
+// that knows that it has none.
 func (h FixtureHistory) check() error {
 	if h.Commits == nil {
 		return errors.New("specgraph: history: it sets no commits; a history of no commit sets an empty list")
@@ -152,13 +152,41 @@ func historyFault(h History) error {
 
 // Changed is the sorted paths whose label differs between the trees of from and to, or that one
 // of the trees does not hold, so a move gives both of its paths; ok is false when the history
-// holds no commit with one of the two ids. A FixtureHistory gives no error.
+// holds no commit with one of the two ids. A FixtureHistory gives no error. Each call builds the
+// tree of each commit by its id (trees) and reads the two trees there; the judge builds them once
+// instead (fixtureTrees, newCheckJudge), so that its many calls take time that grows with the
+// history and not with its square.
 func (h FixtureHistory) Changed(from, to string) ([]string, bool, error) {
-	a, okFrom := h.tree(from)
-	b, okTo := h.tree(to)
+	return h.trees().Changed(from, to)
+}
+
+// fixtureTrees is the tree of each commit of a FixtureHistory by its id, whose ids are unique
+// (FixtureHistory.check): the history as the judge reads it, each answer of Changed reading two
+// trees by their ids.
+type fixtureTrees map[string]map[string]string
+
+// trees is the tree of each commit of h by its id.
+func (h FixtureHistory) trees() fixtureTrees {
+	trees := make(fixtureTrees, len(h.Commits))
+	for _, c := range h.Commits {
+		trees[c.ID] = c.Files
+	}
+	return trees
+}
+
+// Changed is FixtureHistory.Changed of the history whose trees t holds, the one body of both.
+func (t fixtureTrees) Changed(from, to string) ([]string, bool, error) {
+	a, okFrom := t[from]
+	b, okTo := t[to]
 	if !okFrom || !okTo {
 		return nil, false, nil
 	}
+	return pathsChanged(a, b), true, nil
+}
+
+// pathsChanged is the sorted paths whose label differs between the trees a and b, or that one of
+// them does not hold.
+func pathsChanged(a, b map[string]string) []string {
 	var changed []string
 	for path, label := range a {
 		if other, held := b[path]; !held || other != label {
@@ -171,16 +199,7 @@ func (h FixtureHistory) Changed(from, to string) ([]string, bool, error) {
 		}
 	}
 	slices.Sort(changed)
-	return changed, true, nil
-}
-
-// tree is the files of the commit id, and whether the history holds it.
-func (h FixtureHistory) tree(id string) (map[string]string, bool) {
-	i := slices.IndexFunc(h.Commits, func(c FixtureCommit) bool { return c.ID == id })
-	if i < 0 {
-		return nil, false
-	}
-	return h.Commits[i].Files, true
+	return changed
 }
 
 // GitHistory is the history of the git clone at Dir.
@@ -199,7 +218,6 @@ func (g GitHistory) dirFault() error {
 // gitDiffArgs are the arguments of git that Changed runs before its two commits, each one there so
 // that no setting of the clone or of the machine changes the answer (TestGitHistoryIsTheSameUnderEachSetting):
 //
-//   - --no-replace-objects: a replace ref would put another commit, and its tree, in the place of one;
 //   - --no-renames: with diff.renames, a move would give its new path alone;
 //   - --ignore-submodules=none: ignore = all for a submodule in .gitmodules or in the config, or
 //     diff.ignoreSubmodules, would leave out a moved submodule;
@@ -210,16 +228,16 @@ func (g GitHistory) dirFault() error {
 //   - --end-of-options: an id that starts with "-" is a revision, never an option.
 //
 // It passes no flag for diff.external, a textconv of .gitattributes or color: git runs none of them
-// for a list of names, which a row of the test holds. Changed also runs git with no variable GIT_*
-// of the environment that it would inherit (exec.Cmd.Environ), such as GIT_DIR, which would make git
-// read another clone than Dir.
-var gitDiffArgs = []string{"--no-replace-objects", "diff", "--no-renames", "--ignore-submodules=none", "--no-relative",
+// for a list of names, which a row of the test holds. Changed runs git through command, which adds
+// --no-replace-objects and runs git with no variable GIT_* of the environment.
+var gitDiffArgs = []string{"diff", "--no-renames", "--ignore-submodules=none", "--no-relative",
 	"--name-only", "-z", "--end-of-options"}
 
-// Changed gives the paths that `git -C <Dir> <gitDiffArgs> <from> <to> --` lists, sorted, once the
-// clone holds a commit of each of the two ids (holds). ok is false, and err nil, when it does not,
-// as for a commit beyond the depth of a shallow clone. err names Dir and git's own reason when git
-// cannot answer, as for a directory that is no clone: such a history has not read two equal trees.
+// Changed gives the paths that `git -C <Dir> --no-replace-objects <gitDiffArgs> <from> <to> --`
+// lists, sorted, once the clone holds a commit of each of the two ids (holds). ok is false, and
+// err nil, when it does not, as for a commit beyond the depth of a shallow clone. err names Dir and
+// git's own reason when git cannot answer, as for a directory that is no clone: such a history has
+// not read two equal trees.
 // The check comes first because git diff outside a clone runs in its no-index mode, which reads
 // two paths of the directory and not two commits, so only a clone is asked for a diff.
 func (g GitHistory) Changed(from, to string) ([]string, bool, error) {
@@ -258,7 +276,7 @@ func (g GitHistory) holds(ids ...string) (bool, error) {
 		input.WriteString(id)
 		input.WriteString("^{commit}\n")
 	}
-	out, err := g.git(input.String(), "--no-replace-objects", "cat-file", "--batch-check")
+	out, err := g.git(input.String(), "cat-file", "--batch-check")
 	if err != nil {
 		return false, err
 	}
@@ -274,11 +292,24 @@ func (g GitHistory) holds(ids ...string) (bool, error) {
 	return true, nil
 }
 
-// git runs `git -C <Dir> <args>` with stdin as its input and no variable GIT_* of the environment
-// that it would inherit (exec.Cmd.Environ), and gives its output.
-func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
-	cmd := exec.Command("git", append([]string{"-C", g.Dir}, args...)...)
+// command is `git -C <Dir> --no-replace-objects <args>`, run with the environment that it would
+// inherit (exec.Cmd.Environ) less each variable GIT_*. Each git command of this package runs
+// through it, so no setting of the process changes which objects git reads:
+//
+//   - --no-replace-objects: a replace ref would put another commit, and its tree, in the place of
+//     one, in what git diff, cat-file, ls-tree and read-tree read;
+//   - no variable GIT_*: a variable such as GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE or
+//     GIT_OBJECT_DIRECTORY would make git read another clone, another tree or another index than
+//     the one that its command names, and GIT_CONFIG_* other settings.
+func (g GitHistory) command(args ...string) *exec.Cmd {
+	cmd := exec.Command("git", append([]string{"-C", g.Dir, "--no-replace-objects"}, args...)...)
 	cmd.Env = slices.DeleteFunc(cmd.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "GIT_") })
+	return cmd
+}
+
+// git runs command(args) with stdin as its input, and gives its output.
+func (g GitHistory) git(stdin string, args ...string) ([]byte, error) {
+	cmd := g.command(args...)
 	cmd.Stdin = strings.NewReader(stdin)
 	return cmd.Output()
 }

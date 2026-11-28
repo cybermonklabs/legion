@@ -99,6 +99,16 @@ func Parse(markdown string) (*Node, error) {
 	return parseStamped(markdown, NewWriteBudget())
 }
 
+// ParseWithBlockIDs is Parse with mint, rather than the package-level generator
+// (SetBlockIDGenerator), minting the id of every block the markdown leaves without one, so a
+// caller whose ids come from a counter of its own (cmd/dispatch-seed's renderVersion) stamps a
+// parse from it without installing it for the whole process. mint must not be nil, and it must
+// keep returning ids that are new and not empty: the stamp asks it again until it gets one, so a
+// mint that repeats itself never returns.
+func ParseWithBlockIDs(markdown string, mint func() string) (*Node, error) {
+	return parseStampedAt(markdown, fromStart, NewWriteBudget(), mint)
+}
+
 // ParseRendering is Parse of markdown the renderer wrote, a read-back, whose short rows are the
 // tree's: its padding spends a budget of its own (readBackBudget), not a caller write's.
 func ParseRendering(markdown string) (*Node, error) {
@@ -115,7 +125,9 @@ func ParseRendering(markdown string) (*Node, error) {
 // blocks begin (itemblocks.Split).
 func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	var starts []int
-	doc, err := parseMarkdown(markdown, fromStart, true, "", NewWriteBudget(), &starts)
+	doc, err := parseMarkdown(markdown, fromStart, true, "", NewWriteBudget(), func(doc *Node, root ast.Node, _ []byte, rest int) {
+		starts = startsInMarkdown(sourceStarts(doc, root, rest), markdown)
+	})
 	if err != nil {
 		return nil, nil, err
 	}
@@ -123,18 +135,74 @@ func ParseWithSourceStarts(markdown string) (*Node, []int, error) {
 	return doc, starts, nil
 }
 
+// Outline is where a rendering's typed blocks and ATX headings stand (RenderingOutline). Each
+// typed block is one the document holds, or a typed block holds at that level, with no list item,
+// quote, footnote definition, table or other container between them and the document. Each
+// heading is one the document or such a typed block holds, directly or inside a list, a quote or
+// a footnote definition (OutlineHeading.ContainerEnd). Each offset counts markdown's own bytes,
+// the U+0000 the parse reads as U+FFFD included (startsInMarkdown), as ParseWithSourceStarts' do.
+type Outline struct {
+	// Headings is each ATX heading, in document order.
+	Headings []OutlineHeading
+	// TypedBlocks is each typed block, in document order, a block ahead of the blocks it holds.
+	TypedBlocks []OutlineTypedBlock
+}
+
+// OutlineHeading is one heading of an Outline. LineStart is where its line starts in the
+// markdown, and Start where its `#` stands on that line: past the markers of a list, a quote or a
+// footnote definition that holds it, and at the line's start for every other heading the renderer
+// writes. Within is the index in the Outline's TypedBlocks of the innermost of them that holds it,
+// or -1 where none does. ContainerEnd is where the outermost list, quote or footnote definition
+// that holds it ends, its last line's end before the line feed, or -1 where none does: that
+// container is a block of the document or of the typed block that holds it.
+type OutlineHeading struct {
+	LineStart    int
+	Start        int
+	Within       int
+	ContainerEnd int
+}
+
+// OutlineTypedBlock is one typed block of an Outline: Start is where its opening line starts in
+// the markdown, End where its closing line ends, before its line feed, and Within is the index in
+// the Outline's TypedBlocks of the innermost typed block that holds it, or -1 where none does. A
+// typed block no line of its own closes ends where the typed block holding it ends, since that
+// block's closing line closes both; the parser refuses one at the document's level.
+type OutlineTypedBlock struct {
+	Start, End int
+	Within     int
+}
+
+// RenderingOutline reads markdown the renderer wrote, a stored rendering, with the parse
+// ParseRendering makes of it, its tables' padding spending the read-back's budget, and answers
+// its Outline: its headings and typed blocks as the parser places them. A list item's fenced code
+// or typed block, whose closing line carries the item's indentation, so holds no heading after the
+// item and closes none of the document's typed blocks. A caller reads a heading's level and title
+// from its line, from its Start on. Markdown the parser refuses answers that refusal and no
+// outline.
+func RenderingOutline(markdown string) (Outline, error) {
+	var outline Outline
+	_, err := parseMarkdown(markdown, fromStart, true, "", readBackBudget(), func(_ *Node, root ast.Node, source []byte, rest int) {
+		outline = outlineOf(root, source, rest, markdown)
+	})
+	if err != nil {
+		return Outline{}, err
+	}
+	return outline, nil
+}
+
 func parseStamped(markdown string, budget *WriteBudget) (*Node, error) {
-	return parseStampedAt(markdown, fromStart, budget)
+	return parseStampedAt(markdown, fromStart, budget, mintBlockID)
 }
 
 // parseStampedAt is parseStamped of markdown that stands at at in what the caller wrote, so a
-// refusal names the caller's line and charges nothing for what the server wrote ahead of it.
-func parseStampedAt(markdown string, at origin, budget *WriteBudget) (*Node, error) {
+// refusal names the caller's line and charges nothing for what the server wrote ahead of it, with
+// mint minting the id of every block left without one (ensureBlockIDs).
+func parseStampedAt(markdown string, at origin, budget *WriteBudget, mint func() string) (*Node, error) {
 	doc, err := parseUnstamped(markdown, at, true, budget)
 	if err != nil {
 		return nil, err
 	}
-	EnsureBlockIDs(doc)
+	ensureBlockIDs(doc, mint)
 	return doc, nil
 }
 
@@ -164,6 +232,34 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 	if err != nil {
 		return nil, WrittenReadBack{}, err
 	}
+	return withWrittenReadBack(doc)
+}
+
+// ParseWrittenAsReplacement is ParseWritten of markdown as the most permissive replacement of a
+// whole document parses it: one whose live document holds every block id the markdown names on
+// two blocks and every element in it this build cannot create yet, so that it makes neither
+// refusal of a repeated id (RepeatedBlockID) nor of an element this build cannot create
+// (refuseUncreatable), which ParseWritten over no live document makes. It is the parse a
+// replacement makes when its live document holds the same, and every refusal it makes is one
+// every replacement of a whole document makes too. Every other step is ParseWritten's, as a
+// replacement makes it: the write budget, the schema, the ids, where a block id named twice stays
+// on its first block and each later block naming it is minted another (EnsureBlockIDs), and the
+// read-back. The live document it stands for is no document in particular, so it carries no id
+// onto a block the markdown leaves unchanged (carryBlockIDs), and a block naming none is minted
+// one, as a new document's is.
+func ParseWrittenAsReplacement(markdown string) (*Node, WrittenReadBack, error) {
+	doc, err := parseUnstamped(LineFeeds(markdown), fromStart, true, NewWriteBudget())
+	if err != nil {
+		return nil, WrittenReadBack{}, err
+	}
+	EnsureBlockIDs(doc)
+	return withWrittenReadBack(doc)
+}
+
+// withWrittenReadBack is doc, the tree a write parsed, with the read-back of the markdown it is
+// stored as (WrittenReadBack), or the refusal of a document that reads back otherwise
+// (RefuseMisreadDocument), which ParseWritten and ParseWrittenAsReplacement share.
+func withWrittenReadBack(doc *Node) (*Node, WrittenReadBack, error) {
 	read, misread, refused, err := documentMisread(doc)
 	if err := refuseMisread(misread, refused, err); err != nil {
 		return nil, WrittenReadBack{}, err
@@ -175,31 +271,49 @@ func ParseWritten(markdown string, live *Node) (*Node, WrittenReadBack, error) {
 // as ParseForWrite parses a fragment: a leading `---` line is a horizontal rule, as it is anywhere
 // after a document's start. Written where the document begins (opensDocument), a closed
 // front-matter block opening the markdown is front matter, as Parse reads it. Its tables' short
-// rows are padded on budget, the caller write's, which its other fragments share.
+// rows are padded on budget, the caller write's, which its other fragments share. It judges the
+// markdown against no document, so an element this build cannot create yet is refused wherever
+// it is written: a write into a live document parses with ParseFragmentHolding.
 func ParseFragment(markdown string, opensDocument bool, budget *WriteBudget) (*Node, error) {
 	return parseForWrite(markdown, nil, opensDocument, "", budget)
 }
 
-// ParseFragmentInto parses markdown a caller writes inside a block of type parent, after that
-// block's last child, as ParseFragment parses one written between blocks: its blocks are read as
-// that block's children rather than a document's, so a block of a type whose parents name parent
-// - a reading in a decision or an ask (TypedContent) - is read where it is written, as it is
-// nowhere at a document's level. A block's children hold no front matter, so none is read. The
-// tree is a document holding those blocks, as ParseFragment's is; whether they may close the block
-// is InsertInto's to judge, against the children the block holds already.
-func ParseFragmentInto(markdown, parent string, budget *WriteBudget) (*Node, error) {
-	return parseForWrite(markdown, nil, false, parent, budget)
+// ParseFragmentHolding is ParseFragment of markdown written into live - an insert, a replace's
+// `with`, an accepted suggestion - which carries none of live's block IDs into the fragment. An
+// element live already holds need not be creatable by this build, as an upload of the whole
+// document over live may keep it.
+func ParseFragmentHolding(markdown string, opensDocument bool, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, opensDocument, "", budget)
 }
 
-// parseForWrite is the parse ParseForWrite, ParseFragment and ParseFragmentInto share. The
-// markdown's tree is judged for repeated ids (RepeatedBlockID) with only the ids it names, then
-// takes the ids of the blocks of live it leaves unchanged (carryBlockIDs), and only then is an id
-// minted for each block still without one (EnsureBlockIDs), so the refusal and the carry see only
-// the ids the markdown named. The tree is held to the content rule of each block a live document
-// keeps in any order (writtenContentError), since a caller wrote it in one piece. within is the
-// type of the block whose children the markdown's blocks are, "" for a document's
-// (validateWithin).
+// ParseFragmentInto parses markdown a caller writes inside a block of type parent of live, after
+// that block's last child, as ParseFragmentHolding parses one written between blocks: its blocks
+// are read as that block's children rather than a document's, so a block of a type whose parents
+// name parent - a reading in a decision or an ask (TypedContent) - is read where it is written, as
+// it is nowhere at a document's level. A block's children hold no front matter, so none is read.
+// It carries none of live's block IDs, and an element live already holds need not be creatable by
+// this build. The tree is a document holding those blocks, as ParseFragment's is; whether they may
+// close the block is InsertInto's to judge, against the children the block holds already.
+func ParseFragmentInto(markdown, parent string, budget *WriteBudget, live *Node) (*Node, error) {
+	return parseForWriteHolding(markdown, nil, live, false, parent, budget)
+}
+
+// parseForWrite is the parse ParseForWrite and ParseFragment share. The markdown's tree is judged
+// for repeated ids (RepeatedBlockID) with only the ids it names, then takes the ids of the blocks
+// of live it leaves unchanged (carryBlockIDs), and only then is an id minted for each block still
+// without one (EnsureBlockIDs), so the refusal and the carry see only the ids the markdown named.
+// The tree is held to the content rule of each block a live document keeps in any order
+// (writtenContentError), since a caller wrote it in one piece. within is the type of the block
+// whose children the markdown's blocks are, "" for a document's (validateWithin).
 func parseForWrite(markdown string, live *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
+	return parseForWriteHolding(markdown, live, live, readFrontmatter, within, budget)
+}
+
+// parseForWriteHolding is parseForWrite whose markdown may keep an element held holds that this
+// build cannot create (refuseUncreatable), live being the tree whose block ids it carries:
+// ParseFragmentHolding and ParseFragmentInto carry none, and hold the live document they write
+// into.
+func parseForWriteHolding(markdown string, live, held *Node, readFrontmatter bool, within string, budget *WriteBudget) (*Node, error) {
 	doc, err := parseMarkdown(LineFeeds(markdown), fromStart, readFrontmatter, within, budget, nil)
 	if err != nil {
 		return nil, err
@@ -211,7 +325,7 @@ func parseForWrite(markdown string, live *Node, readFrontmatter bool, within str
 		return nil, fmt.Errorf("%w: %w", ErrSchema, err)
 	}
 	// A write may keep an element live holds that this build cannot create, never add one.
-	if err := refuseUncreatable([]*Node{doc}, func() *Node { return live }); err != nil {
+	if err := refuseUncreatable([]*Node{doc}, func() *Node { return held }); err != nil {
 		return nil, err
 	}
 	carryBlockIDs(doc, live)
@@ -274,9 +388,13 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 	return parseMarkdown(markdown, at, readFrontmatter, "", budget, nil)
 }
 
-// parseMarkdown is parseUnstamped that, given starts, also sets it to where each of the tree's
-// top-level children starts in markdown (sourceStarts), and whose top-level children are those
-// of a block of type within where within names one (validateWithin).
+// parseMarkdown is parseUnstamped whose top-level children are those of a block of type within
+// where within names one (validateWithin), and that, given read, also hands it what the parse read
+// once the tree is converted and valid: the tree, the goldmark tree root it was converted from,
+// the source root's offsets count, and rest, how many bytes of front matter the parse read ahead
+// of that source, 0 where it read none (a closed front-matter block is never empty).
+// ParseWithSourceStarts reads its starts there (sourceStarts) and RenderingOutline its outline
+// (outlineOf).
 //
 // Every U+0000 in markdown is read as U+FFFD (nulAsReplacement) before any parser sees a byte of
 // it, as CommonMark requires of a reader (§2.3 Insecure characters) and the browser editor's parser
@@ -287,9 +405,12 @@ func parseUnstamped(markdown string, at origin, readFrontmatter bool, budget *Wr
 // after it is an offset into source and never into markdown: a refusal's line number counts
 // source's line feeds, which the replacement neither adds nor removes, at.server measures a
 // prefix the server itself wrote ahead of the caller's text (parseTableRows), which holds no
-// U+0000 and so keeps its length, and starts are offsets into source until startsInMarkdown maps
-// each of them back to the byte of markdown it stands at.
-func parseMarkdown(markdown string, at origin, readFrontmatter bool, within string, budget *WriteBudget, starts *[]int) (doc *Node, err error) {
+// U+0000 and so keeps its length, and the offsets read hands on are offsets into source until
+// startsInMarkdown maps each of them back to the byte of markdown it stands at.
+func parseMarkdown(
+	markdown string, at origin, readFrontmatter bool, within string, budget *WriteBudget,
+	read func(doc *Node, root ast.Node, source []byte, rest int),
+) (doc *Node, err error) {
 	defer recoverPanic(&doc, &err, "reading markdown")
 	source := []byte(nulAsReplacement(markdown))
 	var front *Node
@@ -326,21 +447,22 @@ func parseMarkdown(markdown string, at origin, readFrontmatter bool, within stri
 	if err := validateWithin(doc, within); err != nil {
 		return nil, err
 	}
-	if starts != nil {
-		*starts = startsInMarkdown(sourceStarts(doc, root, front != nil, rest), markdown)
+	if read != nil {
+		read(doc, root, source, rest)
 	}
 	return doc, nil
 }
 
 // sourceStarts is where each of doc's top-level children starts in the markdown parsed: front
 // matter at 0, and every other child where the block of root it was converted from starts
-// (sourceStart), past the front matter's offset bytes. Each of root's blocks converts to one child
+// (sourceStart), past the front matter's offset bytes. offset is not 0 exactly when the parse read
+// front matter, which then opens doc (parseMarkdown). Each of root's blocks converts to one child
 // (parseBlocks); a child past root's last block, the empty paragraph of a document with no blocks,
 // answers -1.
-func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
+func sourceStarts(doc *Node, root ast.Node, offset int) []int {
 	starts := make([]int, len(doc.Children))
 	index := 0
-	if front {
+	if offset > 0 {
 		index = 1
 	}
 	for block := root.FirstChild(); index < len(starts); index++ {
@@ -356,6 +478,108 @@ func sourceStarts(doc *Node, root ast.Node, front bool, offset int) []int {
 	return starts
 }
 
+// outlineOf is the Outline of root, the goldmark tree of source, which rest bytes of front matter
+// stood ahead of in markdown's parse: each typed block root holds through typed blocks alone, and
+// each ATX heading those blocks hold, directly or inside a list, a quote or a footnote definition,
+// at offsets mapped back to markdown's bytes (startsInMarkdown).
+func outlineOf(root ast.Node, source []byte, rest int, markdown string) Outline {
+	var outline Outline
+	// addHeading adds the ATX heading that starts at start in source, which the typed block at
+	// index within of outline.TypedBlocks holds, or none where within is -1, and which a list, a
+	// quote or a footnote definition that ends at containerEnd, past rest, holds, or none where
+	// containerEnd is -1.
+	addHeading := func(start, within, containerEnd int) {
+		outline.Headings = append(outline.Headings, OutlineHeading{
+			LineStart: rest + lineStart(source, start), Start: rest + start, Within: within, ContainerEnd: containerEnd,
+		})
+	}
+	// held adds each ATX heading node holds, at any depth, which the typed block at index within
+	// of outline.TypedBlocks holds, or none where within is -1, and which a list, a quote or a
+	// footnote definition that ends at containerEnd holds. A block whose first child is no block
+	// holds text alone, so it is not read further.
+	var held func(node ast.Node, within, containerEnd int)
+	held = func(node ast.Node, within, containerEnd int) {
+		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+			if _, heading := child.(*ast.Heading); heading {
+				if start := sourceStart(child); start >= 0 && opensATXHeading(source[start:]) {
+					addHeading(start, within, rest+containerEnd)
+				}
+			} else if first := child.FirstChild(); first != nil && first.Type() == ast.TypeBlock {
+				held(child, within, containerEnd)
+			}
+		}
+	}
+	// walk reads parent's blocks, which the typed block at index within of outline.TypedBlocks
+	// holds, or none where within is -1. Parent's lines end where last starts: the line of its
+	// closing fence, or the source's end. A typed block ends where its closing line ends: the line
+	// of its own closing fence or, where no line of its own closes it, the line at last, which
+	// closes both.
+	var walk func(parent ast.Node, within, last int)
+	walk = func(parent ast.Node, within, last int) {
+		for child := parent.FirstChild(); child != nil; child = child.NextSibling() {
+			start := sourceStart(child)
+			if start < 0 {
+				continue
+			}
+			switch block := child.(type) {
+			case *ast.Heading:
+				if opensATXHeading(source[start:]) {
+					addHeading(start, within, -1)
+				}
+			case *typedDirective:
+				closer := last
+				if block.Closed {
+					closer = block.closer
+				}
+				line, _, _ := bytes.Cut(source[closer:], []byte("\n"))
+				outline.TypedBlocks = append(outline.TypedBlocks, OutlineTypedBlock{Start: rest + lineStart(source, start), End: rest + closer + len(line), Within: within})
+				walk(block, len(outline.TypedBlocks)-1, closer)
+			case *ast.List, *ast.Blockquote, *extensionast.Footnote:
+				// Its lines run up to the line the next block starts on, or to the end of
+				// parent's lines, less the line feeds of the blank lines between.
+				containerEnd := last
+				for next := child.NextSibling(); next != nil; next = next.NextSibling() {
+					if at := sourceStart(next); at >= 0 {
+						containerEnd = lineStart(source, at)
+						break
+					}
+				}
+				containerEnd = start + len(bytes.TrimRight(source[start:containerEnd], "\n"))
+				held(child, within, containerEnd)
+			}
+		}
+	}
+	walk(root, -1, len(source))
+	if strings.IndexByte(markdown, 0) < 0 {
+		return outline
+	}
+	replacements := replacementsIn(markdown)
+	for index := range outline.Headings {
+		heading := &outline.Headings[index]
+		replacements.inMarkdown(&heading.LineStart)
+		replacements.inMarkdown(&heading.Start)
+		replacements.inMarkdown(&heading.ContainerEnd)
+	}
+	for index := range outline.TypedBlocks {
+		block := &outline.TypedBlocks[index]
+		replacements.inMarkdown(&block.Start)
+		replacements.inMarkdown(&block.End)
+	}
+	return outline
+}
+
+// opensATXHeading reports whether text, a heading's text from where it starts, opens as an ATX
+// heading's line does, as goldmark's ATX heading parser reads it: one to six `#`, then a space
+// character or nothing. A setext heading's first line never does, since that parser reads such a
+// line before a paragraph can open on it.
+func opensATXHeading(text []byte) bool {
+	marker := 0
+	for marker < len(text) && text[marker] == '#' {
+		marker++
+	}
+	return marker >= 1 && marker <= 6 && (marker == len(text) || util.IsSpace(text[marker]))
+}
+
 // startsInMarkdown is starts, offsets into the source parsed, as offsets into markdown itself,
 // the bytes the caller wrote: the parse reads every U+0000 as U+FFFD (nulAsReplacement), three
 // bytes where the caller wrote one, so a start past one of them stands two bytes further on in
@@ -369,22 +593,37 @@ func startsInMarkdown(starts []int, markdown string) []int {
 	if strings.IndexByte(markdown, 0) < 0 {
 		return starts
 	}
-	// Where each replacement stands in the source, which is where the U+0000 before it stood plus
-	// the two bytes each earlier replacement added.
-	var replacements []int
+	replacements := replacementsIn(markdown)
+	for index := range starts {
+		replacements.inMarkdown(&starts[index])
+	}
+	return starts
+}
+
+// nulReplacements is where each U+0000 of a markdown stands in the source its parse reads, in
+// order (startsInMarkdown).
+type nulReplacements []int
+
+// replacementsIn is where each U+0000 of markdown stands in the source its parse reads: where the
+// U+0000 stood plus the two bytes each earlier replacement added.
+func replacementsIn(markdown string) nulReplacements {
+	var replacements nulReplacements
 	for index := range len(markdown) {
 		if markdown[index] == 0 {
 			replacements = append(replacements, index+2*len(replacements))
 		}
 	}
-	for index, start := range starts {
-		if start >= 0 {
-			// The replacements before start, which is where the first one at or past it stands.
-			earlier, _ := slices.BinarySearch(replacements, start)
-			starts[index] = start - 2*earlier
-		}
+	return replacements
+}
+
+// inMarkdown maps *offset, an offset into the source parsed, in place to the byte of markdown it
+// stands at (startsInMarkdown). A negative offset, which names no position, stays as it is.
+func (replacements nulReplacements) inMarkdown(offset *int) {
+	if *offset >= 0 {
+		// The replacements before offset, which is where the first one at or past it stands.
+		earlier, _ := slices.BinarySearch(replacements, *offset)
+		*offset -= 2 * earlier
 	}
-	return starts
 }
 
 // sourceStart is startOf, or -1 for a block that records neither the position nor the line startOf
@@ -664,7 +903,7 @@ func parseTableRows(markdown string, width int, budget *WriteBudget) ([]*Node, b
 	// element budget nothing, and no refusal of its elements names one.
 	header := syntheticTableHeader(width)
 	firstLine := 1 + strings.Count(markdown[:start], "\n") - strings.Count(header, "\n")
-	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget)
+	parsed, err := parseStampedAt(header+markdown[start:end]+"\n", origin{line: firstLine, server: len(header)}, budget, mintBlockID)
 	// The parse opens with the header written above, so the table under it is the one document-level
 	// table with nothing before it; any other is the fragment's own and keeps its own refusal.
 	if wide := (wideRow{}); errors.As(err, &wide) && wide.firstBlock {
@@ -1257,7 +1496,7 @@ func parseInlineMarks(parent ast.Node, source []byte, initial []Mark, footnotes 
 			// stored decoded and written from that, so one matching only as written, before
 			// decoding (`[^&AUML;]` beside `[^&auml;]: `), would not match once written.
 			decoded := decodeMarkdownText([]byte(label))
-			if definition := decodeMarkdownText([]byte(definitionLabel)); FootnoteLabelKey(decoded) != FootnoteLabelKey(definition) {
+			if definition := decodeMarkdownText([]byte(definitionLabel)); footnoteLabelKey(decoded) != footnoteLabelKey(definition) {
 				return nil, nil, fmt.Errorf("%w: footnote reference %q matches its definition %q only as written, before their character references are decoded, which the document's markdown cannot keep", ErrSchema, decoded, definition)
 			}
 			children = append(children, &Node{Type: "footnote_reference", Attrs: Attrs{"label": decoded}})
@@ -1302,6 +1541,13 @@ func parseTextValue(node ast.Node, value []byte, marks []Mark) string {
 		if mark.Type == "inlineCode" {
 			return string(value)
 		}
+	}
+	// A raw text outside code is an autolink put back as the text it showed, inside a
+	// `dispatch://` address (keepAddressesWhole). Only the tokenizer's comes back raw, its source
+	// as written, as it showed linked and as the engine shows it; the transform's comes back
+	// decoded, as its label was.
+	if text, ok := node.(*ast.Text); ok && text.IsRaw() {
+		return string(value)
 	}
 	decoded := decodeMarkdownText(value)
 	if strings.IndexByte(decoded, '\n') < 0 || insideImage(node) {

@@ -111,10 +111,10 @@
 # BROKER_SERVICE_LOGINS lets log in as legion-daemon and no pod runs as: each account holds one
 # launcher credential, so logging in as a running daemon's account would take that daemon's). The
 # run logs in as the daemon does, with that account's token, which the operator context mints with
-# `kubectl create token` for the broker's audience, an hour long, and mints again every half hour
-# while the run lasts; no person approves it. The run asks nothing of a person: secrets-approval-ask
-# cancels the one request it makes rather than waiting for an approval. See
-# scripts/e2e/README.md's Stage 4a section.
+# `kubectl create token` for the broker audience the namespace's daemons use
+# (lib/broker-audience.ts), an hour long, and mints again every half hour while the run lasts; no
+# person approves it. The run asks nothing of a person: secrets-approval-ask cancels the one request
+# it makes rather than waiting for an approval. See scripts/e2e/README.md's Stage 4a section.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -275,7 +275,10 @@ git -C "$root" merge-base --is-ancestor "$previous_base" HEAD ||
 if git -C "$root" cat-file -e "$previous_base:packages/daemon/internal/runtime/sandbox/one_container_test.go" 2>/dev/null; then
   fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, which already runs issue pods of one container"
 fi
-previous_contract=$(git -C "$root" show "$previous_base:packages/daemon/internal/api/version.go" | sed -n 's/^const DaemonAPIVersion = \([0-9]*\)$/\1/p')
+# The commit's own contract as scripts/daemon-contract.sh prints it for a commit: a commit of 37 or
+# 38 declares it in version.go's `const DaemonAPIVersion`, which the script reads there.
+previous_contract=$(cd "$root" && bash scripts/daemon-contract.sh "$previous_base") ||
+  fail "scripts/daemon-contract.sh could not read the daemon API contract of $previous_base, which LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from"
 case "$previous_contract" in
 37 | 38) ;;
 *) fail "LEGION_E2E_PREVIOUS_IMAGE $previous_image was built from $previous_base, at daemon API contract ${previous_contract:-unknown}: previous-layout needs a main build at contract 37 or 38, the two whose harness records the claim's session and whose issue pods run six role containers" ;;
@@ -313,7 +316,10 @@ if [ -n "$agent_secrets_account" ]; then
   # The run's login token: what the kubelet projects into the daemon's pod, minted here by the
   # operator context for the broker's audience and written owner-only; never printed. The broker
   # refuses a token that lives longer than an hour, so the run mints one every half hour, and its
-  # login reads the file afresh each time, as the daemon reads the kubelet's.
+  # login reads the file afresh each time, as the daemon reads the kubelet's. The audience is the
+  # one the namespace's daemons use, read from their ConfigMaps' legion.yaml, or the daemon's default
+  # where none names one, as the harness reads it for the pods it enrolls: the run proves enrollment
+  # against the broker the deployment enrolls with.
   account_namespace=${agent_secrets_account%%/*}
   account_name=${agent_secrets_account#*/}
   [ -n "$account_namespace" ] && [ -n "$account_name" ] && [ "$account_namespace" != "$agent_secrets_account" ] ||
@@ -323,11 +329,18 @@ if [ -n "$agent_secrets_account" ]; then
     fail "the operator context could not list the pods of $account_namespace to check that no daemon runs as $agent_secrets_account"
   [ -z "$account_pods" ] ||
     fail "LEGION_E2E_AGENT_SECRETS_ACCOUNT $agent_secrets_account is the account pod(s) ${account_pods% } run as: a login as it would take that daemon's one launcher credential; list a ServiceAccount of the proof's own in BROKER_SERVICE_LOGINS and name it here"
+  # shellcheck disable=SC2016  # the key table's literal backquotes around the value, not an expansion
+  agent_secrets_default=$(go -C "$root/packages/daemon" run ./cmd/legion config reference --json |
+    jq -r '.[].nested[] | select(.path == "runtime.kubernetes.agent_secrets" and .name == "audience") | .default | ltrimstr("`") | rtrimstr("`")') ||
+    fail "reading the daemon's default broker audience from legion config reference failed"
+  agent_secrets_audience=$(op get configmaps -o json | bun "$root/scripts/e2e/lib/broker-audience.ts" "$agent_secrets_default") ||
+    fail "the namespace's daemons name no one broker audience to mint the run's login token for (the reason is above)"
+  note "[operator] the namespace's daemons enroll their pods for the broker audience $agent_secrets_audience; the run's login token is minted for it"
   agent_secrets_token_file=$work/agent-secrets-token
   mint_agent_secrets_token() {
     (
       umask 077
-      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience agent-secrets --duration 1h >"$agent_secrets_token_file.next"
+      timeout --foreground 300 kubectl --context "$operator" -n "$account_namespace" create token "$account_name" --audience "$agent_secrets_audience" --duration 1h >"$agent_secrets_token_file.next"
     ) && mv -f "$agent_secrets_token_file.next" "$agent_secrets_token_file"
   }
   mint_agent_secrets_token || fail "the operator could not mint a token for $agent_secrets_account"

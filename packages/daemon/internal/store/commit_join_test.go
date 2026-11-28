@@ -67,6 +67,7 @@ func (r *commitRig) probeIDs(t *testing.T) []int {
 }
 
 func TestATransactionOpenedInsideAnOpenOneJoinsIt(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
@@ -101,6 +102,7 @@ func TestATransactionOpenedInsideAnOpenOneJoinsIt(t *testing.T) {
 }
 
 func TestAJoinedTransactionRollsBackWithItsOuter(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
@@ -134,6 +136,7 @@ func TestAJoinedTransactionRollsBackWithItsOuter(t *testing.T) {
 }
 
 func TestATransactionOnAnotherPoolInsideAnOpenOneIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	other := NewPool(rig.observer)
@@ -158,6 +161,7 @@ func TestATransactionOnAnotherPoolInsideAnOpenOneIsRefused(t *testing.T) {
 }
 
 func TestATransactionOnAClosedScopeIsItsOwn(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var kept context.Context
@@ -189,6 +193,7 @@ func TestATransactionOnAClosedScopeIsItsOwn(t *testing.T) {
 // join runs under a savepoint that rolls back, and the hooks it registered are cut, so an outer
 // body that swallows the error commits neither the inner write's row nor its hook.
 func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
@@ -230,6 +235,7 @@ func TestAJoinedWriteThatFailsKeepsNeitherItsWritesNorItsHooks(t *testing.T) {
 // the joined write's row nor its hook. On the joined context alone, pgconn sends no rollback once
 // that context has ended, and the whole transaction then fails (errSavepointNotEnded).
 func TestAJoinedWriteWhoseContextEndedBeforeItsRollbackKeepsNeitherItsRowsNorItsHooks(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
@@ -274,6 +280,7 @@ func TestAJoinedWriteWhoseContextEndedBeforeItsRollbackKeepsNeitherItsRowsNorIts
 // transaction's. On the joined context alone, pgconn sends no release once that context has ended,
 // and the join answers an error for a write whose row and hook commit.
 func TestAJoinedWriteWhoseContextEndedBeforeItsReleaseCommitsWithItsHooks(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	var hooks joinedHooks
@@ -370,6 +377,7 @@ func (s *heldSavepoint) Commit(ctx context.Context) error {
 // a commit there would keep the joined write's row, without its hook after a rollback and with it
 // after a release, for a join that answered an error.
 func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *testing.T) {
+	t.Parallel()
 	innerFails := errors.New("the inner body fails once its context has ended")
 	for _, row := range []struct {
 		name    string
@@ -425,6 +433,7 @@ func TestAJoinedWriteWhoseSavepointWasNeverEndedFailsItsWholeTransaction(t *test
 // its body runs: a repeatable-read read joined into a read-committed transaction would lose the
 // snapshot it asked for, and a read-only one would lose PostgreSQL's refusal of its writes.
 func TestAJoinThatAsksForOtherOptionsIsRefused(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	for _, row := range []struct {
 		name         string
@@ -461,6 +470,7 @@ func TestAJoinThatAsksForOtherOptionsIsRefused(t *testing.T) {
 // commit scope: a transaction it opens is its own, and it registers no hook on the body's list,
 // which only the body's goroutine appends to.
 func TestAWorkerStartedInsideABodyJoinsNothing(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	var scoped bool
 	var worker context.Context
@@ -480,6 +490,7 @@ func TestAWorkerStartedInsideABodyJoinsNothing(t *testing.T) {
 }
 
 func TestAJoinedHookWaitsForItsOuterOutcome(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	fired := rig.fault.Cut(commitMatch, testdb.CutAfterCommitRefusing)
@@ -532,6 +543,7 @@ func (t *idReadsTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.R
 }
 
 func TestAReadOnlyTransactionReadsNoID(t *testing.T) {
+	t.Parallel()
 	rig := newCommitRig(t)
 	ctx := WithTransactionTracking(context.Background())
 	counted := &idReads{pool: rig.pool}
@@ -556,6 +568,7 @@ func TestAReadOnlyTransactionReadsNoID(t *testing.T) {
 // The database's half of the guard that refuses every statement outside the boundary: a read
 // runs read-only, and PostgreSQL refuses each write there, however its SQL is spelled.
 func TestAReadOnlyTransactionRefusesEveryWrite(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, testdb.Database(t, "legion_store_commit_test"))
 	if err != nil {
@@ -609,6 +622,7 @@ func TestAReadOnlyTransactionRefusesEveryWrite(t *testing.T) {
 }
 
 func TestARollbackAfterTheCallersCancelKeepsItsConnection(t *testing.T) {
+	t.Parallel()
 	dsn := testdb.PlainDatabase(t, "legion_store_commit_test")
 	config, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
@@ -662,6 +676,7 @@ func TestARollbackAfterTheCallersCancelKeepsItsConnection(t *testing.T) {
 }
 
 func TestAnOutcomeReadWhoseCommitReplyIsWithheldEndsAtItsBound(t *testing.T) {
+	t.Parallel()
 	t.Run("the read", func(t *testing.T) {
 		rig := newCommitRig(t)
 		ctx := context.Background()
@@ -696,7 +711,7 @@ func TestAnOutcomeReadWhoseCommitReplyIsWithheldEndsAtItsBound(t *testing.T) {
 	})
 	t.Run("the settlement", func(t *testing.T) {
 		rig := newCommitRig(t)
-		log := captureCommitLog(t)
+		log := captureLog(t, rig.pool)
 		parent := WithTransactionTracking(context.Background())
 		child, cancel := context.WithCancel(parent)
 		defer cancel()

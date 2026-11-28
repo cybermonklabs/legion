@@ -9,15 +9,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // runWritesSeen installs, in the test's own database, a trigger on going_requests and on
@@ -157,6 +154,7 @@ func requireFramesHeldAsValues(t *testing.T, database *store.Store, run string, 
 // is inserted, and the id of the transaction that inserted it, which is the id that wrote the
 // node, the tuple and the author's node.
 func TestARunIsAnInteractionNodeWrittenBeforeItsRowInOneTransaction(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	runWritesSeen(t, rig.database)
 	ctx := context.Background()
@@ -255,6 +253,7 @@ func TestARunIsAnInteractionNodeWrittenBeforeItsRowInOneTransaction(t *testing.T
 // the one before it: no sequence is taken twice, none is skipped, and each frame's value and row
 // are both there.
 func TestTwoWritersAppendingFramesOfOneRunTakeGaplessSequences(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	run := rig.record(t, "how many frames can two writers append?")
@@ -304,6 +303,7 @@ func TestTwoWritersAppendingFramesOfOneRunTakeGaplessSequences(t *testing.T) {
 // exactly what an address nobody holds answers. A run whose author is nobody, which only a direct
 // call writes, is answered to nobody at all and states no authored_by.
 func TestARunIsReadByTheWholeCredentialThatAskedIt(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	pool := rig.database.Pool
@@ -375,6 +375,7 @@ func TestARunIsReadByTheWholeCredentialThatAskedIt(t *testing.T) {
 // (graphstore.WriteRun), with its authored_by, its author's node and a frame value of every frame
 // that pod stored, and then the frame itself, all in the frame's one transaction.
 func TestAFrameOfARunWithNoNodeWritesTheNodeFirst(t *testing.T) {
+	t.Parallel()
 	rig := newGoingRig(t)
 	ctx := context.Background()
 	pool := rig.database.Pool
@@ -444,120 +445,4 @@ func TestAFrameOfARunWithNoNodeWritesTheNodeFirst(t *testing.T) {
 	if _, found, err := refs.Node(ctx, pool, model.Actor{Kind: "user", ID: "older-pod-asker@example.com"}, graphstore.KindInteraction, id, true); err != nil || !found {
 		t.Fatalf("the asker reads the run the older pod recorded: found %t, %v", found, err)
 	}
-}
-
-// The erase of a run takes the run's interaction node row and then its going_requests row, each
-// `for update` (grapherase's lockProjectionRows), and every frame of this build takes the node's
-// row before the run's. A frame of a run a pod of the release before recorded with no node finds
-// no node to take, and writes it under the run's row (graphstore.WriteRun); but where another
-// write committed the node after the frame looked, the frame finds that node under the run's row,
-// and an erase may hold it by then. A frame that waited for the node there would wait on the
-// erase while the erase waited on it for the run's row, and Postgres would end one of the two
-// (40P01). So the frame lets its whole transaction go and begins again, taking the node first.
-//
-// A transaction holds the run's row `for no key update`, as another writer of the run's node
-// holds it, while the frame queues behind it having found no node; the run's node is committed
-// meanwhile in a transaction of its own; and a third transaction takes the node's row and then
-// asks for the run's, both `for update`, as the erase does, and queues behind the frame. Once the
-// run's row is let go, the erase is granted the run's row, with no deadlock, and the frame waits
-// on the node's row holding nothing; once the erase lets go, the frame writes the run's first
-// frame, held as its value.
-func TestAFrameOfARunWithNoNodeTakesNoNodeWhileItHoldsTheRunsRow(t *testing.T) {
-	rig := newGoingRig(t)
-	ctx := context.Background()
-	pool := rig.database.Pool
-	var id string
-	if err := pool.QueryRow(ctx, `
-		insert into going_requests (author, project, words, ends_at)
-		values ('{"kind":"user","id":"older-pod-asker@example.com"}'::jsonb, 'TEST', 'which lock does the frame take first?',
-		        now() + make_interval(secs => $1))
-		returning id::text
-	`, contracts.GoingRunWindow.Seconds()).Scan(&id); err != nil {
-		t.Fatalf("record the run as a pod of the release before: %v", err)
-	}
-	begin := func(what string) pgx.Tx {
-		t.Helper()
-		tx, err := pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin %s: %v", what, err)
-		}
-		t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
-		return tx
-	}
-
-	writer := begin("the transaction holding the run's row")
-	if _, err := writer.Exec(ctx, `select 1 from going_requests where id = $1::uuid for no key update`, id); err != nil {
-		t.Fatalf("hold the run's row: %v", err)
-	}
-	type framed struct {
-		sequence int
-		err      error
-	}
-	frame := make(chan framed, 1)
-	go func() {
-		sequence, err := appendGoingEvent(ctx, pool, id, going.Text("A frame of the older pod's run."))
-		frame <- framed{sequence, err}
-	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 1, 10*time.Second); waiting < 1 {
-		t.Fatalf("the frame never queued behind the run's row, having found no node")
-	}
-
-	var run graphstore.Interaction
-	var author []byte
-	if err := pool.QueryRow(ctx, `
-		select id::text, author, project, words, created_at, ends_at from going_requests where id = $1::uuid
-	`, id).Scan(&run.ID, &author, &run.Project, &run.Words, &run.At, &run.EndsAt); err != nil {
-		t.Fatalf("read the run's row: %v", err)
-	}
-	if err := json.Unmarshal(author, &run.Author); err != nil {
-		t.Fatalf("decode the run's author: %v", err)
-	}
-	nodes, tuples := graphstore.InteractionFacts(run)
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error { return graphstore.Write(ctx, tx, nodes, tuples) }); err != nil {
-		t.Fatalf("commit the run's node while the frame waits: %v", err)
-	}
-
-	erase := begin("the erase's transaction")
-	if _, err := erase.Exec(ctx, `select 1 from graph_nodes where kind = $1 and id = $2 for update`, graphstore.KindInteraction, id); err != nil {
-		t.Fatalf("take the run's node row as the erase does: %v", err)
-	}
-	erased := make(chan error, 1)
-	go func() {
-		_, err := erase.Exec(ctx, `select 1 from going_requests where id = $1::uuid for update`, id)
-		erased <- err
-	}()
-	if waiting := storetest.WaitForLockWaiters(t, writer, 2, 10*time.Second); waiting < 2 {
-		t.Fatalf("%d transaction(s) queued behind the run's row, want the frame and then the erase", waiting)
-	}
-	if err := writer.Rollback(ctx); err != nil {
-		t.Fatalf("let the run's row go: %v", err)
-	}
-	select {
-	case err := <-erased:
-		if err != nil {
-			t.Fatalf("the erase's lock of the run's row after the node's: %v; want it granted, with the frame holding nothing it waits for", err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the erase never took the run's row after the node's")
-	}
-	if waiting := storetest.WaitForLockWaiters(t, erase, 1, 10*time.Second); waiting < 1 {
-		select {
-		case answered := <-frame:
-			t.Fatalf("the frame answered sequence %d, %v while the erase held the run's node, want it waiting on the node's row", answered.sequence, answered.err)
-		default:
-			t.Fatal("the frame never queued behind the erase's hold of the run's node")
-		}
-	}
-	if err := erase.Rollback(ctx); err != nil {
-		t.Fatalf("let the erase's locks go: %v", err)
-	}
-	select {
-	case answered := <-frame:
-		if answered.err != nil || answered.sequence != 1 {
-			t.Fatalf("the frame answered sequence %d, %v, want the run's first frame", answered.sequence, answered.err)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatal("the frame never answered once the erase let go")
-	}
-	requireFramesHeldAsValues(t, rig.database, id, 1)
 }

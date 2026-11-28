@@ -12,7 +12,13 @@ import type {
   IssueDetails,
 } from "../../api/types";
 import { wordsOf } from "../refs/tree-fragment";
-import { anchorQuote, changeAnchor, decisionChangeComments } from "./decision-review";
+import {
+  anchorQuote,
+  changeAnchor,
+  changeDocumentIds,
+  decisionChangeComments,
+  decisionChanges,
+} from "./decision-review";
 import { buildIssueTree, type DocumentBlocks, isStatement, type TreeNode } from "./issue-tree";
 import { coverageStatements } from "./tree-drafts";
 import { nodesInOrder } from "./tree-keys";
@@ -270,6 +276,8 @@ const change: Comment = {
   author: { id: "alice", kind: "user" },
   body: "Say which pages this covers.",
   created_at: "2026-11-05T11:00:00Z",
+  deleted_at: null,
+  deleted_by: null,
   deliveries: [],
   edited_at: null,
   id: "change-1",
@@ -294,6 +302,14 @@ const planned: IssueDetails = {
   ...issue,
   artifacts: [spec, plan],
   plan_artifact_id: plan.id,
+  queries: [
+    {
+      query: "plan",
+      artifact_id: plan.id,
+      takes: ["plan_task", "plan_role"],
+      subtree: `issue:${KEY}`,
+    },
+  ],
 };
 
 /** A `requirement` block of a document, as the blocks read answers it. */
@@ -482,6 +498,112 @@ test("what waits on the reader is their open questions, the review list and thei
   );
   expect(unknown.total).toBe(0);
   expect(waitingIn(buildIssueTree({ comments: [change], coverage, decisions, issue }))).toEqual([]);
+});
+
+// R7 and R13, and R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any
+// more, so the decision it was asked of is back on the review list and in the header's count,
+// in the tree as in the count. The deleted Change keeps its place under that decision, drawn as
+// the deleted line, and holds no word of what it asked.
+test("a Change its author deleted leaves its decision on the review list and in the count", () => {
+  const deleted: Comment = {
+    ...change,
+    body: "",
+    deleted_at: "2026-11-05T12:00:00Z",
+    deleted_by: { id: "alice", kind: "user" },
+  };
+  const counted = waitingOnReader(
+    issue,
+    "alice",
+    decisions,
+    isCoverageStatement,
+    [deleted],
+    undefined
+  );
+  expect(counted).toEqual({ approvals: [spec.id], asks: 1, decisions: 2, total: 4 });
+
+  const root = buildIssueTree({ comments: [deleted], coverage, decisions, issue, viewer: "alice" });
+  expect(waitingIn(root)).toEqual(["spec#b-listed", "spec#b-changed", "mine"]);
+  expect(parentsOf(root, deleted.id)).toEqual(["spec#b-changed"]);
+  const node = nodesInOrder(root).find((one) => one.id === deleted.id);
+  expect({ deletedAt: node?.deletedAt, text: node?.text }).toEqual({
+    deletedAt: "2026-11-05T12:00:00Z",
+    text: "Deleted by alice · 2026-11-05T12:00:00Z",
+  });
+});
+
+// The decisions read names the document each decision's block stands in
+// (`DecisionEntry.document`), and every reader takes it there, whether or not the issue read lists
+// the issue's documents yet: the Change of `changed` is placed under it, so the count counts
+// `listed` alone, the header and the Decisions filter read that document's blocks, and the tree
+// reads the decision's words against it. An answered ask's entry names the document its block
+// stands in too, and takes no Change, though its words hold the Change's quote.
+test("a decision's document is the one the read names, before the issue read lists its documents", () => {
+  const unlisted: IssueDetails = { ...issue, artifacts: [] };
+  const asked: DecisionEntry = {
+    ...entryOf(waitingDecision("q1", [])),
+    answer: "Yes.",
+    answer_state: "answered",
+    kind: "person",
+    node: { id: "ask-1", kind: "ask" },
+    question: "The words of changed.",
+    ref: `dispatch://${KEY}/ask/ask-1`,
+    text: "The words of changed.",
+    waiting_review: false,
+  };
+  const read: IssueDecisions = { ...decisions, entries: [asked, ...(decisions.entries ?? [])] };
+
+  expect(decisionChangeComments(read, [change], unlisted, undefined)).toEqual(
+    new Map([[change.id, `dispatch://${KEY}/spec#b-changed`]])
+  );
+  expect(changeDocumentIds(unlisted, read)).toEqual(new Set([spec.id]));
+  const counted = waitingOnReader(
+    unlisted,
+    "alice",
+    read,
+    isCoverageStatement,
+    [change],
+    undefined
+  );
+  expect(counted.decisions).toBe(1);
+  const root = buildIssueTree({
+    comments: [change],
+    coverage,
+    decisions: read,
+    issue: unlisted,
+    viewer: "alice",
+  });
+  const listed = nodesInOrder(root).find(
+    (node) => node.reference === `dispatch://${KEY}/spec#b-listed`
+  );
+  expect(listed?.source).toEqual({ id: spec.id, issue: KEY, kind: "artifact" });
+});
+
+// A `decision` block whose `decided_by` names a person is that person's own decision, which the
+// Decisions tab lists under "Your decisions" (`isPersonDecision`): a person's comment on its words
+// is no Change of it. The tree draws the decision as no change asked of it, never as waiting on its
+// agent, and the comment stands as a turn of the conversation, not under the decision; the
+// Decisions filter, which reads `decisionChanges`, holds no change for it either.
+test("a person's comment on a decision block a person decided asks no change of it", () => {
+  const decided: DecisionEntry = {
+    ...entryOf(waitingDecision("changed", ["r1"])),
+    decided_by: { id: "bob", kind: "person" },
+    waiting_review: false,
+  };
+  const read: IssueDecisions = { ...decisions, entries: [decided] };
+
+  expect(decisionChangeComments(read, [change], issue, undefined)).toEqual(new Map());
+  expect(decisionChanges(read, [change], issue, undefined)).toEqual(new Map());
+  expect(changeDocumentIds(issue, read)).toEqual(new Set());
+  const root = buildIssueTree({
+    comments: [change],
+    coverage,
+    decisions: read,
+    issue,
+    viewer: "alice",
+  });
+  const node = nodesInOrder(root).find((one) => one.reference === decided.ref);
+  expect({ id: node?.id, state: node?.state }).toEqual({ id: "spec#b-changed", state: undefined });
+  expect(parentsOf(root, change.id)).toEqual([root.id]);
 });
 
 // R3, R7 and R13: a Change belongs to the decision whose block of the spec holds the block the

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync/atomic"
 
 	"github.com/jackc/pgx/v5"
 
@@ -89,7 +90,10 @@ func QueueBacklinkCounts(b *pgx.Batch, who model.Actor, toKind string, ids, excl
 //
 // The acting credential is bound as $3, which every arm's visibility predicate names: an edge
 // whose source who may not see raises no count, by the same test the list of those edges binds
-// (readEdgeRows), so a count and its list cannot disagree.
+// (readEdgeRows), so a count and its list cannot disagree. Each arm binds its predicate through
+// the gate, as the list does (authorOnlyGate): only where its source can be reserved for its
+// author. The arms over a document's block keep theirs (gateKeeps), and every count holds them
+// (mentionBacklinkArms), so every statement still names $3, which Postgres must find in it to type.
 //
 // A count of one address binds that address itself and not an array of one, which is the
 // statement every page read of a single node runs (the issue read's own count). An array tells
@@ -239,6 +243,34 @@ func (t backlinkTarget) addressed() string {
 // visibility predicate names (backlinkCountStatement).
 const backlinkSeen = "$3"
 
+// fourArmsDeleted says graph_edges holds none of the four arms the graph-store spec moved and its
+// tuple arm no join to the tables behind them: the arm over document_blocks, the arm over
+// block_refs and the two arms over comments, which graphcensus.RunViewArmsStep deletes at a boot
+// once it has proved that every row of those tables names its node and that every tuple of their
+// kinds is named by a row. While it is false a count reads the view as every set before the step's
+// states it (store.GraphEdgesBlockNodeListed): each of those arms over the rows that name no node,
+// and the store's reading of each kind while the row that names it carries its node. Once it is true
+// the arms marked goesWithFourArms, the arm over block_refs of mentionBacklinkArms and the store's
+// reading of a block's links drop their read of the table and their join to the projection row, as
+// the view's tuple arm does (store.GraphEdgesFourArmsDeleted): a block's links by their kind
+// (store.BlockLinkKindsSQL) and a block's membership and a comment's relations by the tuple alone.
+//
+// It is the view the database holds, as this process last read it: cmd/dispatch sets it from the
+// view's definition before the process serves (graphcensus.ViewArmsGone), again about every minute
+// after (graphcensus.FollowViewArms), and once this boot's own step has deleted the arms. So a
+// process that boots after another process's step counts as the view answers from its first
+// request. A process that read the arms standing counts as the view did before the deletion until
+// its next read; what it counts then, and the one class of row it counts that the view no longer
+// answers, a row past the store's address bound written in that interval, FollowViewArms says.
+var fourArmsDeleted atomic.Bool
+
+// SetFourArmsDeleted records whether graph_edges holds none of the four arms the boot step deletes
+// (fourArmsDeleted). Only a process that boots (cmd/dispatch, through the reads graphcensus makes
+// of the view and the step's own answer) and a test that reads the counts against a view stated
+// without them set it; a test that sets it holds the counts of every other test of its process to
+// a view without the arms, so it runs alone and sets it back.
+func SetFourArmsDeleted(deleted bool) { fourArmsDeleted.Store(deleted) }
+
 // A projection row says for itself which relation holds its edges: while it names no node the
 // table does, and from the moment it names one the tuples do (migration 20261109215947). The
 // two sets never overlap, because the writer that states a row's tuples names its node on the
@@ -259,7 +291,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 // release before this one deletes a row and appends no retraction, so the tuple outlives the row,
 // and only the row can say the edge still stands; that build may also write the row again with
 // no node, which its table's arm then answers alone. graph_edges' tuple arm makes the same join
-// (migrations 20261109215947, 20261116094101, 20261117140000 and 20261118023219). An ask holds a
+// (migrations 20261109215947, 20261125163553, 20261126050003 and 20261126050004). An ask holds a
 // follower row per session, so the follower row that carries a followed_by is the one of the
 // session the tuple reaches; an issue's row carries its child_of while it names that parent, and
 // an issue_links row the needs of its own pair; a component's row carries its part_of while it
@@ -270,6 +302,7 @@ func rowNamesNoNode(column string) string { return column + ` is null` }
 func projectionCarries(table, fromKind, alias string) string {
 	pair := ""
 	switch table {
+	// kept for one release: asks-arms
 	case "ask_followers":
 		pair = ` and projected.session_id = ` + alias + `.to_id`
 	case "issues":
@@ -290,12 +323,24 @@ func projectionCarries(table, fromKind, alias string) string {
 // blockRefCarries is projectionCarries for a link, whose projection row is the block_refs row of
 // the pair: the same node, kind and far end as the tuple at alias. The node is fromKind's: a
 // block's own link, or an answered ask's shaped, whose block_refs row names the ask's node
-// (migration 20261116094101).
+// (migration 20261125163553).
 func blockRefCarries(fromKind, alias string) string {
 	return `exists (select 1 from block_refs projected
 		where projected.node_kind = '` + fromKind + `' and projected.node_address = ` + alias + `.from_id
 			and projected.kind = ` + alias + `.kind and projected.to_kind = ` + alias + `.to_kind
 			and projected.to_id = ` + alias + `.to_id)`
+}
+
+// blockLinkCarried is the test the store's reading of a block's links, or of an answered ask's
+// shaped, makes of the tuple at alias in place of the block_refs row: while the row of the pair
+// carries the node (blockRefCarries), and once graph_edges holds no arm over block_refs
+// (fourArmsDeleted, which deleted says), while the tuple's kind is one a block_refs row projects
+// (store.BlockLinkKindsSQL), as the view's tuple arm tests it.
+func blockLinkCarried(fromKind, alias string, deleted bool) string {
+	if deleted {
+		return alias + `.kind in (` + store.BlockLinkKindsSQL + `)`
+	}
+	return blockRefCarries(fromKind, alias)
 }
 
 // TupleKinds is every relation kind this build writes as tuples and graph_edges answers from
@@ -304,20 +349,26 @@ func blockRefCarries(fromKind, alias string) string {
 // followed_by, and a decision block's from_ask and decided_by, which the
 // arm renders through the block_refs row of the pair as it renders a block's every other link,
 // and the kinds the view answers from the tuples alone, with no projection row behind them (its
-// store class, migrations 20261116184707 and 20261117020856): changed_by_run, has_kind,
-// triggered_by, constrained_by and prevented_by out of any node, and part_of and authored_by out
-// of a node of the kinds cybermonklabs/legion#4193 adds (graphstore.KindInteraction and the three
-// beside it); an issue's relations, child_of and needs, which issues and issue_links project,
-// and duplicate_of and filed_from, which no row does, beside a document's attached_to, the part_of
-// to its issue the view answers by that name (migration 20261117140000); and a component's
-// part_of its parent and depends_on another component and an issue's affects a component, which
-// components, component_depends and issue_component_members project (migration 20261118023219).
-// It is the list the view's tuple arms render (migrations 20261109215947, 20261116094101,
-// 20261116184707, 20261117020856, 20261117140000, 20261118023219 and 20261119100000) and the list
+// store class, migrations 20261126050001 and 20261126050002), which the graph read's store arm
+// reads by the same lists (keyedStoreArm): storeArmPointers out of any node, and
+// storeArmPlacements and authored_by out of a node of the kinds cybermonklabs/legion#4193 adds
+// (graphstore.KindInteraction and the three beside it); an issue's relations, child_of and needs,
+// which issues and issue_links project, and duplicate_of and filed_from, which no row does, beside
+// a document's attached_to, the part_of to its issue the view answers by that name (migration
+// 20261126050003); and a component's part_of its parent and depends_on another component and an
+// issue's affects a component, which components, component_depends and issue_component_members
+// project (migration 20261126050004).
+// It is the list the view's tuple arms render (migrations 20261109215947, 20261125163554,
+// 20261126050001, 20261126050002, 20261126050003, 20261126050004 and 20261126050005) and the list
 // the announcer writes into server_build_announcements.tuple_kinds (startup.Deps), which is how
 // the release that deletes an old arm of the view reads whether the release a rollback would
 // reach writes that arm's kinds as tuples too. A child that moves another relation into the store
-// adds its kinds here, so the arm and the announcement read one list.
+// adds its kinds here, so the arm and the announcement read one list; a relation the view answers
+// from the tuples alone goes into graphstore's pointerRules instead: a pointer there alone, which
+// storeArmPointers (graph.go) reads from graphstore.PointerKinds, and a placement there and then
+// in storeArmPlacements (graph.go), which TestTheStoreArmReadsEveryKindThePointerRulesHold holds
+// to graphstore.PlacementKinds; one that no pointer rule holds, as changed_by_run is, goes into
+// storeArmPointers itself. This list reads both.
 //
 // The announcement names a kind alone, and part_of in it is no claim about every part_of the store
 // holds: this build writes a part_of the view answers only out of a lens, a lens_block, a risk, a
@@ -328,23 +379,19 @@ func blockRefCarries(fromKind, alias string) string {
 // mentions in it is an artifact source's too, not a block's alone: a document's version index and
 // rebuild-refs write a mentions tuple out of the document's node beside each refs row of the
 // document (Replacement.ArtifactMentions), which the view answers while that row stands (migration
-// 20261119100000).
+// 20261126050005).
 //
 // The list carries this build's capabilities too (processes.Capabilities): issue_room, which no
 // relation kind spells, is how a reader of the announcements tells a build that serves the issue
-// room (decision 7 of this branch's plan). No arm renders a capability, so the view answers
+// room (decision 7 of the issue-tree plan). No arm renders a capability, so the view answers
 // nothing under that name.
 func TupleKinds() []string {
-	kinds := append([]string{
+	kinds := slices.Concat([]string{
 		TupleInDocument, "mentions", graphstore.TupleAnchoredTo, graphstore.TupleOwnedBy,
-		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy,
-		graphstore.TupleChangedByRun, graphstore.TupleHasKind, graphstore.TupleTriggeredBy,
-		graphstore.TupleConstrainedBy, graphstore.TuplePreventedBy,
-		graphstore.TuplePartOf, graphstore.TupleAuthoredBy,
+		graphstore.TupleFollowedBy, TupleFromAsk, graphstore.TupleDecidedBy, graphstore.TupleAuthoredBy,
 		graphstore.TupleChildOf, graphstore.TupleNeeds, graphstore.TupleDuplicateOf, graphstore.TupleFiledFrom,
 		TupleAttachedTo, graphstore.TupleDependsOn, graphstore.TupleAffects,
-	}, pmdoc.LinkKinds()...)
-	kinds = append(kinds, processes.Capabilities...)
+	}, storeArmPointers, storeArmPlacements, pmdoc.LinkKinds(), processes.Capabilities)
 	slices.Sort(kinds)
 	return slices.Compact(kinds)
 }
@@ -355,7 +402,7 @@ const TupleAttachedTo = "attached_to"
 
 // attachedArtifactStands is the test the view's arm over the artifacts that carry their node makes
 // of the artifacts row aliased a: its node is not gone and its part_of to the issue the row names
-// is the newest tuple of that relation and asserts it (migration 20261117140000).
+// is the newest tuple of that relation and asserts it (migration 20261126050003).
 const attachedArtifactStands = `a.node_kind is not null
 			and exists (select 1 from graph_nodes live where live.kind = a.node_kind and live.id = a.node_address and live.state <> 'gone')
 			and exists (select 1 from (
@@ -409,7 +456,9 @@ func currentTuple(alias string) string {
 // deleted - a block a version no longer holds. The state is the node row's, the projection of
 // its own state tuples, so a block a later version restores holds its edges again. The second
 // is that node kind's predicate from the registry, which keeps an edge whose source the acting
-// person may not see out of the count exactly as it is out of the list (visibility.go).
+// person may not see out of the count exactly as it is out of the list (visibility.go). The first
+// is made on every arm; the second only where the gate keeps the predicate of kind (gateKeeps,
+// authorOnlyGate), so a source the store reserves for nobody is read for its state alone.
 //
 // Written apart - an `exists` over the node's primary key for the state, and the predicate's
 // own scalar subquery over the same key - the arm read that one row twice for every candidate
@@ -423,20 +472,37 @@ func currentTuple(alias string) string {
 // It is keyed as the view's join is, over the node's own primary key, so the count and the
 // view cannot read one tuple differently.
 func liveVisibleNode(kind, address string) string {
-	return `exists (select 1 from graph_nodes live
-		where live.kind = '` + kind + `' and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and ` + VisibleKindRow(kind, "live", backlinkSeen) + `)`
+	visible := "true"
+	if gateKeeps(kind) {
+		visible = VisibleKindRow(kind, "live", backlinkSeen)
+	}
+	return liveNode(`'`+kind+`'`, address, visible)
 }
 
-// liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr: the
-// same one read of the node's row, with the predicate of the row's own kind over it (VisibleRow),
-// which compares each kind's author as that kind's entry states. The arm that binds it keeps only
-// sources of kinds the registry holds (storedSQL), so no row of a kind without a predicate reaches
-// it.
-func liveVisibleNodeOf(kindExpr, address string) string {
+// liveVisibleNodeOf is liveVisibleNode over an edge whose source kind is a column, kindExpr, of one
+// of kinds: the same one read of the node's row, with the predicate of the row's own kind over it
+// (VisibleRow), which compares each kind's author as that kind's entry states. The arm that binds
+// it keeps only sources of kinds the registry holds (storedSQL), so no row of a kind without a
+// predicate reaches it. The predicate is bound where the gate (authorOnlyGate) keeps the predicate
+// of any of kinds (NodeKinds.gate), and not at all where it keeps none. It is bound whole, never
+// behind the gate in SQL: it reads only columns of the row liveNode already holds, so the gate
+// would spare it no probe and only add to every tuple its own test of the row's kind as the graph
+// addresses it (graphstore.AddressKindSQL).
+func liveVisibleNodeOf(kinds NodeKinds, kindExpr, address string) string {
+	visible := "true"
+	if bind, _ := kinds.gate(); bind {
+		visible = VisibleRow("live", backlinkSeen)
+	}
+	return liveNode(kindExpr, address, visible)
+}
+
+// liveNode is the one read of the node's row that liveVisibleNode and liveVisibleNodeOf make: the
+// row of the node kindExpr and address name, aliased live, whose state is not gone and which
+// visible, a predicate over live, holds: true where the read binds no predicate of the node.
+func liveNode(kindExpr, address, visible string) string {
 	return `exists (select 1 from graph_nodes live
 		where live.kind = ` + kindExpr + ` and live.id = ` + address + ` and live.state <> '` + graphstore.StateGone + `'
-			and ` + VisibleRow("live", backlinkSeen) + `)`
+			and ` + visible + `)`
 }
 
 // backlinkArm is one arm of graph_edges whose edge kind is a SQL literal rather than a column:
@@ -450,8 +516,9 @@ type backlinkArm struct {
 	from string
 	// fromKind and fromID are the node the arm's edge comes from: the kind the view writes as
 	// that arm's from_kind, and the expression that names the node under it. They are what the
-	// arm binds its visibility predicate over, so an edge whose source the acting person may
-	// not see raises no count, exactly as it is no row of the list (readEdgeRows).
+	// arm binds its visibility predicate over, where the gate keeps it (gatedKind), so an edge
+	// whose source the acting person may not see raises no count, exactly as it is no row of the
+	// list (readEdgeRows).
 	fromKind string
 	fromID   string
 	// addressIs is the test the view's arm makes of the address itself, written as the tail of
@@ -478,16 +545,23 @@ type backlinkArm struct {
 	projectedIn string
 	// moved is, for an arm over a column that may be updated in place while the row's node columns
 	// are left as they were, the test that a row naming its node names a far end its node's tuple
-	// does not: the arm counts such a row as naming no node (R9 of dispatch://INFRA-1253), as
+	// does not: the arm counts such a row as naming no node (R9 of the issue-tree spec), as
 	// graph_edges' old arm answers it. An issue's parent has one (store.IssueParentMoved), since
 	// the release before's issue PATCH sets parent_key in place, and a component's parent the same
 	// (store.ComponentParentMoved).
 	moved string
 	// storedFrom makes the arm the store's alone: the current tuples of kind out of a node of one
 	// of these kinds, which graph_edges answers from the tuples with no projection row behind
-	// them (its tuple arm's store class, migration 20261117020856). Such an arm reads no table
+	// them (its tuple arm's store class, migration 20261126050002). Such an arm reads no table
 	// of its own, so it names no from, where, toID, fromKind or fromID (storedSQL).
 	storedFrom []string
+	// goesWithFourArms marks the arms of this table that count what graph_edges' arms over
+	// comments' anchored_to and owned_by and over document_blocks' part_of count, three of the four
+	// arms the boot step graphcensus.RunViewArmsStep deletes (the fourth, over block_refs, is
+	// mentionBacklinkArms'). Once the view holds none of them (fourArmsDeleted) the arm is the
+	// store's reading alone, with no read of its own table and no join to the row that names the
+	// node, as the view's tuple arm answers the kind then.
+	goesWithFourArms bool
 }
 
 // sql is the arm as the count reads it for target, keyed on the addresses bound as $1 and
@@ -498,6 +572,10 @@ type backlinkArm struct {
 func (a backlinkArm) sql(target backlinkTarget) string {
 	if len(a.storedFrom) > 0 {
 		return a.storedSQL(target)
+	}
+	deleted := a.goesWithFourArms && fourArmsDeleted.Load()
+	if deleted {
+		return a.tupleSQL(target, true)
 	}
 	counted, join, keyed, address := target.read(a.toID)
 	where := a.where
@@ -521,30 +599,35 @@ func (a backlinkArm) sql(target backlinkTarget) string {
 		where += ` and `
 	}
 	read := `select ` + counted + ` from ` + a.from + join + ` where ` + where + keyed +
-		` and ` + VisibleKind(a.fromKind, a.fromID, backlinkSeen)
+		` and ` + gatedKind(a.fromKind, a.fromID, backlinkSeen)
 	if a.tupleKind == "" {
 		return read
 	}
-	return read + ` union all ` + a.tupleSQL(target)
+	return read + ` union all ` + a.tupleSQL(target, false)
 }
 
 // tupleSQL is the arm's reading of the store: the current tuples of this arm's kind pointing at
 // the addresses bound as $1, read through graph_tuples_as_of_in, which leads with the to side
 // and the kind. Its last tests are the view's own three rules over the node the tuple comes
 // from: an edge is the newest tuple of its own while that one asserts, it counts only while the
-// projection row that names the node carries it (projectionCarries), and a node whose state is
-// gone holds none, the last taken with the registry's predicate for that node kind out of one
-// read of its row (liveVisibleNode), so a node the acting person may not see raises no count.
-func (a backlinkArm) tupleSQL(target backlinkTarget) string {
+// projection row that names the node carries it (projectionCarries) - but for an arm that goes with
+// the four, once deleted says the view holds none of them (fourArmsDeleted), which reads no row -
+// and a node whose state is gone holds none, the last taken with the registry's predicate for that
+// node kind out of one read of its row (liveVisibleNode), so a node the acting person may not see
+// raises no count.
+func (a backlinkArm) tupleSQL(target backlinkTarget, deleted bool) string {
 	counted, join, keyed, address := target.read(`tuple.to_id`)
 	where := `tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.tupleKind +
 		`' and tuple.from_kind = '` + a.fromKind + `'`
 	if a.addressIs != "" {
 		where += ` and ` + address + a.addressIs
 	}
+	carried := ""
+	if !deleted {
+		carried = ` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple")
+	}
 	return `select ` + counted + ` from graph_tuples tuple` + join + ` where ` + where +
-		` and ` + keyed + ` and ` + currentTuple("tuple") +
-		` and ` + projectionCarries(a.projectedIn, a.fromKind, "tuple") +
+		` and ` + keyed + ` and ` + currentTuple("tuple") + carried +
 		` and ` + liveVisibleNode(a.fromKind, `tuple.from_id`)
 }
 
@@ -557,7 +640,7 @@ func (a backlinkArm) tupleSQL(target backlinkTarget) string {
 // writes it as, and a block arm counts no finding. Every kind of storedFrom is one this build
 // resolves, so the count holds no edge whose node the list behind it cannot answer; and a source
 // is counted only while it is not gone and the acting person may see it, by its own kind's
-// predicate (liveVisibleNodeOf).
+// predicate, bound through the gate over the kinds of storedFrom (liveVisibleNodeOf).
 func (a backlinkArm) storedSQL(target backlinkTarget) string {
 	counted, join, keyed, _ := target.read(`tuple.to_id`)
 	addressed := graphstore.AddressKindSQL(`tuple.from_kind`, `tuple.from_id`)
@@ -569,9 +652,9 @@ func (a backlinkArm) storedSQL(target backlinkTarget) string {
 	}
 	return `select ` + counted + ` from graph_tuples tuple` + join +
 		` where tuple.to_kind = '` + target.kind + `' and tuple.kind = '` + a.kind +
-		`' and tuple.from_kind in (` + quotedKinds(stored) + `) and ` + addressed + ` in (` + quotedKinds(a.storedFrom) + `)` +
+		`' and tuple.from_kind in (` + store.QuoteLiterals(stored) + `) and ` + addressed + ` in (` + store.QuoteLiterals(a.storedFrom) + `)` +
 		` and ` + keyed + ` and ` + currentTuple("tuple") +
-		` and ` + liveVisibleNodeOf(`tuple.from_kind`, `tuple.from_id`)
+		` and ` + liveVisibleNodeOf(NodeKinds{kinds: a.storedFrom}, `tuple.from_kind`, `tuple.from_id`)
 }
 
 // authoredByReasoning is the arm that counts, on a person's or a session's node, the authored_by
@@ -606,7 +689,7 @@ var changedByRun = backlinkArm{kind: graphstore.TupleChangedByRun, storedFrom: [
 }}
 
 // filedFrom is the arm that counts, on an ask, a comment or a message, the filed_from tuple of each
-// issue filed out of it, which the view answers from the store alone (dispatch://INFRA-1253 R9).
+// issue filed out of it, which the view answers from the store alone (R9 of the issue-tree spec).
 var filedFrom = backlinkArm{kind: graphstore.TupleFiledFrom, storedFrom: []string{graphstore.KindIssue}}
 
 // backlinkArms is, for each node kind nodeRegistry resolves, every arm of graph_edges whose edge
@@ -630,7 +713,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// issues_parent_key, partial on parent_key is not null, over the rows that name no node
 		// and the rows whose parent the release before moved in place (store.IssueParentMoved);
 		// the store states the same fact as the issue's child_of, answered while the issue's row
-		// carries its node and names that parent (migration 20261117140000).
+		// carries its node and names that parent (migration 20261126050003).
 		{kind: graphstore.TupleChildOf, from: `issues i`, where: `i.parent_key is not null`, toID: `i.parent_key`,
 			fromKind: "issue", fromID: `i.key`, projected: `i.node_kind`, moved: store.IssueParentMoved,
 			tupleKind: graphstore.TupleChildOf, projectedIn: "issues"},
@@ -659,24 +742,34 @@ var backlinkArms = map[string][]backlinkArm{
 	// through the unique artifacts_ref_key_key and joins the table that points at it.
 	"artifact": {
 		// asks_anchor_artifact, on the same coalesce the join makes; the store states the same
-		// fact as an ask's anchored_to, answered while the ask's row carries its node.
+		// fact as an ask's anchored_to, answered while the ask's row carries its node. It goes
+		// with graph_edges' arm over asks, and the store's reading of an ask's anchored_to then
+		// joins no asks row, as the view's tuple arm does then.
+		// kept for one release: asks-arms
 		{kind: "anchored_to", from: `artifacts a join asks k on coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "asks"},
 		// comments_anchor_artifact, on the same cast the join makes; the store states the same
-		// fact as a comment's anchored_to, answered while the comment's row carries its node.
+		// fact as a comment's anchored_to, answered while the comment's row carries its node. It
+		// goes with the view's arm over comments (goesWithFourArms).
 		{kind: "anchored_to", from: `artifacts a join comments c on (c.anchor->>'artifact_id')::uuid = a.id`, toID: `a.ref_key`,
-			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments"},
-		// asks_artifact_id, and the ask's owned_by in the store.
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleAnchoredTo, projectedIn: "comments",
+			goesWithFourArms: true},
+		// asks_artifact_id, and the ask's owned_by in the store, which go as an ask's anchored_to does.
+		// kept for one release: asks-arms
 		{kind: "owned_by", from: `artifacts a join asks k on k.artifact_id = a.id`, toID: `a.ref_key`,
 			fromKind: "ask", fromID: `k.id::text`, projected: `k.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "asks"},
-		// comments_artifact_id, and the comment's owned_by in the store.
+		// comments_artifact_id, and the comment's owned_by in the store. It goes as the arm over
+		// comments' anchored_to does.
 		{kind: "owned_by", from: `artifacts a join comments c on c.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments"},
+			fromKind: graphstore.KindComment, fromID: `c.id::text`, projected: `c.node_kind`, tupleKind: graphstore.TupleOwnedBy, projectedIn: "comments",
+			goesWithFourArms: true},
 		// The document_blocks primary key (artifact_id, block_id). The store states a block's
 		// membership of its document as in_document, which the view renders as this part_of,
-		// answered while the block's own row carries its node.
+		// answered while the block's own row carries its node. It goes with the view's arm over
+		// document_blocks (goesWithFourArms).
 		{kind: "part_of", from: `artifacts a join document_blocks d on d.artifact_id = a.id`, toID: `a.ref_key`,
-			fromKind: "block", fromID: `d.node_id`, projected: `d.node_kind`, tupleKind: TupleInDocument, projectedIn: "document_blocks"},
+			fromKind: "block", fromID: `d.node_id`, projected: `d.node_kind`, tupleKind: TupleInDocument, projectedIn: "document_blocks",
+			goesWithFourArms: true},
 		// graph_tuples_as_of_in: a lens invoked on the document, its part_of at the document's
 		// ref_key; a block's membership is in_document, so this arm counts none of it.
 		lensStandsOn,
@@ -720,7 +813,7 @@ var backlinkArms = map[string][]backlinkArm{
 		// components_parent_node, on the same expression the arm selects, over the rows that
 		// name no node and the rows whose parent was moved in place (store.ComponentParentMoved);
 		// the store states the same fact as the component's part_of, answered while the
-		// component's row carries its node and names that parent (migration 20261118023219).
+		// component's row carries its node and names that parent (migration 20261126050004).
 		{kind: graphstore.TuplePartOf, from: `components c`, where: `c.parent is not null`, toID: `c.project_key || '/' || c.parent`,
 			fromKind: graphstore.KindComponent, fromID: `c.project_key || '/' || c.id`, projected: `c.node_kind`,
 			moved: store.ComponentParentMoved, tupleKind: graphstore.TuplePartOf, projectedIn: "components"},
@@ -740,7 +833,9 @@ var backlinkArms = map[string][]backlinkArm{
 	"session": {
 		// ask_followers_session_id (migration 20261101182419), which exists for this arm; the
 		// store states the same fact as an ask's followed_by, answered while the follower row of
-		// that ask and that session carries the ask's node (projectionCarries' session test).
+		// that ask and that session carries the ask's node (projectionCarries' session test). It
+		// goes as the artifact's arms over asks do.
+		// kept for one release: asks-arms
 		{kind: "followed_by", from: `ask_followers f`, toID: `f.session_id`,
 			fromKind: "ask", fromID: `f.ask_id::text`, projected: `f.node_kind`, tupleKind: graphstore.TupleFollowedBy, projectedIn: "ask_followers"},
 		// graph_tuples_as_of_in: what a session wrote of the kinds the view answers its
@@ -771,7 +866,7 @@ var backlinkArms = map[string][]backlinkArm{
 	// triggered, whose count says how many lenses its findings invoked. A finding and a risk are
 	// pointed at by the part_of of a lens invoked on them. Each is an arm of the store alone, the
 	// view's tuple arms answering every one of them, a finding's part_of as the lens_block its own
-	// arm writes (migration 20261117020856).
+	// arm writes (migration 20261126050002).
 	graphstore.KindLens: {
 		{kind: graphstore.TuplePartOf, storedFrom: []string{graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindRisk}},
 		{kind: graphstore.TupleTriggeredBy, storedFrom: []string{graphstore.KindLens}},
@@ -819,20 +914,26 @@ var backlinkArms = map[string][]backlinkArm{
 // caller's excluded edge kinds, bound as $4 - on these arms the edge kind is a column, so an
 // exclusion is a predicate and never drops an arm, and an empty list adds nothing.
 //
-// Each arm carries the visibility predicate of the node its mention comes from: the refs arm's
-// source kind is a column, so it binds the registry over every kind at once (VisibleEnd, over
-// the from side's spelling of an id, and over a refs row's source kinds, none of them standing:
-// refsSources), the store's reading of a document's mentions binds the document's, and each block
-// arm's source is a block of the kind its table holds.
+// Each arm carries the visibility predicate of the node its mention comes from, bound through the
+// gate (authorOnlyGate): only where that node can be reserved for its author. The refs arm's
+// source kind is a column of the kinds a refs row's source can be (refsSources: a document, an
+// ask, a comment or a message, none of them standing), which the store reserves for nobody, so it
+// binds none (gatedEnd), and neither does the store's reading of a document's mentions
+// (liveVisibleNode); a document block's arms bind the block predicate (gateKeeps); and the arms
+// over an ask's, a comment's or a message's blocks bind none (gatedKind). The arms over the
+// store's tuples test the source's state on every arm (liveVisibleNode).
 func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string {
+	deleted := fourArmsDeleted.Load()
 	exclude := ""
 	if len(excludeKinds) > 0 {
 		exclude = ` and not (r.kind = any($4))`
 	}
 	counted, join, keyed, _ := target.read(`r.to_id`)
-	arm := func(relation, rest, visible string) string {
+	// rest is the arm's own tests of its row, and source its test of the node its mention comes
+	// from; each is a predicate, source true where it makes none.
+	arm := func(relation, rest, source string) string {
 		return `select ` + counted + ` from ` + relation + join + `
-			where r.to_kind = '` + target.kind + `' and ` + keyed + rest + exclude + ` and ` + visible
+			where r.to_kind = '` + target.kind + `' and ` + keyed + ` and ` + rest + exclude + ` and ` + source
 	}
 	arms := []string{
 		// refs_to (to_kind, to_id), over the rows the store states no tuple of
@@ -845,8 +946,8 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// The source-kind filter is this arm's alone for the same reason: every other arm's
 		// from_kind is a literal, or one of a list of literals (storedSQL), of a kind nodeRegistry
 		// resolves, so the filter would drop nothing there.
-		arm(`refs r`, ` and r.from_kind = any($2) and `+store.ReferenceNotStated+` and not `+heldByABlock("r"),
-			VisibleEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
+		arm(`refs r`, `r.from_kind = any($2) and `+store.ReferenceNotStated+` and not `+heldByABlock("r"),
+			gatedEnd(refsSources, `r.from_kind`, `r.from_id`, false, backlinkSeen)),
 		// The mentions of a document whose row names its node, in the store, read through
 		// graph_tuples_inbound: each current mentions tuple out of the document's node, joined to
 		// the artifacts row naming that node by its ref_key, counted only while the refs row of the
@@ -856,44 +957,50 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 		// row names; its own test of the document is the view's state rule and this registry's
 		// predicate made out of one read of the document's node row (liveVisibleNode).
 		arm(`graph_tuples r join artifacts mentioning on mentioning.ref_key = r.from_id and mentioning.node_kind is not null`,
-			` and r.from_kind = '`+graphstore.KindArtifact+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
+			`r.from_kind = '`+graphstore.KindArtifact+`' and r.kind = '`+graphstore.TupleMentions+`' and `+currentTuple("r")+`
 			and exists (select 1 from refs projected
 				where projected.from_kind = r.from_kind and projected.from_id = mentioning.id::text
 					and projected.to_kind = r.to_kind and projected.to_id = r.to_id)
 			and not `+documentBlockHolds("r", "mentioning.id::text"),
 			liveVisibleNode(graphstore.KindArtifact, `r.from_id`)),
-		// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
-		// over the rows that name no node. The view's own arm lists a block[] pointer's row only
-		// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
-		// with no limit is listed without the call; this arm repeats both, so the count is the
-		// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
-		// the count the moment it leaves the list, with no rewrite of either.
-		arm(`block_refs r`, ` and (r.to_types is null or block_ref_listed(r.to_types, r.to_id))
-			and `+rowNamesNoNode(`r.node_kind`),
-			VisibleKind("block", `r.from_node`, backlinkSeen)),
-		// The same links in the store, read through graph_tuples_as_of_in: every current
-		// relation a block states but its membership of its document, which is the artifact's
-		// own part_of arm, and its placement under the block holding it, which is no edge of
-		// the view, each counted only while the block_refs row of its pair carries the block's
-		// node (blockRefCarries), as the view's tuple arm joins it. The types test is the same one
-		// with the attribute node's targets as its input, as the view's tuple arm makes it
-		// (migration 20261109215947), and a mention is no attribute of any block type, so it is
-		// listed without the lookup. Its own test of the citing block is the view's state rule and
-		// this registry's predicate made out of one read of that block's node row
-		// (liveVisibleNode).
-		arm(`graph_tuples r`, ` and r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
-			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
-			and (r.kind = 'mentions' or block_ref_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
-			and `+blockRefCarries(BlockNodeKind, "r"),
-			liveVisibleNode("block", `r.from_id`)),
 	}
+	// block_refs_to_source (to_kind, to_id, (artifact_id::text)), by its first two columns,
+	// over the rows that name no node. The view's own arm lists a block[] pointer's row only
+	// while block_ref_listed holds, the types test a typed block's pointer carries, and a row
+	// with no limit is listed without the call; this arm repeats both, so the count is the
+	// rows the list shows. A pointer whose target is retyped out of its allowed types leaves
+	// the count the moment it leaves the list, with no rewrite of either. It goes with the view's
+	// arm over block_refs, which the step of graphcensus.RunViewArmsStep deletes (fourArmsDeleted).
+	if !deleted {
+		arms = append(arms, arm(`block_refs r`, `(r.to_types is null or block_ref_listed(r.to_types, r.to_id))
+			and `+rowNamesNoNode(`r.node_kind`),
+			gatedKind("block", `r.from_node`, backlinkSeen)))
+	}
+	// The same links in the store, read through graph_tuples_as_of_in: every current
+	// relation a block states but its membership of its document, which is the artifact's
+	// own part_of arm, and its placement under the block holding it, which is no edge of
+	// the view, each counted only while the block_refs row of its pair carries the block's
+	// node (blockRefCarries), as the view's tuple arm joins it, and once the view holds no arm
+	// over block_refs only while its kind is one a block_refs row projects (blockLinkCarried).
+	// The types test is the view's
+	// tuple arm's: block_node_listed with the attribute node's targets as its input
+	// (migration 20261126050009), which a boot step restates to read the target's type from
+	// its node (graphcensus.RunTypedBlockSupertagsStep), and a mention is no attribute of any
+	// block type, so it is listed without the lookup. Its own test of the citing block is the
+	// view's state rule and this registry's predicate made out of one read of that block's
+	// node row (liveVisibleNode).
+	arms = append(arms, arm(`graph_tuples r`, `r.from_kind = 'block' and r.kind <> '`+TupleInDocument+`'
+			and r.kind <> '`+graphstore.TuplePartOf+`' and `+currentTuple("r")+`
+			and (r.kind = 'mentions' or block_node_listed(block_pointer_targets(r.from_id, r.kind), r.to_id))
+			and `+blockLinkCarried(BlockNodeKind, "r", deleted),
+		liveVisibleNode("block", `r.from_id`)))
 	// An answered ask's shaped, its tie to a block of its issue, which the store states from the
 	// ask's node and the view's tuple arm answers while the block_refs row of the pair, marked with
-	// that node, stands (migration 20261116094101). An ask's shaped declares no targets, so it
+	// that node, stands (migration 20261125163553). An ask's shaped declares no targets, so it
 	// carries no types test.
 	if target.kind == BlockNodeKind {
-		arms = append(arms, arm(`graph_tuples r`, ` and r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
-			and `+currentTuple("r")+` and `+blockRefCarries(graphstore.KindAsk, "r"),
+		arms = append(arms, arm(`graph_tuples r`, `r.from_kind = '`+graphstore.KindAsk+`' and r.kind = '`+TupleShaped+`'
+			and `+currentTuple("r")+` and `+blockLinkCarried(graphstore.KindAsk, "r", deleted),
 			liveVisibleNode(graphstore.KindAsk, `r.from_id`)))
 	}
 	// One arm per item kind over the links its blocks hold: <kind>_block_refs_to
@@ -902,8 +1009,8 @@ func mentionBacklinkArms(target backlinkTarget, excludeKinds []string) []string 
 	// holds is listed while that block is one of the item's current ones, and the count copies
 	// the view's answer rather than correcting it.
 	for _, item := range itemKinds {
-		arms = append(arms, arm(itemBlockLinks(item), ` and `+itemBlockCurrent,
-			VisibleKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
+		arms = append(arms, arm(itemBlockLinks(item), itemBlockCurrent,
+			gatedKind(item.BlockKind(), `r.from_node`, backlinkSeen)))
 	}
 	return arms
 }

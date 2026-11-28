@@ -7,8 +7,8 @@ import { configure } from "@testing-library/react";
 // this in-memory one, which keeps IndexedDB's transaction ordering.
 import "fake-indexeddb/auto";
 import { notifyManager } from "@tanstack/react-query";
+import { resetPageGoing } from "../api/client";
 import { resetReachability } from "../api/reachability";
-import { resetFormRefusals } from "../features/doc/form-refusals";
 import { resetAnswerDrafts } from "../features/inbox/answer-drafts";
 import { resetDraftStorage } from "../features/inbox/draft-store";
 import { resetOutstandingAnswers } from "../features/inbox/outstanding-answers";
@@ -166,16 +166,13 @@ notifyManager.setScheduler((callback) => callback());
 // Ask-reply and ask-answer drafts live in module-level stores that outlive every render, so a
 // draft one test leaves behind would pre-fill the next test's composer or answer box for the
 // same ask id. An answer still out when a test ends is held in one of its own
-// (`outstanding-answers.ts`), which would keep the next test's reading column on that ask id, and
-// a refusal of Approve for the form of The Spec is kept in one too (`form-refusals.ts`), which
-// would show on the next test's card of that ask id. What every draft store kept in the tab's
-// storage goes too, the composers' own with it: their stores go with the test's query client, and
-// the next test's sign-in would take it up.
+// (`outstanding-answers.ts`), which would keep the next test's reading column on that ask id.
+// What every draft store kept in the tab's storage goes too, the composers' own with it: their
+// stores go with the test's query client, and the next test's sign-in would take it up.
 afterEach(resetReplyDrafts);
 afterEach(resetAnswerDrafts);
 afterEach(resetDraftStorage);
 afterEach(resetOutstandingAnswers);
-afterEach(resetFormRefusals);
 
 // A write a test leaves out keeps writing what it keeps, and the next test's signed-in app would
 // take it up again (`Writes.resume`): each test's are let go, their trying stopped first, since a
@@ -196,6 +193,9 @@ afterEach(resetPinState);
 // Whether Dispatch could be reached is the page's to learn afresh: a request one test failed would
 // otherwise make the next test's first answer start every waiting write's backoff over.
 afterEach(resetReachability);
+// So is whether the page went: a row that tells the page it goes (`pagehide`) ends no page, and
+// the next row's writes would else all be sent as the page goes (`api/client.ts`'s `pageGoing`).
+afterEach(resetPageGoing);
 // Every `<Timestamp>` shares one tick (`Timestamp.tsx`) that outlives the row that armed it, and a
 // tick a row did not start must not land in another row as an update outside act. One armed on a
 // fake clock the row put back never fires and would leave the tick marked as armed, so no later

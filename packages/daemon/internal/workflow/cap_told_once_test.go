@@ -63,6 +63,7 @@ func clearsGeneration(t *testing.T, pool *pgxpool.Pool) {
 // a < would never do, and a generation cleared from the row tells again at that generation's own
 // first crossing.
 func TestTheArchitectIsToldOncePerCapValue(t *testing.T) {
+	t.Parallel()
 	t.Run("seventeen moves back past the cap", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := workBackEngine(3)

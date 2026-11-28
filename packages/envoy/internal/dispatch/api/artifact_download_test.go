@@ -150,8 +150,8 @@ func requireFileVersion(t *testing.T, handler http.Handler, read fileVersionRead
 }
 
 // documentVersionKeys are the members of a document version's JSON answer, which every read
-// without download=true keeps.
-var documentVersionKeys = []string{"authors", "created_at", "markdown", "named", "number", "sha256", "size", "summary"}
+// without download=true keeps: digest among them, which a document's version always answers.
+var documentVersionKeys = []string{"authors", "created_at", "digest", "markdown", "named", "number", "sha256", "size", "summary"}
 
 // documentVersionJSON reads a document's version at address, holds the answer to the JSON a read
 // without download=true answers, with exactly documentVersionKeys and none of a download's

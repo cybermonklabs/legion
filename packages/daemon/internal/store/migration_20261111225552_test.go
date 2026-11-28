@@ -36,6 +36,7 @@ const phaseEntryVersion = 20261111225552
 // and claims.delivered_rows, which holds a person's recorded decision to the claim that was told
 // it and guards a delivery that carries no entry against being queued twice.
 func TestThePhaseEntryColumnsReplaceTheAssignmentColumnsWith20261111225552(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, phaseEntryVersion-1)

@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,6 +56,7 @@ const (
 func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 	t.Helper()
 	ctx := context.Background()
+	blocks, texts := strconv.Itoa(asOfSeedBlocks), strconv.Itoa(asOfSeedTexts)
 	for _, statement := range []string{
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 values ('issue', 'SEED-1', 'issue', 'project', 'live', now() - interval '2 days', '{}', 0),
@@ -61,7 +65,7 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		        ('artifact', 'SEED-2/spec', 'document', 'project', 'live', now() - interval '2 days', '{}', 0)`,
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 select 'block', 'SEED-1/spec#b' || i, 'block', 'project', 'live', now() - interval '1 day' + i * interval '1 second', '{}', 0
-		 from generate_series(1, 480) i`,
+		 from generate_series(1, ` + blocks + `) i`,
 		`insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
 		 select 'block', 'SEED-2/spec#c' || i, 'block', 'project', 'live', now() - interval '1 day' + i * interval '1 second', '{}', 0
 		 from generate_series(1, 10) i`,
@@ -69,32 +73,43 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		 values ('artifact', 'SEED-1/spec', 'part_of', 'issue', 'SEED-1', now() - interval '2 days', '{}', 0),
 		        ('artifact', 'SEED-2/spec', 'part_of', 'issue', 'SEED-2', now() - interval '2 days', '{}', 0)`,
 		// Each block: its part_of - the first hundred under the issue, each other one under one of
-		// those - its in_document, its rank, its state, its placement and its history of text.
+		// those - its in_document, its rank, its state, its placement, its place in the text - its
+		// text_parent, the spec for the first hundred and one of those for each other one, and its
+		// text_rank - and its history of text.
 		`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
 		 select 'block', 'SEED-1/spec#b' || i, 'part_of',
 		        case when i <= 100 then 'issue' else 'block' end,
 		        case when i <= 100 then 'SEED-1' else 'SEED-1/spec#b' || ((i - 1) % 100 + 1) end,
 		        now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'in_document', 'artifact', 'SEED-1/spec', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributeRank + `', 'value',
 		        case i when 1 then '1a' when 2 then '1B' else '2' || lpad(i::text, 4, '0') end,
 		        now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'state', 'value', 'live', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, '` + AttributePlacement + `', 'value', 'text', now() - interval '1 day', '{}'::jsonb, 0
-		 from generate_series(1, 480) i
+		 from generate_series(1, ` + blocks + `) i
+		 union all
+		 select 'block', 'SEED-1/spec#b' || i, '` + TupleTextParent + `',
+		        case when i <= 100 then 'artifact' else 'block' end,
+		        case when i <= 100 then 'SEED-1/spec' else 'SEED-1/spec#b' || ((i - 1) % 100 + 1) end,
+		        now() - interval '1 day', '{}'::jsonb, 0
+		 from generate_series(1, ` + blocks + `) i
+		 union all
+		 select 'block', 'SEED-1/spec#b' || i, '` + AttributeTextRank + `', 'value', '1' || lpad(i::text, 4, '0'), now() - interval '1 day', '{}'::jsonb, 0
+		 from generate_series(1, ` + blocks + `) i
 		 union all
 		 select 'block', 'SEED-1/spec#b' || i, 'text', 'value',
 		        ':::requirement{#b' || i || '}' || chr(10) || 'The words of b' || i || ', written ' || version || ' times.' || chr(10) || ':::' || chr(10),
 		        now() - interval '1 day' + version * interval '1 minute', '{}'::jsonb, 0
-		 from generate_series(1, 480) i, generate_series(1, 95) version`,
+		 from generate_series(1, ` + blocks + `) i, generate_series(1, ` + texts + `) version`,
 		// SEED-2's blocks, each in its own document and placed under SEED-1's first block.
 		`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
 		 select 'block', 'SEED-2/spec#c' || i, 'part_of', 'block', 'SEED-1/spec#b1', now() - interval '1 day', '{}'::jsonb, 0
@@ -139,19 +154,25 @@ type asOfRead struct {
 }
 
 // asOfReads are the walk's reads over the seed: the head's cut, the children of two nodes in rank
-// order, the values and the relations out of nodes, the rows of nodes, the moves of old
-// addresses, and the nodes of a child placed under its parent's tree, each at the seed's seq; and
-// the reads a render makes as of a time inside the seed's history of text (TreeCut.Dated): the
-// children, the values and the blocks of a document. A read of one value out of a node is served
-// by graph_tuples_values as by graph_tuples_as_of_out, each keyed on the node and the attribute,
-// and a read of the part_of or the moved_to out of a node by graph_tuples_current as by
-// graph_tuples_as_of_out, each keyed on the node and the kind: the planner takes whichever it
-// costs lower.
+// order, the values and the relations out of every block of SEED-1's tree in one read, the rows of
+// nodes, the moves of old addresses, and the nodes of a child placed under its parent's tree, each
+// at the seed's seq; and the reads a render makes as of a time inside the seed's history of text
+// (TreeCut.Dated): the children, the values and the relations - a block's text_rank and its
+// text_parent among them - and the blocks of a document. A read of the part_of or the moved_to out
+// of a node is served by graph_tuples_current as by graph_tuples_as_of_out, each keyed on the node
+// and the kind: the planner takes whichever it costs lower. The values and relations read takes a
+// lateral read of each node's tuples, keyed on the node, over a tree's every block, where a join
+// of the nodes to the tuples is planned as one scan of the whole table.
 func asOfReads(seed asOfSeed) []asOfRead {
 	parents := []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b1"}}
 	parentKinds, parentIDs := targetColumns(parents)
 	blocks := []Target{{Kind: BlockNodeKind, ID: "SEED-1/spec#b7"}, {Kind: BlockNodeKind, ID: "SEED-1/spec#b300"}}
 	blockKinds, blockIDs := targetColumns(blocks)
+	tree := make([]Target, asOfSeedBlocks)
+	for index := range tree {
+		tree[index] = Target{Kind: BlockNodeKind, ID: "SEED-1/spec#b" + strconv.Itoa(index+1)}
+	}
+	treeKinds, treeIDs := targetColumns(tree)
 	seq, open := TreeCut{ReadSeq: seed.readSeq}.bounds()
 	unbounded, at := TreeCut{At: time.Now().Add(-24*time.Hour + 30*time.Minute), Dated: true}.bounds()
 	return []asOfRead{
@@ -160,22 +181,56 @@ func asOfReads(seed asOfSeed) []asOfRead {
 			[]any{parentKinds, parentIDs, seq, open}, []string{"graph_tuples_as_of_in"}},
 		{"the children of a node in rank order as of a render's time", treeChildrenStatement,
 			[]any{parentKinds, parentIDs, unbounded, at}, []string{"graph_tuples_as_of_in"}},
-		{"the values out of a node at a time", treeValuesStatement,
-			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
-		{"the values out of a node as of a render's time", treeValuesStatement,
-			[]any{blockKinds, blockIDs, unbounded, at}, []string{"graph_tuples_as_of_out", "graph_tuples_values"}},
-		{"the relations out of a node at a time", treeRelationsStatement,
-			[]any{blockKinds, blockIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
+		{"the subtrees of nodes the walk of SEED-1 enters, every level in one read, at a time", treeSubtreesStatement,
+			[]any{parentKinds, parentIDs, seq, open, "SEED-1"}, []string{"graph_tuples_as_of_in"}},
+		{"the values and the relations out of every block of a tree at a time", treeFactsStatement,
+			[]any{treeKinds, treeIDs, seq, open}, []string{"graph_tuples_as_of_out"}},
+		{"the values and the relations out of every block of a tree as of a render's time, a text_rank and a text_parent among them", treeFactsStatement,
+			[]any{treeKinds, treeIDs, unbounded, at}, []string{"graph_tuples_as_of_out"}},
 		{"the rows of nodes", treeNodesStatement,
 			[]any{blockKinds, blockIDs}, []string{"graph_nodes_pkey"}},
 		{"the moved_to resolve at a time", treeMovedToStatement,
 			[]any{[]string{"SEED-1/old#b3", "SEED-1/spec#b9"}, seq, open, graphstore.MovedToHops},
 			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}},
+		{"the moved_to presence probe before BlockLinks and Closure resolve a target", `select ` + ResolvedBlockSQL("$1::text"),
+			[]any{"SEED-1/spec#b9"}, []string{"graph_tuples_as_of_out", "graph_tuples_current"}},
 		{"the nodes of an issue placed under an issue above, at a time", treePlacedAboveStatement,
 			[]any{"SEED-2", []string{"SEED-1"}, seq, open}, []string{"graph_tuples_as_of_in"}},
 		{"the blocks of a document as of a render's time", treeMembersStatement,
 			[]any{"SEED-1/spec", unbounded, at}, []string{"graph_tuples_as_of_in"}},
 	}
+}
+
+// EXPLAIN hides PL/pgSQL statements. Extract the installed hop query, including its
+// predicate and ordering, and bind the function's reached address as a parameter.
+var blockHop = regexp.MustCompile(`(?s)select moved\.to_kind, moved\.to_id into far_kind, far_end\s+from \(.*?\)\s*moved\s+where moved\.asserted and moved\.to_kind in \('block', 'ask'\)\s+order by moved\.at desc, moved\.seq desc\s+limit 1;`)
+
+// reachedAddress is the hop query's reference to the function's reached address, which the read
+// binds as a parameter.
+var reachedAddress = regexp.MustCompile(`\breached\b`)
+
+func blockResolutionReads(t *testing.T, database *store.Store) []asOfRead {
+	t.Helper()
+	var reads []asOfRead
+	for _, reader := range []struct{ function, name string }{
+		{"block_address_walk", "a moved_to hop in the reference, closure and block-link resolvers and the unresolved counter"},
+		{"moved_to_reach", "the terminal ask lookup in the resolvers and the unresolved counter"},
+	} {
+		var body string
+		err := database.Pool.QueryRow(t.Context(), `select prosrc from pg_proc where oid = $1::text::regprocedure`, reader.function+"(text)").Scan(&body)
+		if err != nil {
+			t.Fatalf("read %s: %v", reader.function, err)
+		}
+		query := blockHop.FindString(body)
+		if query == "" {
+			t.Fatalf("cannot find the moved_to block lookup in %s:\n%s", reader.function, body)
+		}
+		query = strings.Replace(query, " into far_kind, far_end", "", 1)
+		query = reachedAddress.ReplaceAllLiteralString(query, "$1::text")
+		reads = append(reads, asOfRead{reader.name, strings.TrimSuffix(query, ";"), []any{"SEED-1/old#b3"},
+			[]string{"graph_tuples_as_of_out", "graph_tuples_current"}})
+	}
+	return reads
 }
 
 // asOfUnkeyedRead is the control: the children read with its parent's kind left out, which no
@@ -234,8 +289,9 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	if len(children) != 101 {
 		t.Errorf("SEED-1 holds %d children at seq %d, want the 100 blocks placed under it and its spec", len(children), seed.readSeq)
 	}
+	requireSubtreesReadEveryLevelsChildren(t, database, seed)
 
-	for _, read := range asOfReads(seed) {
+	for _, read := range append(asOfReads(seed), blockResolutionReads(t, database)...) {
 		plan := asOfPlan(t, database, read.statement, read.args)
 		for _, table := range []string{"graph_tuples", "graph_nodes"} {
 			if explaintest.SeqScansRelation(t, plan, table) {
@@ -262,6 +318,45 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	requireTypeMigrationsAloneWriteTheTupleTable(t)
 }
 
+// requireSubtreesReadEveryLevelsChildren holds the one statement of TreeSubtrees to the children
+// TreeChildren reads level by level over the seed, from SEED-1's node down: under each node the walk
+// of SEED-1 enters, the same children in the same order, and nothing under a node it does not
+// enter - SEED-2's blocks are answered under b1 and read under nowhere.
+func requireSubtreesReadEveryLevelsChildren(t *testing.T, database *store.Store, seed asOfSeed) {
+	t.Helper()
+	ctx := context.Background()
+	cut := TreeCut{ReadSeq: seed.readSeq}
+	under, err := TreeSubtrees(ctx, database.Pool, []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}, "SEED-1", cut)
+	if err != nil {
+		t.Fatalf("read the subtrees of SEED-1: %v", err)
+	}
+	levels := map[Target][]TreeChild{}
+	read := 0
+	for frontier := []Target{{Kind: graphstore.KindIssue, ID: "SEED-1"}}; len(frontier) > 0; {
+		children, err := TreeChildren(ctx, database.Pool, frontier, cut)
+		if err != nil {
+			t.Fatalf("read a level of SEED-1's tree: %v", err)
+		}
+		frontier = nil
+		for _, child := range children {
+			levels[child.Parent] = append(levels[child.Parent], child)
+			read++
+			if TreeOwns("SEED-1", child.Node) {
+				frontier = append(frontier, child.Node)
+			}
+		}
+	}
+	if !reflect.DeepEqual(under, levels) {
+		t.Errorf("the subtrees read answers %d parents, the level reads %d: the one statement does not read the children the levels read", len(under), len(levels))
+	}
+	if got := len(under[Target{Kind: BlockNodeKind, ID: "SEED-1/spec#b1"}]); got != 14 {
+		t.Errorf("b1 holds %d children in the subtrees read, want its 4 blocks of SEED-1 and the 10 of SEED-2 placed under it", got)
+	}
+	if _, entered := under[Target{Kind: BlockNodeKind, ID: "SEED-2/spec#c1"}]; entered || read != 491 {
+		t.Errorf("the level reads read %d children, want 491 - SEED-1's 480 blocks, its spec and SEED-2's 10 blocks - and the subtrees read entered SEED-2's c1 = %t, want false", read, entered)
+	}
+}
+
 // asOfPlan is the plan of statement under args, explained with analyze and buffers.
 func asOfPlan(t *testing.T, database *store.Store, statement string, args []any) json.RawMessage {
 	t.Helper()
@@ -282,10 +377,16 @@ var asOfTupleInsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b`
 // asOfUpsert is an insert into the tuple table whose conflict clause updates the row it meets.
 var asOfUpsert = regexp.MustCompile(`(?is)\binsert\s+into\s+graph_tuples\b[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`)
 
+// asOfCreateTrigger is a create trigger, which writes no row of its table and runs only on later
+// writes, never on the rows already there (pgmigrate's catalogOnlyStatements): the head
+// projection's trigger on graph_tuples (20261127120803_issue_tree_head) writes none of its rows.
+var asOfCreateTrigger = regexp.MustCompile(`(?is)^\s*(--[^\n]*\n\s*)*create\s+(or\s+replace\s+)?(constraint\s+)?trigger\b`)
+
 // requireTypeMigrationsAloneWriteTheTupleTable reads every migration of this child and every type
 // migration (store.TypeMigrations) as pgmigrate.TouchedTables reads them: a statement that writes
 // graph_tuples is an insert of a type migration, with no conflict clause that updates, and no
-// other migration of this child writes graph_tuples at all.
+// other migration of this child writes graph_tuples at all. A create trigger on the table writes
+// none of its rows (asOfCreateTrigger).
 func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 	t.Helper()
 	migrations, err := pgmigrate.Load(os.DirFS("../store"), "migrations")
@@ -304,8 +405,8 @@ func requireTypeMigrationsAloneWriteTheTupleTable(t *testing.T) {
 			continue
 		}
 		read++
-		for _, statement := range pgmigrate.Statements(migration.SQL) {
-			if !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
+		for _, statement := range pgmigrate.CensusStatements(migration.SQL) {
+			if asOfCreateTrigger.MatchString(statement) || !slices.Contains(pgmigrate.TouchedTables(statement), "graph_tuples") {
 				continue
 			}
 			beside := asOfTupleInsert.ReplaceAllString(statement, "insert into the_type_insert")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/access"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -114,10 +116,15 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		s.writeHandlerError(w, err)
 		return
 	}
-	actor, ok := s.requireActor(w, r, input.Actor)
-	if !ok {
+	// The caller's credential rides with the actor the create records, which carries none
+	// (model.Actor.Recorded), for the p0 check below. The one project the credential names rides
+	// with the writer too (callerProject), for the project checks, as the PATCH reads it.
+	caller, err := s.requestWriter(r, input.Actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
+	actor := caller.actor
 	waits, _, err := resolveIssueWaits(optionalList(input.Needs), optionalList(input.BlockedBy))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -153,23 +160,38 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	}
 	// The one write whose project its address does not name, so withinProjectScope leaves it
 	// here by its class (scopeProjectInBody). It runs once the body's project is read, and so
-	// before the external ref is resolved to an issue already imported: a scoped caller naming
-	// one imported into another project is refused rather than answered that project's issue,
-	// which respondWithExistingExternalIssue would also record a related-check outcome on.
-	// Nothing is written before this point.
-	// callerProject is empty for a credential that names none, which is every caller that
-	// exists today; the dependency lock step, the parent's read and writeIssueNeeds below read it
-	// again, since neither a wait's target's project nor the parent's is part of this address.
-	callerProject, scoped := s.callerProject(r)
-	if scoped && callerProject != input.Project {
-		refuseWriteOutsideProjectScope(w, callerProject, input.Project)
-		return
+	// before the external ref is resolved to an issue already imported. Nothing is written before
+	// this point. A credential that names one project creates an issue in every project that
+	// access.CredentialCovers covers. The one exception is a private project it does not name,
+	// whose visibility one statement reads here (projectVisibility). Such a caller gets here the
+	// 404 NOT_FOUND of a project that does not exist (pgx.ErrNoRows) for that project and for a
+	// project that no row holds. The checks before this one read no project, so the two get one
+	// answer whatever else the body holds, and the caller cannot tell them apart. It is refused
+	// here, so it is never answered with that project's issue, which
+	// respondWithExistingExternalIssue would also record a related-check outcome on. A key that is
+	// empty or not a project key is left to its 400 below. callerProject is empty for a credential
+	// that names none, which is answered as before. The dependency lock step, the parent's read
+	// and writeIssueNeeds below read it again, because neither a wait's target's project nor
+	// the parent's is part of this address.
+	callerProject := caller.callerProject
+	if callerProject != "" && projectKeyPattern.MatchString(input.Project) {
+		private, found, err := projectVisibility(r.Context(), s.deps.Store.Pool, input.Project)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if !found || !access.CredentialCovers(access.Credential{Listed: []string{callerProject}}, input.Project, private) {
+			s.writeHandlerError(w, pgx.ErrNoRows)
+			return
+		}
 	}
-	// A scoped caller is refused a parent or a wait's target outside its project here too,
-	// with no lock held, before the near-copy gate and every other write before the transaction,
-	// so a create it may not make records no near-copy check and gets no 409 in place of its 403.
-	// The lock step and the reads under the locks refuse it again, the authoritative refusal.
-	if scoped && (parentKey != "" || len(waits.targets) > 0) {
+	// A scoped caller is asked here too about a parent or a wait's target
+	// (foreignDependencyTargets), with no lock held, before the near-copy gate and every other
+	// write before the transaction, so a create it may not make records no near-copy check. A
+	// parent or a target that no issue holds, or of a private project that the credential does
+	// not name, gets here the 400 of a parent or a target that does not exist. The lock step and
+	// the reads under the locks ask again, the final check.
+	if callerProject != "" && (parentKey != "" || len(waits.targets) > 0) {
 		if _, err := foreignDependencyTargets(r.Context(), s.deps.Store.Pool, input.Project, callerProject, waits, parentKey); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -231,6 +253,15 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	}
 	priority, _, err := parseIssuePriority(input.Priority)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// A create that names priority 0 makes its new issue's own priority P0, which needs the p0
+	// scope (p0_scope.go): a priority the issue's parent has is none of the new issue's own. The
+	// check is here, after the answer for an external ref Dispatch already imported, which makes
+	// no new issue and changes no priority, and before the near-copy gate, which writes a
+	// near_copy_checks row at its 409, and before everything else the create writes.
+	if err := refuseP0WithoutScope(caller.credential, priority, nil); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -316,6 +347,13 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		}
 	}
 
+	// Whether the credential is a person's, for the check of a create under a parent
+	// (refuseSpecWriter), read before the transaction opens (specWriterOf). A create under no
+	// parent is not checked and reads nothing for it.
+	var writer specWriter
+	if parentKey != "" {
+		writer = s.specWriterOf(r, actor)
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -336,20 +374,9 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	var parentAssignee *string
 	if parentKey != "" {
 		var parentProject string
-		err := tx.QueryRow(r.Context(), `select project_key, assignee from issues where key = $1`, parentKey).Scan(&parentProject, &parentAssignee)
-		if errors.Is(err, pgx.ErrNoRows) {
-			writeError(w, "PARENT_INPUT", http.StatusBadRequest, fmt.Sprintf("parent issue %s not found", parentKey))
-			return
-		}
+		parentProject, parentAssignee, err = readCreateParent(r.Context(), tx, callerProject, parentKey)
 		if err != nil {
 			s.writeHandlerError(w, err)
-			return
-		}
-		// A parent may be an issue of any project, but not for a credential that may write one
-		// project alone: the authoritative refusal, under the locks, of what the lock step
-		// refused before them.
-		if callerProject != "" && parentProject != callerProject {
-			s.writeHandlerError(w, refuseParentOutsideCallerProject(callerProject, parentKey, parentProject))
 			return
 		}
 		// A parent of another project passes on no assignee, as it passes on no repository,
@@ -360,6 +387,17 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 			parentAssignee = nil
 		}
 		if err := refuseParentTooDeep(r.Context(), tx, "", parentKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		// The check of who writes the spec of an issue Legion runs, on the new row as the create
+		// leaves it: its labels, and its parent's chain, whose architects pass. A parent of another
+		// project ends that chain at the new row, so the check judges the new issue as a root of
+		// its own project, which it does not judge. It runs before the project's owner lock and the
+		// spec's document call, and before the create's first write.
+		if err := refuseSpecWriter(r.Context(), tx, writer, specWrite{
+			act: specWriteCreate, under: parentKey, labels: labels, project: input.Project,
+		}); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
@@ -429,11 +467,11 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	// An issue is born converted - its spec a fragment of the issue's room from its first write,
-	// and a query node - only while every live process serves the issue room (decision 7 of
-	// this branch's plan, R5): a process of the release before would admit the spec's
-	// socket to the spec's own room. It is read here, in the read phase, and so is everything the
-	// room's documents are planned from (planConvertedIssueRoom), before the spec's seed, which
-	// then writes the spec's fragment of the room.
+	// and a query node - only while every live process serves the issue room (R5 of the issue-tree
+	// spec): a process of the release before would admit the spec's socket to the spec's own room.
+	// It is read here, in the read phase, and so is everything the room's documents are planned
+	// from (planConvertedIssueRoom), before the spec's seed, which then writes the spec's fragment
+	// of the room.
 	bornConverted, err := fleetServesIssueRoom(r.Context(), tx)
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -450,6 +488,10 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// null parent_key the insert below writes. The spec's node is a query node where the issue
 	// is born converted.
 	ledger.RegisterPendingIssue(key)
+	specQuery := ""
+	if bornConverted {
+		specQuery = graphstore.QuerySpec
+	}
 	ledger.RegisterPendingArtifact(artifactID, refs.DocumentAddress{
 		RefKey:        key + "/spec",
 		IssueKey:      key,
@@ -457,7 +499,7 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		PendingParent: parentKey,
 		Project:       input.Project,
 		Band:          refs.DocumentBand(&key, "doc", true, nil, "spec"),
-	}, bornConverted)
+	}, specQuery)
 	var room convertedIssueRoom
 	if bornConverted {
 		if room, err = s.planConvertedIssueRoom(documentCtx, tx, ledger, key, input.Project, parentKey, artifactID, actor); err != nil {
@@ -526,16 +568,30 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		return
 	}
 	specBlocks = graphstore.Joined(specBlocks, specVersionNode)
+	// An issue born converted writes its decisions query's version 1 once its spec is read back:
+	// the rendering of the decisions the spec holds (queueDecisionsFirstVersion).
+	if bornConverted {
+		if err := s.queueDecisionsFirstVersion(documentCtx, tx, ledger, &room, key, input.Project, actor, spec); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	var parentRef *string
 	if parentKey != "" {
 		parentRef = &parentKey
 	}
 	// A new issue is in triage (the column's default), and its row - its labels and its parent -
-	// is not written yet (writeAdviceBefore).
-	advice := s.writeAdviceBefore(
+	// is not written yet (writeAdviceBefore). An advice savepoint that could not be rolled back left
+	// tx aborted: the route answers that failure, rather than sending its write phase on tx
+	// (adviceTxError).
+	advice, err := s.writeAdviceBefore(
 		r.Context(), tx, "POST /api/v1/issues", key, actor, model.IssueStatusTriage,
 		adviceIssueRow{project: input.Project, parent: parentRef, labels: labels}, adviceAsks{},
 	)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 
 	// The write phase: the statements from here on run back to back.
 	var written int
@@ -573,15 +629,37 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		return
 	}
 	issueRank := rank.Between(lastRank, "")
+	// R24 with the rule on: a new issue is in triage, so only a done parent holds the rule
+	// against it (createParentConflict). A create holds no owner lock of its parent, so the
+	// parent's row is read `for share`, as the statement just before the insert. A close of the
+	// parent whose update ran first makes this read wait for its commit and read done. A close
+	// whose update comes after this read waits for this create to commit, and its second read
+	// sees the new child (openChildrenOfAClose). With the rule off the create reads nothing here.
+	if parentKey != "" && s.deps.ParentStatusRule.On() {
+		var parentTitle, parentStatus string
+		if err := tx.QueryRow(r.Context(), `
+			select title, status from issues where key = $1 for share
+		`, parentKey).Scan(&parentTitle, &parentStatus); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if conflict := createParentConflict(parentKey, parentTitle, parentStatus); conflict != nil {
+			s.writeHandlerError(w, conflict)
+			return
+		}
+	}
 
 	// The issue's node and its spec's node go in before the two rows, in one write that takes
 	// them in the store's order, each in the issue's project, with the spec's part_of the issue
-	// (R16 of this branch's spec); what that write states waits for the issue.created event
+	// (R16 of the issue-tree spec); what that write states waits for the issue.created event
 	// below (graphstore.QueueCaused). It is one of the create's inline writes, before the
 	// ledger's: the spec's version and block index run at Commit, and the index's projection rows
 	// name the spec's node. Each row names its node in the same transaction. Both are nodes this
 	// write creates (graphstore.Created). The item filed_from names is stated before them where
-	// the store holds no node of it (stateFiledFromNode).
+	// the store holds no node of it (stateFiledFromNode). The node write and the issue's row go
+	// to the server as one batch (store.WriteBatch), the node write first, as createStoredMessage
+	// writes a message's node and row: the node write adds no round trip while the create holds
+	// its transaction id, which the xid window tests count.
 	if err := stateFiledFromNode(r.Context(), tx, filedFrom); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -594,19 +672,18 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		specFacts = graphstore.AttributeFacts(specFacts, specNode)
 	}
 	issueNodes := graphstore.PlanUncaused([]graphstore.Node{issueNode, specNode}, specFacts)
+	var issueCreatedAt time.Time
 	if err := store.RunWrite(r.Context(), tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, issueNodes)
+		b.Queue("", `
+			insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
+			values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
+			returning created_at
+		`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue).QueryRow(func(row pgx.Row) error {
+			return row.Scan(&issueCreatedAt)
+		})
 		return nil
 	}); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	var issueCreatedAt time.Time
-	if err := tx.QueryRow(r.Context(), `
-		insert into issues (key, project_key, number, title, parent_key, created_by, labels, priority, rank, assignee, repo, node_kind, node_address)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $1)
-		returning created_at
-	`, key, input.Project, number, input.Title, parentRef, actorJSON, labels, priority, issueRank, assignee, repo, graphstore.KindIssue).Scan(&issueCreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -684,9 +761,9 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	// whose Yjs document is the issue's room, the spec's document_rooms row naming it, and its
 	// decisions query node (createConvertedIssueRoom), queued at the head of the write phase,
 	// after the spec's row above, which they name, and before every statement the read phase
-	// queued, so every queued statement that resolves the spec's room reads the room (T12b of this
-	// branch's plan). They steer nothing this route answers, so they run in the write phase's batch
-	// and not inline inside the transaction's id window.
+	// queued, so every queued statement that resolves the spec's room reads the room. They steer
+	// nothing this route answers, so they run in the write phase's batch and not inline inside the
+	// transaction's id window.
 	var roomNodes graphstore.Uncaused
 	if bornConverted {
 		if roomNodes, err = s.createConvertedIssueRoom(ledger, key, input.Project, artifactID, room, actor, createdAt); err != nil {
@@ -740,7 +817,15 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 		}
 		graphstore.QueueCaused(b, graphstore.Joined(issueNodes, roomNodes), graphstore.LatestEvent)
 		graphstore.QueueCaused(b, specBlocks, graphstore.LatestEvent)
-		return queueIssueRelations(b, relations, actor)
+		if err := queueIssueRelations(b, relations, actor); err != nil {
+			return err
+		}
+		// The issue's first nodes are this write's, and every writer of its tree from here on
+		// keeps its head rows, so they are whole from its birth and the issue is marked so.
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(graphstore.Joined(issueNodes, roomNodes)),
+			graphstore.HeldHeads(specBlocks), relations.heads()))
+		graphstore.QueueHeadMark(b, key)
+		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -803,6 +888,35 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 	WriteJSON(w, http.StatusCreated, withSuggestions(issue, advice, suggestions))
 }
 
+// readCreateParent reads, under a create's locks, the parent that the create names: the project
+// of that issue and its assignee. A parent may be an issue of any project. caller is the one
+// project the request's credential names, empty for a credential that names none. A parent that
+// no issue holds answers parentNotFound. A credential that names one project is asked about the
+// parent again here, under the locks, as the lock step asked before them
+// (lockIssueDependencyWrite), and this read is the final check. A parent of a private project
+// that the credential does not name answers parentNotFound too, as a parent that does not exist.
+func readCreateParent(ctx context.Context, tx pgx.Tx, caller, parent string) (string, *string, error) {
+	var project string
+	var assignee *string
+	var private bool
+	err := tx.QueryRow(ctx, `
+		select i.project_key, i.assignee, p.visibility = 'private'
+		from issues i
+		join projects p on p.key = i.project_key
+		where i.key = $1
+	`, parent).Scan(&project, &assignee, &private)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil, parentNotFound(parent)
+	}
+	if err != nil {
+		return "", nil, err
+	}
+	if caller != "" && !access.CredentialCovers(access.Credential{Listed: []string{caller}}, project, private) {
+		return "", nil, parentNotFound(parent)
+	}
+	return project, assignee, nil
+}
+
 // duplicateGateTimeout bounds the near-copy gate's whole read, on the context and as the read
 // transaction's own statement_timeout. Every create waits on it before it is written: past it the
 // create goes in and is told that no near-copy check was made, which is what a slow read must cost
@@ -811,10 +925,11 @@ func (s *server) createIssueWith(w http.ResponseWriter, r *http.Request, hook *i
 // 500 ms came from the replay on an idle machine (TestNearCopyRefusalReplay: p50 135 ms, p95
 // 228 ms, max 566 ms), which predicted it would cut 0.17% of creates. In production it cut 9 of
 // INFRA's first 29 creates in near_copy_checks (2026-11-17, build 4055c4a5, reason bound). 2 s is an
-// estimate, not a measurement: the rows hold no read time past the bound. If production's reads
-// are a uniform multiple of the replay's (about three times, which puts the replay's 70th
-// percentile at 500 ms), 2 s covers the replay's slowest read. How many reads 2 s still cuts is
-// read from near_copy_checks after it is deployed.
+// estimate, not a measurement: the rows written before read_ms and read_stage held no read time
+// past the bound. If production's reads are a uniform multiple of the replay's (about three times,
+// which puts the replay's 70th percentile at 500 ms), 2 s covers the replay's slowest read. How long
+// each read takes, and the step a read the bound cuts was in, is read from near_copy_checks'
+// read_ms and read_stage.
 const duplicateGateTimeout = 2 * time.Second
 
 // nearCopyOutcome is everything the near-copy gate decides for one create, settled once by
@@ -866,7 +981,7 @@ func (s *server) runNearCopyGate(
 ) nearCopyOutcome {
 	gate := s.duplicateGate(ctx, project, title, spec, ancestors)
 	refusals := gate.refusals()
-	check := &nearCopyCheck{force: force, candidates: gate.Candidates}
+	check := &nearCopyCheck{force: force, candidates: gate.Candidates, readMS: gate.ReadMS, readStage: gate.ReadStage}
 	switch {
 	case !gate.answered():
 		check.outcome, check.reason = nearCopyNotMade, gate.NotMade
@@ -936,9 +1051,13 @@ func (s *server) respondWithExistingExternalIssue(
 		s.writeHandlerError(w, err)
 		return
 	}
-	advice := s.writeAdvice(
+	advice, err := s.writeAdvice(
 		r.Context(), adviceReadTx, "POST /api/v1/issues", existingKey, actor, adviceAsks{}, existingStatus, "", false,
 	)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	if err := adviceReadTx.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -958,7 +1077,7 @@ func isUniqueViolation(err error) bool {
 
 // fleetServesIssueRoom reports whether every live server process (processes.Live, read through
 // tx) lists the issue room in its capabilities: the test an issue is born converted by (decision 7
-// of dispatch://INFRA-1253's plan). With no live process it holds, as every fleet test of this
+// of the issue-tree plan). With no live process it holds, as every fleet test of this
 // server reads an empty fleet, so a process that has not registered yet - a test's, a tool's -
 // serves no older room.
 func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
@@ -976,16 +1095,16 @@ func fleetServesIssueRoom(ctx context.Context, tx pgx.Tx) (bool, error) {
 
 // issueDecisionsName is the name an issue's decisions query node is created under, from which its
 // slug is taken (nextArtifactSlug). It is no decisions document's: decisions_documents(), which
-// INFRA-1150's decisions step selects by, takes a role of `decisions` or the slug `decisions-md`,
-// and this row carries no role and never that slug.
+// the decisions-tree spec's decisions step selects by, takes a role of `decisions` or the slug
+// `decisions-md`, and this row carries no role and never that slug.
 const issueDecisionsName = "decisions"
 
-// convertedIssueRoom is what an issue born converted holds beside its spec's row (T12b of
-// this branch's plan), as the create's read phase planned it (planConvertedIssueRoom):
-// its tree artifact, whose Yjs document is the issue's room, and its decisions query node, each by
-// the id and the slug its row will take, and what the read phase's document work held for the
-// issue's event - the two documents' first versions' nodes and the decisions query's index. The
-// zero value is an issue that is not born converted.
+// convertedIssueRoom is what an issue born converted holds beside its spec's row, as the create's
+// read phase planned it (planConvertedIssueRoom): its tree artifact, whose Yjs document is the
+// issue's room, and its decisions query node, each by the id and the slug its row will take, and
+// what the read phase's document work held for the issue's event - the two documents' first
+// versions' nodes and the decisions query's index. The zero value is an issue that is not born
+// converted.
 type convertedIssueRoom struct {
 	tree, treeSlug           string
 	decisions, decisionsSlug string
@@ -1001,14 +1120,13 @@ type convertedIssueRoom struct {
 // (Ledger.RegisterPendingRoom), so the spec's seed writes the spec's fragment of the room; and it
 // announces the spec's move into that room (docs.AnnounceDocumentRooms), a notification Postgres
 // delivers at the commit, which assigns the transaction no id and so is sent here. Then it
-// does the two documents' work, queued on the ledger and run at the commit, after their rows: the
-// tree's own fragment seeded empty, so an edit of the tree finds a document inside the Proof
-// schema; and each one's version 1, empty, with its version node, as every empty document is
-// created with, so a settlement of the room always finds the tree's latest version and no reader
-// of the issue's documents meets one with no version; and the decisions query's version indexed,
-// in the create's transaction (docs.API.IndexDocumentReferences indexes an empty version as the
-// empty document), so no block-index reconciliation picks it up. ctx is the context the caller
-// joined to tx (docs.Service.Join), and the caller holds the project's owner lock.
+// does the tree's work, queued on the ledger and run at the commit, after its row: its own
+// fragment seeded empty, so an edit of the tree finds a document inside the Proof schema; and its
+// version 1, empty, with its version node, as every empty document is created with, so a
+// settlement of the room always finds the tree's latest version. The decisions query's version 1
+// is written once the spec is seeded (queueDecisionsFirstVersion), since it stores the rendering
+// of the decisions the spec holds. ctx is the context the caller joined to tx
+// (docs.Service.Join), and the caller holds the project's owner lock.
 func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, key, project, parent, specID string, actor model.Actor) (convertedIssueRoom, error) {
 	var room convertedIssueRoom
 	if err := tx.QueryRow(ctx, `select gen_random_uuid()::text, gen_random_uuid()::text`).Scan(&room.tree, &room.decisions); err != nil {
@@ -1022,7 +1140,7 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	if room.decisionsSlug, err = s.nextArtifactSlug(ctx, tx, issue, issueDecisionsName); err != nil {
 		return convertedIssueRoom{}, fmt.Errorf("take the decisions query's slug: %w", err)
 	}
-	pending := func(id, slug, kind string) refs.DocumentAddress {
+	pending := func(slug, kind string) refs.DocumentAddress {
 		return refs.DocumentAddress{
 			RefKey: graphstore.ArtifactRefKey(key, project, "", slug), IssueKey: key,
 			Ref:           refs.ArtifactRef(&key, project, nil, slug, kind, false),
@@ -1030,8 +1148,8 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 			Band: refs.DocumentBand(&key, kind, false, nil, slug),
 		}
 	}
-	ledger.RegisterPendingArtifact(room.tree, pending(room.tree, room.treeSlug, "tree"), false)
-	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisions, room.decisionsSlug, "doc"), true)
+	ledger.RegisterPendingArtifact(room.tree, pending(room.treeSlug, "tree"), "")
+	ledger.RegisterPendingArtifact(room.decisions, pending(room.decisionsSlug, "doc"), graphstore.QueryDecisions)
 	ledger.RegisterPendingRoom(specID, room.tree)
 	if err := docs.AnnounceDocumentRooms(ctx, tx, room.tree, specID); err != nil {
 		return convertedIssueRoom{}, err
@@ -1053,23 +1171,48 @@ func (s *server) planConvertedIssueRoom(ctx context.Context, tx pgx.Tx, ledger *
 	if err != nil {
 		return convertedIssueRoom{}, err
 	}
-	decisionsVersion, err := ledger.QueueVersion(ctx, room.decisions, "", authors, nil)
+	room.held = treeVersionNode
+	return room, nil
+}
+
+// queueDecisionsFirstVersion queues version 1 of the decisions query node of an issue born
+// converted, in the create's read phase, once its spec is seeded and read back (spec): the
+// rendering of the decisions query's answer at the create (R15), which the spec's decisions and
+// their readings are, each a node the spec's pass writes in the create's batch (docs.DecisionsOfSpec),
+// with its version node, a query version holding the query's definition version; and that version
+// indexed in the create's transaction (docs.API.IndexDocumentReferences), handed no text, so it
+// indexes no block, no member and no reference of the version: each node the rendering prints is a
+// node of the issue, indexed as one, and the tree holds no member of the decisions query node; its
+// re-index queue rows, including the scope row the version insert's trigger made, are cleared in
+// the same batch (docs.SettleDecisionsQueryQueues). The pass states the version, so its
+// version_renders row goes in the create's batch with its cut, and its record's digest is filled
+// after the COMMIT (docs' fillOwedDigests). What it states joins room's held facts, which the
+// issue's event causes.
+func (s *server) queueDecisionsFirstVersion(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room *convertedIssueRoom, key, project string, actor model.Actor, spec *pmdoc.Node) error {
+	rendered, err := docs.DecisionsOfSpec(spec)
 	if err != nil {
-		return convertedIssueRoom{}, fmt.Errorf("write the decisions query's first version: %w", err)
+		return fmt.Errorf("render the decisions query's first version: %w", err)
+	}
+	decisionsVersion, err := ledger.QueueVersion(ctx, room.decisions, rendered, []model.Actor{actor}, nil)
+	if err != nil {
+		return fmt.Errorf("write the decisions query's first version: %w", err)
 	}
 	decisionsVersionNode, err := docs.WriteVersionNode(ctx, tx, graphstore.VersionOwner{
 		RefKey: graphstore.ArtifactRefKey(key, project, "", room.decisionsSlug), Project: project,
 		Query: true, DefinitionVersion: graphstore.QueryDefinitionVersion,
 	}, decisionsVersion.Number, actor, decisionsVersion.CreatedAt)
 	if err != nil {
-		return convertedIssueRoom{}, err
+		return err
 	}
 	_, indexed, err := s.deps.Docs.IndexDocumentReferences(ctx, room.decisions, decisionsVersion.Number, "")
 	if err != nil {
-		return convertedIssueRoom{}, fmt.Errorf("index the decisions query's first version: %w", err)
+		return fmt.Errorf("index the decisions query's first version: %w", err)
 	}
-	room.held = graphstore.Joined(treeVersionNode, decisionsVersionNode, indexed)
-	return room, nil
+	if err := docs.SettleDecisionsQueryQueues(ctx, tx, room.decisions); err != nil {
+		return fmt.Errorf("clear the re-index queues of the decisions query's first version: %w", err)
+	}
+	room.held = graphstore.Joined(room.held, decisionsVersionNode, indexed)
+	return nil
 }
 
 // createConvertedIssueRoom queues, at the head of ledger's write phase (docs.Ledger.QueueFirst),
@@ -1100,10 +1243,10 @@ func (s *server) createConvertedIssueRoom(ledger *docs.Ledger, key, project, spe
 // queueIssueRoomJoin is the room join createConvertedIssueRoom queues, for a document whose row's
 // insert is queued on ledger, an upload's (queueNewArtifact): it records on the ledger that the
 // document is edited in room (docs.Ledger.RegisterPendingRoom), so the document work that follows
-// writes the document's
-// fragment of the room, and queues the document_rooms row right after that insert, whose key it
-// names, and before any write of the document. The announcement is a notification, which
-// Postgres delivers at the commit, so it is sent at once and assigns the transaction no id.
+// writes the document's fragment of the room, and queues the document_rooms row right after that
+// insert, whose key it names, and before any write of the document. The announcement is a
+// notification, which Postgres delivers at the commit, so it is sent at once and assigns the
+// transaction no id.
 func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, room, document string) error {
 	ledger.RegisterPendingRoom(document, room)
 	if err := queueExec(ledger, `insert into document_rooms (artifact_id, room) values ($1, $2)`, document, room); err != nil {
@@ -1115,13 +1258,13 @@ func queueIssueRoomJoin(ctx context.Context, tx pgx.Tx, ledger *docs.Ledger, roo
 // documentJoinsIssueRoom is whether a new document of a converted issue, whose slug is slug, is
 // made a fragment of the issue's room: only one of the issue's three role documents - its spec,
 // which createConvertedIssueRoom joins as the issue is created, and its Verification document and
-// plan (roleSlugs), which an upload creates - from its first write (R5 of this branch's spec,
-// version 112). Every other document keeps a room of its own, as every document of an
-// unconverted issue does. The room's state is one update ygo decodes, whose bound the documents in
-// it share (docs' refuseUndecodableSeed refuses a seed past it), so a document no role names would
-// spend that bound for the three, and the heaviest documents the element limit admits filled it in
-// about a dozen uploads. A role document's fixed short name always gives an address the store can
-// hold (graphstore.AddressFits), so the address bound this test once read is never what keeps a
+// plan (roleSlugs), which an upload creates - from its first write (R5 of the issue-tree spec).
+// Every other document keeps a room of its own, as every document of an unconverted issue does.
+// The room's state is one update ygo decodes, whose bound the documents in it share (docs'
+// refuseUndecodableSeed refuses a seed past it), so a document no role names would spend that
+// bound for the three, and the heaviest documents the element limit admits filled it in about a
+// dozen uploads. A role document's fixed short name always gives an address the store can hold
+// (graphstore.AddressFits), so the address bound this test once read is never what keeps a
 // document out: a block of the room names the node of the document whose fragment holds it, and a
 // role document's node always fits.
 func documentJoinsIssueRoom(slug string) bool {
@@ -1147,10 +1290,10 @@ func decisionsQueryWrite(slug, key, project string, actor model.Actor, at time.T
 }
 
 // createDecisionsQuery queues on b the decisions query node id of the issue key in project, under
-// slug: a doc row with no fragment and no document_rooms row (D6 of this branch's plan), whose
-// node is written, as written plans it (decisionsQueryWrite), before the row that names it. Its
-// version 1, empty, with its version node and its index, is the read phase's
-// (planConvertedIssueRoom). The row carries no role: the read projects `decisions` from the node's
+// slug: a doc row with no fragment and no document_rooms row, whose node is written, as written
+// plans it (decisionsQueryWrite), before the row that names it. Its version 1, the rendering of the
+// decisions the spec holds, with its version node and its index, is the read phase's
+// (queueDecisionsFirstVersion). The row carries no role: the read projects `decisions` from the node's
 // query value. What the node write states waits for the caller's event, which the caller causes it
 // under.
 func (s *server) createDecisionsQuery(b *store.WriteBatch, written graphstore.Uncaused, id, slug, key, project string, actor model.Actor) error {

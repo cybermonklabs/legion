@@ -14,7 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 const duplicateHeadlineOptions = "StartSel=" + markStart + ", StopSel=" + markEnd + ", HighlightAll=true"
@@ -105,10 +107,13 @@ func duplicateNamesAnotherIssue(newTitle string) string {
                  where candidate.key = named.key))`
 }
 
-// duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
-// happened to it. It is not the read's bound: it ends a rollback the database will not take,
-// so the handler is never held by one.
-const duplicateGateRollback = 2 * time.Second
+// readRollbackBound bounds the rollback of a read transaction that is rolled back on a context of
+// its own, after the read whatever happened to it: the near-copy gate's read
+// (readDuplicateCandidates), whose context is expired exactly when its bound ended the read, and
+// each read inJITOffRead runs - the issue references read, whose context can have expired at its
+// bound, and the references list read. It is not the bound of any of those reads: it ends a
+// rollback the database will not take, so the handler is never held by one.
+const readRollbackBound = 2 * time.Second
 
 // duplicateKeyLexemesQuery is what the issues trigger makes of a key of project $1
 // (0057_issues_search_trigger): the compound lexeme, the project's own word and the number.
@@ -143,13 +148,16 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 
 // duplicateScoreQuery scores the project's open issues against the new text's picked rarest
 // words: the share of the picked weight that a candidate's title vector and its primary
-// document's latest vector hold together.
+// document's whole-text vector hold together.
 //
 // The statement drives from term_weights, one row per picked lexeme and its idf, into
-// issues.search and into document_search (migration 20261101182447, one row per document holding
-// its latest version's vector), so each term is one probe of a GIN index and no candidate's spec
-// vector is read more than once per term. project_key, the status and the ancestors are filters
-// on the rows those index scans produced, never the driving predicate.
+// issues.search and into node_search's document rows (node_kind = 'artifact', migration
+// 20261125160000_issue_tree_node_search, one row per live document holding its newest markdown
+// version's vector under node_search_document_vector), so each term is one probe of a GIN index
+// and no candidate's spec is read more than once per term, as main read document_search. Document
+// rows already carry search_document_text's vector (ask blocks stripped), so no ask-block walk is
+// needed here. The document, its issue and the issue's project, status and ancestors are filters on
+// the rows those index scans produced, never the driving predicate.
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
@@ -183,8 +191,8 @@ hits as (
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
-    join document_search d on d.search @@ w.tq
-    join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
+    join node_search s on s.node_kind = '` + graphstore.KindArtifact + `' and s.search @@ w.tq
+    join artifacts a on a.ref_key = s.node_address and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
    where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
 ),
@@ -214,20 +222,20 @@ select s.key, i.title, i.status, s.shared, s.score,
 // would answer on a difference in construction rather than in words. A title's are
 // title_lexemes() (migration 0088), the function the issues trigger writes issues.title_lexemes
 // with. A spec's are the document vector artifact_versions_search() builds, which 0058's trigger
-// writes on every version and 20261101182454's trigger copies into document_search for the
-// primary document's latest version: search_vector, with an empty head, over
-// search_document_text of the stored markdown, its ask blocks removed and then search_text
-// (20261121060636; 0058 built the same vector with to_tsvector, which search_vector only leaves
-// for text too long to hold in one tsvector). The spec this side reads is the new one as Dispatch
-// would store it, rendered by storedMarkdown, because the stored vector is of the rendering and
-// not of the request's markdown. tsvector_to_array answers a vector's lexemes sorted and each
-// once, as title_lexemes does, so array equality is set equality here.
+// writes on every version and QueueDocumentSearch copies into node_search's document row
+// (node_kind = 'artifact'): search_vector, with an empty head, over search_document_text of the
+// stored markdown, its ask blocks removed and then search_text (20261121060636; 0058 built the same
+// vector with to_tsvector, which search_vector only leaves for text too long to hold in one
+// tsvector). The spec this side reads is the new one as Dispatch would store it, rendered by
+// storedMarkdown, because the stored vector is of the rendering and not of the request's markdown.
+// tsvector_to_array answers a vector's lexemes sorted and each once, as title_lexemes does, so
+// array equality is set equality here.
 //
 // A spec is compared whether or not either side has one, which covers the architect's rule for
 // both: with no spec on either side the two empty sets are equal and the titles decide, and with
 // one on either side the specs must hold the same lexemes too. An issue whose primary document
-// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, which
-// is what document_search holds for it.
+// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, as
+// is one with no version that holds markdown.
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
@@ -250,12 +258,47 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
     on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
-  left join document_search d on d.artifact_id = a.id
+  left join node_search d on d.node_kind = '` + graphstore.KindArtifact + `' and d.node_address = a.ref_key
  where cardinality(n.title_lex) > 0
    and coalesce(tsvector_to_array(d.search), '{}') = n.spec_lex
  order by i.updated_at desc
  limit ` + strconv.Itoa(duplicateCandidateLimit) + `
 `
+
+// storedMarkdown is text as the store would hold it: the parse and the render every write of a
+// whole document runs over it (docs' SeedText and ReplaceText, pmdoc.ParseWritten over no live
+// document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
+// else of those writes is run here, since nothing else of them changes the markdown.
+//
+// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with the
+// vector of the primary document's latest version, the vector of the markdown the seed stored,
+// and a rendering differs from the text it was parsed from wherever the renderer normalises one:
+// an ordered list is renumbered, and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is
+// stored as `1.` `2.` and an exact copy of that spec would hold different lexemes from the row it
+// copies.
+//
+// An empty answer is what a create seeds for a spec of spaces, tabs, carriage returns and line
+// feeds alone; the seed keeps the other characters strings.TrimSpace empties, which this answers
+// empty all the same. Markdown the parse or the render refuses is handed back as it came. The
+// write that follows refuses it with the error of its own seed, which says what is wrong with it;
+// the gate answers on the text it was given rather than failing a write the seed would have let
+// through.
+func storedMarkdown(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	tree, _, err := pmdoc.ParseWritten(text, nil)
+	if err != nil {
+		return text
+	}
+	tree = pmdoc.StripAnchorMarks(tree)
+	pmdoc.StripServerOwnedAttrs(tree)
+	stored, err := pmdoc.Render(tree)
+	if err != nil {
+		return text
+	}
+	return stored
+}
 
 // scoredDuplicate is one candidate with the near-copy score that found it. The score is the
 // gate's own reading and is not part of what a client is told, so it rides here rather than on
@@ -276,6 +319,12 @@ type duplicateGateResult struct {
 	// Candidates are the project's open non-ancestor issues whose score reaches
 	// duplicateNudgeScore, best score first, at most duplicateCandidateLimit.
 	Candidates []scoredDuplicate
+	// ReadMS is how long the create waited on the read, from the gate's start until the read
+	// returned, its transaction's rollback included, and ReadStage the step the read was in when
+	// it answered or ended (nearCopyReadStage), as near_copy_checks.read_ms and read_stage record
+	// them: with NotMade, the step where a read that did not answer was waiting.
+	ReadMS    *int
+	ReadStage string
 }
 
 // answered reports whether the gate's read answered at all. Candidates is empty both when it
@@ -343,21 +392,49 @@ func (s *server) duplicateGate(
 	ctx context.Context, project, title, spec string, ancestors []string,
 ) duplicateGateResult {
 	bound := s.duplicateGateBound()
+	// The clock starts before the bound does, so a read the bound ends records at least the bound.
+	start := time.Now()
 	gateCtx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	candidates, err := s.readDuplicateCandidates(gateCtx, project, title, spec, ancestors, bound, duplicateNudgeScore)
+	readMS, stage := milliseconds(time.Since(start)), nearCopyReadStage(err)
 	switch {
 	case err == nil:
-		return duplicateGateResult{Candidates: candidates}
+		return duplicateGateResult{Candidates: candidates, ReadMS: readMS, ReadStage: stage}
 	case nearCopyBoundHit(err) || errors.Is(err, context.Canceled):
 		// The read ran out of its bound, or the create's own request went away under it, which
 		// answers nobody anything.
 		slog.Warn("dispatch: the near-copy check did not answer within its bound",
-			"project", project, "bound", bound, "error", err)
-		return duplicateGateResult{NotMade: nearCopyNotMadeBound}
+			"project", project, "bound", bound, "read_ms", *readMS, "read_stage", stage, "error", err)
+		return duplicateGateResult{NotMade: nearCopyNotMadeBound, ReadMS: readMS, ReadStage: stage}
 	}
-	slog.Error("dispatch: the near-copy check failed", "project", project, "error", err)
-	return duplicateGateResult{NotMade: nearCopyNotMadeFailed}
+	slog.Error("dispatch: the near-copy check failed",
+		"project", project, "read_ms", *readMS, "read_stage", stage, "error", err)
+	return duplicateGateResult{NotMade: nearCopyNotMadeFailed, ReadMS: readMS, ReadStage: stage}
+}
+
+// nearCopyReadError is an error of the gate's read with the step the read was in when it ended,
+// so the row of a read that ran out of its bound or failed says where it was waiting.
+type nearCopyReadError struct {
+	stage string
+	err   error
+}
+
+func (e nearCopyReadError) Error() string {
+	return "near-copy read, step " + e.stage + ": " + e.err.Error()
+}
+
+func (e nearCopyReadError) Unwrap() error { return e.err }
+
+// nearCopyReadStage is the step a read that returned err ended in: the one its error names
+// (readDuplicateCandidates names one on every error it returns), and nearCopyStageScore for a
+// read that answered, since every answered read ends there.
+func nearCopyReadStage(err error) string {
+	var read nearCopyReadError
+	if errors.As(err, &read) {
+		return read.stage
+	}
+	return nearCopyStageScore
 }
 
 // readDuplicateCandidates picks the new text's rarest words and scores the project's open issues
@@ -366,9 +443,17 @@ func (s *server) duplicateGate(
 // the two bars reads from zero, so the whole distribution is visible to it.
 func (s *server) readDuplicateCandidates(
 	ctx context.Context, project, title, spec string, ancestors []string, bound time.Duration, floor float64,
-) ([]scoredDuplicate, error) {
+) (candidates []scoredDuplicate, err error) {
+	// Every error names the step the read was in (nearCopyReadError), set before each step starts.
+	stage := nearCopyStageConnect
+	defer func() {
+		if err != nil {
+			err = nearCopyReadError{stage: stage, err: err}
+		}
+	}()
 	// The test seam: a case holds the read here until its bound ends it (server
-	// beforeDuplicateRead). Nothing but a test sets it.
+	// beforeDuplicateRead), as a read waiting for a pool connection is held. Nothing but a test
+	// sets it.
 	if s.beforeDuplicateRead != nil {
 		if err := s.beforeDuplicateRead(ctx); err != nil {
 			return nil, err
@@ -384,7 +469,7 @@ func (s *server) readDuplicateCandidates(
 	// for as long as the server lives. A read held past the bound is the ordinary case here, not
 	// the rare one, since the bound is what ends a slow one.
 	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), readRollbackBound)
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()
@@ -392,14 +477,17 @@ func (s *server) readDuplicateCandidates(
 		return nil, err
 	}
 	// The new issue does not exist yet, so nothing of it is left out of the word statistics.
+	stage = nearCopyStageTerms
 	picked, err := s.pickRelatedTerms(ctx, tx, project, duplicateGateText(title, spec), title, relatedExclusion{}, priceUnknownTerms)
 	if err != nil {
 		return nil, err
 	}
+	stage = nearCopyStageKeys
 	keyLexemes, err := duplicateKeyLexemes(ctx, tx, project)
 	if err != nil {
 		return nil, err
 	}
+	stage = nearCopyStageScore
 	lexemes, weights := nearCopyScoreTerms(picked, keyLexemes)
 	if ancestors == nil {
 		ancestors = []string{}

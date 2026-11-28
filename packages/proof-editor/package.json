@@ -40,7 +40,7 @@
   "main": "src/lib.ts",
   "types": "src/lib.ts",
   "scripts": {
-    "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit -p tsconfig.check.json",
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",

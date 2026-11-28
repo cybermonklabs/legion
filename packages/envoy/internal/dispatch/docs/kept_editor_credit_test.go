@@ -159,11 +159,7 @@ func (f keptEditorSweep) reopen(t *testing.T) {
 		if err := f.service.MarkReopenOwedAskDocuments(ctx, "DOC-1"); err != nil {
 			return err
 		}
-		versions, err := f.service.ClosedIssueVersions(ctx, "DOC-1")
-		if err != nil {
-			return err
-		}
-		return f.service.FollowClosedIssueVersions(ctx, "DOC-1", versions)
+		return f.service.FollowClosedIssueVersions(ctx, "DOC-1")
 	}); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
 	}
@@ -251,6 +247,7 @@ func askEventsOf(t *testing.T, appended []appendedEvent, kind, id string) []appe
 //   - A request opened after the reopen names the version the sweep's settlement wrote, so its move
 //     goes over the reopen's ask-state write alone, in the name of SettlementActor.
 func TestAVersionNamesNoEditorWhoseTextItDoesNotHold(t *testing.T) {
+	t.Parallel()
 	t.Run("a closed issue's settlement of the ask repair's sweep", func(t *testing.T) {
 		f := sweepAfterAClosedEdit(t, false)
 		lastEvent := f.settleOwed(t, "the closed issue's settlement of the sweep")

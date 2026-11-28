@@ -32,6 +32,16 @@ const STREAM_SUBJECT_PREFIXES = [
 ] as const;
 
 /**
+ * The kinds of topic the stream stores, in the order of its prefixes: the token after
+ * `notifications.` of each prefix but the two exception ones. The subscribe and publish tools list
+ * them (`STORED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches those
+ * texts from this list alone.
+ */
+export const STORED_TOPIC_KINDS: readonly string[] = STREAM_SUBJECT_PREFIXES.filter(
+  (prefix) => !prefix.startsWith(EXCEPTION_TOPIC_PREFIX)
+).map((prefix) => prefix.slice("notifications.".length, -1));
+
+/**
  * Whether the stream stores a publish to `topic`, read as the listener's `bus.StreamCaptures`
  * reads it: the topic extends one of the stream's prefixes by at least one token. A `*` or `>` in
  * the topic is read literally, so `notifications.dispatch.issue.X.>` is stored.

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import document from "../schemas/dispatch-openapi.json";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
   type Actor,
@@ -8,6 +9,7 @@ import {
   type Anchor,
   type AnchorInput,
   type AnswerAskInput,
+  ArtifactApprovalSchema,
   type ArtifactBlock,
   ArtifactReviewEventPayloadSchema,
   type ArtifactText,
@@ -46,8 +48,10 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
+  type IssueCoverage,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
+  type IssueTreeRead,
   type ItemBlocks,
   inboxThreadRow,
   type Message,
@@ -58,6 +62,7 @@ import {
   type MyAnswersResponse,
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
+  ProjectAccessChangedEventPayloadSchema,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -70,6 +75,7 @@ import {
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
+  WrittenArtifactReviewEventPayloadSchema,
 } from "./dispatch-api";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
@@ -87,6 +93,61 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("artifact approval and review event schemas hold carried_from_version as integer, null or absent", () => {
+  // This build writes carried_from_version on every answer and payload (the source version for a
+  // carry, null for a person's own act); a Dispatch from the release before leaves it out during
+  // a roll.
+  for (const carried of [4, null, undefined] as const) {
+    const approval = {
+      latest_version: 5,
+      state: "approved" as const,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactApprovalSchema.parse(approval)).toEqual(approval);
+
+    const written = {
+      actor: { id: "alice", kind: "user" as const },
+      artifact_id: "doc-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: null,
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(WrittenArtifactReviewEventPayloadSchema.parse(written)).toEqual(written);
+
+    const inbound = {
+      artifact_id: "doc-1",
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactReviewEventPayloadSchema.parse(inbound)).toEqual(inbound);
+  }
+  expect(
+    ArtifactApprovalSchema.safeParse({
+      carried_from_version: 4.5,
+      latest_version: 5,
+      state: "approved",
+    }).success
+  ).toBe(false);
+});
+
+test("a project.access_changed payload names the project and the change, and no access list", () => {
+  // The event is read by every reader of the project's events, so it carries no email, group name
+  // or channel id, nor the time the channels changed.
+  const change = { project: "CORE", change: "slack_channels" } as const;
+  expect(ProjectAccessChangedEventPayloadSchema.parse(change)).toEqual(change);
+  for (const extra of [
+    { owner: "alice@example.com" },
+    { slack_channels: ["C012345678"] },
+    { slack_channels_changed_at: "2026-11-18T18:12:30Z" },
+  ]) {
+    expect(ProjectAccessChangedEventPayloadSchema.safeParse({ ...change, ...extra }).success).toBe(
+      false
+    );
+  }
 });
 
 test("delivery modes are exactly the closed capability list", () => {
@@ -833,6 +894,8 @@ test("models full orphaned anchor refresh events without a notification", () => 
     author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-1",
@@ -1046,6 +1109,8 @@ test("models comment thread lifecycle events and author edits", () => {
     author: actor,
     body: "Edited discussion",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: "2026-09-10T00:02:00Z",
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1148,6 +1213,8 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     author: actor,
     body: "Please update this.",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: null,
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1241,8 +1308,10 @@ test("a reply names the block it answers, and an event recorded before reads no 
     replyInput.in_reply_to_block,
   ]).toEqual(["b2", "b2", "b2", "b2"]);
 
+  // A quote of a post its author edited carries the edit; a quote of an unedited one, none.
   const block: ReplyBlock = {
     block_id: "b2",
+    edited_at: "2026-09-10T00:00:00.5Z",
     node: "comment/comment-1#b2",
     ref: "dispatch://DSP-1/comment/comment-1#b-b2",
     removed: false,
@@ -1260,6 +1329,9 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On two.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
+    edited_at: null,
     deliveries: [],
     id: "message-2",
     in_reply_to: "message-1",
@@ -1275,6 +1347,8 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On the second paragraph.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-2",
@@ -1303,6 +1377,40 @@ test("a reply names the block it answers, and an event recorded before reads no 
     MessageEventPayloadSchema.parse({ id: "message-3", author: actor, in_reply_to: "message-1" })
       .reply_block
   ).toBeUndefined();
+});
+
+// A deleted post's events carry the mark in place of the body, and an edited message carries the
+// time of its edit. MessageEventPayloadSchema strips a field it does not declare, so the three
+// message marks are declared there; an event written before the corrections carries none of them.
+test("keeps the edited and deleted marks of a post through its event payload", () => {
+  const deletedBy = { id: "alice", kind: "user" };
+  const comment = CommentEventPayloadSchema.parse({
+    id: "comment-1",
+    author: deletedBy,
+    deleted_at: "2026-11-10T00:00:00Z",
+    deleted_by: deletedBy,
+  });
+  const message = MessageEventPayloadSchema.parse({
+    id: "message-1",
+    author: deletedBy,
+    edited_at: "2026-11-10T00:01:00Z",
+    deleted_at: "2026-11-10T00:02:00Z",
+    deleted_by: deletedBy,
+  });
+
+  expect([comment.deleted_at, comment.deleted_by]).toEqual(["2026-11-10T00:00:00Z", deletedBy]);
+  expect([message.edited_at, message.deleted_at, message.deleted_by]).toEqual([
+    "2026-11-10T00:01:00Z",
+    "2026-11-10T00:02:00Z",
+    deletedBy,
+  ]);
+
+  const live = MessageEventPayloadSchema.parse({ id: "message-2", author: deletedBy });
+  expect([live.edited_at, live.deleted_at, live.deleted_by]).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
 });
 
 test("accepts complete targeted-message payloads while ignoring future fields", () => {
@@ -1421,6 +1529,48 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
 
   expect("token" in block).toBe(false);
   expect("token" in text).toBe(false);
+});
+
+test("keeps owed_documents optional on the coverage and tree reads for older Dispatch servers", () => {
+  // A server names each document of the issue that owes its block index, by its id and the version
+  // whose blocks wait; an issue that owes none, and a server of the release before, answer no
+  // member at all, which a reader takes as nothing owed. tsc holds each literal below to its type,
+  // and the route table's document the types are generated from is read as the test runs: it
+  // declares owed_documents on both reads, each answer that leaves it out holds every field the
+  // document requires of its read, and the entry of owed_documents every field it requires of one.
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [],
+    spec_artifact_id: "spec",
+  };
+  const tree: IssueTreeRead = {
+    converted: false,
+    cursor: null,
+    documents: null,
+    issue: "CORE-1",
+    nodes: [],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "",
+    view_of: null,
+  };
+  const owed: IssueTreeRead = {
+    ...tree,
+    owed_documents: [{ artifact_id: "verification", version: 2 }],
+  };
+  const declared = document.components.schemas;
+  for (const [answer, shape] of [
+    [coverage, declared.IssueCoverage],
+    [tree, declared.IssueTreeRead],
+  ] as const) {
+    expect(Object.keys(shape.properties)).toContain("owed_documents");
+    expect(shape.required.filter((field) => !(field in answer))).toEqual([]);
+  }
+  const entry = owed.owed_documents?.[0] ?? {};
+  expect(declared.OwedDocument.required.filter((field) => !(field in entry))).toEqual([]);
 });
 
 test("models a comment's and a direct message's blocks", () => {

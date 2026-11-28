@@ -3,8 +3,13 @@ import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } 
 import { Link } from "react-router-dom";
 
 import { api, apiErrorMessage } from "../../api/client";
-import { projectsQuery, referenceTargetsQuery, whoAmIQuery } from "../../api/queries";
-import type { Artifact, IssueDetails, ReferenceTargets, UserState } from "../../api/types";
+import {
+  projectsQuery,
+  type ReferenceTargetsAnswer,
+  referenceTargetsQuery,
+  whoAmIQuery,
+} from "../../api/queries";
+import type { Artifact, IssueDetails, UserState } from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -107,7 +112,7 @@ export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
  *  (`keptUntilFailed`: the last answer that held data, of an earlier set), and any other is
  *  undefined; undefined too where the read failed holding no answer, and where it names nothing
  *  at the issue's address. */
-function issueTitleIn(read: ReferenceTargets | undefined, key: string): string | undefined {
+function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): string | undefined {
   const reference = buildDispatchReference({ key, kind: "issue" });
   return read?.targets?.find((target) => target.ref === reference)?.name;
 }
@@ -163,7 +168,7 @@ export function IssueMarginCards({
             threads anchored in an open document and its composer, in the margin's words and the
             authors' own, and not the page's declared vocabulary (`page-structure.ts`). They are
             first because the margin places an anchored card at a `top` it measures down from
-            the top of its own content (`margin/ThreadList.tsx`'s `regionOrigin`), so anything
+            the top of its own content (`margin/card-stack.ts`'s `regionOrigin`), so anything
             drawn over them moves that anchor and a card can no longer reach the line its mark
             is on. */}
         <div className="contents" {...authorText}>

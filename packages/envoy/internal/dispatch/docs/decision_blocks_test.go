@@ -1,29 +1,29 @@
 package docs
 
 import (
-	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 )
 
 // The decision type's server-owned attributes are read off the installed manifest once for each
-// manifest (decisionServerAttributes), as storedAskAttributes reads the ask type's: every
-// settlement reads the one list, each server attribute of the type with the store name its value
-// or its relation is kept under, and builds none of its own. A manifest installed since is read
-// again, and answers the same attributes while it declares the same decision type.
+// manifest (decisionServerAttributes, over pmdoc.ServerAttributes), as storedAskAttributes reads
+// the ask type's (pmdoc.ServerAttributesInMarkdown): every settlement reads the one list, each
+// server attribute of the type in declaration order, and builds none of its own. A manifest
+// installed since is read again, and answers the same attributes while it declares the same
+// decision type.
 func TestTheDecisionTypesServerAttributesAreReadOnceForEachManifest(t *testing.T) {
-	want := func(t *testing.T) []decisionServerAttribute {
+	want := func(t *testing.T) []string {
 		t.Helper()
 		schema, declared := pmdoc.BlockTypeAttributes(decisionType)
 		if !declared {
 			t.Fatalf("the installed manifest declares no %s type", decisionType)
 		}
-		var server []decisionServerAttribute
+		var server []string
 		for _, attribute := range schema {
 			if attribute.Server {
-				server = append(server, decisionServerAttribute{name: attribute.Name, kind: schemanodes.StoreName(decisionType, attribute.Name)})
+				server = append(server, attribute.Name)
 			}
 		}
 		if len(server) == 0 {
@@ -31,13 +31,10 @@ func TestTheDecisionTypesServerAttributesAreReadOnceForEachManifest(t *testing.T
 		}
 		return server
 	}
-	read := func(t *testing.T) []decisionServerAttribute {
+	read := func(t *testing.T) []string {
 		t.Helper()
-		server, declared := decisionServerAttributes()
-		if !declared {
-			t.Fatalf("decisionServerAttributes reads no %s type", decisionType)
-		}
-		if expected := want(t); !reflect.DeepEqual(server, expected) {
+		server := decisionServerAttributes()
+		if expected := want(t); !slices.Equal(server, expected) {
 			t.Fatalf("decisionServerAttributes = %v, want %v", server, expected)
 		}
 		return server

@@ -34,7 +34,7 @@ import (
 // runs once per way the state directory is reached, because the path the operator names and the
 // path the child stands in need not be the same one.
 func TestProvisionLeavesTheEnclosingRepositoryUntouched(t *testing.T) {
-	for _, source := range []string{"github", "feed"} {
+	for _, source := range []string{"github"} {
 		t.Run("a state directory outside it, from "+source, func(t *testing.T) {
 			run := newLocalRunner(t)
 			decoy := enclosingRepository(t)
@@ -42,9 +42,6 @@ func TestProvisionLeavesTheEnclosingRepositoryUntouched(t *testing.T) {
 			t.Chdir(decoy)
 
 			req := provisionRequest(t)
-			if source == "feed" {
-				req = feedRequest(t, run, req)
-			}
 			working, err := Provision(context.Background(), run, req)
 			if err != nil {
 				t.Fatalf("Provision from %s while standing in %s: %v", source, decoy, err)

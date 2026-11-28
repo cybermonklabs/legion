@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A quote written with a heading marker (`## Title`) matches only a heading whose whole text is
+  the title, at any level, as its description says. Before, it matched the title as part of any
+  heading, so in a spec with the headings `# Back-links in issue specs` and `## Back-link` a
+  suggestion, comment, ask or edit quoting `## Back-link` was refused `TARGET_AMBIGUOUS`. Two
+  headings with the same whole title are still ambiguous. Whitespace at a heading's edges is not
+  part of the title.

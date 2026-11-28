@@ -17,6 +17,7 @@ import (
 // for a build of a lower rule. A build of rule 1 after a rollback from rule 2 would otherwise
 // report the marks of rule 2 as a backlog that only grows, since it never drains them (R13).
 func TestABuildsBacklogCountsOnlyTheDocumentsItLists(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database, service := blockIndexService(t)
 	rule, higherRule := service.markingRule, service.markingRule+1
@@ -67,6 +68,7 @@ func dateOwedVersion(t *testing.T, database *store.Store, artifactID string, at 
 // age must follow the oldest owed document and not the newest, since a backlog dated by its
 // newest arrival reads as fresh however long its oldest has waited.
 func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	// Postgres holds a timestamp to the microsecond. The test's own clock is rounded to it, so
 	// a nanosecond the database cannot store cannot make the comparisons below fail.
@@ -114,13 +116,13 @@ func TestTheBlockIndexTickReportsTheBacklogAndTheAgeOfItsOldestDocument(t *testi
 // one text both the tick's logged figure and `census --store --sizing` read). Dating it by nothing
 // would leave it counted in the backlog and invisible in the age.
 //
-// What the tick then does with it is this branch's rule (R16), and why this test no longer finds
-// the document owed after the tick: once the owner-locked re-read finds no markdown version, one
-// statement clears the document's marks and states it at version 0 (indexOwedDocument), where a
-// tick of the release before passed over it and left it owed for ever. After the tick the
-// document is stated at version 0 by this build's rule, owed by nothing, and the backlog holds no
-// debt of it to date.
+// What the tick then does with it is this build's rule (R16): once the owner-locked re-read finds
+// no markdown version, one statement clears the document's marks and states it at version 0
+// (indexOwedDocument), where a tick of the release before passed over it and left it owed for
+// ever. After the tick the document is stated at version 0 by this build's rule, owed by nothing,
+// and the backlog holds no debt of it to date.
 func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 	made := time.Now().UTC().Truncate(time.Microsecond).Add(-5 * time.Hour)
@@ -159,27 +161,14 @@ func TestADocumentWithNoVersionIsDatedByItsOwnCreation(t *testing.T) {
 	if tick.Documents != 0 || tick.OwedDocuments != 0 || !tick.OldestOwedDocumentAt.IsZero() {
 		t.Fatalf("tick = %#v, want nothing indexed, nothing owed and no debt dated: the tick states a document with no markdown version at version 0", tick)
 	}
-	var version, statedVersion, statedRule *int
-	var owedAt *time.Time
-	if err := database.Pool.QueryRow(ctx, `
-		select version, stated_version, stated_rule, store_owed_at from document_block_versions where artifact_id = $1::uuid
-	`, artifactID).Scan(&version, &statedVersion, &statedRule, &owedAt); err != nil {
-		t.Fatalf("read the block index row of %s: %v", artifactID, err)
+	if version := blockIndexAt(t, database, artifactID); version == nil || *version != 0 {
+		t.Errorf("after the tick the version-less document's blocks stand at %s, want version 0", standsText(version))
 	}
-	if version == nil || *version != 0 || statedVersion == nil || *statedVersion != 0 ||
-		statedRule == nil || *statedRule != service.markingRule || owedAt != nil {
-		t.Errorf("after the tick the version-less document's row reads version %v, stated_version %v, stated_rule %v and mark %v; want it stated at version 0 by marking rule %d and owed by nothing",
-			ptrText(version), ptrText(statedVersion), ptrText(statedRule), owedAt, service.markingRule)
+	requireStatedByThisRule(t, database, artifactID, 0, "after the tick the version-less document")
+	if owedAt, _ := backfillMark(t, database, artifactID); owedAt != nil {
+		t.Errorf("after the tick the version-less document holds the mark %v, want it owed by nothing", owedAt)
 	}
 	if count, _ := debts(); count != 0 {
 		t.Errorf("after the tick the backlog holds %d debt(s), want none", count)
 	}
-}
-
-// ptrText writes an optional integer for a failure message, `null` where it holds none.
-func ptrText(value *int) string {
-	if value == nil {
-		return "null"
-	}
-	return fmt.Sprint(*value)
 }

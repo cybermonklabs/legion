@@ -40,9 +40,9 @@ import { refusalWithCode } from "./failures";
  * lens and its risks. Each write names the node it wrote by its dispatch:// address, which is how
  * every later call names it, and says when that node is the caller's alone. Dispatch refuses these
  * calls by code - LENS_KIND_REQUIRED, INVALID_POINTER, POINTER_ALREADY_ASSERTED,
- * AUTHOR_NAMES_NOBODY, CONSTRAINT_INPUT, NODE_STATE_NOT_WRITABLE, NODE_NOT_PROPOSED,
- * SETTLE_NOT_PERMITTED, ARTIFACT_INPUT and NOT_FOUND among them - and each tool's description
- * names its own, so the code reaches the caller.
+ * AUTHOR_NAMES_NOBODY, CONSTRAINT_INPUT, NODE_STATE_NOT_WRITABLE, ASK_HOLDS_STATE,
+ * NODE_NOT_PROPOSED, SETTLE_NOT_PERMITTED, ARTIFACT_INPUT and NOT_FOUND among them - and each
+ * tool's description names its own, so the code reaches the caller.
  */
 
 /** `visibility` as the schema took it, which holds it to NODE_VISIBILITIES. */

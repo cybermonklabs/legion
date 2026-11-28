@@ -1,6 +1,6 @@
 kind: Changed
 body: |-
-  Daemon API contract 47.
+  Daemon API contract 51.
   `admission.active` and `admission.waiting` list the issues that hold an admission slot and the
   issues in the waiting line, children as well as roots, because the cap now counts issues in
   progress rather than trees.

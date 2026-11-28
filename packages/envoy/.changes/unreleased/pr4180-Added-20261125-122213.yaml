@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `GET /api/v1/issues/{key}/tree` answers an issue as one tree of nodes, as the caller may see it:
+  the spec, the Verification, the plan and the decisions are views of it (`?view=`), a version of a
+  view is a read at the cut its version records (`&v=`, 404 QUERY_VERSION_NOT_RECORDED for a
+  version written before that record), `?kind=` filters by node kind and keeps each ancestor as
+  context, comments page newest first, and each comment on text hangs under the node it quotes.
+time: 2026-11-25T12:22:13Z
+custom:
+    Issue: pr4180

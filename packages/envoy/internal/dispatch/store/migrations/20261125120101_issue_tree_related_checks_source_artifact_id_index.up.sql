@@ -1,0 +1,22 @@
+-- pgmigrate:non-transactional
+-- 20261125120101_issue_tree_related_checks_source_artifact_id_index.up.sql - the related-item
+-- checks of a project document's ask or decision block, by that document.
+--
+-- The removal of a document deletes its artifacts row (api's removeArtifact), and Postgres checks
+-- every foreign key to artifacts (id) for that row. related_checks_source_artifact_id_fkey
+-- cascades, so its check deletes the checks whose source_artifact_id names the row. No index of
+-- related_checks led by source_artifact_id, so that delete read every row of related_checks, while
+-- the removal holds the issue's owner lock that every comment, ask and upload of the issue waits
+-- on. This index is keyed by source_artifact_id alone, so the delete is one probe of it (this
+-- issue's spec R7).
+--
+-- related_checks grows with every issue create, ask and decision block a check runs for. A
+-- concurrent build does not hold off its writers while it scans the table, so the migration runs
+-- outside a transaction, alone in its file, as the census admits a concurrent build of any table's
+-- size (pgmigrate's ConcurrentIndex, this issue's spec R19). It is a performance index: no
+-- constraint and no later migration depends on it, and the release before reads and writes
+-- related_checks as it did. A failed concurrent build leaves an INVALID index of this name on
+-- related_checks, which the runner drops with DROP INDEX CONCURRENTLY and builds again on the next
+-- attempt.
+create index concurrently if not exists related_checks_source_artifact_id
+    on related_checks (source_artifact_id);

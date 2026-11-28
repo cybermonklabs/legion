@@ -41,7 +41,7 @@ func runPrint(args []string, stdout, stderr io.Writer) int {
 		case !held:
 			say(stderr, "%s: the approved spec holds no node %q", path, id)
 			refused = true
-		case *n.Removed: // ReadApproved refused a node that does not set it
+		case n.Removed:
 			say(stderr, "%s: the approved spec removed node %q, so it has no current text", path, id)
 			refused = true
 		}

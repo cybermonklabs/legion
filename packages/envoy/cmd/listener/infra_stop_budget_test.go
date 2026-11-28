@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/infra/gcp/clusteredhub_listener.go TestTheInfraCopyOfTheStopBudgetIsTheStopBudget parses it (infraStopBudgetRead) for the infra module's copy of the stop budget
+
 import (
 	"go/ast"
 	"go/constant"
@@ -44,6 +46,7 @@ var (
 // that name, and a constant whose expression is no longer a constant expression each fail by
 // name: each is this check losing its other side, and a lost side must red rather than pass.
 func TestTheInfraCopyOfTheStopBudgetIsTheStopBudget(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	file, err := parser.ParseFile(fset, infraStopBudgetRead, nil, parser.SkipObjectResolution)
 	if err != nil {

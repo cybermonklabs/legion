@@ -88,6 +88,10 @@ type routing struct {
 // Postgres does not flatten into a join, so each is one lookup of events_pkey: as a join, the
 // planner, which expects many more kept rows than a batch keeps, merges them with a walk of every
 // event's id.
+//
+// The payload is read as every read that hands an event on reads it (model.EventPayloadSQL): an
+// issue event the release before wrote is published with needs beside its blocked_by, as this
+// build's writers write it.
 const readBatchSQL = `
 	with fresh as (
 		select id, coalesce(issue_key, artifact_id::text, project_key) as owner, next_attempt_at
@@ -143,7 +147,7 @@ const readBatchSQL = `
 	)
 	select e.id, coalesce(i.last_seq, ar.last_seq, p.last_seq, 0),
 	       e.issue_key, e.artifact_id::text, coalesce(e.project_key, i.project_key, ar.project_key, ''),
-	       e.seq, e.type, e.actor, e.notify, e.created_at, e.payload, e.attempt_count,
+	       e.seq, e.type, e.actor, e.notify, e.created_at, ` + model.EventPayloadSQL + `, e.attempt_count,
 	       e.published_destinations, coalesce(ar.slug, ''), coalesce(i.route, ai.route),
 	       coalesce(case when i.claimed_by ->> 'kind' = 'session' then i.claimed_by ->> 'id' end, ''),
 	       coalesce(e.issue_key, e.artifact_id::text, e.project_key), r.due, r.next_attempt_at, r.candidates,

@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/lookpath"
 	"github.com/sjawhar/legion/daemon/internal/ompdirs"
+	"github.com/sjawhar/legion/daemon/internal/omplaunch"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
@@ -31,6 +32,14 @@ type Image struct {
 	// OmpLaunchPrefix before it (omplaunch.WithPrefix), as a pane launches Oh My Pi. The shell
 	// parses it as a pod's shim parses its launch, so a prefix runs as it would there.
 	Launch string
+	// Shown is Launch as a refusal names it, when the daemon's launch prefix is in Launch: its
+	// program and how many arguments follow (omplaunch.WithPrefixShown), never an argument, which
+	// can carry a credential. Empty, the refusals name Launch, which then holds no prefix.
+	Shown string
+	// Prefix is the daemon's launch prefix in Launch, whose words, and each NAME=value word's
+	// value, every check's output is quoted without (omplaunch.PrefixMasked): a prefix that
+	// refuses or fails can echo a credential it carries. Nil when Launch holds no prefix.
+	Prefix []string
 	// Env is the environment the checks run under (PATH, PUPPETEER_EXECUTABLE_PATH, HOME,
 	// OMP_PROFILE, PI_CONFIG_FILES, …): the one the pod's Oh My Pi starts with, after the pod
 	// baseline and the operator's pod env shaped it. A binary is looked up on Env's PATH, never
@@ -138,24 +147,66 @@ func CheckImage(ctx context.Context, img Image) ([]State, error) {
 // is unavailable. An error names the command and its output.
 func ReadModelFallback(ctx context.Context, img Image) (string, error) {
 	const args = "config get retry.modelFallback --json"
-	command := img.Launch + " " + args
-	r := img.launch(ctx, args)
-	if r.err != nil {
-		return "", fmt.Errorf("%s: %w", command, r.err)
-	}
-	if r.exit != 0 {
-		return "", fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
 	}
 	var answer struct {
 		Value *bool `json:"value"`
 	}
 	if err := json.NewDecoder(strings.NewReader(r.stdout)).Decode(&answer); err != nil || answer.Value == nil {
-		return "", fmt.Errorf("%s printed no JSON object with a boolean value: %s", command, r.output())
+		return "", fmt.Errorf("%s %s printed no JSON object with a boolean value: %s", img.shown(), args, r.output())
 	}
 	if *answer.Value {
 		return bootprobe.ModelFallbackOn, nil
 	}
 	return bootprobe.ModelFallbackOff, nil
+}
+
+// ReadOmpVersion runs `<Launch> --version` under img and answers the first non-blank line it
+// printed on stdout, trimmed: which Oh My Pi the image carries. It cannot say whether that Oh My
+// Pi takes --session-id (ReadSessionIDFlag): every release of the fork's 18.18.6 line prints
+// `omp/18.18.6`, those with the flag and those without it. An error names the command and its
+// output.
+func ReadOmpVersion(ctx context.Context, img Image) (string, error) {
+	const args = "--version"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(r.stdout), "\n")
+	if first = strings.TrimSpace(first); first == "" {
+		return "", fmt.Errorf("%s %s printed no version: %s", img.shown(), args, r.output())
+	}
+	return first, nil
+}
+
+// sessionIDFlag is a line of Oh My Pi's `--help` that defines --session-id: its flags table's flag
+// column, after an optional short flag (`  -r, --resume=<value>`), names the whole flag, followed
+// by `=<value>`, a space or the line's end. A description that mentions the words, and a longer
+// flag that begins with them, are not it.
+var sessionIDFlag = regexp.MustCompile(`(?m)^[ \t]*(?:-\w,[ \t]+)?--session-id(?:[=\s]|$)`)
+
+// ReadSessionIDFlag runs `<Launch> --help` under img and answers bootprobe.SessionIDFlagTaken when
+// the help it printed on stdout defines --session-id (sessionIDFlag), and
+// bootprobe.SessionIDFlagAbsent when it printed help that defines no such flag. The help is the
+// one answer Oh My Pi gives: its version does not tell (ReadOmpVersion), and
+// `<omp> --session-id <uuid> --version` exits 0 on a release without the flag, since --version
+// answers before Oh My Pi checks its flags. The first release of the fork whose help defines it is
+// v18.18.6-sami.20261117-074351. An error names the command and its output.
+func ReadSessionIDFlag(ctx context.Context, img Image) (string, error) {
+	const args = "--help"
+	r, err := img.answer(ctx, args)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(r.stdout) == "" {
+		return "", fmt.Errorf("%s %s printed no help: %s", img.shown(), args, r.output())
+	}
+	if sessionIDFlag.MatchString(r.stdout) {
+		return bootprobe.SessionIDFlagTaken, nil
+	}
+	return bootprobe.SessionIDFlagAbsent, nil
 }
 
 // evalJS: Oh My Pi is its JavaScript runtime, and the launch probes ran it.
@@ -535,6 +586,29 @@ func (img Image) launch(ctx context.Context, args string) ran {
 	return img.run(ctx, "sh", "-c", "exec "+img.Launch+" "+args)
 }
 
+// shown is the launch as a refusal names it (Image.Shown).
+func (img Image) shown() string {
+	if img.Shown != "" {
+		return img.Shown
+	}
+	return img.Launch
+}
+
+// answer is the launch's run of args when it exited 0, and otherwise an error naming the command
+// — the launch as a refusal names it (shown) and args — and the run's own error, or its exit and
+// its output.
+func (img Image) answer(ctx context.Context, args string) (ran, error) {
+	command := img.shown() + " " + args
+	r := img.launch(ctx, args)
+	if r.err != nil {
+		return r, fmt.Errorf("%s: %w", command, r.err)
+	}
+	if r.exit != 0 {
+		return r, fmt.Errorf("%s exited %d: %s", command, r.exit, r.output())
+	}
+	return r, nil
+}
+
 // run runs one command within commandTimeout, under img's environment, in its directory, in a
 // process group of its own, so a timeout kills what is actually running rather than a shell that
 // leaves it holding the pipes (procgroup). Its stdin is empty: nothing a check runs may wait on
@@ -566,7 +640,8 @@ func (img Image) runWithin(ctx context.Context, budget time.Duration, name strin
 	// own, context.Canceled.
 	cause := context.Cause(attempt)
 	timedOut := errors.Is(cause, errCommandTimeout)
-	r := ran{stdout: stdout.String(), stderr: stderr.String(), cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
+	r := ran{stdout: omplaunch.PrefixMasked(stdout.String(), img.Prefix), stderr: omplaunch.PrefixMasked(stderr.String(), img.Prefix),
+		cut: cause != nil && !timedOut && (killed() || cmd.Process == nil)}
 	switch {
 	case killed() && timedOut:
 		r.err = fmt.Errorf("timed out after %s", budget)

@@ -549,7 +549,7 @@ function postgresLexer(target: string): Lexer & { close(): Promise<void> } {
 }
 
 async function main(argv: readonly string[]): Promise<number> {
-  const prelude = readCommandLine(argv, parseArguments, "config" satisfies Category);
+  const prelude = await readCommandLine(argv, parseArguments, "config" satisfies Category);
   if (!prelude.ready) return prelude.code;
   const { options } = prelude;
   const lexer =

@@ -1,4 +1,4 @@
-import { beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -20,9 +20,16 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { stoppedWriteNote } from "../writes/keyed-write";
 import { deletePendingEdits, openPendingEdits } from "./pending-edits";
 import { compiledSchemaCreatable } from "./schema";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
 // admission's own `/text` read, a socket the server refuses as outside the Proof schema, the repair
@@ -549,10 +556,13 @@ test("a transport that fails to load is reported instead of connecting forever",
   const { toolbar, view } = renderProofDocument({ fake });
 
   try {
-    await flushLoadFailure(rejection);
-    const alert = within(view.container).getByRole("alert");
+    // The admission starts only once the artifact read names the document's fragment (this
+    // file's artifact names none), so the transport's failure reaches the page a read after the
+    // render: the row waits for the alert, and then for the toolbar's report of it, which a
+    // passive effect makes a commit later (`flushLoadFailure` in `__tests__/proof-document.tsx`).
+    const alert = await within(view.container).findByRole("alert");
     expect(alert.textContent).toBe("This document could not load: Failed to fetch");
-    expect(toolbar.current?.connection).toBe("failed");
+    await waitFor(() => expect(toolbar.current?.connection).toBe("failed"));
   } finally {
     view.unmount();
   }

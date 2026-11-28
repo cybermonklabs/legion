@@ -85,10 +85,14 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	}
 	relation := followChange(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
-		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		followed.Uncaused.State(graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+		return nil
+	}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 	}
 	return followed, nil
@@ -118,7 +122,7 @@ type followResult struct {
 // which says the ask node's followed_by to the session is the record of this row: on a new row,
 // and on a row a process of the release before wrote with none, which this follow makes the
 // store's. graph_edges' tuple arm answers a marked row from that relation, and its old arm answers
-// an unmarked one (20261116094101). A row is marked only where the ask's node is there to name -
+// an unmarked one (20261125163553). A row is marked only where the ask's node is there to name -
 // an ask a process of the release before created has none until the boot step's backfill writes it
 // - and the session is a node the store can key. A follow that marks the row states followed_by,
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked
@@ -162,7 +166,7 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 				(select node.kind from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
 				(select node.id from graph_nodes node where $4 and node.kind = $3 and node.id = $1::uuid::text),
 				coalesce($5::timestamptz, now()))
-			on conflict (ask_id, session_id) do update
+			on conflict (ask_id, session_id) do update -- kept for one release: follower-row-mark
 				set node_kind = excluded.node_kind, node_address = excluded.node_address
 				where ask_followers.node_kind is null and excluded.node_kind is not null
 			returning xmax = 0 as added, node_kind is not null as marked, since
@@ -185,8 +189,10 @@ func queueFollow(b *store.WriteBatch, askID, sessionID string, who model.Actor, 
 	return held, nil
 }
 
-// followedBy is the ask node's followed_by to a session, asserted or retracted.
-func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+// FollowedBy is the ask node's followed_by to a session, asserted or retracted, made by who at at
+// under event: the one build of that tuple, which every follow, unfollow and catch-up of a follow
+// states, and the boot step's backfill of a follower row written before this release (R3).
+func FollowedBy(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
 	return graphstore.Tuple{
 		FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
 		ToKind: graphstore.KindSession, ToID: sessionID,
@@ -194,12 +200,12 @@ func followedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 	}
 }
 
-// followChange is followedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
+// followChange is FollowedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
 // relation a follow or an unfollow states, which a write made for a run names the ask's node
 // changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
-// made, through followedBy alone.
+// made, through FollowedBy alone.
 func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
-	relation := followedBy(askID, sessionID, asserted, who, at, event)
+	relation := FollowedBy(askID, sessionID, asserted, who, at, event)
 	relation.Changes = true
 	return relation
 }
@@ -281,6 +287,7 @@ func PlanFollowAuthor(ctx context.Context, q RowQueryer, askID string, author mo
 	switch {
 	case !held:
 		plan.marks, plan.since = true, now
+	// kept for one release: follower-row-mark
 	case !marked && since != nil:
 		plan.marks, plan.since = true, *since
 	}
@@ -313,10 +320,11 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 	}
 	relation := followChange(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
-		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		held.State(graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
 	return held, nil
 }
 
@@ -349,7 +357,7 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
 		retraction := followChange(askID, sessionID, false, who, at, graphstore.NoEvent)
-		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: retraction}}
+		unfollowed.Uncaused = graphstore.Holding(graphstore.UncausedTuple{Tuple: retraction})
 	}
 	return unfollowed, nil
 }
@@ -362,6 +370,8 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 // gone retracts the followed_by the node still asserts. It writes no follower row and deletes
 // none, so an event caught up after a later one never brings back a row the later one took away.
 // It reports whether it stated anything.
+//
+// kept for one release: catch-up
 func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, added bool, who model.Actor, at time.Time, event int64) (bool, error) {
 	if !graphstore.AddressFits(sessionID) {
 		return false, nil
@@ -381,7 +391,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{followedBy(askID, sessionID, true, who, since, event)}); err != nil {
+		relation := FollowedBy(askID, sessionID, true, who, since, event)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, []graphstore.Tuple{relation})
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+			return nil
+		}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 		}
 		return true, nil
@@ -399,7 +414,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{followedBy(askID, sessionID, false, who, at, event)}); err != nil {
+	retraction := FollowedBy(askID, sessionID, false, who, at, event)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
 	}
 	return true, nil

@@ -154,8 +154,7 @@ func insertDocumentBlock(t *testing.T, tx pgx.Tx, artifactID, blockID, nodeID st
 	}
 }
 
-// closureStatementRows runs statement with args and answers its rows in the order it gave them,
-// each by the four columns main's statement answers, which this package's statement answers first.
+// closureStatementRows runs statement with args and answers its rows in the order it gave them.
 func closureStatementRows(t *testing.T, database *store.Store, statement string, args ...any) []closureRow {
 	t.Helper()
 	rows, err := database.Pool.Query(context.Background(), statement, args...)
@@ -165,18 +164,11 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 	defer rows.Close()
 	var got []closureRow
 	for rows.Next() {
-		values, err := rows.Values()
-		if err != nil {
-			t.Fatalf("read a closure row: %v", err)
+		var row closureRow
+		if err := rows.Scan(&row.refKey, &row.depth, &row.viaKind, &row.viaID); err != nil {
+			t.Fatalf("scan a closure row: %v", err)
 		}
-		refKey, refKeyRead := values[0].(string)
-		depth, depthRead := values[1].(int32)
-		viaKind, viaKindRead := values[2].(string)
-		viaID, viaIDRead := values[3].(string)
-		if !refKeyRead || !depthRead || !viaKindRead || !viaIDRead {
-			t.Fatalf("a closure row leads with %#v, want a ref_key, a depth, a via kind and a via id", values[:4])
-		}
-		got = append(got, closureRow{refKey: refKey, depth: int(depth), viaKind: viaKind, viaID: viaID})
+		got = append(got, row)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate the closure rows: %v", err)
@@ -184,10 +176,10 @@ func closureStatementRows(t *testing.T, database *store.Store, statement string,
 	return got
 }
 
-// documentMember is the member a closure answers for the document stored at refKey, read
-// through q, reached at depth through via: kind artifact at the document's own address
+// documentMember is the member the references read answers for the document stored at refKey,
+// read through q, reached at depth 1 through via: kind artifact at the document's own address
 // (ArtifactRef).
-func documentMember(t *testing.T, q Queryer, refKey string, depth int, via model.ReferenceVia) Member {
+func documentMember(t *testing.T, q Queryer, refKey string, via model.ReferenceVia) Member {
 	t.Helper()
 	var issue, session *string
 	var project, slug, kind string
@@ -198,19 +190,20 @@ func documentMember(t *testing.T, q Queryer, refKey string, depth int, via model
 		t.Fatalf("read the document at %s: %v", refKey, err)
 	}
 	return Member{Kind: graphstore.KindArtifact, Address: ArtifactRef(issue, project, session, slug, kind, primary),
-		RefKey: refKey, Depth: depth, Via: via}
+		RefKey: refKey, Depth: 1, Via: via}
 }
 
 // Closure's members are main's rows of depth 1 over the same data, each at depth 1 with main's
 // via: a block its document still holds reaches that document, one no version holds reaches
 // nothing, and the documents of the chain past its first, which main's walk answered at depths
-// two to ten, are no member. It reads as somebody who proves no author, and no node of this data
-// is reserved for one, so the predicates it binds leave every member main answered. No document of
-// this data moved, so each member is the document of kind artifact at its own address.
+// two to ten, are no member. No document of this data moved, so each member is the document of
+// kind artifact at its own address. It reads as somebody who proves no author, and no node of
+// this data is reserved for one, so the predicates it binds leave every row main answered.
 func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	wantMembers := mainsDepthOneMembers(t, fixture.database, "CORE-1")
-	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1")
+	references, err := Closure(context.Background(), fixture.database.Pool, model.Actor{}, "CORE-1", "")
 	if err != nil {
 		t.Fatalf("read the closure: %v", err)
 	}
@@ -232,6 +225,7 @@ func TestTheClosureAnswersWhatMainsStatementDid(t *testing.T) {
 // build its hash and cannot use that index at all; the lateral join is what keeps the probe a
 // keyed one. Every read of refs is keyed too.
 func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
+	t.Parallel()
 	fixture := newClosureFixture(t)
 	ctx := context.Background()
 	tx, err := fixture.database.Pool.Begin(ctx)
@@ -246,7 +240,7 @@ func TestTheClosureProbesDocumentBlocksThroughItsNodeIndex(t *testing.T) {
 		t.Fatalf("set local enable_seqscan = off: %v", err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), "CORE-1", VisibilityArg(model.Actor{})).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain (format json) "+linksOutQuery(), closureArgs("CORE-1", model.Actor{})...).Scan(&raw); err != nil {
 		t.Fatalf("explain the out statement: %v", err)
 	}
 	plan := explaintest.OnePlan(t, raw)
@@ -317,12 +311,12 @@ func lineDiff(got, want []string) string {
 	return fmt.Sprintf("%d missing [%s], %d unexpected [%s]", len(missing), first(missing), len(unexpected), first(unexpected))
 }
 
-// memberLines is each member as "<ref_key> depth <depth> via <kind> <id>, <kind> at <address>",
-// every field of a Member, sorted.
+// memberLines is each member as "<ref_key> <kind> <address> depth <depth> via <kind> <id>",
+// sorted.
 func memberLines(members []Member) []string {
 	lines := make([]string, len(members))
 	for index, member := range members {
-		lines[index] = fmt.Sprintf("%s depth %d via %s %s, %s at %s", member.RefKey, member.Depth, member.Via.Kind, member.Via.ID, member.Kind, member.Address)
+		lines[index] = fmt.Sprintf("%s %s %s depth %d via %s %s", member.RefKey, member.Kind, member.Address, member.Depth, member.Via.Kind, member.Via.ID)
 	}
 	slices.Sort(lines)
 	return lines
@@ -346,35 +340,6 @@ func membersDiff(members, want []Member, wantName string) (string, []Member) {
 	return strings.Join(problems, "; "), got
 }
 
-// writeOutsideStoreNodes writes n session nodes into graph_nodes, each live and visible to its
-// project, and one value of each into graph_tuples, none of which any read of these tests
-// reaches, and analyzes both tables. Every read of the graph binds the visibility registry's
-// predicates (visibility.go), each a probe of graph_nodes by its key, and graph_edges' own tuple
-// arm reads graph_tuples by its far end, so both are tables the statements read, and a test that
-// holds every table its statements read to a real size holds these two to one too. A value is no
-// relation, so no arm of graph_edges answers one.
-func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
-	t.Helper()
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `
-		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
-		select 'session', 'outside-session-' || i, 'session', 'project', 'live', now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write %d outside nodes into graph_nodes: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, `
-		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
-		select 'session', 'outside-session-' || i, 'name', 'value', 'Outside session ' || i, now(), '{"kind":"user","id":"alice"}', 0
-		from generate_series(1, $1::int) i
-	`, n); err != nil {
-		t.Fatalf("write a value of each of %d outside nodes into graph_tuples: %v", n, err)
-	}
-	if _, err := pool.Exec(ctx, "analyze graph_nodes, graph_tuples"); err != nil {
-		t.Fatalf("analyze graph_nodes and graph_tuples: %v", err)
-	}
-}
-
 // The references read reads one hop in each direction, keyed by the issue and its own content,
 // however large the graph beyond them. On a graph of the size and shape of INFRA-1098's closure
 // (newOneHopFixture), Closure answers under the route's 2 s bound: its links hold the 25
@@ -393,17 +358,15 @@ func writeOutsideStoreNodes(t *testing.T, pool *store.Pool, n int) {
 // are at most 20 times the issue's own content, its links out and in and the rows of both fields;
 // and every table is read through an index by its first key column, artifacts by ref_key, id or
 // the issue's key. Every table a statement reads holds oneHopMinimumRows or more, so the planner
-// plans the default settings on tables of a real size; graph_nodes, which each visibility
-// predicate of the statements probes by its key, is filled to that size with nodes no read of the
-// test reaches (writeOutsideStoreNodes).
+// plans the default settings on tables of a real size.
 //
 // The control runs main's statement on the same fixture under the same bound: it must end at the
 // bound (SQLSTATE 57014) or read ten times the rows of plan nodes the out statement reads, which
 // shows the fixture is as hard as the real graph. Every count of every statement, and of main's,
 // is printed.
 func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
+	t.Parallel()
 	fixture := newOneHopFixture(t, true)
-	writeOutsideStoreNodes(t, fixture.database.Pool, oneHopMinimumRows)
 	ctx := context.Background()
 	sizes := fixture.sizes(t)
 	bound := sizes.out + sizes.in + sizes.held
@@ -421,7 +384,7 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 	}
 	recorder := &statementRecorder{Queryer: tx}
 	read := time.Now()
-	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue)
+	references, err := Closure(ctx, recorder, model.Actor{}, fixture.issue, "")
 	took := time.Since(read)
 	_ = tx.Rollback(ctx)
 	if err != nil {
@@ -554,13 +517,14 @@ func TestTheReferencesReadReadsOnlyTheIssuesOwnLinks(t *testing.T) {
 }
 
 // mainsDepthOneMembers is main's rows of depth 1 for issueKey, as the members they make, by
-// ref_key.
+// ref_key: no document a fixture compares on moved, so each is the document of kind artifact at
+// its own address (documentMember).
 func mainsDepthOneMembers(t *testing.T, database *store.Store, issueKey string) []Member {
 	t.Helper()
 	members := []Member{}
 	for _, row := range closureStatementRows(t, database, mainClosureQuery, issueKey) {
 		if row.depth == 1 {
-			members = append(members, documentMember(t, database.Pool, row.refKey, 1, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
+			members = append(members, documentMember(t, database.Pool, row.refKey, model.ReferenceVia{Kind: row.viaKind, ID: row.viaID}))
 		}
 	}
 	sort.Slice(members, func(left, right int) bool { return members[left].RefKey < members[right].RefKey })
@@ -579,7 +543,7 @@ func depthOneDiff(t *testing.T, database *store.Store, issueKey string, reached 
 			t.Fatalf("main's statement answers %s at no depth 1 for %s, so the fixture decides nothing; its rows of depth 1: %v", refKey, issueKey, want)
 		}
 	}
-	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey)
+	references, err := Closure(context.Background(), database.Pool, model.Actor{}, issueKey, "")
 	if err != nil {
 		t.Fatalf("read %s's references: %v", issueKey, err)
 	}
@@ -620,6 +584,7 @@ func insertItemWithID(t *testing.T, tx pgx.Tx, kind ItemKind, id, issueKey strin
 // is first checked to answer at depth 1, and each named fixture also holds a second hop, which a
 // read past one hop answers. None holds a typed pointer, which main's statement does not read.
 func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
+	t.Parallel()
 	// The out side of TestTheReferencesReadReadsOnlyTheIssuesOwnLinks' graph, its pointer a
 	// plain mention.
 	t.Run("the out side of the one-hop fixture", func(t *testing.T) {
@@ -750,7 +715,7 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 		insertIndexedItem(t, tx, ItemMessage, "CORE-1", "Intro.\n\nSee dispatch://CORE/artifact/by-message-block-md.")
 		question := insertAsk(t, tx, "CORE-1", "Ship dispatch://CORE/artifact/by-question-md first?", model.AskOption{Label: "Yes"})
 		mentions := NewReader(ctx, tx, question.Author, "ask", question.ID, itemBlockServer).Mentions(question.Question)
-		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil); err != nil {
+		if _, err := replaceRefs(ctx, tx, "ask", question.ID, text.Refs(mentions), nil, false); err != nil {
 			t.Fatalf("index the ask's own references: %v", err)
 		}
 		indexAskPartsAt(t, tx, question, 1)
@@ -933,117 +898,58 @@ func TestTheReferencesReadAnswersMainsDepthOneMembers(t *testing.T) {
 	})
 }
 
-// writeLensNode writes the lens id under the issue key, live or gone, through the store's writer
-// as the reasoning write stores one: the node and its part_of. A second call moves its state
-// alone, as the state route's write does.
-func writeLensNode(t *testing.T, database *store.Store, id, key, project, state string) {
-	t.Helper()
+// A retired document's address names its issue (loadArtifactNodes). A comment of CORE-1 links
+// both CORE-2 and CORE-2's retired decisions document, and the references read lists CORE-2 once
+// among the links out, with the kinds of both links; two retired documents of CORE-2 each link
+// CORE-1, and the read lists CORE-2 once among the links in. Each list holds one row for each
+// node, so a client keying its rows by node draws each once.
+func TestTheReferencesReadListsTheIssueOfARetiredDocumentOnce(t *testing.T) {
+	tx := prefixFixture(t)
 	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the lens's write: %v", err)
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('CORE-2', 'CORE', 2, 'Retired its documents', '{"kind":"user","id":"alice"}', 'V')
+	`); err != nil {
+		t.Fatalf("create issue CORE-2: %v", err)
 	}
-	defer tx.Rollback(ctx)
-	writer, at := model.Actor{Kind: "user", ID: "alice"}, time.Now().UTC()
-	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindLens, id)
-	if err != nil {
-		t.Fatalf("read the lens %s: %v", id, err)
-	}
-	var tuples []graphstore.Tuple
-	if !held {
-		node = graphstore.Node{Kind: graphstore.KindLens, ID: id, Supertag: graphstore.KindLens,
-			Visibility: graphstore.VisibilityProject, Project: project}
-		tuples = []graphstore.Tuple{{
-			FromKind: graphstore.KindLens, FromID: id, Kind: graphstore.TuplePartOf, ToKind: graphstore.KindIssue, ToID: key,
-			At: at, Who: writer, SourceEvent: graphstore.NoEvent, Asserted: true,
-		}}
-	}
-	node.State, node.MadeAt, node.MadeBy, node.SourceEvent = state, at, writer, graphstore.NoEvent
-	node.Restates, node.KeepsCause, node.Changed = false, held, held
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, tuples); err != nil {
-		t.Fatalf("write the lens %s %s: %v", id, state, err)
-	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the lens's write: %v", err)
-	}
-}
-
-// A citation of a document whose own address moved to a lens - the pre-mortem conversion moves
-// the address of the document it retires to the lens it wrote in its place (api.ConvertPremortem)
-// - reaches that lens: the references read of the citing issue holds one member of kind lens at
-// the lens's address, with the document's ref_key and the citation's via, and its links name the
-// lens in the document's place. A citation of a block of the moved document is no citation of its
-// address, and still reaches the document itself. The read reads one hop, so the document the
-// moved one cites is no member either way. Once the lens is gone the move reaches nothing that
-// stands (block_moved_to), and the citation of the address reaches the document again.
-func TestTheClosureAnswersTheLensACitedDocumentMovedTo(t *testing.T) {
-	database := storetest.Open(t)
-	ctx := context.Background()
-	tx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the fixture: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	for _, project := range []string{"CORE", "OPS", "DOC"} {
-		createReferenceProject(t, tx, project)
-		createReferenceIssue(t, tx, project+"-1", project)
-	}
-	moved, movedRef := createReferenceArtifact(t, tx, "OPS-1", "OPS", "graph-premortem-md")
-	_, citedRef := createReferenceArtifact(t, tx, "", "CORE", "cited-md")
-	insertDocumentBlock(t, tx, moved, "b1", movedRef+"#b1")
-	insertReference(t, tx, "artifact", moved, "artifact", citedRef)
-	addressCitation := createReferenceComment(t, tx, "CORE-1")
-	insertReference(t, tx, "comment", addressCitation, "artifact", movedRef)
-	blockCitation := createReferenceComment(t, tx, "DOC-1")
-	insertReference(t, tx, "comment", blockCitation, "block", movedRef+"#b1")
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit the fixture: %v", err)
-	}
-	const lens = "00000000-0000-4000-8000-0000000003a1"
-	writeLensNode(t, database, lens, "OPS-1", "OPS", graphstore.StateLive)
-	moveTx, err := database.Pool.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin the move: %v", err)
-	}
-	defer moveTx.Rollback(ctx)
-	if err := graphstore.Write(ctx, moveTx, nil, []graphstore.Tuple{{
-		FromKind: graphstore.KindArtifact, FromID: movedRef, Kind: graphstore.TupleMovedTo, ToKind: graphstore.KindLens, ToID: lens,
-		At: time.Now().UTC(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
-	}}); err != nil {
-		t.Fatalf("move %s to the lens: %v", movedRef, err)
-	}
-	if err := moveTx.Commit(ctx); err != nil {
-		t.Fatalf("commit the move: %v", err)
-	}
-
-	read := func(key string) References {
+	retired := func(slug string) (string, string) {
 		t.Helper()
-		references, err := Closure(ctx, database.Pool, model.Actor{}, key)
-		if err != nil {
-			t.Fatalf("read the references of %s: %v", key, err)
+		var id, refKey string
+		if err := tx.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by, retired_at)
+			values ('CORE-2', 'CORE', $1, $1, 'doc', false, '{"kind":"user","id":"alice"}', now())
+			returning id::text, ref_key
+		`, slug).Scan(&id, &refKey); err != nil {
+			t.Fatalf("create the retired document %s: %v", slug, err)
 		}
-		return references
+		return id, refKey
 	}
-	movedDocument := documentMember(t, database.Pool, movedRef, 1, model.ReferenceVia{Kind: "comment", ID: addressCitation})
-	lensMember := movedDocument
-	lensMember.Kind, lensMember.Address = graphstore.KindLens, "dispatch://"+graphstore.KindLens+"/"+lens
-	byBlock := movedDocument
-	byBlock.Via.ID = blockCitation
+	decisions, decisionsKey := retired(RetiredDecisionsSlug)
+	notes, _ := retired("notes")
+	comment := createReferenceComment(t, tx, "CORE-1")
+	insertReference(t, tx, "comment", comment, "issue", "CORE-2")
+	insertReference(t, tx, "comment", comment, "artifact", decisionsKey)
+	insertReference(t, tx, "artifact", decisions, "issue", "CORE-1")
+	insertReference(t, tx, "artifact", notes, "issue", "CORE-1")
 
-	core := read("CORE-1")
-	if got := core.Members; !reflect.DeepEqual(got, []Member{lensMember}) {
-		t.Errorf("the members of CORE-1, whose comment cites the moved document's address, are %#v; want the lens alone, %#v", got, lensMember)
+	references, err := Closure(ctx, tx, model.Actor{}, "CORE-1", "")
+	if err != nil {
+		t.Fatalf("read the references of CORE-1: %v", err)
 	}
-	if len(core.Links) != 1 || core.Links[0].Node.Kind != graphstore.KindLens || core.Links[0].Node.Ref != lensMember.Address {
-		t.Errorf("the links of CORE-1 are %#v; want the lens at %s alone", core.Links, lensMember.Address)
+	listed := func(links []model.ReferenceLink) []string {
+		rows := []string{}
+		for _, link := range links {
+			rows = append(rows, fmt.Sprintf("%s %s %v via %s %s", link.Node.Kind, link.Node.ID, link.Kinds, link.Via.Kind, link.Via.ID))
+		}
+		return rows
 	}
-	if got := read("DOC-1").Members; !reflect.DeepEqual(got, []Member{byBlock}) {
-		t.Errorf("the members of DOC-1, whose comment cites a block of the moved document, are %#v; want the document alone, %#v",
-			got, []Member{byBlock})
+	if got, want := listed(references.Links), []string{"issue CORE-2 [mentions] via comment " + comment}; !slices.Equal(got, want) {
+		t.Errorf("the links out of CORE-1 = %q; want %q, the issue once for its own address and its retired document's", got, want)
 	}
-
-	writeLensNode(t, database, lens, "OPS-1", "OPS", graphstore.StateGone)
-	if got := read("CORE-1").Members; !reflect.DeepEqual(got, []Member{movedDocument}) {
-		t.Errorf("once the lens is gone the members of CORE-1 are %#v; want the document alone, %#v", got, []Member{movedDocument})
+	if got, want := listed(references.LinkedFrom), []string{"issue CORE-2 [mentions] via issue CORE-1"}; !slices.Equal(got, want) {
+		t.Errorf("the links into CORE-1 = %q; want %q, the issue once for its two retired documents", got, want)
+	}
+	if len(references.Members) != 0 {
+		t.Errorf("the members of CORE-1 = %#v; want none, since a retired document's address names its issue", references.Members)
 	}
 }

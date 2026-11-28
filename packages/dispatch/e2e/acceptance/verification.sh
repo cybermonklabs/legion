@@ -12,8 +12,10 @@
 # back when that check is deleted, with the missing plan task named only once a plan document
 # exists; the gap an approval request names and the covered spec that earns none; `dispatch
 # plan-approve`, refused on a spec, and `dispatch request-approval`, refused on a plan; and the one
-# request that names a spec and its Verification document together; a person's review and the CLI
-# pin the fetched version's UTF-8 bytes, even after the latest version changes; and, with a
+# request that names a spec and its Verification document together; a person's review pins the
+# digest of the version it approved - its query record's digest for a document a query covers, the
+# sha256 of its markdown for one no query covers - and the CLI prints both that digest and the
+# version's bytes' sha256, even after the latest version changes; and, with a
 # default repository set, every result of a check read whole — all forty characters of each
 # commit, so a commit that only reads like the head is told apart from it — beside a result at a
 # commit that repository does not hold refused.
@@ -53,8 +55,10 @@
 # script's fixture and its count rather than a server talking to GitHub.
 #
 # It writes four issues in PROJECT — a root, a child of it, a sibling in another tree and one more
-# whose spec and Verification document are approved together — with a spec, a Verification document
-# and, on the root, a plan; it closes every one of them, also when a check fails, and an approval
+# whose spec and Verification document are approved together — with a spec and a Verification
+# document, and beside them on the root a plan and a second plan document, outside-needs.md, on the
+# sibling a tasks.md, and on the fourth a notes.md no query covers; it closes every one of them,
+# also when a check fails, and an approval
 # request it left open is withdrawn with the issue that holds it. Nothing it writes is read by a
 # second run, so it may be run again at once.
 # Each passing check prints `PASS: <section> <what>`; the first failing one prints
@@ -102,10 +106,10 @@ read_bearer
 
 # shellcheck disable=SC2031 # the DISPATCH_URL `cli` exports is its own; this one is the caller's
 readonly base="${DISPATCH_URL%/}"
-# The dashboard's origin, the scheme and host of DISPATCH_URL: a write the person's cookie
-# authenticates must name it (enforceCookieOrigin).
-base_host="${base#*://}"
-readonly origin="${base%%://*}://${base_host%%/*}"
+# The dashboard's origin, the scheme and host of DISPATCH_URL (lib.sh's base_origin): a write the
+# person's cookie authenticates must name it (enforceCookieOrigin).
+origin="$(base_origin)"
+readonly origin
 # shellcheck disable=SC2153 # PROJECT is the caller's input, checked by name above
 readonly project="$PROJECT"
 script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
@@ -586,7 +590,7 @@ A task waiting on a requirement.
   "attribute \"needs\" points at $root_spec#b-r1, a \"requirement\" block; it points only at plan_task"
 
 # A needs names a plan task of its own issue or of an issue above it, so one at a task of another
-# document of the same issue is taken (dispatch://INFRA-1253/spec R10), and one at a task of an
+# document of the same issue is taken (R10 of the issue-tree spec), and one at a task of an
 # issue in another tree is refused.
 printf ':::plan_task{#u1}\nA task of another document.\n:::\n\n:::plan_task{#u2 needs="%s#b-t1"}\nA task waiting on another plan'"'"'s task.\n:::\n' \
   "$root_plan" >"$work/outside-needs.md"
@@ -773,6 +777,9 @@ else
   person_send POST "/api/v1/artifacts/$artifact/reviews" '{"state":"approved"}'
   want_status 201 review "$dev_login approves the spec of $both"
   pass review "$dev_login approved $both's spec, answering the request that named both"
+  # A review pins the digest of what the person approved, the version read's digest: for a document
+  # a query covers, as both of these are, its record's digest, which is not the sha256 of its
+  # markdown. The version read's sha256 still names the bytes it answers.
   for document in spec.md verification.md; do
     artifact_id review "$both" "$document"
     get "/api/v1/artifacts/$artifact/versions/1"
@@ -780,19 +787,43 @@ else
     jq -j .markdown "$work/body" >"$work/approved-$document"
     h1="$(sha256sum "$work/approved-$document" | cut -d' ' -f1)"
     expect review "$document version read names its own bytes" "\"$h1\"" '.sha256'
+    d1="$(jq -er .digest "$work/body")" || fail review "$document version 1 names its digest" "$(body)"
+    [[ "$d1" != "$h1" ]] ||
+      fail review "$document version 1's digest is its record's, not its markdown's sha256" "$d1 = $h1"
+    pass review "$document version 1's digest is its record's, not its markdown's sha256"
+    printf '%s' "$d1" >"$work/digest-$document"
     person_send GET "/api/v1/artifacts/$artifact/reviews"
     want_status 200 review "$both's $document reviews answer"
     expect review "$both's $document carries one approved person's review" \
       '[["approved","person",1]]' '[.[] | [.state, .kind, .version]]'
-    expect review "$both's $document review names the sha256 of the bytes approved" \
-      "\"$h1\"" '.[0].content_sha256'
+    expect review "$both's $document review names the digest of the version approved" \
+      "\"$d1\"" '.[0].content_sha256'
     expect review "$both's $document review was hashed at approval" '"insert"' '.[0].content_sha256_source'
+    get "/api/v1/artifacts/$artifact"
+    want_status 200 review "$both's $document answers"
+    expect review "$both's $document approval names the digest of the version approved" \
+      "\"$d1\"" '.approval.content_sha256'
+    expect review "$both's $document version list names version 1's digest" \
+      "\"$d1\"" '.versions[] | select(.number == 1) | .digest'
+    run review "read $document version 1 through the CLI" doc-read --issue "$both" \
+      --artifact "$document" --version 1
+    grep -qF "Content: sha256:$h1" "$work/out" ||
+      fail review "the CLI names $document version 1's bytes" "$(<"$work/out")"
+    grep -qF "Digest: sha256:$d1" "$work/out" ||
+      fail review "the CLI names $document version 1's digest" "$(<"$work/out")"
+    grep -qF "content sha256:$d1" "$work/out" ||
+      fail review "the CLI's approval line names $document version 1's digest" "$(<"$work/out")"
+    pass review "the CLI names $document version 1's bytes, and its digest on its line and the approval's"
   done
 
   artifact_id review "$both" spec.md
   h1="$(sha256sum "$work/approved-spec.md" | cut -d' ' -f1)"
+  d1="$(<"$work/digest-spec.md")"
   cp "$work/approved-spec.md" "$work/revised-spec.md"
-  printf '\nA new line the person has not approved.\n' >>"$work/revised-spec.md"
+  # The new line is a requirement's: an approval covers the record of the Spec query - the spec's
+  # memo, criteria and requirements - and not its paragraphs (R14), so a paragraph added after the
+  # last requirement would carry the approval to version 2 rather than leave it stale.
+  printf '\n:::requirement{#b2}\nA new line the person has not approved.\n:::\n' >>"$work/revised-spec.md"
   # This upload replaces the spec whole, so it names the token of the version it replaces, through the multipart
   # form `--path` sends.
   token_of review "$both" spec.md
@@ -804,15 +835,16 @@ else
   expect review "version 2 read names its own bytes" "\"$h2\"" '.sha256'
   person_send GET "/api/v1/artifacts/$artifact/reviews"
   want_status 200 review "the person's review still answers after the edit"
-  expect review "the review does not follow the latest bytes" "\"$h1\"" '.[0].content_sha256'
+  expect review "the review does not follow the latest version" "\"$d1\"" '.[0].content_sha256'
   get "/api/v1/artifacts/$artifact"
   want_status 200 review "the changed document answers"
   expect review "an unapproved edit leaves the approval stale" '"stale"' '.approval.state'
-  expect review "the stale approval still names the approved bytes" "\"$h1\"" '.approval.content_sha256'
+  expect review "the stale approval still names the approved version's digest" "\"$d1\"" '.approval.content_sha256'
   run review "read the approved spec version through the CLI" doc-read --issue "$both" --version 1
   grep -qF "Content: sha256:$h1" "$work/out" || fail review "the CLI names version 1's bytes" "$(<"$work/out")"
-  grep -qF "content sha256:$h1" "$work/out" || fail review "the CLI names the approval's bytes" "$(<"$work/out")"
-  pass review "the CLI's approved-version content and approval hashes match"
+  grep -qF "Digest: sha256:$d1" "$work/out" || fail review "the CLI names version 1's digest" "$(<"$work/out")"
+  grep -qF "content sha256:$d1" "$work/out" || fail review "the CLI names the approval's digest" "$(<"$work/out")"
+  pass review "the CLI's approved-version digest and approval digest match"
   run review "read the changed spec version through the CLI" doc-read --issue "$both" --version 2
   grep -qF "Content: sha256:$h2" "$work/out" || fail review "the CLI names version 2's bytes" "$(<"$work/out")"
   pass review "the CLI's latest-version content differs from its stale approval"
@@ -831,6 +863,17 @@ else
   expect review "a request naming the spec alone records nothing on the Verification document" \
     '[]' '[.[] | [.state, .kind, .version]]'
 fi
+
+# A document no query covers has no record, so its version's digest is the sha256 of its markdown.
+printf '# Notes\n\nNo query covers this document.\n' >"$work/notes.md"
+upload review "$both" notes.md "$work/notes.md"
+artifact_id review "$both" notes.md
+get "/api/v1/artifacts/$artifact/versions/1"
+want_status 200 review "$both's notes.md version 1 answers"
+hn="$(jq -j .markdown "$work/body" | sha256sum | cut -d' ' -f1)"
+expect review "notes.md version read names its own bytes" "\"$hn\"" '.sha256'
+expect review "notes.md, which no query covers, answers its markdown's sha256 as its digest" \
+  "\"$hn\"" '.digest'
 
 # --- reading: every result of a check, each commit whole, and one the repository does not hold ---
 

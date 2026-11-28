@@ -220,22 +220,25 @@ func (s *Service) pinAnchorBlock(ctx context.Context, tx pgx.Tx, table, id, bloc
 }
 
 // pinCommentAnchorBlock writes blockID into the anchor of comment id in tx where that anchor still
-// names no block, and states the anchored_in the anchor now names (graphstore.AnchoredIn), in the
-// same transaction: the comment's row, which the update locks, then the tuple, dated now by
-// AnchorBlockBackfillActor at the sentinel, since the backfill appends no event. The tuple's far
-// end is read off the row the update leaves (graphstore.CommentAnchoredInSQL), so an anchor the
+// names no block, and states the anchored_in the anchor now names and, for a comment that answers
+// nothing, its part_of to the same block (graphstore.AnchorTuples, this issue's spec R31), in the
+// same transaction: the comment's row, which the update locks, then the tuples, dated now by
+// AnchorBlockBackfillActor at the sentinel, since the backfill appends no event. Their far end
+// is read off the row the update leaves (graphstore.CommentAnchoredInSQL), so an anchor the
 // refresh orphaned, or a comment the store holds no node of, states none. tx holds the comment's
 // owner lock (backfillAnchorBlock), as a settlement that refreshes the anchors holds its
 // document owner's, and it takes no owner row: the refresh writes only the anchor's quote and
 // orphan flag, never its block, and the two meet at the lock and the row alone.
 func (s *Service) pinCommentAnchorBlock(ctx context.Context, tx pgx.Tx, id, blockID string) (bool, error) {
 	var block *string
+	var answersNothing bool
 	err := tx.QueryRow(ctx, `
 		update comments c
 		set anchor = jsonb_set(c.anchor, '{block_id}', to_jsonb($2::text), true)
-		where c.id = $1 and nullif(c.anchor->>'block_id', '') is null
-		returning case when c.node_kind is not null then `+graphstore.CommentAnchoredInSQL("c")+` end
-	`, id, blockID).Scan(&block)
+		where c.id = $1 and nullif(c.anchor->>'block_id', '') is null and `+graphstore.KeptHeadRows+`
+		returning case when c.node_kind is not null then `+graphstore.CommentAnchoredInSQL("c")+` end,
+		          `+graphstore.CommentAnswersNothingSQL("c")+`
+	`, id, blockID).Scan(&block, &answersNothing)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -245,8 +248,12 @@ func (s *Service) pinCommentAnchorBlock(ctx context.Context, tx pgx.Tx, id, bloc
 	if block == nil || !graphstore.AddressFits(*block) {
 		return true, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
-		graphstore.AnchoredIn(id, *block, true, AnchorBlockBackfillActor, time.Now().UTC(), graphstore.NoEvent),
+	anchored := graphstore.AnchorTuples(nil, id, refs.BlockNodeKind, *block, answersNothing, true,
+		AnchorBlockBackfillActor, time.Now().UTC(), graphstore.NoEvent)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, anchored)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, anchored))
+		return nil
 	}); err != nil {
 		return false, fmt.Errorf("state comment %s's anchored_in: %w", id, err)
 	}

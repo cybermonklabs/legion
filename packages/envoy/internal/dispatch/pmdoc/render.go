@@ -20,8 +20,15 @@ import (
 // corpus's document tokens, and TestRendererVersionGoldenHoldsTheCorpus holds this build to both.
 // A hash also moves when the corpus itself gains or loses a document, which changes nothing a
 // stored rendering holds: that writes the new hash and leaves this number where it is. Only a
-// change to what the renderer writes of a document the corpus already held raises it.
-const RendererVersion = 1
+// change to what the renderer writes of a document the corpus already held raises it, and a change
+// to the parser can be one: the writer keeps a run's spelling only where the run reads back as
+// written (inlineWithEscapes), so a parser change that moves what a run reads back as moves what
+// the renderer writes of it, and raises this number too.
+//
+// Version 4 writes each blank line between two items of a list once; versions 1 and 3 wrote two
+// lines for each blank line they counted there, the first carrying its containers' prefix with the
+// space after it. Version 2 was that change alone, on a build without version 3's.
+const RendererVersion = 4
 
 type renderer struct {
 	b                bytes.Buffer
@@ -252,7 +259,7 @@ func holdsAContainerTheBrowserDrops(doc *Node) bool {
 }
 
 // footnoteLabelSet is every label a document's footnote definitions carry, wherever they stand,
-// kept two ways: as the browser editor's parser compares labels (FootnoteLabelKey), since it
+// kept two ways: as the browser editor's parser compares labels (footnoteLabelKey), since it
 // matches a reference to its definition whatever the case, and lowercased, as this renderer
 // compared them before it did, since text escaped then must be escaped still.
 type footnoteLabelSet struct {
@@ -265,7 +272,7 @@ type footnoteLabelSet struct {
 // reference to a defined label, or this renderer escaped it when it lowercased labels. An escape
 // the parser does not need reads back as the same text.
 func (labels footnoteLabelSet) refersTo(label string) bool {
-	return labels.keys[FootnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
+	return labels.keys[footnoteLabelKey(label)] || labels.lowered[strings.ToLower(label)]
 }
 
 func definedFootnoteLabels(doc *Node) footnoteLabelSet {
@@ -274,7 +281,7 @@ func definedFootnoteLabels(doc *Node) footnoteLabelSet {
 	walk = func(node *Node) {
 		if node.Type == "footnote_definition" {
 			if label, ok := node.Attrs["label"].(string); ok {
-				labels.keys[FootnoteLabelKey(label)] = true
+				labels.keys[footnoteLabelKey(label)] = true
 				labels.lowered[strings.ToLower(label)] = true
 				runeCount := 0
 				for range label {
@@ -362,14 +369,22 @@ func listItemMarker(ordered bool, number int, other bool) string {
 	}
 }
 
+// beginBlock records an identified block before any of its children. The caller closes its byte
+// range after rendering it. List items use the same offsets as other blocks, so the block index
+// can give each item a node at its existing block id.
+func (r *renderer) beginBlock(n *Node) int {
+	if id, ok := n.Attrs[BlockIDAttr].(string); ok && id != "" {
+		offset := len(r.blockOffsets)
+		r.blockOffsets = append(r.blockOffsets, BlockOffset{ID: id, Type: n.Type, From: r.b.Len()})
+		return offset
+	}
+	return -1
+}
+
 func (r *renderer) block(n *Node, prefix string) {
-	start := r.b.Len()
 	blockOffset := -1
 	if n.Type != "doc" && !isInlineNodeType(n.Type) {
-		if id, ok := n.Attrs[BlockIDAttr].(string); ok && id != "" {
-			blockOffset = len(r.blockOffsets)
-			r.blockOffsets = append(r.blockOffsets, BlockOffset{ID: id, Type: n.Type, From: start})
-		}
+		blockOffset = r.beginBlock(n)
 	}
 	defer func() {
 		if blockOffset >= 0 {
@@ -581,17 +596,15 @@ func (r *renderer) list(n *Node, prefix string) {
 			return
 		}
 		if index > 0 {
-			r.writeSyntax("\n" + prefix)
-			blanks := 0
+			var blanks int
 			if previous := n.Children[index-1]; r.definitionEndsItem(previous) {
 				blanks = r.blanksAfterDefinitionItem(previous, item)
-			} else if r.writesBlankAfterItem(n, previous) {
-				blanks = 1
+			} else {
+				blanks = r.blanksAfterItem(n, previous)
 			}
-			for range blanks {
-				r.writeSyntax("\n" + strings.TrimRight(prefix, " ") + "\n" + prefix)
-			}
+			r.writeSyntax("\n" + strings.Repeat(strings.TrimRight(prefix, " ")+"\n", blanks) + prefix)
 		}
+		blockOffset := r.beginBlock(item)
 		marker := listItemMarker(n.Type == "ordered_list", start+index, other)
 		r.writeSyntax(marker)
 		// A task item holding only an empty paragraph is written as an empty item, as the browser
@@ -626,6 +639,9 @@ func (r *renderer) list(n *Node, prefix string) {
 		r.enterItem(item, indent, readsLoose)
 		r.itemBlocks(children, item.Attrs["spread"] == true, prefix, indent, skipped && marker != "* ")
 		r.leave()
+		if blockOffset >= 0 {
+			r.blockOffsets[blockOffset].To = r.b.Len()
+		}
 	}
 }
 

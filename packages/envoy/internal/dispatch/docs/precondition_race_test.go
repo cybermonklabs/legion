@@ -16,9 +16,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name         string
 		precondition bool
@@ -40,11 +42,14 @@ func TestConditionalDocumentEditDoesNotOverwriteWriterDuringTableAnchorCheck(t *
 				t.Fatalf("open dedicated table-race pool: %v", err)
 			}
 			database.Pool = store.NewPool(pool)
-			t.Cleanup(pool.Close)
+			testcleanup.Add(t, pool.Close)
 			artifactID := createDocument(t, database, "")
 			service := New(Deps{Store: database, Settle: time.Hour})
-			t.Cleanup(func() {
-				shutdown, cancel := context.WithTimeout(context.Background(), time.Second)
+			testcleanup.Add(t, func() {
+				// The shutdown drains the room's appends and runs what the rooms owe, which takes
+				// as long as the machine takes: roomWait is the smaller of what the test binary's
+				// deadline leaves and roomWaitCap's two minutes, far past any run measured.
+				shutdown, cancel := context.WithTimeout(context.Background(), roomWait(t))
 				defer cancel()
 				if err := service.Shutdown(shutdown); err != nil {
 					t.Errorf("shutdown service: %v", err)

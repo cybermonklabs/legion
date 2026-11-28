@@ -1,0 +1,9 @@
+kind: Added
+body: |-
+  `schemas/dispatch-openapi.json`, and so the `IssueTreeNode` type rendered from it, carries the
+  optional member `block_anchor` (`IssueTreeBlockAnchor`: `{artifact_id, block_id}`, two required
+  strings) on the node of an ask whose anchor names a block of a document. An ask anchored nowhere
+  or across two top-level blocks, every other node, and a server of the release before answer none.
+time: 2026-11-27T10:29:42Z
+custom:
+    Issue: INFRA-1253

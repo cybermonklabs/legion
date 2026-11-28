@@ -316,6 +316,62 @@ func TestTokensMintsRefreshesAndCachesIdentity(t *testing.T) {
 	}
 }
 
+// KnownIdentity is the bot identity a lease of the App already fetched, read from the Manager's
+// cache alone: none is known for either App before a mint, the identity once a lease of that App
+// fetched it, still none for the other App, and no read of it, before or after, reaches GitHub.
+func TestKnownIdentityIsWhatALeaseFetchedAndAsksGitHubNothing(t *testing.T) {
+	_, privatePEM := testAppKey(t)
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var requests atomic.Int64
+	server := githubtest.Serve(t, githubtest.Spec{Record: func(*http.Request) { requests.Add(1) }, Handle: func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/app/installations":
+			fmt.Fprint(w, `[{"id":77,"account":{"login":"acme"}}]`)
+		case "/app/installations/77":
+			fmt.Fprint(w, installationGranting("77", grantedEverythingAsked))
+		case "/app/installations/77/access_tokens":
+			_, asked := askedInExchange(t, r)
+			fmt.Fprint(w, mintedFor("installation-1", now.Add(time.Hour), asked.Permissions, "legion"))
+		case "/app":
+			fmt.Fprint(w, `{"slug":"legion-implementer"}`)
+		case "/users/legion-implementer[bot]":
+			fmt.Fprint(w, `{"id":271566630}`)
+		default:
+			githubtest.Unexpected(t, w, r)
+		}
+	}})
+	tokens := New(config.GitHubApps{
+		Implement: config.GitHubApp{AppID: "12345", PrivateKey: privatePEM},
+		Review:    config.GitHubApp{AppID: "67890", PrivateKey: privatePEM},
+	}, Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }})
+	t.Cleanup(tokens.Close)
+
+	for _, role := range append(slices.Clone(Roles), "unconfigured") {
+		if identity, known := tokens.KnownIdentity(role); known {
+			t.Errorf("KnownIdentity(%s) before any mint = %+v, want none known", role, identity)
+		}
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("%d requests reached GitHub before any mint, want none: KnownIdentity asks GitHub nothing", got)
+	}
+
+	lease, err := tokens.Token(context.Background(), Implement, "acme")
+	if err != nil {
+		t.Fatalf("the implement App's lease on acme: %v", err)
+	}
+	minted := requests.Load()
+	want := GitIdentity{Name: "legion-implementer[bot]", Email: "271566630+legion-implementer[bot]@users.noreply.github.com"}
+	if identity, known := tokens.KnownIdentity(Implement); !known || identity != want || identity != lease.Identity {
+		t.Errorf("KnownIdentity(implement) after its lease = %+v, %t; want %+v, the identity the lease fetched", identity, known, want)
+	}
+	if identity, known := tokens.KnownIdentity(Review); known {
+		t.Errorf("KnownIdentity(review) after the implement App's lease alone = %+v, want none known: no lease of the review App fetched one", identity)
+	}
+	if got := requests.Load(); got != minted {
+		t.Errorf("%d requests reached GitHub after the mint's %d, want none: KnownIdentity reads the cache alone", got-minted, minted)
+	}
+}
+
 // An App removed from an owner after the daemon found its installation answers the next mint's
 // exchange 404: the installation found is forgotten and looked for again, so the mint answers
 // ErrNotInstalled, an answer about the owner, rather than an error a caller retries without end;
@@ -996,10 +1052,10 @@ func TestTokensDeduplicatesConcurrentRequests(t *testing.T) {
 }
 
 // GitHub's trouble is transient and its answers are not: a request GitHub never answered or whose
-// body stopped mid-read, a 5xx, or a rate limit (a 429, or a 403 that says it is one) may pass when
-// it is made again, and a boot waits it out; any other status, a body that is not the JSON asked
-// for, or an owner the App is not installed on is refused at once. The boot's retry reads nothing
-// else.
+// body stopped mid-read, an outage (a 5xx, a 408 or a 429), or a rate limit (a 403 that says it is
+// one) may pass when it is made again, and a boot waits it out; any other status, a body that is
+// not the JSON asked for, or an owner the App is not installed on is refused at once. The boot's
+// retry reads nothing else.
 func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	_, privatePEM := testAppKey(t)
 	status := func(code int, header ...string) http.HandlerFunc {
@@ -1024,6 +1080,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 	}{
 		{name: "discovery 502", discovery: status(http.StatusBadGateway), transient: true},
 		{name: "discovery 429", discovery: status(http.StatusTooManyRequests), transient: true},
+		{name: "discovery 408", discovery: status(http.StatusRequestTimeout), transient: true},
 		{name: "discovery 403 out of rate limit", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "0"), transient: true},
 		{name: "discovery 403 with retry-after", discovery: status(http.StatusForbidden, "Retry-After", "60"), transient: true},
 		{name: "discovery 403", discovery: status(http.StatusForbidden, "X-RateLimit-Remaining", "4999")},
@@ -1046,6 +1103,7 @@ func TestGitHubsTroubleIsTransientAndItsAnswersAreNot(t *testing.T) {
 			fmt.Fprint(w, `[{"id":77,"account":{"login":"someone-else"}}]`)
 		}},
 		{name: "exchange 500", discovery: installed, exchange: status(http.StatusInternalServerError), transient: true},
+		{name: "exchange 408", discovery: installed, exchange: status(http.StatusRequestTimeout), transient: true},
 		{name: "exchange 422", discovery: installed, exchange: status(http.StatusUnprocessableEntity)},
 		{name: "exchange 403 for a secondary rate limit", discovery: installed, exchange: secondaryLimit, transient: true},
 	} {

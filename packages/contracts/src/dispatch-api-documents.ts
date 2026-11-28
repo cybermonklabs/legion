@@ -22,6 +22,17 @@ export const versionFields = {
   mime: z.string().optional(),
   /** The stored bytes' hash; present on a document version read as well as a file version. */
   sha256: z.string().optional(),
+  /** What an approval of a document's version covers, and a review's `content_sha256` pins: the
+   *  digest of its query's record where the pass that stated the version recorded one, else the
+   *  sha256 of its stored markdown. Present on a document version read and on each document
+   *  version of the artifact read; absent from every other version and from a server that
+   *  predates it. */
+  digest: z.string().optional(),
+  /** A file's or an image's version token, `sha256:` and the SHA-256 of its bytes: what an upload
+   *  replacing that version names as its precondition's `document`, and what `dispatch doc-read`
+   *  prints for it. Absent on a document's version, whose token is its live tree's (`/text`), and
+   *  from a server that predates it. */
+  token: z.string().optional(),
 };
 
 export const VersionSchema = z.strictObject(versionFields).readonly();
@@ -91,6 +102,12 @@ export const ArtifactApprovalSchema = z
     /** The latest review's kind, so a reader can say an approval is a plan review's rather than a
      *  person's; absent while no review stands, and from a Dispatch older than review kinds. */
     kind: ArtifactReviewKindSchema.optional(),
+    /** The version a carried approval was carried from (`artifact_review_carries`), and `null`
+     *  for a person's own approval, for a plan review's approval, and where no review stands.
+     *  Absent only from a Dispatch older than the carry record during a roll. A carried person's
+     *  approval reads `kind: person` with the person as its actor, so this member is how a reader
+     *  tells the carry from the person's own act. */
+    carried_from_version: z.number().int().nullable().optional(),
     /** Every document the open request covers, each at the version the request names, this one
      *  included; absent when it covers this document alone. It is the request's own list
      *  (`AskApprovalDocument`), so each entry carries the `requested_version` the request records
@@ -236,6 +253,19 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
   diff_truncated: artifactHumanEditedEventPayloadFields.diff_truncated.optional(),
 });
 
+/** `artifact.indexed`: the block-index reconciliation committed the block index of documents of
+ *  the issue whose versions their writes left owed one, each version announced already by its own
+ *  `artifact.version`. `artifact_ids` names each document whose owed index it cleared, sorted: the
+ *  coverage read's `owed_documents` and gaps, the tree read, the decisions read, the indexed checks
+ *  of a Verification document and a document's blocks answer from the index from then on. It is
+ *  quiet: it wakes nobody. A reader that does not know the type refreshes what it holds, as for any
+ *  event it cannot read. */
+export const ArtifactIndexedEventPayloadSchema = z
+  .strictObject({ artifact_ids: z.array(z.string()).readonly() })
+  .readonly();
+
+export type ArtifactIndexedEventPayload = z.output<typeof ArtifactIndexedEventPayloadSchema>;
+
 /** `artifact.approved` and `artifact.changes_requested`: a human review of a document,
  *  pinned to `version`; `reason` is required for changes requested; `ask_id` names the
  *  approval ask the review answered, null when given from the document header with no
@@ -243,9 +273,13 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
  *  `artifact.approved` in a human's name at a later version whose change since the version he
  *  approved is one the carry takes - a version whose text is byte for byte the approved
  *  version's with no ask block in it decided since, among others. A person's answer, resolve or
- *  decline of an ask writes one version, which changes only the server-owned attributes of the
- *  ask's block, and the carry takes it; a closed issue's settlement carries nothing, so the
- *  version an issue's close writes carries no approval. Its `reason` names the carry and the version it
+ *  decline of an ask writes one version. When the answer, resolve or decline is that version's
+ *  whole change, the version changes only the server-owned attributes of the ask's block, and the
+ *  carry takes it. The version carries an approval only when the person's answer, resolve or
+ *  decline is its whole change. If text that a person was editing in the browser is settled into
+ *  the same version, the approval does not carry, and the request goes back to its agent. A closed
+ *  issue's settlement carries nothing, so the version an issue's close writes carries no approval.
+ *  Its `reason` names the carry and the version it
  *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
  *  (see `ArtifactReview`). */
 export const artifactReviewEventPayloadFields = {
@@ -259,6 +293,10 @@ export const artifactReviewEventPayloadFields = {
   kind: ArtifactReviewKindSchema.optional(),
   content_sha256: z.string().optional(),
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
+  /** The version a carried approval was carried from (`artifact_review_carries`), and `null` for a
+   *  person's own review or a plan review's; absent only from a Dispatch older than the carry
+   *  record during a roll. */
+  carried_from_version: z.number().int().nullable().optional(),
 };
 
 export const WrittenArtifactReviewEventPayloadSchema = z
@@ -279,6 +317,7 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   ask_id: artifactReviewEventPayloadFields.ask_id.optional(),
   content_sha256: artifactReviewEventPayloadFields.content_sha256,
   content_sha256_source: artifactReviewEventPayloadFields.content_sha256_source,
+  carried_from_version: artifactReviewEventPayloadFields.carried_from_version,
 });
 
 /** A server-owned typed-block attribute was restored from its indexed row. */
@@ -317,3 +356,27 @@ export const DecisionKeptEventPayloadSchema = z
   .readonly();
 
 export type DecisionKeptEventPayload = z.output<typeof DecisionKeptEventPayloadSchema>;
+
+/** `document.retired`: `docs.RetireDocument` retired the document, once, on its owner: the
+ *  document, the role it played until its retirement cleared it (absent where it had none), why
+ *  it was retired, and the standing approval the retirement superseded (null where none stood). */
+export const DocumentRetiredEventPayloadSchema = z
+  .strictObject({
+    artifact_id: z.string(),
+    ref_key: z.string(),
+    name: z.string(),
+    role: z.string().optional(),
+    reason: z.string(),
+    superseded_approval: z
+      .strictObject({
+        review_id: z.string(),
+        approved_version: z.number().int(),
+        approved_by: ActorSchema,
+        kind: ArtifactReviewKindSchema,
+      })
+      .readonly()
+      .nullable(),
+  })
+  .readonly();
+
+export type DocumentRetiredEventPayload = z.output<typeof DocumentRetiredEventPayloadSchema>;

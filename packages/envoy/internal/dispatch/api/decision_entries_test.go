@@ -188,8 +188,12 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 			t.Fatalf("turn %s off: %v", setting, err)
 		}
 	}
+	kinds, ids, err := decisionEntryTargets(ctx, tx, key)
+	if err != nil {
+		t.Fatalf("select the decisions query's nodes: %v", err)
+	}
 	rows, err := tx.Query(ctx, `explain (costs off) `+decisionEntriesRead(), key,
-		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds)
+		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds, kinds, ids)
 	if err != nil {
 		t.Fatalf("read the plan of the entries statement: %v", err)
 	}
@@ -229,6 +233,7 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 // choices.md holds the decision that shaped three requirements (d1). A second issue's spec of
 // 2,001 blocks, above docs.deferBlockIndexBlocks, holds one decision whose block index never runs.
 func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -492,6 +497,23 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 				step.what, read.ChangedVersion, read.ChangedAt, read.TextSHA256, ownWords.Number, d1.ChangedAt, d1.TextSHA256)
 		}
 	}
+	// The words change back to those d1 was tied at: the sum of its words at the tie is the sum as
+	// they stand, so no link is stale, though the last change into those words came after the tie
+	// and after r1's rewrite, and the decisions member answers the same.
+	agentUploadAs(t, handler, issue.Key, "choices.md", choicesText(viewD1Words, ""), nil)
+	changedBack := readIssueDecisions(t, handler, issue.Key)
+	d1 = requireEntry(t, changedBack.Entries, "the agent's decision", entryKey(d1))
+	if !strings.Contains(d1.Text, viewD1Words) {
+		t.Fatalf("the decision reads %q after its words changed back, want %q", d1.Text, viewD1Words)
+	}
+	for _, link := range d1.Shaped {
+		if link.Stale {
+			t.Errorf("the link %s of %s reads %s after the words changed back to those it was tied at, want stale false", link.To.ID, entryKey(d1), entryJSON(t, link))
+		}
+		if old := decisionMemberLink(t, changedBack, d1.Ref, link.To.ID); old.Stale {
+			t.Errorf("the link %s of %s reads stale in the decisions member after the words changed back, want false", link.To.ID, d1.Ref)
+		}
+	}
 	// A reading written, edited and removed under the answered ask moves the ask block's row and
 	// none of its own words, its question and its options.
 	askBefore := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+answered)
@@ -561,6 +583,7 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 // writes stamped none, and a person, carry no title at all. The decided_by members are read as
 // the response holds them, so an empty title the answer spelled would fail as a title it held.
 func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
+	t.Parallel()
 	const (
 		titledSession = "session-titled-0123456789"
 		title         = "Legion planner · CORE-1"
@@ -606,6 +629,66 @@ func TestTheDecisionsReadNamesASessionDeciderByTheTitleItStamped(t *testing.T) {
 		decider, found := deciders[want.node]
 		if !found || !reflect.DeepEqual(decider, want.decider) {
 			t.Errorf("%s (%s): the read answers the decided_by %v (an entry %t), want %v", want.what, want.node, decider, found, want.decider)
+		}
+	}
+}
+
+// A decision whose decided_by names a person is that person's and waits for nobody's review
+// (spec R4: the author the read answers is the one its decided_by tuple holds), and an agent's,
+// whose decided_by names its session, waits until a person keeps it. Both are `decision` blocks
+// nobody kept, so no Keep tells them apart: the person's is the spec's p1, which alice's
+// credential wrote, and the agent's the a1 the agent's session uploaded. Each stays an entry of
+// kind `agent`, the node's shape. The members are read as the response holds them, so an answer
+// that left waiting_review out fails as neither value.
+func TestADecisionAPersonDecidedWaitsForNoReviewAndAnAgentsDoes(t *testing.T) {
+	t.Parallel()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", ":::decision{#p1}\nAlice's spec decides.\n:::\n")
+	agentUploadAs(t, handler, issue.Key, "agent.md", ":::decision{#a1}\nThe agent decides.\n:::\n", nil)
+
+	person := readDecisionDocument(t, database, issue.Key, "spec").address("p1")
+	agent := readDecisionDocument(t, database, issue.Key, "agent-md").address("a1")
+	requireDecidedBy(t, database, "the person's decision", person, "alice")
+	requireDecidedByNode(t, database, "the agent's decision", agent, graphstore.KindSession, decidingSession)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/decisions", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET /api/v1/issues/%s/decisions: status=%d body=%s", issue.Key, response.Code, response.Body.String())
+	}
+	type readEntry struct {
+		Node          decisionEntryNode `json:"node"`
+		Kind          string            `json:"kind"`
+		DecidedBy     map[string]any    `json:"decided_by"`
+		Kept          map[string]any    `json:"kept"`
+		WaitingReview *bool             `json:"waiting_review"`
+	}
+	read := decodeBody[struct {
+		Entries []readEntry `json:"entries"`
+	}](t, response)
+	byNode := map[string]readEntry{}
+	for _, entry := range read.Entries {
+		if entry.Node.Kind == refs.BlockNodeKind {
+			byNode[entry.Node.ID] = entry
+		}
+	}
+	for _, want := range []struct {
+		what, node string
+		decider    map[string]any
+		waiting    bool
+	}{
+		{"the person's decision", person, map[string]any{"kind": graphstore.KindPerson, "id": "alice"}, false},
+		{"the agent's decision", agent, map[string]any{"kind": graphstore.KindSession, "id": decidingSession}, true},
+	} {
+		entry, found := byNode[want.node]
+		switch {
+		case !found:
+			t.Errorf("%s (%s): the read answers no entry for it", want.what, want.node)
+		case entry.Kind != "agent" || entry.Kept != nil || !reflect.DeepEqual(entry.DecidedBy, want.decider):
+			t.Errorf("%s (%s): the entry reads %s, want kind agent, the node's shape, no Keep and the decided_by %v",
+				want.what, want.node, entryJSON(t, entry), want.decider)
+		case entry.WaitingReview == nil || *entry.WaitingReview != want.waiting:
+			t.Errorf("%s (%s): the entry reads %s, want waiting_review %t", want.what, want.node, entryJSON(t, entry), want.waiting)
 		}
 	}
 }
@@ -682,6 +765,7 @@ const (
 // (a2); the agent's choices.md holds its decision d1 and a replaced decision d2. Every write
 // below is the agent's unless it names a person.
 func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	ctx := context.Background()
@@ -743,8 +827,11 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read what the reading states: %v", err)
 	}
+	// The reading's text_parent (refs.TupleTextParent) names the decision too, since its text sits
+	// in the decision's: that tuple is its place in the text, which no walk of the tree reads, and
+	// the part_of alone carries the tie.
 	for _, tuple := range out {
-		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf {
+		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf && tuple.Kind != refs.TupleTextParent {
 			t.Errorf("the reading points at the decision through %s as well as its part_of: the part_of carries the tie", tuple.Kind)
 		}
 		if tuple.Kind == graphstore.TupleDecidedBy {
@@ -1024,6 +1111,7 @@ func versionMarkdownAt(t *testing.T, database *store.Store, artifactID string, n
 // keptAskState), and a write that gives its block a `shaped` pointer, as the conversion does, each
 // move the block's row and leave the ask at the version that wrote it.
 func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttributes(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1078,6 +1166,7 @@ func TestAnAnsweredAsksVersionMovesWithItsOwnWordsAloneAndNotWithTheServersAttri
 // A document no pass ever indexed reads its newest version's words too, not those of the version
 // that first wrote its node.
 func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1141,6 +1230,7 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 // document is edited in (the document itself, or its issue's room for a converted one), and its
 // entry names no document: no block of it holds the ask.
 func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1174,6 +1264,7 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 // that deleted the answered ask q-kept and put a callout with the id q-kept in its place left the
 // entry naming SEED-1/spec#q-kept, the callout, until the next tick restored the ask.
 func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1205,6 +1296,7 @@ func TestAnAnsweredAskWhoseBlockIdABlockOfAnotherTypeTookNamesNoDocument(t *test
 // `:::ask{#q-drive urgency="med" multiple="false"}`, and `dispatch artifact --force` refused that
 // text naming the ask's line.
 func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackUnchanged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1215,7 +1307,10 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	answerDecisionBlock(t, handler, askID, "bob", []string{"REST"}, "Plain HTTP until a client streams.", nil)
 	settleIssue(t, documents, issue.Key)
 	artifactID := readDecisionDocument(t, database, issue.Key, "asks-md").id
-	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
+	// The text as `dispatch doc-read` reads it, under `Dispatch-Asks: 1` (textRead); a reader
+	// without the header is served the form kept for one release (ask_blocks_test.go's
+	// TestTheTextRoutesServeAReaderOfAsksNoAskAttributeAndEveryOtherReaderTheKeptForm).
+	response := textRead(t, handler, "/api/v1/artifacts/"+artifactID+"/text", true)
 	if response.Code != http.StatusOK {
 		t.Fatalf("read the text of asks.md: status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -1243,13 +1338,14 @@ func TestTheTextADocumentReadPrintsHoldsNoServerOwnedAskAttributeAndUploadsBackU
 	agentUploadAs(t, handler, issue.Key, "asks.md", read.Markdown, nil)
 }
 
-// INFRA-1150, test round 2, the defect INFRA-1152's implementer found at 44f1abef1605 and the
+// Test round 2 of this change, the defect a sibling change's implementer found at 44f1abef1605 and the
 // architect sent to this round: the release before answered the text of a document with no ask
 // block with no asks member at all, and this build adds "asks":[]. The field carries omitzero,
 // which leaves out a nil slice and keeps an empty one, so a writer that fills the field with an
 // empty slice changes the shape of every such read, which the basebuild store census reads as the
 // two builds answering differently. A document with an ask block still answers its asks member.
 func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
+	t.Parallel()
 	handler, _, deps := newTestServer(t, testServerOptions{settle: time.Hour})
 	documents := deps.Docs.(*docs.Service)
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1285,10 +1381,11 @@ func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
 
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
-// transaction: a version that removes a decision and the reading under another leaves both out
-// of the Decisions read, and one that holds no typed block at all leaves the last decision out,
-// before any block-index reconciliation.
+// transaction, deleting their document_blocks and block_refs rows in it: a version that removes a
+// decision and the reading under another leaves both out of the Decisions read, and one that holds
+// no typed block at all leaves the last decision out, before any block-index reconciliation.
 func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
@@ -1334,6 +1431,15 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	if kept := requireEntry(t, readEntries(t, handler, issue.Key), "the kept decision", d1); len(kept.Readings) != 0 {
 		t.Errorf("the kept decision answers the readings %v after the version that removed g1, want none", readingsOf(kept))
 	}
+	var rows, links int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and block_id in ('d2', 'g1')),
+		       (select count(*) from block_refs where artifact_id = $1 and block_id in ('d2', 'g1'))`, doc.id).Scan(&rows, &links); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || links != 0 {
+		t.Errorf("the version that removed d2 and g1 left %d document_blocks rows and %d block_refs rows of them, want none: the write that states them gone deletes them", rows, links)
+	}
 
 	agentUploadAs(t, handler, issue.Key, "big.md", big("A paragraph and no decision.\n"), nil)
 	if indexed := blockIndexVersion(t, database, doc.id); indexed != nil {
@@ -1341,4 +1447,86 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	}
 	requireState("the version that holds no typed block", doc.address("d1"), graphstore.StateGone)
 	notListed("the version that holds no typed block", d1)
+}
+
+// staleFixture is an issue whose spec holds the requirements r1 and r2, and the agent's decision d1
+// in choices.md, which ties r1 as its words are first written. A link's stale compares text sums
+// (decisionread's markStale): the decision's own words as they stand against those its document
+// held at the version the tie was written in, and against those it held at the version that stood
+// when the requirement last changed.
+type staleFixture struct {
+	t       *testing.T
+	handler http.Handler
+	issue   model.Issue
+	spec    decisionDocument
+	node    string
+}
+
+func newStaleFixture(t *testing.T, words string) *staleFixture {
+	t.Helper()
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	createReferenceAPIProject(t, handler, "CORE")
+	fixture := &staleFixture{t: t, handler: handler}
+	fixture.issue = createSpecIssue(t, handler, "CORE", ":::requirement{#r1}\nOne.\n:::\n\n:::requirement{#r2}\nTwo.\n:::\n")
+	fixture.spec = readDecisionDocument(t, database, fixture.issue.Key, "spec")
+	fixture.say(words)
+	fixture.node = readDecisionDocument(t, database, fixture.issue.Key, "choices-md").address("d1")
+	return fixture
+}
+
+// say writes the decision d1 with words, tying r1, as a new version of choices.md.
+func (f *staleFixture) say(words string) {
+	f.t.Helper()
+	agentUploadAs(f.t, f.handler, f.issue.Key, "choices.md",
+		":::decision{#d1 shaped=\"dispatch://"+f.issue.Key+"/spec#b-r1\"}\n"+words+"\n:::\n", nil)
+}
+
+// reword writes a version of the spec that changes the requirement r1 alone.
+func (f *staleFixture) reword(words string) {
+	f.t.Helper()
+	editSpec(f.t, f.handler, f.issue.Key, []map[string]any{{"op": "replace", "find": "One.", "with": words}})
+}
+
+// requireStale fails unless the decision's link to r1 reads stale as want, and the link to r1 is
+// the decision's one.
+func (f *staleFixture) requireStale(what string, want bool) {
+	f.t.Helper()
+	entry := requireEntry(f.t, readEntries(f.t, f.handler, f.issue.Key), "the agent's decision", refs.BlockNodeKind+":"+f.node)
+	if link := shapedLink(f.t, entry, f.spec.address("r1")); link.Stale != want {
+		f.t.Errorf("%s: the link of %s to %s reads stale %t, want %t: %s", what, f.node, f.spec.address("r1"), link.Stale, want, entryJSON(f.t, link))
+	}
+}
+
+// A decision whose words change and change back is not stale: its words as they stand are the
+// words its document held at the version the tie was written in, so the sums compare equal, as
+// they did on `main`. A comparison of times would read the last change into those words as a
+// change after the tie. A change that stands is stale.
+func TestALinkOfADecisionWhoseWordsChangedAndChangedBackIsNotStale(t *testing.T) {
+	t.Parallel()
+	fixture := newStaleFixture(t, "REST for every service.")
+	fixture.requireStale("the words as they were tied", false)
+	fixture.say("gRPC for every service.")
+	fixture.requireStale("after the words changed, and the requirement did not", true)
+	fixture.say("REST for every service.")
+	fixture.requireStale("after the words changed back to those it was tied at", false)
+	fixture.say("GraphQL for every service.")
+	fixture.requireStale("after the words changed to others", true)
+}
+
+// A decision whose words change, and then change to the words it held when the requirement last
+// changed, is not stale either: the requirement has not changed since the decision did. The words
+// A, B, C and B again, with the requirement changed while the decision read B, read stale while
+// the decision reads C, which the requirement has not answered, and not once it reads B again.
+// A requirement that changes after the decision's change clears the link too.
+func TestALinkOfADecisionWhoseWordsReturnToThoseTheRequirementChangedBesideIsNotStale(t *testing.T) {
+	t.Parallel()
+	fixture := newStaleFixture(t, "REST for every service.")
+	fixture.say("gRPC for every service.")
+	fixture.requireStale("after the words changed", true)
+	fixture.reword("One, rewritten.")
+	fixture.requireStale("after the requirement changed beside the new words", false)
+	fixture.say("GraphQL for every service.")
+	fixture.requireStale("after the words changed again, which the requirement has not answered", true)
+	fixture.say("gRPC for every service.")
+	fixture.requireStale("after the words changed back to those the requirement changed beside", false)
 }

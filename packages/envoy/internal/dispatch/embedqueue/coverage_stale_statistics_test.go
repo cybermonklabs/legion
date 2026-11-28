@@ -41,6 +41,7 @@ import (
 // and 3,355 ms in the same state. With statistics that recorded the state, that version read the
 // windows by the bitmap and Coverage took 1,339 ms and 2,963 ms.
 func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t *testing.T) {
+	t.Parallel()
 	opened := storetest.Open(t)
 	ctx := context.Background()
 	// Every session of the database commits synchronously, whatever the server's setting, as the

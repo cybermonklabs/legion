@@ -115,7 +115,7 @@ func TestWithDatabase(t *testing.T) {
 // other bytes) and an answer drift bytes off production's change: version 1 lands off its plan,
 // yet every padded and restored version changes size by exactly its planned change, only the
 // answer version itself carries the drift, and the resolve version changes by the resolve's own
-// bytes (state "open" to "resolved").
+// bytes (an open block's directive, which holds no state, taking state "resolved").
 func TestHistoryPadsFromStoredSizes(t *testing.T) {
 	blockID, resolvedID, docID := "b1", "b2", "d1"
 	answered := `:::ask{#b1 urgency="med" multiple="false" state="answered" answered_by="u@example.com" answered_at="2026-10-25T10:00:00.5Z" selected="[]" answer="yes"}`
@@ -124,7 +124,8 @@ func TestHistoryPadsFromStoredSizes(t *testing.T) {
 		"\n\n## Two\n\n" + strings.Repeat("second section words. ", 20) + "\n"
 	stripped := stripAnswers(text, map[string]bool{blockID: true})
 	grow := len(text) - len(stripped)
-	real := []int{300, 340, 340 + grow, 344 + grow, 200, 260, len(text) + 40}
+	settle := len(resolved) - len(stripAnswers(resolved, map[string]bool{resolvedID: true}))
+	real := []int{300, 340, 340 + grow, 340 + grow + settle, 200, 260, len(text) + 40}
 	is := &replayIssue{Key: "PRJ-1", Asks: []replayAsk{
 		{ID: "a1", BlockID: &blockID, BlockArtifactID: &docID, State: "answered", AnswerVersion: 3},
 		{ID: "a2", BlockID: &resolvedID, BlockArtifactID: &docID, State: "resolved", ResolveVersion: 4,

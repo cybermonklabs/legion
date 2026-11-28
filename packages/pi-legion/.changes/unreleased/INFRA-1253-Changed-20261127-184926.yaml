@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  `legion-architect` says that Dispatch judges which versions close the design gate. On an issue
+  Dispatch has converted to one tree, an approval covers the digest of its document's query, so a
+  change to a requirement, a criterion, a check, the memo or their relations closes the step, and a
+  prose edit, an ask's answer, a reading, a restore of the approved text or a recorded result keeps
+  it open. On an issue not yet converted, any new version closes the step unless Dispatch carries
+  the approval to it by its text. The architect repeats the approval request after an answer only
+  where the rewrite closes the step.
+time: 2026-11-27T18:49:26Z
+custom:
+    Issue: INFRA-1253

@@ -31,10 +31,13 @@ func threadLoginsQuery(param string) string {
 
 // issueLoginsQuery is the status half of an issue event's thread_logins, for an event that
 // closed or reopened the issue (IssueLoginsOf), its issue key the parameter param: every login
-// with a Replies row on one of that issue's open asks, sorted and never nil.
+// with a Replies row on one of that issue's asks whose row reads open, sorted and never nil.
 // The Replies list leaves out an open ask on an open issue that waits on that login
-// (api/replies.go, myRepliesOwner), so a close or a reopen moves exactly those rows and no
-// other. It reads the asks through asks_open and their rows through user_threads_thread, so it
+// (api/replies.go, myRepliesOwner), so a close or a reopen moves those rows and no other. That
+// list also requires the ask's node to hold it open (api's askOpenOf), which the row's state
+// agrees with outside a roll, so this reads those logins, or more of them inside a roll's
+// window, and never fewer: a login it names whose row does not move reads its list again for
+// nothing. It reads the asks through asks_open and their rows through user_threads_thread, so it
 // never scans user_threads.
 //
 // An issue event carries logins on an assignee move too, the old and the new assignee, a side

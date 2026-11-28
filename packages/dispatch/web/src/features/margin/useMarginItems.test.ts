@@ -1,9 +1,9 @@
-import { expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import type { AcceptSuggestionResponse } from "@legion/contracts";
 import { hashKey, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createElement, type ReactNode } from "react";
+import { createElement, type ReactElement, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { realClock } from "../../__tests__/fake-clock";
@@ -12,6 +12,7 @@ import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
+import { decisionsFromRead } from "../../api/decisions-tree";
 import { DispatchQueryClient, hearLiveEvent } from "../../api/query-client";
 import type {
   Artifact,
@@ -22,7 +23,8 @@ import type {
   DispatchEvent,
   IssueDecisions,
 } from "../../api/types";
-import type { DecisionsRead } from "../issue/decision-entries";
+import type { DecisionDocuments } from "../issue-page/decision-review";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import {
   anchoredThreadComments,
@@ -30,6 +32,12 @@ import {
   marginItemId,
   useMarginItems,
 } from "./useMarginItems";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 function event(id: string): DispatchEvent {
   const seq = Number(id);
@@ -1130,7 +1138,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   try {
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
-        decisions: [["p-a", "answered-ask", false]],
+        decisions: [["p-a", "answered-ask", false, "choices-md-id"]],
         items: ["decision:answered-ask:CORE-1/spec#p-a"],
       })
     );
@@ -1140,7 +1148,7 @@ test("an open and a declined ask are no decision beside the spec, and an answere
   }
 });
 
-function DecisionItems({ document }: { document: Artifact }) {
+function DecisionItems({ document, issue }: { document: Artifact; issue?: DecisionDocuments }) {
   const { decisions, items } = useMarginItems(
     { key: "CORE-1", kind: "issue" },
     "comments",
@@ -1151,7 +1159,7 @@ function DecisionItems({ document }: { document: Artifact }) {
       ["p-a", { pos: 12, top: 72 }],
     ]),
     undefined,
-    { documentShown: true }
+    { documentShown: true, issue }
   );
   return createElement(
     "output",
@@ -1161,13 +1169,20 @@ function DecisionItems({ document }: { document: Artifact }) {
         item.blockId,
         item.decision.node.id,
         item.decision.uncertainty === "high",
+        item.documentId ?? null,
       ]),
       items: items.map(marginItemId),
     })
   );
 }
 
-function renderDecisionItems(document: Artifact) {
+function renderDecisionItems(document: Artifact, issue?: DecisionDocuments) {
+  return renderMarginReads(createElement(DecisionItems, { document, issue }));
+}
+
+/** `element` on CORE-1's spec, under the reads of the margin a test does not answer, each held
+ *  empty, so the decisions read is the one a row answers. */
+function renderMarginReads(element: ReactElement) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1179,11 +1194,7 @@ function renderDecisionItems(document: Artifact) {
     createElement(
       MemoryRouter,
       { initialEntries: ["/issues/CORE-1/spec"] },
-      createElement(
-        QueryClientProvider,
-        { client: queryClient },
-        createElement(DecisionItems, { document })
-      )
+      createElement(QueryClientProvider, { client: queryClient }, element)
     )
   );
 }
@@ -1197,11 +1208,11 @@ test("each decision is a margin item beside every spec block it links, in the sp
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", "CORE-1/choices-md#d-1", false],
-          ["p-b", "CORE-1/choices-md#d-2", true],
-          ["p-b", "CORE-1/notes-md#d-2", false],
-          ["p-a", "CORE-1/choices-md#d-1", false],
-          ["p-c", "CORE-1/choices-md#d-4", false],
+          ["p-b", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-b", "CORE-1/choices-md#d-2", true, "choices-md-id"],
+          ["p-b", "CORE-1/notes-md#d-2", false, "notes-md-id"],
+          ["p-a", "CORE-1/choices-md#d-1", false, "choices-md-id"],
+          ["p-c", "CORE-1/choices-md#d-4", false, "choices-md-id"],
         ],
         items: [
           "decision:CORE-1/choices-md#d-1:CORE-1/spec#p-b",
@@ -1236,10 +1247,70 @@ test("an issue document that is not its spec reads no decisions and shows none",
   }
 });
 
+/** The document each margin decision item names, by the spec block it stands beside, with the
+ *  issue read `issue` handed to the margin, or none. */
+function DecisionDocumentIds({ issue }: { issue: DecisionDocuments | undefined }) {
+  const { decisions } = useMarginItems(
+    { key: "CORE-1", kind: "issue" },
+    "comments",
+    artifact,
+    new Map(),
+    new Map(),
+    undefined,
+    { documentShown: true, ...(issue === undefined ? {} : { issue }) }
+  );
+  return createElement(
+    "output",
+    { "aria-label": "Margin decision documents" },
+    JSON.stringify(decisions.map((item) => [item.blockId, item.documentId ?? null]))
+  );
+}
+
+// The Decisions view names a document only for a typed block of a role document, so a decision of
+// choices.md, which plays no role, names none. Its item finds the document by the decision's own
+// address among the issue read's documents, as the Decisions tab does: the card reads a `#id` in
+// the decision's words against it. Until the issue read answers, the item names none.
+test("a decision of a document no role names is an item of that document, found by its address", async () => {
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue({
+    ...issueDecisions,
+    entries: [{ ...decisionOf("d-5", [decisionLink("d-5", "p-a")]), document: null }],
+  });
+  const issue: DecisionDocuments = {
+    artifacts: [
+      { id: "artifact-1", slug: "spec" },
+      { id: "choices-id", slug: "choices-md" },
+    ],
+    key: "CORE-1",
+    primary_artifact_id: "artifact-1",
+  };
+  try {
+    for (const [handed, named] of [
+      [undefined, null],
+      [issue, "choices-id"],
+    ] as const) {
+      const view = renderMarginReads(createElement(DecisionDocumentIds, { issue: handed }));
+      try {
+        await waitFor(() =>
+          expect(
+            JSON.parse(screen.getByLabelText("Margin decision documents").textContent ?? "")
+          ).toEqual([["p-a", named]])
+        );
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    getIssueDecisions.mockRestore();
+  }
+});
+
 // A server of the release before answers the Decisions read with no `entries`: its decisions are
 // the sections of the issue's decisions document, an agent's or, where a section cites an ask, a
-// person's, each with the links it shaped. During a roll a page of this build can reach one, and
-// the margin still draws each beside the spec blocks it links, as it draws an entry.
+// person's, each with the links it shaped. During a roll a page of this build can reach one: the
+// client reads its sections as the entries they are (`decisionsFromRead`), and the margin still
+// draws each beside the spec blocks it links, as it draws an entry. Such an entry names no
+// document, so its card's text resolves against the issue's document its address names, found
+// among the documents the issue read lists, as every other view finds it.
 test("a Decisions read of the release before, with no entries, still draws its decisions beside the spec", async () => {
   const section = (
     block: string,
@@ -1262,7 +1333,7 @@ test("a Decisions read of the release before, with no entries, still draws its d
     unsure,
     waiting_review: kind === "agent" && !replaced,
   });
-  const before: DecisionsRead = {
+  const before: Parameters<typeof decisionsFromRead>[1] = {
     decisions: [
       section("h-agent", "p-a", "agent"),
       section("h-person", "p-b", "person", { unsure: true }),
@@ -1272,17 +1343,21 @@ test("a Decisions read of the release before, with no entries, still draws its d
     open_questions: [],
   };
   const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(
-    before as IssueDecisions
+    decisionsFromRead("CORE-1", before)
   );
-  const view = renderDecisionItems(artifact);
+  const view = renderDecisionItems(artifact, {
+    artifacts: [artifact, { id: "decisions-md-id", slug: "decisions-md" }],
+    key: "CORE-1",
+    primary_artifact_id: artifact.id,
+  });
   try {
     const agent = "dispatch://CORE-1/artifact/decisions-md#b-h-agent";
     const person = "dispatch://CORE-1/artifact/decisions-md#b-h-person";
     await waitFor(() =>
       expect(JSON.parse(screen.getByLabelText("Margin decisions").textContent ?? "")).toEqual({
         decisions: [
-          ["p-b", person, true],
-          ["p-a", agent, false],
+          ["p-b", person, true, "decisions-md-id"],
+          ["p-a", agent, false, "decisions-md-id"],
         ],
         items: [`decision:${person}:CORE-1/spec#p-b`, `decision:${agent}:CORE-1/spec#p-a`],
       })

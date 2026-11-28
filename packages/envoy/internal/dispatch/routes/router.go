@@ -115,12 +115,9 @@ type AppContextOptions struct {
 	// where the deployment configured neither. See api.DepsInput.
 	NewIssueLabel   string
 	NewIssueSession string
-	// SpecRoots names the roots of The Spec (cmd/dispatch: DISPATCH_SPEC_ROOTS), issue keys
-	// separated by commas; empty names none. See api.DepsInput.
-	SpecRoots      string
-	ServerURL      string
-	InsecureCookie bool
-	EnvoyURL       string
+	ServerURL       string
+	InsecureCookie  bool
+	EnvoyURL        string
 	// EnvoyToken is the bearer every Envoy listener call sends (cmd/dispatch: ENVOY_TOKEN); empty
 	// sends none.
 	EnvoyToken string
@@ -163,6 +160,8 @@ type AppContextOptions struct {
 	// client; empty URL means the feature is off. See api.DepsInput.
 	AgentSecretsURL       string
 	AgentSecretsTokenFile string
+	// LegionStatusScope is DISPATCH_LEGION_STATUS_SCOPE. See api.Deps.LegionStatusScope.
+	LegionStatusScope bool
 	// Files is the uploaded-file store main built from DISPATCH_FILE_STORE_BUCKET; nil keeps
 	// files in Postgres. See api.DepsInput.
 	Files            files.Store
@@ -197,6 +196,9 @@ type AppContextOptions struct {
 	// is not the dashboard origin. cmd/dispatch sets it from DISPATCH_DEV_SIGNIN behind its boot
 	// fence; BuildAppContext refuses it for a non-loopback ServerURL.
 	DevSignIn bool
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE as the boot read it; the zero value is off.
+	// See api.Deps.ParentStatusRule.
+	ParentStatusRule api.ParentStatusRule
 }
 
 // BuildAppContext bundles the shared HTTP-handler state.
@@ -232,7 +234,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentTokens:            opts.AgentTokens,
 		NewIssueLabel:          opts.NewIssueLabel,
 		NewIssueSession:        opts.NewIssueSession,
-		SpecRoots:              opts.SpecRoots,
 		ServerURL:              opts.ServerURL,
 		EnvoyURL:               opts.EnvoyURL,
 		EnvoyToken:             opts.EnvoyToken,
@@ -251,6 +252,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AgentPublisher:         opts.AgentPublisher,
 		AgentSecretsURL:        opts.AgentSecretsURL,
 		AgentSecretsTokenFile:  opts.AgentSecretsTokenFile,
+		LegionStatusScope:      opts.LegionStatusScope,
 		Files:                  opts.Files,
 		TestHooksEnabled:       opts.TestHooksEnabled,
 		RouteRosterTTL:         opts.RouteRosterTTL,
@@ -263,6 +265,7 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		AnswersLatency:         opts.AnswersLatency,
 		DashboardEntry:         opts.DashboardEntry,
 		BuildCommit:            opts.BuildCommit,
+		ParentStatusRule:       opts.ParentStatusRule,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("BuildAppContext: %w", err)
@@ -295,14 +298,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 
 // errNoEventLog is what a context built with no Store answers for the event log's head.
 var errNoEventLog = errors.New("this server holds no store, so no event log to read the head of")
-
-// APIDeps is the API's dependencies that BuildAppContext parsed and New registers the routes
-// with. A pass that does what a route does outside a request (api.RunIssueAskRepair, which
-// restores the approval requests a reopen restores) runs on these, so it holds every field the
-// routes hold, the roots of The Spec among them.
-func (ctx *AppContext) APIDeps() api.Deps {
-	return ctx.apiDeps
-}
 
 // Architecture is the shared architecture importer the HTTP routes use, so
 // the server's five-minute sync ticker, the Refresh route and the sync tool

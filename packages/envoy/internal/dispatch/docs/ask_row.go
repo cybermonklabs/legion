@@ -22,8 +22,26 @@ import (
 var AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, (` + refs.AskBlockDocumentSQL("a") + `)::text, a.author, a.question, a.options, a.multiple, a.urgency,
 		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
+// UndecodableAskError is a value an ask stores that does not decode, read once its row has
+// scanned: a column of its row (ScanAsk: its author, options, anchor, answer, resolution or
+// approval), the answer its node holds, or its newest reply's author (api's scanAskRead). AskID is
+// the ask's own id, which the scan read; Value names the value; Err is what its decoder answered,
+// which errors.Is and errors.As reach through it. A failure of the scan itself, a column pgx
+// cannot read among them, is no such error: the scan's own error answers it.
+type UndecodableAskError struct {
+	AskID, Value string
+	Err          error
+}
+
+func (e *UndecodableAskError) Error() string {
+	return fmt.Sprintf("ask %s: decode its %s: %v", e.AskID, e.Value, e.Err)
+}
+
+func (e *UndecodableAskError) Unwrap() error { return e.Err }
+
 // ScanAsk decodes one AskColumns row. extra receives, in order, any columns the query
-// selects after AskColumns.
+// selects after AskColumns. A stored value of the row that does not decode answers an
+// UndecodableAskError naming the ask.
 func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 	var ask model.Ask
 	var author, options, anchor, answer, resolution, approval []byte
@@ -36,36 +54,36 @@ func ScanAsk(row pgx.Row, extra ...any) (model.Ask, error) {
 		return model.Ask{}, err
 	}
 	if err := json.Unmarshal(author, &ask.Author); err != nil {
-		return model.Ask{}, fmt.Errorf("decode ask author: %w", err)
+		return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "author", Err: err}
 	}
 	if err := json.Unmarshal(options, &ask.Options); err != nil {
-		return model.Ask{}, fmt.Errorf("decode ask options: %w", err)
+		return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "options", Err: err}
 	}
 	if len(anchor) > 0 {
 		var value model.Anchor
 		if err := model.DecodeAnchor(anchor, &value); err != nil {
-			return model.Ask{}, fmt.Errorf("decode ask anchor: %w", err)
+			return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "anchor", Err: err}
 		}
 		ask.Anchor = &value
 	}
 	if len(answer) > 0 {
 		var value model.AskAnswer
 		if err := json.Unmarshal(answer, &value); err != nil {
-			return model.Ask{}, fmt.Errorf("decode ask answer: %w", err)
+			return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "answer", Err: err}
 		}
 		ask.Answer = &value
 	}
 	if len(resolution) > 0 {
 		var value model.AskResolution
 		if err := json.Unmarshal(resolution, &value); err != nil {
-			return model.Ask{}, fmt.Errorf("decode ask resolution: %w", err)
+			return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "resolution", Err: err}
 		}
 		ask.Resolution = &value
 	}
 	if len(approval) > 0 {
 		var value model.AskApproval
 		if err := json.Unmarshal(approval, &value); err != nil {
-			return model.Ask{}, fmt.Errorf("decode ask approval: %w", err)
+			return model.Ask{}, &UndecodableAskError{AskID: ask.ID, Value: "approval", Err: err}
 		}
 		// Every stored approval carries its documents list: the migration backfilled it and the
 		// asks_normalize_approval_documents trigger writes it for a row a release that knows
@@ -119,7 +137,7 @@ func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reas
 	}
 	change := asks.Resolved(resolution)
 	change.Who, change.At, change.Held = actor, resolution.At, held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, ask, change)
 	if err != nil {
 		return asks.Settled{}, model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
@@ -154,7 +172,7 @@ func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask, act
 		ids[index] = ask.ID
 		change := asks.Reopened()
 		change.Who, change.At, change.Held = actor, at, &held[index]
-		settled, err := planSettle(ctx, tx, ask.ID, change)
+		settled, err := planSettle(ctx, tx, ask, change)
 		if err != nil {
 			return fmt.Errorf("restore withdrawn ask: %w", err)
 		}

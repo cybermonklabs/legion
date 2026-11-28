@@ -23,8 +23,8 @@
 -- do nothing` (record.Store.PutAssignments, record.Store.CarryAssignments).
 --
 -- The three defaults are the shapes the record has to hold beside a plain draw. variant '' is no
--- variant: an experiment at mode off, which draws for no unit and is recorded as having drawn for
--- none, and the answer a hand-over settles a child at when the tree it left held no row for the
+-- variant: an experiment at mode off, which gives every new unit no arm, and the answer a hand-over
+-- settles a child at when the tree it left held no row for the
 -- experiment. mode '' is such a hand-over too, where no draw was ever made and so no mode was ever
 -- in force. drawn_at null is the same fact in the third column: nothing was drawn, so there is no
 -- instant to record. carried is the hand-over's own mark, as issues.memory_carried is today: a row

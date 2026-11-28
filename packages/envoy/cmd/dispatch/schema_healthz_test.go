@@ -29,6 +29,7 @@ const schemaHealthWait = 30 * time.Second
 // as a deployment's newer pod would write it, so what is read is the server's own wake, its own
 // installer and its own probe.
 func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	server := startDispatchProcess(t, database.Pool.Config().ConnString())
@@ -61,11 +62,12 @@ func TestAStoreSchemaAboveTheBuildAnswersHealthzOK(t *testing.T) {
 // serves. The store's migration here moves, to creatable only from the next version, every element
 // that gives this build its creatable number - each block type, attribute, choice and item whose
 // since is that number, an item being an entry of its attribute's item_versions - and raises the
-// store to that version: this build installs it at its own version and may no longer create those
-// elements. The migration finds them by their since in the store, so it names none: which element
-// is newest changes with blocks.json. The numbers the row must reach are the ones this build's own
-// install of that store answers, read in the test's process.
+// store to that version: this build installs it at its own version and may no longer create
+// those elements. The migration finds them by their since in the store, so it names none: which
+// element is newest changes with blocks.json. The numbers the row must reach are the ones this
+// build's own install of that store answers, read in the test's process.
 func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
+	// Not parallel: it installs pmdoc's process-wide block schema.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	server := startDispatchProcess(t, database.Pool.Config().ConnString())

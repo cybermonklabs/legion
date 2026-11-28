@@ -3,8 +3,7 @@ package docs
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
+	"errors"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,10 +11,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -25,12 +26,13 @@ import (
 var renderWho = model.Actor{Kind: "user", ID: "alice"}
 
 // The blocks of the render rig's spec, each as its text value holds it: the whole slice of the
-// block, its children included and the blank line after it left out (D9 of this branch's plan).
+// block, its children included and the blank line after it left out (D9 of the issue-tree plan).
 // The memo is the issue's first child; the two criteria are authored nodes at the top; the two
-// requirements are authored nodes under the first criterion, ranked 1a and 1B, which byte order
-// takes B first; the box is a callout whose text holds the inner callout, a node placed by the
-// text under it; the closing paragraph is the last top-level block. The check is a block of the
-// Verification document under the first requirement, which no render of the spec takes. The
+// requirements are authored nodes under the first criterion in the tree, ranked 1a and 1B there,
+// and in the text they stand after the second criterion, at the text ranks 1na and 1nB, which byte
+// order takes B first; the box is a callout whose text holds the inner callout, a node placed by
+// the text under it; the closing paragraph is the last top-level block. The check is a block of
+// the Verification document under the first requirement, which no render of the spec takes. The
 // intruder is a paragraph a test dates before the version written before the cutover.
 const (
 	renderMemo     = ":::callout{#memo kind=\"note\" title=\"\"}\nThe memo says why.\n:::"
@@ -68,6 +70,10 @@ type renderRig struct {
 	// first render of version 3 answered, and digest the digest of its record.
 	before        time.Time
 	first, digest string
+	// settledRows is how many version_renders rows DOC-1's settlement left: the rows its room pass
+	// recorded for the newest version of each of DOC-1's query documents, which the census of the
+	// rendered versions reads beside DOC-2's.
+	settledRows int64
 }
 
 // address is the store address of block id of DOC-2's room.
@@ -108,15 +114,22 @@ func (r *renderRig) value(id, attribute, value string, at time.Time) graphstore.
 }
 
 // block is every tuple a pass states of block id of document, at: its in_document, its part_of
-// to parent, its rank, its text and its placement.
-func (r *renderRig) block(id, document string, parent refs.Target, rank, text, placement string, at time.Time) []graphstore.Tuple {
+// to parent, its rank, its text_parent to textParent, its text_rank, its text and its placement.
+func (r *renderRig) block(id, document string, parent, textParent refs.Target, rank, textRank, text, placement string, at time.Time) []graphstore.Tuple {
 	return []graphstore.Tuple{
 		r.relation(id, refs.TupleInDocument, graphstore.KindArtifact, document, true, at),
 		r.relation(id, graphstore.TuplePartOf, parent.Kind, parent.ID, true, at),
 		r.value(id, refs.AttributeRank, rank, at),
+		r.relation(id, refs.TupleTextParent, textParent.Kind, textParent.ID, true, at),
+		r.value(id, refs.AttributeTextRank, textRank, at),
 		r.value(id, graphstore.AttributeText, text, at),
 		r.value(id, refs.AttributePlacement, placement, at),
 	}
+}
+
+// document is the node of DOC-2's spec, the text parent of each of its top-level blocks.
+func (r *renderRig) document() refs.Target {
+	return refs.Target{Kind: graphstore.KindArtifact, ID: r.spec}
 }
 
 // issue is DOC-2's node, and under the block id of its room.
@@ -147,11 +160,13 @@ func (r *renderRig) renderAt(t *testing.T, artifactID string, at time.Time) Rend
 	return rendering
 }
 
-// requireVersionFromTree fails unless version 3 of the spec renders from the tree as want.
+// requireVersionFromTree fails unless version 3 of the spec, which stores its first render, renders
+// from the tree as want, naming the first byte that differs.
 func (r *renderRig) requireVersionFromTree(t *testing.T, what, want string) {
 	t.Helper()
 	if got := r.renderVersion(t, r.room.spec, 3); got.Source != RenderedFromTree || got.Markdown != want {
-		t.Errorf("%s: version 3 renders %q from %q, want %q from the tree", what, got.Markdown, got.Source, want)
+		t.Errorf("the render of %s@v3 differs from its stored bytes from byte %d %s: it renders %q from %q, want %q from the tree",
+			r.spec, firstDifference(got.Markdown, want), what, got.Markdown, got.Source, want)
 	}
 }
 
@@ -176,16 +191,10 @@ func (r *renderRig) versionDigest(t *testing.T, artifactID string, number int) s
 	return *digest
 }
 
-// renderSum is the lower-case hex sha256 of text.
-func renderSum(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return hex.EncodeToString(sum[:])
-}
-
-// writeVersionFromTree writes version number of the spec in tx as this child's writer writes one:
-// the spec rendered as of the head's cut, stored as the version's markdown, and its version_renders
-// row holding the digest of the spec's record read at that cut. It answers the rendering and the
-// record.
+// writeVersionFromTree writes version number of the spec in tx as this build's version write
+// writes one: the spec rendered as of the head's cut, stored as the version's markdown, and its
+// version_renders row holding the digest of the spec's record read at that cut. It answers the
+// rendering and the record.
 func (r *renderRig) writeVersionFromTree(t *testing.T, tx pgx.Tx, number int) (Rendering, QueryRecord) {
 	t.Helper()
 	ctx := context.Background()
@@ -264,7 +273,7 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 			}
 			if _, err := tx.Exec(ctx, `
 				insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
-				values ($1, $2, $3, 'paragraph', $4, $5, 1, now(), 'block', $3)`, id, block, address, renderSum(text), text); err != nil {
+				values ($1, $2, $3, 'paragraph', $4, $5, 1, now(), 'block', $3)`, id, block, address, reviewTextHash(text), text); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
@@ -283,28 +292,87 @@ func writeUnconvertedIssue(t *testing.T, database *store.Store) int {
 	return len(words)
 }
 
-// A version this child's writer wrote renders again from the tree (R15 of this branch's spec;
-// D2, D5, D6, D9 and D10 of its plan). The test writes a subtree of DOC-2's spec straight into
-// the store, writes version 3 from it - its rendering and its version_renders row, holding the
-// digest of the spec's record, in one transaction - and then, one change at a time, edits a
-// requirement's text, re-parents another, re-orders two siblings and retracts a paragraph's
-// part_of, each dated after the version: the version renders its first bytes after each, the head
-// renders each change, and two renders of the version at two times read one byte string. The
-// render prints each node it takes once, a node whose text its parent's already holds left out,
-// and orders two siblings ranked a and B with B first, byte for byte; it refuses to run where
-// select 'a' < 'B' is false. A transaction rolled back leaves neither the version nor its row. The
-// digest of a version with a row is its record's, and of one without its stored markdown's. A
-// tuple dated before the version written before the cutover moves nothing of it, though the tree
-// at its time holds that tuple; it moves the version that holds a row, which the census of the
-// versions then reads as a difference; and with that row deleted the version answers its stored
-// bytes and says so. A version whose
+// writeQueryNode writes the node of the document slug of issue, in project, as the query node of
+// query an issue born converted holds (graphstore.QueryNode, as api's create and upload write it),
+// part of the issue, and names it on the document's row where that row stands: a version this
+// build then writes of the document is a query version, holding its query's definition_version,
+// which a query's record covers. A test that writes a document by SQL, which writes no node, calls
+// it before the document's first version that should take a version_renders row.
+func writeQueryNode(t *testing.T, database *store.Store, project, issue, slug, query string) {
+	t.Helper()
+	ctx := context.Background()
+	refKey := graphstore.ArtifactRefKey(issue, project, "", slug)
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		at, err := graphstore.StatementTime(ctx, tx, graphstore.KindArtifact, refKey)
+		if err != nil {
+			return err
+		}
+		node := graphstore.Created(graphstore.QueryNode(refKey, project, query, renderWho, at))
+		facts := graphstore.AttributeFacts([]graphstore.Tuple{graphstore.ArtifactPartOf(refKey, issue, renderWho, at)}, node)
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, facts); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `update artifacts set node_kind = $2, node_address = $1 where ref_key = $1`, refKey, graphstore.KindArtifact)
+		return err
+	}); err != nil {
+		t.Fatalf("write %s as the %s query's node: %v", refKey, query, err)
+	}
+}
+
+// writeRoomQueryNodes writes the node of each of room's spec, Verification document and plan as
+// the query node of its query (writeQueryNode), as an issue born converted holds them:
+// createIssueRoom writes the rows by SQL with no node.
+func writeRoomQueryNodes(t *testing.T, database *store.Store, room issueRoom) {
+	t.Helper()
+	writeQueryNode(t, database, "DOC", room.issue, "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugVerification, graphstore.QueryVerification)
+	writeQueryNode(t, database, "DOC", room.issue, model.ArtifactSlugPlan, graphstore.QueryPlan)
+}
+
+// A version this build's version write wrote renders again from the tree, in the text order its
+// author wrote. The test writes a subtree of DOC-2's spec straight into the store, writes version
+// 3 from it - its rendering and its version_renders row, holding the digest of the spec's record,
+// in one transaction - and then, one change at a time, edits a requirement's text, re-parents
+// another, re-orders the text of two top-level siblings and the tree ranks of two others, and
+// retracts a paragraph's in_document, each dated after the version: the version renders its first
+// bytes after each, the head renders each change that moves the text and none that moves only the
+// tree, and two renders of the version at two times read one byte string. The render prints the
+// document's text children, each once, by its text value, in increasing text_rank, a text_rank of
+// a and one of B taking B first, byte for byte; it refuses to run where select 'a' < 'B' is false.
+// A transaction rolled back leaves neither the version nor its row. The digest of a version with a
+// row is its record's, and of one without its stored markdown's. A tuple dated before the version
+// written before the cutover moves nothing of it, though the tree at its time holds that tuple; it
+// moves the version that holds a row, which the census of the versions then reads as a difference;
+// and with that row deleted the version answers its stored bytes and says so. A version whose
 // markdown is null says it holds no bytes. The head of a spec a real settlement wrote renders as
-// that version's stored markdown. The census of document_block_texts reads no difference in
-// either direction over the converted issues, and prints the rows of DOC-9 as the class of unstated
-// rows of an issue that has not converted, with their count; and document_block_texts keeps the
-// columns 0121_block_graph.up.sql creates. Last, a version the real path settles whose requirement
-// stands under the criterion it serves and not after the paragraph before it takes a row, and the
-// step logs what the census of the rendered versions reads of it, with both byte strings.
+// that version's stored markdown, and that settlement's room pass recorded the version's row,
+// holding its record's digest, which the census reads beside DOC-2's with no difference. The census
+// of document_block_texts reads no difference in either direction over the converted issues, and
+// prints the rows of DOC-9 as the class of unstated rows of an issue that has not converted, with
+// their count; and document_block_texts keeps the columns 0121_block_graph.up.sql creates.
+//
+// Then the versions the real version path writes, each holding the row its pass recorded with its
+// record's digest. Five versions of the spec of CORE-1 each render their stored bytes
+// (renderStepTextOrder): a requirement under the criterion before the paragraph in the tree prints
+// after the paragraph, where its text stands; each member prints once at its place in the text,
+// whether its parent is a block of another document, an ask, a criterion the version dropped or
+// the callout holding it; two members of one text each print at their own place; and a member's
+// place in the text is read as of the row's time. And the versions an issue room's settlement
+// writes each render their stored bytes, each block's text value being its slice of its own
+// fragment's rendering (renderStepFragments).
+//
+// Last, a version whose tree does not render as its stored markdown keeps its stored bytes, and
+// the census refuses on it, until a quiet tick restates it or closes its mark
+// (renderStepTreeMismatch), and the reconciliation's pass that states an uploaded version first
+// carries the upload's carry to it, naming the version the person approved
+// (renderStepCarryOfACarry). A render leaves out the blocks its reader may not see, at their own
+// offsets (renderStepHidden), and a stored version the blocks it held that its reader may not see,
+// placed by what it held of them (renderStepHiddenHistory). A version of 2,001 list items,
+// deferred to the reconciliation, renders its stored bytes and is deferred until its pass gives it
+// its time and its digest and carries the approval taken before it (renderStepDeferred); and the
+// reconciliation, run while a browser's
+// paragraph is committed and not classified, states and marks nothing of the document's or of the
+// issue room's version it reads as live ahead (renderStepRaceOfADocument, renderStepRaceOfARoom).
 func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -317,28 +385,31 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	}
 	service, server := newTestServiceInstance(t, database)
 	rig := &renderRig{database: database, settled: createIssueRoom(t, database, 1), room: createIssueRoom(t, database, 2)}
-	if err := database.Pool.QueryRow(ctx, `
-		select (select ref_key from artifacts where id = $1), (select ref_key from artifacts where id = $2)`,
-		rig.room.tree, rig.room.spec).Scan(&rig.tree, &rig.spec); err != nil {
-		t.Fatalf("read DOC-2's ref_keys: %v", err)
-	}
+	rig.tree, rig.spec = refKeyOf(t, database, rig.room.tree), refKeyOf(t, database, rig.room.spec)
 
-	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed.
+	// DOC-1's spec, written by a real settlement of its room once the peer's update has landed. Its
+	// documents are query nodes, as a converted issue's are, so the version the settlement writes
+	// is a query version, which takes the row its room pass records.
+	writeRoomQueryNodes(t, database, rig.settled)
 	peer := connectPeer(t, server.URL, rig.settled.spec, "alice")
-	stored := roomUpdateCount(t, database, rig.settled.tree)
+	stored := storedUpdateCount(t, database, rig.settled.tree)
 	if _, err := peer.Send(writeParagraph(peer.Doc, rig.settled.spec, "Spec words.")); err != nil {
 		t.Fatalf("write into DOC-1's spec: %v", err)
 	}
 	if err := peer.WaitForText(fragmentMarkdown(rig.settled.spec), "Spec words.\n", roomWait(t)); err != nil {
 		t.Fatalf("a peer's copy of DOC-1's room: %v", err)
 	}
-	waitForStoredUpdates(t, database, rig.settled.tree, stored)
-	if err := service.waitForDurableAppends(ctx, rig.settled.tree); err != nil {
-		t.Fatalf("wait for DOC-1's appends: %v", err)
+	settleLandedWrite(t, ctx, database, service, rig.settled, stored)
+	// The room pass of DOC-1's settlement records the row of the newest version of each of its query
+	// documents, the spec's among them, and the census reads each as its stored bytes.
+	settledSpec := savedVersion(t, database, rig.settled.spec)
+	requireStatedRow(t, database, rig.settled.issue, graphstore.QuerySpec, rig.settled.spec, settledSpec)
+	settledRenders := rig.readRenderCensus(t)
+	if settledRenders.Versions == 0 || settledRenders.Differences != 0 {
+		t.Fatalf("after DOC-1's settlement the census of the rendered versions compares %d and reads %d differences (%+v), want DOC-1's versions and none",
+			settledRenders.Versions, settledRenders.Differences, settledRenders.Reported)
 	}
-	if err := service.settleOwedNow(ctx, rig.settled.tree, time.Now().Add(roomWait(t))); err != nil {
-		t.Fatalf("settle DOC-1's room: %v", err)
-	}
+	rig.settledRows = settledRenders.Versions
 	unconverted := writeUnconvertedIssue(t, database)
 
 	// DOC-2: version 2 of the spec, written before the cutover, and then the spec's subtree.
@@ -350,22 +421,25 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	}
 	at := rig.now(t)
 	var subtree []graphstore.Tuple
+	spec := rig.document()
 	for _, block := range []struct {
-		id, document    string
-		parent          refs.Target
-		rank, text, how string
+		id, document       string
+		parent, textParent refs.Target
+		rank, textRank     string
+		text, how          string
 	}{
-		{"memo", rig.spec, rig.issue(), "1c", renderMemo, refs.PlacementText},
-		{"k1", rig.spec, rig.issue(), "1g", renderK1, refs.PlacementAuthored},
-		{"r1", rig.spec, rig.under("k1"), "1a", renderR1, refs.PlacementAuthored},
-		{"r2", rig.spec, rig.under("k1"), "1B", renderR2, refs.PlacementAuthored},
-		{"k2", rig.spec, rig.issue(), "1m", renderK2, refs.PlacementAuthored},
-		{"box", rig.spec, rig.issue(), "1p", renderBox, refs.PlacementText},
-		{"inner", rig.spec, rig.under("box"), "1q", renderInner, refs.PlacementText},
-		{"p1", rig.spec, rig.issue(), "1t", renderP1, refs.PlacementText},
-		{"c1", rig.room.issue + "/verification-md", rig.under("r1"), "3a", renderCheck, refs.PlacementAuthored},
+		{"memo", rig.spec, rig.issue(), spec, "1c", "1c", renderMemo, refs.PlacementText},
+		{"k1", rig.spec, rig.issue(), spec, "1g", "1g", renderK1, refs.PlacementAuthored},
+		{"r1", rig.spec, rig.under("k1"), spec, "1a", "1na", renderR1, refs.PlacementAuthored},
+		{"r2", rig.spec, rig.under("k1"), spec, "1B", "1nB", renderR2, refs.PlacementAuthored},
+		{"k2", rig.spec, rig.issue(), spec, "1m", "1m", renderK2, refs.PlacementAuthored},
+		{"box", rig.spec, rig.issue(), spec, "1p", "1p", renderBox, refs.PlacementText},
+		{"inner", rig.spec, rig.under("box"), rig.under("box"), "1q", "1q", renderInner, refs.PlacementText},
+		{"p1", rig.spec, rig.issue(), spec, "1t", "1t", renderP1, refs.PlacementText},
+		{"c1", rig.room.issue + "/verification-md", rig.under("r1"),
+			refs.Target{Kind: graphstore.KindArtifact, ID: rig.room.issue + "/verification-md"}, "3a", "3a", renderCheck, refs.PlacementAuthored},
 	} {
-		subtree = append(subtree, rig.block(block.id, block.document, block.parent, block.rank, block.text, block.how, at)...)
+		subtree = append(subtree, rig.block(block.id, block.document, block.parent, block.textParent, block.rank, block.textRank, block.text, block.how, at)...)
 	}
 	rig.write(t, subtree...)
 
@@ -375,9 +449,11 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 	}{
 		{"a version written from the tree holds its row, written in the version's own transaction", renderStepVersionRow},
 		{"a text edit after the version leaves the version's text as it stood", renderStepText},
-		{"a re-parent after the version leaves the version's parent as it stood", renderStepParent},
-		{"a re-order after the version leaves the version's ranks as they stood", renderStepRanks},
-		{"a part_of retracted after the version leaves the node in it", renderStepRetraction},
+		{"a re-parent after the version moves no byte of a render", renderStepParent},
+		{"a re-order after the version leaves the version's text ranks as they stood", renderStepRanks},
+		{"an in_document retracted after the version leaves the node in it", renderStepRetraction},
+		{"a render leaves out the blocks its reader may not see, at their own offsets", renderStepHidden},
+		{"a stored version leaves out the blocks its reader may not see, placed by what that version held of them", renderStepHiddenHistory},
 		{"two renders of the version at two times read one byte string, and the head is the renderer at now", renderStepTwoTimes},
 		{"the digest of a version with a row is its record's, and of one without its stored markdown's", renderStepDigests},
 		{"the census reads the converted issues' texts both ways and the unconverted issue's rows as a class", func(t *testing.T, rig *renderRig) {
@@ -387,17 +463,37 @@ func TestTheTreeRendersAPostCutoverVersionFromItsTuples(t *testing.T) {
 		{"with its row deleted a version answers its stored bytes and says so", renderStepRowDeleted},
 		{"a version whose markdown is null says it holds no bytes", renderStepNoBytes},
 		{"document_block_texts keeps the columns 0121_block_graph creates", renderStepTextColumns},
-		{"a settled version whose authored block stands under a parent other than the block before it", func(t *testing.T, rig *renderRig) {
-			renderStepAuthoredPlacement(t, rig, service)
+		{"each version the real path writes renders in the text order its author wrote", func(t *testing.T, rig *renderRig) {
+			renderStepTextOrder(t, rig, service)
+		}},
+		{"each version an issue room's settlement writes renders its own fragment's bytes", func(t *testing.T, rig *renderRig) {
+			renderStepFragments(t, rig, service, server.URL)
+		}},
+		{"a version whose tree does not render as its stored markdown keeps its stored bytes until a quiet tick repairs or closes its mark", func(t *testing.T, rig *renderRig) {
+			renderStepTreeMismatch(t, rig, service)
+		}},
+		{"the pass that states an uploaded version first carries the carry to it, naming the version the person approved", func(t *testing.T, rig *renderRig) {
+			renderStepCarryOfACarry(t, rig, service)
+		}},
+		{"a deferred version renders its stored bytes until the reconciliation states it, which gives it its time and its digest and carries the approval taken before", func(t *testing.T, rig *renderRig) {
+			renderStepDeferred(t, rig, service)
+		}},
+		{"the reconciliation reads an update its document's room has not stored as live ahead and marks no row", func(t *testing.T, rig *renderRig) {
+			renderStepRaceOfADocument(t, rig, service, server.URL)
+		}},
+		{"the reconciliation reads an update an issue room has not stored as live ahead and marks no row", func(t *testing.T, rig *renderRig) {
+			renderStepRaceOfARoom(t, rig, service, server.URL)
 		}},
 	} {
 		t.Run(step.name, func(t *testing.T) { step.run(t, rig) })
 	}
 }
 
-// renderFirst is the rendering of version 3, the spec's subtree as written: the requirement
-// ranked 1B before the one ranked 1a, and the inner callout once, inside the box.
-var renderFirst = joinRenderings(renderMemo, renderK1, renderR2, renderR1, renderK2, renderBox, renderP1)
+// renderFirst is the rendering of version 3, the spec's subtree as written, in the order of the
+// text ranks: the requirements after the second criterion, the one of text rank 1nB before the one
+// of 1na, and the inner callout once, inside the box. The tree's order would print the two
+// requirements under the first criterion, before the second.
+var renderFirst = joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1, renderBox, renderP1)
 
 func renderStepVersionRow(t *testing.T, rig *renderRig) {
 	ctx := context.Background()
@@ -411,7 +507,7 @@ func renderStepVersionRow(t *testing.T, rig *renderRig) {
 		t.Fatalf("the head renders %q from %q, want %q from the tree", rendering.Markdown, rendering.Source, renderFirst)
 	}
 	if strings.Index(rendering.Markdown, renderR2) > strings.Index(rendering.Markdown, renderR1) {
-		t.Errorf("the render takes r1 (rank 1a) before r2 (rank 1B), want B first, byte for byte")
+		t.Errorf("the render takes r1 (text rank 1na) before r2 (text rank 1nB), want B first, byte for byte")
 	}
 	if strings.Count(rendering.Markdown, renderInner) != 1 {
 		t.Errorf("the render holds the inner callout %d times, want once, inside its box", strings.Count(rendering.Markdown, renderInner))
@@ -431,7 +527,7 @@ func renderStepVersionRow(t *testing.T, rig *renderRig) {
 		t.Errorf("version 3's row holds %s at %s and seq %d, want the record's %s at %s and seq %d",
 			digest, at, readSeq, record.Digest, record.Cut.At, record.Cut.ReadSeq)
 	}
-	if renderSum(renderFirst) == record.Digest {
+	if reviewTextHash(renderFirst) == record.Digest {
 		t.Errorf("the record's digest is the sha256 of the version's markdown, %s", record.Digest)
 	}
 
@@ -457,51 +553,446 @@ func renderStepVersionRow(t *testing.T, rig *renderRig) {
 func renderStepText(t *testing.T, rig *renderRig) {
 	rig.write(t, rig.value("r1", graphstore.AttributeText, renderR1Edited, rig.now(t)))
 	rig.requireVersionFromTree(t, "after r1's text edit", renderFirst)
-	rig.requireHead(t, "after r1's text edit", joinRenderings(renderMemo, renderK1, renderR2, renderR1Edited, renderK2, renderBox, renderP1))
+	rig.requireHead(t, "after r1's text edit", joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1Edited, renderBox, renderP1))
 }
 
+// The render of a document reads no part_of: a node moved under another parent stands at one
+// place in the text in both renders.
 func renderStepParent(t *testing.T, rig *renderRig) {
 	at := rig.now(t)
 	rig.write(t,
 		rig.relation("r2", graphstore.TuplePartOf, refs.BlockNodeKind, rig.address("k1"), false, at),
 		rig.relation("r2", graphstore.TuplePartOf, refs.BlockNodeKind, rig.address("k2"), true, at))
 	rig.requireVersionFromTree(t, "after r2 moved under k2", renderFirst)
-	rig.requireHead(t, "after r2 moved under k2", joinRenderings(renderMemo, renderK1, renderR1Edited, renderK2, renderR2, renderBox, renderP1))
+	rig.requireHead(t, "after r2 moved under k2", joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1Edited, renderBox, renderP1))
 }
 
+// A re-order of the text moves the head and leaves the version as it stood, whose text ranks are
+// the ones its members held at its row's time; a re-order of the tree's ranks moves neither.
 func renderStepRanks(t *testing.T, rig *renderRig) {
+	ctx := context.Background()
 	at := rig.now(t)
-	rig.write(t, rig.value("box", refs.AttributeRank, "1t", at), rig.value("p1", refs.AttributeRank, "1p", at))
-	rig.requireVersionFromTree(t, "after the box and the closing paragraph swapped ranks", renderFirst)
-	rig.requireHead(t, "after the box and the closing paragraph swapped ranks",
-		joinRenderings(renderMemo, renderK1, renderR1Edited, renderK2, renderR2, renderP1, renderBox))
+	rig.write(t,
+		rig.value("box", refs.AttributeTextRank, "1t", at), rig.value("p1", refs.AttributeTextRank, "1p", at),
+		rig.value("memo", refs.AttributeRank, "1g", at), rig.value("k1", refs.AttributeRank, "1c", at))
+	rig.requireVersionFromTree(t, "after the box and the closing paragraph swapped text ranks", renderFirst)
+	rig.requireHead(t, "after the box and the closing paragraph swapped text ranks",
+		joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1Edited, renderP1, renderBox))
+	var rendered time.Time
+	if err := rig.database.Pool.QueryRow(ctx, `select at from version_renders where artifact_id = $1 and number = 3`, rig.room.spec).Scan(&rendered); err != nil {
+		t.Fatalf("read version 3's row: %v", err)
+	}
+	box, p1 := rig.under("box"), rig.under("p1")
+	facts, err := refs.TreeFactsOf(ctx, rig.database.Pool, []refs.Target{box, p1}, refs.TreeCut{At: rendered, Dated: true})
+	if err != nil {
+		t.Fatalf("read the box and the closing paragraph as of version 3: %v", err)
+	}
+	if held := []string{facts[box].Values[refs.AttributeTextRank], facts[p1].Values[refs.AttributeTextRank]}; !slices.Equal(held, []string{"1p", "1t"}) {
+		t.Errorf("as of version 3's row the box and the closing paragraph hold the text ranks %v, want the 1p and 1t they held then", held)
+	}
 }
 
+// An in_document retracted after the version leaves the member in the version, and takes it out
+// of the head.
 func renderStepRetraction(t *testing.T, rig *renderRig) {
-	rig.write(t, rig.relation("p1", graphstore.TuplePartOf, graphstore.KindIssue, rig.room.issue, false, rig.now(t)))
-	rig.requireVersionFromTree(t, "after the closing paragraph's part_of was retracted", renderFirst)
-	rig.requireHead(t, "after the closing paragraph's part_of was retracted",
-		joinRenderings(renderMemo, renderK1, renderR1Edited, renderK2, renderR2, renderBox))
+	rig.write(t, rig.relation("p1", refs.TupleInDocument, graphstore.KindArtifact, rig.spec, false, rig.now(t)))
+	rig.requireVersionFromTree(t, "after the closing paragraph's in_document was retracted", renderFirst)
+	rig.requireHead(t, "after the closing paragraph's in_document was retracted",
+		joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1Edited, renderBox))
+}
+
+// hide reserves the blocks ids of DOC-2's room for bob: it writes the node of each as bob's
+// author-only node. No writer of this build can: the store refuses a node reserved for its author
+// of a kind the read registry does not admit (graphstore.CheckVisibilityAdmitted), and a block of
+// a document is such a kind until a release admits it, so the case plants the rows as that
+// release's own writer will leave them.
+func (r *renderRig) hide(t *testing.T, ids ...string) {
+	t.Helper()
+	for _, id := range ids {
+		if _, err := r.database.Pool.Exec(context.Background(), `
+			insert into graph_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			values ('block', $1, 'block', 'author', 'live', '{}'::jsonb, now(), '{"kind":"user","id":"bob"}', 0)
+			on conflict (kind, id) do update set visibility = 'author', made_by = excluded.made_by`, r.address(id)); err != nil {
+			t.Fatalf("reserve block %s of DOC-2's room for bob: %v", id, err)
+		}
+	}
+}
+
+// show deletes the nodes hide wrote, so no later step reads them.
+func (r *renderRig) show(t *testing.T, ids ...string) {
+	t.Helper()
+	addresses := make([]string, len(ids))
+	for index, id := range ids {
+		addresses[index] = r.address(id)
+	}
+	if _, err := r.database.Pool.Exec(context.Background(), `delete from graph_nodes where kind = 'block' and id = any($1)`, addresses); err != nil {
+		t.Fatalf("delete the nodes of %v: %v", ids, err)
+	}
+}
+
+// A render leaves out what its reader may not see (INFRA-1950's R1), and says nothing of it.
+// Version 3, written from the tree, is read as each reader with a block of its text reserved for
+// bob (hide): a top-level block, a block inside another's text, the block that holds that one, and
+// two together. Alice, carol and a credential that proves no author read the version as if the
+// block did not exist: a top-level block prints nowhere, with its text children inside its bytes,
+// and a nested one is cut out of the text that holds it at its own offsets, and no other byte
+// moves. Bob, whose block it is, and the server's own read, which the census of the versions
+// makes, read every byte, so the census reads no difference at the version. The head is cut the
+// same way.
+func renderStepHidden(t *testing.T, rig *renderRig) {
+	ctx := context.Background()
+	pool := rig.database.Pool
+	carol := model.Actor{Kind: "user", ID: "carol"}
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	withoutInner := strings.Replace(renderBox, renderInner, "", 1)
+	for _, hidden := range []struct {
+		what string
+		ids  []string
+		want string
+	}{
+		{"a top-level criterion", []string{"k2"}, joinRenderings(renderMemo, renderK1, renderR2, renderR1, renderBox, renderP1)},
+		{"the callout inside the box", []string{"inner"}, joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1, withoutInner, renderP1)},
+		{"the box, and so the callout inside it", []string{"box"}, joinRenderings(renderMemo, renderK1, renderK2, renderR2, renderR1, renderP1)},
+		{"a criterion and the callout inside the box", []string{"k2", "inner"}, joinRenderings(renderMemo, renderK1, renderR2, renderR1, withoutInner, renderP1)},
+	} {
+		rig.hide(t, hidden.ids...)
+		for _, reader := range []struct {
+			name string
+			who  model.Actor
+			want string
+		}{
+			{"alice", renderWho, hidden.want}, {"carol", carol, hidden.want},
+			{"a credential that proves no author", model.Actor{}, hidden.want},
+			{"bob, whose blocks they are", bob, renderFirst}, {"the server", model.ServerReader, renderFirst},
+		} {
+			got, err := RenderVersion(ctx, pool, reader.who, rig.room.spec, 3)
+			if err != nil {
+				t.Fatalf("render version 3 of %s for %s with %s reserved for bob: %v", rig.spec, reader.name, hidden.what, err)
+			}
+			if got.Source != RenderedFromTree || got.Markdown != reader.want {
+				t.Errorf("version 3 of %s renders %q from %s for %s with %s reserved for bob, want %q from the tree: first differing byte %d",
+					rig.spec, got.Markdown, got.Source, reader.name, hidden.what, reader.want, firstDifference(got.Markdown, reader.want))
+			}
+		}
+		rig.show(t, hidden.ids...)
+	}
+
+	// The head, as alice, with the criterion reserved; and the census, which reads as the server,
+	// reads no difference at the version.
+	rig.hide(t, "k2")
+	head, err := RenderAt(ctx, pool, renderWho, rig.room.spec, rig.now(t))
+	if err != nil {
+		t.Fatalf("render the head of %s for alice with k2 reserved for bob: %v", rig.spec, err)
+	}
+	if want := joinRenderings(renderMemo, renderK1, renderR2, renderR1Edited, renderBox); head.Markdown != want {
+		t.Errorf("the head of %s renders %q for alice with k2 reserved for bob, want %q", rig.spec, head.Markdown, want)
+	}
+	if cause := differenceAt(rig.readRenderCensus(t), "version "+rig.spec+"@v3"); cause != "" {
+		t.Errorf("the census reads a difference at version %s@v3 with k2 reserved for bob: %s, want the server's read to see every block", rig.spec, cause)
+	}
+	rig.show(t, "k2")
+}
+
+// renderStepHiddenHistory: a version that answers its stored bytes leaves out each block it held
+// that its reader may not see, placed by what that version held of the block - the newest row of
+// the record of block texts (document_block_texts) at or before the version - whatever the
+// document's index holds now. In one transaction, rolled back at its end so no later step reads
+// its rows, it writes by SQL, as the release before this one stores them, the spec of DOC-8, an
+// issue that has not converted, with five versions: version 1 holds the paragraphs u1 and u2;
+// version 2 changes u2's words; version 3 removes u2; version 4, which no pass indexed, holds u1
+// alone; version 5 holds u1 and two paragraphs of one text, u4 and u5. The index's rows are those
+// of version 5, so they hold no row of u2, and the row of u4 holds other words than u2 ever held.
+// The nodes of u2 and u4 are reserved for bob, as hide reserves one (no writer of this build can
+// write such a node). Alice and a credential that proves no author read version 1 and version 2
+// with u2's bytes of that version left out and every other byte kept - the paragraph a later
+// version changed and then removed, which the index no longer holds - and version 3, which holds
+// no hidden block, whole. Version 4 is refused (ErrHiddenNotPlaced): no pass indexed it, so the
+// record says nothing of the blocks it held, while it records hidden blocks of the document; and
+// so is version 5, which holds two paragraphs of u4's words, which the record cannot tell apart.
+// Bob and the server read every version whole.
+func renderStepHiddenHistory(t *testing.T, rig *renderRig) {
+	ctx := context.Background()
+	tx, err := rig.database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the transaction of DOC-8: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	const first, second, changed, fourth = "First words.", "Second words.", "Second words, changed.", "Fourth words."
+	stored := []string{
+		joinRenderings(first, second), joinRenderings(first, changed), joinRenderings(first),
+		joinRenderings(first), joinRenderings(first, fourth, fourth),
+	}
+	if _, err := tx.Exec(ctx, `
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('DOC-8', 'DOC', 8, 'A history with a hidden block', '{"kind":"user","id":"alice"}', 'X')`); err != nil {
+		t.Fatalf("write DOC-8: %v", err)
+	}
+	var spec, ref string
+	if err := tx.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('DOC-8', 'DOC', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+		returning id::text, ref_key`).Scan(&spec, &ref); err != nil {
+		t.Fatalf("write the spec of DOC-8: %v", err)
+	}
+	for index, markdown := range stored {
+		if _, err := tx.Exec(ctx, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1, $2, $3, '[{"kind":"user","id":"alice"}]')`, spec, index+1, markdown); err != nil {
+			t.Fatalf("write version %d of %s: %v", index+1, ref, err)
+		}
+	}
+	for _, text := range []struct {
+		block   string
+		version int
+		text    *string
+	}{
+		{"u1", 1, new(first)}, {"u2", 1, new(second)}, {"u2", 2, new(changed)}, {"u2", 3, nil},
+		{"u4", 5, new(fourth)}, {"u5", 5, new(fourth)},
+	} {
+		if _, err := tx.Exec(ctx, `insert into document_block_texts (artifact_id, block_id, version, text) values ($1, $2, $3, $4)`,
+			spec, text.block, text.version, text.text); err != nil {
+			t.Fatalf("record block %s of %s at version %d: %v", text.block, ref, text.version, err)
+		}
+	}
+	for _, version := range []int{1, 2, 3, 5} {
+		if _, err := tx.Exec(ctx, `insert into document_indexed_versions (artifact_id, version) values ($1, $2)`, spec, version); err != nil {
+			t.Fatalf("record version %d of %s indexed: %v", version, ref, err)
+		}
+	}
+	for _, node := range []struct {
+		block, visibility, state, author string
+		// text and version are the text and the changed_version of the block's row, which a
+		// block with no row (row false) leaves empty.
+		row     bool
+		text    string
+		version int
+	}{
+		{"u1", "project", "live", "alice", true, first, 1}, {"u2", "author", "gone", "bob", false, "", 0},
+		{"u4", "author", "live", "bob", true, fourth, 5}, {"u5", "project", "live", "alice", true, fourth, 5},
+	} {
+		address := ref + "#" + node.block
+		if _, err := tx.Exec(ctx, `
+			insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
+			values ('block', $1, 'block', $2, $3, now(), jsonb_build_object('kind', 'user', 'id', $4::text), 0)`,
+			address, node.visibility, node.state, node.author); err != nil {
+			t.Fatalf("write the node of %s: %v", address, err)
+		}
+		if !node.row {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at, node_kind, node_address)
+			values ($1, $2, $3, 'paragraph', $4, $5, $6, now(), 'block', $3)`, spec, node.block, address, reviewTextHash(node.text), node.text, node.version); err != nil {
+			t.Fatalf("write the index's row of %s: %v", address, err)
+		}
+	}
+
+	bob := model.Actor{Kind: "user", ID: "bob"}
+	cut := []string{strings.Replace(stored[0], second, "", 1), strings.Replace(stored[1], changed, "", 1), stored[2]}
+	for number := 1; number <= len(stored); number++ {
+		for _, reader := range []struct {
+			name string
+			who  model.Actor
+			sees bool
+		}{
+			{"alice", renderWho, false}, {"a credential that proves no author", model.Actor{}, false},
+			{"bob, whose blocks they are", bob, true}, {"the server", model.ServerReader, true},
+		} {
+			got, err := RenderVersion(ctx, tx, reader.who, spec, number)
+			switch {
+			case !reader.sees && number > len(cut):
+				if !errors.Is(err, ErrHiddenNotPlaced) {
+					t.Errorf("version %d of %s renders %q (%v) for %s, want the refusal of a version whose hidden block it cannot place", number, ref, got.Markdown, err, reader.name)
+				}
+				continue
+			case err != nil:
+				t.Fatalf("render version %d of %s for %s: %v", number, ref, reader.name, err)
+			}
+			want := stored[number-1]
+			if !reader.sees {
+				want = cut[number-1]
+			}
+			if got.Source != StoredBytes || got.Markdown != want {
+				t.Errorf("version %d of %s renders %q from %s for %s, want %q from %s: first differing byte %d",
+					number, ref, got.Markdown, got.Source, reader.name, want, StoredBytes, firstDifference(got.Markdown, want))
+			}
+		}
+	}
+}
+
+// memberOf is a member of a document held in memory: its id, the id of its text parent ("" for
+// the document), its text rank ("" for none) and its text.
+type memberOf struct{ id, parent, rank, text string }
+
+// holdMembers is the members of the document DOC-X/spec of specs, each addressed under DOC-X's
+// tree, and what each states as RenderAt reads it (refs.TreeFactsOf): its text, its text_rank where
+// it holds one, and its text_parent.
+func holdMembers(specs ...memberOf) ([]refs.Target, map[refs.Target]refs.TreeFacts) {
+	const tree = "DOC-X/tree#"
+	members := make([]refs.Target, 0, len(specs))
+	facts := make(map[refs.Target]refs.TreeFacts, len(specs))
+	for _, spec := range specs {
+		member := refs.Target{Kind: refs.BlockNodeKind, ID: tree + spec.id}
+		parent := refs.Target{Kind: graphstore.KindArtifact, ID: "DOC-X/spec"}
+		if spec.parent != "" {
+			parent = refs.Target{Kind: refs.BlockNodeKind, ID: tree + spec.parent}
+		}
+		values := map[string]string{graphstore.AttributeText: spec.text}
+		if spec.rank != "" {
+			values[refs.AttributeTextRank] = spec.rank
+		}
+		members = append(members, member)
+		facts[member] = refs.TreeFacts{Values: values, Relations: []refs.TreeRelation{{Kind: refs.TupleTextParent, To: parent}}}
+	}
+	return members, facts
+}
+
+// hiddenOf is the members ids of DOC-X/spec name, as hiddenNodes answers them.
+func hiddenOf(ids ...string) map[refs.Target]struct{} {
+	hidden := make(map[refs.Target]struct{}, len(ids))
+	for _, id := range ids {
+		hidden[refs.Target{Kind: refs.BlockNodeKind, ID: "DOC-X/tree#" + id}] = struct{}{}
+	}
+	return hidden
+}
+
+// TestLeaveOutHiddenCutsOnlyTheHiddenBytesOfEveryTextAroundIt: a render that leaves out a hidden
+// member (memberTree.leaveOut) cuts it out of every text that holds it, three levels up, at its
+// own offsets in the document's rendering, and no other byte. It takes the one of two equal texts
+// that is the hidden member's, by the order of their text ranks; it drops a hidden top-level block
+// with the text children inside it; it cuts a hidden paragraph whose words the callout holding it
+// also writes in its opening line, and one whose words stand in an earlier block of that callout
+// that is no member, and leaves those words where they stand. It refuses (ErrHiddenNotPlaced) a
+// hidden member that lies in no place of its parent's text, one whose words another block of its
+// parent that is no member also holds, and one under a member that holds no text_rank, rather than
+// print bytes it cannot prove it left out.
+func TestLeaveOutHiddenCutsOnlyTheHiddenBytesOfEveryTextAroundIt(t *testing.T) {
+	const same, deep, top = "Same words.", "Deep words.", "Top words."
+	l2 := ":::callout{#l2 kind=\"note\" title=\"\"}\nL2 opens.\n\n" + deep + "\n\nL2 closes.\n:::"
+	l1 := "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n" + same + "\n\nMiddle.\n\n" + same + "\n\n" + l2 + "\n\nL1 closes.\n::::"
+	gone := ":::callout{#gone kind=\"note\" title=\"\"}\nA hidden block.\n\nIts child.\n:::"
+	c1 := ":::callout{#c1 kind=\"note\" title=\"Risks\"}\nRisks\n:::"
+	c2 := ":::callout{#c2 kind=\"note\" title=\"\"}\nWe list the Risks here.\n\nRisks\n:::"
+	specs := []memberOf{
+		{"l1", "", "a", l1}, {"l1-open", "l1", "a", "L1 opens."}, {"s1", "l1", "c", same}, {"mid", "l1", "d", "Middle."},
+		{"s2", "l1", "e", same}, {"l2", "l1", "g", l2}, {"l2-open", "l2", "a", "L2 opens."}, {"l3", "l2", "c", deep},
+		{"l2-close", "l2", "e", "L2 closes."}, {"l1-close", "l1", "i", "L1 closes."},
+		{"top", "", "b", top},
+		{"gone", "", "c", gone}, {"gone-open", "gone", "a", "A hidden block."}, {"gonekid", "gone", "c", "Its child."},
+		{"c1", "", "d", c1}, {"risks1", "c1", "a", "Risks"},
+		// The paragraph "We list the Risks here." is no member of c2: a block that holds no
+		// text_rank, as a pass leaves a block whose address no key of the store fits.
+		{"c2", "", "e", c2}, {"risks2", "c2", "c", "Risks"},
+	}
+	base := []string{l1, top, gone, c1, c2}
+	with := func(index int, text string) []string {
+		texts := slices.Clone(base)
+		texts[index] = text
+		return texts
+	}
+	for _, test := range []struct {
+		what   string
+		hidden []string
+		want   []string
+	}{
+		{"the block three levels down", []string{"l3"}, with(0, strings.Replace(l1, deep, "", 1))},
+		{"the second of two equal texts", []string{"s2"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n"+same+"\n\nMiddle.\n\n\n\n"+l2+"\n\nL1 closes.\n::::")},
+		{"the first of two equal texts", []string{"s1"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n\n\nMiddle.\n\n"+same+"\n\n"+l2+"\n\nL1 closes.\n::::")},
+		{"the first of two equal texts and the block three levels down", []string{"s1", "l3"},
+			with(0, "::::callout{#l1 kind=\"note\" title=\"\"}\nL1 opens.\n\n\n\nMiddle.\n\n"+same+"\n\n"+strings.Replace(l2, deep, "", 1)+"\n\nL1 closes.\n::::")},
+		{"a callout inside another", []string{"l2"}, with(0, strings.Replace(l1, l2, "", 1))},
+		{"a top-level block with its text children", []string{"gone"}, []string{l1, top, c1, c2}},
+		{"the text child of a top-level block", []string{"gonekid"}, with(2, strings.Replace(gone, "Its child.", "", 1))},
+		{"a paragraph whose words its callout's opening line writes", []string{"risks1"},
+			with(3, ":::callout{#c1 kind=\"note\" title=\"Risks\"}\n\n:::")},
+		{"a paragraph whose words an earlier block that is no member holds", []string{"risks2"},
+			with(4, ":::callout{#c2 kind=\"note\" title=\"\"}\nWe list the Risks here.\n\n\n:::")},
+	} {
+		members, facts := holdMembers(specs...)
+		got, err := readMemberTree("DOC-X/spec", members, facts, true).leaveOut(hiddenOf(test.hidden...))
+		if err != nil {
+			t.Errorf("hiding %s: %v", test.what, err)
+			continue
+		}
+		var texts []string
+		for _, child := range got {
+			texts = append(texts, child.text)
+		}
+		if !slices.Equal(texts, test.want) {
+			t.Errorf("hiding %s leaves the top-level texts %q, want %q", test.what, texts, test.want)
+		}
+	}
+
+	for _, refused := range []struct {
+		what   string
+		specs  []memberOf
+		hidden string
+	}{
+		{"a block that lies in no place of its parent's text", append(slices.Clone(specs), memberOf{"lost", "l1", "k", "Not in the text."}), "lost"},
+		{"a paragraph whose words a block before it that is no member also holds", []memberOf{
+			{"dup", "", "a", ":::callout{#dup kind=\"note\" title=\"\"}\nRisks\n\nRisks\n:::"}, {"risks", "dup", "c", "Risks"},
+		}, "risks"},
+		{"a paragraph under a member that holds no text_rank", []memberOf{
+			{"outer", "", "a", "::::callout{#outer kind=\"note\" title=\"\"}\nOuter.\n\n:::callout{#wrap kind=\"note\" title=\"\"}\nWrapped.\n:::\n::::"},
+			{"wrap", "outer", "", ":::callout{#wrap kind=\"note\" title=\"\"}\nWrapped.\n:::"}, {"wrapped", "wrap", "a", "Wrapped."},
+		}, "wrapped"},
+	} {
+		members, facts := holdMembers(refused.specs...)
+		got, err := readMemberTree("DOC-X/spec", members, facts, true).leaveOut(hiddenOf(refused.hidden))
+		if !errors.Is(err, ErrHiddenNotPlaced) {
+			t.Errorf("hiding %s answers %+v (%v), want the refusal of a block whose bytes it cannot leave out", refused.what, got, err)
+		}
+	}
+}
+
+// TestADecisionsEntryLeavesOutTheReadingItsReaderMayNotSee: an entry of a decisions rendering is a
+// decision's whole text, its readings included, and a reading the reader may not see is cut out of
+// it at the reading's own offsets in its document's rendering (memberTree.withoutHiddenIn, which
+// renderDecisions calls through entriesWithoutHidden), every other byte kept; a paragraph the
+// reader may not see inside a reading is cut out of the reading's entry and out of the decision's
+// alike.
+func TestADecisionsEntryLeavesOutTheReadingItsReaderMayNotSee(t *testing.T) {
+	const words, reads = "We ship.", "The agent reads it as shipping."
+	reading := ":::reading{#g1}\n" + reads + "\n:::"
+	decision := "::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n" + reading + "\n::::"
+	members, facts := holdMembers(
+		memberOf{"d1", "", "a", decision}, memberOf{"d1-words", "d1", "a", words},
+		memberOf{"g1", "d1", "c", reading}, memberOf{"g1-words", "g1", "a", reads},
+		memberOf{"after", "", "b", "After the decision."},
+	)
+	tree := readMemberTree("DOC-X/spec", members, facts, true)
+	back, err := readBackRendering(joinTexts(tree.top))
+	if err != nil {
+		t.Fatalf("read back the document of the decision: %v", err)
+	}
+	for _, test := range []struct {
+		what, entry, words string
+		hidden             string
+		want               string
+	}{
+		{"the decision's reading", "d1", decision, "g1", "::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n\n::::"},
+		{"the reading's words, out of the decision", "d1", decision, "g1-words",
+			"::::decision{#d1 replaced=\"false\"}\n" + words + "\n\n:::reading{#g1}\n\n:::\n::::"},
+		{"the reading's words, out of the reading", "g1", reading, "g1-words", ":::reading{#g1}\n\n:::"},
+	} {
+		got, err := tree.withoutHiddenIn(back, "DOC-X/tree#"+test.entry, test.words, hiddenOf(test.hidden))
+		if err != nil || got != test.want {
+			t.Errorf("hiding %s, the entry of %s reads %q (%v), want %q", test.what, test.entry, got, err, test.want)
+		}
+	}
 }
 
 func renderStepTwoTimes(t *testing.T, rig *renderRig) {
 	if again := rig.renderVersion(t, rig.room.spec, 3).Markdown; again != rig.first || rig.first != renderFirst {
 		t.Errorf("version 3 rendered after every change reads %q, and first read %q, want one byte string, %q", again, rig.first, renderFirst)
 	}
-	var stored string
-	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select markdown from artifact_versions where artifact_id = $1 and number = 3`, rig.room.spec).Scan(&stored); err != nil {
-		t.Fatalf("read version 3's markdown: %v", err)
-	}
-	if stored != rig.first {
+	if stored := storedVersionMarkdown(t, rig.database, rig.room.spec, 3); stored != rig.first {
 		t.Errorf("version 3 stores %q, want its own render, %q", stored, rig.first)
 	}
 	// The head of DOC-1's spec, which a real settlement indexed, is that version's markdown.
-	var settled string
-	if err := rig.database.Pool.QueryRow(context.Background(), `
-		select markdown from artifact_versions where artifact_id = $1 order by number desc limit 1`, rig.settled.spec).Scan(&settled); err != nil {
-		t.Fatalf("read DOC-1's newest spec version: %v", err)
-	}
+	_, settled := newestStoredVersion(t, rig.database, rig.settled.spec)
 	if settled != "Spec words.\n" {
 		t.Fatalf("DOC-1's newest spec version holds %q, want the settlement's \"Spec words.\\n\"", settled)
 	}
@@ -512,13 +1003,13 @@ func renderStepTwoTimes(t *testing.T, rig *renderRig) {
 
 func renderStepDigests(t *testing.T, rig *renderRig) {
 	ctx := context.Background()
-	if got := rig.versionDigest(t, rig.room.spec, 2); got != renderSum(renderBefore) {
-		t.Errorf("the version before the cutover digests to %s, want the sha256 of its stored markdown, %s", got, renderSum(renderBefore))
+	if got := rig.versionDigest(t, rig.room.spec, 2); got != reviewTextHash(renderBefore) {
+		t.Errorf("the version before the cutover digests to %s, want the sha256 of its stored markdown, %s", got, reviewTextHash(renderBefore))
 	}
 	if got := rig.versionDigest(t, rig.room.spec, 3); got != rig.digest {
 		t.Errorf("version 3 digests to %s, want its record's digest, %s", got, rig.digest)
 	}
-	for number, want := range map[int]string{2: renderSum(renderBefore), 3: rig.digest} {
+	for number, want := range map[int]string{2: reviewTextHash(renderBefore), 3: rig.digest} {
 		var pinned string
 		if err := rig.database.Pool.QueryRow(ctx, `
 			insert into artifact_reviews (artifact_id, version, state, actor)
@@ -532,8 +1023,8 @@ func renderStepDigests(t *testing.T, rig *renderRig) {
 }
 
 func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
-	census := treeCensus(t, rig.database)
-	texts := treeCensusKind(t, census, "block_text")
+	census := takeStoreCensus(t, rig.database)
+	texts := censusKind(t, census, "block_text")
 	for _, difference := range slices.Concat(texts.ReportedRows, texts.ReportedNodes) {
 		t.Errorf("the census reads a block_text difference at %s: %s", difference.At, difference.Cause)
 	}
@@ -550,19 +1041,15 @@ func renderStepCensus(t *testing.T, rig *renderRig, unconverted int) {
 	if line := "census: store kind=block_text unstated_rows=" + strconv.Itoa(unconverted) + " "; !strings.Contains(printed.String(), line) {
 		t.Errorf("the census prints no line %q:\n%s", line, printed.String())
 	}
-	renders, err := ReadVersionRenderCensus(context.Background(), rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
-	if renders.Versions != 1 || renders.Differences != 0 {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3 alone and none",
-			renders.Versions, renders.Differences, renders.Reported)
+	renders := rig.readRenderCensus(t)
+	if renders.Versions != rig.settledRows+1 || renders.Differences != 0 {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3 beside DOC-1's %d and none",
+			renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 }
 
 func renderStepBoundary(t *testing.T, rig *renderRig) {
-	ctx := context.Background()
-	rig.write(t, rig.block("intruder", rig.spec, rig.issue(), "1d", renderIntruder, refs.PlacementText, rig.before.Add(-time.Minute))...)
+	rig.write(t, rig.block("intruder", rig.spec, rig.issue(), rig.document(), "1d", "1d", renderIntruder, refs.PlacementText, rig.before.Add(-time.Minute))...)
 	if tree := rig.renderAt(t, rig.room.spec, rig.before); !strings.Contains(tree.Markdown, renderIntruder) {
 		t.Fatalf("the tree as of the version before the cutover renders %q, without the paragraph dated before it, so this case proves nothing", tree.Markdown)
 	}
@@ -574,12 +1061,9 @@ func renderStepBoundary(t *testing.T, rig *renderRig) {
 	if got := rig.renderVersion(t, rig.room.spec, 3); got.Source != RenderedFromTree || !strings.Contains(got.Markdown, renderIntruder) {
 		t.Errorf("version 3 renders %q from %q, want the tree's, with the paragraph dated before it", got.Markdown, got.Source)
 	}
-	renders, err := ReadVersionRenderCensus(ctx, rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
-	if renders.Versions != 1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v3") {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3's", renders.Versions, renders.Differences, renders.Reported)
+	renders := rig.readRenderCensus(t)
+	if renders.Versions != rig.settledRows+1 || renders.Differences != 1 || len(renders.Reported) != 1 || !strings.Contains(renders.Reported[0].At, rig.spec+"@v3") {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences (%+v), want version 3's beside DOC-1's %d versions", renders.Versions, renders.Differences, renders.Reported, rig.settledRows)
 	}
 }
 
@@ -591,15 +1075,12 @@ func renderStepRowDeleted(t *testing.T, rig *renderRig) {
 	if got := rig.renderVersion(t, rig.room.spec, 3); got.Source != StoredBytes || got.Markdown != renderFirst {
 		t.Errorf("version 3 with no row renders %q from %q, want its stored %q, the stored bytes", got.Markdown, got.Source, renderFirst)
 	}
-	if got := rig.versionDigest(t, rig.room.spec, 3); got != renderSum(renderFirst) {
-		t.Errorf("version 3 with no row digests to %s, want the sha256 of its stored markdown, %s", got, renderSum(renderFirst))
+	if got := rig.versionDigest(t, rig.room.spec, 3); got != reviewTextHash(renderFirst) {
+		t.Errorf("version 3 with no row digests to %s, want the sha256 of its stored markdown, %s", got, reviewTextHash(renderFirst))
 	}
-	renders, err := ReadVersionRenderCensus(ctx, rig.database.Pool)
-	if err != nil {
-		t.Fatalf("read the census of the versions version_renders holds: %v", err)
-	}
-	if renders.Versions != 0 || renders.Differences != 0 {
-		t.Errorf("the census of the rendered versions compares %d and reads %d differences, want none: no version holds a row", renders.Versions, renders.Differences)
+	renders := rig.readRenderCensus(t)
+	if renders.Versions != rig.settledRows || renders.Differences != 0 {
+		t.Errorf("the census of the rendered versions compares %d and reads %d differences, want DOC-1's %d and none: no version of DOC-2 holds a row", renders.Versions, renders.Differences, rig.settledRows)
 	}
 }
 
@@ -613,55 +1094,329 @@ func (r *renderRig) readRenderCensus(t *testing.T) graphcensus.VersionRenderCens
 	return renders
 }
 
-// renderAuthoredSpec is the spec of CORE-1, an issue's spec the real version path writes: a
-// criterion, a paragraph, and a requirement that serves the criterion, which the block index
-// places under the criterion rather than after the paragraph it follows.
-const renderAuthoredSpec = ":::criterion{#k1}\nI want the urgent list.\n:::\n\n" +
-	"A paragraph between the two.\n\n" +
-	":::requirement{#r1 serves=\"dispatch://CORE-1/spec#b-k1\"}\nAn urgent ask comes first.\n:::\n"
+// The texts of the spec of CORE-1 that renderStepTextOrder writes through the real version path,
+// each as its member's text value holds it: the first criterion, the paragraph after it, and the
+// requirement after the paragraph whose parent attribute names the criterion; the second
+// criterion, a requirement under the callout of the issue's Verification document, a box holding
+// a requirement under the first criterion, and a requirement under the second criterion; and the
+// paragraph and the rule a version repeats. orderR3 is the requirement under an ask of the issue.
+const (
+	orderK1        = ":::criterion{#k1}\nI want the urgent list.\n:::"
+	orderParagraph = "A paragraph between the two."
+	orderR1        = ":::requirement{#r1 parent=\"dispatch://CORE-1/spec#b-k1\"}\nAn urgent ask comes first.\n:::"
+	orderK2        = ":::criterion{#k2}\nI want it quick.\n:::"
+	orderR2        = ":::requirement{#r2 parent=\"dispatch://CORE-1/artifact/verification-md#b-c1\"}\nThe proof holds the list.\n:::"
+	orderR4        = ":::requirement{#r4 parent=\"dispatch://CORE-1/spec#b-k1\"}\nA boxed ask comes first too.\n:::"
+	orderBox       = "::::callout{#box kind=\"note\" title=\"\"}\nThe box holds:\n\n" + orderR4 + "\n::::"
+	orderR5        = ":::requirement{#r5 parent=\"dispatch://CORE-1/spec#b-k2\"}\nA quick ask is answered first.\n:::"
+	orderSame      = "Same words."
+	orderRule      = "---"
+	// orderProof is the issue's Verification document, whose callout r2 stands under.
+	orderProof = ":::callout{#c1 kind=\"note\" title=\"\"}\nThe proof of the urgent list.\n:::\n"
+)
 
-// A version the real path settles, whose requirement the block index places under the criterion
-// it serves and not after the paragraph before it, takes a version_renders row as the pass that
-// writes a version's tree will write it; the census of the rendered versions then reads that
-// version. The step records what it reads, the stored bytes and the render's, for the rule of the
-// render's order to be decided on; it holds the census to reading the version.
-func renderStepAuthoredPlacement(t *testing.T, rig *renderRig, service *Service) {
+func orderR3(ask string) string {
+	return ":::requirement{#r3 parent=\"dispatch://CORE-1/ask/" + ask + "\"}\nThe asked ask comes first.\n:::"
+}
+
+// firstDifference is the first byte at which got and want differ, the shorter one's length where
+// one is the other's prefix.
+func firstDifference(got, want string) int {
+	for index := range min(len(got), len(want)) {
+		if got[index] != want[index] {
+			return index
+		}
+	}
+	return min(len(got), len(want))
+}
+
+// requireStatedRow fails unless version number of the document artifactID, a document of issue
+// whose query is query, holds the version_renders row the pass that stated it wrote: the time and
+// the seq of a cut, and the digest of the query's record read at that cut.
+func requireStatedRow(t *testing.T, database *store.Store, issue, query, artifactID string, number int) {
+	t.Helper()
 	ctx := context.Background()
-	if _, err := rig.database.Pool.Exec(ctx, `
+	var digest string
+	var cut refs.TreeCut
+	if err := database.Pool.QueryRow(ctx, `
+		select record_sha256, at, read_seq from version_renders where artifact_id = $1 and number = $2`,
+		artifactID, number).Scan(&digest, &cut.At, &cut.ReadSeq); err != nil {
+		t.Fatalf("read the version_renders row the pass that stated version %d of %s wrote: %v", number, artifactID, err)
+	}
+	record, err := ReadQueryRecord(ctx, database.Pool, issue, query, cut)
+	if err != nil {
+		t.Fatalf("read the %s record of %s at the cut of version %d of %s: %v", query, issue, number, artifactID, err)
+	}
+	if digest != record.Digest {
+		t.Errorf("the pass that stated version %d of %s recorded the digest %s, want its %s record's, %s", number, artifactID, digest, query, record.Digest)
+	}
+}
+
+// requireRenderedAsStored fails, naming the first byte that differs, unless version number of the
+// document artifactID, whose ref_key is refKey, renders from the tree as the bytes it stores, and
+// answers the render.
+func (r *renderRig) requireRenderedAsStored(t *testing.T, artifactID, refKey string, number int) string {
+	t.Helper()
+	stored := storedVersionMarkdown(t, r.database, artifactID, number)
+	got := r.renderVersion(t, artifactID, number)
+	if got.Source != RenderedFromTree || got.Markdown != stored {
+		t.Errorf("the render of %s@v%d differs from its stored bytes from byte %d: it renders %q from %s, and stores %q",
+			refKey, number, firstDifference(got.Markdown, stored), got.Markdown, got.Source, stored)
+	}
+	return got.Markdown
+}
+
+// requireOnceInPlace fails unless each of texts is held once by the render of version number of
+// refKey, at the byte offset its stored bytes hold it.
+func requireOnceInPlace(t *testing.T, refKey string, number int, rendered, stored string, texts ...string) {
+	t.Helper()
+	for _, text := range texts {
+		if count := strings.Count(rendered, text); count != 1 {
+			t.Errorf("the render of %s@v%d holds the text of %q %d times, want once", refKey, number, text, count)
+		} else if at, want := strings.Index(rendered, text), strings.Index(stored, text); at != want {
+			t.Errorf("the render of %s@v%d holds the text of %q at byte %d, want the byte %d its stored bytes hold it at", refKey, number, text, at, want)
+		}
+	}
+}
+
+// A version of a document renders in the text order its author wrote (R15), each member once, at
+// its place in the text, wherever its parent stands (R1). The spec of CORE-1 is written through the
+// real version path, version by version, each holding the version_renders row the pass that
+// states it recorded, and each renders its stored bytes, character for character:
+//   - version 1, 165 bytes: a criterion, a paragraph, and a requirement whose parent attribute
+//     names the criterion, which the tree holds under the criterion, before the paragraph; the
+//     text of each once, at its place; and the census of the rendered versions reads no difference
+//     at that version;
+//   - version 2, a second criterion and four requirements more, under a block of the issue's
+//     Verification document, under an ask of the issue, inside a callout under the first criterion,
+//     and under the second criterion: each once, at its place;
+//   - version 3, which drops the second criterion, stated gone, and keeps the requirement under
+//     it: that requirement once and no text of the criterion, and version 2 renders as it did;
+//   - version 4, two paragraphs of one text and two rules: each at its own place;
+//   - version 5, which moves the boxed requirement out of the callout and the first of those
+//     paragraphs into it, their text parents the document's node and the callout: version 4
+//     renders as it did.
+func renderStepTextOrder(t *testing.T, rig *renderRig, service *Service) {
+	ctx := context.Background()
+	database := rig.database
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	if _, err := database.Pool.Exec(ctx, `
 		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice') on conflict (key) do nothing;
 		insert into issues (key, project_key, number, title, created_by, rank)
 		values ('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
 		t.Fatalf("seed project CORE: %v", err)
 	}
-	spec, written := treeDocument(t, rig.database, service, "CORE-1", "spec", true, "", renderAuthoredSpec)
-	if err := pgx.BeginFunc(ctx, rig.database.Pool, func(tx pgx.Tx) error {
-		cut, err := refs.HeadCut(ctx, tx)
-		if err != nil {
-			return err
-		}
-		record, err := ReadQueryRecord(ctx, tx, "CORE-1", graphstore.QuerySpec, cut)
-		if err != nil {
-			return err
-		}
-		return store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
-			return QueueVersionRender(b, spec, written.Version.Number, record)
-		})
-	}); err != nil {
-		t.Fatalf("write the version_renders row of CORE-1's spec: %v", err)
+	// The spec and the Verification document are query nodes before their first versions, as a
+	// converted issue's are, so each version the real path writes of them is a query version,
+	// which takes the row the pass that states it records. Their rows, written after, name no node.
+	writeQueryNode(t, database, "CORE", "CORE-1", "spec", graphstore.QuerySpec)
+	writeQueryNode(t, database, "CORE", "CORE-1", model.ArtifactSlugVerification, graphstore.QueryVerification)
+	treeDocument(t, database, service, "CORE-1", "verification-md", false, model.ArtifactRoleVerification, orderProof)
+	var ask string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into asks (issue_key, author, question, options)
+		values ('CORE-1', '{"kind":"session","id":"asker"}', 'Which list comes first?', '[{"label":"urgent"}]') returning id::text`).Scan(&ask); err != nil {
+		t.Fatalf("open an ask of CORE-1: %v", err)
 	}
-	var stored string
-	if err := rig.database.Pool.QueryRow(ctx, `select markdown from artifact_versions where artifact_id = $1 and number = $2`,
-		spec, written.Version.Number).Scan(&stored); err != nil {
-		t.Fatalf("read CORE-1's spec version: %v", err)
+
+	first := joinRenderings(orderK1, orderParagraph, orderR1)
+	if len(first) != 165 {
+		t.Fatalf("version 1 of the spec is %d bytes, want the 165 the case is written for", len(first))
 	}
-	rendered := rig.renderVersion(t, spec, written.Version.Number)
+	spec, written := treeDocument(t, database, service, "CORE-1", "spec", true, "", first)
+	refKey := refKeyOf(t, database, spec)
+	address := func(id string) string { return refKey + "#" + id }
+	version := func(markdown string) int {
+		t.Helper()
+		if _, err := joinedReplaceText(service, spec, markdown, alice); err != nil {
+			t.Fatalf("write the spec's next text: %v", err)
+		}
+		result, _ := writeVersionThroughTheRealPath(t, service, spec, "The next version")
+		settle(t, database, spec)
+		return result.Version.Number
+	}
+	stated := func(number int) string {
+		t.Helper()
+		requireStatedRow(t, database, "CORE-1", graphstore.QuerySpec, spec, number)
+		return storedVersionMarkdown(t, database, spec, number)
+	}
+
+	one := written.Version.Number
+	if stored := stated(one); stored != first {
+		t.Fatalf("version %d of the spec stores %q, want the %q written", one, stored, first)
+	}
+	if parent := currentPartOf(t, database, address("r1")); parent.ToID != address("k1") {
+		t.Fatalf("the requirement of version 1 is part of %s, want the criterion %s, before the paragraph in the tree", parent.ToID, address("k1"))
+	}
+	rendered := rig.requireRenderedAsStored(t, spec, refKey, one)
+	requireOnceInPlace(t, refKey, one, rendered, first, orderK1, orderParagraph, orderR1)
 	renders := rig.readRenderCensus(t)
-	if renders.Versions != 1 {
-		t.Errorf("the census of the rendered versions compares %d versions, want CORE-1's spec's version alone", renders.Versions)
+	for _, difference := range renders.Reported {
+		if strings.Contains(difference.At, refKey+"@v"+strconv.Itoa(one)) {
+			t.Errorf("the census reads a difference at %s: %s", difference.At, difference.Cause)
+		}
 	}
-	t.Logf("CORE-1's spec version %d stores %q", written.Version.Number, stored)
-	t.Logf("CORE-1's spec version %d renders %q from %q", written.Version.Number, rendered.Markdown, rendered.Source)
-	t.Logf("the census of the rendered versions compares %d and reads %d differences: %+v", renders.Versions, renders.Differences, renders.Reported)
+
+	second := joinRenderings(orderK1, orderParagraph, orderR1, orderK2, orderR2, orderR3(ask), orderBox, orderR5)
+	two := version(second)
+	stored := stated(two)
+	for id, parent := range map[string]string{
+		"r2": "CORE-1/verification-md#c1", "r3": ask, "r4": address("k1"), "r5": address("k2"),
+	} {
+		if held := currentPartOf(t, database, address(id)); held.ToID != parent {
+			t.Errorf("version 2's %s is part of %s/%s, want %s", id, held.ToKind, held.ToID, parent)
+		}
+	}
+	renderedTwo := rig.requireRenderedAsStored(t, spec, refKey, two)
+	requireOnceInPlace(t, refKey, two, renderedTwo, stored, orderR2, orderR3(ask), orderR4, orderR5)
+
+	third := joinRenderings(orderK1, orderParagraph, orderR1, orderR2, orderR3(ask), orderBox, orderR5)
+	three := version(third)
+	stored = stated(three)
+	if node, found, err := graphstore.ReadNode(ctx, database.Pool, refs.BlockNodeKind, address("k2")); err != nil || !found || node.State != graphstore.StateGone {
+		t.Errorf("after version 3 the second criterion's node reads %+v (found %t, %v), want it gone", node, found, err)
+	}
+	rendered = rig.requireRenderedAsStored(t, spec, refKey, three)
+	requireOnceInPlace(t, refKey, three, rendered, stored, orderR5)
+	if strings.Contains(rendered, orderK2) {
+		t.Errorf("the render of %s@v%d holds the text of %s, a block whose state is gone at that version", refKey, three, address("k2"))
+	}
+	if again := rig.requireRenderedAsStored(t, spec, refKey, two); again != renderedTwo {
+		t.Errorf("version %d renders %q after the second criterion went gone, want the %q it rendered before", two, again, renderedTwo)
+	}
+
+	fourth := joinRenderings(orderK1, orderParagraph, orderR1, orderR2, orderR3(ask), orderBox, orderR5, orderSame, orderRule, orderSame, orderRule)
+	four := version(fourth)
+	stated(four)
+	renderedFour := rig.requireRenderedAsStored(t, spec, refKey, four)
+
+	fifth := joinRenderings(orderK1, orderParagraph, orderR1, orderR2, orderR3(ask),
+		":::callout{#box kind=\"note\" title=\"\"}\nThe box holds:\n\n"+orderSame+"\n:::", orderR4, orderR5, orderRule, orderSame, orderRule)
+	five := version(fifth)
+	stated(five)
+	rig.requireRenderedAsStored(t, spec, refKey, five)
+	if held, err := graphstore.CurrentOut(ctx, database.Pool, refs.BlockNodeKind, address("r4"), []string{refs.TupleTextParent}); err != nil ||
+		len(held) != 1 || held[0].ToKind != graphstore.KindArtifact || held[0].ToID != refKey {
+		t.Errorf("after version 5 the boxed requirement's text parents are %+v (%v), want the document's node", held, err)
+	}
+	members, err := refs.TreeMembers(ctx, database.Pool, refKey, refs.TreeCut{At: rig.now(t), Dated: true})
+	if err != nil {
+		t.Fatalf("read the members of the spec: %v", err)
+	}
+	facts, err := refs.TreeFactsOf(ctx, database.Pool, members, refs.TreeCut{At: rig.now(t), Dated: true})
+	if err != nil {
+		t.Fatalf("read the members of the spec: %v", err)
+	}
+	boxed := 0
+	for _, member := range members {
+		if facts[member].Values[graphstore.AttributeText] != orderSame {
+			continue
+		}
+		for _, relation := range facts[member].Relations {
+			if relation.Kind == refs.TupleTextParent && relation.To.ID == address("box") {
+				boxed++
+			}
+		}
+	}
+	if boxed != 1 {
+		t.Errorf("after version 5 %d paragraphs reading %q name the callout as their text parent, want the one moved into it", boxed, orderSame)
+	}
+	if again := rig.requireRenderedAsStored(t, spec, refKey, four); again != renderedFour {
+		t.Errorf("version %d renders %q after version 5, want the %q it rendered before", four, again, renderedFour)
+	}
+}
+
+// A fragment of an issue room renders its own bytes (R1). The room renders its own fragment first,
+// then the Verification document, the plan and the spec: through the room of DOC-3 and its
+// settlement a peer writes a Verification document ending with a `-` list, a plan opening with a
+// `-` list, which the room's joined rendering writes with the other marker, and a spec opening
+// with a rule and holding a second one later, whose first the joined rendering writes `---` and
+// the spec's own rendering `***`. The settlement writes a version of each from its own fragment's
+// rendering, each holding the version_renders row its room pass recorded, and each renders its
+// stored bytes; the text value of the plan's and the spec's first block is its slice of its own
+// document's stored bytes. The Verification document's blocks read alike in both renderings.
+func renderStepFragments(t *testing.T, rig *renderRig, service *Service, serverURL string) {
+	ctx := context.Background()
+	database := rig.database
+	room := createIssueRoom(t, database, 3)
+	writeRoomQueryNodes(t, database, room)
+	documents := []struct {
+		id, query, text string
+	}{
+		{room.verification, graphstore.QueryVerification, "A proof of the list.\n\n- the first proof\n- the second proof\n"},
+		{room.plan, graphstore.QueryPlan, "- the first step\n- the second step\n\nThe plan's closing words.\n"},
+		{room.spec, graphstore.QuerySpec, "***\n\nThe spec's words.\n\n***\n\nThe spec's last words.\n"},
+	}
+	peer := connectPeer(t, serverURL, room.spec, "alice")
+	// The peer writes over the plan's fragment only once its copy holds the room's stored seed,
+	// else the seed arrives after the write and stands beside it.
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatalf("a peer's copy of DOC-3's room: %v", err)
+	}
+	stored := storedUpdateCount(t, database, room.tree)
+	for _, document := range documents {
+		tree, err := pmdoc.Parse(document.text)
+		if err != nil {
+			t.Fatalf("parse %q: %v", document.text, err)
+		}
+		want, err := pmdoc.Render(tree)
+		if err != nil {
+			t.Fatalf("render %q: %v", document.text, err)
+		}
+		fragment := peer.Doc.GetXmlFragment(document.id)
+		var updated error
+		if _, err := peer.Send(func(txn *crdt.Transaction) { updated = pmdoc.Update(txn, fragment, tree) }); err != nil || updated != nil {
+			t.Fatalf("write %q into the fragment of %s: %v, %v", document.text, document.id, err, updated)
+		}
+		if err := peer.WaitForText(fragmentMarkdown(document.id), want, roomWait(t)); err != nil {
+			t.Fatalf("a peer's copy of DOC-3's room: %v", err)
+		}
+	}
+	settleLandedWrite(t, ctx, database, service, room, stored)
+	for _, document := range documents {
+		var refKey string
+		var number int
+		if err := database.Pool.QueryRow(ctx, `
+			select a.ref_key, (select max(v.number) from artifact_versions v where v.artifact_id = a.id)
+			from artifacts a where a.id = $1`, document.id).Scan(&refKey, &number); err != nil {
+			t.Fatalf("read the newest version of %s: %v", document.id, err)
+		}
+		requireStatedRow(t, database, room.issue, document.query, document.id, number)
+		rig.requireRenderedAsStored(t, document.id, refKey, number)
+		if document.id == room.verification {
+			continue
+		}
+		var rendered time.Time
+		if err := database.Pool.QueryRow(ctx, `select at from version_renders where artifact_id = $1 and number = $2`, document.id, number).Scan(&rendered); err != nil {
+			t.Fatalf("read the row of %s@v%d: %v", refKey, number, err)
+		}
+		cut := refs.TreeCut{At: rendered, Dated: true}
+		members, err := refs.TreeMembers(ctx, database.Pool, refKey, cut)
+		if err != nil {
+			t.Fatalf("read the members of %s: %v", refKey, err)
+		}
+		facts, err := refs.TreeFactsOf(ctx, database.Pool, members, cut)
+		if err != nil {
+			t.Fatalf("read the members of %s: %v", refKey, err)
+		}
+		var firstBlock refs.Target
+		var firstRank string
+		for _, member := range members {
+			for _, relation := range facts[member].Relations {
+				if relation.Kind != refs.TupleTextParent || relation.To.Kind != graphstore.KindArtifact || relation.To.ID != refKey {
+					continue
+				}
+				if held := facts[member].Values[refs.AttributeTextRank]; firstBlock.ID == "" || held < firstRank {
+					firstBlock, firstRank = member, held
+				}
+			}
+		}
+		text := facts[firstBlock].Values[graphstore.AttributeText]
+		versioned := storedVersionMarkdown(t, database, document.id, number)
+		if text == "" || !strings.HasPrefix(versioned, text) {
+			t.Errorf("the text value of %s is %q, want its slice of %s@v%d, %q", firstBlock.ID, text, refKey, number, versioned[:min(len(text), len(versioned))])
+		}
+	}
 }
 
 func renderStepNoBytes(t *testing.T, rig *renderRig) {
@@ -675,7 +1430,7 @@ func renderStepNoBytes(t *testing.T, rig *renderRig) {
 			insert into artifact_versions (artifact_id, number, content, mime, size, sha256, authors)
 			select id, 1, '\x0001'::bytea, 'application/octet-stream', 2, $2, '[{"kind":"user","id":"alice"}]' from file
 		)
-		select id::text from file`, rig.room.issue, renderSum("\x00\x01")).Scan(&file); err != nil {
+		select id::text from file`, rig.room.issue, reviewTextHash("\x00\x01")).Scan(&file); err != nil {
 		t.Fatalf("write a file: %v", err)
 	}
 	if got := rig.renderVersion(t, file, 1); got.Source != NoBytes || got.Markdown != "" {
@@ -706,15 +1461,23 @@ func renderStepTextColumns(t *testing.T, rig *renderRig) {
 	}
 }
 
-// TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord: over a walk holding an ask's node, the
-// block that shows that ask in the spec, a decision with a reading under it, a reading under the
-// ask and a requirement, the decisions query takes the ask's node, the decision and the reading
-// under the decision, and nothing else; and a record of the decisions query is refused, through
-// ReadQueryRecord and through the walk's own builder, with the error a query no definition names is
-// refused with, so no version records its digest.
-func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
+// TestTheDecisionsQueryTakesItsNodes: over a walk holding an answered ask's node with a reading
+// under it, the block that shows that ask in the spec, an ask nobody has answered with a reading
+// under its block, a decision with a reading under it, a requirement, and a request for a
+// document's approval with a reading under its node, the decisions query takes each question's own
+// node, the decision, the reading under the decision and the reading under the answered question's
+// node, and nothing else: neither block of an ask, nor the reading in the ask nobody has answered,
+// which is no reading yet, nor the approval request, an ask of the issue's conversation whose row
+// holds another kind (the walk's read of the conversation answers each ask's, refs.ExcerptedNode's
+// AskKind), nor the reading under it. Its record is built by that rule, as every query's is
+// (queryDefinitions; R14 gives the decisions query definition_version 1, and each of its versions
+// holds its record's digest, R15).
+func TestTheDecisionsQueryTakesItsNodes(t *testing.T) {
 	issue := refs.Target{Kind: graphstore.KindIssue, ID: "CORE-1"}
 	ask := refs.Target{Kind: graphstore.KindAsk, ID: "5d1f6a3e-0c4b-4f7e-9b1a-2c3d4e5f6a7b"}
+	open := refs.Target{Kind: graphstore.KindAsk, ID: "6e2a7b4f-1d5c-4a8f-8c2b-3d4e5f6a7b8c"}
+	approval := refs.Target{Kind: graphstore.KindAsk, ID: "7f3b8c5a-2e6d-4b9a-9d3c-4e5f6a7b8c9d"}
+	openBlock := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#a2"}
 	decision := refs.Target{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#d1"}
 	nodes := []TreeNode{
 		{Kind: issue.Kind, ID: issue.ID, Type: graphstore.SupertagIssue},
@@ -724,8 +1487,18 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g1", Parent: decision, Type: refs.ReadingSupertag},
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g2", Parent: ask, Type: refs.ReadingSupertag},
 		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#r1", Parent: issue, Type: "requirement"},
+		{Kind: open.Kind, ID: open.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: openBlock.Kind, ID: openBlock.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g3", Parent: openBlock, Type: refs.ReadingSupertag},
+		{Kind: approval.Kind, ID: approval.ID, Parent: issue, Type: graphstore.SupertagAsk},
+		{Kind: refs.BlockNodeKind, ID: "CORE-1/tree#g4", Parent: approval, Type: refs.ReadingSupertag},
 	}
-	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, index: map[refs.Target]int{}}
+	conversation := map[refs.Target]refs.ExcerptedNode{
+		ask:      {AskKind: questionAsk},
+		open:     {AskKind: questionAsk},
+		approval: {AskKind: "approval"},
+	}
+	tree := IssueTree{Issue: issue.ID, Nodes: nodes, Memo: -1, Conversation: conversation, index: map[refs.Target]int{}}
 	for index, node := range nodes {
 		tree.index[node.target()] = index
 	}
@@ -734,16 +1507,70 @@ func TestTheDecisionsQueryTakesItsNodesAndBuildsNoRecord(t *testing.T) {
 	for _, index := range taken {
 		addresses = append(addresses, nodes[index].Address())
 	}
-	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address()}
+	want := []string{nodes[1].Address(), nodes[3].Address(), nodes[4].Address(), nodes[5].Address(), nodes[7].Address()}
 	if !defined || !slices.Equal(addresses, want) {
-		t.Errorf("the decisions query takes %v (defined %t), want %v: the ask's own node, the decision and the reading under it", addresses, defined, want)
+		t.Errorf("the decisions query takes %v (defined %t), want %v: each question's own node, the decision, the reading under it and the reading under the answered question",
+			addresses, defined, want)
+	}
+	if _, built := queryDefinitions[graphstore.QueryDecisions]; !built {
+		t.Errorf("no definition builds the record of the decisions query, want its versions to hold their record's digest")
+	}
+}
+
+// TestAVersionWrittenBeforeTheCutoverKeepsItsStoredBytes holds R15's boundary for a document no
+// query record covers: "every version written before [the cutover] keeps the bytes it holds". The
+// document is notes.md of KEEP-1, an issue that has not converted, whose version 1 a build before
+// the cutover wrote, as that release stores one: its artifacts and artifact_versions rows by SQL,
+// with no version_renders row, which the version insert's trigger (document_block_versions_owe)
+// leaves owing its block index. The reconciliation, as this head's boot runs it, then states that
+// version. The version takes no version_renders row, and RenderVersion answers its stored bytes
+// from the source stored: only a version this build's writer wrote renders from the tree.
+func TestAVersionWrittenBeforeTheCutoverKeepsItsStoredBytes(t *testing.T) {
+	ctx := context.Background()
+	database := storetest.Open(t)
+	service, _ := newTestServiceInstance(t, database)
+	const notes = "# Notes\n\nThe words a build before the cutover wrote.\n"
+	if _, err := database.Pool.Exec(ctx, `
+		insert into projects (key, name, default_assignee) values ('KEEP', 'Kept bytes', 'alice');
+		insert into issues (key, project_key, number, title, created_by, rank)
+		values ('KEEP-1', 'KEEP', 1, 'An issue that has not converted', '{"kind":"user","id":"alice"}', 'U')`); err != nil {
+		t.Fatalf("seed the issue KEEP-1: %v", err)
+	}
+	var id string
+	if err := database.Pool.QueryRow(ctx, `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('KEEP-1', 'KEEP', 'notes-md', 'notes.md', 'doc', false, '{"kind":"user","id":"alice"}')
+		returning id::text`).Scan(&id); err != nil {
+		t.Fatalf("create notes.md of KEEP-1: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `
+		insert into artifact_versions (artifact_id, number, markdown, authors)
+		values ($1, 1, $2, '[{"kind":"user","id":"alice"}]')`, id, notes); err != nil {
+		t.Fatalf("write version 1 of notes.md as a build before the cutover writes it: %v", err)
 	}
 
-	const refused = `the query "decisions" has no record`
-	if _, err := ReadQueryRecord(context.Background(), nil, issue.ID, graphstore.QueryDecisions, refs.TreeCut{}); err == nil || err.Error() != refused {
-		t.Errorf("ReadQueryRecord of the decisions query answers %v, want it refused: %s", err, refused)
+	drainOwed(t, database, service)
+	var stated *int
+	if err := database.Pool.QueryRow(ctx, `
+		select stated_version from document_block_versions where artifact_id = $1`, id).Scan(&stated); err != nil {
+		t.Fatalf("read what the reconciliation stated of notes.md: %v", err)
 	}
-	if _, err := tree.QueryRecord(context.Background(), nil, graphstore.QueryDecisions); err == nil || err.Error() != refused {
-		t.Errorf("the walk's record of the decisions query answers %v, want it refused: %s", err, refused)
+	if stated == nil || *stated != 1 {
+		t.Fatalf("the reconciliation stated version %v of notes.md, want version 1: the case reads a version a pass of this build stated", stated)
+	}
+	var rows int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from version_renders where artifact_id = $1 and number = 1`, id).Scan(&rows); err != nil {
+		t.Fatalf("count the version_renders rows of notes.md@v1: %v", err)
+	}
+	if rows != 0 {
+		t.Errorf("version 1 of notes.md, written before the cutover, holds %d version_renders rows after the pass that stated it, want none (R15)", rows)
+	}
+	rendering, err := RenderVersion(ctx, database.Pool, renderWho, id, 1)
+	if err != nil {
+		t.Fatalf("render version 1 of notes.md: %v", err)
+	}
+	if rendering.Source != StoredBytes || rendering.Markdown != notes {
+		t.Errorf("version 1 of notes.md renders %q from %s, want its stored bytes %q from %s", rendering.Markdown, rendering.Source, notes, StoredBytes)
 	}
 }

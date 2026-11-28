@@ -65,10 +65,10 @@ Legion's coordinator works only the issues handed to it, which are the ones carr
 label `legion`. That lets Legion share a project with people and other agents. A person sets the
 label from the issue header, or asks Legion's own **controller** agent to set it for them; the
 controller never hands over work on its own. An agent that finds a problem outside its own issue
-files no issue: a defect with a clear fix in code its own tree touches or depends on is fixed in that tree's
-pull request, any other goes to the controller, which gives it to the tree that owns that code and
-files it for Legion only when none does, and a
-problem that needs a decision goes to a person in a Dispatch ask.
+files no issue: it fixes a defect with a clear fix itself, in its own pull request or a separate
+pull request of its tree. The controller files for Legion a defect in a repository the agent's
+token does not reach, and passes no message on. A problem that needs a decision goes to a person
+in a Dispatch ask.
 
 Each admitted issue gets an **architect**, which owns the issue's tree. It writes the spec, splits
 large work into child issues, and runs each change through the phase workers its plan names, in the
@@ -80,11 +80,30 @@ the issue's status back to Dispatch as the work moves (In Progress, Testing, Nee
 
 Two decisions stay with people:
 
-- **The design gate.** Before implementation starts, a person approves the root issue's spec at a
-  specific version in Dispatch. A later version of the spec closes the gate again until someone
-  approves it. A person's answer to an ask block in the spec writes one version, whose only change
-  is the block's `state`, answerer and time, and Dispatch carries the approval across it, so it
-  leaves the gate as it stands. Dispatch carries the approval to a later version only when that version's text
+- **The design gate.** Before implementation starts, a person approves the root issue's spec in
+  Dispatch, and Dispatch judges whether that approval still stands at each later version; Legion
+  follows its verdict.
+  On an issue Dispatch has converted to one tree, an approval covers the digest of the document's
+  query: the spec's memo callout and its criterion and requirement nodes, and the Verification
+  document's check nodes.
+  A later version that changes one of them, or their relations, closes the gate again until
+  someone approves it.
+  One that leaves the digest equal keeps the approval and the gate open: a prose edit, an answer to
+  an ask block, a reading, a restore of the approved text or a recorded result.
+  On an issue Dispatch has not converted yet, a later version of the spec closes the gate again
+  until someone approves it, unless Dispatch carries the approval to it, as follows.
+  A person's answer to an ask block in the spec writes one version, which changes only the block's
+  `state`, answerer and time.
+  Dispatch carries an approval that already stands: an answer never approves a spec that is not
+  approved.
+  When an answer, resolve or decline is the whole change since the approved version, Dispatch
+  records the new version as approved, so the gate stays open.
+  Where the architect added the ask after the approval, which closed the gate, the approver's own
+  answer, given in the browser or under a credential with the approve scope, records the approval
+  again when it is the whole change since the approved version, and the gate opens again.
+  If text that a person was editing in the browser is settled into the same version, the approval
+  does not carry, and the request goes back to its agent.
+  Dispatch also carries the approval to a later version when that version's text
   is the approved text, or when its only changes are ones that change no decision: the readings of
   decisions and answered asks, attributes of ask blocks the server owns, or what Dispatch's
   decisions step moved into the spec. Then Dispatch records the approval in the person's name at

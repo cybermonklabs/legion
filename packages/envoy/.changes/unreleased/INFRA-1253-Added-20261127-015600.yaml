@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The document server refuses a socket's update that holds a document as its own room held it
+  before the conversion moved the document into its issue's room, and closes that socket with
+  code 4205. A browser that held the document's socket across the conversion keeps its copy of
+  the old room and reconnects with it. Applied, that copy would be written a second time, into
+  the tree artifact's own fragment of the issue's room. Nothing of the update is applied, the room
+  stays open for its other sockets, and a socket the page opens on a document read from the room
+  is taken.
+time: 2026-11-27T01:56:00Z
+custom:
+    Issue: INFRA-1253

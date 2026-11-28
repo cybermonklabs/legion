@@ -1,9 +1,10 @@
-import { beforeAll, describe, expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { ownGroup } from "./own-group";
+import { rowWaits } from "./row-waits";
 import { scriptFunctions } from "./script-functions";
 
 // The Claude Code backend proof's process guards (claude-backend-tmux.sh), taken from the script by
@@ -33,9 +34,7 @@ const dir = temporaryDirectory("claude-backend-guards-test");
 // The gate is given every name: it walks each one and names the missing ones in its warning.
 // `found` is the run's own walk, whose real binaries the stand-ins below are copies of.
 const found = new Map(["bash", "sleep", "sh"].map((name) => [name, hostTool(name)] as const));
-const skip = skipWithout("bash", "sleep", "sh", "perl");
-// Only the unreadable-environment case needs an interpreter.
-const withoutPython = skipWithout("python3");
+const host = hostGate({ programs: ["bash", "sleep", "sh", "perl"] });
 function tool(name: string): string {
   const path = found.get(name) ?? null;
   if (path === null) throw new Error(`${name} is not on PATH`);
@@ -65,7 +64,7 @@ const claudeWithTool = join(claudeDir, "claude-with-tool");
 const ompTool = join(dir, "real", "omp");
 const cwd = join(dir, "cwd");
 beforeAll(() => {
-  if (skip) return;
+  if (host.missing) return;
   mkdirSync(work);
   copyFileSync(tool("bash"), join(work, "legion"));
   mkdirSync(claudeDir);
@@ -99,13 +98,16 @@ beforeAll(() => {
 // carries its parent's command line until it execs, and a guard asked about it then answers for the
 // parent. Every process spawn started goes, with everything below it, when BODY ends (stop_tree,
 // lib/process-tree.sh, which signals a process only while its parent is the one it was started
-// under).
+// under). Each wait of BODY ends on its event, and gives up at until_true_deadline, the end of the
+// row's waits (lib/row-waits.ts): how soon a process the row started runs its program is a loaded
+// host's.
 function run(body: string, vars: Record<string, string> = {}) {
   const prelude = `set -Eeuo pipefail
 root=${JSON.stringify(root)} evidence=$SCRATCH timeout_hook=
 note() { :; }
 fail() { echo "fail: $*" >&2; exit 1; }
 . ${JSON.stringify(rig)}
+until_true_deadline=$((SECONDS + ${waits.secondsLeft()}))
 ${guards}
 work=$WORK claude_bin=$CLAUDE claude_exe=$(realpath -e -- "$CLAUDE") port_dispatch=1 port_listener=2 port_nats=3 state=/rig
 scratch=$(mktemp -d "$SCRATCH/run.XXXXXX")
@@ -122,30 +124,31 @@ spawn() {
   started+=("$pid")
 }
 await_child() {
-  local want seen= i
+  local want seen=
   want=$(realpath -e -- "$1")
   child=
-  for i in $(seq 1 200); do
+  while :; do
     child=$(cat "/proc/$pid/task/$pid/children" 2>/dev/null) || true
     child=\${child%% *}
     if [ -n "$child" ]; then
       seen=$(readlink "/proc/$child/exe" 2>/dev/null) || seen=
       [ "$seen" != "$want" ] || break
     fi
+    [ "$SECONDS" -lt "$until_true_deadline" ] || break
     sleep 0.05
   done
   [ -z "$child" ] || started+=("$child")
   [ -n "$child" ] && [ "$seen" = "$want" ] ||
-    { echo "no child of $pid running $want within 10 s (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
+    { echo "no child of $pid running $want by the end of the row's waits (child \${child:-none}, running \${seen:-nothing})" >&2; exit 1; }
 }
 # await_below EXE sets below to the process anywhere below pid that runs EXE, once one does and its
 # command line, which the rows read, is laid out (args_laid_out); read through every process's
 # children and the kernel's record of what each runs, never a name.
 await_below() {
-  local want i p queue
+  local want p queue
   want=$(realpath -e -- "$1")
   below=
-  for i in $(seq 1 200); do
+  while :; do
     queue=("$pid")
     while [ "\${#queue[@]}" -gt 0 ] && [ -z "$below" ]; do
       for p in $(cat /proc/"\${queue[0]}"/task/*/children 2>/dev/null || :); do
@@ -154,9 +157,10 @@ await_below() {
       queue=("\${queue[@]:1}")
     done
     [ -z "$below" ] || return 0
+    [ "$SECONDS" -lt "$until_true_deadline" ] || break
     sleep 0.05
   done
-  echo "no process below $pid running $want within 10 s" >&2
+  echo "no process below $pid running $want by the end of the row's waits" >&2
   exit 1
 }
 `;
@@ -171,8 +175,9 @@ await_below() {
 }
 
 const slow = 60_000;
+const waits = rowWaits(slow);
 
-describe.skipIf(skip)("bridged", () => {
+host.describe("bridged", () => {
   test(
     "accepts the run's legion claude-bridge -- <claude> every time, with a pane-sized multi-line argument",
     () => {
@@ -225,7 +230,7 @@ if bridged "$child"; then echo "other claude: accepted"; else echo "other claude
   );
 });
 
-describe.skipIf(skip)("claude_pid", () => {
+host.describe("claude_pid", () => {
   // A pane stand-in: bash for the pane's own `sh -c`, the run's legion running pane-shim for its
   // `legion worker-shim`, and the run's legion running claude-bridge, whose one child is the run's
   // claude.
@@ -264,14 +269,14 @@ claude_bin=${JSON.stringify(wrapper)} claude_exe=$(realpath -e -- ${JSON.stringi
 spawn bash -c '"$@"; :' pane "$work/legion" pane-shim -- "$work/legion" claude-bridge -- "$claude_bin"
 : >"$scratch/stages"
 found=
-SECONDS=0
-while [ "$SECONDS" -lt 60 ]; do
+while :; do
   if found=$(claude_pid "$pid"); then break; fi
   case $found in *"does not run Claude Code yet: it runs "*) printf '%s\\n' "\${found##*it runs }" >>"$scratch/stages" ;; esac
   found=
+  [ "$SECONDS" -lt "$until_true_deadline" ] || break
   sleep 0.02
 done
-[ -n "$found" ] || { echo "no Claude Code within 60 s" >&2; exit 1; }
+[ -n "$found" ] || { echo "no Claude Code by the end of the row's waits" >&2; exit 1; }
 [ "$(readlink "/proc/$found/exe")" = "$claude_exe" ] && echo "first answer: the program the chain ends in" || echo "first answer: $found, running $(readlink "/proc/$found/exe")"
 for stage in "the bridge's fork:$(realpath -e -- "$work/legion")" "the first wrapper:$(realpath -e -- "$(command -v bash)")" "the second wrapper:$(realpath -e -- "$(command -v sh)")"; do
   if grep -qxF -- "\${stage#*:}" "$scratch/stages"; then echo "refused while it was \${stage%%:*}"; else echo "never saw \${stage%%:*}"; fi
@@ -307,7 +312,7 @@ esac`);
   );
 });
 
-describe.skipIf(skip)("endpoint_mismatch", () => {
+host.describe("endpoint_mismatch", () => {
   const rig = [
     "DISPATCH_URL=http://127.0.0.1:1",
     "DISPATCH_TOKEN_FILE=/rig/secrets/dispatch-token",
@@ -319,7 +324,7 @@ describe.skipIf(skip)("endpoint_mismatch", () => {
   const agent = (env: string[]) => `
 spawn env -i ${env.join(" ")} "$(command -v sleep)" 600
 ready=
-for i in $(seq 1 200); do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; sleep 0.05; done
+while :; do grep -qz '^ENVOY_NATS_URL=' "/proc/$pid/environ" 2>/dev/null && { ready=1; break; }; [ "$SECONDS" -lt "$until_true_deadline" ] || break; sleep 0.05; done
 [ -n "$ready" ] || { echo "the agent stand-in $pid never carried its environment" >&2; exit 1; }
 ${check}`;
   const check = `status=0
@@ -350,7 +355,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
     slow
   );
 
-  test.skipIf(withoutPython)(
+  test(
     "reports an environment it cannot read as not checked, never clean, while the agent still runs with a credential variable in it",
     () => {
       // A process that makes itself non-dumpable (prctl PR_SET_DUMPABLE 0) has its /proc entries
@@ -360,6 +365,7 @@ printf 'status %s: %s\\n' "$status" "$found"`;
       // It runs the interpreter python3 reports as sys.executable, resolved here with the caller's
       // environment and passed as data, not the first python3 on PATH: under `env -i` a version
       // manager's shim there (mise's, with no python selected) has no version and starts nothing.
+      requireHostTools("python3");
       const resolved = Bun.spawnSync(["python3", "-I", "-c", "import sys; print(sys.executable)"]);
       const python = resolved.stdout.toString().trim();
       if (resolved.exitCode !== 0 || !isAbsolute(python)) {
@@ -385,9 +391,10 @@ time.sleep(600)
 pid=$!
 started+=("$pid")
 state() { local s; s=$(cat "/proc/$1/stat" 2>/dev/null) || { echo gone; return; }; s=\${s##*) }; echo "\${s%% *}"; }
-for i in $(seq 1 200); do
+while :; do
   [ ! -s "$ready" ] || break
   case $(state "$pid") in Z | X | gone) break ;; esac
+  [ "$SECONDS" -lt "$until_true_deadline" ] || break
   sleep 0.05
 done
 [ -s "$ready" ] || { echo "the stand-in $pid did not start (state $(state "$pid")): $(cat "$err")" >&2; exit 1; }

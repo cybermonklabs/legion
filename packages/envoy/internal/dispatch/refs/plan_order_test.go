@@ -97,20 +97,7 @@ func (f *orderFixture) convert(key string) {
 	f.t.Helper()
 	project, _, _ := strings.Cut(key, "-")
 	spec := f.documents[key].artifact
-	var tree, treeRef string
-	if err := f.tx.QueryRow(context.Background(), `
-		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
-		values ($1, $2, 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
-		returning id::text, ref_key
-	`, key, project).Scan(&tree, &treeRef); err != nil {
-		f.t.Fatalf("create the tree of %s: %v", key, err)
-	}
-	if _, err := f.tx.Exec(context.Background(), `
-		with held as (insert into issue_trees (issue_key, artifact_id) values ($1, $2::uuid))
-		insert into document_rooms (artifact_id, room) values ($3::uuid, $2::uuid)
-	`, key, tree, spec); err != nil {
-		f.t.Fatalf("move the spec of %s into its room: %v", key, err)
-	}
+	tree, treeRef := insertIssueRoom(f.t, f.tx, key, project, spec)
 	f.documents[key] = &orderDocument{artifact: tree, refKey: treeRef, fragment: spec}
 }
 
@@ -158,7 +145,6 @@ func (f *orderFixture) reference(key, named string) string {
 // that render and appends what the pass stated at the sentinel.
 func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 	f.t.Helper()
-	ctx := context.Background()
 	document := f.documents[key]
 	document.versions++
 	var source strings.Builder
@@ -194,10 +180,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 	for index, offset := range offsets {
 		written[index] = model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To, Attributes: offset.Attributes}
 	}
-	var pointers []Pointer
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		pointers = append(pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	pointers := PointersOf(tree)
 	versions := Versions{}
 	if document.fragment == "" {
 		at := writeAuthoredVersion(f.t, f.tx, document.artifact, document.versions, markdown, orderAuthor)
@@ -211,13 +194,7 @@ func (f *orderFixture) plan(key string, blocks ...orderBlock) {
 			written[index].Document = document.fragment
 		}
 	}
-	_, won, write, _, err := IndexBlocks(ctx, f.tx, document.artifact, versions, markdown, written, nil, pointers, TypedFacts{})
-	if err != nil || !won {
-		f.t.Fatalf("index version %d of the plan of %s: won %t, %v", document.versions, key, won, err)
-	}
-	if err := graphstore.Caused(ctx, f.tx, write, graphstore.NoEvent); err != nil {
-		f.t.Fatalf("append what the plan of %s stated: %v", key, err)
-	}
+	indexAndCause(f.t, f.tx, document.artifact, versions, markdown, written, pointers...)
 }
 
 // needs states that issue key waits on each of targets, as the issue route's writer states it
@@ -336,9 +313,10 @@ func orderNamed(t *testing.T, answer TreeOrder, name OrderNode) OrderedNode {
 }
 
 // orderOf orders nodes as the ordered read orders the tree it read (waitGraph), each waiting on
-// what needs answers of it, and answers the order and the cycles by name.
-func orderOf(nodes []OrderedNode, needs func(OrderedNode) []OrderNode) ([]OrderNode, [][]OrderNode) {
-	graph := newWaitGraph(namesOf(nodes))
+// what needs answers of it, over the base order base, and answers the order and the cycles by
+// name.
+func orderOf(nodes []OrderedNode, base []OrderNode, needs func(OrderedNode) []OrderNode) ([]OrderNode, [][]OrderNode) {
+	graph := newWaitGraph(namesOf(nodes), base)
 	for _, node := range nodes {
 		for _, need := range needs(node) {
 			graph.wait(node.OrderNode, need)
@@ -358,16 +336,16 @@ func orderOf(nodes []OrderedNode, needs func(OrderedNode) []OrderNode) ([]OrderN
 	return order, cycles
 }
 
-// One read answers the order the whole tree of an issue runs in (R11 of the spec this branch
-// builds, and c-ordered-read of its Verification document). A parent issue, CORE-1, holds two
+// One read answers the order the whole tree of an issue runs in (R11 of the issue-tree spec, and
+// c-ordered-read of its Verification document). A parent issue, CORE-1, holds two
 // children, CORE-2 and CORE-3, the second converted so its room's tree keys its plan, and each
 // holds plan nodes; the plan nodes need plan nodes of their own issue and of the issue above,
 // CORE-1's p2 needs the issue CORE-2, and CORE-3 needs CORE-2 and OTHR-1, an issue of another
 // project. Each plan is markdown, every need and size written in its plan node's opening line
-// (`size="2"`), indexed by the block index pass. The answer holds every issue as its start and
+// (`size="2h"`), indexed by the block index pass. The answer holds every issue as its start and
 // its done and every plan node, each once, after every node it needs, with the size its line
-// writes beside it, none where it writes none, and its issue the one its part_of chain reaches:
-// a1 stands under a requirement of CORE-2. A parent holding a child is no cycle,
+// writes beside it in whole minutes, none where it writes none, and its issue the one its part_of
+// chain reaches: a1 stands under a requirement of CORE-2. A parent holding a child is no cycle,
 // and its done sits after each child's done; a plan node sits after its issue's start and before
 // its issue's done; a sibling waiting on a sibling keeps its order; and p2, which needs CORE-2,
 // comes back after every plan node of CORE-2 and after CORE-2's done. OTHR-1 is a fixed node
@@ -404,16 +382,16 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		f.issue("OTHR-1", "")
 		f.convert("CORE-3")
 		f.plan("CORE-1",
-			orderTask("p1", "1"), orderTask("p2", "", "CORE-2"),
-			orderTask("p3", "2", "CORE-1#p1"), orderTask("p4", "2", "CORE-1#p1"), orderTask("p5", "0.5", "CORE-1#p3", "CORE-1#p4"),
-			orderTask("p6", "1"))
+			orderTask("p1", "1h"), orderTask("p2", "", "CORE-2"),
+			orderTask("p3", "2h", "CORE-1#p1"), orderTask("p4", "2h", "CORE-1#p1"), orderTask("p5", "30m", "CORE-1#p3", "CORE-1#p4"),
+			orderTask("p6", "1h"))
 		aPlan := []orderBlock{
-			orderRequirement("r1"), {id: "a1", typ: planTaskType, serves: "r1", size: "2"}, orderTask("a2", "1.25", "CORE-2#a1"),
-			orderRequirement("r2"), {id: "a3", typ: planTaskType, serves: "r2", size: "1"},
+			orderRequirement("r1"), {id: "a1", typ: planTaskType, serves: "r1", size: "1h30m"}, orderTask("a2", "45m", "CORE-2#a1"),
+			orderRequirement("r2"), {id: "a3", typ: planTaskType, serves: "r2", size: "1h"},
 		}
 		f.plan("CORE-2", aPlan...)
-		f.plan("CORE-3", orderTask("b1", "3", "CORE-1#p1"))
-		f.plan("CORE-5", orderTask("e1", "1"))
+		f.plan("CORE-3", orderTask("b1", "3h", "CORE-1#p1"))
+		f.plan("CORE-5", orderTask("e1", "1h"))
 		f.needs("CORE-3", "CORE-2", "OTHR-1")
 		f.overtake(BlockNodeKind, f.address("CORE-1", "p6"))
 		f.overtake(BlockNodeKind, f.address("CORE-2", "r2"))
@@ -424,13 +402,15 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		p := func(id string) OrderNode { return f.task("CORE-1", id) }
 		a := func(id string) OrderNode { return f.task("CORE-2", id) }
 		b1 := f.task("CORE-3", "b1")
+		// v245's R11: the walk "starts from the nodes that no node needs, in the base order": p2,
+		// the first, takes CORE-2 whole before it, which it needs, and p1's chain comes after.
 		want := []OrderNode{
-			issueStart("CORE-1"), p("p1"), p("p3"), p("p4"), p("p5"),
-			issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"), p("p2"),
+			issueStart("CORE-1"), issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"), p("p2"),
+			p("p1"), p("p3"), p("p4"), p("p5"),
 			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
 		}
 		if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, ties by node id:\n%v", got, want)
+			t.Fatalf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, in R11's needs-first walk:\n%v", got, want)
 		}
 		if len(answer.Cycles) != 0 {
 			t.Errorf("the tree with a diamond and no cycle reports the cycles %v, want none", answer.Cycles)
@@ -461,7 +441,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		after(b1, p("p1"), "a child's plan node that needs a plan node of its parent comes back after it")
 
 		sizes := map[OrderNode]string{
-			p("p1"): "1", p("p2"): "", p("p3"): "2", p("p4"): "2", p("p5"): "0.5", a("a1"): "2", a("a2"): "1.25", b1: "3",
+			p("p1"): "60", p("p2"): "", p("p3"): "120", p("p4"): "120", p("p5"): "30", a("a1"): "90", a("a2"): "45", b1: "180",
 			issueStart("CORE-1"): "", issueDone("CORE-1"): "",
 		}
 		for name, size := range sizes {
@@ -497,8 +477,15 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		}
 
 		// The control: with CORE-2's start half taken for p2's need of the issue CORE-2, p2 comes
-		// back before CORE-2's plan nodes, so it is the done half that holds it after them.
-		startHalf, _ := orderOf(answer.Order, func(node OrderedNode) []OrderNode {
+		// back before CORE-2's plan nodes, so it is the done half that holds it after them. The
+		// walk runs over the read's base order: each issue's start, its plan nodes, its children
+		// and its done.
+		base := []OrderNode{
+			issueStart("CORE-1"), p("p1"), p("p2"), p("p3"), p("p4"), p("p5"),
+			issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"),
+			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
+		}
+		startHalf, _ := orderOf(answer.Order, base, func(node OrderedNode) []OrderNode {
 			if node.Kind != BlockNodeKind {
 				return node.Needs
 			}
@@ -555,7 +542,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		// edit takes a2's size out of its opening line, which leaves a2 no size value.
 		edited := slices.Clone(aPlan)
 		edited[2] = orderTask("a2", "", "CORE-2#a1")
-		f.plan("CORE-2", append(edited, orderTask("a5", "1", "CORE-1#p2"))...)
+		f.plan("CORE-2", append(edited, orderTask("a5", "1h", "CORE-1#p2"))...)
 		cycled := f.read(orderAuthor, "CORE-1")
 		requireOrderStands(t, cycled)
 		wantCycle := [][]OrderNode{{p("p2"), issueDone("CORE-2"), a("a5")}}
@@ -575,8 +562,8 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		if value, held, err := graphstore.CurrentValue(ctx, f.tx, BlockNodeKind, a("a2").ID, AttributePlanSize); err != nil || held {
 			t.Errorf("a2 holds the size value %q (held %t, %v) after the edit that took it out, want none", value, held, err)
 		}
-		if size := orderNamed(t, cycled, a("a1")).Size; size != "2" {
-			t.Errorf("a1, whose size the edit kept, comes back with the size %q, want 2", size)
+		if size := orderNamed(t, cycled, a("a1")).Size; size != "90" {
+			t.Errorf("a1, whose size the edit kept, written 1h30m, comes back with the size %q, want 90 minutes", size)
 		}
 	})
 
@@ -587,11 +574,11 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 			f.issue(child, "ACME-1")
 		}
 		f.plan("ACME-1",
-			orderTask("q1", "1", "ACME-1#q2"), orderTask("q2", "1", "ACME-1#q1"),
-			orderTask("q3", "1", "ACME-2"), orderTask("q4", "1", "ACME-3"), orderTask("q5", "1", "ACME-1#q5"),
-			orderTask("q6", "1", "ACME-1#q1"), orderTask("q7", "1"))
-		f.plan("ACME-2", orderTask("d1", "1", "ACME-1#q3"), orderTask("d2", "1"))
-		f.plan("ACME-4", orderTask("f1", "1", "ACME-1#q4"))
+			orderTask("q1", "1h", "ACME-1#q2"), orderTask("q2", "1h", "ACME-1#q1"),
+			orderTask("q3", "1h", "ACME-2"), orderTask("q4", "1h", "ACME-3"), orderTask("q5", "1h", "ACME-1#q5"),
+			orderTask("q6", "1h", "ACME-1#q1"), orderTask("q7", "1h"))
+		f.plan("ACME-2", orderTask("d1", "1h", "ACME-1#q3"), orderTask("d2", "1h"))
+		f.plan("ACME-4", orderTask("f1", "1h", "ACME-1#q4"))
 		f.needs("ACME-3", "ACME-4")
 
 		answer := f.read(orderAuthor, "ACME-1")
@@ -606,14 +593,16 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		if got := cycleNames(answer); !reflect.DeepEqual(got, wantCycles) {
 			t.Fatalf("the read reports the cycles\n%v\nwant each with its nodes:\n%v", got, wantCycles)
 		}
-		want := []OrderNode{issueStart("ACME-1"), q("q6"), q("q7"), issueStart("ACME-2"), f.task("ACME-2", "d2"), issueStart("ACME-4"), issueDone("ACME-1")}
+		// v245's R11: the walk "starts from the nodes that no node needs, in the base order": the
+		// cycle through q3 comes first and places ACME-2's start and d2, which ACME-2's done waits on.
+		want := []OrderNode{issueStart("ACME-1"), issueStart("ACME-2"), f.task("ACME-2", "d2"), issueStart("ACME-4"), q("q6"), q("q7"), issueDone("ACME-1")}
 		if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
 			t.Errorf("with the cycles the order is\n%v\nwant every node in no cycle kept at a position:\n%v", got, want)
 		}
 		for _, cycle := range answer.Cycles {
 			for _, node := range cycle {
-				if node.Kind == BlockNodeKind && node.Size != "1" {
-					t.Errorf("%+v of a cycle comes back with the size %q, want its own", node.OrderNode, node.Size)
+				if node.Kind == BlockNodeKind && node.Size != "60" {
+					t.Errorf("%+v of a cycle comes back with the size %q, want its own, 60 minutes", node.OrderNode, node.Size)
 				}
 			}
 		}
@@ -627,13 +616,128 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 				own = append(own, node)
 			}
 		}
-		_, alone := orderOf(own, func(node OrderedNode) []OrderNode { return node.Needs })
+		_, alone := orderOf(own, nil, func(node OrderedNode) []OrderNode { return node.Needs })
 		if wantAlone := [][]OrderNode{{q("q1"), q("q2")}, {q("q5")}}; !reflect.DeepEqual(alone, wantAlone) {
 			t.Fatalf("the walk of ACME-1's plan nodes alone reports the cycles %v, want only the two inside ACME-1, %v", alone, wantAlone)
 		}
 		t.Logf("the control: the walk of ACME-1's plan nodes alone reports the cycles %v and answers q3 and q4 an order, where the walk of the tree reports %v",
 			alone, wantCycles)
 	})
+}
+
+// The ordered read keeps each chain of steps together (R11 of the issue-tree spec, at its
+// version 245, and c-ordered-read of its Verification document): the position is a needs-first
+// depth-first walk from the nodes that no node needs, in the base order, which places each node's
+// unplaced needs before it, so each need stands just before the first node that needs it.
+// CHAIN-1's plan writes the tasks a, b and c in that order, and c needs a: the read answers b, a,
+// c, as the issue page's Plan chart draws them. CHAIN-2 writes two tasks, p1 and p2, and its child
+// CHAIN-3 two, c1 and c2, where p1 needs c2: the base order is CHAIN-2's own tasks in their
+// document's order, then CHAIN-3 with its tasks in theirs, and the read answers c2, p1, p2, c1, so
+// c2 stands just before p1. CHAIN-4's task p needs its child CHAIN-5, whose tasks are a, b and c, c
+// needing a: the read answers CHAIN-5 whole before p, its tasks in the order CHAIN-5's own read
+// answers them, b, a, c, since a done half places first the steps that no node needs. In each tree
+// an issue's start stands before its plan nodes and its children, and its done after them. The
+// control, a read that places the nodes as Kahn's algorithm frees them with a tie broken by id,
+// answers a, b, c for CHAIN-1, and the test fails, printing the order it read and the order it
+// wants.
+func TestTheOrderedReadKeepsEachChainOfStepsTogether(t *testing.T) {
+	database := storetest.Open(t)
+	f := newOrderFixture(t, database, "CHAIN")
+	f.issue("CHAIN-1", "")
+	f.issue("CHAIN-2", "")
+	f.issue("CHAIN-3", "CHAIN-2")
+	f.issue("CHAIN-4", "")
+	f.issue("CHAIN-5", "CHAIN-4")
+	f.plan("CHAIN-1", orderTask("a", ""), orderTask("b", ""), orderTask("c", "", "CHAIN-1#a"))
+	f.plan("CHAIN-3", orderTask("c1", ""), orderTask("c2", ""))
+	f.plan("CHAIN-2", orderTask("p1", "", "CHAIN-3#c2"), orderTask("p2", ""))
+	f.plan("CHAIN-5", orderTask("a", ""), orderTask("b", ""), orderTask("c", "", "CHAIN-5#a"))
+	f.plan("CHAIN-4", orderTask("p", "", "CHAIN-5"))
+
+	task := f.task
+	for _, tree := range []struct {
+		root string
+		want []OrderNode
+		why  string
+	}{
+		{"CHAIN-1", []OrderNode{issueStart("CHAIN-1"), task("CHAIN-1", "b"), task("CHAIN-1", "a"), task("CHAIN-1", "c"), issueDone("CHAIN-1")},
+			"b, which no node needs, first, then a just before c, the first node that needs it"},
+		{"CHAIN-2", []OrderNode{
+			issueStart("CHAIN-2"), issueStart("CHAIN-3"), task("CHAIN-3", "c2"), task("CHAIN-2", "p1"), task("CHAIN-2", "p2"),
+			task("CHAIN-3", "c1"), issueDone("CHAIN-3"), issueDone("CHAIN-2"),
+		}, "CHAIN-2's own tasks first in their document's order, CHAIN-3's after in theirs, and c2 just before p1, the first node that needs it"},
+		{"CHAIN-4", []OrderNode{
+			issueStart("CHAIN-4"), issueStart("CHAIN-5"), task("CHAIN-5", "b"), task("CHAIN-5", "a"), task("CHAIN-5", "c"),
+			issueDone("CHAIN-5"), task("CHAIN-4", "p"), issueDone("CHAIN-4"),
+		}, "CHAIN-5 whole just before p, which needs it, with its tasks in the order CHAIN-5's own read answers them"},
+		{"CHAIN-5", []OrderNode{issueStart("CHAIN-5"), task("CHAIN-5", "b"), task("CHAIN-5", "a"), task("CHAIN-5", "c"), issueDone("CHAIN-5")},
+			"the three tasks in the order they stand in inside CHAIN-4's read"},
+	} {
+		answer := f.read(orderAuthor, tree.root)
+		requireOrderStands(t, answer)
+		if len(answer.Cycles) != 0 {
+			t.Errorf("the tree of %s reports the cycles %v, want none", tree.root, cycleNames(answer))
+		}
+		if got := namesOf(answer.Order); !reflect.DeepEqual(got, tree.want) {
+			t.Errorf("the ordered read of %s answers the order\n%v\nwant R11's needs-first walk, %s:\n%v", tree.root, got, tree.why, tree.want)
+		}
+	}
+}
+
+// TestTheOrderedReadReachesAPlanNodeUnderTheConversation: a plan node that stands under a block
+// of a comment of the issue - as a criterion a person writes in that exchange stands, and every
+// node under it - takes its place in the issue's order, as one under the issue's own node does.
+// The comment holds no part_of into the issue (the walk of the tree reads the conversation apart
+// and walks down from its blocks), so the walk down the issue's part_of tuples alone reaches no
+// node under it, and the plan view answered no position for such a node. Before readPlanTree
+// starts from the blocks of the issue's asks, comments and messages too, TALK-1's order holds a
+// alone, and the test fails, printing it.
+func TestTheOrderedReadReachesAPlanNodeUnderTheConversation(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	f := newOrderFixture(t, database, "TALK")
+	f.issue("TALK-1", "")
+	f.plan("TALK-1", orderTask("a", ""), orderTask("b", "", "TALK-1#a"))
+	comment := createReferenceComment(t, f.tx, "TALK-1")
+	block := "comment/" + comment + "#b1"
+	if _, err := f.tx.Exec(ctx, `
+		insert into comment_blocks (comment_id, block_id, node_id, position, type, text_sha256, excerpt,
+		                            made_at, changed_revision, changed_at)
+		values ($1::uuid, 'b1', $2, 0, 'paragraph', 'sha', 'The thread the plan comes out of.', now(), 1, now())
+	`, comment, block); err != nil {
+		t.Fatalf("index the comment's block: %v", err)
+	}
+	// b moves from the place the index pass gave it to the comment's block, as a move writes it:
+	// the old part_of retracted, the new one asserted.
+	moved := f.address("TALK-1", "b")
+	var fromKind, fromID string
+	if err := f.tx.QueryRow(ctx, `
+		select to_kind, to_id from graph_tuples
+		where from_kind = $1 and from_id = $2 and kind = $3 and to_kind <> $4
+		order by seq desc limit 1
+	`, BlockNodeKind, moved, graphstore.TuplePartOf, graphstore.KindValue).Scan(&fromKind, &fromID); err != nil {
+		t.Fatalf("read the part_of of %s: %v", moved, err)
+	}
+	at := time.Now()
+	placement := func(toKind, toID string, asserted bool) graphstore.Tuple {
+		return graphstore.Tuple{
+			FromKind: BlockNodeKind, FromID: moved, Kind: graphstore.TuplePartOf, ToKind: toKind, ToID: toID,
+			At: at, Who: orderAuthor, SourceEvent: graphstore.NoEvent, Asserted: asserted,
+		}
+	}
+	if err := store.RunWrite(ctx, f.tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{placement(fromKind, fromID, false), placement(ItemComment.BlockKind(), block, true)})
+		return nil
+	}); err != nil {
+		t.Fatalf("move %s under %s: %v", moved, block, err)
+	}
+
+	answer := f.read(orderAuthor, "TALK-1")
+	requireOrderStands(t, answer)
+	want := []OrderNode{issueStart("TALK-1"), f.task("TALK-1", "a"), f.task("TALK-1", "b"), issueDone("TALK-1")}
+	if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
+		t.Errorf("the ordered read of TALK-1 answers the order\n%v\nwant b, which stands under the comment's block %s, at its place after a, which it needs:\n%v", got, block, want)
+	}
 }
 
 // cycleNames is the name of each node of each cycle answer reports.

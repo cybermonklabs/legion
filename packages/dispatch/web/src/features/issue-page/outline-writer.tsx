@@ -1,6 +1,7 @@
 import { type MutationKey, useQuery } from "@tanstack/react-query";
 import { createContext, type ReactNode, useCallback, useContext, useMemo, useState } from "react";
 
+import { issueAsksQuery } from "../../api/queries";
 import type { Actor, Comment, MessageDelivery, MessageRead } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import type { ReplyTarget } from "../conversation/composer-model";
@@ -10,7 +11,7 @@ import { type AgentText, useAgentText } from "../refs/AgentName";
 import { EVENT_FRESH } from "../refs/reference-target";
 import { buildIssuePath, parseNodeReference, sessionOfAddress } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
-import { issueAsksQuery, issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
+import { issueCommentsQuery, issueMessagesQuery } from "./useIssueTree";
 
 /**
  * Where the reader writes on the issue page (R16): the one line at the foot
@@ -331,10 +332,12 @@ export interface ReplyItem {
 }
 
 /** The item a row of the outline is, where the row takes a reply (R16): an ask in any state, a
- *  comment, a message. Every other row takes none in today's model. */
+ *  comment, a message. Every other row takes none in today's model, and neither does a comment or
+ *  a message its author deleted: Dispatch refuses a reply to it (409 `POST_DELETED`, INFRA-1523
+ *  R3), and its words are the deleted line, which no reply quotes. */
 export function replyItemOf(node: TreeNode): ReplyItem | undefined {
   const item = conversationItem(node);
-  return item === undefined || node.author === undefined
+  return item === undefined || node.author === undefined || node.deletedAt !== undefined
     ? undefined
     : { ...item, author: node.author, text: node.text };
 }

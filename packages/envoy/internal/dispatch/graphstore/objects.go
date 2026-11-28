@@ -38,11 +38,14 @@ const (
 
 // PartyPerson and PartySession are the two kinds of party a node no project owns is between: a
 // person, by the login every node of theirs is keyed by (model.CanonicalLogin), and a session, by
-// its id. Each is written `<kind>:<id>`, the kind being the store's own node kind of that party, so
-// a party names the node it is.
-func PartyPerson(login string) string { return KindPerson + ":" + model.CanonicalLogin(login) }
+// its id. Each is written `<kind>:<id>` (party), the kind being the store's own node kind of that
+// party, so a party names the node it is.
+func PartyPerson(login string) string { return party(KindPerson, model.CanonicalLogin(login)) }
 
-func PartySession(id string) string { return KindSession + ":" + id }
+func PartySession(id string) string { return party(KindSession, id) }
+
+// party is the party the node kind/id is: `<kind>:<id>`.
+func party(kind, id string) string { return kind + ":" + id }
 
 // IssueNode is an issue's node as its create writes it: project-visible, live, in its project, and
 // with no cause yet, since the issue's node is written before its row and its event after both
@@ -63,7 +66,7 @@ func ArtifactNode(refKey, project, session string, who model.Actor, at time.Time
 
 // ArtifactPartOf is the fact that hangs a document under the issue that owns it: the part_of tuple
 // from the document's node, addressed by its ref_key, to the issue's node, which
-// artifacts.issue_key projects (R16 of dispatch://INFRA-1253). Every write of the node of an
+// artifacts.issue_key projects (R16 of the issue-tree spec). Every write of the node of an
 // issue's document states it beside that node, and a document no issue owns - a project's, or a
 // file of an agent's conversation - states none. It carries who wrote it and when; its cause is
 // Caused's to fill, or the sentinel where no event recorded the write.
@@ -104,15 +107,15 @@ func ArtifactBytes(tuples []Tuple, refKey, mime string, size int64, sha256 strin
 }
 
 // KindVersion is what this store calls one version of a document: one accepted write of it, which
-// its artifact_versions row projects (R16 of dispatch://INFRA-1253). A version's address is its
+// its artifact_versions row projects (R16 of the issue-tree spec). A version's address is its
 // document's ref_key, `@v` and its number (VersionID).
 const KindVersion = "version"
 
 // The supertags a version and a query carry (the root's R21 list): a version of a document is a
 // document version, and a version of a query node is a query version; a document that a query
 // replaces becomes a query node (QueryNode). `document version` is seeded with the closed list
-// (20261109051232); `query` and `query version` are this child's
-// (20261116121500_issue_tree_query_supertags).
+// (20261109051232); `query` and `query version` are the issue-tree spec's
+// (20261123174750_issue_tree_query_supertags).
 const (
 	SupertagDocumentVersion = "document version"
 	SupertagQuery           = "query"
@@ -154,14 +157,17 @@ const (
 // definition names them: the spec its memo callout, its criteria, its requirements and the
 // components and interfaces it proposes (R22: "the spec query of a change request also returns the
 // component and interface nodes that the issue proposes"); the verification its checks and their
-// results; the plan its plan nodes; and the decisions the asks, the decisions and the readings
-// under an agent's decision. Adding component to the spec's takes changes no record's layout and no
-// record of an issue that holds no component block, which no build before block schema version 8
-// could write, so QueryDefinitionVersion stays (TestTheSpecQueryTakesComponentsUnderOneDefinition).
+// results; the plan its plan nodes and the role blocks of their owners (plan_role, a type no block
+// schema of this build declares, so a schema that declares it reaches the view with no change
+// here); and the decisions the asks, the decisions and the readings under an agent's decision (the
+// decisions-tree spec's supertags). Adding component to the spec's takes changes no record's
+// layout and no record of an issue that holds no component block, which no build before block
+// schema version 10 could write, so QueryDefinitionVersion stays
+// (TestTheSpecQueryTakesComponentsUnderOneDefinition).
 var queryTakes = map[string][]string{
 	QuerySpec:         {"callout", "criterion", "requirement", "component"},
 	QueryVerification: {"check", "result"},
-	QueryPlan:         {"plan_task"},
+	QueryPlan:         {"plan_task", "plan_role"},
 	QueryDecisions:    {"ask", "decision", "reading"},
 }
 
@@ -200,7 +206,7 @@ func QueryNode(refKey, project, query string, who model.Actor, at time.Time) Nod
 // row's document plays as a query node (QueryNode): its query value, `verification`, `plan` or
 // `decisions`, and null for the spec's `spec`, whose part is the row's is_primary, and for a
 // document whose node is no query node. A document of an issue born converted writes no role in its
-// row (decision 2 of dispatch://INFRA-1253's plan), so a reader of the role it plays reads this
+// row (decision 2 of the issue-tree plan), so a reader of the role it plays reads this
 // beside the row's own.
 const ArtifactQueryRoleSQL = `(select nullif(node.attributes->>'` + AttributeQuery + `', '` + QuerySpec + `')
 	from graph_nodes node
@@ -297,11 +303,7 @@ func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 			}
 			value = string(encoded)
 		}
-		tuples = append(tuples, Tuple{
-			FromKind: node.Kind, FromID: node.ID, Kind: name,
-			ToKind: KindValue, ToID: value,
-			At: node.MadeAt, Who: node.MadeBy, SourceEvent: node.SourceEvent, Asserted: true,
-		})
+		tuples = append(tuples, valueTupleOf(node, name, value))
 	}
 	return tuples
 }
@@ -309,14 +311,18 @@ func AttributeFacts(tuples []Tuple, node Node) []Tuple {
 // Joined is several writes held for one cause as one write held for it: QueueCaused moves the
 // nodes of each and appends the facts of each under that cause, in the order given, each in an
 // append of its own, since each carries the mark its own node write left (nodeMark), and
-// QueueNodes writes the nodes of each. Its Nodes and Tuples are theirs, in that order, and a fact
-// a writer appends to its Tuples after joining them is appended after every one's (Uncaused's
-// parts). A writer whose caller causes one write it answers adds its own to it here.
+// QueueNodes writes the nodes of each. Its Nodes and facts are theirs, in that order, its runs
+// (Uncaused.HoldRun) held as runs and none built, and a fact a writer adds to it after joining
+// them is appended after every one's (Uncaused's parts). A writer whose caller causes one write it
+// answers adds its own to it here.
 func Joined(writes ...Uncaused) Uncaused {
 	var joined Uncaused
 	for _, write := range writes {
+		for _, held := range write.runs {
+			joined.runs = append(joined.runs, heldRun{at: len(joined.tuples) + held.at, run: held.run})
+		}
 		joined.Nodes = append(joined.Nodes, write.Nodes...)
-		joined.Tuples = append(joined.Tuples, write.Tuples...)
+		joined.tuples = append(joined.tuples, write.tuples...)
 		joined.parts = append(joined.parts, write.split()...)
 	}
 	return joined
@@ -435,6 +441,25 @@ func PartiesValue(parties []string) (string, error) {
 // names one is refused before it binds anything, and the caller's transaction ends.
 var ErrBadParty = errors.New("a party is empty or holds white space")
 
+// scopeColumns is a project and parties as graph_nodes' nullable project_key and parties columns
+// bind them: nil for no project and for no parties, else the project and the parties' value
+// (PartiesValue), whose refusal it answers.
+func scopeColumns(project *string, parties []string) (*string, *string, error) {
+	var projectColumn, partiesColumn *string
+	if *project != "" {
+		projectColumn = project
+	}
+	value, err := PartiesValue(parties)
+	if err != nil {
+		return nil, nil, err
+	}
+	if value != "" {
+		held := value
+		partiesColumn = &held
+	}
+	return projectColumn, partiesColumn, nil
+}
+
 // ScopeOf is the project, or for a thing no project owns the parties, of an ask or a comment that
 // belongs to an issue or a document: the issue's project where it names an issue, else the
 // document's project, else, for a file an agent's conversation owns, that conversation's session
@@ -452,8 +477,8 @@ func ScopeOf(ctx context.Context, q Queryer, issueKey, artifactID *string) (proj
 // CommentScopeOf is ScopeOf of a comment that belongs to issueKey or artifactID, read in the same
 // statement as whether the comment's row names its node (comments.node_kind): a comment left out
 // of the store, or one a process of the release before wrote and the backfill has not stated yet,
-// names none. It is the one read of an edit of a comment's words made for a run (api's
-// editComment).
+// names none. It is the one read of an edit of a comment's words and of a comment's delete, each
+// made for a run (api's planCommentChangedForRun, for editComment and deleteComment).
 func CommentScopeOf(ctx context.Context, q Queryer, commentID string, issueKey, artifactID *string) (stored bool, project string, parties []string, err error) {
 	var projectKey, session *string
 	if err := q.QueryRow(ctx, `select (select node_kind is not null from comments where id = $3), `+scopeRead,
@@ -492,7 +517,7 @@ func rowScope(projectKey, session *string) (project string, parties []string) {
 func ThreadParties(rootAuthor model.Actor, rootTarget *string) []string {
 	var parties []string
 	if kind, id, ok := AuthorOf(rootAuthor); ok {
-		parties = append(parties, kind+":"+id)
+		parties = append(parties, party(kind, id))
 	}
 	if rootTarget != nil && *rootTarget != "" {
 		parties = append(parties, *rootTarget)

@@ -3,7 +3,9 @@ package texttrees_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
@@ -12,6 +14,38 @@ import (
 )
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+
+// A stored tree is read back in an array of its own grown by append, whose capacity is the whole
+// allocation the runtime rounded the tree's length up to. The display cache charges a tree its
+// array's capacity (pmdoc.PutStoredDisplayTree), so an array made exactly the tree's length, as a
+// scan into a []byte makes it, would hide that rounding from the charge while the heap still held
+// it.
+func TestAStoredTreeIsReadBackInAnArrayAsLongAsItsAllocation(t *testing.T) {
+	ctx := context.Background()
+	table := texttrees.New(storetest.Open(t).Pool)
+	// A tree of 1,000 bytes: no size the runtime allocates, so its allocation is longer than it.
+	const frame = `{"type":"doc","text":""}`
+	tree := json.RawMessage(`{"type":"doc","text":"` + strings.Repeat("a", 1000-len(frame)) + `"}`)
+	sum := pmdoc.TextSum("A text whose tree this test stores itself.")
+	if err := table.StoreTrees(ctx, pmdoc.DisplayLatest, []texttrees.Tree{{Sum: sum, Tree: tree}}); err != nil {
+		t.Fatalf("store the tree: %v", err)
+	}
+	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{sum})
+	if err != nil {
+		t.Fatalf("read the tree: %v", err)
+	}
+	got := stored[sum]
+	if !bytes.Equal(got, tree) {
+		t.Fatalf("the stored tree is read back as\n\t%s\nwant\n\t%s", got, tree)
+	}
+	allocated := cap(append(json.RawMessage(nil), tree...))
+	if allocated == len(tree) {
+		t.Fatalf("a tree of %d bytes is allocated exactly its length, so this test shows nothing: choose another length", len(tree))
+	}
+	if cap(got) != allocated {
+		t.Errorf("the tree of %d bytes is read back in an array of %d, want the %d its allocation holds", len(got), cap(got), allocated)
+	}
+}
 
 // A text's tree is stored once and read back as the bytes pmdoc.DisplayJSON answers, which is what
 // a response carries: a read serves the stored bytes rather than reading the markdown again.
@@ -154,6 +188,45 @@ func TestATreeStoredAtOneVersionIsNotReadAtAnother(t *testing.T) {
 	}
 	if len(stored) != 1 {
 		t.Errorf("the row stored at version %d is gone after the next version stored its own", pmdoc.DisplayTreeVersion)
+	}
+}
+
+// A tree stored at display parser version 4, which read an address written after `](` on past its
+// `)` and so held an email typed straight after that `)` as text, is not served at this build's
+// version: the text is read again, and the email is the link this build's reading makes of it
+// (text.DispatchSpans ends such an address at its `)`).
+func TestATreeStoredBeforeALinkAddressEndedAtItsParenthesisIsReadAgain(t *testing.T) {
+	ctx := context.Background()
+	table := texttrees.New(storetest.Open(t).Pool)
+	const text = `Mail \[w](dispatch://ACME-1)me@example.com now.`
+	sum := pmdoc.TextSum(text)
+	old := json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[` +
+		`{"type":"text","text":"Mail [w](dispatch://ACME-1)me@example.com now."}]}]}`)
+	restore := pmdoc.SetDisplayTreeVersionForTest(4)
+	err := table.StoreTrees(ctx, pmdoc.DisplayLatest, []texttrees.Tree{{Sum: sum, Tree: old}})
+	restore()
+	if err != nil {
+		t.Fatalf("store the tree version 4 read: %v", err)
+	}
+	stored, err := table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{sum})
+	if err != nil {
+		t.Fatalf("read at version %d: %v", pmdoc.DisplayTreeVersion, err)
+	}
+	if len(stored) != 0 {
+		t.Fatalf("the read at version %d answered the tree stored at version 4: %s", pmdoc.DisplayTreeVersion, stored[sum])
+	}
+	reading := pmdoc.DisplayJSON(text, pmdoc.DisplayLatest)
+	if !bytes.Contains(reading, []byte(`"href":"mailto:me@example.com"`)) {
+		t.Fatalf("this build reads %q as\n\t%s\nwhich links no email", text, reading)
+	}
+	if err := table.Store(ctx, pmdoc.DisplayLatest, text); err != nil {
+		t.Fatalf("store at version %d: %v", pmdoc.DisplayTreeVersion, err)
+	}
+	if stored, err = table.Read(ctx, pmdoc.DisplayLatest, [][32]byte{sum}); err != nil {
+		t.Fatalf("read this version's row: %v", err)
+	}
+	if got := stored[sum]; !bytes.Equal(got, reading) {
+		t.Errorf("the tree stored at version %d is\n\t%s\nwant\n\t%s", pmdoc.DisplayTreeVersion, got, reading)
 	}
 }
 

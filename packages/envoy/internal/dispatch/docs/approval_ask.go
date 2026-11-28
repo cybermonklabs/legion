@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -110,17 +113,19 @@ func openApprovalAsk(ctx context.Context, tx pgx.Tx, artifactID string) (*model.
 // (versionWrite.settlement), or the reopen's follow of a version written while the issue was
 // closed, which a settlement or a comment anchor's snapshot wrote, and which no stored version
 // tells apart (FollowClosedIssueVersions). Only then, when the document waits on the human (its
-// requested_version is the version the request names), and markdown either is byte for byte the
-// stored text of that version (restoresApprovedText) or differs from it in the server-owned
-// attributes of its ask blocks alone, every ask block agreeing with its node (R10's test,
-// changesAskAttributesAlone), does its requested_version move with its version, quietly: a
-// settlement saves what the room already holds - the blocks a close and a reopen wrote back, or
-// the state a person's answer, resolve or decline wrote into the ask's block - so the text the
-// person was asked about did not change and the request keeps its turn as if it had not moved,
-// waking nobody. A version a route writes - a named version, an upload, an edit or a summary edit
-// - moves the request to its agent whatever text it stores, as every move did before the rule:
-// the Legion daemon answers an agent's gate wait with such a version's artifact.version, telling
-// the agent the request is back on its turn, which this keeps true.
+// requested_version is the version the request names), and markdown either holds the stored text
+// of that version as the approval's restore compares it (restoresApprovedText: byte for byte, or,
+// for a version another renderer version stored or none stamped, as this build renders it) or
+// differs from it in the server-owned attributes of its ask blocks alone, every ask block agreeing
+// with its node (R5's test, changesAskAttributesAlone, which holds that version to its rendering
+// by the same rule), does its requested_version move with its version, quietly: a settlement saves
+// what the room already holds - the blocks a close and a reopen wrote back, or the state a
+// person's answer, resolve or decline wrote into the ask's block - so the text the person was
+// asked about did not change and the request keeps its turn as if it had not moved, waking nobody.
+// A version a route writes - a named version, an upload, an edit or a summary edit - moves the
+// request to its agent whatever text it stores, as every move did before the rule: the Legion
+// daemon answers an agent's gate wait with such a version's artifact.version, telling the agent
+// the request is back on its turn, which this keeps true.
 //
 // It runs in a transaction a caller joined, as every other document operation does, and in the
 // one a settlement or the block-id backfill owns, which no caller joins (Ledger): the version
@@ -206,10 +211,10 @@ func moveApprovalAsk(ctx context.Context, tx pgx.Tx, broker *events.Broker, arti
 // (rewriteApprovalAsk). A version move, a request with a new summary and a request that changes
 // which documents it covers all reword; none hands the request back, so each document's
 // requested_version stays as it was. The one exception is a settlement's version move that stores
-// byte for byte the text of the version the person was asked about, or differs from it only in the
-// server-owned attributes of its ask blocks (changesAskAttributesAlone), which moves that document's
-// requested_version with its version, quietly (MoveApprovalAsk). A move of a request that an
-// earlier version already moved since it was opened or handed back, a document's
+// the text of the version the person was asked about (restoresApprovedText), or differs from it
+// only in the server-owned attributes of its ask blocks (changesAskAttributesAlone), which moves
+// that document's requested_version with its version, quietly (MoveApprovalAsk). A move of a
+// request that an earlier version already moved since it was opened or handed back, a document's
 // requested_version below the version it named, is recorded quiet
 // (model.AskEditEventPayload.Quiet): it changes only that version, so like a human's unnamed version
 // it wakes nobody. The event it appends goes to the ledger of the transaction it runs in, as every
@@ -257,6 +262,7 @@ func rewriteApprovalAsk(
 		return errUnjoined
 	}
 	sink := eventSink(ctx)
+	priorDocuments := slices.Clone(ask.Approval.Documents)
 	previous := model.NewAskEditPrevious(*ask)
 	ask.Question = ApprovalQuestion(documents, summary)
 	// A fresh approval rather than the old one changed in place: the event below keeps its own
@@ -284,10 +290,15 @@ func rewriteApprovalAsk(
 	// which its ask.edited names beside the request's own references. The parts are planned from
 	// the row the update below writes, which the read of the index does not show yet, and written
 	// in that same step; the row carries the edited_at that update sets, so the plan marks the
-	// request edited without reading it back.
-	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, changes)
+	// request edited without reading it back. The question's reconciliation is queued before the
+	// parts, so the parts' step settles the forms queue (questionReconciled).
+	changes, parts, err := planAskPartsCounted(ctx, tx, reader, row, editedAt, true, changes)
 	if err != nil {
 		return fmt.Errorf("index the parts of approval ask %s: %w", ask.ID, err)
+	}
+	approves, err := planApprovesMoves(ctx, tx, ask.ID, priorDocuments, documents, actor, editedAt)
+	if err != nil {
+		return err
 	}
 	payload := model.NewAskEditEventPayload(row, previous, actor, changes)
 	payload.Quiet = quiet
@@ -310,8 +321,126 @@ func rewriteApprovalAsk(
 			return fmt.Errorf("append approval ask edit: %w", err)
 		}
 		refs.QueueStamp(b, "ask", ask.ID)
+		if approves.Len() > 0 {
+			graphstore.QueueCaused(b, approves, graphstore.LatestEvent)
+			graphstore.QueueHeads(b, graphstore.HeldHeads(approves))
+		}
 		return nil
 	})
+}
+
+// approvalRefKeys reads the ref_key of each document named by documents, keyed by artifact id, in
+// one statement. It is what a rewrite of an approval request's approves tuples needs to spell the
+// version node address of each document it moves (graphstore.VersionID); a new request takes each
+// ref_key from the document rows its route read already (api's openApprovalAsk).
+func approvalRefKeys(ctx context.Context, q Queryer, documents []model.AskApprovalDocument) (map[string]string, error) {
+	ids := make([]string, 0, len(documents))
+	for _, document := range documents {
+		if !slices.Contains(ids, document.ArtifactID) {
+			ids = append(ids, document.ArtifactID)
+		}
+	}
+	if len(ids) == 0 {
+		return map[string]string{}, nil
+	}
+	rows, err := q.Query(ctx, `select id::text, ref_key from artifacts where id = any($1::uuid[])`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read the ref_keys of an approval request's documents: %w", err)
+	}
+	defer rows.Close()
+	keys := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, refKey string
+		if err := rows.Scan(&id, &refKey); err != nil {
+			return nil, fmt.Errorf("read the ref_keys of an approval request's documents: %w", err)
+		}
+		keys[id] = refKey
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the ref_keys of an approval request's documents: %w", err)
+	}
+	return keys, nil
+}
+
+// planApprovesMoves plans the approves tuples a rewrite of an approval ask's documents from prior
+// to next appends, held for the rewrite's ask.edited (graphstore.PlanUncaused), dated at and signed
+// by who. For each document whose version the rewrite changes, it reads what the ask's node holds
+// now, as the census does (graphcensus' approvesMoves): it retracts each approves the node holds to
+// a version of that document other than the one next names, and the one to the version prior named
+// - a retraction of a tuple the node does not hold changes nothing, and it covers a move this
+// transaction queued and has not written - and asserts the one to the version next names where the
+// node does not hold it. So a row a process of the release before moved without its tuple leaves no
+// approves asserted that the row does not name. Where no document version changed, or where the
+// ask's row names no node yet, it plans nothing.
+func planApprovesMoves(ctx context.Context, tx pgx.Tx, askID string, prior, next []model.AskApprovalDocument, who model.Actor, at time.Time) (graphstore.Uncaused, error) {
+	was := make(map[string]int, len(prior))
+	for _, document := range prior {
+		was[document.ArtifactID] = document.Version
+	}
+	var moved []model.AskApprovalDocument
+	for _, document := range next {
+		if version, named := was[document.ArtifactID]; !named || version != document.Version {
+			moved = append(moved, document)
+		}
+	}
+	if len(moved) == 0 {
+		return graphstore.Uncaused{}, nil
+	}
+	var nodeAddress *string
+	if err := tx.QueryRow(ctx, `select node_address from asks where id = $1`, askID).Scan(&nodeAddress); err != nil {
+		return graphstore.Uncaused{}, fmt.Errorf("read the node of approval ask %s: %w", askID, err)
+	}
+	if nodeAddress == nil {
+		return graphstore.Uncaused{}, nil
+	}
+	keys, err := approvalRefKeys(ctx, tx, moved)
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	stated, err := graphstore.CurrentOut(ctx, tx, graphstore.KindAsk, *nodeAddress, []string{graphcensus.TupleApproves})
+	if err != nil {
+		return graphstore.Uncaused{}, err
+	}
+	held := map[string]bool{}
+	for _, tuple := range stated {
+		if tuple.ToKind == graphstore.KindVersion {
+			held[tuple.ToID] = true
+		}
+	}
+	var tuples []graphstore.Tuple
+	for _, document := range moved {
+		refKey, ok := keys[document.ArtifactID]
+		if !ok {
+			continue
+		}
+		wanted := graphstore.VersionID(refKey, document.Version)
+		retracted := map[string]bool{}
+		for address := range held {
+			if strings.HasPrefix(address, refKey+"@v") && address != wanted {
+				retracted[address] = true
+			}
+		}
+		if version, named := was[document.ArtifactID]; named {
+			if address := graphstore.VersionID(refKey, version); address != wanted {
+				retracted[address] = true
+			}
+		}
+		for _, address := range slices.Sorted(maps.Keys(retracted)) {
+			if graphstore.AddressFits(address) {
+				tuples = append(tuples, graphstore.Tuple{
+					FromKind: graphstore.KindAsk, FromID: *nodeAddress, Kind: graphcensus.TupleApproves,
+					ToKind: graphstore.KindVersion, ToID: address,
+					At: at, Who: who, SourceEvent: graphstore.NoEvent, Asserted: false,
+				})
+			}
+		}
+		if !held[wanted] {
+			if tuple, fits := graphcensus.ApprovesTuple(*nodeAddress, refKey, document.Version, who, at, true); fits {
+				tuples = append(tuples, tuple)
+			}
+		}
+	}
+	return graphstore.PlanUncaused(nil, tuples), nil
 }
 
 // EncodeApproval is an approval ask's approval as asks.approval stores it.

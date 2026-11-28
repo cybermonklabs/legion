@@ -2,6 +2,7 @@ package docs
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -34,6 +35,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
+
+import "github.com/sjawhar/envoy/internal/clock"
 
 var (
 	// ErrIssueClosed rejects a document mutation after its issue is closed.
@@ -93,6 +96,10 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
+	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
+	// loaded machine takes between them does not spend the budget.
+	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
 	// on it, and compares it with the commit of every live server process to report whether
@@ -103,6 +110,13 @@ type Deps struct {
 	// clock, which nothing a test hands the service reaches, so a test whose verdict needs a room
 	// to leave residency only through a close it asked for hands a window that never ends.
 	RoomIdleTimeout time.Duration
+	// CloseMargin is how long after an issue's close the append gate of the store New builds still
+	// stores a browser update a room observed (observedBeforeClose); zero, which every deployment
+	// leaves it, is closeMargin. It reaches the store New builds alone, not a Persistence the
+	// caller hands. Only a test sets it: one that stands for a process whose room takes a browser's
+	// update after a close it never hears of gives a margin past any run, so whether the update is
+	// stored is not decided by how long a loaded machine takes between the close and the update.
+	CloseMargin time.Duration
 }
 
 // VersionedStore is Dispatch's transactional extension of ygo's durable room
@@ -153,21 +167,19 @@ type VersionedStore interface {
 
 // Service owns live Yjs documents and their durable Dispatch versions.
 type Service struct {
-	srv         *roomServer
-	store       *store.Store
-	persistence VersionedStore
-	events      *events.Broker
-	identity    identity.Identity
-	serverURL   string
-	// formGate is the form gate of The Spec that each carry of an approval asks (SetFormGate),
-	// nil until the API sets it: a carry with no gate writes nothing (writeCarriedReview), so a
-	// process that builds this service with no API carries no approval.
-	formGate          atomic.Pointer[FormGate]
+	srv               *roomServer
+	store             *store.Store
+	persistence       VersionedStore
+	events            *events.Broker
+	identity          identity.Identity
+	serverURL         string
 	settle            time.Duration
 	markWait          time.Duration
 	unrecordedMarkTTL time.Duration
 	// editNoticeQuiet is Deps.EditNoticeQuiet, with its default applied.
 	editNoticeQuiet time.Duration
+	// clock is Deps.Clock, the real clock when that is nil: the clock of Shutdown's drain budget.
+	clock clock.Clock
 	// buildCommit is Deps.BuildCommit.
 	buildCommit string
 	// markingRule is the block index's marking rule this build applies, refs.BlockIndexMarkingRule
@@ -179,10 +191,11 @@ type Service struct {
 	// blockIndexHorizon builds under horizonOnce on the first tick that asks for it.
 	horizonOnce  sync.Once
 	eventHorizon *events.Horizon
-	// objectPassFinished is when this process's last object pass finished with nothing left, in
-	// Unix nanoseconds by the service's clock (now), and zero before one has: a block-index tick
-	// owes the pass on the process's first tick and once objectPassInterval has passed since
-	// (readEventsAfterCursor).
+	// objectPassFinished is when this process's last object pass that a cursor row records
+	// finished with nothing left, in Unix nanoseconds by the service's clock (now), and zero before
+	// one has: a block-index tick owes the pass on the process's first tick with a proven horizon
+	// and once objectPassInterval has passed since (readEventsAfterCursor). A pass a tick runs
+	// before any horizon is proven (objectPassDebt with no recorded time) does not set it.
 	objectPassFinished atomic.Int64
 	// maxPendingItems is the pending queue the service's rooms decode their stored state under
 	// (Server.MaxPendingItems, which New sets from it and ygo reads as each room loads) and the
@@ -243,6 +256,11 @@ type Service struct {
 	// before the version takes its document lock and reads it. Nil outside tests; tests use it to
 	// evict the warmed room or edit it in that window.
 	afterReadWarm func(room string)
+	// afterMarkMiss runs each time a look of VerifyMark has missed the mark and the call is about
+	// to wait for the room's next update or its wait (markTimer). Nil outside tests; tests use it
+	// to write the mark only once the call has looked and missed, so the call can find it only
+	// through the update's wake.
+	afterMarkMiss func(room string)
 	// afterReadCopy runs once a read of a room has copied the room's document (holdLive) and
 	// before that copy is offered to the room's replica (startFromRead). Nil outside tests;
 	// tests use it to commit into the room, and to leave the room's replica recovered, in the
@@ -274,9 +292,16 @@ type Service struct {
 	// describe its fork, at names where: "fork" once forkLive has brought the fork up to date,
 	// "margin", "docTree" and "capture" as a margin write (applyMargin) or a read joined to the
 	// write's transaction takes the rendering in place of reading the fork (reuseRendering), and
-	// "publish" just before publishLiveWrite releases the fork. Nil outside tests; tests use it to
-	// compare the rendering with a fresh read and render of the fork.
+	// "commit" as the commit hands the fork to the room's shadow (Ledger.commit), the last point
+	// the fork is the write's own: the room's worker measures on the shadow the browser updates
+	// the transaction's advisory lock held back (roomShadow.measure), whether the write's publish
+	// has begun or not. Nil outside tests; tests use it to compare the rendering with a fresh read
+	// and render of the fork.
 	checkRendering func(at string, write *liveWrite)
+	// beforePublish runs as a committed write's publish begins (publishLiveWrite), after the
+	// pause armed there (PauseAfterCommit) and before the publish releases the fork. Nil outside
+	// tests; tests use it to read the write and its room as the publish finds them.
+	beforePublish func(write *liveWrite)
 	// afterSettleAuthorsTake runs after a settlement has bounded the in-flight credits it lists
 	// and before it reads the tree it will version. Nil outside tests; tests use it to edit the
 	// room in that window.
@@ -344,6 +369,19 @@ type Service struct {
 	// holder takes - the window the commit's cursors must already stand at the head for
 	// (Ledger.takeRoomCursors).
 	afterLiveCommit func(room string)
+	// fillHold, where a test set it (HoldFills), runs at the start of each fill of a record digest
+	// a write left owed (fillOwedDigests), once that write has committed and before the fill's own
+	// transaction begins. Unset outside tests.
+	fillHold atomic.Pointer[func(issueKey string)]
+	// drainHold, where a test set it (HoldDrains), runs at the start of each drain of an issue's
+	// query mark (drainMark), once the fill before it has committed and before the drain's own
+	// transaction begins. Unset outside tests.
+	drainHold atomic.Pointer[func(issueKey string)]
+	// afterCommitLockWaitForTest, where a test set it (SetAfterCommitLockWaitForTest), replaces
+	// afterCommitLockWait as the bound of each lock wait of the fill and the drain a write's caller
+	// runs after its COMMIT (Service.afterCommitWait); a negative value takes the bound out. Zero,
+	// its value outside tests, leaves the constant.
+	afterCommitLockWaitForTest atomic.Int64
 	// beforeFlushMeasure runs once a flush has copied the room's shadow window and the classes it
 	// is to store under the state's lock and released that lock, and before it measures them on
 	// the shadow (Service.flushThrough, storedClasses). Nil outside tests; tests use it to drop
@@ -452,6 +490,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
+	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
+	// was armed with and to fire it themselves.
+	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
 	now      func() time.Time
@@ -514,6 +556,10 @@ type Service struct {
 	// appended while the load ran, which reaches no instance of its own (roomLoad).
 	instances sync.Map
 	roomLoads sync.Map
+	// layoutMoved is the latest instant by which a transaction of this process that joined a
+	// document to an issue room had committed (noteLayoutMoved, Ledger.closeJoinedRooms), nil until
+	// one has. A room's load takes no layout a socket's admission read before it (admittedIssueRead).
+	layoutMoved atomic.Pointer[time.Time]
 	// reads holds the renderings of the documents cold reads served, each under the stored state
 	// it was rendered from (coldRead), within the budget New gives it from the Go memory limit
 	// (readBudgetFor).
@@ -593,22 +639,27 @@ type Service struct {
 
 // artifactOwner is what lockArtifactOwner reads of an artifact beside the owner row it locks: its
 // issue or project, its slug and name, and its kind, which tells an issue's tree, whose room is the
-// issue room (settlement.readLocked), from a document.
+// issue room (settlement.readLocked), from a document. Retired is whether the artifact is retired
+// (artifacts.retired_at, RetireDocument), read in the statement after the owner's lock, which the
+// retirement takes too: a writer that holds the lock reads a retirement that committed before it,
+// and no retirement commits until the writer's transaction ends.
 type artifactOwner struct {
 	IssueKey *string
 	Project  string
 	Slug     string
 	Name     string
 	Kind     string
+	Retired  bool
 }
 
 // lockArtifactOwner loads an artifact's owner, then takes that owner's lock (store.LockOwner): the
 // artifact itself for a project document, its issue otherwise. The lock is a transaction advisory
 // lock, so it serialises this writer against every other writer of the owner without taking a row
 // lock, and so without giving the transaction a transaction id or blocking the `for key share` a
-// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open is
-// read in the statement after the lock, sent with it (store.LockOwnerAndRead), so a close committed
-// while this waited is seen.
+// child insert takes - see lockDocumentRoom for why that is the rule. Whether the issue is open,
+// and whether the document is retired (artifactOwner.Retired), are read in the statement after
+// the lock, sent with it (store.LockOwnerAndRead), so a close or a retirement committed while this
+// waited is seen.
 func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artifactOwner, bool, error) {
 	var owner artifactOwner
 	if err := tx.QueryRow(ctx, `
@@ -619,16 +670,17 @@ func lockArtifactOwner(ctx context.Context, tx pgx.Tx, artifactID string) (artif
 	}
 	if owner.IssueKey == nil {
 		if err := store.LockOwnerAndRead(ctx, tx, store.ArtifactOwner(artifactID), `
-			select true from artifacts where id = $1 and issue_key is null
-		`, []any{artifactID}, new(bool)); err != nil {
+			select retired_at is not null from artifacts where id = $1 and issue_key is null
+		`, []any{artifactID}, &owner.Retired); err != nil {
 			return artifactOwner{}, false, fmt.Errorf("lock and read document artifact: %w", err)
 		}
 		return owner, true, nil
 	}
 	var open bool
 	if err := store.LockOwnerAndRead(ctx, tx, store.IssueOwner(*owner.IssueKey), `
-		select closed_at is null from issues where key = $1
-	`, []any{*owner.IssueKey}, &open); err != nil {
+		select i.closed_at is null, a.retired_at is not null
+		from issues i, artifacts a where i.key = $1 and a.id = $2
+	`, []any{*owner.IssueKey, artifactID}, &open, &owner.Retired); err != nil {
 		return artifactOwner{}, false, fmt.Errorf("lock and read document issue: %w", err)
 	}
 	return owner, open, nil
@@ -904,6 +956,10 @@ func New(deps Deps) *Service {
 	if editNoticeQuiet <= 0 {
 		editNoticeQuiet = defaultEditNoticeQuiet
 	}
+	serviceClock := deps.Clock
+	if serviceClock == nil {
+		serviceClock = clock.Real()
+	}
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -925,6 +981,7 @@ func New(deps Deps) *Service {
 	if persist == nil {
 		pg := NewPgVersioned(deps.Store)
 		pg.processID = processID
+		pg.closeMargin = cmp.Or(deps.CloseMargin, closeMargin)
 		persist = pg
 	}
 	service := &Service{
@@ -937,9 +994,11 @@ func New(deps Deps) *Service {
 		settle:            settle,
 		markWait:          markWait,
 		now:               time.Now,
+		markTimer:         wallMarkTimer,
 		timers:            make(map[uint64]*time.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
+		clock:             serviceClock,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1179,7 +1238,8 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // ones already queued - has room to finish: the live durableAppends counter waits for every append
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
-// is left of the caller's deadline, so a caller's deadline has to exceed it.
+// is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
+// Deps.Clock, the real clock in production.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1242,7 +1302,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := context.WithTimeout(ctx, ShutdownDrainBudget)
+	drainCtx, cancelDrain := s.clock.WithTimeout(ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {
@@ -2021,10 +2081,11 @@ const (
 	settleRoomFailed
 	// settleReloaded is a settlement whose room instance was replaced under it: it holds a stored
 	// history that was replaced, which no catch-up can bring to the durable head
-	// (ErrRoomBehindHead), or it is an issue room loaded over documents the room no longer holds
-	// (errRoomLayoutMoved). The room has been closed for a reload or the settlement armed again
-	// (reloadReplacedRoom), which logs the refusal, and the pending-settlement row, which the
-	// refusal's rollback kept, still says the settlement is owed.
+	// (ErrRoomBehindHead), it is an issue room loaded over documents the room no longer holds
+	// (errRoomLayoutMoved), or its document moved into its issue's room (ErrRoomMoved). The room
+	// has been closed for a reload or the settlement armed again (reloadReplacedRoom), which logs
+	// the refusal, and the pending-settlement row, which the refusal's rollback kept, still says
+	// the settlement is owed.
 	settleReloaded
 )
 
@@ -2108,7 +2169,8 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 // no longer holds - a document joined it, and the notice that closes the room on every process
 // (AnnounceDocumentRooms) did not reach this one (errRoomLayoutMoved) - so a settlement of it would
 // version and index the room over fragments that are not the room's, and only a load reads the
-// room's layout. The settlement has written nothing, and its caller has rolled its transaction
+// room's layout; or live's document moved into its issue's room, so the room takes nothing more
+// (ErrRoomMoved). The settlement has written nothing, and its caller has rolled its transaction
 // back, which releases the document's advisory lock that the close below needs. It closes the room
 // as the catch-up does for the same case (roomCatchUps.closeReplaced) and arms the settlement
 // again: its timer loads the document at the head, over the room's layout, and settles every
@@ -2583,7 +2645,8 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 	var cursor *roomCursor
 	slot, update, err := s.applySuppressed(backfillCtx, artifactID, nil, func(doc *crdt.Doc, origin any) error {
 		cursor = s.cursorOf(doc)
-		read, _, err := s.liveFragmentsTree(artifactID, doc, s.layoutOf(doc).fragments())
+		layout := s.layoutOf(doc)
+		read, _, err := s.liveFragmentsTree(artifactID, doc, layout.fragments())
 		if err != nil {
 			return err
 		}
@@ -2593,7 +2656,7 @@ func (s *Service) backfillBlockIDs(ctx context.Context, artifactID string) Block
 		if s.afterBackfillRead != nil {
 			s.afterBackfillRead(artifactID)
 		}
-		_, _, minted, stampRenamed, err := stampBlockIDs(doc, s.layoutOf(doc), origin)
+		_, _, minted, stampRenamed, err := stampBlockIDs(doc, layout, origin)
 		report.Stamped = minted
 		renamed = stampRenamed
 		return err
@@ -2764,11 +2827,12 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // documentRemoved is documentRemovedChannel's handler, on its room-sync lane (roomSync.handlers):
 // the document artifactID was removed, in a transaction of any process - this one's or another's
 // - whose commit announced it (AnnounceDocumentRemoved). It is what the same lane's pass after a
-// LISTEN calls too, for each room whose row it reads gone (recheckRemovedRooms). The row has
-// gone, so a room of it here is a room over nothing: its next append would meet a foreign key
-// that no longer resolves, and a settlement would commit against a row that is not there. The
+// LISTEN calls too, for each room whose row it reads gone or retired (recheckRemovedRooms). The
+// row has gone, so a room of it here is a room over nothing: its next append would meet a foreign
+// key that no longer resolves, and a settlement would commit against a row that is not there. The
 // room is closed, through the same eviction the removing process runs over its own room after
-// the commit (api.removeArtifact).
+// the commit (api.removeArtifact). A retirement announces itself the same way (RetireDocument):
+// its row stays, and a room of it would take typing no version holds, so that room is closed too.
 //
 // A process holding no room of the document has nothing to close, which is read first
 // (residentLoadedRooms reads residence the same way): every process hears this, the removing
@@ -2780,10 +2844,7 @@ func (s *Service) issueOpenChanged(ctx context.Context, issueKey string) {
 // read; it is lost by this close, and it could not have been stored anyway, since its append
 // would meet an artifacts row that has gone.
 func (s *Service) documentRemoved(ctx context.Context, artifactID string) {
-	if s.srv.GetDoc(artifactID) == nil {
-		return
-	}
-	if err := s.Evict(ctx, artifactID); err != nil && ctx.Err() == nil {
+	if err := s.evictResident(ctx, artifactID); err != nil {
 		// The room stays open until this process's next close of it. The removal is
 		// announced once and the row it names is gone, so nothing notifies it again; what
 		// reads it again is the lane's pass after the next LISTEN (recheckRemovedRooms),
@@ -2830,31 +2891,35 @@ func (s *Service) recheckResidentIssues(ctx context.Context) {
 	}
 }
 
-// residentArtifactsStatement reads which of the documents in $1 still have an artifacts row. It
-// reads no kind: a row whose kind changed is no removal, and only a row that has gone is one
+// residentArtifactsStatement reads which of the documents in $1 still have an artifacts row that
+// is not retired. It reads no kind: a row whose kind changed is no removal, and only a row that
+// has gone, or one a retirement marked (artifacts.retired_at, RetireDocument), is one
 // (recheckRemovedRooms). $1 holds the resident rooms' own names, which are canonical uuids
 // because the admission refuses a socket whose room is spelled any other way (ServeHTTP): every
 // element is cast to uuid here, and one Postgres could not read as a uuid would error the whole
 // statement, taking the answer for every other room with it.
-const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[])`
+const residentArtifactsStatement = `select id::text from artifacts where id = any($1::uuid[]) and retired_at is null`
 
-// recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal notified
-// while the hub had no connection reached nobody, and nothing says it again - the announcement
-// is sent once, and the row it named has gone, so no later read of that document brings it
-// back. This reads the rows of the rooms this process holds, in one statement, and every room
-// the answer leaves out is a document that has gone: it is closed through the lane's own
-// handler (documentRemoved), which reads residence again and logs only a close that failed.
-// A close that succeeds writes no line at all (Evict, evictRoom, forgetEvicted write none), so
-// a room this pass took is a room that left nothing in the log to find. A room left open over a
-// deleted row takes a person's typing that no append can store, the doc_updates foreign key
-// refusing it.
+// recheckRemovedRooms is the removal lane's work after each LISTEN stands: a removal or a
+// retirement notified while the hub had no connection reached nobody, and nothing says it again -
+// the announcement is sent once (AnnounceDocumentRemoved), and neither a row that has gone nor a
+// retired one is read by any later write of that document. This reads the rows of the rooms this
+// process holds, in one statement, and every room the answer leaves out is a document that has
+// gone or is retired: it is closed through the lane's own handler (documentRemoved), which reads
+// residence again and logs only a close that failed. A close that succeeds writes no line at all
+// (Evict, evictRoom, forgetEvicted write none), so a room this pass took is a room that left
+// nothing in the log to find. A room left open over a deleted row takes a person's typing that no
+// append can store, the doc_updates foreign key refusing it; one left open over a retired
+// document takes typing that settlement stores and writes no version of, and nothing tells the
+// person.
 //
-// The catch-up's sweep after the same LISTEN closes such a room too, where the room holds
-// stored updates: the removal took them with the document, so the room stands above the head
-// of an empty history, which reads as a history replaced under it (roomCatchUps.sweep,
-// storedHistoryReplaced). Whichever pass reads the room first closes it. This one closes it
-// for what it is, and it is the only one that closes a room holding nothing stored, which
-// stands at that empty history's head and reads as current.
+// The catch-up's sweep after the same LISTEN closes a removed document's room too, where the room
+// holds stored updates: the removal took them with the document, so the room stands above the
+// head of an empty history, which reads as a history replaced under it (roomCatchUps.sweep,
+// storedHistoryReplaced). Whichever pass reads the room first closes it. This one closes it for
+// what it is, and it is the only one that closes a room holding nothing stored, which stands at
+// that empty history's head and reads as current, and the room of a retired document, whose
+// stored history stays.
 func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	rooms := s.residentLoadedRooms()
 	if len(rooms) == 0 {
@@ -2875,7 +2940,7 @@ func (s *Service) recheckRemovedRooms(ctx context.Context) {
 	}
 	// The usual answer holds every room asked for and builds nothing to read itself by: id is
 	// the artifacts primary key and each room is asked about once, so a row count that matches
-	// is every document still there.
+	// is every document still there and not retired.
 	if len(held) == len(rooms) {
 		return
 	}

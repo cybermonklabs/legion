@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
 var (
@@ -17,10 +19,6 @@ var (
 	// readsReviewTable matches the table after a from or a join, since a statement reaches it
 	// either way and a join's newest-row pick is as ordinary a shape as a plain read's.
 	readsReviewTable = regexp.MustCompile(`\b(?:from|join)\s+` + reviewTable)
-	// reviewOrderText is the leading term of docs.ReviewOrder, the one a statement written with
-	// another order cannot carry: the two after it, created_at and id, are what the wrong order
-	// is made of.
-	reviewOrderText = "event_seq desc nulls last"
 )
 
 // The guard reads an order by clause and nothing else, so one edge is outside it: a newest-row
@@ -31,7 +29,7 @@ var (
 
 // TestEveryReviewReadOrdersByReviewOrder enforces, over the whole module, what
 // docs/review_order_plan_test.go enforces over the three reads it explains: a statement that
-// reads artifact_reviews and orders its rows orders them by docs.ReviewOrder, the order the
+// reads artifact_reviews and orders its rows orders them by model.ReviewOrder, the order the
 // reviews' events committed. artifact_reviews.created_at is its transaction's start and its id is
 // random, so `created_at desc, id desc` returns a review that committed first ahead of one that
 // committed after it - an approval committed while a version write was open ahead of the
@@ -59,7 +57,10 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 			if !readsReviewTable.MatchString(statement) || !ordersRows.MatchString(statement) {
 				continue
 			}
-			if strings.Contains(statement, reviewOrderText) {
+			// model.ReviewEventOrder is the leading term of model.ReviewOrder, the one a statement
+			// written with another order cannot carry: the two after it, created_at and id, are
+			// what the wrong order is made of.
+			if strings.Contains(statement, model.ReviewEventOrder) {
 				continue
 			}
 			offence := filepath.ToSlash(source.path) + ": " + statement
@@ -71,8 +72,8 @@ func TestEveryReviewReadOrdersByReviewOrder(t *testing.T) {
 		}
 	}
 	if len(offences) > 0 {
-		t.Fatalf("a read of artifact_reviews orders its rows otherwise than docs.ReviewOrder:\n\t%s\n"+
-			"Order by docs.ReviewOrder, which reads artifact_reviews_by_artifact_event_seq: "+
+		t.Fatalf("a read of artifact_reviews orders its rows otherwise than model.ReviewOrder:\n\t%s\n"+
+			"Order by model.ReviewOrder, which reads artifact_reviews_by_artifact_event_seq: "+
 			"created_at is the writing transaction's start and id is random, so the two alone "+
 			"rank a review that committed later below one that committed first.",
 			strings.Join(offences, "\n\t"))
@@ -111,7 +112,7 @@ func TestTheReviewOrderGuardReadsBothOrders(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			refused := readsReviewTable.MatchString(test.statement) &&
 				ordersRows.MatchString(test.statement) &&
-				!strings.Contains(test.statement, reviewOrderText)
+				!strings.Contains(test.statement, model.ReviewEventOrder)
 			if refused != test.refused {
 				t.Fatalf("refused = %t, want %t for %q", refused, test.refused, test.statement)
 			}

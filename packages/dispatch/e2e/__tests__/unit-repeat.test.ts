@@ -24,6 +24,7 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { realHostTool } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 
 import {
@@ -782,20 +783,28 @@ test(
   rowLimit()
 );
 
+/** The python3 `asSubreaper` runs, resolved once, here, under the caller's own HOME: never a mise
+ *  shim, which under the rows' HOME of their own refuses the caller's mise config, or finds no
+ *  version, and exits 1 before the driver runs (`realHostTool`). */
+const python3 = realHostTool("python3");
+
 /** Runs the rest of its arguments as a child subreaper: `prctl(PR_SET_CHILD_SUBREAPER)`, which is
  *  option 36, and then an exec of them, which keeps it. So each process the command's tree leaves
  *  when its parent ends re-parents to the command, whatever process group or session it went to,
  *  and the command can list its whole tree from its own `/proc/<pid>/task/<tid>/children`, with no
  *  read of any other process on the machine. Where `prctl` refuses, it exits 1 saying so, and the
- *  command never runs. */
-const asSubreaper = [
-  "python3",
-  "-c",
-  "import ctypes, os, sys\n" +
-    "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n" +
-    "    sys.exit(f'prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}')\n" +
-    "os.execvp(sys.argv[1], sys.argv[1:])",
-] as const;
+ *  command never runs. A host with no python3 but a mise shim fails the row here, by name. */
+function asSubreaper(): string[] {
+  if (python3 === null) throw new Error("this host has no python3 on PATH that is no mise shim");
+  return [
+    python3,
+    "-c",
+    "import ctypes, os, sys\n" +
+      "if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:\n" +
+      "    sys.exit(f'prctl(PR_SET_CHILD_SUBREAPER) failed: errno {ctypes.get_errno()}')\n" +
+      "os.execvp(sys.argv[1], sys.argv[1:])",
+  ];
+}
 
 /** Bash for a driver that runs under `asSubreaper`. Once what it started has ended, `count` lists
  *  every process still below the driver, which is every process its tree left, and prints each one
@@ -920,7 +929,9 @@ const driverRow = test.skipIf(!shdPnd && process.env.GITHUB_ACTIONS !== "true");
  *  preload of the tool's own process, and a file the driver writes once it has sent the SIGTERM,
  *  which that preload can wait for. `how.killFrom`, where given, is a file that holds a pid: the
  *  driver sends that process a SIGKILL in place of the SIGTERM to the tool, as the out-of-memory
- *  killer would, and the tool hears of no stop. */
+ *  killer would, and the tool hears of no stop. `how.doneRuns`, where given, is how many runs the
+ *  progress file must show ended (`done`) before the driver sends either signal, so that a file
+ *  the row wants finished at that moment is finished, whatever the machine's load. */
 async function stoppedLeg(
   directory: string,
   files: Readonly<Record<string, string>>,
@@ -929,9 +940,10 @@ async function stoppedLeg(
   how: {
     readonly hold?: { readonly preload: string; readonly release: string };
     readonly killFrom?: string;
+    readonly doneRuns?: number;
   } = {}
 ): Promise<StoppedLeg> {
-  const { hold, killFrom } = how;
+  const { hold, killFrom, doneRuns } = how;
   const tools = join(directory, "e2e", "tools");
   const rows = join(directory, "e2e", "__tests__");
   mkdirSync(tools, { recursive: true });
@@ -949,13 +961,15 @@ async function stoppedLeg(
     leftBehind +
     'capable || exit 2; "$@" & tool=$!; ' +
     'seen "$tool" || { echo "left behind: unknown: the driver\'s own children do not list the tool $tool"; kill -KILL "$tool" 2>/dev/null; exit 2; }; ' +
-    'ready() { for m in $MARKS; do [ -e "$m" ] || return 1; done; }; ' +
+    'dones() { local n=0 line; [ -e "$PROGRESS" ] || { echo 0; return; }; ' +
+    'while IFS= read -r line; do case $line in *\'"event":"done"\'*) n=$((n + 1)) ;; esac; done <"$PROGRESS"; echo "$n"; }; ' +
+    'ready() { while IFS= read -r m; do [ -e "$m" ] || return 1; done <<<"$MARKS"; [ -z "$DONE_RUNS" ] || [ "$(dones)" -ge "$DONE_RUNS" ]; }; ' +
     'until ready || ! kill -0 "$tool" 2>/dev/null; do sleep 0.05; done; ' +
     'if [ -n "$KILL_FROM" ]; then kill -KILL "$(cat "$KILL_FROM")" 2>/dev/null; else kill -TERM "$tool" 2>/dev/null; fi; ' +
     'if [ -n "$RELEASE" ]; then : >"$RELEASE"; fi; wait "$tool"; code=$?; count; exit "$code"';
   const { code, stdout, stderr } = await runBounded({
     argv: [
-      ...asSubreaper,
+      ...asSubreaper(),
       "bash",
       "-c",
       driver,
@@ -979,9 +993,11 @@ async function stoppedLeg(
       PATH: process.env.PATH ?? "",
       TMPDIR: tmpdir(),
       GITHUB_ACTIONS: "true",
-      MARKS: marks.join(" "),
+      MARKS: marks.join("\n"),
       RELEASE: hold?.release ?? "",
       KILL_FROM: killFrom ?? "",
+      DONE_RUNS: doneRuns === undefined ? "" : String(doneRuns),
+      PROGRESS: join(out, "progress.jsonl"),
       DISPATCH_UNIT_REPEAT_STOP_GRACE_MS: String(bounds.graceMs),
       DISPATCH_UNIT_REPEAT_NAMES_BOUND_MS: String(bounds.namesMs),
     },
@@ -1294,6 +1310,13 @@ driverRow(
     // and the report says only that: no file and no row is named, and the progress file that
     // records the row is deleted. Here the row writes its parent's pid, Bun's test process, and
     // spins; the driver sends that process a SIGKILL, and the tool no signal at all.
+    //
+    // Killing Bun's test process ends every worker, so each file a worker was still in is cut
+    // short, and the report names it: beside.test.ts too, as "loading", where its worker had not
+    // ended it yet, which a loaded CI runner showed. The driver waits until beside.test.ts has
+    // ended both its runs (two `done` lines; killed.test.ts never ends its first), so the one file
+    // cut short is the killed one, and the row holds the report to name exactly that file: it
+    // fails on a file the tool leaves out and on a finished file the tool names.
     const directory = scratch();
     const pid = join(directory, "test-process-pid");
     const { code, report, left } = await stoppedLeg(
@@ -1301,7 +1324,7 @@ driverRow(
       { "killed.test.ts": killedRow(pid, "process.ppid"), "beside.test.ts": besideIt },
       [pid],
       { graceMs: 120_000, namesMs: 120_000 },
-      { killFrom: pid }
+      { killFrom: pid, doneRuns: 2 }
     );
     expect(code).toBe(1);
     expect(report.stop).toBeNull();
@@ -1386,7 +1409,7 @@ driverRow(
       'until [ -e "$MARK" ] || ! kill -0 "$step" 2>/dev/null; do sleep 0.05; done; ' +
       'kill -INT "$step" 2>/dev/null; wait "$step"; code=$?; count; exit "$code"';
     const { code, stdout, stderr } = await runBounded({
-      argv: [...asSubreaper, "bash", "-c", driver],
+      argv: [...asSubreaper(), "bash", "-c", driver],
       bound: "stoppedLeg",
       cwd: directory,
       env: {

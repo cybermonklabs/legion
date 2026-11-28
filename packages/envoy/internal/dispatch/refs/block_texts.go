@@ -28,7 +28,7 @@ type BlockVersion struct {
 // Postgres integer, so a version past math.MaxInt32 is one no document has: BlockTextAt answers
 // it with a zero BlockVersion (Exists false) without querying.
 //
-// A document converted into an issue room keeps its own history (T12a of dispatch://INFRA-1253's
+// A document converted into an issue room keeps its own history (T12a of the issue-tree
 // plan): its versions and its indexed versions are its own rows, while its blocks' text rows are
 // keyed by the room's tree artifact, at the document's own version numbers (blockTextOwners).
 func BlockTextAt(ctx context.Context, q Queryer, artifactID, blockID string, version int) (BlockVersion, error) {

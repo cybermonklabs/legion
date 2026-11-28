@@ -1,6 +1,7 @@
 package classify
 
 import (
+	"reflect"
 	"slices"
 	"testing"
 
@@ -104,11 +105,11 @@ func TestTheGateRulesHoldARegisteredCriteriaRowUnderSpecAlone(t *testing.T) {
 				t.Fatalf("DesignGatesOpen = %v, want %v", got, tc.open)
 			}
 			step, row, closed := FirstClosedStep(tc.deployment, tc.rows)
-			if closed != (tc.closed != "") || step != tc.closed || closed && row != tc.rows[tc.closed] {
+			if closed != (tc.closed != "") || step != tc.closed || closed && !reflect.DeepEqual(row, tc.rows[tc.closed]) {
 				t.Fatalf("FirstClosedStep = %q %#v (closed %t), want %q", step, row, closed, tc.closed)
 			}
 			gate, standing := StandingGate(tc.deployment, tc.rows)
-			if standing != (tc.standing != "") || standing && gate != tc.rows[tc.standing] {
+			if standing != (tc.standing != "") || standing && !reflect.DeepEqual(gate, tc.rows[tc.standing]) {
 				t.Fatalf("StandingGate = %#v (standing %t), want the %q row", gate, standing, tc.standing)
 			}
 		})

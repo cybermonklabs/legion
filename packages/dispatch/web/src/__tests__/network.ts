@@ -22,6 +22,7 @@
  * node build, which intercepts neither `fetch` nor `XMLHttpRequest` here.
  */
 
+import type { IssueTreeRead, WhoamiUser } from "@legion/contracts";
 import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
@@ -53,6 +54,19 @@ const shellHandlers: RequestHandler[] = [
   // know, status and code both.
   http.get("/auth/whoami", () =>
     Response.json({ code: "NO_IDENTITY", error: "no identity" }, { status: 401 })
+  ),
+  // Settings reads the scopes Dispatch says the signed-in person's own credential holds, and offers
+  // the Set P0 box only where they name p0 (`features/settings/AgentTokensSection.tsx`), so every
+  // test that renders Settings makes this read without being about scopes. The answer is the
+  // server's own for a person at a browser, who holds every scope of a person's own credential,
+  // p0 among them. A test about another answer - a build before p0, a read still out, a failed
+  // read - answers this route itself.
+  http.get("/api/v1/whoami", () =>
+    Response.json({
+      kind: "user",
+      login: "alice",
+      scopes: ["person", "approve", "p0"],
+    } satisfies WhoamiUser)
   ),
   http.get("/api/v1/agents", () => Response.json([])),
   // The sidebar reads the project list wherever it is drawn - on a wide viewport with the sidebar
@@ -88,6 +102,28 @@ const shellHandlers: RequestHandler[] = [
   ),
   http.get("/api/v1/projects/:key/artifacts/:slug/text", () =>
     Response.json({ code: "ARTIFACT_NOT_FOUND", error: "artifact not found" }, { status: 404 })
+  ),
+  // A page that draws an issue's document learns whether the issue is a view on its ancestor's
+  // spec before it makes the document's editor (`issueViewOfQuery`, which `ProofDocument.tsx`'s
+  // admission waits for). It reads this route, under the `spec` view, only for an issue that may
+  // be a view: one the page does not hold the read of, or holds under a parent. An issue it holds
+  // under no parent is no view and reads nothing. So a row that draws the document of such an
+  // issue makes this read without being about views. The answer is Dispatch's own for an issue
+  // that is no view: `view_of` null, under the view the read asked for, with no node. A row about
+  // a view answers this route itself.
+  http.get("/api/v1/issues/:key/tree", ({ params, request }) =>
+    Response.json({
+      converted: false,
+      cursor: null,
+      documents: null,
+      issue: String(params.key),
+      nodes: [],
+      tree: null,
+      tuples: [],
+      version: null,
+      view: new URL(request.url).searchParams.get("view") ?? "",
+      view_of: null,
+    } satisfies IssueTreeRead)
   ),
   // The navigation rail reads the two fault counts on every page it is drawn on
   // (`features/sidebar/Sidebar.tsx`, `prioritySummaryQuery`), so every test that renders the

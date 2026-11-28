@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `dispatch plan-approve` finds the issue's plan, and `dispatch results` whether the issue has a
+  Verification document, through the issue read's `queries`. Against a server of the release
+  before, which answers no `queries`, they read `plan_artifact_id` and the results read's
+  `verification_artifact_id` as before.
+time: 2026-11-26T01:46:54Z
+custom:
+    Issue: INFRA-1253

@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 10,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -104,8 +104,8 @@
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         }
       }
     },
@@ -117,45 +117,45 @@
         "serves": {
           "kind": "block[]",
           "targets": ["criterion", "requirement"],
-          "since": 7,
-          "creatable_since": 7
+          "since": 9,
+          "creatable_since": 9
         },
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 7,
-          "creatable_since": 7
+          "since": 9,
+          "creatable_since": 9
         },
         "kind": {
           "kind": "enum",
           "choices": ["behavior", "structure", "property"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "under": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "supports": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "about": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "base": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "removes": {
           "kind": "bool",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         }
       },
       "since": 3,
@@ -174,7 +174,7 @@
           "kind": "block[]",
           "targets": ["plan_task"],
           "items": ["issue"],
-          "item_versions": { "issue": { "since": 7, "creatable_since": 7 } }
+          "item_versions": { "issue": { "since": 9, "creatable_since": 9 } }
         },
         "steps": {
           "kind": "string",
@@ -182,15 +182,25 @@
           "creatable_since": 5
         },
         "size": {
-          "kind": "days",
-          "since": 7,
-          "creatable_since": 7
+          "kind": "minutes",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "skills": {
+          "kind": "string[]",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "docs": {
+          "kind": "string[]",
+          "since": 9,
+          "creatable_since": 9
         },
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 7,
-          "creatable_since": 7
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
@@ -225,58 +235,63 @@
           "since": 4,
           "creatable_since": 4
         },
-        "parent": {
-          "kind": "block[]",
-          "items": ["ask", "comment", "message"],
-          "since": 7,
-          "creatable_since": 7
-        },
-        "statement": {
-          "kind": "string",
-          "since": 8,
-          "creatable_since": 8
-        },
         "subject": {
           "kind": "enum",
           "choices": ["code", "production", "graph"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 6,
+          "creatable_since": 10
+        },
+        "program": {
+          "kind": "string",
+          "since": 6,
+          "creatable_since": 10
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 9,
+          "creatable_since": 9
+        },
+        "statement": {
+          "kind": "string",
+          "since": 10,
+          "creatable_since": 10
         },
         "procedure": {
           "kind": "enum",
           "choices": ["program", "query", "agent"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "runner": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "selector": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "job": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "time_limit": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "base": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "removes": {
           "kind": "bool",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         }
       },
       "since": 3,
@@ -290,54 +305,54 @@
         "uncertainty": {
           "kind": "enum",
           "choices": ["low", "medium", "high"],
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "uncertainty_reason": {
           "kind": "string",
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "shaped": {
           "kind": "block[]",
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "from_ask": {
           "kind": "ask",
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "replaced": {
           "kind": "bool",
           "default": false,
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "decided_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_by": {
           "kind": "actor",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         },
         "kept_text_sum": {
           "kind": "string",
           "server": true,
           "markdown": false,
-          "since": 6,
-          "creatable_since": 6
+          "since": 7,
+          "creatable_since": 8
         }
       },
-      "since": 6,
-      "creatable_since": 6
+      "since": 7,
+      "creatable_since": 8
     },
     {
       "name": "reading",
@@ -345,8 +360,8 @@
       "render": "host",
       "attributes": {},
       "parents": ["decision", "ask"],
-      "since": 6,
-      "creatable_since": 6
+      "since": 7,
+      "creatable_since": 8
     },
     {
       "name": "criterion",
@@ -356,12 +371,12 @@
         "parent": {
           "kind": "block[]",
           "items": ["ask", "comment", "message"],
-          "since": 7,
-          "creatable_since": 7
+          "since": 9,
+          "creatable_since": 9
         }
       },
-      "since": 7,
-      "creatable_since": 7
+      "since": 9,
+      "creatable_since": 9
     },
     {
       "name": "component",
@@ -370,38 +385,38 @@
       "attributes": {
         "name": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "kind": {
           "kind": "enum",
           "choices": ["interface"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "under": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "joins": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "base": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "removes": {
           "kind": "bool",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         }
       },
-      "since": 8,
-      "creatable_since": 8
+      "since": 10,
+      "creatable_since": 10
     },
     {
       "name": "conclusion",
@@ -410,23 +425,23 @@
       "attributes": {
         "statement": {
           "kind": "string",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "difference": {
           "kind": "enum",
           "choices": ["files_differ", "code_breaks", "check_wrong", "statement_wrong"],
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         },
         "no_statement": {
           "kind": "bool",
-          "since": 8,
-          "creatable_since": 8
+          "since": 10,
+          "creatable_since": 10
         }
       },
-      "since": 8,
-      "creatable_since": 8
+      "since": 10,
+      "creatable_since": 10
     }
   ]
 }

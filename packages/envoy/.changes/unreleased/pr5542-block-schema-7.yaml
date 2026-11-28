@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+    The block schema is version 7, and `GET /api/v1/schema/blocks` serves it. It declares the `decision` type, which holds any blocks, with `uncertainty` (`low`, `medium` or `high`), `uncertainty_reason`, `shaped`, `from_ask` and `replaced`, and the `reading` type, which holds paragraphs and stands only at the end of a `decision` or an `ask`, after that block's own content. The `ask` type gains `shaped`, a list of the spec blocks the ask shaped. This release reads them and does not create them yet: a write that adds a `decision` block, a `reading` block or an ask's `shaped` to a document that holds none is refused and stores nothing, with `this Dispatch build reads typed block "decision" but cannot write it yet` (the same words name `typed block "reading"` and `attribute "shaped" of typed block "ask"`). A document that already holds one stays editable, and a stored version that holds one is read and drawn.
+    So this release adds no element of version 7 to a document that holds none, and a rollback from it stays safe. It reads `check`'s `subject` and `program` from version 6 and does not create them yet either: a write that adds either to a document that holds none is refused the same way (`attribute "subject" of typed block "check"`, `attribute "program" of typed block "check"`). The `invalid` attribute of `ask` is never written into markdown.
+time: 2026-11-26T03:00:01Z
+custom:
+    Issue: pr5542

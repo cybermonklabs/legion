@@ -35,6 +35,7 @@ const seenReleaseVersion = 20261111181500
 // The sixth pins the floor: a wake whose own clock stands before the release it paired with,
 // which the `p.at <= r.at` proxy would stamp below its own release_id.
 func TestAResumeTakesTheReleaseItSawWith20261111181500(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, seenReleaseVersion-1)

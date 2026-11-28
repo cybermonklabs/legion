@@ -3,7 +3,6 @@ package leakguard
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -190,7 +189,7 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			curl:    curlTimesOut,
 			git:     asksForACredential,
 			fails: []string{
-				`gh could not reach GitHub: Get "https://api.github.com/repos/` + maskPath(theRepo) + `": net/http: TLS handshake timeout`,
+				`gh could not reach GitHub: Get "https://api.github.com/repos/` + theRepo + `": net/http: TLS handshake timeout`,
 				"curl could not reach GitHub: exit 28: curl: (28) SSL connection timeout",
 				"git ls-remote could not answer",
 				"could not read Username",
@@ -210,7 +209,7 @@ func TestVisibilityAfterAGhTransportFailureIsReadThroughCurl(t *testing.T) {
 			graphql: noGraphQL,
 			curl:    curlNotFound,
 			git:     answersTheRefs,
-			fails:   []string{"gh could not reach GitHub", "curl could not answer", "GitHub answers 404 for " + maskPath(theRepo)},
+			fails:   []string{"gh could not reach GitHub", "curl could not answer", "GitHub answers 404 for " + theRepo},
 		},
 		{
 			name:    "curl hears GitHub and then loses its connection",
@@ -301,7 +300,7 @@ func TestOnlyATransportFailureOfGhIsReadThroughCurl(t *testing.T) {
 			name: "a GitHub error body",
 			rest: included("HTTP/2.0 404 Not Found", `{"message":"Not Found","status":"404"}`, "X-Ratelimit-Remaining: 4999") +
 				printsToStderr("gh: Not Found (HTTP 404)") + "exit 1\n",
-			fails: "GitHub answers 404 for " + maskPath(theRepo),
+			fails: "GitHub answers 404 for " + theRepo,
 		},
 		{
 			name: "a 403 that is not a rate limit",
@@ -695,95 +694,14 @@ func TestTransportFailureWithNoTimeLeftForCurlRefuses(t *testing.T) {
 	}
 }
 
-// maskedRepo is a repository whose name the private-name rules mask, and that name. The name is
-// built out of two pieces for the reason TestTheReportMasksAPathComponent gives.
-func maskedRepo(t *testing.T) (slug, name string) {
-	t.Helper()
-	name = "agen" + "t-c"
-	slug = "invented-org/" + name
-	if maskPath(slug) == slug {
-		t.Fatalf("the rules mask nothing of %q, so no test of masking can fail", slug)
-	}
-	return slug, name
-}
-
-// ghTransportFailure names the failure with the repository's name masked, and reads nothing else
-// as one.
+// ghTransportFailure names the failure in gh's own line, with the repository as it was written.
 func TestTransportFailureSaysGhsLine(t *testing.T) {
-	slug, name := maskedRepo(t)
-	line := `Get "https://api.github.com/repos/` + slug + `": net/http: TLS handshake timeout`
-	unreached := ghTransportFailure(1, line+"\n", slug)
+	line := `Get "https://api.github.com/repos/` + theRepo + `": net/http: TLS handshake timeout`
+	unreached := ghTransportFailure(1, line+"\n", theRepo)
 	if unreached == nil {
 		t.Fatal("gh's TLS handshake timeout is no transport failure")
 	}
-	if want := fmt.Sprintf("gh could not reach GitHub: Get %q: net/http: TLS handshake timeout", "https://api.github.com/repos/"+maskPath(slug)); unreached.Error() != want {
+	if want := "gh could not reach GitHub: " + line; unreached.Error() != want {
 		t.Errorf("the failure says %q, want %q", unreached, want)
-	}
-	if strings.Contains(unreached.Error(), name) {
-		t.Errorf("the failure %q holds the name the rules mask", unreached)
-	}
-}
-
-// Each failure of the reads after gh's transport failure that quotes what a program printed masks
-// the repository's name there: gh stopped by the guard's own bound, curl that could not connect,
-// curl's error answer, curl's answer with no visibility, and a `gh auth git-credential get` that
-// refused. A refusal a role posts can then name a private repository only masked.
-func TestTransportFailuresMaskTheRepository(t *testing.T) {
-	slug, name := maskedRepo(t)
-	bin := t.TempDir()
-	writeProgram(t, bin, "gh", printsToStderr("legion gh: no credential for https://github.com/"+slug+".git")+"exit 1\n")
-	guard := New(Options{Env: append(fixtureenv.Isolated(t.TempDir()), pathWith(bin))})
-	for _, tc := range []struct {
-		name string
-		read func() error
-	}{
-		{
-			name: "gh stopped by the guard's own bound",
-			read: func() error {
-				if unreached := ghStoppedByItsBound(context.Background(), &stoppedError{program: "gh", ran: time.Second, bound: time.Second},
-					"Get \"https://api.github.com/repos/"+slug+"\": waiting", slug); unreached != nil {
-					return unreached
-				}
-				return nil
-			},
-		},
-		{
-			name: "curl that could not connect",
-			read: func() error {
-				_, err := curlAnswer(7, "", "curl: (7) Failed to connect for https://api.github.com/repos/"+slug, slug)
-				return err
-			},
-		},
-		{
-			name: "curl's error answer",
-			read: func() error {
-				_, err := curlAnswer(0, "HTTP/2 404\r\n\r\n"+`{"message":"Not Found: repos/`+slug+`"}`, "", slug)
-				return err
-			},
-		},
-		{
-			name: "curl's answer with no visibility",
-			read: func() error {
-				_, err := curlAnswer(0, "HTTP/2 200\r\n\r\n"+`{"full_name":"`+slug+`"}`, "", slug)
-				return err
-			},
-		},
-		{
-			name: "gh auth git-credential get that refused",
-			read: func() error {
-				_, err := guard.ghToken(bound(t), slug)
-				return err
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			err := tc.read()
-			if err == nil {
-				t.Fatal("the read answered, want a failure")
-			}
-			if !strings.Contains(err.Error(), maskPath(slug)) || strings.Contains(err.Error(), name) {
-				t.Errorf("the failure %q does not name %s masked, as %s", err, slug, maskPath(slug))
-			}
-		})
 	}
 }

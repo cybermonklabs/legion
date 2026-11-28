@@ -1,10 +1,12 @@
 kind: Changed
 body: |-
-  Block schema version 8: `requirement` and `check` get the attributes of The Spec. `requirement`
-  gets kind, under, supports, about, base and removes; `check` gets statement, subject, procedure,
-  runner, selector, job, time_limit, base and removes. A new block type `component` holds
+  Block schema version 10: `requirement` and `check` get the attributes of The Spec. `requirement`
+  gets kind, under, supports, about, base and removes; `check` gets statement, procedure, runner,
+  selector, job, time_limit, base and removes. A new block type `component` holds
   components and interfaces, and a new block type `conclusion` holds a statement, a difference,
-  `no_statement` and its evidence. The spec query reads component blocks.
+  `no_statement` and its evidence. The spec query reads component blocks. `check`'s `subject` and
+  `program`, read from version 6, are created from version 10, since every check of a change
+  request names its subject.
 time: 2026-11-22T11:32:13Z
 custom:
     Issue: pr4984

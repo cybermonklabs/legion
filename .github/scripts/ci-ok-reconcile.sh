@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The last step of ci.yaml's `ci-ok` job but on the one run the hold step ends instead (a merge
+# The last step of `.github/workflows/ci.yaml#ci-ok` job but on the one run the hold step ends instead (a merge
 # group's first attempt whose verdict failed, where every ci-ok posted on the head is failure
 # already: ci-ok-hold.sh's header): it sets every other ci-ok check run on this head to the
 # conclusion that job just reached, so exactly one verdict stands at the end of every attempt.

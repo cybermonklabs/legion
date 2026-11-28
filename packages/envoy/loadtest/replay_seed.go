@@ -28,6 +28,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
+
+	"github.com/sjawhar/envoy/internal/oauthrefusal"
 )
 
 // replayIDsDDL is the logged-to-local id map a seed writes as it goes and a resumed seed reads,
@@ -110,7 +112,7 @@ func runReplaySeed(args []string) error {
 	if err := checkStack(ctx, ep); err != nil {
 		return err
 	}
-	pool, err := pgxpool.New(ctx, pgURL)
+	pool, err := workerPool(ctx, pgURL, *workers)
 	if err != nil {
 		return err
 	}
@@ -118,7 +120,7 @@ func runReplaySeed(args []string) error {
 	s := &replaySeeder{
 		b: b, api: newAPI(ep.dispatch, ep.token, *workers*2+2), pool: pool, rngSeed: *rngSeed,
 		dispatchPID: ep.pids["dispatch"], workers: *workers,
-		lg: log.New(os.Stderr, "replay-seed ", log.LstdFlags), start: time.Now(),
+		lg: log.New(os.Stderr, "replay-seed ", log.LstdFlags), start: time.Now(), pause: time.Sleep,
 		marks: map[string]int{}, counts: map[string]int{}, rules: map[string]int{}, skipped: map[string]int{},
 	}
 	if *opsLog != "" {
@@ -154,6 +156,9 @@ type replaySeeder struct {
 	workers     int
 	lg          *log.Logger
 	start       time.Time
+	// pause waits out write's backoff before it tries a transient answer again: time.Sleep, which
+	// runReplaySeed sets.
+	pause func(time.Duration)
 
 	mu      sync.Mutex
 	ops     *csv.Writer
@@ -332,11 +337,12 @@ type seedWrite struct {
 	ok       []int
 }
 
-// write sends one write, retrying a transport error, 429 or 5xx with backoff, and records it in the
-// counts and the ops log. A 2xx or a status in ok returns the body; any other status is a
-// *seedError. A write the seed's context ended returns that context's error alone: its cause is
-// the error another issue's write failed with (errgroup), and wrapped here it would read as this
-// write's own refusal (anchored would take another write's 413 for its quote's).
+// write sends one write, retrying a transport error or an outage status (a 408, a 429, a 5xx) with
+// backoff, waited out with pause, and records it in the counts and the ops log. A 2xx or a status
+// in ok returns the body; any other status is a *seedError. A write the seed's context ended
+// returns that context's error alone: its cause is the error another issue's write failed with
+// (errgroup), and wrapped here it would read as this write's own refusal (anchored would take
+// another write's 413 for its quote's).
 func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) {
 	backoff := 250 * time.Millisecond
 	for attempt := 0; ; attempt++ {
@@ -345,7 +351,7 @@ func (s *replaySeeder) write(ctx context.Context, sw seedWrite) ([]byte, error) 
 		after := s.ticks()
 		if res.transient() && attempt < 10 && ctx.Err() == nil {
 			s.lg.Printf("%s %s: transient status %d (%v); retrying in %s", sw.step, sw.logged, res.status, errClass(res.err), backoff)
-			time.Sleep(backoff)
+			s.pause(backoff)
 			backoff = min(2*backoff, 8*time.Second)
 			continue
 		}
@@ -859,17 +865,21 @@ func (s *replaySeeder) history(ctx context.Context, key string, docs map[string]
 			if err != nil {
 				return err
 			}
-			var later []askStep
+			stepsLater := false
 			for v, steps := range p.AskAt {
-				if v > n {
-					later = append(later, steps...)
+				if v > n && len(steps) > 0 {
+					stepsLater = true
+					break
 				}
 			}
-			want := stripAnswers(d.text, blockIDs(d.is, later))
-			if !sameMasked(got, want) {
-				return fmt.Errorf("history %s: the restored version %d has %d bytes and differs from the text at At less its later answers and resolves (%d bytes)", d.a.ID, n, len(got), len(want))
+			// The restored version is compared with the text at At as the text route serves both
+			// (servedText): a version this build writes holds no answer's words or selection and
+			// no open ask's state, so no block's answer is read off it; replay-check-seed compares
+			// the answers as the asks' nodes hold them.
+			if servedText(got) != servedText(d.text) {
+				return fmt.Errorf("history %s: the restored version %d has %d bytes and differs from the text at At (%d bytes) outside its ask blocks' server-owned attributes", d.a.ID, n, len(got), len(d.text))
 			}
-			if len(later) > 0 {
+			if stepsLater {
 				// Its size rests on the later answers' and resolves' changes matching
 				// production's; the check compares them.
 				continue
@@ -1016,12 +1026,6 @@ func headingAt(d *issueDoc, markdown string) (int, error) {
 	return best, nil
 }
 
-// sameMasked says whether two markdowns are equal once answered_at is masked.
-func sameMasked(a, b string) bool {
-	ma, _ := maskAnsweredAt(a)
-	mb, _ := maskAnsweredAt(b)
-	return ma == mb
-}
 func abs(x int) int {
 	if x < 0 {
 		return -x
@@ -1284,8 +1288,11 @@ func (s *replaySeeder) anchored(ctx context.Context, kind, key string, d *issueD
 				s.addMark(d.local, 1)
 				return local, s.ids.put(ctx, rowKind, logged, local)
 			}
+			// Only a 4xx that is no outage refuses the quote (oauthrefusal.Refuses): an outage
+			// status (a 408 or a 429, past write's retries) says nothing of the quote, so the seed
+			// stops on it rather than anchoring the item on another sentence.
 			var se *seedError
-			if !errors.As(err, &se) || se.status/100 != 4 {
+			if !errors.As(err, &se) || !oauthrefusal.Refuses(se.status) {
 				return "", err
 			}
 			s.lg.Printf("%s %s: quote refused (branch %s, status %d code %q)", kind, logged, choice.Branch, se.status, se.code)

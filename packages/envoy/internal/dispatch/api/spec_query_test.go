@@ -18,11 +18,11 @@ func recordField(field string) string { return strconv.Itoa(len(field)) + " " + 
 
 // The spec query takes the component and interface blocks an issue proposes (R22), in the record's
 // one layout, and QueryDefinitionVersion stays 1: a store that holds no component block reads the
-// record TestTheRecordOfOneNodeIsItsLayoutByteForByte pins, byte for byte, as every record an
-// approval before this change covered was built; and a component block written beside the
-// requirement stands after it in the walk's order as one more node of the same seven fields. No
-// approval of a version written under one definition reads as one of another, so the version does
-// not rise.
+// record TestTheRecordOfOneNodeIsItsLayoutByteForByte pins, byte for byte, from the tree that test
+// writes (pinnedTree), as every record an approval before this change covered was built; and a
+// component block written beside the requirement stands after it in the walk's order as one more
+// node of the same seven fields. No approval of a version written under one definition reads as
+// one of another, so the version does not rise.
 func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 	if graphstore.QueryDefinitionVersion != 1 {
 		t.Fatalf("QueryDefinitionVersion is %d, want 1: adding the component to the spec query changes no record's layout", graphstore.QueryDefinitionVersion)
@@ -30,18 +30,8 @@ func TestTheSpecQueryTakesComponentsUnderOneDefinition(t *testing.T) {
 	database := storetest.Open(t)
 	rig := &digestRig{database: database}
 	pinned := pinnedIssue(t)
-	requirement, component := pinned+"/spec#r1", pinned+"/spec#billing"
-	rig.state(t,
-		blockTuple(requirement, graphstore.TuplePartOf, graphstore.KindIssue, pinned, true),
-		blockValue(requirement, refs.AttributeRank, "1V"),
-		blockValue(requirement, graphstore.AttributeText, ":::requirement{#r1}\nThe words.\n:::\n"),
-		blockValue(requirement, "size", "1.5"),
-		blockValue(requirement, "probe", "a b"),
-		blockValue(requirement, refs.AttributePlacement, refs.PlacementAuthored),
-		blockValue(requirement, graphstore.AttributeState, graphstore.StateLive),
-		blockValue(requirement, graphstore.AttributeVisibility, graphstore.VisibilityProject),
-		blockTuple(requirement, "serves", refs.BlockNodeKind, pinned+"/spec#k1", true),
-	)
+	component := pinned + "/spec#billing"
+	rig.state(t, pinnedTree(pinned)...)
 	read := func() docs.QueryRecord {
 		t.Helper()
 		record, err := docs.ReadQueryRecord(context.Background(), database.Pool, pinned, graphstore.QuerySpec, refs.TreeCut{})

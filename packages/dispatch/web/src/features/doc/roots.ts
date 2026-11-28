@@ -13,7 +13,7 @@ export const MARKS_MAP_NAME = "marks";
 
 /** The editor's tree of `artifact`'s room: the fragment the artifact read names
  *  (`Artifact.fragment`), and `DEFAULT_FRAGMENT_NAME` where it names none, as a server of the
- *  release before the issue room (INFRA-1253) answers. */
+ *  release before the issue room (the issue-tree spec) answers. */
 export function fragmentOf(artifact: Artifact): string {
   return artifact.fragment ?? DEFAULT_FRAGMENT_NAME;
 }

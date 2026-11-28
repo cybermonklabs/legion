@@ -69,12 +69,17 @@ const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 // refused to count this process as live again beside a live process whose signing keys it does not
 // share (lost, processes.Registration.Lost). Either cancels ctx, so the stop is the one a signal
 // makes: the listener closes at once, the requests in flight are answered, the intakes stop, and
-// the registry's row is deleted.
+// the registry's row is deleted. Each of afterListen starts on a goroutine of its own once the
+// listening line is logged: R2's daemon-thread step (docs.DaemonThreadStep.AfterListen) runs its
+// first pass only once this process serves.
 func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *http.Server, listener net.Listener,
-	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}) error {
+	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, afterListen ...func(context.Context)) error {
 	serveErr := make(chan error, 1)
 	go func() {
 		slog.Info("dispatch: listening", "addr", listener.Addr().String())
+		for _, call := range afterListen {
+			go call(ctx)
+		}
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("dispatch: serve", "error", err)
 			serveErr <- err

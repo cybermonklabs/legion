@@ -22,9 +22,10 @@ import (
 //
 // This is the one rule, and every reader and every writer asks it rather than keeping a copy:
 // the going POST, of the asker it records (api.createGoingRequest), the visibility a write may
-// ask for (VisibilityFor) and the SQL every author-private read binds (AuthorIsSQL, which states
-// the same test over a stored author). A run's owner is no question of it: the stream and a
-// write made for a run hold the run to the credential that asked it, through NamesCredential and
+// ask for (VisibilityFor, and graphstoretest.VisibilityFor, which a test's write is handed this
+// answer for) and the SQL every author-private read binds (AuthorIsSQL, which states the same
+// test over a stored author). A run's owner is no question of it: the stream and a write made for
+// a run hold the run to the credential that asked it, through NamesCredential and
 // model.Actor.SameCredential (api's goingRunIsTheCallers).
 func ProvesAuthor(actor model.Actor) bool {
 	_, proved := provedAuthor(actor)
@@ -33,7 +34,7 @@ func ProvesAuthor(actor model.Actor) bool {
 
 // SameAuthor is the one rule stated in Go over two actors, as AuthorIsSQL states it in SQL: true
 // when the author writer's record proved (provedAuthor) and the author reader's credential proves
-// are one author, and false where either proves none. api's maySettle reads it.
+// are one author, and false where either proves none.
 func SameAuthor(writer, reader model.Actor) bool {
 	written, proved := provedAuthor(writer)
 	read, reads := provedAuthor(reader)

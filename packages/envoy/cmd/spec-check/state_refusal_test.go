@@ -24,6 +24,22 @@ func TestScenarioRefusals(t *testing.T) {
 	replace := func(file, old, new string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) { replaceIn(t, filepath.Join(dir, file), old, new) }
 	}
+	// noMatrixAtM2 makes silent-leg's job run at m2 one run of no matrix that ended, and sets the
+	// members of set on result i+1, one of its runs of leg linux at c1.
+	noMatrixAtM2 := func(i int, set map[string]any) func(t *testing.T, dir string) {
+		return func(t *testing.T, dir string) {
+			writeJSONFile(t, filepath.Join(dir, "jobs.json"), []any{map[string]any{"job": "go-checks", "leg": "", "commit": "m2", "ended": true}})
+			var results []map[string]any
+			readJSONFile(t, filepath.Join(dir, "results.json"), &results)
+			if r := results[i]; r["kind"] != "run" || r["commit"] != "c1" || r["leg"] != "linux" {
+				t.Fatalf("result %d of silent-leg is no run of leg linux at c1: %v", i+1, r)
+			}
+			for member, v := range set {
+				results[i][member] = v
+			}
+			writeJSONFile(t, filepath.Join(dir, "results.json"), results)
+		}
+	}
 	// approvedParent sets the parent of a-message-survives-a-restart in wait-cycle's approved.json.
 	approvedParent := func(parent string) func(t *testing.T, dir string) {
 		return func(t *testing.T, dir string) {
@@ -254,7 +270,7 @@ func TestScenarioRefusals(t *testing.T) {
 		{"an approved block whose parent is a check that the approved spec removed", "wait-cycle", func(t *testing.T, dir string) {
 			editApproved(t, filepath.Join(dir, "approved.json"), func(nodes []specgraph.ApprovedNode) []specgraph.ApprovedNode {
 				removed := *approvedNode(t, nodes, "a-late-session-gets-the-message")
-				removed.ID, removed.Removed = "an-old-check", new(true)
+				removed.ID, removed.Removed = "an-old-check", true
 				removed.Versions = []specgraph.ApprovedVersion{removed.Versions[0]}
 				removed.Versions[0].Block = strings.Replace(removed.Versions[0].Block, "#a-late-session-gets-the-message", "#an-old-check", 1)
 				return append(nodes, removed)
@@ -331,6 +347,8 @@ func TestScenarioRefusals(t *testing.T) {
 			"units.json", `it is not in the form [` + unitForm + `, …]: the value at "/0/waits_on" is null`},
 		{"a unit with no id", "wait-cycle", write("units.json", `[{"serves":[],"needs":[],"waits_on":[]}]`),
 			"units.json", "unit 1 has no id"},
+		{"a unit two times", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":[]},{"id":"u-a","serves":[],"needs":[],"waits_on":[]}]`),
+			"units.json", `unit "u-a" is in the list two times`},
 		{"a wait on no statement", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":[],"waits_on":["no-such-statement"]}]`),
 			"units.json", `unit "u-a": waits_on names "no-such-statement", which is no current statement of the approved spec`},
 		{"a need of no unit", "wait-cycle", write("units.json", `[{"id":"u-a","serves":[],"needs":["u-x"],"waits_on":[]}]`),
@@ -393,12 +411,25 @@ func TestScenarioRefusals(t *testing.T) {
 		// R12: "Each leg of a matrix reports its own result, and no leg replaces the result of
 		// another." One job at one commit has legs or it has none, "" being the leg of no matrix: a
 		// run of no matrix beside a run of leg linux, or a run result of no matrix where the job's runs
-		// there have legs, would be answered by an older run result of the leg "" that counts there
-		// (TestARunResultOfNoMatrixAnswersNoRunWhereItsJobHadLegs).
+		// there have legs, would be answered by an older run result of the leg "" at that commit. The
+		// reader reads a run result of a check of the code at its commit, so a test_commit, which such
+		// a result does not need, changes no refusal: one of no commit of the history, or m2, where
+		// the job runs with no matrix (the control below reads that run alone).
 		{`runs of one job at one commit in the leg "" and in a named leg`, "silent-leg", replace("jobs.json", `"leg": "arm"`, `"leg": ""`),
 			"jobs.json", `job run 2: it sets the leg "", and job run 1 of its job "go-checks" at the commit "m2" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 		{`a run result in the leg "" where the runs of its job at its commit name legs`, "carry", write("jobs.json", `[{"job":"go-checks","leg":"linux","commit":"c1","ended":true}]`),
 			"results.json", `result 1: it sets the leg "", and job run 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a run result of no matrix at c1 beside run results of leg linux there`, "silent-leg", noMatrixAtM2(0, map[string]any{"leg": ""}),
+			"results.json", `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a run result of no matrix at c1 beside run results of leg linux there, with a test_commit of no commit of the history`, "silent-leg",
+			noMatrixAtM2(0, map[string]any{"leg": "", "test_commit": "c9"}),
+			"results.json", `result 3: it sets the leg "linux", and result 1 of its job "go-checks" at the commit "c1" sets the leg ""; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a later run result of no matrix at c1 after one of leg linux there, with a test_commit of no commit of the history`, "silent-leg",
+			noMatrixAtM2(2, map[string]any{"leg": "", "test_commit": "c9"}),
+			"results.json", `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
+		{`a later run result of no matrix at c1 after one of leg linux there, with test_commit m2, where the job runs with no matrix`, "silent-leg",
+			noMatrixAtM2(2, map[string]any{"leg": "", "test_commit": "m2"}),
+			"results.json", `result 3: it sets the leg "", and result 1 of its job "go-checks" at the commit "c1" sets the leg "linux"; one job at one commit has legs or it has none, and "" is the leg of no matrix`},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -407,6 +438,14 @@ func TestScenarioRefusals(t *testing.T) {
 			expect(t, runBinary(t, binary, "", "state", "--scenario", dir), result{code: 2, stderr: "spec-check: " + filepath.Join(dir, row.file) + ": " + row.fault + "\n"})
 		})
 	}
+	t.Run("control: silent-leg with its job's run at m2 one of no matrix is read", func(t *testing.T) {
+		t.Parallel()
+		dir := copyScenario(t, "silent-leg")
+		noMatrixAtM2(0, map[string]any{})(t, dir)
+		if got := runBinary(t, binary, "", "state", "--scenario", dir); got.code != 0 || got.stderr != "" {
+			t.Errorf("exit %d, stderr %q: want exit 0 and nothing on stderr", got.code, got.stderr)
+		}
+	})
 	t.Run("a scenario directory that does not exist", func(t *testing.T) {
 		t.Parallel()
 		missing := filepath.Join(t.TempDir(), "missing")

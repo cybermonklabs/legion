@@ -248,16 +248,6 @@ if [ -n "$server_bin" ]; then
   fi
 fi
 
-# The roots of The Spec, read before the sweep below: DISPATCH_E2E_SPEC_ROOTS names the issue
-# keys, separated by commas, that the server takes as DISPATCH_SPEC_ROOTS, so Dispatch refuses an
-# approval request of a document under one of them that breaks the form of The Spec
-# (internal/dispatch/api/spec_form.go). Unset, the root is STE-1, the root e2e/spec-form.e2e.ts
-# seeds; no other spec makes the project STE, so the documents of every other row are outside it.
-# Empty names no root, the server's own default. `bun run dispatch:local` hands it on, so a person
-# names a root of the instance with it. No colon, so empty and unset differ, as for
-# DISPATCH_E2E_AGENT_SECRETS_URL above.
-spec_roots="${DISPATCH_E2E_SPEC_ROOTS-STE-1}"
-
 # How long a document room waits after its last live update before it settles, read before the
 # sweep below: a settlement is when an `:::ask` block becomes an ask row and when live typing is
 # written as a version, so it is what every row that waits for one waits for. 250ms in place of
@@ -301,6 +291,16 @@ listener_takeover_window="${DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW:-500ms}"
 delivery_reconcile_env=()
 if [ -n "${DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL:-}" ]; then
   delivery_reconcile_env=(DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL="$DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL")
+fi
+
+# Whether the server keeps a parent's status in line with its children's
+# (DISPATCH_PARENT_STATUS_RULE), read before the sweep below. Unset is the server's own off, which
+# every e2e run keeps, since none sets it. A caller that sets it
+# (`DISPATCH_PARENT_STATUS_RULE=on bun run dispatch:local`) gets that value passed on as it set it,
+# and the server refuses a value other than on or off.
+parent_status_rule_env=()
+if [ -n "${DISPATCH_PARENT_STATUS_RULE+set}" ]; then
+  parent_status_rule_env=(DISPATCH_PARENT_STATUS_RULE="$DISPATCH_PARENT_STATUS_RULE")
 fi
 
 # Meaning search's embedder, read before the sweep below. The file-store block above gives this
@@ -435,9 +435,10 @@ exec "${listen[@]}" env \
   "${nats_env[@]}" \
   "${port_env[@]}" \
   "${delivery_reconcile_env[@]}" \
-  DISPATCH_SPEC_ROOTS="$spec_roots" \
+  "${parent_status_rule_env[@]}" \
   DISPATCH_TEST_EMBEDDER_OFF="$embedder_off" \
   DISPATCH_TEST_HOOKS=1 \
+  DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1 \
   DISPATCH_TEST_LISTENER_TAKEOVER_WINDOW="$listener_takeover_window" \
   DISPATCH_TEST_MARK_WAIT="$mark_wait" \
   DISPATCH_TEST_ROSTER_UNCACHED=1 \

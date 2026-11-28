@@ -86,9 +86,10 @@ about. It shows as a card with its urgency and the word **Decision**, and its op
 can pick. It is an ask like any other: it appears in your Inbox too, and an answer or **Ask back**
 made in either place shows in both. Your answer is kept on the ask, not in the document's text:
 no version of the document holds your words or the options you chose. Answering, resolving or
-declining the ask, or closing or reopening its issue, writes one version of the document, whose
-only change is the ask block's `state` and, where the ask is answered, `answered_by` and
-`answered_at`. The block of an open ask holds no `state`.
+declining the ask, or closing or reopening its issue, writes one version of the document. When the
+answer, resolve, decline, close or reopen is that version's whole change, the version changes only
+the ask block's `state` and, where the ask is answered, `answered_by` and `answered_at`. The block
+of an open ask holds no `state`.
 
 To edit an ask block's options, click into its question. The option list appears for that block,
 and folds away again when you click elsewhere.
@@ -109,8 +110,8 @@ with the approval state:
 | Chip | Meaning |
 | --- | --- |
 | `Awaiting approval` | Approval was requested and nobody has reviewed this version yet. |
-| `Approved v12` | Version 12 is approved, and it is the latest version. |
-| `Approved v12 · changed since` | Version 12 was approved, then a later version changed the document, and Dispatch did not carry the approval to it (below). |
+| `Approved v12` | Version 12 is approved, and Dispatch finds that approval standing at the latest version. |
+| `Approved v12 · changed since` | Version 12 was approved, then a later version changed what that approval covers (below). |
 | `Changes requested` | A reviewer asked for changes. |
 
 Choose the chip to see the review history. Beside it:
@@ -126,9 +127,23 @@ shows what changed between that version and the one you are asked to approve, wi
 block left out of both, so you read what changed outside the questions you already answered; the
 agent's summary names it in a sentence.
 
-Your answer to an ask block writes one version, whose only change is the ask block's `state` and,
-where you answered, `answered_by` and `answered_at`, and Dispatch carries your approval across it;
-it carries no approval of its own. Dispatch carries your approval to a later version only when that version's
+Dispatch judges whether your approval still stands at a later version. On an issue Dispatch has
+converted to one tree, an approval of its spec or Verification document covers the digest of that
+document's query: the spec's memo callout and its criterion and requirement nodes, or the
+Verification document's check nodes. A later version that changes one of them, or their
+relations, leaves the document `changed since`. A version that leaves the digest equal keeps your
+approval, and the chip goes on naming the version you approved: a prose edit, your answer to an
+ask block, a reading, a restore of the approved text or a recorded result. Dispatch records no
+new review for it.
+
+On an issue Dispatch has not converted yet, approval follows the text. Your answer to an ask block
+writes one version. When your answer is that version's whole change,
+the version changes only the ask block's `state` and, where you answered, `answered_by` and
+`answered_at`, and Dispatch carries your approval across it; it carries no approval of its own.
+The version carries the approval only when the person's answer, resolve or decline is its whole
+change. If text that a person was editing in the browser is settled into the same version, the
+approval does not carry, and the request goes back to its agent.
+Dispatch carries your approval to a later version only when that version's
 text is the text you approved, such as an edit undone exactly, or when every change in it is one
 of these, none of which changes a decision:
 

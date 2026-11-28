@@ -18,10 +18,12 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 )
 
 // leakCheckTag is the tag these tests read the check at, spelled as the worker image pins one.
@@ -297,7 +299,7 @@ func newLeakCheckBroker(t *testing.T, refuse bool) leakCheckBroker {
 	}
 	script := fmt.Sprintf("#!/bin/sh\nprintf '%%s|%%s\\n' \"$LEGION_GITHUB_OWNER\" \"$LEGION_GITHUB_READ_ONLY\" >>%q\n%s\n", calls, answer)
 	command := filepath.Join(dir, "broker")
-	if err := os.WriteFile(command, []byte(script), 0o700); err != nil {
+	if err := execfile.Write(command, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	return leakCheckBroker{command: command, calls: calls}
@@ -407,7 +409,7 @@ func TestTheLeakCheckSettingReachesEitherRuntime(t *testing.T) {
 	}
 	k := kubernetesConfig(t, "https://127.0.0.1:1")
 	k.LeakCheck = leakCheckSetting
-	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", "", lookup(nil), quietLogger())
+	opts, err := sandboxOptions(k, *k.Runtime.Kubernetes, "test", sandbox.DispatchCredential{}, lookup(nil), quietLogger())
 	if err != nil {
 		t.Fatalf("sandboxOptions: %v", err)
 	}

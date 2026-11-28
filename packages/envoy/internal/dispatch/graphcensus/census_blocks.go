@@ -12,7 +12,7 @@ import (
 
 // blockProjections are the census's kinds of the document blocks (projections): a block against
 // its document_blocks row, the links out of a block against its block_refs rows, and the rank
-// and the text every block holds (dispatch://INFRA-1253/spec#b-r-one-tree), each against the
+// and the text every block holds (R1 of the issue-tree spec, `r-one-tree`), each against the
 // block's row, and the size every plan node holds against the opening line of its block's text,
 // the document each block of an issue room is in against its issue_room_blocks row (room_block),
 // and who wrote each block whose node records its authors against the version that first held it
@@ -23,7 +23,7 @@ import (
 // states, whose band its rank stands in and under whose top a top-level block hangs; every other
 // row's document is its own artifact. A row of a room any artifact of which owes its block index
 // (roomOwed) is counted owed, on neither side of the block, rank and text kinds, since the
-// reconciliation indexes the room whole (T12a of dispatch://INFRA-1253's plan).
+// reconciliation indexes the room whole (T12a of the issue-tree plan).
 var blockProjections = []projection{{
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
@@ -33,17 +33,21 @@ var blockProjections = []projection{{
 		" issue for a block of an issue's spec, Verification or plan document, the document itself for any other -" +
 		" against the in_document and part_of tuples the node states now, a block with no part_of telling itself from" +
 		" one at its document's top and a part_of to an ask's node read as the ask's block in the node's own document;" +
-		" an authored node's row with no parent_block_id states a part_of to no block of its artifact, and the node's" +
-		" part_of to anything but a block of its own artifact - its issue, a conversation node, another artifact's" +
-		" block - reads as that; a row of an issue room's tree artifact reads its document from its issue_room_blocks" +
-		" row, and one of a room that owes its block index is owed",
+		" an authored node's row with no parent_block_id, and the row of a block a move of the node route placed" +
+		" (placement stored), states a part_of to no block of its artifact, and the node's part_of to anything but a" +
+		" block of its own artifact - its issue, a conversation node, another artifact's block, a lens - reads as that;" +
+		" a decision's row whose node holds a current from_ask to an ask of its document's issue whose row names its" +
+		" node states a part_of to that ask, read as the node side reads it, whatever its parent_block_id;" +
+		" a row of an issue room's tree artifact reads its document from its issue_room_blocks row, and one of a room" +
+		" that owes its block index is owed",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
 		       md5(d.node_id || '|' || ` + statedLinks(
 		`'`+refs.TupleInDocument+`>artifact:' || document.ref_key`,
-		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
-		      when d.type in `+refs.AuthoredTypesSQL+` then '`+outsideArtifact+`' || a.ref_key
-		      else `+refs.DocumentTopSQL("document")+` end`,
+		`'`+graphstore.TuplePartOf+`>' || coalesce(`+settledAsk("d", "a")+`,
+		      case when d.parent_block_id is not null then '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id
+		      when d.type in `+refs.AuthoredTypesSQL+` or `+storedRow("d")+` then '`+outsideArtifact+`' || a.ref_key
+		      else `+refs.DocumentTopSQL("document")+` end)`,
 	) + `)
 		from document_blocks d
 		join artifacts a on a.id = d.artifact_id
@@ -54,9 +58,9 @@ var blockProjections = []projection{{
 	nodes: `
 		select n.id, md5(n.id || '|' || ` + blockPlacedLinks(kindIn("t.kind", blockPlacementKinds)) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
-	owed:    `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	pastBound: blockRowsPastBound,
+	owed:      `(` + typedNodeOwed + ` or ` + roomNodeOwed + `)`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_ref",
@@ -94,11 +98,14 @@ var blockProjections = []projection{{
 	// placement, its shaped, its from_ask, its decided_by, or tuples no block_refs row projects -
 	// its authored_by among them, which the block index states through graphstore.AuthorFacts -
 	// states no link here and is no node of this kind; the block kind holds its placement. A
-	// finding of a lens is a block no document holds, so no block_refs row names it.
+	// finding of a lens is a block no document holds, so no block_refs row names it. The kinds are
+	// one array the statement reads once (an initplan), not a select each node's links run again:
+	// that select reads the store's type nodes, so per node it cost a scan of graph_nodes, the
+	// block count times the store's size over a deployment's blocks.
 	nodes: `
 		select held.id, md5(held.id || '|' || held.links)
 		from (
-			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind in (`+blockRefKinds+`)`) + ` as links
+			select n.id, ` + currentLinks(refs.BlockNodeKind, `t.kind = any (array(`+blockRefKinds+`))`) + ` as links
 			from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + `
 		) held
 		where held.links <> ''`,
@@ -106,6 +113,7 @@ var blockProjections = []projection{{
 		select count(*) from block_refs r
 		where (octet_length(r.from_node) > ` + addressBound + ` or octet_length(r.to_id) > ` + addressBound + `)
 		  and r.kind in (` + blockRefKinds + `) and r.node_kind is distinct from '` + graphstore.KindAsk + `'`,
+	// kept for one release: deferred-typed-rows
 	rowOwed: typedRowOwed,
 }, {
 	name:     "block_rank",
@@ -126,8 +134,29 @@ var blockProjections = []projection{{
 		select n.id, md5(n.id || '|' || coalesce(left(` + currentValue(refs.AttributeRank) + `, 1), ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound:   blockRowsPastBound,
+	emptyAgrees: true,
+}, {
+	name:     blockTypeKind,
+	nodeKind: refs.BlockNodeKind,
+	table:    "document_blocks",
+	note: "the type of every block of a document that owes no block index, which its node's supertag holds" +
+		" (R26 of the issue-tree spec, `r-block-type-supertag`): the row side is each row that names its node, and" +
+		" the digest is the supertag the row's type gives - the type itself for a typed block of the block schema," +
+		" block for any other kind, and for a reading block unless it stands in a decision or in an ask block whose" +
+		" ask holds an answer (refs.BlockTypeSupertagSQL) - against the supertag its node carries, so a typed block" +
+		" whose node carries block, and a paragraph whose node carries a type, are each a difference; a block of a" +
+		" document still owed its index, or of an issue room any artifact of which is, is on neither side, since the" +
+		" reconciliation restates its node, and a census of documents that all owe theirs reads none of this kind",
+	rows: `
+		select 'block_type ' || d.node_id, d.node_kind, d.node_address, md5(d.node_id || '|' || ` + refs.BlockTypeSupertagSQL("d") + `)
+		from document_blocks d
+		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id"),
+	nodes: `
+		select n.id, md5(n.id || '|' || n.supertag)
+		from graph_nodes n
+		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
+	pastBound:   blockRowsPastBound,
 	emptyAgrees: true,
 }, {
 	name:     "block_text",
@@ -143,7 +172,7 @@ var blockProjections = []projection{{
 		" converted which no pass of this build's rule has stated, as the release before leaves every document it" +
 		" indexed, is on neither side and counted as unstated_rows, since only this build's pass writes its text",
 	// The projection of a text value is the newest document_block_texts row of its block (R15 of
-	// dispatch://INFRA-1253), and text_sha256 only for a block no row of that table records the
+	// the issue-tree spec), and text_sha256 only for a block no row of that table records the
 	// text of.
 	rows: `
 		select 'block_text ' || d.node_id, d.node_kind, d.node_address,
@@ -161,8 +190,7 @@ var blockProjections = []projection{{
 		  and not exists (
 			select 1 from artifacts document
 			where document.ref_key = split_part(n.id, '#', 1) and ` + unconvertedUnstated("document") + `)`,
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound: blockRowsPastBound,
 	unstated: `
 		select count(*) from document_blocks d
 		where d.node_kind is not null and octet_length(d.node_id) <= ` + addressBound + ` and not ` + roomOwed("d.artifact_id") + `
@@ -187,8 +215,7 @@ var blockProjections = []projection{{
 		select n.id, md5(n.id || '|' || coalesce(` + currentValue(refs.AttributePlanSize) + `, ''))
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `' and not ` + graphstore.FindingIDSQL("n.id") + ` and not ` + blockDocumentOwed("n"),
-	pastBound: `
-		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound,
+	pastBound:   blockRowsPastBound,
 	emptyAgrees: true,
 }, {
 	name:     "room_block",
@@ -208,7 +235,7 @@ var blockProjections = []projection{{
 	// tuple no row projects. The tuple side reads the block nodes whose id starts with a tree
 	// artifact's ref_key, the part of a block node's id before its first '#'. A row of a block
 	// whose id is past text.MaxBlockIDBytes, which the room's index records with no document_blocks
-	// row (refs' reconcileRoomBlocks), projects no node, so it is counted past the bound with a row
+	// row (refs' planRoomBlocks), projects no node, so it is counted past the bound with a row
 	// whose address is.
 	rows: `
 		select 'room_block ' || tree.ref_key || '#' || r.block_id, d.node_kind, d.node_address,
@@ -241,6 +268,11 @@ var blockProjections = []projection{{
 // as a statement spells it, written into the text as addressBound is.
 var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 
+// blockRowsPastBound counts the document_blocks rows whose node's address is past the store's
+// bound, the class every kind of the blocks' rows counts past it.
+var blockRowsPastBound = `
+		select count(*) from document_blocks d where octet_length(d.node_id) > ` + addressBound
+
 // outsideArtifact starts the part_of link the block kind reads an authored node's place by where
 // that place is no block of the node's own artifact, followed by that artifact's ref_key: the
 // rule document_blocks.parent_block_id projects an authored node's part_of by (refs'
@@ -249,10 +281,19 @@ var blockIDBound = strconv.Itoa(text.MaxBlockIDBytes)
 // so a null column tells only that the parent is none of the artifact's blocks.
 const outsideArtifact = "outside:"
 
-// blockPlacedLinks is placedLinks of a block node n, but where n is an authored node - its
-// placement value refs.PlacementAuthored - a part_of whose far end is no block of n's own
-// artifact is written outside:<that artifact's ref_key>, which is what its row's null
-// parent_block_id states (outsideArtifact), and a part_of to an ask's node is read as that far
+// blockPlacedLinks is currentLinks of a block node n under kinds, but a part_of whose far end is an
+// ask's node is written as the block of n's own document that holds that ask (askBlockID): the
+// ask's own block in the document its row names, and in any other document of its owner the block
+// n stands in where that block is a copy of the ask. A reading in an answered ask hangs on the
+// ask's node, while its row's parent_block_id keeps the id of the ask block holding it, which is
+// that tuple's projection (refs' planBlockParents), so both read as one link to that block. An ask
+// no marked row names, or whose row names no block, or a part_of to an ask the block n stands in
+// is no copy of, keeps the ask's own address, which no row states.
+//
+// Where n is an authored node - its placement value refs.PlacementAuthored - or a block a move of
+// the node route placed - its placement value refs.PlacementStored - a part_of whose far end is no
+// block of n's own artifact is written outside:<that artifact's ref_key>, which is what its row's
+// null parent_block_id states (outsideArtifact), and a part_of to an ask's node is read as that far
 // end too, never as the ask's block, which only a reading's row names. A ref_key holds no '#', so
 // n's artifact is the part of its id before the first one.
 func blockPlacedLinks(kinds string) string {
@@ -264,16 +305,56 @@ func blockPlacedLinks(kinds string) string {
 		                      else held.kind || '>` + outsideArtifact + `' || split_part(n.id, '#', 1) end
 		            when held.kind = '` + graphstore.TuplePartOf + `' and held.to_kind = '` + graphstore.KindAsk + `'
 		            then coalesce(held.kind || '>` + refs.BlockNodeKind + `:' || split_part(n.id, '#', 1) || '#' || ` +
-		askBlockID(`held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
+		askBlockID(`n.id`, `held.to_id`) + `, held.kind || '>' || held.to_kind || ':' || held.to_id)
 		            else held.kind || '>' || held.to_kind || ':' || held.to_id end as link
 		from (
 			` + graphstore.CurrentTupleRead(`t.kind, t.to_kind, t.to_id`, `t.kind, t.to_kind, t.to_id, t.asserted`,
 		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = n.id
 		  and t.to_kind <> '`+graphstore.KindValue+`' and `+kinds) + `
 		) held
-		cross join lateral (select coalesce(` + currentValue(refs.AttributePlacement) + ` = '` + refs.PlacementAuthored + `', false) as held) authored
+		cross join lateral (select coalesce(` + currentValue(refs.AttributePlacement) + ` in ('` + refs.PlacementAuthored + `', '` +
+		refs.PlacementStored + `'), false) as held) authored
 		where held.asserted
 	 ) placed)`
+}
+
+// storedRow is true of the document_blocks row alias whose node a move of the node route placed:
+// the placement value its node holds now is refs.PlacementStored, read as currentValue reads one,
+// through the row's node address. Such a row's null parent_block_id states a part_of to no block of
+// its artifact, as an authored node's does (blockPlacedLinks).
+func storedRow(alias string) string {
+	return `coalesce(` + currentValueOf(alias+`.node_kind`, alias+`.node_address`, refs.AttributePlacement) + ` = '` +
+		refs.PlacementStored + `', false)`
+}
+
+// settledAsk is the far end, written kind:id as statedLinks reads a link, of the part_of the
+// node of the document_blocks row alias stands under where that row is a decision that settles an
+// ask of its issue (R2 of the issue-tree spec, refs.DecisionFacts): its node holds a current
+// from_ask to an ask whose marked row is one of the issue of artifact, the row's own artifacts row,
+// and the decision stands under that ask's node whatever its parent_block_id says, since that
+// part_of to an ask's node (askBlockID), spelled out here over the row: where the ask's row names a
+// block and the document holding it (asks.block_id, asks.block_artifact_id) is the row's own
+// artifact, that block; where that document is another, the block the row's own parent_block_id
+// names, which askBlockID reads off the same row where that block is a copy of the ask, so a
+// decision whose parent copies no such ask reads as a difference; and the ask's own address where
+// the ask's row names no block or the row's parent_block_id none. It is null for every other row,
+// whose parent its own columns state.
+func settledAsk(alias, artifact string) string {
+	return `case when ` + alias + `.type = '` + refs.DecisionSupertag + `' then (
+		select coalesce('` + refs.BlockNodeKind + `:' || ` + artifact + `.ref_key || '#' ||
+		                case when own.id is null then null
+		                     when own.ref_key = ` + artifact + `.ref_key then settled.block_id
+		                     when ` + parentCopiesAsk(artifact+`.ref_key || '#' || `+alias+`.parent_block_id`, alias+`.artifact_id`, `settled.node_address`) + `
+		                     then ` + alias + `.parent_block_id end,
+		                '` + graphstore.KindAsk + `:' || settled.node_address)
+		from (` + graphstore.CurrentTupleRead(`t.to_id`, `t.to_id, t.asserted`,
+		`t.from_kind = `+alias+`.node_kind and t.from_id = `+alias+`.node_address and t.kind = '`+refs.TupleFromAsk+`'
+		  and t.to_kind = '`+graphstore.KindAsk+`'`) + `) held
+		join asks settled on settled.node_kind = '` + graphstore.KindAsk + `' and settled.node_address = held.to_id
+		  and settled.issue_key = ` + artifact + `.issue_key
+		left join artifacts own on own.id = settled.block_artifact_id and settled.block_id is not null
+		where held.asserted
+		order by held.to_id limit 1) end`
 }
 
 // blockAuthorsHeld is true of each document_blocks row d, with its artifacts row a, whose block's
@@ -297,16 +378,26 @@ func blockAuthorsHeld(d, a string) string {
 }
 
 // blockFirstAuthors is the FROM and WHERE text over each document_blocks row d whose block's
-// authors the census holds (blockAuthorsHeld), with each author of the version v that first held
-// its block, as graphstore.AuthorOf names an actor (author.kind, author.id; an actor naming nobody
-// is left out). The version is the lowest one document_block_texts records a text of the block in,
-// read against the block's own document (refs.BlockDocumentSQL), the one refs.IndexBlocks takes
-// the block's authors from: the block index states one authored_by per author of it through
-// graphstore.AuthorFacts, which makes the author's person or session node, for every such block of
-// every document it indexes, a block an earlier build wrote included, so once a document owes
-// nothing each of its blocks names those authors (blockAuthorProjection) and each author is a node
-// the store holds (storedAuthors). A document still owed is on neither side, since the pass that
-// drains it writes them.
+// authors the census holds (blockAuthorsHeld), with each author its node is to name, as
+// graphstore.AuthorOf names an actor (author.kind, author.id; an actor naming nobody is left out),
+// and the time the author is read at (author.at). They are the authors of the version v that first
+// held the block, read against the block's own document (refs.BlockDocumentSQL), the one
+// refs.IndexBlocks takes the block's authors from: the block index states one authored_by per
+// author of it through graphstore.AuthorFacts, which makes the author's person or session node,
+// for every such block of every document it indexes, a block an earlier build wrote included, so
+// once a document owes nothing each of its blocks names those authors (blockAuthorProjection) and
+// each author is a node the store holds (storedAuthors). A document still owed is on neither side,
+// since the pass that drains it writes them.
+//
+// For a block no conversion moved, v is the lowest version document_block_texts records a text of
+// the block in under its row's own artifact. For a block the issue conversion moved into its room
+// (convertedBlock) they are what the conversion carried to its node before the room's pass (docs'
+// writeMoves, T19b of the issue-tree plan), which adds no author to a node that states one: the far
+// ends of the authored_by its old node states, at each tuple's time, where it states any; else the
+// authors of the version v that first held the block in its document under its old address, where
+// Dispatch knows that version, and nobody where it does not. The lowest text row the room records
+// of such a block is the conversion's own version of its document, whose one author is the
+// conversion, which names nobody.
 var blockFirstAuthors = `
 	from document_blocks d
 	join artifacts a on a.id = d.artifact_id
@@ -315,32 +406,104 @@ var blockFirstAuthors = `
 		where t.artifact_id = d.artifact_id and t.block_id = d.block_id and t.text is not null
 		order by t.version limit 1
 	) first
-	join artifact_versions v on v.artifact_id = ` + refs.BlockDocumentSQL("d") + ` and v.number = first.version
-	cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
-	cross join lateral (select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `) author (kind, id)
+	` + convertedBlock + `
+	cross join lateral (
+		select carried.to_kind, carried.to_id, carried.at
+		from (` + carriedAuthors("converted.address") + `) carried
+		where converted.carries and carried.asserted
+		union all
+		select ` + authorNodeKind("written.actor") + `, ` + authorNodeID("written.actor") + `, v.created_at
+		from artifact_versions v
+		cross join lateral jsonb_array_elements(case when jsonb_typeof(v.authors) = 'array' then v.authors else '[]'::jsonb end) written (actor)
+		where v.artifact_id = ` + refs.BlockDocumentSQL("d") + `
+		  and v.number = case when converted.address is null then first.version
+		                      when converted.known and not converted.carries then converted.version end
+	) author (kind, id, at)
 	where author.kind is not null and ` + blockAuthorsHeld("d", "a")
 
-// blockVersionAuthors are those authors as (kind, id, at) (storedAuthors), at the version's time.
-var blockVersionAuthors = `select author.kind, author.id, v.created_at` + blockFirstAuthors
+// convertedBlock is a left join lateral, aliased converted, over the move the issue conversion made
+// of the block of the document_blocks row d, of an issue's tree artifact a, whose lowest text row is
+// first: the moved_to the store asserts now into d's node from the address of a block of the
+// document whose fragment of the room holds the block (refs.BlockDocumentSQL), the one the
+// conversion appends from each block's old address in a document it takes into the room to the
+// block's node there (docs' writeMoves). No other writer states one into a block of a tree artifact
+// from its fragment's own document: the restore's moves end at the spec's own addresses, and a
+// block a version or the node route moves within the room keeps its address. Its columns are the
+// old address (address); whether the old node states an authored_by now (carries), which the
+// conversion then copied to the node; and the version F that first held the block in its document
+// under its old id (version), with whether Dispatch knows the block was made in F (known: F is 1,
+// or a block-aware build indexed F-1), as the conversion read them for a node that states none
+// (docs' conversionFirstAuthorsStatement). Every column is null for a block no conversion moved.
+//
+// The conversion read F off the document's own text rows before it retired the document's own
+// index, by a pass over the version it read as the latest holding no block (docs'
+// retireDocuments), which writes each old block's text null at that version. So F is read off
+// those rows as the retirement leaves them: the document's own rows of the old id below
+// first.version, which is the conversion's version of the document and the first the room records
+// the block in, the newest of them being the one the retirement wrote; F is the lowest that holds
+// a text or is that newest one. A block's text is recorded at the version it stands since (refs'
+// textSince), so a block no older row holds a text of was first held at the version the
+// retirement nulled. No row the room keys, no row at or past the conversion's version and no other
+// row whose text is null is read as F.
+var convertedBlock = `left join lateral (
+		select held.from_id as address, oldest.version, oldest.known,
+		       exists (select 1 from (` + carriedAuthors("held.from_id") + `) carried where carried.asserted) as carries
+		from (` + graphstore.CurrentTupleRead(`t.from_kind, t.from_id`, `t.from_kind, t.from_id, t.seq, t.asserted`,
+	`a.kind = 'tree' and t.to_kind = '`+refs.BlockNodeKind+`' and t.to_id = d.node_address and t.kind = '`+graphstore.TupleMovedTo+`'
+			  and t.to_kind <> '`+graphstore.KindValue+`'`) + `) held
+		join artifacts origin on origin.ref_key = split_part(held.from_id, '#', 1) and origin.id = ` + refs.BlockDocumentSQL("d") + `
+		left join lateral (
+			select kept.version, kept.version = 1 or exists (
+			         select 1 from document_indexed_versions i where i.artifact_id = origin.id and i.version = kept.version - 1
+			       ) as known
+			from (
+				select t.version, t.text, max(t.version) over () as retired
+				from document_block_texts t
+				where t.artifact_id = origin.id and t.block_id = substr(held.from_id, strpos(held.from_id, '#') + 1)
+				  and t.version < first.version
+			) kept
+			where kept.text is not null or kept.version = kept.retired
+			order by kept.version limit 1
+		) oldest on true
+		where held.asserted and held.from_kind = '` + refs.BlockNodeKind + `'
+		order by held.seq limit 1
+	) converted on true`
+
+// carriedAuthors is the newest authored_by to each far end out of the block node whose address the
+// SQL text address names (graphstore.CurrentTupleRead), as (to_kind, to_id, at, asserted): the
+// authors a block's old node states, which the conversion copies to its node in the room.
+func carriedAuthors(address string) string {
+	return graphstore.CurrentTupleRead(`t.to_kind, t.to_id`, `t.to_kind, t.to_id, t.at, t.asserted`,
+		`t.from_kind = '`+refs.BlockNodeKind+`' and t.from_id = `+address+` and t.kind = '`+graphstore.TupleAuthoredBy+`'
+		  and t.to_kind <> '`+graphstore.KindValue+`'`)
+}
+
+// blockVersionAuthors are those authors as (kind, id, at) (storedAuthors).
+var blockVersionAuthors = `select author.kind, author.id, author.at` + blockFirstAuthors
 
 // blockAuthorProjection is the census's kind of each block's authors (T7 of
-// dispatch://INFRA-1253's plan), held triple by triple over the blocks blockAuthorsHeld reads: each
+// the issue-tree plan), held triple by triple over the blocks blockAuthorsHeld reads: each
 // row is an authored_by of such a block's node to one author of the version that first held the
-// block (blockFirstAuthors), against every authored_by such a block's node states now while it is
-// present. So an authored node of a document that owes nothing and states no authored_by is a row
-// no tuple states, an author it names that its version does not is a tuple no row projects, and a
-// block either side leaves out - a decision, a reading, a block of a document still owed, a block
-// of a room that moved between fragments - the other leaves out too.
+// block, or of a block the issue conversion moved into its room to one author the conversion
+// carried to it (blockFirstAuthors), against every authored_by such a block's node states now
+// while it is present. So an authored node of a document that owes nothing and states no
+// authored_by is a row no tuple states, and so is a moved block whose node lost an author it was
+// carried; an author it names that its version does not is a tuple no row projects, and a block
+// either side leaves out - a decision, a reading, a block of a document still owed, a block of a
+// room that moved between fragments - the other leaves out too.
 var blockAuthorProjection = projection{
 	name:     "block_author",
 	nodeKind: refs.BlockNodeKind,
-	table:    "document_blocks, artifact_versions.authors",
+	table:    "document_blocks, artifact_versions.authors, graph_tuples.moved_to, graph_tuples.authored_by",
 	note: "who wrote each block whose node records its authors, held triple by triple over one set of document_blocks" +
 		" rows on both sides: each row is an authored_by of the node of a row of an authored node, or of a block of an" +
 		" issue's tree artifact but a decision and a reading, by the row's type, to each author of the version that" +
-		" first held the block, against every authored_by the present node of such a row states now; a block of a" +
-		" document that owes its block index, and a block of an issue room that has stood in more than one fragment," +
-		" whose text rows name no document, are on neither side",
+		" first held the block - for a block the issue conversion moved into its room through a moved_to from its old" +
+		" address in its own document, each author the authored_by of its old node names, or where it names none each" +
+		" author of the version of that document that first held it at its old address, where Dispatch knows that" +
+		" version, as the conversion carries them - against every authored_by the present node of such a row states" +
+		" now; a block of a document that owes its block index, and a block of an issue room that has stood in more" +
+		" than one fragment, whose text rows name no document, are on neither side",
 	rows: `
 		select distinct 'block_author ' || d.node_id || ' ' || author.kind || ':' || author.id, d.node_kind, d.node_address,
 		       '` + graphstore.TupleAuthoredBy + `', author.kind, author.id` + blockFirstAuthors + `

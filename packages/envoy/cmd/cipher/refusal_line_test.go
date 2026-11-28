@@ -22,6 +22,7 @@ import (
 // found\n" does, rather than reading quoted for it. The code and words this client tells
 // refusals apart by are still the ones that came.
 func TestABrokerRefusalReadsAsOneLine(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name        string
 		code, words string

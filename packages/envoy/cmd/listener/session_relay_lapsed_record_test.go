@@ -21,6 +21,7 @@ import (
 // (TestACleanStopsRelayHandOverNeverPromisesAFurtherDelivery), where the stop deleted the
 // consumer with the record and nobody is delivered them.
 func TestARelayHandsOverALapsedSessionsMessagesToTheConsumerThatStands(t *testing.T) {
+	t.Parallel()
 	rig, sessionID, silent, stored := relayHoldingOneMessage(t, "ses_lapsed_handover_")
 
 	// The record alone, as a lapse takes it: no clean stop and no reap, so nothing deletes the

@@ -5,32 +5,75 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// runRowHeld is true of an interaction node n whose going_requests row stands. Every writer of an
-// interaction keys it by its run's uuid as Postgres writes it, and an id of any other shape is
-// read as a run with no row rather than cast (store.CanonicalUUID), so no node can fail the read.
-var runRowHeld = `exists (
-		select 1 from going_requests r
-		where r.id = ` + store.CanonicalUUID("n.id") + `)`
+// The backfill's three passes over the runs of the command bar. A process of the release before
+// this one, during a roll or after a rollback, records a run with no interaction node, appends a
+// frame with no frame value, and deletes a run an hour old, row and frames, leaving its node live.
+// This build's sweep removes a run's rows an hour after it was asked too, and states its node gone
+// in the same transaction (api's goRunGone), so a run it removed owes the third pass nothing. Each
+// pass finds what it owes by an anti-join of one side against the other, row by row, and not by a
+// marker: going_requests and going_events carry no column naming a node, so nothing about a row
+// says whether its node was written. Each writes in a transaction of its own per run, under the
+// lock order the frame path takes (api's appendGoingEvent), and reads again under its locks
+// whether the run still owes it, so a pass beside a live server, and a second run of the backfill,
+// writes nothing it does not owe.
+//
+// Its input is each row's own content - a run's row and its frames - or, for the third, the
+// absence of the row a node projects, which an older process's delete leaves: the store is never
+// read to decide what a row should say, nor a row to mend the store.
 
 // runOwed is the from and the where of the runs whose row names no interaction node, which
-// backfillRuns reads in batches and counts once it is done, $1 the interaction kind.
+// backfillRuns reads in batches and counts once it is done.
 const runOwed = `
 		from going_requests r
-		where not exists (select 1 from graph_nodes n where n.kind = $1 and n.id = r.id::text)`
+		where not exists (select 1 from graph_nodes n where n.kind = '` + graphstore.KindInteraction + `' and n.id = r.id::text)`
 
-// runRowless is the from and the where of the interaction nodes, not gone, whose row is gone
-// (runRowHeld), which backfillGoneRuns reads in batches and counts once it is done, $1 the
-// interaction kind and $2 the gone state.
+// runRowless is the from and the where of the interaction nodes of the source going_requests
+// (graphstore.SourceGoingRequests), not gone, whose row is gone (graphstore.RowlessRunSQL), which
+// backfillGoneRuns reads in batches and counts once it is done. A node of another source - a turn
+// of a History conversation, whose row is in another table - is no run of the command bar, and
+// neither this pass nor the sweep states it gone.
 var runRowless = `
 		from graph_nodes n
-		where n.kind = $1 and n.state <> $2 and not ` + runRowHeld
+		where ` + graphstore.RowlessRunSQL
+
+// walkBatches reads, by read, the rows a pass owes past after, in batches of backfillBatch, each
+// row by scan, and hands each batch that holds a row to write, until a batch comes back short. read
+// selects the rows in the order their keys compare in, past $1 and at most $2 of them, so the key
+// of a batch's last row (key) is where the next one starts. what names the rows in the error of a
+// read that fails.
+func walkBatches[R any](ctx context.Context, database *store.Store, read, what, after string, scan pgx.RowToFunc[R], key func(R) string, write func(batch []R) error) error {
+	for {
+		rows, err := database.Pool.Query(ctx, read, after, backfillBatch)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		batch, err := pgx.CollectRows(rows, scan)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", what, err)
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		after = key(batch[len(batch)-1])
+		if err := write(batch); err != nil {
+			return err
+		}
+		if len(batch) < backfillBatch {
+			return nil
+		}
+	}
+}
+
+// owedBatches is walkBatches over a read of one text column, the keys themselves.
+func owedBatches(ctx context.Context, database *store.Store, read, what, after string, write func(owed []string) error) error {
+	return walkBatches(ctx, database, read, what, after, pgx.RowTo[string], func(key string) string { return key }, write)
+}
 
 // backfillRuns gives every run going_requests holds and the store holds no interaction node of its
 // node, through the one writer of such a node from its row (graphstore.WriteRun): the node, its
@@ -40,16 +83,11 @@ var runRowless = `
 // there, so a run the frame path or another backfill gave its node meanwhile is left as it is.
 func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindInteraction}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
+	err := owedBatches(ctx, database, owedRunsRead, "the runs the store holds no node of", zeroUUID, func(owed []string) error {
 		for _, id := range owed {
 			written, err := writeOwedRun(ctx, database, id)
 			if err != nil {
-				return done, err
+				return err
 			}
 			if written.Nodes > 0 {
 				done.Rows++
@@ -57,35 +95,24 @@ func backfillRuns(ctx context.Context, database *store.Store) (KindBackfill, err
 				done.Tuples += written.Tuples
 			}
 		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+		return nil
+	})
+	if err != nil {
+		return done, err
 	}
-	if err := database.Pool.QueryRow(ctx, `select count(*)`+runOwed, graphstore.KindInteraction).Scan(&done.Remaining); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the runs the store holds no node of: %w", err)
 	}
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
 
-// readOwedRuns reads the runs past after, in id order, whose row names no interaction node, at
-// most limit of them.
-func readOwedRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select r.id::text`+runOwed+` and r.id > $2::uuid
+// owedRunsRead reads the runs past $1, in id order, whose row names no interaction node, at most
+// $2 of them (owedBatches).
+const owedRunsRead = `
+		select r.id::text` + runOwed + ` and r.id > $1::uuid
 		order by r.id
-		limit $3
-	`, graphstore.KindInteraction, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs the store holds no node of: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeOwedRun writes the node of one run in a transaction of its own (graphstore.WriteRun).
 func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphstore.RunWritten, error) {
@@ -111,25 +138,21 @@ func writeOwedRun(ctx context.Context, database *store.Store, id string) (graphs
 // values, one each, with what graphstore.WriteRun stated of a run that had no node by then.
 func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.AttributeFrame}
-	after := uuid.Nil.String()
-	for {
-		owed, err := readOwedFrameRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
-		for _, run := range owed {
-			frames, written, err := writeRunFrames(ctx, database, run)
-			if err != nil {
-				return done, err
+	err := owedBatches(ctx, database, owedFrameRunsRead, "the runs holding a frame the store holds no value of", zeroUUID,
+		func(owed []string) error {
+			for _, run := range owed {
+				frames, written, err := writeRunFrames(ctx, database, run)
+				if err != nil {
+					return err
+				}
+				done.Rows += frames
+				done.Tuples += frames + written.Tuples
+				done.Nodes += written.Nodes
 			}
-			done.Rows += frames
-			done.Tuples += frames + written.Tuples
-			done.Nodes += written.Nodes
-		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+			return nil
+		})
+	if err != nil {
+		return done, err
 	}
 	var left int64
 	if err := database.Pool.QueryRow(ctx, `select count(*) from going_events e where not `+graphstore.FrameHeldSQL).Scan(&left); err != nil {
@@ -140,26 +163,16 @@ func backfillRunFrames(ctx context.Context, database *store.Store) (KindBackfill
 	return done, nil
 }
 
-// readOwedFrameRuns reads the runs past after, in id order, that hold a frame the store holds no
-// value of, at most limit of them. The runs are grouped and ordered by the uuid itself, the order
-// `after` compares in, so the read takes going_events' (request_id, sequence) key in its order.
-func readOwedFrameRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
+// owedFrameRunsRead reads the runs past $1, in id order, that hold a frame the store holds no
+// value of, at most $2 of them (owedBatches). The runs are grouped and ordered by the uuid itself,
+// the order $1 compares in, so the read takes going_events' (request_id, sequence) key in its
+// order.
+const owedFrameRunsRead = `
 		select e.request_id::text from going_events e
-		where e.request_id > $1::uuid and not `+graphstore.FrameHeldSQL+`
+		where e.request_id > $1::uuid and not ` + graphstore.FrameHeldSQL + `
 		group by e.request_id
 		order by e.request_id
-		limit $2
-	`, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs holding a frame the store holds no value of: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeRunFrames states, in one transaction, a frame value of each frame of run the store holds no
 // value of, and answers how many. It takes the run's interaction node row first
@@ -204,66 +217,49 @@ func writeRunFrames(ctx context.Context, database *store.Store, run string) (int
 	return int64(len(frames)), graphstore.RunWritten{}, nil
 }
 
-// backfillGoneRuns states gone every interaction node, not gone already, whose going_requests row
-// is gone (runRowHeld): a run a process of the release before deleted an hour old, frames with it,
-// whose node it left standing. The store keeps the node, as it keeps every node an erase has not
-// removed, and the census reads a gone node with no row as no difference. A run an erase removed
-// has no node either, so this states nothing of it.
+// backfillGoneRuns states gone every interaction node of the source going_requests, not gone
+// already, whose going_requests row is gone (runRowless): a run a process of the release before
+// deleted an hour old, frames with it, whose node it left live, as the sweep does once the node is
+// an hour old (api's goRunGone). The store keeps the node, and the census reads a gone node with no
+// row as no difference.
 func backfillGoneRuns(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "interaction_gone"}
-	after := ""
-	for {
-		owed, err := readRowlessRuns(ctx, database, after, backfillBatch)
-		if err != nil {
-			return done, err
-		}
+	err := owedBatches(ctx, database, rowlessRunsRead, "the runs whose row is gone", "", func(owed []string) error {
 		for _, id := range owed {
 			stated, err := writeGoneRun(ctx, database, id)
 			if err != nil {
-				return done, err
+				return err
 			}
 			if stated {
 				done.Rows++
 				done.Tuples++
 			}
 		}
-		if len(owed) < backfillBatch {
-			break
-		}
-		after = owed[len(owed)-1]
+		return nil
+	})
+	if err != nil {
+		return done, err
 	}
-	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless, graphstore.KindInteraction, graphstore.StateGone).Scan(&done.Remaining); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select count(*)`+runRowless).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the runs whose row is gone: %w", err)
 	}
 	done.Complete = done.Remaining == 0
 	return done, nil
 }
 
-// readRowlessRuns reads the interaction nodes past after, in id order, not gone and whose row is
-// gone, at most limit of them.
-func readRowlessRuns(ctx context.Context, database *store.Store, after string, limit int) ([]string, error) {
-	rows, err := database.Pool.Query(ctx, `
-		select n.id`+runRowless+` and n.id > $3
+// rowlessRunsRead reads the interaction nodes past $1, in id order, not gone and whose row is
+// gone, at most $2 of them (owedBatches).
+var rowlessRunsRead = `
+		select n.id` + runRowless + ` and n.id > $1
 		order by n.id
-		limit $4
-	`, graphstore.KindInteraction, graphstore.StateGone, after, limit)
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	owed, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the runs whose row is gone: %w", err)
-	}
-	return owed, nil
-}
+		limit $2`
 
 // writeGoneRun states the interaction node id gone where its row is still gone, in a transaction
-// of its own, and answers whether it did. It takes the node's row first, as a frame and an erase
-// of the run do, then reads under that lock the node and whether its row stands: the going POST
-// commits a run's node and its row together, so a node it reads has its row whenever the run has
-// one, and a node an erase removed meanwhile is read as none. The write is the node as the store
-// holds it but for its state, a plain write that moves the row and appends the state tuple, made
-// by the run (backfillActor) now, as api's writeNodeState moves a node's state.
+// of its own, and answers whether it did. It takes the node's row first, as a frame of the run
+// does, then reads under that lock the node and whether it is still a run whose row is gone
+// (graphstore.RowlessRunSQL): the going POST commits a run's node and its row together, so a node
+// it reads has its row whenever the run has one. The write is graphstore.WriteState of the node,
+// made by the run (backfillActor) now, as api's goRunGone states a run's node gone.
 func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
@@ -274,20 +270,18 @@ func writeGoneRun(ctx context.Context, database *store.Store, id string) (bool, 
 		return false, err
 	}
 	node, held, err := graphstore.ReadNode(ctx, tx, graphstore.KindInteraction, id)
-	if err != nil || !held || node.State == graphstore.StateGone {
+	if err != nil || !held {
 		return false, err
 	}
-	var rowHeld bool
-	if err := tx.QueryRow(ctx, `select `+runRowHeld+` from graph_nodes n where n.kind = $1 and n.id = $2`,
-		graphstore.KindInteraction, id).Scan(&rowHeld); err != nil {
-		return false, fmt.Errorf("read whether run %s holds its row: %w", id, err)
+	var rowless bool
+	if err := tx.QueryRow(ctx, `select `+graphstore.RowlessRunSQL+` from graph_nodes n where n.kind = $1 and n.id = $2`,
+		graphstore.KindInteraction, id).Scan(&rowless); err != nil {
+		return false, fmt.Errorf("read whether run %s is still a run whose row is gone: %w", id, err)
 	}
-	if rowHeld {
+	if !rowless {
 		return false, nil
 	}
-	node.State, node.Restates = graphstore.StateGone, false
-	node.MadeAt, node.MadeBy, node.SourceEvent = time.Now().UTC(), backfillActor, graphstore.NoEvent
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{node}, nil); err != nil {
+	if _, err := graphstore.WriteState(ctx, tx, []graphstore.Node{node}, graphstore.StateGone, time.Now().UTC(), backfillActor); err != nil {
 		return false, fmt.Errorf("state run %s gone: %w", id, err)
 	}
 	if err := tx.Commit(ctx); err != nil {

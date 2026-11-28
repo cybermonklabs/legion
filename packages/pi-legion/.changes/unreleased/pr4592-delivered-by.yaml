@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `plan-reviewer` and `plan-gap-analyst` agents ask for no plan task and no check in the issue's
+  own documents for a requirement whose text starts `Delivered by` after its number and any title
+  and names the issue that delivers it, whatever that issue's parent, since that issue's checks
+  serve it. They read a view's requirements as the parts of its ancestor's requirements that its
+  `Delivers:` line names.
+custom:
+    Issue: pr4592

@@ -465,6 +465,8 @@ fake k1 "the commits the recorded results name" '.commits += [$held, $plain]' \
   --arg held "$held_commit" --arg plain "$plain_commit"
 
 readonly k1_control="Delete the check and the requirement reads uncovered."
+# The negative control every result this run records names.
+readonly result_control="Deleted the check and the requirement read uncovered."
 readonly k1_contracts=":::check{#c-contracts surface=\"cli\" ci_check=\"contracts\" negative_control=\"Break a contract and the contracts job fails.\"}
 $ci_words
 :::"
@@ -497,7 +499,7 @@ line k1 "a check carrying neither ci_check nor run is stored as it is today" \
 run k1 "record a tester's pass for c-held" result --issue "$k1" --check c-held --role tester \
   --verdict pass --commit "$held_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
   --observed "the ci-check acceptance run recorded it" \
-  --negative-control "Deleted the check and the requirement read uncovered."
+  --negative-control "$result_control"
 pass k1 "recorded a tester's pass for c-held at $held_commit"
 text_of k1 "$k1"
 readonly k1_version="$version"
@@ -779,7 +781,7 @@ derived k3 "the run of the higher id decides: a fail, where the first listed pas
 readonly proved_refusal='check c-fresh is proved by CI run "contracts": dispatch results reads its result from that run, and no role records one'
 for role in tester implementer; do
   cli result --issue "$k1" --check c-fresh --role "$role" --verdict pass --commit "$plain_commit" \
-    --negative-control "Deleted the check and the requirement read uncovered." \
+    --negative-control "$result_control" \
     >"$work/out" 2>&1 && fail k4 "the $role's result for c-fresh is refused" "it was recorded: $(<"$work/out")"
   line k4 "the $role's result for c-fresh is refused CHECK_PROVED_BY_CI, naming the block and the run" \
     "CHECK_PROVED_BY_CI: $proved_refusal"
@@ -788,7 +790,7 @@ no_rows k4 "nothing is stored for c-fresh" "$k1_artifact" c-fresh
 run k4 "record a tester's pass for c-plain" result --issue "$k1" --check c-plain --role tester \
   --verdict pass --commit "$plain_commit" --surface cli --run "bash e2e/acceptance/ci-check.sh" \
   --observed "the ci-check acceptance run recorded it" \
-  --negative-control "Deleted the check and the requirement read uncovered."
+  --negative-control "$result_control"
 pass k4 "the same call against c-plain, which carries no ci_check, is recorded"
 results k4 "$k1"
 grep -A3 -F -- "- c-plain (before_merge). " "$work/out" |

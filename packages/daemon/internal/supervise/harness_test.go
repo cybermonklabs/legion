@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,6 +45,14 @@ type fakeClock struct {
 	armed  int
 	// slept is every wait a machine asked to Sleep, in order.
 	slept []time.Duration
+	// advancing is how many Advance calls are moving the clock now, and stood is signalled each
+	// time one ends and each time a posted function returns; posted is how many functions
+	// whenStill posted that have not returned yet, whether they wait for the clock to stand still
+	// or run; settling is how many moves wait for them (settlePosts).
+	advancing int
+	stood     *sync.Cond
+	posted    int
+	settling  int
 }
 
 // Sleep records d and returns at once, with ctx's error when it has ended: a machine's wait costs
@@ -64,7 +73,11 @@ type fakeTimer struct {
 	fired   bool
 }
 
-func newFakeClock() *fakeClock { return &fakeClock{now: epoch} }
+func newFakeClock() *fakeClock {
+	c := &fakeClock{now: epoch}
+	c.stood = sync.NewCond(&c.mu)
+	return c
+}
 
 func (c *fakeClock) Now() time.Time {
 	c.mu.Lock()
@@ -75,8 +88,24 @@ func (c *fakeClock) Now() time.Time {
 func (c *fakeClock) AfterFunc(d time.Duration, f func()) Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *fakeClock) At(at time.Time, f func()) Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for at, or for the clock's own time when at has passed: Advance sets the clock
+// to each timer's moment as it fires it, so a timer left at a passed moment would move the clock
+// back. The caller holds mu.
+func (c *fakeClock) armLocked(at time.Time, f func()) Cancel {
+	if at.Before(c.now) {
+		at = c.now
+	}
 	c.armed++
-	timer := &fakeTimer{clock: c, at: c.now.Add(d), order: c.armed, f: f}
+	timer := &fakeTimer{clock: c, at: at, order: c.armed, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -91,11 +120,29 @@ func (t *fakeTimer) Stop() bool {
 	return true
 }
 
-// Advance moves time forward by d, firing what falls due on the way.
+// postsSettleBound is the most of the wall clock a move waits for the functions whenStill posted
+// to return (settlePosts). A posted decision that waits for something the test gives only after
+// the move would wait for ever; past this bound the move panics, naming the count, rather than
+// hang the test binary.
+const postsSettleBound = 30 * time.Second
+
+// Advance moves time forward by d, firing what falls due on the way. A move that begins with the
+// clock standing still first lets every function whenStill posted run to its end (settlePosts), so
+// what a grant's decision arms is armed before the clock moves, and the move fires it exactly
+// when it is due.
 func (c *fakeClock) Advance(d time.Duration) {
 	c.mu.Lock()
+	c.settlePosts()
 	until := c.now.Add(d)
+	c.advancing++
 	c.mu.Unlock()
+	// A callback that ends its goroutine (t.Fatal) still leaves the clock standing.
+	defer func() {
+		c.mu.Lock()
+		c.advancing--
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	}()
 	for {
 		c.mu.Lock()
 		var next *fakeTimer
@@ -119,6 +166,73 @@ func (c *fakeClock) Advance(d time.Duration) {
 	}
 }
 
+// settlePosts waits, where no Advance moves the clock, until every function whenStill posted has
+// returned: a grant the gate made before this move reaches its machine, and the decision it
+// starts ends, before the clock moves. A move begun while another runs, on any goroutine, waits
+// for none: what it would wait for waits for the running move to end. So a posted function must
+// not move the clock itself; the bound below turns one that does into a panic. Called with mu
+// held.
+func (c *fakeClock) settlePosts() {
+	if c.advancing > 0 || c.posted == 0 {
+		return
+	}
+	c.settling++
+	defer func() { c.settling-- }()
+	timedOut := false
+	bound := time.AfterFunc(postsSettleBound, func() {
+		c.mu.Lock()
+		timedOut = true
+		c.stood.Broadcast()
+		c.mu.Unlock()
+	})
+	defer bound.Stop()
+	for c.posted > 0 && !timedOut {
+		c.stood.Wait()
+	}
+	if c.posted > 0 {
+		panic(fmt.Sprintf("fakeClock.Advance: %d functions whenStill posted have not returned after %s of the wall clock; a posted grant's decision waits for something the test does only after this move",
+			c.posted, postsSettleBound))
+	}
+}
+
+// whenStill runs f on a goroutine of its own once no Advance is moving the clock: podHarness's
+// post of the gate's grants (PodStarts.post). The next move waits for f to return (settlePosts).
+func (c *fakeClock) whenStill(f func()) {
+	c.mu.Lock()
+	c.posted++
+	c.mu.Unlock()
+	go func() {
+		c.mu.Lock()
+		for c.advancing > 0 {
+			c.stood.Wait()
+		}
+		c.mu.Unlock()
+		// Lowered however f ends, its goroutine's end (t.Fatal off the test goroutine) included,
+		// so the next move does not wait the bound for a function that will never return.
+		defer func() {
+			c.mu.Lock()
+			c.posted--
+			c.stood.Broadcast()
+			c.mu.Unlock()
+		}()
+		f()
+	}()
+}
+
+// waitingPosts is how many functions whenStill posted have not returned yet.
+func (c *fakeClock) waitingPosts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.posted
+}
+
+// settlingMoves is how many moves wait for the functions whenStill posted (settlePosts).
+func (c *fakeClock) settlingMoves() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.settling
+}
+
 // dropAll is every armed timer dying with the process that armed it.
 func (c *fakeClock) dropAll() {
 	c.mu.Lock()
@@ -139,6 +253,28 @@ func (c *fakeClock) Live() int {
 		}
 	}
 	return live
+}
+
+// movingClock is the harness's clock moved by step right after each read while moving is set, as
+// another goroutine moves a test's clock between a decision's read of it and its arm. A move fires
+// nothing, so the decision that read the clock still runs; a timer that falls due within a move
+// fires at the next Advance at its own moment, which sets the clock back to that moment.
+type movingClock struct {
+	*fakeClock
+	step   time.Duration
+	moving atomic.Bool
+	moves  atomic.Int32
+}
+
+func (c *movingClock) Now() time.Time {
+	c.fakeClock.mu.Lock()
+	defer c.fakeClock.mu.Unlock()
+	now := c.fakeClock.now
+	if c.moving.Load() {
+		c.moves.Add(1)
+		c.fakeClock.now = now.Add(c.step)
+	}
+	return now
 }
 
 // memStore is the store as a double: what was written, in order, and a way to fail a write.
@@ -671,6 +807,10 @@ type harness struct {
 	records *logRecords
 	deps    Deps
 	m       *Machine
+	// pace is the wake pacing the harness's machines are built with (pacedHarness), which a
+	// restart builds afresh, as a restarted daemon builds its pacer anew (restart); nil for a
+	// harness that set none, or set its own.
+	pace func(*Deps)
 }
 
 func testLimits() Limits { return Limits{LaunchFailures: 3, PromptFailures: 3, PromptRetires: 2} }
@@ -793,11 +933,17 @@ func (h *harness) start(c Claim) {
 }
 
 // restart is a daemon restart: the machine is dropped with whatever it held in memory — its
-// timers die with it — and a new one is built from what the store read back.
+// timers die with it — and a new one is built from what the store read back. The wake pacer's
+// own timer dies with them, so the pacing the harness was built with is built anew (pace), as a
+// restarted daemon builds its own: the old pacer, its pending turn gone, lets nothing more out,
+// and no place a dropped machine held is ever let out to it.
 func (h *harness) restart() {
 	h.t.Helper()
 	h.m.Wait()
 	h.clock.dropAll()
+	if h.pace != nil {
+		h.pace(&h.deps)
+	}
 	h.start(h.store.load(h.token))
 }
 

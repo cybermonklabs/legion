@@ -11,7 +11,8 @@ body: |-
   `503 PROJECTS_UNCHECKED`. A restricted member's machine login and pod login enroll nothing at
   all, naming projects or not (`403 RESTRICTED_MEMBER_ENROLLS_NOTHING`), and while Dispatch cannot
   say what kind of member a person is, neither does any person's machine login or pod login
-  (`503 MEMBER_KIND_UNCHECKABLE`). A person's sign-in naming no project enrolls as before while
+  (`503 MEMBER_KIND_UNCHECKABLE`), but for a person Dispatch last answered a full member, whose kept
+  kind the broker serves while Dispatch does not answer. A person's sign-in naming no project enrolls as before while
   Dispatch cannot be reached, with a line saying it enrolled unchecked, and one whose person
   Dispatch calls a restricted member is refused `403 PROJECTS_REQUIRED` when it names none; while
   Dispatch refuses the broker's own account, no session enrolls through it. The list is fixed for the

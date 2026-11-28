@@ -213,7 +213,7 @@ func newestPersonApproval(ctx context.Context, q queryer, artifactID string) (*l
 	err := q.QueryRow(ctx, `
 		select id::text, version, ask_id::text, actor from artifact_reviews
 		where artifact_id = $1::uuid and state = 'approved' and kind = $2
-		order by `+docs.ReviewOrder+` limit 1
+		order by `+model.ReviewOrder+` limit 1
 	`, artifactID, docs.ReviewKindPerson).Scan(&approval.review, &approval.version, &approval.ask, &person)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

@@ -285,7 +285,10 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 work=$(mktemp -d "${TMPDIR:-/tmp}/outside-agent-tailnet.XXXXXX") || work=''
 tools="$work/tools"
-[ -z "$work" ] || real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper
+# A program real_tools could not link holds every row from the pins on, as a missing scratch
+# directory does: the helper, the probe and the peer all start under that PATH.
+tools_problem=''
+[ -z "$work" ] || tools_problem=$(real_tools "$tools" bun omp tmux agent-secrets agent-secrets-helper)
 
 emit "row${tab}want${tab}got${tab}verdict"
 
@@ -342,6 +345,7 @@ want_pins="the broker's pin holds ${commit:-<OUTSIDE_ENROLL_REFUSAL_COMMIT>}; Di
 problem=$(lacking OUTSIDE_PINS OUTSIDE_ENROLL_REFUSAL_COMMIT OUTSIDE_DISPATCH_COMMITS OUTSIDE_TAILNET_DISPATCH_URL)
 [ -n "$project" ] || problem="${problem:+$problem; }the project key (\$1) is not given"
 [ -n "$work" ] || problem="${problem:+$problem; }mktemp -d made no scratch directory"
+[ -z "$tools_problem" ] || problem="${problem:+$problem; }$tools_problem"
 if [ -z "$problem" ] && [ ! -r "$OUTSIDE_PINS" ]; then
   problem="OUTSIDE_PINS names $OUTSIDE_PINS, which cannot be read"
 fi
@@ -499,9 +503,10 @@ helper_env() {
 }
 # start_login DIR: starts the helper helper_vars describes, its process id in helper_pid, and then
 # its machine login, in the background, its process id in login_pid, writing DIR/helper.log and
-# DIR/login.log. Sets login_code to the login's code, or login_problem.
+# DIR/login.log. Sets login_code to the login's code, or login_problem. The socket and the code are
+# looked at every pause, and each wait ends at once when the process that would make it has ended.
 start_login() {
-  local deadline line
+  local deadline line login_ended=''
   login_code=''
   login_problem=''
   login_pid=''
@@ -509,9 +514,15 @@ start_login() {
   helper_pid=$!
   background="$background $helper_pid"
   deadline=$(($(now) + 30))
-  while [ ! -S "$1/helper.sock" ] && [ "$(now)" -lt "$deadline" ]; do sleep 1; done
+  while [ ! -S "$1/helper.sock" ] && running_child "$helper_pid" && [ "$(now)" -lt "$deadline" ]; do
+    pause
+  done
   if [ ! -S "$1/helper.sock" ]; then
-    login_problem="the scratch helper made no socket within 30 s: $(text_of "$1/helper.log")"
+    if running_child "$helper_pid"; then
+      login_problem="the scratch helper made no socket within 30 s: $(text_of "$1/helper.log")"
+    else
+      login_problem="the scratch helper ended before it made a socket: $(text_of "$1/helper.log")"
+    fi
     return
   fi
   # The log exists before the login starts, so the read below never meets a missing file.
@@ -520,16 +531,20 @@ start_login() {
   login_pid=$!
   background="$background $login_pid"
   deadline=$(($(now) + 60))
-  while [ -z "$login_code" ] && [ "$(now)" -lt "$deadline" ]; do
+  # Whether the login still runs is read before its log: a login that has ended has written all it
+  # printed, so a code it printed as it ended is still read, and the wait ends on that read.
+  while [ -z "$login_code" ] && [ -z "$login_ended" ] && [ "$(now)" -lt "$deadline" ]; do
+    running_child "$login_pid" || login_ended=yes
     while IFS= read -r line; do
       case $line in 'machine login code: '*) login_code=${line#machine login code: } ;; esac
     done <"$1/login.log"
-    [ -z "$login_code" ] || break
-    running_child "$login_pid" || break
-    sleep 1
+    [ -n "$login_code" ] || [ -n "$login_ended" ] || pause
   done
-  [ -n "$login_code" ] ||
+  if [ -z "$login_code" ] && [ -n "$login_ended" ]; then
+    login_problem="agent-secrets machine login ended and printed no code: $(text_of "$1/login.log")"
+  elif [ -z "$login_code" ]; then
     login_problem="agent-secrets machine login printed no code within 60 s: $(text_of "$1/login.log")"
+  fi
 }
 scratch="$work/scratch"
 code=''
@@ -570,10 +585,11 @@ EOF
 fi
 
 # --- The full member's browser session (OUTSIDE_FULL_COOKIE_FILE) at Dispatch's private origin.
-# No broker token approves, so the positive controls of T3 and P7 read with it; the browser gate's
-# owner acts are made with it where their commands are unset; and the sweep's GitHub proxy reads
-# use it where it is given and the full member's token (below) where it is not, which a build of
-# Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl in a
+# No broker token a machine holds approves, so the positive controls of T3 and P7 read with it; the
+# browser gate's owner acts are made with it where their commands are unset; and the sweep's GitHub
+# proxy reads use it where it is given and the full member's token (below) where it is not, which a
+# build of Dispatch that reads the proxy as a browser's person alone refuses. The cookie reaches curl
+# in a
 # header file of mode 0600 alone, never on a command line. whoami names the member, whose address
 # is the operator of the full member's helper (T3 and P7's control). The pins row has already held
 # OUTSIDE_TAILNET_DISPATCH_URL. ---
@@ -949,7 +965,7 @@ elif [ -n "$public_problem" ]; then
   row T1 "$want_t1" "not run: only the public leg approves code $code, and it did not start: $public_problem" UNKNOWN
 else
   say "T1: waiting for the code $code to be approved (the code waits 15 minutes)"
-  await_child "$scratch_login_pid" 960 2
+  await_child "$scratch_login_pid" 960
   exited=$child_exit
   [ ! -f "$scratch/machine.json" ] || credential=$(json_field credential_id "$(tr -d ' \n' <"$scratch/machine.json")")
   listed=$(env -i "${scratch_env[@]}" agent-secrets machine list --json 2>&1 </dev/null)
@@ -1058,10 +1074,11 @@ else
   esac
 fi
 
-# --- The full member's helper, the positive control of T3 and of P7. No broker token approves, the
-# full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for the agent's token
-# says something about that token only where a browser session is answered on the same routes. The
-# full member's browser mints a personal agent token (201), revoked again at once, and approves a
+# --- The full member's helper, the positive control of T3 and of P7. No broker token a machine
+# holds approves, the full member's own included, so the 403 OAUTH_SCOPE_REQUIRED that P7 reads for
+# the agent's token says something about that token only where a browser session is answered on
+# the same routes. The full member's browser mints a personal agent token (201), revoked again at
+# once, and approves a
 # machine login (200) of a scratch helper whose operator is that member and whose broker is
 # OUTSIDE_TAILNET_BROKER_URL, the broker T2's scratch helper enrolls at. T3 enrolls through that
 # helper, and then its login is revoked and the helper stopped. T3 needs the helper alone
@@ -1107,7 +1124,7 @@ if [ -z "$control_helper_problem" ]; then
   fi
   # The approved login completes and writes its machine file; then the helper can enroll.
   child_exit=''
-  [ -z "$control_credential" ] || await_child "$control_login_pid" 30 1
+  [ -z "$control_credential" ] || await_child "$control_login_pid" 30
   case $approved:$child_exit in
     2??:0) ;;
     2??:*) control_helper_problem="the full member's machine login did not complete within 30 s of its approval (${child_exit:+exit $child_exit}${child_exit:-still running})" ;;
@@ -1255,12 +1272,17 @@ if [ -z "$t5_problem" ]; then
     say "T5: waiting for the public leg to open its window"
     # The window line is read before whether the public leg still runs: a leg that opened its
     # window and has since ended still opened it. The public leg opens it after P10, well within an
-    # hour.
+    # hour. The peer's text is looked at every pause; a local public leg's end at each look, and a
+    # workflow run's, which is GitHub's to answer, at most every 5 s.
+    run_asked=0
     while [ -z "$opened" ]; do
       case $(peer_text) in *'outside-e2e t5-open '*) opened=yes && break ;; esac
-      public_running || break
+      if [ -z "$run_id" ] || [ "$(now)" -ge $((run_asked + 5)) ]; then
+        public_running || break
+        run_asked=$(now)
+      fi
       [ "$(now)" -lt "$window_deadline" ] || break
-      sleep 5
+      pause
     done
     if [ -z "$opened" ] && public_running; then
       window_problem="the public leg had not opened its window within an hour"
@@ -1305,7 +1327,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   gh run watch "$run_id" -R "$OUTSIDE_WORKFLOW_REPO" --interval 30 >/dev/null 2>&1 </dev/null &
   watch_pid=$!
   background="$background $watch_pid"
-  await_child "$watch_pid" 7200 5
+  await_child "$watch_pid" 7200
   [ -n "$child_exit" ] || stop_child "$watch_pid"
   if public_running; then
     public_problem="run $run_id had not ended within two hours, or its watch ended before it did"
@@ -1321,7 +1343,7 @@ if [ -z "$public_problem" ] && [ -n "$run_id" ]; then
   fi
 elif [ -z "$public_problem" ]; then
   say "waiting for the public leg's command"
-  await_child "$public_pid" 3600 5
+  await_child "$public_pid" 3600
   if [ -z "$child_exit" ]; then
     public_problem="the public leg's command had not ended within an hour"
   else

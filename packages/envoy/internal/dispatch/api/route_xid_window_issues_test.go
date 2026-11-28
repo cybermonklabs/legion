@@ -62,6 +62,18 @@ var issueRouteXidWindows = []routeXidWindowCase{
 		ready: readyProjectGatedSteps, window: storetest.XidWindowOf(3,
 			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
 	},
+	// The read of the project the two proven-sessions routes answer with runs after their
+	// transaction has ended, so it is outside the window.
+	{
+		name: "the project proven sessions on route", route: "PUT /api/v1/projects/{key}/proven-sessions (putProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOn, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
+	{
+		name: "the project proven sessions off route", route: "DELETE /api/v1/projects/{key}/proven-sessions (deleteProjectProvenSessions)",
+		ready: readyProjectProvenSessionsOff, window: storetest.XidWindowOf(3,
+			"the project row's update, the batch appending project.updated and the COMMIT ending them"),
+	},
 	{
 		name: "the handoff route", route: "POST /api/v1/issues/{key}/handoffs/{phase} (recordHandoff)",
 		ready: readyHandoff, window: storetest.XidWindowOf(3,
@@ -85,11 +97,13 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	},
 	// A create naming a repository writes it in the issue row's insert and reads or locks no other
 	// row for it. Its read phase, under the project's owner lock, holds its spec's seed, task count
-	// and reference index, all of the harness's size, and its write advice.
+	// and reference index, all of the harness's size, and its write advice. Its spec's
+	// version_renders row goes in the queued batch with its record's digest owed, which the fill
+	// after the COMMIT records in a transaction of its own (R15, docs' fillOwedDigests).
 	{
 		name: "the issue create naming a repository", route: "POST /api/v1/issues naming a repository (createIssue)",
-		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(11,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
+		ready: readyIssueCreateNamingRepository, window: storetest.XidWindowOf(10,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, the queued batch and its COMMIT"),
 	},
 	// A near copy whose refusal's near_copy_checks row could not be written goes in unchecked
@@ -101,8 +115,8 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// transaction id of the create's.
 	{
 		name: "the issue create of a near copy whose refusal was not recorded", route: "POST /api/v1/issues past an unrecorded refusal (createIssue, writeNearCopyCheck)",
-		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(12,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, its blocked_by links and its artifact row - "+
+		ready: readyIssueCreateUnrecordedNearCopy, window: storetest.XidWindowOf(11,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, its blocked_by links and its artifact row - "+
 				"the two reads that load the issue it answers with, its near_copy_checks row, the queued batch and its COMMIT"),
 	},
 	// A patch stating a relation to a priority decides the revision rule on the issue it read
@@ -118,22 +132,22 @@ var issueRouteXidWindows = []routeXidWindowCase{
 	// A create naming a blocker in another project (INFRA-3036) takes the dependency locks of both
 	// projects and the deployment's own before its project's owner lock, by plain reads and
 	// advisory locks (lockIssueDependencyWrite), so its read phase - the spec's seed, task count,
-	// reference index and the write advice - still holds no transaction id; writeBlockedBy reads
+	// reference index and the write advice - still holds no transaction id; writeIssueNeeds reads
 	// the target's project and walks the wait graph inside the write phase, under those locks,
 	// and the event it appends names the blocker among its changed references, which one more read
 	// resolves (refs.resolveIssueTargets). A window with one blocker and a wait graph one link deep.
 	{
-		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeBlockedBy)",
-		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(15,
-			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue's node, the issue row, "+
+		name: "the issue create naming a blocker in another project", route: "POST /api/v1/issues naming a blocked_by target in another project (createIssue, lockIssueDependencyWrite, writeIssueNeeds)",
+		ready: readyIssueCreateBlockedAcrossProjects, window: storetest.XidWindowOf(14,
+			"the create's inline steering writes - the project's next number, the rank lock, the rank read, the issue row, whose batch carries the issue's and the spec's node, "+
 				"the target's project read, the wait walk, the blocked_by delete and insert and its artifact row - "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
 				"the queued batch and its COMMIT"),
 	},
 	// A patch naming a blocker in another project takes the same locks before the issue's owner
-	// lock, and its write phase is the row's update and writeBlockedBy's reads and writes.
+	// lock, and its write phase is the row's update and writeIssueNeeds's reads and writes.
 	{
-		name: "the issue patch naming a blocker in another project", route: "PATCH /api/v1/issues/{key} naming a blocked_by target in another project (patchIssue, lockIssueDependencyWrite, writeBlockedBy)",
+		name: "the issue patch naming a blocker in another project", route: "PATCH /api/v1/issues/{key} naming a blocked_by target in another project (patchIssue, lockIssueDependencyWrite, writeIssueNeeds)",
 		ready: readyIssuePatchBlockedAcrossProjects, window: storetest.XidWindowOf(10,
 			"the issue row's own update, the target's project read, the wait walk, the blocked_by delete and insert, "+
 				"the two reads that load the issue it answers with, the read resolving the blocker its event names, "+
@@ -292,7 +306,7 @@ func readyIssuePatchStatingAdvances(t *testing.T, base routeFixture) lockedItemW
 
 // readyIssueCreateBlockedAcrossProjects drives POST /api/v1/issues by a session filing an issue of
 // the fixture's project with a spec of the harness's size, blocked by an issue of another project
-// (lockIssueDependencyWrite, writeBlockedBy).
+// (lockIssueDependencyWrite, writeIssueNeeds).
 func readyIssueCreateBlockedAcrossProjects(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Create blocked across projects")
@@ -316,7 +330,7 @@ func readyIssueCreateBlockedAcrossProjects(t *testing.T, base routeFixture) lock
 }
 
 // readyIssuePatchBlockedAcrossProjects drives PATCH /api/v1/issues/{key} naming an issue of another
-// project as the issue's one blocker (lockIssueDependencyWrite, writeBlockedBy).
+// project as the issue's one blocker (lockIssueDependencyWrite, writeIssueNeeds).
 func readyIssuePatchBlockedAcrossProjects(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
 	fixture := base.issue(t, "Patch blocked across projects")

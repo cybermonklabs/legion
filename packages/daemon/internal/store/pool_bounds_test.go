@@ -66,12 +66,14 @@ func requireSetting(t *testing.T, store *Store, setting string, want time.Durati
 // Every connection the daemon hands out carries the idle bound, because Open sets it on the pool
 // and no call site can forget it.
 func TestThePooledConnectionCarriesTheIdleBound(t *testing.T) {
+	t.Parallel()
 	requireSetting(t, emptyStore(t), idleBoundParam, idleBound)
 }
 
 // A deployment that wants another bound writes it into its DSN and keeps it, so raising it takes
 // no release of the daemon.
 func TestADsnThatNamesTheIdleBoundKeepsItsValue(t *testing.T) {
+	t.Parallel()
 	const named = 5 * time.Second
 	store := storeWith(t, map[string]string{idleBoundParam: "5s"})
 	requireSetting(t, store, idleBoundParam, named)
@@ -87,6 +89,7 @@ func TestADsnThatNamesTheIdleBoundKeepsItsValue(t *testing.T) {
 // the bound ends is the only connection there is and the read at the end cannot be served by
 // another.
 func TestTheIdleBoundEndsAStalledTransactionAndFreesTheConnection(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{idleBoundParam: "1s", "pool_max_conns": "1"})
 	ctx := context.Background()
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})
@@ -126,6 +129,7 @@ func TestTheIdleBoundEndsAStalledTransactionAndFreesTheConnection(t *testing.T) 
 // bounding a statement is a statement_timeout's job and set where one statement's length is known
 // (the state route's own, internal/api).
 func TestALongStatementSurvivesTheIdleBound(t *testing.T) {
+	t.Parallel()
 	store := storeWith(t, map[string]string{idleBoundParam: "1s"})
 	ctx := context.Background()
 	tx, err := store.pool.BeginTx(ctx, pgx.TxOptions{})

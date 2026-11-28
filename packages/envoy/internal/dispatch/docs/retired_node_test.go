@@ -64,7 +64,7 @@ func TestARetiredDocumentsNodeStaysGoneThroughTheDecisionsStep(t *testing.T) {
 		if state != graphstore.StateGone {
 			t.Errorf("the node of the retired document %s is %s %s, want it gone as its retirement stated it", refKey, state, when)
 		}
-		if owed, err := graphcensus.AsksOwed(ctx, database.Pool); err != nil || owed {
+		if owed, err := graphcensus.AsksOwed(ctx, database); err != nil || owed {
 			t.Errorf("AsksOwed reads %v (%v) %s, want nothing owed: the retired document's row is owed no live node", owed, err, when)
 		}
 		reports, err := graphcensus.ProjectCensus(ctx, database.Pool)

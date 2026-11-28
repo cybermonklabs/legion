@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/listenerwire"
@@ -58,8 +59,10 @@ var collaboratorEventTypes = slices.Sorted(maps.Keys(collaboratorEventReasons))
 
 // legionDaemonSessionPrefix starts the session id the Legion daemon writes an issue's status and
 // lifecycle messages under (legion-daemon:<PROJECT>, packages/daemon's DaemonSession). It holds no
-// conversation, so it is nobody to ask and never a collaborator.
-const legionDaemonSessionPrefix = "legion-daemon:"
+// conversation, so it is nobody to ask and never a collaborator. It is the broker's spelling
+// (ciphertoken.LegionDaemonSessionPrefix), so the session a daemon's broker token proves and the
+// session Dispatch takes for the daemon's are one string (putIssueRoleHolders).
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
 
 // Registry states the collaborators answer names.
 const (
@@ -189,18 +192,26 @@ func (s *server) getIssueCollaborators(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// collaboratorEventsStatement reads the issue $1's events of the types $2, one row per actor and
+// type with its latest created_at, passing over the versions of the issue's decisions query
+// (decisionsQueryVersionSQL).
+var collaboratorEventsStatement = `
+		select coalesce(e.actor->>'kind', ''), coalesce(e.actor->>'id', ''), e.type, max(e.created_at)
+		from events e
+		where e.issue_key = $1 and e.type = any($2) and not ` + decisionsQueryVersionSQL("e") + `
+		group by 1, 2, 3
+	`
+
 // tallyCollaboratorEvents reads the issue's claim, writing and answer events, one row per actor
 // and type, into people (by canonical login) and sessions (by id). A session acting for a
-// person's token is an agent; the daemon's lifecycle writer and system writers are nobody.
+// person's token is an agent; the daemon's lifecycle writer and system writers are nobody. A
+// version of the issue's decisions query is nobody's post: a query drain writes it after the write
+// that moved the query's record, under that write's writer, whose own event already counts
+// (decisionsQueryVersionSQL).
 func (s *server) tallyCollaboratorEvents(
 	ctx context.Context, key string, people, sessions map[string]*collaboratorTally,
 ) error {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
-		select coalesce(actor->>'kind', ''), coalesce(actor->>'id', ''), type, max(created_at)
-		from events
-		where issue_key = $1 and type = any($2)
-		group by 1, 2, 3
-	`, key, collaboratorEventTypes)
+	rows, err := s.deps.Store.Pool.Query(ctx, collaboratorEventsStatement, key, collaboratorEventTypes)
 	if err != nil {
 		return fmt.Errorf("query issue collaborators: %w", err)
 	}

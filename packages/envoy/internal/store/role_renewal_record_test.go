@@ -33,10 +33,13 @@ var (
 // countedKeyValue is a bucket's legacy handle with every Get counted, and every Get or Update
 // failing while the test says so. The count is what says which reads an act made of the bucket
 // it wraps, so it wraps the handle the registry reads through and nothing else. bus.Bounded runs
-// each call on a goroutine of its own, so the count and the switches are atomic.
+// each call on a goroutine of its own, so the count and the switches are atomic. A role bucket's
+// handle also answers the leader's read of a claim (leaderReader, which a controller notice lane's
+// decision makes, Registry.roleClaimFromLeader) through leader, counted and failed as a Get is.
 type countedKeyValue struct {
 	natsgo.KeyValue
 
+	leader      func(ctx context.Context, key string) (natsgo.KeyValueEntry, error)
 	gets        atomic.Int64
 	failGets    atomic.Bool
 	failUpdates atomic.Bool
@@ -50,6 +53,17 @@ func (kv *countedKeyValue) Get(key string) (natsgo.KeyValueEntry, error) {
 	return kv.KeyValue.Get(key)
 }
 
+func (kv *countedKeyValue) GetFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+	kv.gets.Add(1)
+	if kv.failGets.Load() {
+		return nil, errClaimReadFailed
+	}
+	if kv.leader == nil {
+		return nil, errors.New("this counted handle reads no bucket stream's leader")
+	}
+	return kv.leader(ctx, key)
+}
+
 func (kv *countedKeyValue) Update(key string, value []byte, revision uint64) (uint64, error) {
 	if kv.failUpdates.Load() {
 		return 0, errClaimWriteFailed
@@ -57,17 +71,19 @@ func (kv *countedKeyValue) Update(key string, value []byte, revision uint64) (ui
 	return kv.KeyValue.Update(key, value, revision)
 }
 
-// reads is how many Gets the bucket has taken through this handle.
+// reads is how many Gets, and leader reads, the bucket has taken through this handle.
 func (kv *countedKeyValue) reads() int64 { return kv.gets.Load() }
 
 // countRoleReads puts a countedKeyValue in front of the registry's role bucket handle, the one
 // every claim read and write of the registry goes through (Registry.roles), for the rest of the
 // test (swapRoleBucketHandle); the role claim watcher reads through a handle of its own, so the
-// copy goes on following the bucket.
+// copy goes on following the bucket. Its leader reads go to the bucket stream's leader through
+// the handle it replaces.
 func countRoleReads(t *testing.T, reg *Registry) *countedKeyValue {
 	t.Helper()
+	base := reg.roles()
 	return swapRoleBucketHandle(t, reg, func(legacy natsgo.KeyValue) *countedKeyValue {
-		return &countedKeyValue{KeyValue: legacy}
+		return &countedKeyValue{KeyValue: legacy, leader: base.GetFromLeader}
 	}, nil)
 }
 
@@ -107,7 +123,7 @@ func seedStaleInterest(t *testing.T, rig *repairRig, sessionID, topic string) In
 	row.Topics = slices.DeleteFunc(slices.Clone(row.Topics), func(stored string) bool { return stored == topic })
 	rig.reg.mu.Lock()
 	_, epoch := rig.reg.watcher.Handle()
-	outcome := rig.reg.cache.Put(rig.reg.watcher, epoch, sessionID, row, entry.Revision())
+	outcome := rig.reg.cache.Put(rig.reg.watcher, epoch, sessionID, storedRow{Interest: row}, entry.Revision())
 	rig.reg.mu.Unlock()
 	if outcome != kvwatch.Applied {
 		t.Fatalf("the cache refused %s's row at revision %d (outcome %d)", sessionID, entry.Revision(), outcome)

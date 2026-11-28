@@ -22,19 +22,19 @@ export interface DispatchSession {
  * `.envoy/envoy.json` names its own server), with `limit` on every request of it: a caller's
  * `signal` (its stop) ends each one, and a `deadlineMs` of its own budget is the client's deadline,
  * which its credential is given less the request's reserve (`DispatchClient`'s `deadlineMs`);
- * undefined when Dispatch is not configured. A configuration that cannot be read throws, as
- * `activeDispatchSettings` does. `session` is the session this plugin instance is acting as, read
+ * undefined when Dispatch is not configured. A configuration that cannot be read rejects, as
+ * `activeDispatchSettings` throws. `session` is the session this plugin instance is acting as, read
  * at each call, which a broker trade writes under: the token this session presents names this
  * session and no other of this process.
  */
-export function sessionDispatchClient(
+export async function sessionDispatchClient(
   file: SessionConfigFile,
   cwd: string,
   limit: { readonly signal?: AbortSignal; readonly deadlineMs?: number },
   session: () => string
-): DispatchSession | undefined {
+): Promise<DispatchSession | undefined> {
   const config = activeDispatchSettings(
-    sessionDispatchSettings(file, process.env, { cwd, session }).dispatch
+    (await sessionDispatchSettings(file, process.env, { cwd, session })).dispatch
   );
   return config === null
     ? undefined

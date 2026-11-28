@@ -309,7 +309,7 @@ func (s *Sweeper) Run(ctx context.Context, interval time.Duration, leases duty.L
 func (s *Sweeper) run(ctx context.Context, interval time.Duration, leases duty.Leases, exclusive duty.ExclusiveFunc) {
 	due := time.Now()
 	for {
-		exclusive(ctx, leases, webhookRedeliveryLease, due, duty.LeasePeriod(interval), s.sweepAndReport)
+		exclusive(ctx, nil, leases, webhookRedeliveryLease, due, duty.LeasePeriod(interval), s.sweepAndReport)
 		timer := time.NewTimer(jittered(interval))
 		select {
 		case <-ctx.Done():

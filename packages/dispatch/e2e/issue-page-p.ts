@@ -2,7 +2,14 @@ import { expect, type Locator, type Page, test } from "@playwright/test";
 
 import { ACTION_WORDS } from "../web/src/features/issue-page/approval-chip-box";
 import { CONTROL_LABELS } from "../web/src/features/issue-page/page-words";
-import { createAsk, createIssue, createIssueArtifact, createProject, patchIssue } from "./api";
+import {
+  createAsk,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  getIssue,
+  patchIssue,
+} from "./api";
 import { filterRow } from "./issue-page";
 import { assertWhole } from "./unclipped";
 
@@ -102,11 +109,16 @@ export interface HeaderSeed {
 }
 
 /**
- * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent
- * whose route reaches nobody, so the parent draws the header's one route marker; the issue under
- * it in progress, at P1, assigned to alice, with a spec and a Verification document, three
- * children (one done, one in progress, one to do) and two questions an agent asked, which wait
- * on alice. No approval request is open: a row that needs one asks for it.
+ * One issue holding every part of the header's list, written through `e2e/api.ts`: a parent in
+ * progress whose route reaches nobody, so the parent draws the header's one route marker; the
+ * issue under it in progress, at P1, assigned to alice, with a spec and a Verification document,
+ * three children (one done, one in progress, one to do) and two questions an agent asked, which
+ * wait on alice. No approval request is open: a row that needs one asks for it.
+ *
+ * The parent is in work, so the chain keeps Dispatch's parent-status rule (R24): a pick of the
+ * issue's status into work is one the rule asks nothing of, and the page sends its PATCH after the
+ * dry run, which Dispatch answers as the rule is on whatever its setting. A close is not: a row
+ * that closes the issue closes its open children first (`closeOpenChildren`).
  */
 export async function seedHeader(): Promise<HeaderSeed> {
   await createProject({ key: HEADER_PROJECT, name: "Header" });
@@ -116,7 +128,7 @@ export async function seedHeader(): Promise<HeaderSeed> {
     spec: "The parent's plan.",
     title: "The parent of the header's issue",
   });
-  await patchIssue(parent.key, { route: "role:nobody-holds-this" });
+  await patchIssue(parent.key, { route: "role:nobody-holds-this", status: "in_progress" });
   const issue = await createIssue({
     force: true,
     parent: parent.key,
@@ -152,6 +164,17 @@ export async function seedHeader(): Promise<HeaderSeed> {
     parentKey: parent.key,
     specArtifactId: issue.primary_artifact_id ?? "",
   };
+}
+
+/** Closes each open child of the seeded issue through the API, so that a close of the issue keeps
+ *  Dispatch's parent-status rule (a parent is done only when each child is done) and the page
+ *  writes it with no question. A child already done is left as it is: Dispatch refuses a write of
+ *  a closed issue's status (`ISSUE_CLOSED`). A row about what a close does to the page, not about
+ *  the rule's question, calls it before it closes the issue. */
+export async function closeOpenChildren(seeded: HeaderSeed): Promise<void> {
+  for (const child of seeded.childKeys) {
+    if ((await getIssue(child)).status !== "done") await patchIssue(child, { status: "done" });
+  }
 }
 
 /** The new page's header. */

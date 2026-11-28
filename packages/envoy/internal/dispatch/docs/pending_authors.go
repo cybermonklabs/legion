@@ -51,6 +51,12 @@ type inflightCredit struct {
 	documents []string
 }
 
+// changed reports whether the credit counts toward a version of document: its edit changed
+// document's fragment, or it names no document, a room that is its own document's.
+func (record *inflightCredit) changed(document string) bool {
+	return record.documents == nil || slices.Contains(record.documents, document)
+}
+
 // UpdateCredit is a browser update's in-flight credit as it crosses VersionedStore: the store
 // takes it in the transaction that appends the update, under the document's advisory lock (take),
 // and reports it landed before it releases that lock (landed). Its fields are unexported, so a
@@ -291,8 +297,8 @@ func captureAuthors(state *roomState, owed map[string]model.Actor, durableLatest
 }
 
 // captureDocumentAuthors is captureAuthors for a version of document, a document of an issue room,
-// which takes only the in-flight credits whose update changed its fragment (inflightCredit.documents)
-// or that name no document, a room that is its own document's; "" takes every credit.
+// which takes only the in-flight credits whose update changed its fragment or that name no
+// document, a room that is its own document's (inflightCredit.changed); "" takes every credit.
 func captureDocumentAuthors(state *roomState, owed map[string]model.Actor, durableLatest *model.Actor, write *liveWrite, actor *model.Actor, through uint64, document string) authorCapture {
 	capture := authorCapture{
 		state:    state,
@@ -306,7 +312,7 @@ func captureDocumentAuthors(state *roomState, owed map[string]model.Actor, durab
 	capture.inflight = state.unconsumedInflightLocked(through)
 	if document != "" {
 		capture.inflight = slices.DeleteFunc(capture.inflight, func(record *inflightCredit) bool {
-			return record.documents != nil && !slices.Contains(record.documents, document)
+			return !record.changed(document)
 		})
 	}
 	for _, record := range capture.inflight {
@@ -413,6 +419,53 @@ func (capture authorCapture) withoutInflight(actor *model.Actor) authorCapture {
 	capture.authors, capture.inflight = authors, nil
 	capture.latest = latestEditSource(nil, nil, capture.durable)
 	return capture
+}
+
+// roomAuthors is whom the capture read as the authors of the room's edits no version has listed -
+// the pending authors it read (rAuthors) and its in-flight credits (inflight) - without the
+// calling transaction's own credits or the version's writer, which authors lists beside them: the
+// authors a settlement of the same room state lists, whose person a version taking the room in
+// that settlement's place holds the room's removals as (holdRoomRemovals). The credits are read
+// under the room's state lock, as captureAuthors read them.
+func (capture authorCapture) roomAuthors() []model.Actor {
+	authors := make(map[string]model.Actor, len(capture.rAuthors))
+	for _, author := range capture.rAuthors {
+		mergeAuthor(authors, author)
+	}
+	if len(capture.inflight) > 0 {
+		capture.state.mu.Lock()
+		for _, record := range capture.inflight {
+			mergeAuthors(authors, record.authors)
+		}
+		capture.state.mu.Unlock()
+	}
+	return actorSlice(authors)
+}
+
+// pendingRoomAuthors is the authors of document's edits no version has listed that write's read of
+// its room holds, as a capture of that read lists them (authorCapture.roomAuthors): the pending
+// authors its transaction reads of document (transactionPendingAuthors) and the in-flight credits
+// observed by the read (liveWrite.forkSeq), none for a fork read from the store. Of an issue room
+// it takes, as captureDocumentAuthors does, only the credits whose update changed document's
+// fragment or that name no document (inflightCredit.changed): a person whose edit changed only
+// another document of the room made no edit of this one. An upload's version lists none of them
+// and clears them all (uploadCapture), so its write reads them first, for the room's removals
+// (holdRoomRemovals).
+func pendingRoomAuthors(ctx context.Context, tx pgx.Tx, document string, write *liveWrite) ([]model.Actor, error) {
+	authors, err := transactionPendingAuthors(ctx, tx, document)
+	if err != nil {
+		return nil, err
+	}
+	if write != nil && !write.cold && write.state != nil {
+		write.state.mu.Lock()
+		for _, record := range write.state.unconsumedInflightLocked(write.forkSeq) {
+			if record.changed(document) {
+				mergeAuthors(authors, record.authors)
+			}
+		}
+		write.state.mu.Unlock()
+	}
+	return actorSlice(authors), nil
 }
 
 // uploadCapture is an upload's capture over write: the in-flight credits observed by its read of

@@ -160,7 +160,7 @@ const bytesPerCharacter = 64 << 10
 // Every shape a write stores parses in work proportional to its length, counted at an eighth of
 // what the shape grows and then at the whole of it: a shape whose statements or allocations grew
 // with the square of its length would grow growthStep² times where a linear one may grow
-// linearSlack*growthStep (growthStep, below).
+// linearSlack*growthStep (growthStep, linear_test.go).
 func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
 	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {
@@ -513,6 +513,7 @@ func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
 // TestHeavyBodiesCountedHelper is the run of the counted build the rows count: it prepares the op
 // countedHelperEnv names, runs it once, and logs countedHelperRan with it and its outcome.
 func TestHeavyBodiesCountedHelper(t *testing.T) {
+	t.Parallel()
 	text := os.Getenv(countedHelperEnv)
 	if text == "" {
 		t.Skip("the child process the heavy-bodies rows count statements in")
@@ -620,6 +621,7 @@ func cpuGrowthVerdict(characters [2]int, perCharacter [2]float64) (string, bool)
 // as the dearest of these rows measured, fails work quadratic in it, and fails a time of none,
 // which would pass any growth at all.
 func TestCPUGrowthVerdictCatchesQuadraticWorkAndRefusesATimeOfNone(t *testing.T) {
+	t.Parallel()
 	characters := [2]int{32_000, cpuCheckLength * 32_000}
 	for _, test := range []struct {
 		name         string
@@ -718,18 +720,6 @@ func workOf(t *testing.T, what string, op func()) callWork {
 	return callWork{bytes: after.TotalAlloc - before.TotalAlloc}
 }
 
-// growthStep is how many times the full size of each count row of this file is its smaller size,
-// and linearSlack how many times faster than the size its counted work may grow before
-// countGrowthVerdict calls it quadratic: work in proportion to the input grows about growthStep
-// times, inside the linearSlack*growthStep bound (24), and work for each pair of characters about
-// growthStep² (64) times, past it. A count is the work itself, which no load on the machine moves,
-// so these rows keep the eighth they were written at; linear_test.go's rows, which time the
-// thread that parses (cputest.Growth), step by growthScale and hold growthBound.
-const (
-	growthStep  = 8
-	linearSlack = 3
-)
-
 // workGrowsLinearly counts the work measure does at each of sizes in turn, once each, since a
 // count is the work itself and needs no sample, holds each to its bounds for each character
 // (holdsCountsPerCharacter), and fails t at the first size whose statements or whose bytes grew
@@ -798,6 +788,7 @@ func countGrowthVerdict(sizes []int, counts []uint64, allowance int, unit string
 // growth at all: the same arithmetic TestGrowsLinearlyCatchesQuadraticAtThisFilesGrowthStepAndSlack
 // proves of the timed verdict, on counts.
 func TestCountGrowthVerdictCatchesQuadraticWorkAndRefusesACountOfNone(t *testing.T) {
+	t.Parallel()
 	sizes := []int{4_000, 4_000 * growthStep}
 	linear := func(size int) uint64 { return uint64(3*size + 500) }
 	quadratic := func(size int) uint64 { return uint64(size) * uint64(size) / 64 }

@@ -133,16 +133,16 @@ func (m *newsModel) enabled() []string {
 		switch {
 		case window:
 			add("approve-changed", 1)
-			add("approve-decision-only", 1)
+			add("approve-ask-only", 1)
 		case stale:
 			add("approve-changed", 6)
-			add("approve-decision-only", 6)
+			add("approve-ask-only", 6)
 		case architectOpening, prompt != "" && tells && m.child.base != newsModelUnknown, prompt == "" && !reconciles && !starts:
 			add("approve-changed", 3)
-			add("approve-decision-only", 3)
+			add("approve-ask-only", 3)
 		default:
 			add("approve-changed", 1)
-			add("approve-decision-only", 1)
+			add("approve-ask-only", 1)
 		}
 	}
 	if rev.next != "" && rev.turn == "" {
@@ -251,13 +251,14 @@ func (m *newsModel) rootTaskEnabled() bool {
 	return hears
 }
 
-// do runs the step name.
+// do runs the step name, and then waits for the machines (wait): a step ends once every send it
+// started has had its outcome handled.
 func (m *newsModel) do(name string) {
 	m.t.Helper()
 	rev := m.reviewer
 	switch name {
-	case "approve-changed", "approve-decision-only":
-		m.approve(name == "approve-decision-only")
+	case "approve-changed", "approve-ask-only":
+		m.approve(name == "approve-ask-only")
 	case "close-and-reopen":
 		m.r.dispatchEvent(intake.DispatchArtifactChangesRequested, m.latest)
 		m.r.dispatchEvent(intake.DispatchArtifactApproved, m.latest)
@@ -288,11 +289,6 @@ func (m *newsModel) do(name string) {
 		m.providerError(m.tester)
 	case "ladder":
 		m.clock.fireLadder()
-		for _, a := range m.agents() {
-			if a.machine != nil {
-				a.machine.Wait()
-			}
-		}
 	case "supersede":
 		// A newer task of the phase, as an operator's or a repair's: it carries no entry, so the
 		// claim's given entry stays the one its phases row names, and a news-only start still
@@ -330,6 +326,22 @@ func (m *newsModel) do(name string) {
 		m.result(m.architect)
 	default:
 		m.fail("no step %q", name)
+	}
+	m.wait()
+}
+
+// wait waits until every send a machine of the model's claims started has had its outcome handled
+// (supervise's Machine.Wait). A step that runs an outbox row, such as the reviewer's starts, hands a
+// machine its task and returns while the task's send still runs on its own goroutine. The send's
+// acknowledgement sets the task's copy of its news and writes the task to the claim store in one
+// decision, under the machine's lock, so once that write succeeds the store holds the delivery the
+// machine holds. A check that read the store before that decision and the machine after it would
+// see a lag that no refused write made.
+func (m *newsModel) wait() {
+	for _, a := range m.agents() {
+		if a.machine != nil {
+			a.machine.Wait()
+		}
 	}
 }
 
@@ -428,7 +440,7 @@ func (m *newsModel) reconcile() {
 
 // settled is the model's side of what the reconcile settles for row: a row that knows no version
 // is filled from the review history, which names the version below the approved one
-// (newNewsModel), and a row owed only versions that changed decision blocks alone, and no opening,
+// (newNewsModel), and a row owed only versions that changed ask blocks alone, and no opening,
 // is raised past them, by a credit counted from the version it took (record.Store.RaiseTold), so a
 // raise read off a version an unfinal credit gave reaches nothing once that credit is given back.
 func (m *newsModel) settled(row *newsModelRow, stored map[claim.Token]*supervise.Delivery) {

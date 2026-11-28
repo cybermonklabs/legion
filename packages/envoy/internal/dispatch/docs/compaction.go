@@ -257,7 +257,7 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, r
 			return err
 		}
 		// The rows of a room whose document moved into its issue's room stay as they stood
-		// (dispatch://INFRA-1253 R6): nothing folds or deletes them, and the room leaves the
+		// (R6 of the issue-tree spec): nothing folds or deletes them, and the room leaves the
 		// sweep's list.
 		var moved bool
 		if err := tx.QueryRow(ctx, `select exists (select 1 from document_rooms where artifact_id = $1)`, room).Scan(&moved); err != nil {

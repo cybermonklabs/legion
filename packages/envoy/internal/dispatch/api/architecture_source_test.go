@@ -218,8 +218,8 @@ func newRenamingArchitectureSourceServer(t *testing.T, fake *fakeGitHubApp, rena
 	return handler, database
 }
 
-// architectureAppOptions are the options of a test server whose GitHub App reads fake, which a
-// caller sets the rest of its options on.
+// architectureAppOptions is the options of a server whose GitHub App reads fake's repositories,
+// for a test that sets more options of its own.
 func architectureAppOptions(t *testing.T, fake *fakeGitHubApp) testServerOptions {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -227,10 +227,9 @@ func architectureAppOptions(t *testing.T, fake *fakeGitHubApp) testServerOptions
 		t.Fatalf("generate fixture key: %v", err)
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}))
-	github := githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP})
 	return testServerOptions{
 		app:           &auth.AppConfig{ClientID: "Iv1.test", PEM: pemText},
-		githubAPIBase: github,
+		githubAPIBase: githubtest.Server(t, githubtest.Spec{Handle: fake.handler(t).ServeHTTP}),
 	}
 }
 

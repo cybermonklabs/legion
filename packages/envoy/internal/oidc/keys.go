@@ -13,6 +13,8 @@ import (
 
 	gooidc "github.com/coreos/go-oidc/v3/oidc"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // The class of every Key failure. A key the issuer does not publish and an issuer that cannot be
@@ -118,24 +120,36 @@ type keysFetch struct {
 }
 
 // NewKeys reads issuer's OIDC discovery document now and returns the key source for the keys it
-// names, so a caller configures an issuer and nothing else. It refuses, naming the issuer, one
-// whose discovery document cannot be read or names no jwks_uri. No key is fetched here: the first
-// Key reads the set, and ctx bounds discovery alone.
+// names, so a caller configures an issuer and nothing else. It refuses, naming the issuer through
+// redact.URL and the failure as issuerError prints it, one whose discovery document cannot be
+// read or names no jwks_uri: an issuer a credential was pasted into prints none of it. No key is
+// fetched here: the first Key reads the set, and ctx bounds discovery alone.
 func NewKeys(ctx context.Context, issuer string) (*Keys, error) {
 	provider, err := gooidc.NewProvider(ctx, issuer)
 	if err != nil {
-		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: discovering issuer %s: %w", redact.URL(issuer), issuerError(issuer, err))
 	}
 	var discovery struct {
 		JWKSURI string `json:"jwks_uri"`
 	}
 	if err := provider.Claims(&discovery); err != nil {
-		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", issuer, err)
+		return nil, fmt.Errorf("oidc: reading issuer %s discovery document: %w", redact.URL(issuer), issuerError(issuer, err))
 	}
 	if discovery.JWKSURI == "" {
-		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", issuer)
+		return nil, fmt.Errorf("oidc: issuer %s names no jwks_uri in its discovery document", redact.URL(issuer))
 	}
 	return NewKeysAt(discovery.JWKSURI), nil
+}
+
+// issuerError is err, a failure to read issuer's discovery document, as an error prints it: err
+// whole when the issuer is clean (redact.Clean: a plain http(s) URL, which redact.URL prints as
+// written), and its class alone otherwise (redact.Class), since the URL the failure quotes is the
+// issuer's with the discovery path appended, and holds whatever was pasted into it.
+func issuerError(issuer string, err error) error {
+	if redact.Clean(issuer) {
+		return err
+	}
+	return redact.Class(err)
 }
 
 // NewKeysAt returns the key source for the key set published at jwksURI, for an issuer that
@@ -345,7 +359,11 @@ func (k *Keys) refreshInBackground(ctx context.Context) {
 }
 
 // wait is inflight's set, or its error, once it ends; or ErrKeySet when the caller's wait ends
-// first: ctx ending, or the keys deadline ctx carries (WithKeysDeadline) passing.
+// first: ctx ending, or the keys deadline ctx carries (WithKeysDeadline) passing. A wait that has
+// ended before it begins (a caller that hung up before it asked, a keys deadline already past) is
+// ErrKeySet even where the read has ended too by then: a select picks at random among the cases
+// ready when it runs, so the select alone would answer that caller with the read's set or with
+// ErrKeySet by chance.
 func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey, error) {
 	wait := ctx
 	if deadline, budgeted := keysDeadline(ctx); budgeted {
@@ -353,12 +371,14 @@ func (k *Keys) wait(ctx context.Context, inflight *keysFetch) ([]jose.JSONWebKey
 		wait, cancel = context.WithDeadline(ctx, deadline)
 		defer cancel()
 	}
-	select {
-	case <-inflight.done:
-		return inflight.keys, inflight.err
-	case <-wait.Done():
-		return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
+	if wait.Err() == nil {
+		select {
+		case <-inflight.done:
+			return inflight.keys, inflight.err
+		case <-wait.Done():
+		}
 	}
+	return nil, fmt.Errorf("%w: waiting on %s: %w", ErrKeySet, k.jwksURI, wait.Err())
 }
 
 // complete runs inflight's read on ctx, which no caller ends, and releases every caller waiting on

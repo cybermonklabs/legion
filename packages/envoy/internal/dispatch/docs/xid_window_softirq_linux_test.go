@@ -41,6 +41,10 @@ const (
 // breaks, and the test fails. With the softirq read planted to read nothing, the gap counts no
 // receive and the run stops as one that proves nothing.
 func TestXidWindowRigNeverExcusesASleepForSoftirqs(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also makes the rig charge interrupt time to the thread for the whole
+	// process (storetest.XidChargeInterruptTime).
 	storetest.RequireXidGapJudgment(t)
 	storetest.XidChargeInterruptTime(t)
 	_, database, tracer := xidService(t)
@@ -76,6 +80,10 @@ func TestXidWindowRigNeverExcusesASleepForSoftirqs(t *testing.T) {
 // bound passes 7.4 ms, and the test fails at its check of the bound. With the softirq read planted
 // to read nothing, the gap counts no receive and the run stops as one that proves nothing.
 func TestXidWindowRigHoldsAGapsSoftirqsToTheirCap(t *testing.T) {
+	// Not parallel: it measures with the xid window rig (XidTracer.Measure), which sets the whole
+	// process's GOMAXPROCS and collector for its operation and fails a test that called t.Parallel
+	// (requireMeasuredAlone) It also makes the rig charge interrupt time to the thread for the whole
+	// process (storetest.XidChargeInterruptTime).
 	storetest.RequireXidGapJudgment(t)
 	storetest.XidChargeInterruptTime(t)
 	_, database, tracer := xidService(t)

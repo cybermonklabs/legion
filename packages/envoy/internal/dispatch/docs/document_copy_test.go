@@ -15,6 +15,7 @@ import (
 	ygsync "github.com/reearth/ygo/sync"
 
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A browser whose client id is lower than the server's writes 150,000 blocks into a paragraph the
@@ -23,6 +24,7 @@ import (
 // that document, so every copy the service takes of it - the snapshot a read renders, and the fork
 // a write starts from - holds it too, item for item.
 func TestACopyHoldsEveryItemOneClientWroteAheadOfItsParent(t *testing.T) {
+	t.Parallel()
 	const blocks = 150_000
 	live := crdt.New(crdt.WithClientID(1_000_000))
 	fragment := live.GetXmlFragment(fragmentName)
@@ -72,6 +74,7 @@ const storedHistoryBlocks = 150_000
 // on it, and a rebuild, which would replace its history with its latest saved version, refuses it
 // as a document that loads and leaves its history as it was.
 func TestAStoredHistoryLoadsEveryItemOneClientWroteAheadOfItsParent(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of every paragraph's block id would race the
 	// subtests' reads of the history.
@@ -168,6 +171,7 @@ const browserUpdateBlocks = 75_000
 // the same update and reads its item count from the update's own header, deciding it without a
 // decode at all where one client wrote it (`refuseUpdateItemCap`, sjawhar/legion#2519).
 func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp would race the reads below.
 	service.settle = time.Hour
@@ -204,7 +208,7 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 
 	t.Run("a room stores it and keeps it", func(t *testing.T) {
 		httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-		t.Cleanup(httpServer.Close)
+		testcleanup.Add(t, httpServer.Close)
 		peer := connectPeer(t, httpServer.URL, artifactID, "alice")
 		waitFor(t, 10*time.Second, "the peer's room to open", func() bool {
 			return service.srv.GetDoc(artifactID) != nil
@@ -266,17 +270,27 @@ func TestTheStoreTakesOneBrowserUpdateItsRoomTook(t *testing.T) {
 // A settlement stamps a block id on every block that lacks one, in one update it broadcasts to the
 // room's peers and appends to the store. The stamp of a block the document already holds leans on
 // that block, so the update decoded alone parks one item per stamp, more than ygo's default queue
-// of 100,000 here. The store's check of it reads the item count its header declares rather than
-// decoding it (refuseUpdateItemCap), and ygo's check of the broadcast takes no pending queue
-// (reearth/ygo#268, in the pinned fork); a decode of it at ygo's default queue refuses it, which
-// fails the room on every reload, and the document is never stamped.
+// of 100,000 here, which the test holds by decoding the stamp alone. The store's check of it reads
+// the item count its header declares rather than decoding it (refuseUpdateItemCap), and ygo's
+// check of the broadcast takes no pending queue (reearth/ygo#268, in the pinned fork); a decode of
+// it at ygo's default queue refuses it, which fails the room on every reload, and the document is
+// never stamped.
 func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
+	// Not parallel: under the race detector the settlement below is the largest growth of the
+	// package's binary. Its block index states five values of each of the 150,001 blocks, which it
+	// holds as a run built a batch at a time (refs' blockValueRun). Run alone in a build Job, the
+	// test peaked at a VmHWM of 4,811,000 to 4,966,204 kB over three runs, as main's did at
+	// 4,888,884 to 5,090,112 kB; with the values held as tuples it peaked at 7,699,132 kB, and its
+	// leg's binary reached 8,760,892 kB in envoy-go-race-docs job 140472711245, past the step's
+	// RACE_MEM_LIMIT_KB, while every other test of that leg was paused.
 	service, artifactID := newTestService(t)
 	// The settlement runs below, once, on the test's own goroutine.
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
 	ctx := context.Background()
 	const blocks = 150_000
+	// The room's state before the settlement, so the stamp is what the stored history holds past it.
+	var unstamped crdt.StateVector
 	if err := service.srv.Apply(ctx, artifactID, func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 		fragment := doc.GetXmlFragment(fragmentName)
 		transact(func(txn *crdt.Transaction) {
@@ -284,6 +298,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 				fragment.InsertElement(txn, 0, crdt.NewYXmlElement("paragraph"))
 			}
 		})
+		unstamped = doc.StateVector()
 	}); err != nil {
 		t.Fatalf("write %d paragraphs without block ids: %v", blocks, err)
 	}
@@ -321,6 +336,11 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 	if repairs := pmdoc.BlockIDRepairCount(tree); repairs != 0 {
 		t.Fatalf("the stored document still needs %d block-id repairs", repairs)
 	}
+	// The stamp is what the stored history holds past the room's state before the settlement:
+	// decoded alone at ygo's default queue it parks one item per block it stamps, and is refused.
+	if err := crdt.ApplyUpdateV1(crdt.New(), crdt.EncodeStateAsUpdateV1(durable, unstamped), nil); err == nil {
+		t.Fatal("ygo's default pending queue took the settlement's stamp; this test no longer reaches the queue")
+	}
 }
 
 // A browser's two edits reach the room out of order: the one that leans on the other lands first
@@ -332,6 +352,7 @@ func TestASettlementStampsMoreBlocksThanYgosDefaultQueue(t *testing.T) {
 // lost the browser's parked edit: caught up with the edit that fills the gap, as the room is, it
 // shows the room's text without it.
 func TestTheRoomsRenderedReplicaHoldsWhatACommitParked(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	// Settlement is not under test, and its stamp of the browser's blocks would commit into the
 	// room while the edit is parked.

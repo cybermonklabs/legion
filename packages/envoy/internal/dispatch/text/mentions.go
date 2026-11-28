@@ -48,11 +48,13 @@ type Prefix struct {
 // numeric character reference to whitespace (`&#32;`, as stored markdown writes the space at a
 // mark's edge), or after one of ( [ " ' * _ > ` ~ |. A key is an uppercase project key of 2 to 10
 // characters, `-` and a number from 1 up, ending as keyEnds says. A `#id` is `#` and the longest
-// run of the block-id characters [A-Za-z0-9_-], read as questionRef reads it. There is no markdown
-// parse here, so a candidate in code is read, as a reference in code is.
+// run of the block-id characters [A-Za-z0-9_-], read as questionRef reads it. There is no
+// markdown parse here, so a candidate in code is read, as a reference in code is, and is marked
+// as written there (Located.InCode) by the one reading of the body's code contexts extractSpans
+// makes.
 func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
 	spans := referencePattern.FindAllStringIndex(body, -1)
-	located := extractSpans(body, serverURL, spans, true)
+	located, code := extractSpans(body, serverURL, spans, true)
 	if r == nil {
 		return located, nil
 	}
@@ -86,12 +88,17 @@ func Mentions(body, serverURL string, r Resolver) ([]Located, error) {
 				resolved = append(resolved, Located{
 					Ref:    Ref{Kind: "issue", IssueKey: item.key, ID: item.key},
 					Offset: item.offset,
+					InCode: inCode(code, item.offset),
 				})
 			}
 			continue
 		}
 		if ref, ok := questionRef(questions, item.id); ok {
-			resolved = append(resolved, Located{Ref: ref, Offset: item.offset})
+			resolved = append(resolved, Located{
+				Ref:    ref,
+				Offset: item.offset,
+				InCode: inCode(code, item.offset),
+			})
 		}
 	}
 	if len(resolved) == 0 {

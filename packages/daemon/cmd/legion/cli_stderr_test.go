@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
 // stderrToken is the fake credential these tests put in a URL; no real token is ever used.
@@ -18,6 +19,7 @@ const stderrToken = "FAKEtok3nZQ9x"
 // as https://x-access-token:<token>@github.com/... does: the refusal names that remote by its URL
 // with no credential, and holds no token.
 func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
+	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)
 	stub, _ := visibilityReadGh(t, ":\n")
 	repository := t.TempDir()
@@ -40,7 +42,7 @@ func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 	if strings.Contains(stdout+stderr, stderrToken) {
 		t.Errorf("legion gh printed the token a remote's URL carries: %s", shown)
 	}
-	if want := `remote "tmp" (https://github.com/sjawhar/legion.git)`; !strings.Contains(stderr, want) {
+	if want := `remote "tmp" (https://` + redact.URLWithCredentials + `/sjawhar/legion.git)`; !strings.Contains(stderr, want) {
 		t.Errorf("legion gh printed %q, want it to name %s", shown, want)
 	}
 }
@@ -49,6 +51,7 @@ func TestLegionGhPrintsNoCredentialARemotesURLCarries(t *testing.T) {
 // refusal of a flag's value among it: `legion state --port <url>` quotes the value it could not
 // read, and prints that URL with no credential.
 func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
+	t.Parallel()
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"legion", "state", "--port", "https://x-access-token:" + stderrToken + "@github.com/acme/widgets.git"}, &stdout, &stderr)
 	shown := strings.ReplaceAll(stdout.String()+stderr.String(), stderrToken, "<the token>")
@@ -58,7 +61,7 @@ func TestACommandsFlagRefusalPrintsNoCredentialItsValueCarries(t *testing.T) {
 	if strings.Contains(stdout.String()+stderr.String(), stderrToken) {
 		t.Errorf("legion state printed the token its flag's value carries: %s", shown)
 	}
-	if want := `"https://github.com/acme/widgets.git"`; !strings.Contains(stderr.String(), want) {
+	if want := `"https://` + redact.URLWithCredentials + `/acme/widgets.git"`; !strings.Contains(stderr.String(), want) {
 		t.Errorf("legion state printed %q, want it to quote the value as %s", shown, want)
 	}
 }

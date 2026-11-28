@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The descriptions of `POST /api/v1/artifacts/{id}/plan-reviews`, of the approval request route
+  and of the reopen in `cmd/dispatch/README.md` say that an approval on a converted issue's query
+  document stands at a later version whose query digest is the approved one, and that the text
+  carries of an approval hold on a document of an issue Dispatch has not converted, where they said
+  that every later version makes an approval stale unless Dispatch carries it.
+time: 2026-11-27T18:49:29Z
+custom:
+    Issue: INFRA-1253

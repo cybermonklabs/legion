@@ -19,9 +19,10 @@ import (
 )
 
 // drawnAs is one experiment's answer for a unit, as one line, so two answers are compared whole and
-// a failure names what each holds: the arm drawn, the mode it was drawn under and the instant. An
-// answer with no instant reads the same whatever the other two say, which is what a hand-over
-// settles a unit at for an experiment the tree it left never answered.
+// a failure names what each holds: the arm drawn, the mode it was drawn under and the instant. The
+// arms these tests draw name no `plan`, so no answer they compare holds a group. An answer with no
+// instant reads the same whatever the other two say, which is what a hand-over settles a unit at
+// for an experiment the tree it left never answered.
 func drawnAs(variant, mode string, at *time.Time) string {
 	when := "no draw"
 	if at != nil {
@@ -163,11 +164,11 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			admission := quiet(t, 1)
+			admission, source := quietDrawing(t, 1)
 			admission.UseExperiments(declaring(tc.mode))
-			admission.source = refusingSource(t)
+			source.next = refusingSource(t)
 			if tc.reads {
-				admission.source = pinnedSource(tc.value)
+				source.next = pinnedSource(tc.value)
 			}
 			seedWaiting(t, pool, root, "A")
 
@@ -188,7 +189,7 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 			// writes nothing at all: not an arm, and no other column of any row either.
 			before := answers(t, pool, root)
 			admission.UseExperiments(declaring(config.ExperimentOn))
-			admission.source = refusingSource(t)
+			source.next = refusingSource(t)
 			tick(t, pool, admission, "second-pass")
 			if after := answers(t, pool, root); !reflect.DeepEqual(after, before) {
 				t.Fatalf("after a pass under changed modes the root holds %v, want %v unchanged", after, before)
@@ -208,12 +209,12 @@ func TestAdmissionDrawsEachTreesMemoryGroupUnderTheProjectsMode(t *testing.T) {
 func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *testing.T) {
 	const root = "LEGION-1"
 	pool := migratedPool(t)
-	admission := quiet(t, 1)
+	admission, source := quietDrawing(t, 1)
 	// Exactly what the loader gives such a project: a project with no `memory` block and no
 	// `experiments` key at all.
 	admission.UseExperiments(config.Project{}.ExperimentsDeclared("projects.LEGION"))
 	// Mode off decides without a draw, so the source is one that fails the test when it is read.
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	seedWaiting(t, pool, root, "A")
 
 	tick(t, pool, admission, "admit")
@@ -240,9 +241,9 @@ func TestATreeOfAProjectThatDeclaresNothingIsRecordedAtTheMemoryExperiment(t *te
 func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
-	admission := quiet(t, 1)
+	admission, source := quietDrawing(t, 1)
 	admission.UseExperiments(declaring(config.ExperimentOn))
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root = "LEGION-1"
@@ -325,9 +326,9 @@ func TestADrawnTreeKeepsItsMemoryGroupThroughEveryLaterPass(t *testing.T) {
 // all, drawn as `off`, at the later hour — three differences from what it must carry.
 func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 2)
+	admission, source := quietDrawing(t, 2)
 	admission.UseExperiments(declaring(config.ExperimentOn))
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -369,11 +370,11 @@ func TestAHandedOverChildCarriesItsOldTreesMemoryGroupVerbatim(t *testing.T) {
 func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
-	admission := quiet(t, 2)
+	admission, source := quietDrawing(t, 2)
 	// A project that would draw every new tree `memory` and `deep`: a draw of this tree would be
 	// loud.
 	admission.UseExperiments(declaring(config.ExperimentOn))
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps(),
 		Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -434,9 +435,9 @@ func TestARootWithNoMemoryBeforeThisReleaseIsNeverDrawnAndItsChildCarriesNone(t 
 func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 	pool := migratedPool(t)
 	ctx := context.Background()
-	admission := quiet(t, 2)
+	admission, source := quietDrawing(t, 2)
 	admission.UseExperiments(declaring(config.ExperimentOn))
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -495,9 +496,9 @@ func TestAChildHandedOverFromAnUndrawnTreeIsNeverDrawn(t *testing.T) {
 // `random` at the hour of that pass.
 func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing.T) {
 	pool := migratedPool(t)
-	admission := quiet(t, 2)
+	admission, source := quietDrawing(t, 2)
 	admission.UseExperiments(declaring(config.ExperimentRandom))
-	admission.source = pinnedSource(0)
+	source.next = pinnedSource(0)
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 		Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 	const root, child = "LEGION-1", "LEGION-2"
@@ -518,7 +519,7 @@ func TestAChildHandedOverFromATreeNeverOpenedIsDrawnAtItsOwnFirstOpen(t *testing
 	}
 	// And the draw is made once: a later pass over the same tree creates no row and draws
 	// nothing, under a source that fails the test when it is read.
-	admission.source = refusingSource(t)
+	source.next = refusingSource(t)
 
 	tick(t, pool, admission, "another-pass-over-the-childs-own-tree")
 
@@ -558,9 +559,9 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			pool := migratedPool(t)
 			// No slot stands free while the hand-over and the hand-back run, so neither root is
 			// promoted before the one pass below, and the source fails the test if anything draws.
-			handing := quiet(t, 0)
+			handing, handingSource := quietDrawing(t, 0)
 			handing.UseExperiments(declaring(config.ExperimentRandom))
-			handing.source = refusingSource(t)
+			handingSource.next = refusingSource(t)
 			engine := workflow.New(record.NewStore(), workflow.Config{Project: testProject, Repositories: testRepositories,
 				Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, Clock: func() time.Time { return fixedNow }}, nil)
 			// The old tree as the record holds it: a root waiting for a slot it never gets, so
@@ -578,9 +579,9 @@ func TestAHandedOverChildsMemoryDoesNotTurnOnWhichRootIsPromotedFirst(t *testing
 			apply(t, pool, handing, "root-handed-back", intake.DispatchIssue{Key: root, ResolvedRepo: "acme/widgets", Seq: 4,
 				Type: "issue.updated", Status: "todo", Title: root, Rank: "B", HandedOver: handed}, engine)
 
-			promoting := quiet(t, 2)
+			promoting, promotingSource := quietDrawing(t, 2)
 			promoting.UseExperiments(declaring(config.ExperimentRandom))
-			promoting.source = pinnedSource(0)
+			promotingSource.next = pinnedSource(0)
 			promoting.now = func() time.Time { return later }
 
 			tick(t, pool, promoting, "promote-both-roots")

@@ -18,32 +18,30 @@ import (
 // block's opening line, or a line of its body after the marker of a field of a check (blockTexts),
 // in a block of approved.json or of a spec file of the base, written as " " or "", as an id that
 // no node of the base holds, and as the id of a check of the base, a kind of node that no relation
-// names (relationKinds); and each attribute of the opening line of each block of approved.json
+// names (relationRule); and each attribute of the opening line of each block of approved.json
 // left out, in approved.json alone and in the spec files that hold the same line too
 // (leftOutAttributes). No such input may move a state toward true: the reader refuses a relation
-// of an approved block that names no node of the approved spec of its kind (relationFault), a
-// check's serves left out among them, and Validate refuses one in the files by the same kinds. One
-// right: a parent left out (parentLeftOut). Each write is read back against the text that the input
+// of an approved block that names no node of the approved spec, or, in the current text of a node
+// that the approved spec keeps, one of another kind (relationFault), a check's serves left out
+// among them, and Validate refuses one in the files by the same kinds. One right: a parent left
+// out (parentLeftOut). Each write is read back against the text that the input
 // names, which the read back builds from the base before the writer runs: a text inside a block of
 // approved.json by its place and its form (blockTextChange, changedFile); a text inside a spec file
 // by its file, its place and its form (textMeant, filesWritten); and an attribute left out by its
 // place in the block of approved.json and at each place of the same opening line in the spec files
 // (attributeLeftOut); each with each other file unchanged (filesRead). Each writer is a function of
 // the package (valueAt, textWritten, attributeOutOfFiles), handed a tree or files and copies of its
-// own; each input is read in the reader's own process (sweepReader); and each of the two sweeps
-// derives at least its floors of inputs of each base, of those that the reader reads and of those
-// that it refuses (sweepFloors).
+// own; each input is derived in the test process and judged against its base (sweepAgainst); and
+// each of the two sweeps reads and refuses at least its floors of inputs of each base (sweepFloors).
 func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "texts", bases)
 	floorsCover(t, "attributes", bases)
-	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -86,13 +84,13 @@ func TestNoNameOfNothingInsideABlockMovesAStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, p, name, base, inputs)
+			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "texts", name, n)
-			t.Logf("%d texts inside a block: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
-			n = sweepAgainst(t, p, name, base, leftOutAttributes(t, base, tree))
+			t.Logf("%d texts inside a block: %d refused, %d read", n.inputs, n.refused, n.read)
+			n = sweepAgainst(t, base, leftOutAttributes(t, base, tree))
 			atFloor(t, "attributes", name, n)
-			t.Logf("%d attributes left out: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
-				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
+			t.Logf("%d attributes left out: %d refused, %d read, %d of them toward true by right: %q",
+				n.inputs, n.refused, n.read, n.byRight, n.rights)
 		})
 	}
 }

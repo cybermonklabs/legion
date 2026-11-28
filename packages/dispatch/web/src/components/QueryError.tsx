@@ -42,8 +42,7 @@ export function QueryError({
       className={`flex flex-wrap items-center gap-3 text-sm ${refilling ? textSecondaryOnSurface : dangerText}`}
       role={refilling ? undefined : "alert"}
     >
-      {/* A refusal that lists its findings one per line (`SPEC_FORM`) keeps those lines. */}
-      {refilling ? <AgentListRefilling /> : <p className="whitespace-pre-line">{message}</p>}
+      {refilling ? <AgentListRefilling /> : <p>{message}</p>}
       {onRetry === undefined ? null : (
         <button
           className="font-medium underline disabled:cursor-not-allowed disabled:opacity-50"

@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/envoy/internal/dispatch/specgraph/testdata/** fixture joins ../../internal/dispatch/specgraph/testdata, which TestTheBuiltBinary lists and its built binary reads
+
 import (
 	"encoding/json"
 	"errors"

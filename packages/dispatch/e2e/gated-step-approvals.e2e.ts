@@ -60,9 +60,12 @@ test("a root issue of a project gating both steps reads each step's own document
     title: "Design gate",
   });
 
-  // The Verification document was approved and then written again, so its approval is stale.
+  // The Verification document was approved and then written again, so its approval is stale. An
+  // approval covers the record of the Verification query - its checks and their results - and not
+  // its paragraphs (R14), so the words the edit changes are a check's: as a paragraph, the edit
+  // would carry the approval to version 2.
   const verification = await createIssueArtifact(issue.key, {
-    content: "# Verification\n\nOne check.\n",
+    content: "# Verification\n\n:::check{#c-one}\nOne check.\n:::\n",
     name: "verification.md",
   });
   expect(
@@ -276,6 +279,39 @@ test("one request over two documents reads the same on both steps, and one Reque
     expect(asks.map((ask) => [ask.id, ask.kind, ask.state])).toEqual([
       [opened.ask.id, "approval", "answered"],
     ]);
+  } finally {
+    await alice.close();
+  }
+});
+
+// A step's Approve is the header's own action on that step's document: a press of it writes the
+// review to the server, and the step then reads its document as approved at that version.
+test("Approve on the spec step of today's issue header approves the spec on the server", async ({
+  browser,
+}) => {
+  await createProject({ key: "GATEAPPR", name: "Approve a step" });
+  await setGatedSteps("GATEAPPR", ["criteria", "spec"]);
+  const issue = await createIssue({
+    project: "GATEAPPR",
+    spec: "The plan.",
+    title: "Approve the spec step",
+  });
+  expect((await requestApproval(issue.primary_artifact_id, {}, session)).version).toBe(1);
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    await page.goto(`/issues/${issue.key}`);
+    const spec = stepEntry(page, "spec");
+    await expect(spec.getByRole("button", { name: "Awaiting approval" })).toBeVisible();
+
+    await spec.getByRole("button", { exact: true, name: "Approve" }).click();
+
+    await expect
+      .poll(async () => (await getArtifact(issue.primary_artifact_id, { login: "alice" })).approval)
+      .toMatchObject({ state: "approved", version: 1 });
+    await expect(spec.getByRole("button", { name: "Approved v1" })).toBeVisible();
+    await expect(spec.getByRole("button", { exact: true, name: "Approve" })).toHaveCount(0);
   } finally {
     await alice.close();
   }

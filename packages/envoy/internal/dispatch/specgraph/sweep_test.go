@@ -68,9 +68,10 @@ func notRepoPaths(path string) []string {
 // whose reading moves a state toward true is wrong. The reader may refuse the input. A record taken
 // out whole, such as a result, is another input, not one that says nothing
 // (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and so is a named leg written where a
-// record has "": it states that the job had legs there, which an older result of that leg answers
-// by right (R8). The scenarios hold each shape that a rule reads: a check of the code with a matrix
-// and a silent leg, its failing example planted on a commit (planted_on, fault_paths), a wait on
+// record has "": it states that the job had legs there, which an older result of that leg there
+// answers by right (R12: "Each leg of a matrix reports its own result"). The scenarios hold each
+// shape that a rule reads: a check of the code with a matrix and a silent leg, its failing example
+// planted on a commit (planted_on, fault_paths), a wait on
 // its statement, a failure of production at the at of its pass, a refusal of CI, and, in
 // production-and-graph, a program check of production whose runs name the commit of their test
 // (test_commit), a query of the graph at the transaction of its subject (graph_tx), and a run of a
@@ -85,37 +86,34 @@ func notRepoPaths(path string) []string {
 // decode of the base of its own; a writer is a function of the package, which gets a tree or files
 // of its own and copies of the place and the value (changedFile, filesWritten). So a writer that
 // writes another value, writes it at another place, under another key or under another file name,
-// or changes another place of the file too, fails by name. Each sweep reads each input in the
-// reader's own process (sweepReader), which no code of the test process can reach, and derives at
-// least its floors of inputs of each base, of those that the reader reads and of those that it
-// refuses (sweepFloors), so that a fault that drops inputs, a sweep that does not derive an input
-// that it built, and a fault that moves inputs from one kind to the other fail by name too. One
-// right, which sweepInputs gives the input where it writes it: a repository path of a tree written
-// " " is a real path, since git holds a file of that name (git ls-tree of a tree that holds one
-// lists the path " "), so the tree changed at a path that a tie covers, and a result there, a
-// failure among them, carries no more across it (R8: "A result at one commit also counts at another
-// commit when no code that the check runs changed between the two"); a base whose failure at one
-// commit carries to another shows it. A path of a fault written " " is no path, as one of only
-// white space is none, so its record does not say what its fault changed, and as the newest failing
-// example it reads unknown, no_fault_paths where it was the one path and blank_fault_path beside a
-// real one: it has no right, and a base whose failing example of two paths that missed its fault is
-// newer than a caught one shows that it needs none. A content label is no path, and one of " "
-// names no content, so the reader refuses it and it has no right.
+// or changes another place of the file too, fails by name. Each sweep derives each input in the
+// test process (scenarioStates), judges it against its base (sweepAgainst), and reads and refuses
+// at least its floors of inputs of each base (sweepFloors), so that a sweep that builds no input,
+// or drops some, fails by name too. One right, which sweepInputs gives the input where it writes
+// it: a repository path of a tree written " " is a real path, since git holds a file of that name
+// (git ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a
+// tie covers, and a result before it that counts across commits, a caught failing example or a run
+// of the test of a program check of production or of the graph, counts across it no more (the rule
+// that replaces The Spec's R8); the base of production-and-graph whose failure of the test of c1
+// counts at m2 shows it. A path of a fault written " " is no path, as one of only white space is
+// none, so its record does not say what its fault changed, and as the newest failing example it
+// reads unknown, no_fault_paths where it was the one path and blank_fault_path beside a real one: it
+// has no right, and the base with a later failing example planted on c9, newer than carry's caught
+// one, and TestCheckState's rows of a blank fault path show that it needs none. A content label
+// is no path, and one of " " names no content, so the reader refuses it and it has no right.
 func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "tree", bases)
-	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			p := reader.start(t)
 			inputs, roundTrip := sweepInputs(t, base)
-			if got, err := p.states(t, roundTrip); err != nil || !maps.Equal(got, baseStates(t, p, base)) {
+			if got, err := scenarioStates(roundTrip); err != nil || !maps.Equal(got, baseStates(t, base)) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
-			n := sweepAgainst(t, p, name, base, inputs)
+			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "tree", name, n)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
@@ -123,252 +121,96 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 					legs++
 				}
 			}
-			t.Logf(`%d inputs: %d refused, %d read as the whole scenario, %d read another state, %d of them toward true by right; %d of them a leg written as ""`,
-				n.inputs, n.refused, n.same, n.moved, n.byRight, legs)
+			t.Logf(`%d inputs: %d refused, %d read, %d of them toward true by right; %d of them a leg written as ""`,
+				n.inputs, n.refused, n.read, n.byRight, legs)
 		})
 	}
 }
 
-// baseStates is the state of each check, statement and wait of the base, as the reader's process p
-// reads it.
-func baseStates(t *testing.T, p *readerProcess, base fstest.MapFS) map[string]string {
+// baseStates is the state of each check, statement and wait of the base (scenarioStates).
+func baseStates(t *testing.T, base fstest.MapFS) map[string]string {
 	t.Helper()
-	whole, err := p.states(t, base)
+	whole, err := scenarioStates(base)
 	if err != nil {
 		t.Fatalf("the base: %v", err)
 	}
 	return whole
 }
 
-// sweepCount is what a sweep read: the inputs that it built, and of those that sweepAgainst judged,
-// comparing each one's states with what the sweep wants of them, how many the reader or the
-// derivation refused, how many read as the base, how many read another state with no state moved
-// toward true or with a state moved by the input's right, how many of those moved a state toward
-// true by a right, with what each of them changed; and judged, the key of the base's line, the bytes
-// that the reader's process read of the base (readerLine), then each judged input's key, kind ('r'
-// read, 'x' refused), right and allowed places (counted), in the order of the inputs. An input that
-// fails the comparison fails the test and is counted nowhere. So the floors (atFloor), which count
-// the inputs judged and hold the digest of judged, fail by name where the sweep skips an input that
-// it built, drops one that it judged, writes an input's bytes otherwise, reads a base of other bytes,
-// or judges an input by another right. known holds the lines that the sweep reported of each of its
-// known positives (knownPositives), by its words, which no floor counts: a sweep whose judgment no
-// longer reports an input that moves a state toward true, of any kind of state, with no right, or
-// beyond its right, at a place that the right names with another state or at a place that it leaves
-// out, whether it skips that judgment, counts such an input as read or computes it blind, fails by
-// name there (sweepAgainst).
+// sweepCount is what a sweep read of the inputs that it built (sweepAgainst): how many it built, how
+// many of them the reader or the derivation refused, how many it read with no state moved toward
+// true beyond the input's right, and how many of those moved a state toward true by their right,
+// with what each of them changed. An input that fails the judgment fails the test and is counted
+// nowhere.
 type sweepCount struct {
-	inputs, refused, same, moved, byRight int
-	rights                                []string
-	judged                                []byte
-	known                                 map[string][]string
+	inputs, refused, read, byRight int
+	rights                         []string
 }
 
-// counted counts the judged input in, whose key is key, as of the kind kind, and is whether it
-// counted it: it counts no known positive, which the floors do not hold. It appends to judged the
-// key, the kind, the input's right, and each place that the right allows with the state that it
-// allows there, in the order of the places (nil, a right that covers each place, written apart from
-// a right that allows no place), so that a right that any code gives an input, takes from it, widens
-// or narrows moves the digest of its base, and fails by name (atFloor).
-func (n *sweepCount) counted(in sweepInput, key [sha256.Size]byte, kind byte) bool {
-	if in.known {
-		return false
-	}
-	n.judged = append(append(n.judged, key[:]...), kind)
-	n.judged = fmt.Appendf(n.judged, "right %q", in.right)
-	if in.allowed == nil {
-		n.judged = append(n.judged, " allows each place;"...)
-		return true
-	}
-	n.judged = fmt.Appendf(n.judged, " allows %d places:", len(in.allowed))
-	for _, at := range slices.Sorted(maps.Keys(in.allowed)) {
-		n.judged = fmt.Appendf(n.judged, " %q %q", at, in.allowed[at])
-	}
-	n.judged = append(n.judged, ';')
-	return true
-}
-
-// report fails the test by failure, the line of the input in that moves the states moved toward
-// true with no right or beyond its right; or, where in is a known positive, keeps moved as what the
-// sweep reported of it.
-func (n *sweepCount) report(t *testing.T, in sweepInput, moved []string, failure string) {
+// sweepAgainst derives base and each of its inputs in the test process (scenarioStates) and judges
+// each input that the reader and the derivation read against the base (judgeAnswer): an input that
+// moves a state toward true beyond its right fails the test by its line. A right with allowed covers
+// only the places where the input reads the state that allowed holds there. Two rights name no
+// place, so an input that has one is judged by its right alone: a repository path of a tree written
+// " " (pathOfOneSpace), whose tree then changed at a path that a tie covers, so the carry across that
+// commit ends at each subject after it; and a parent left out of an approved block (parentLeftOut),
+// whose statement then sits at the top of the tree, so the statement above it loses it, which can
+// leave that one and each above it met. The places that such an input may move are those that the
+// derivation itself reaches from its change, so a list of them would be a second derivation. An
+// input whose files are the base's (sameFiles) fails the test too: its writer wrote nothing, and it
+// would read as the base and pass. So does an input whose files are those of an earlier input of the
+// list, byte for byte (filesKey): the sweep would read one case twice and the case that it means not
+// at all, as when a writer or a table turned one input into another.
+func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
-	if in.known {
-		n.known[in.what] = moved
-		return
-	}
-	t.Error(failure)
-}
-
-// knownRight is the right of the known positive that a sweep must report beyond its right
-// (knownPositives): it leaves out one place that the input moves and holds at each other place the
-// state that the base reads there, so each move of the input is beyond it, at a place that the right
-// leaves out or at one that it names with another state.
-const knownRight = "a right that leaves out one place that the input moves and holds at each other place the state that the base reads there, so that each move is beyond it"
-
-// knownPositives is each input that a sweep must report at the base name, with moves, the lines of
-// the states that it is built to move toward true, as towardTrue writes them, in their order: one for
-// each kind of move that the judgment reports, with no right and beyond a right. At silent-leg, its
-// failing result of production-delivery-takes-under-a-second (results.json /5) taken out, with no
-// right: the check reads true at the third subject, where silent-leg reads it false (a row of
-// TestTakingOutAWholeRecordMovesAStateOnlyByItsRight), and its statement delivery-is-fast and that
-// statement's own state read met; and that result with the outcome pass, with the right knownRight,
-// whose places leave out that check's place at the third subject and hold the base's state at each
-// other place: so it moves the same states, each beyond its right, the check at a place that the
-// right leaves out, and the statement and its own state at places that the right names with another
-// state. At wait-cycle, the failing run of a-restart-keeps-the-message (results.json /4) with the
-// outcome pass, with no right: that check reads true, a-message-survives-a-restart, its own state and
-// envoy-delivers-messages read met, and the wait of u-b on a-message-survives-a-restart ends. And at
-// silent-leg, the leg arm of go-checks at m2 (jobs.json /1), which ended with no result of
-// a-restart-loses-no-message, taken out, with the right knownRight, whose places leave out the wait
-// of u-a at the first subject: the check, which silent-leg reads unknown at the first and third
-// subjects, reads true there, a-stored-message-survives-a-restart, its own state and
-// messages-reach-sessions read met, and the wait of u-a on a-stored-message-survives-a-restart ends,
-// each beyond its right, the wait at a place that the right leaves out and the others at places that
-// it names with another state. whole is the states of the base. So a judgment blind to checks, to
-// statements or their own states, or to waits, with no right or beyond a right, or beyond a right to
-// the places that it names or to those that it leaves out, fails by the name of the known positive
-// whose report then lacks a line.
-func knownPositives(t *testing.T, name string, base fstest.MapFS, whole map[string]string) []sweepInput {
-	t.Helper()
-	passed := func(i int) treeChange { return treeChange{place: []string{strconv.Itoa(i), "outcome"}, value: "pass"} }
-	switch name {
-	case "silent-leg":
-		moves := []string{
-			`subject 3 check production-delivery-takes-under-a-second: "true", and "false" in the whole scenario`,
-			`subject 3 own state of delivery-is-fast: "met", and "not_met" in the whole scenario`,
-			`subject 3 statement delivery-is-fast: "met", and "not_met" in the whole scenario`,
-		}
-		checkLeftOut := maps.Clone(whole)
-		delete(checkLeftOut, "subject 3 check production-delivery-takes-under-a-second")
-		waitLeftOut := maps.Clone(whole)
-		delete(waitLeftOut, "subject 1 wait of u-a on a-stored-message-survives-a-restart")
-		return []sweepInput{{
-			what:  "the known positive with no right, results.json /5 (a failure of production-delivery-takes-under-a-second) taken out",
-			fsys:  changedFile(t, base, "results.json", treeChange{place: []string{"5"}, out: true}, leftOutAt),
-			known: true, moves: moves,
-		}, {
-			what:  "the known positive beyond its right, results.json /5 (a failure of production-delivery-takes-under-a-second) with the outcome pass",
-			fsys:  changedFile(t, base, "results.json", passed(5), valueAt),
-			right: knownRight, allowed: checkLeftOut, known: true, moves: moves,
-		}, {
-			what:  "the known positive of a wait beyond its right, jobs.json /1 (the leg arm of go-checks at m2) taken out",
-			fsys:  changedFile(t, base, "jobs.json", treeChange{place: []string{"1"}, out: true}, leftOutAt),
-			right: knownRight, allowed: waitLeftOut, known: true, moves: []string{
-				`subject 1 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
-				`subject 1 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 1 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 1 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
-				`subject 1 wait of u-a on a-stored-message-survives-a-restart: "ends", and "holds" in the whole scenario`,
-				`subject 3 check a-restart-loses-no-message: "true", and "unknown" in the whole scenario`,
-				`subject 3 own state of a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 3 statement a-stored-message-survives-a-restart: "met", and "unknown" in the whole scenario`,
-				`subject 3 statement messages-reach-sessions: "met", and "unknown" in the whole scenario`,
-			},
-		}}
-	case "wait-cycle":
-		return []sweepInput{{
-			what:  "the known positive of a wait, results.json /4 (the failing run of a-restart-keeps-the-message) with the outcome pass",
-			fsys:  changedFile(t, base, "results.json", passed(4), valueAt),
-			known: true, moves: []string{
-				`subject 1 check a-restart-keeps-the-message: "true", and "false" in the whole scenario`,
-				`subject 1 own state of a-message-survives-a-restart: "met", and "not_met" in the whole scenario`,
-				`subject 1 statement a-message-survives-a-restart: "met", and "not_met" in the whole scenario`,
-				`subject 1 statement envoy-delivers-messages: "met", and "not_met" in the whole scenario`,
-				`subject 1 wait of u-b on a-message-survives-a-restart: "ends", and "holds" in the whole scenario`,
-			},
-		}}
-	}
-	return nil
-}
-
-// sweepAgainst derives each input of base, the base name, in the reader's process p and compares its
-// states with those of the base, as the process reads it: an input that moves a state toward true
-// fails the test, unless the input has a right to it. The floor's digest holds the key of the base's
-// line, the bytes that the process read of it (sweepCount.judged), so a base that a writer or code of
-// the sweep changed, whose change the sweep would read both as its input's and as its want's, fails
-// by the base's name. A right with allowed covers only the places where the input reads the state
-// that allowed holds there. Two rights name no place, so an input that has one is judged by its right
-// alone: a repository path of a tree written " " (pathOfOneSpace), whose tree then changed at a path
-// that a tie covers, so the carry of each result across that commit ends, at each subject after it;
-// and a parent left out of an approved block (parentLeftOut), whose statement then sits at the top of
-// the tree, so the statement above it loses it, which can leave that one and each above it met. The
-// places that such an input may move are those that the derivation itself reaches from its change,
-// so a list of them would be a second derivation. An input whose files are the base's (sameFiles)
-// fails the test too: its writer wrote nothing, and it would read as the base and pass. So does an
-// input whose files are those of an earlier input of the list, byte for byte (the key of its line,
-// readerLine): the sweep would read one case twice and the case that it means not at all, as when a
-// writer or a table turned one input into another. The sweep also judges its known positives at
-// the base (knownPositives), last, by the same code as each input, and fails by name unless it
-// reported each, with exactly the lines that it is built to move (sweepCount.known); no floor counts
-// them.
-func sweepAgainst(t *testing.T, reader *readerProcess, name string, base fstest.MapFS, inputs []sweepInput) sweepCount {
-	t.Helper()
-	line, baseKey := readerLine(t, base)
-	whole, err := reader.ask(t, line)
-	if err != nil {
-		t.Fatalf("the base: %v", err)
-	}
-	n := sweepCount{inputs: len(inputs), known: map[string][]string{}}
-	n.judged = append(n.judged, baseKey[:]...)
-	known := knownPositives(t, name, base, whole)
-	inputs = append(slices.Clone(inputs), known...)
+	whole := baseStates(t, base)
+	n := sweepCount{inputs: len(inputs)}
 	seen := map[[sha256.Size]byte]string{}
 	for _, in := range inputs {
 		if sameFiles(t, base, in.fsys) {
 			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
 			continue
 		}
-		line, key := readerLine(t, in.fsys)
+		key := filesKey(in.fsys)
 		if first, held := seen[key]; held {
 			t.Errorf("%s: the input's files are those of the input %s, byte for byte, so the sweep reads one case twice", in.what, first)
 			continue
 		}
 		seen[key] = in.what
-		got, err := reader.ask(t, line)
+		got, err := scenarioStates(in.fsys)
+		if err != nil {
+			n.refused++
+			continue
+		}
+		toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
 		switch {
 		case err != nil:
-			if n.counted(in, key, 'x') {
-				n.refused++
-			}
-		case maps.Equal(got, whole):
-			if n.counted(in, key, 'r') {
-				n.same++
-			}
+			t.Errorf("%s: %v", in.what, err)
+		case len(beyond) > 0 && in.right != "":
+			t.Errorf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; "))
+		case len(beyond) > 0:
+			t.Errorf("%s: %s", in.what, strings.Join(beyond, "; "))
 		default:
-			toward := towardTrue(whole, got)
-			if in.right != "" && in.allowed != nil {
-				beyond := maps.Clone(got)
-				maps.DeleteFunc(beyond, func(at, state string) bool { return in.allowed[at] == state })
-				if rest := towardTrue(whole, beyond); len(rest) > 0 {
-					n.report(t, in, rest, fmt.Sprintf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(rest, "; ")))
-					continue
-				}
+			n.read++
+			if len(toward) > 0 {
+				n.byRight++
+				n.rights = append(n.rights, in.what)
 			}
-			switch {
-			case len(toward) == 0:
-				if n.counted(in, key, 'r') {
-					n.moved++
-				}
-			case in.right != "":
-				if n.counted(in, key, 'r') {
-					n.moved++
-					n.byRight++
-					n.rights = append(n.rights, in.what)
-				}
-			default:
-				n.report(t, in, toward, fmt.Sprintf("%s: %s", in.what, strings.Join(toward, "; ")))
-			}
-		}
-	}
-	for _, k := range known {
-		switch moved, reported := n.known[k.what]; {
-		case !reported:
-			t.Errorf("the sweep judged its known positive at %s, %s, which moves %q toward true, and did not report it: its judgment no longer reports such an input", name, k.what, k.moves)
-		case !slices.Equal(moved, k.moves):
-			t.Errorf("the sweep reported its known positive at %s, %s, as moving %q toward true, where it moves %q: its judgment no longer reports each kind of state", name, k.what, moved, k.moves)
 		}
 	}
 	return n
+}
+
+// filesKey is the sha256 of the files of the scenario fsys, each by its name and the length and the
+// bytes of its data, in the order of the names: two scenarios have one key where they hold the same
+// files, byte for byte.
+func filesKey(fsys fstest.MapFS) [sha256.Size]byte {
+	h := sha256.New()
+	for _, name := range slices.Sorted(maps.Keys(fsys)) {
+		fmt.Fprintf(h, "%q %d\n", name, len(fsys[name].Data))
+		h.Write(fsys[name].Data)
+	}
+	return [sha256.Size]byte(h.Sum(nil))
 }
 
 // sameFiles is whether the scenarios a and b hold the same files with the same contents: each JSON
@@ -394,38 +236,54 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 	return true
 }
 
-// A refusal of CI at a commit A makes its check read unknown at A, whatever else holds there, and
-// the own results of A count nowhere, at A or where R8 would carry them; the results of each other
-// commit stay (CheckStates, step 2; R48: "At that commit, such a check reads unknown, and no
-// earlier result of it counts"). So adding one moves no check toward true, no statement or its own
-// state toward met, and no wait toward ends, but by one right, which the input's data gives: where
-// A holds a result of the check, taking that result out can let the results of other commits
-// decide, and they can read true (refusedCommitsResults). The right covers each place of a subject
-// at another commit than A where the input reads what the base reads with each result of the check
-// whose commit is A (countedCommit: for a failing example of a program check of the code, the
-// commit that its fault was planted on, and none for a record that counts from no commit) taken out
-// of results.json, and no place at A, where R48 gives none. A query or an agent of production or of
-// the graph has no result of a commit (CountsAtACommit), so a refusal of it at another commit than
-// the subject's takes out nothing, whatever commit a result's test_commit names, and it has no
-// right. The sweep adds one refusal at a time to uncited.json of each base (sweepBases), at each
-// commit that a record of the base names, for each check of its approved spec that the base does
-// not refuse there, and reads each one back as the reader reads it, against the refusals that it
-// means, built before its writer runs (refusalAdded, refusalRead).
-func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults(t *testing.T) {
+// A refusal of CI at a commit A makes its check read unknown at A, whatever else holds there (R48:
+// "At that commit, such a check reads unknown, and no earlier result of it counts"), and of the
+// results of A it takes out of the derivation only those that support true: a pass, and a failing
+// example that caught its fault. Its failures, its runs that could not run and its failing examples
+// that missed their fault stay wherever they count (R7: "a later failure cancels an earlier pass";
+// R9: "never as true"). So adding one moves no check toward true, no statement or its own state
+// toward met, and no wait toward ends, and the sweep gives a refusal no right. refusalsTakeOut states
+// as data, for each base, which results each refusal takes out; at each subject at another commit
+// than A, such a refusal reads as the base with those results taken out of results.json
+// (withoutResultsOf). The comparison reads states, not reasons, so a refusal that takes out more
+// or less than its row says fails by the row where the difference moves a state at such a subject:
+// one that keeps a pass or a caught failing example of A, as carry's caught failing example
+// planted on c1, which would read the check true at c2 and at m2; and one that takes out a failure
+// of A, as the failure of the test of c1 in the base where a pass and a caught failing example of
+// the test of m2 come before it, which would read the check true at m2. A failing example of A
+// that missed its fault counts only at the commit that it counts from, so a refusal at A that could
+// reach one is a refusal at the subject's own commit, where step 2 reads uncited first: whether a
+// refusal keeps a missed example is moot. No base holds a run that could not run, so
+// TestCheckState's rows, not this sweep, pin that a refusal keeps one. A refusal that the table
+// does not name takes out nothing that counts at another subject. The sweep adds one refusal at a
+// time to uncited.json of each base (sweepBases), at each commit that a record of the base names,
+// for each check of its approved spec that the base does not refuse there, and reads each one back
+// as the reader reads it, against the refusals that it means, built before its writer runs
+// (refusalAdded, refusalRead). A row of the table that names no refusal that the sweep adds, a base
+// that is no base of the sweeps, and a seq that names no one result of the row's check fail the
+// test by name.
+func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "refusals", bases)
-	reader := newSweepReader(t)
+	takesOut := refusalsTakeOut()
+	for _, name := range slices.Sorted(maps.Keys(takesOut)) {
+		if _, held := bases[name]; !held {
+			t.Errorf("refusalsTakeOut states the refusals of %s, which is no base of the sweeps", name)
+		}
+	}
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
 			}
 			current, _ := s.Approved.Current()
+			whole := baseStates(t, base)
+			rows := takesOut[name]
+			added := make([]bool, len(rows))
 			var inputs []sweepInput
 			for _, commit := range namesOf(t, base)["commit"] {
 				for _, c := range current.Checks {
@@ -434,56 +292,145 @@ func TestAddingARefusalOfCIMovesAStateTowardTrueOnlyByTakingOutItsCommitsResults
 					}
 					fsys := refusalAdded(t, base, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
-					if CountsAtACommit(c) && slices.ContainsFunc(s.Results, func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit }) {
-						in.right, in.allowed = refusedCommitsResults, withoutResultsOf(t, p, base, c, commit)
+					i := slices.IndexFunc(rows, func(r refusalOut) bool { return r.commit == commit && r.check == c.ID })
+					got, err := scenarioStates(fsys)
+					switch {
+					case err != nil && i >= 0:
+						t.Fatalf("%s: %v", in.what, err)
+					case i >= 0:
+						added[i] = true
+						if want := withoutResultsOf(t, base, rows[i]); !maps.Equal(awayFrom(s, commit, got), want) {
+							t.Errorf("%s reads at the subjects at other commits than %s:\n%v\nand the base with the results of seq %v taken out reads:\n%v", in.what, commit, awayFrom(s, commit, got), rows[i].seqs, want)
+						}
+					case err == nil && !maps.Equal(awayFrom(s, commit, got), awayFrom(s, commit, whole)):
+						t.Errorf("%s, which refusalsTakeOut does not name, reads at the subjects at other commits than %s:\n%v\nand the base reads:\n%v", in.what, commit, awayFrom(s, commit, got), awayFrom(s, commit, whole))
 					}
 					inputs = append(inputs, in)
 				}
 			}
-			n := sweepAgainst(t, p, name, base, inputs)
+			for i, r := range rows {
+				if !added[i] {
+					t.Errorf("refusalsTakeOut states that a refusal of %s at %s takes out the results of seq %v, and the sweep adds no such refusal, or the row is there twice", r.check, r.commit, r.seqs)
+				}
+			}
+			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "refusals", name, n)
-			t.Logf("%d refusals added: %d refused, %d read as the base, %d read another state, %d of them toward true by right: %q",
-				n.inputs, n.refused, n.same, n.moved, n.byRight, n.rights)
+			t.Logf("%d refusals added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})
 	}
 }
 
-// refusedCommitsResults is the right of a refusal of CI at a commit that holds results of its
-// check: those results count nowhere (R48), and the results of the other commits decide.
-const refusedCommitsResults = `the results of the refused commit count nowhere, and the results of the other commits decide (R48: "no earlier result of it counts")`
+// refusalOut is one row of refusalsTakeOut: CI's refusal of the check check at the commit commit, and
+// the seq of each result of that check that the refusal takes out of the derivation.
+type refusalOut struct {
+	commit, check string
+	seqs          []int64
+}
 
-// withoutResultsOf is the states of base, as the reader's process p reads them, with each result of
-// the check c whose commit (countedCommit) is commit taken out of results.json, and with no state of a
-// subject at commit: the places that a refusal of the check at commit may move toward true, each to
-// the state given here. The results that it means, those of base but each of c whose commit is
-// commit, as the reader reads them, and the place of each record to take out come from a decode of
-// base of their own, made before the writer runs; the writer (resultsWithout) is handed a copy of
-// those places and the tree of results.json decoded for it alone, and the reader reads its write
-// back.
-func withoutResultsOf(t *testing.T, p *readerProcess, base fstest.MapFS, c Check, commit string) map[string]string {
+// refusalsTakeOut is, for each base of the sweeps (sweepBases) by its name, each refusal of CI that
+// the refusal sweep adds and that takes results that count at another subject out of the
+// derivation, with those results by their seq in the base's results.json: of the refused commit's
+// results of the check, a pass and a failing example that caught its fault. It is data, written
+// from the records of each base, and not a second reading of the rule that the derivation applies: a
+// change of what a refusal takes out is a change of these rows. A refusal that it does not name
+// takes out nothing that counts at another subject. It is a function that gives a new table at each
+// call.
+func refusalsTakeOut() map[string][]refusalOut {
+	const code, program = "a-restart-loses-no-message", "a-production-restart-loses-no-message"
+	// The rows that several bases share: of carry and of each base built from it that keeps its
+	// caught failing example, a refusal of its check at c1 takes out that failing example planted on
+	// c1 (seq 2), which counts at c2 and at m2 by the ties, while its pass at c1, as each run, counts
+	// at c1 alone (the rule that replaces The Spec's R8: "A result counts only at the commit that it
+	// read"); of each base of production-and-graph that keeps its program check of production, a
+	// refusal at c1 takes out that check's pass and caught failing example of test_commit c1 (seq 1
+	// and 2), and keeps its failing run (seq 3), which in the base where a pass and a caught failing
+	// example of the test of m2 (seq 7 and 8) come before it keeps that check false at m2; and of
+	// each base of wait-cycle, a refusal at b1 takes out the caught failing example planted on b1 of
+	// each of its checks, whose runs read m1. A base whose only subject is the refused commit, as
+	// one-commit-two-answers, has no row: no result of it counts at another subject.
+	carry := []refusalOut{{"c1", code, []int64{2}}}
+	production := []refusalOut{{"c1", program, []int64{1, 2}}}
+	waitCycle := []refusalOut{
+		{"b1", "a-sent-message-reaches-a-listener", []int64{2}},
+		{"b1", "a-late-session-gets-the-message", []int64{4}},
+		{"b1", "a-restart-keeps-the-message", []int64{6}},
+	}
+	return map[string][]refusalOut{
+		"carry": carry,
+		"carry with a later failing example planted by no step":                      carry,
+		"carry with a later failing example planted on c9, no commit of the history": carry,
+		"carry with c2's failure between c1's pass and c1's failing example": slices.Concat(carry,
+			[]refusalOut{{"c2", code, []int64{9}}}),
+		"carry with m2's failure and a later pass of m2": slices.Concat(carry,
+			[]refusalOut{{"m2", code, []int64{9}}}),
+		"earlier-text":         {{"c0", "messages-come-in-the-order-of-their-writes", []int64{2}}},
+		"production-and-graph": production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as a query of production":                      production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent":                                   production,
+		"production-and-graph with CI's refusal at c1 of its check of the graph as an agent of production":                     production,
+		"production-and-graph with CI's refusal at c1 of its query of the graph":                                               production,
+		"production-and-graph with a pass and a caught failing example of the test of m2 before the failure of the test of c1": production,
+		"production-and-graph with its program check of production as a program check of the graph":                            production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as a query of production":       production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent":                    production,
+		"production-and-graph with test_commit c1 on the failing run of its check of the graph as an agent of production":      production,
+		"production-and-graph with test_commit c1 on the failing run of its query of the graph":                                production,
+		"refusal":    carry,
+		"silent-leg": {{"c1", code, []int64{2}}},
+		"silent-leg with its matrix dropped at m2": {{"c1", code, []int64{2}}},
+		"wait-cycle": waitCycle,
+		"wait-cycle with a second, passing check of a-message-survives-a-restart": slices.Concat(waitCycle,
+			[]refusalOut{{"b1", "a-restart-keeps-the-order", []int64{8}}}),
+		"wait-cycle with the outcomes of its two first runs swapped": waitCycle,
+	}
+}
+
+// withoutResultsOf is the states of base (scenarioStates) with each result that the refusal of row
+// takes out (refusalsTakeOut) taken out of results.json, at each subject at another commit than the
+// row's (awayFrom): at that commit the refusal itself decides. Each seq of
+// the row names one result of base, of the row's check, or the test fails by the row. The results
+// that it means, as the reader reads them, and the place of each record to take out come from a
+// decode of base of their own, made before the writer runs; the writer (resultsWithout) is handed a
+// copy of those places and the tree of results.json decoded for it alone, and the reader reads its
+// write back.
+func withoutResultsOf(t *testing.T, base fstest.MapFS, row refusalOut) map[string]string {
 	t.Helper()
 	s := decodedScenario(t, base)
 	var out []int
+	for _, seq := range row.seqs {
+		of := func(r Result) bool { return r.Seq == seq }
+		at := slices.IndexFunc(s.Results, of)
+		if at < 0 || s.Results[at].Check != row.check || slices.ContainsFunc(s.Results[at+1:], of) {
+			t.Fatalf("refusalsTakeOut states that a refusal of %s at %s takes out the result of seq %d, which is no one result of that check", row.check, row.commit, seq)
+		}
+		out = append(out, at)
+	}
+	want := make([]Result, 0, len(s.Results))
 	for i, r := range s.Results {
-		if r.Check == c.ID && countedCommit(s, c, r) == commit {
-			out = append(out, i)
+		if !slices.Contains(out, i) {
+			want = append(want, r)
 		}
 	}
-	want := slices.DeleteFunc(slices.Clone(s.Results), func(r Result) bool { return r.Check == c.ID && countedCommit(s, c, r) == commit })
 	fsys := editTree(t, base, "results.json", resultsWithout(slices.Clone(out)))
 	if read, err := ReadScenario(fsys); err != nil || !reflect.DeepEqual(read.Results, want) {
-		t.Fatalf("the sweep took the results of %s at %s out of results.json, and the reader reads %d results (%v), where it should read %d", c.ID, commit, len(read.Results), err, len(want))
+		t.Fatalf("the sweep took the results of seq %v out of results.json, and the reader reads %d results (%v), where it should read %d", row.seqs, len(read.Results), err, len(want))
 	}
-	states, err := p.states(t, fsys)
+	states, err := scenarioStates(fsys)
 	if err != nil {
-		t.Fatalf("the base with the results of %s at %s taken out: %v", c.ID, commit, err)
+		t.Fatalf("the base with the results of seq %v taken out: %v", row.seqs, err)
 	}
+	return awayFrom(s, row.commit, states)
+}
+
+// awayFrom is states with no state of a subject of s at commit.
+func awayFrom(s Scenario, commit string, states map[string]string) map[string]string {
+	away := maps.Clone(states)
 	for i, subject := range s.Subjects {
 		if subject.Commit == commit {
-			maps.DeleteFunc(states, func(at, _ string) bool { return strings.HasPrefix(at, fmt.Sprintf("subject %d ", i+1)) })
+			maps.DeleteFunc(away, func(at, _ string) bool { return strings.HasPrefix(at, fmt.Sprintf("subject %d ", i+1)) })
 		}
 	}
-	return states
+	return away
 }
 
 // resultsWithout is the writer of withoutResultsOf: the tree of results.json that it is handed
@@ -511,36 +458,20 @@ func decodedScenario(t *testing.T, base fstest.MapFS) Scenario {
 }
 
 // plantedOnElsewhere is the right of a planted_on added to a failing example where it names a commit
-// of the history: R8 decides whether that record counts at a subject, and where it does not, the
-// older evidence decides, as with no such record.
-const plantedOnElsewhere = `a planted_on that names a commit of the history counts only where R8 carries it; elsewhere older evidence decides`
+// of the history: a record whose test missed its fault counts at no other commit, and the ties decide
+// whether one whose test caught it counts at a subject (the rule that replaces The Spec's R8), and
+// where it does not, the older evidence decides, as with no such record.
+const plantedOnElsewhere = `a planted_on that names a commit of the history counts at another commit only for a caught failing example, where the ties carry it; elsewhere older evidence decides`
 
-// withoutResult is the states of base with result i of results.json taken out, as the reader's
-// process p reads them.
-func withoutResult(t *testing.T, p *readerProcess, base fstest.MapFS, i int) map[string]string {
+// withoutResult is the states of base with result i of results.json taken out (scenarioStates).
+func withoutResult(t *testing.T, base fstest.MapFS, i int) map[string]string {
 	t.Helper()
 	fsys := changedFile(t, base, "results.json", treeChange{place: []string{strconv.Itoa(i)}, out: true}, leftOutAt)
-	states, err := p.states(t, fsys)
+	states, err := scenarioStates(fsys)
 	if err != nil {
 		t.Fatalf("the base with result %d taken out: %v", i+1, err)
 	}
 	return states
-}
-
-// countedCommit is the commit where the result r of the check c of the scenario s counts
-// (CheckStates, steps 2 and 7), "" for none: for a failing example of a program check of the code,
-// the commit that the step planted its fault on, where its record says where (unplanted) and the
-// history holds that commit, and else none, since such a record counts from no commit, so that a
-// refusal at the commit that it names gives no right to take it out; and for each other result, the
-// commit where its job ran (resultCommit).
-func countedCommit(s Scenario, c Check, r Result) string {
-	if r.Kind != ResultFailingExample || c.Subject != SubjectCode || c.Procedure != ProcedureProgram {
-		return resultCommit(r)
-	}
-	if _, held, err := s.History.Changed(r.PlantedOn, r.PlantedOn); unplanted(r) != "" || err != nil || !held {
-		return ""
-	}
-	return r.PlantedOn
 }
 
 // addableMembers is each member that a record of a JSON file of a scenario can leave out (the
@@ -570,24 +501,23 @@ type addableRecords struct {
 // nothing, since the commit of a result has one reading, its commit (resultCommit), for the judge
 // and for the leg rule alike; one on a result of a query or an agent of production or of the graph
 // moves nothing, also where CI refused the check at that commit, since such a check reads no commit
-// (CountsAtACommit); and a commit on a result of a check of production or of the graph is refused.
+// (countsAtACommit); and a commit on a result of a check of production or of the graph is refused.
 // A planted_on alone, or fault_paths alone, on a failing example of a program check of the code
 // that no step planted moves no state: it counts from planted_on only with both, and with one of
-// the two it reads unknown with the reason that names the other (CheckStates, step 7). A planted_on
-// that names a commit of the history has one right: where R8 does not carry that commit to a
-// subject, the record counts nowhere there and the base without that record decides
-// (plantedOnElsewhere). A planted_on that names no commit of the history has none: such a record
+// the two it reads unknown with the reason that names the other (deriveChecks, step 7). A planted_on
+// that names a commit of the history has one right: at a subject at another commit, a record whose
+// test missed its fault counts nowhere, and one whose test caught it counts nowhere where the ties
+// do not carry that commit there, and the base without that record decides (plantedOnElsewhere). A
+// planted_on that names no commit of the history has none: such a record
 // reads unknown, planted_on_outside_history.
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
 	floorsCover(t, "members", bases)
-	reader := newSweepReader(t)
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			base := bases[name]
-			p := reader.start(t)
 			s, err := ReadScenario(base)
 			if err != nil {
 				t.Fatalf("the base: %v", err)
@@ -633,7 +563,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
-									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, p, base, i)
+									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, base, i)
 								}
 							}
 							inputs = append(inputs, in)
@@ -641,9 +571,9 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, p, name, base, inputs)
+			n := sweepAgainst(t, base, inputs)
 			atFloor(t, "members", name, n)
-			t.Logf("%d members added: %d refused, %d read as the base, %d read another state", n.inputs, n.refused, n.same, n.moved)
+			t.Logf("%d members added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})
 	}
 }
@@ -710,22 +640,18 @@ func namesOf(t *testing.T, fsys fstest.MapFS) map[string][]string {
 }
 
 // sweepInput is one input of the sweep: what it changed, for the line of a failure alone, the files
-// of the scenario with it, the reason of its right to move a state toward true, "" for none, the
-// states that the right allows, by place, nil for a right that covers each place, and whether it is
-// one of the sweep's known positives (knownPositives), which the sweep must report and no floor
-// counts, with moves, the lines of the states that it is built to move toward true.
+// of the scenario with it, the reason of its right to move a state toward true, "" for none, and the
+// states that the right allows, by place, nil for a right that covers each place.
 type sweepInput struct {
 	what    string
 	fsys    fstest.MapFS
 	right   string
 	allowed map[string]string
-	known   bool
-	moves   []string
 }
 
 // pathOfOneSpace is the right of a repository path of a tree of the history written " ": a real
 // path, since git holds a file of that name, so the tree changed at a path that a tie covers.
-const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and the carry ends (R8)`
+const pathOfOneSpace = `the path " " of the tree is a real path, which git holds, so the tree changed at a path that a tie covers, and a failing example counts across it no more (the rule that replaces The Spec's R8)`
 
 // sweepInputs is each input of the sweep of the scenario base, and base with each JSON file written
 // again by the sweep's own decoder and encoder, unchanged, which the sweep reads as base. Each input
@@ -805,17 +731,6 @@ func sweepInputs(t *testing.T, base fstest.MapFS) ([]sweepInput, fstest.MapFS) {
 	return inputs, roundTrip
 }
 
-// towardTrue is each state of got that reads true, met or ends where whole reads otherwise.
-func towardTrue(whole, got map[string]string) []string {
-	var toward []string
-	for _, at := range slices.Sorted(maps.Keys(got)) {
-		if v := got[at]; (v == checkTrue || v == statementMet || v == "ends") && whole[at] != v {
-			toward = append(toward, fmt.Sprintf("%s: %q, and %q in the whole scenario", at, v, whole[at]))
-		}
-	}
-	return toward
-}
-
 // recordKinds is each kind of record of a scenario, a fact that CI or the repository recorded about
 // a check, by its file and its place: a result, a run of a job, a refusal of CI, a tie, a commit of
 // the history and a file of a commit's tree. The approved spec, the subjects and the units are what
@@ -834,11 +749,12 @@ func recordKinds() map[string][][]string {
 // fact did not happen. A record that states a fact against a check, taken out, can move a state
 // toward true by right, and each kind of record has a row here, with the state of the check with
 // the record and with it taken out, and its reason; a kind with no row fails the test. A file taken
-// out of a commit's tree is not there at that commit, so it changed, and the carry of each result
-// across it ends, a failure's as a pass's (R8: "A result at one commit also counts at another
-// commit when no code that the check runs changed between the two"), as a changed label ends it:
-// it moves a state away from true where a pass carried, and toward true where a failure carried (a
-// row of each), as a path of a tree written " " does in
+// out of a commit's tree is not there at that commit, so it changed, and a failing example caught
+// before it counts across it no more (the rule that replaces The Spec's R8: "A failing example that
+// a check's test caught (The Spec R9) counts at another commit only while no file that the test
+// reads changed"; a run of a check of the code counts only at the commit that it read, and a failing
+// example that missed its fault only at the commit that it counts from), as a changed label ends
+// it: it moves a state away from true, as a path of a tree written " " does in
 // TestNoInputThatSaysNothingMovesAStateTowardTrue. Each row derives the check at the subject of its
 // scenario with the record, and with the record taken out; setup makes the scenario first.
 func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
@@ -855,23 +771,20 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		check         string // whose state the row reads
 		with, without string // the state of the check with the record and with it taken out
 	}
-	// carriedFailure is carry with a failure of c at c1 after its pass, which carries to c2, and a
-	// pass at c2 after it and a caught failing example planted on c2: c2 reads unknown (disagree).
-	carriedFailure := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
-		return editTree(t, fsys, "results.json", failureCarriedToC2())
+	// linuxPassAtM2 is silent-leg with a pass of leg linux at m2, where leg arm's run ended with no
+	// result: m2 reads unknown (ci_fault).
+	linuxPassAtM2 := func(t *testing.T, fsys fstest.MapFS) fstest.MapFS {
+		return editTree(t, fsys, "results.json", resultsAdded([]addedResult{{0, map[string]any{"commit": "m2", "at": "2026-11-13T10:00:00Z", "seq": 7}}}))
 	}
 	rows := []row{
-		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's pass carries no more to c2 (R8)",
+		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so the failing example caught at c1 counts no more at c2, and c2's pass has no failing example that counts (the rule that replaces The Spec's R8)",
 			scenario: "carry", file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
 			subject: 1, check: c, with: "true", without: "unknown"},
-		{kind: "a file of a commit's tree", reason: "a tied file that the later commit does not hold changed, so c1's failure carries no more to c2, and c2's own pass and caught failing example count (R8)",
-			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "2", "files", "packages/envoy/cmd/listener/main.go"},
-			subject: 1, check: c, with: "unknown", without: "true"},
 		{kind: "a failing result", reason: "the failure is the record against the check, and the history without it holds no failure (R7: \"a later failure cancels an earlier pass\")",
 			scenario: "silent-leg", file: "results.json", place: []string{"5"},
 			subject: 3, check: q, with: "false", without: "true"},
-		{kind: "a run of a job", reason: "with no run of leg arm that ended, no leg is silent (R9: \"after a run of its job ends\")",
-			scenario: "silent-leg", file: "jobs.json", place: []string{"1"},
+		{kind: "a run of a job", reason: "with no run of leg arm that ended, no leg is silent, and leg linux's pass at m2 counts (R9: \"after a run of its job ends\")",
+			scenario: "silent-leg", setup: linuxPassAtM2, file: "jobs.json", place: []string{"1"},
 			subject: 1, check: c, with: "unknown", without: "true"},
 		{kind: "the refusals of CI at a commit", reason: "CI then refused no check at the commit (R48)",
 			scenario: "refusal", file: "uncited.json", place: []string{"c2"},
@@ -879,15 +792,15 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 		{kind: "a refusal of CI", reason: "CI then refused no check at the commit (R48)",
 			scenario: "refusal", file: "uncited.json", place: []string{"c2", c},
 			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "the ties at a commit", reason: "no tie is then known at the commit, and a tie that is not known carries no result (R18, R8), so the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "ties.json", place: []string{"c1"},
-			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "a tie", reason: "the tie is then not known at the commit, and a tie that is not known carries no result (R18, R8), so the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "ties.json", place: []string{"c1", c},
-			subject: 1, check: c, with: "unknown", without: "true"},
-		{kind: "a commit of the history", reason: "the history then holds no tree of the commit, so no result carries from it (R8), and the failure there counts nowhere else",
-			scenario: "carry", setup: carriedFailure, file: "history.json", place: []string{"commits", "1"},
-			subject: 1, check: c, with: "unknown", without: "true"},
+		{kind: "the ties at a commit", reason: "no tie is then known at the commit, and a failing example planted where no tie is known counts at no other commit (R18; the rule that replaces The Spec's R8), so the one caught there counts at c2 no more, and c2's pass has no failing example that counts",
+			scenario: "carry", file: "ties.json", place: []string{"c1"},
+			subject: 1, check: c, with: "true", without: "unknown"},
+		{kind: "a tie", reason: "the tie is then not known at the commit, and a failing example planted where its tie is not known counts at no other commit (R18; the rule that replaces The Spec's R8), so the one caught there counts at c2 no more, and c2's pass has no failing example that counts",
+			scenario: "carry", file: "ties.json", place: []string{"c1", c},
+			subject: 1, check: c, with: "true", without: "unknown"},
+		{kind: "a commit of the history", reason: "the history then holds no commit c1, so the failing example caught there counts from no commit (planted_on_outside_history), and c2's pass has no failing example",
+			scenario: "carry", file: "history.json", place: []string{"commits", "1"},
+			subject: 1, check: c, with: "true", without: "unknown"},
 	}
 	kinds := recordKinds()
 	for kind := range maps.Keys(kinds) {
@@ -897,8 +810,6 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			}
 		}
 	}
-	reader := newSweepReader(t)
-	p := reader.start(t)
 	for _, r := range rows {
 		base := scenarioFS(t, filepath.Join("testdata", "scenarios", r.scenario))
 		if r.setup != nil {
@@ -910,7 +821,7 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 			want string
 			form string
 		}{{base, r.with, "with"}, {without, r.without, "without"}} {
-			states, err := p.states(t, read.fsys)
+			states, err := scenarioStates(read.fsys)
 			if err != nil {
 				t.Errorf("%s, %s the record: %v", r.kind, read.form, err)
 				continue
@@ -925,23 +836,6 @@ func TestTakingOutAWholeRecordMovesAStateOnlyByItsRight(t *testing.T) {
 				t.Errorf("%s, %s the record %s %s: the check reads %q, want %q (%s)", r.kind, read.form, r.file, treePointer(r.place), got, read.want, r.reason)
 			}
 		}
-	}
-}
-
-// failureCarriedToC2 is the writer of carry's results.json that adds a failure of its first
-// record's check at c1 after its pass, a pass at c2 after it, and a copy of its caught failing
-// example planted on c2 (TestTakingOutAWholeRecordMovesAStateOnlyByItsRight).
-func failureCarriedToC2() treeEdit {
-	return func(v any) any {
-		results := v.([]any)
-		run := func(commit, outcome, at string, seq int) map[string]any {
-			r := maps.Clone(results[0].(map[string]any))
-			r["commit"], r["outcome"], r["at"], r["seq"] = commit, outcome, at, seq
-			return r
-		}
-		fault := maps.Clone(results[1].(map[string]any))
-		fault["commit"], fault["planted_on"], fault["at"], fault["seq"] = "f-c2", "c2", "2026-11-13T09:05:00Z", 7
-		return append(results, run("c1", "fail", "2026-11-12T10:10:00Z", 5), run("c2", "pass", "2026-11-13T09:00:00Z", 6), fault)
 	}
 }
 

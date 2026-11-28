@@ -42,7 +42,7 @@ func addAskBlockIDs(ids map[string]struct{}, tree *pmdoc.Node) {
 
 // openAskBlockIDs collects the id of every ask block tree holds (pmdoc.WalkAskBlocks), and of no
 // other credited block: the ids an asks row can name, which a refusal of a dropped ask reads
-// against (refuseDroppedAskBlocksIn, droppedAskBlocks), so a decision retyped from an ask block is
+// against (refuseDroppedAskBlocks, droppedAskBlocks), so a decision retyped from an ask block is
 // no ask block kept.
 func openAskBlockIDs(tree *pmdoc.Node) map[string]struct{} {
 	ids := map[string]struct{}{}

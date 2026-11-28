@@ -25,6 +25,7 @@ import (
 // architect's start task names no approval of the `decisions` step. Afterwards each of the three
 // stored values still stands, since this release deletes none of them.
 func TestADecisionsGateRowIsIgnored(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	engine := stepsEngine(twoSteps(), nil)
 	apply := applyFacts(t, pool, engine)

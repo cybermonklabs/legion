@@ -131,7 +131,7 @@ func (w addressingWrites) writeCausing(
 }
 
 // createIssue writes an issue as the API's createIssue does: the issue's node before its row, the
-// row naming that node (dispatch://INFRA-1253), and the issue.created event whose payload is the
+// row naming that node (the issue-tree spec), and the issue.created event whose payload is the
 // issue it made, routed to no one. The node's facts carry the sentinel rather than that event,
 // since this writes the event after the rows; no read here asks what caused them. A row the API
 // wrote names its node, so no backfill pass reads it.
@@ -438,7 +438,7 @@ func requireTheRoleCensusAgrees(t *testing.T, database *store.Store, addressed .
 	for _, kind := range report.Kinds {
 		t.Logf("kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
 			kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("the census reads a difference of kind %s at %s: %s", kind.Kind, difference.At, difference.Cause)
 		}
 	}

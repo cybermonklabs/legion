@@ -227,6 +227,8 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/run-verdict.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
 . "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -888,10 +890,10 @@ make_issue() {
 # and agent directory of the run's own. Its RPC is newline JSON both ways, so the rig writes
 # requests on a FIFO it holds open and reads answers out of the process's own stdout.
 write_omp_profile() {
-  local natives=$HOME/.omp/natives role url id key
-  # The caller's native-module cache, linked as lib/omp-home.sh links it, so a fresh home downloads
+  local natives role url id key
+  # The caller's native-module cache (omp_natives_dir, lib/omp-home.sh), so a fresh home downloads
   # nothing and the caller's own ~/.omp is neither written nor removed.
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  natives=$(omp_natives_dir)
   mkdir -p "$natives" "$work/home/.omp" "$work/agent"
   ln -sfT "$natives" "$work/home/.omp/natives"
   # A selection with no check that needs a model turn needs no model route, and still needs a
@@ -1252,7 +1254,7 @@ check_stored_deliveries_arrive_once() {
       '{source:"agent",source_session:"ess-peer",target_session:$t,message:("direct " + $m)}')" ||
     refuse "the direct message to the stalled session was refused $api_status: $(head -c 300 "$answer")" || return 1
   ! api "$port_a" POST /v1/messages/publish \
-    "$(jq -cn --arg r "$role" --arg m "$marker" '{topic:("notifications.role." + $r),message:("role " + $m)}')" ||
+    "$(jq -cn --arg r "$role" --arg m "$marker" '{topic:("notifications.role." + $r),source:"agent",source_session:"ess-peer",message:("role " + $m)}')" ||
     refuse "the publish onto the role route of an unresponsive holder answered 200, as if that holder had taken it" || return 1
   [ "$api_status" = 202 ] ||
     refuse "the role publish answered $api_status, not 202 kept: $(head -c 300 "$answer")" || return 1
@@ -1529,7 +1531,7 @@ check_role_claim_survives_lookups() {
       refuse "lookup $i does not name the holder, its unresponsive state, its last_seen and claim_released false: $(head -c 300 "$answer")" || return 1
   done
   ! api "$port_a" POST /v1/messages/publish \
-    "$(jq -cn --arg r "$role" '{topic:("notifications.role." + $r),message:"a publish onto a lapsed holder'\''s role"}')" ||
+    "$(jq -cn --arg r "$role" '{topic:("notifications.role." + $r),source:"agent",source_session:"ess-peer",message:"a publish onto a lapsed holder'\''s role"}')" ||
     refuse "the publish onto a lapsed holder's role answered 200, as if that holder had taken it" || return 1
   [ "$api_status" = 202 ] ||
     refuse "the publish answered $api_status, not 202 kept: $(head -c 200 "$answer")" || return 1

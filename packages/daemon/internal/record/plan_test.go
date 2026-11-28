@@ -293,7 +293,7 @@ func TestOwnersNewestPlanReadsOnlyAnOwnersGift(t *testing.T) {
 		var got *StoredPlan
 		inTx(t, st, func(tx pgx.Tx) {
 			var err error
-			got, err = NewStore().OwnersNewestPlan(ctx, tx, issue)
+			got, err = OwnersNewestPlan(ctx, NewStore(), tx, issue)
 			must(t, err)
 		})
 		return got
@@ -346,11 +346,12 @@ func TestArchitectOfTreeIsTheRootsOrAMembersArchitect(t *testing.T) {
 	})
 }
 
-// The plans a first step passes over are each plan of the issue in force whose giver is no
-// architect of the issue's tree now (ArchitectOfTree), with its version and its giver, in the order
-// they were given: a plan of the tree root's architect is not among them, nor a plan of a
-// sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in a
-// tree of its own, each of those owners' plans is an earlier owner's.
+// The plans of earlier owners a first step passes over are each plan of the issue in force whose
+// giver is no architect of the issue's tree now (ArchitectOfTree), with its version and its giver,
+// in the order they were given: a plan of the tree root's architect is not among them, nor a plan
+// of a sub-architect, nor a plan of the default steps, which nobody gave. Once the issue stands in
+// a tree of its own, each of those owners' plans is an earlier owner's. (A first step in a group
+// that takes no plan passes its owner's plans over too, which workflow's passOverOwners reads.)
 func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()
@@ -372,14 +373,14 @@ func TestPlansOfEarlierOwnersLeaveOutEachArchitectOfTheTree(t *testing.T) {
 		putPlan(t, tx, defaults, defaultTasks, nil)
 	})
 	inTx(t, st, func(tx pgx.Tx) {
-		got, err := NewStore().PlansOfEarlierOwners(ctx, tx, issue)
+		got, err := PlansOfEarlierOwners(ctx, NewStore(), tx, issue)
 		must(t, err)
 		if want := []PlanVersion{earlier}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in the tree %s = %#v, want the other tree's alone: %#v", key, planIssue, got, want)
 		}
 		alone := issue
 		alone.Tree = key
-		got, err = NewStore().PlansOfEarlierOwners(ctx, tx, alone)
+		got, err = PlansOfEarlierOwners(ctx, NewStore(), tx, alone)
 		must(t, err)
 		if want := []PlanVersion{earlier, bySub, own}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("the plans of earlier owners of %s in a tree of its own = %#v, want every owner's: %#v", key, got, want)

@@ -337,7 +337,7 @@ func DocumentReadWeightForTest(markdown string) (int64, error) {
 // package makes, in place of a hook field on Service: the renders are made by the package's
 // render helpers (countDocumentRender), which hold no service. A render loads it and, outside a
 // test, finds it nil and does nothing else, so no production path changes. One test at a time
-// holds it, as the hook fields on Service are held, and clears it in t.Cleanup.
+// holds it, as the hook fields on Service are held, and clears it in a cleanup (testcleanup.Add).
 var documentRenders atomic.Pointer[renderRecord]
 
 // renderRecord is what the renderings a test watches produced: the markdown of each, in the

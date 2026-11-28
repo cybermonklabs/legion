@@ -186,7 +186,8 @@ func textColumn(line string, column int) int {
 }
 
 // fenceColons is the number of colons in line when they are all it holds but spaces, tabs and a
-// line feed, and 0 otherwise.
+// line feed, and 0 otherwise. QuestionBlocks reads a typed block's closing fence with it, as the
+// parser does (typedDirectiveParser.Continue).
 func fenceColons(line string) int {
 	return colonLine(strings.Trim(line, " \t\n"))
 }
@@ -256,7 +257,7 @@ func (p *unsupportedDirectiveParser) CanAcceptIndentedLine() bool {
 // refused where its attributes are, since the browser editor's parser refuses it too. The line
 // is passed past its indentation and its containers' markers and without its line ending, as
 // the parser passes it (typedDirectiveParser.Open), and this is the one reader of the grammar:
-// a caller outside the document parser - refs.questionBlocks, which scans a stored version's
+// a caller outside the document parser - QuestionBlocks, which scans a stored version's
 // lines for its question blocks - reads a line with it rather than with a grammar of its own.
 func ParseTypedDirectiveOpen(line string) (string, Attrs, bool) {
 	colons := colonRun([]byte(line))
@@ -447,6 +448,8 @@ func directiveName(name string) bool {
 	return true
 }
 
+// directiveNameByte reports whether char can stand in a directive's name: an ASCII letter or
+// digit, `_` or `-`.
 func directiveNameByte(char byte) bool {
 	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-'
 }

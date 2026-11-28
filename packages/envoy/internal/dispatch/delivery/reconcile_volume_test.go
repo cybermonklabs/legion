@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -31,6 +32,7 @@ func fastPageRetries(t *testing.T) {
 // is visited whole rather than halved or refused, and one past githubResultCap is refused, since
 // its results past the cap are unreachable however the window is asked for.
 func TestWalkWindowedVisitsAWindowItCannotHalveWhole(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(minimumSearchWindow)
 	const maxResults = 10
@@ -146,6 +148,7 @@ func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
 // a real week of the deploy repository's history, which failed the pass identically on every
 // retry, forever.
 func TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit(t *testing.T) {
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -228,6 +231,71 @@ func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T
 	}
 	if !timedOut {
 		t.Fatal("the fake never answered a timeout, so the retry was never exercised")
+	}
+}
+
+// TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts: a page GitHub answers once
+// with its own timeout answer, a 502 or a 504, is asked again within the call and read. Every
+// other outage status, a 408, a 500, a 503 and the 429 of GitHub's rate limit, goes back to the
+// caller after one ask, whose retry is the next reconcile pass (retryGitHubPage says why); the
+// 429 as a *githubapp.RateLimitError, whose wait the caller keeps.
+func TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts(t *testing.T) {
+	fastPageRetries(t)
+	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	until := since.Add(24 * time.Hour)
+	runs := make([]map[string]any, 0, 25)
+	for i := range 25 {
+		runs = append(runs, smallRun(int64(2000+i), until.Add(-time.Duration(i+1)*time.Minute)))
+	}
+	for _, tc := range []struct {
+		status  int
+		retried bool
+	}{
+		{http.StatusBadGateway, true},
+		{http.StatusGatewayTimeout, true},
+		{http.StatusRequestTimeout, false},
+		{http.StatusInternalServerError, false},
+		{http.StatusServiceUnavailable, false},
+		{http.StatusTooManyRequests, false},
+	} {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			fake := newFakeGitHub(t)
+			var mu sync.Mutex
+			failed, secondPages := false, 0
+			fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
+				mu.Lock()
+				second := r.URL.Query().Get("page") == "2"
+				first := second && !failed
+				if second {
+					secondPages++
+				}
+				if first {
+					failed = true
+				}
+				mu.Unlock()
+				if first {
+					http.Error(w, http.StatusText(tc.status), tc.status)
+					return
+				}
+				runsPage(t, w, r, runs)
+			})
+			got, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml", since, until)
+			if !failed {
+				t.Fatalf("the fake never answered %d, so the row is blind", tc.status)
+			}
+			if tc.retried {
+				if err != nil || len(got) != 25 || secondPages != 2 {
+					t.Fatalf("ListWorkflowRuns across a page answered %d once = %d runs, %v, page 2 asked %d times; want 25 runs, page 2 asked twice", tc.status, len(got), err, secondPages)
+				}
+				return
+			}
+			if err == nil || secondPages != 1 {
+				t.Fatalf("ListWorkflowRuns across a page answered %d = %d runs, %v, page 2 asked %d times; want the failure, page 2 asked once", tc.status, len(got), err, secondPages)
+			}
+			if _, limited := githubapp.AsRateLimit(err); limited != (tc.status == http.StatusTooManyRequests) {
+				t.Fatalf("ListWorkflowRuns across a page answered %d = %v; want GitHub's rate limit for a 429 alone", tc.status, err)
+			}
+		})
 	}
 }
 

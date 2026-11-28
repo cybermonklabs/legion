@@ -228,7 +228,7 @@ func socketRoom(r *http.Request) string {
 // the socket is held: the admission reads the count of switches first and again once the socket
 // is held, and a count that moved closes it the same way (refuseSwitchedAdmission).
 //
-// The server decides the room (R5 of dispatch://INFRA-1253): the one statement that reads the
+// The server decides the room (R5 of the issue-tree spec): the one statement that reads the
 // document's issue reads its room beside it (issueOpen), the document_rooms row's room for a
 // document converted into its issue's room, else the document itself. Everything of the socket
 // from there is the room's - its place under the room cap, its admission, its load, its lock - so
@@ -237,6 +237,13 @@ func socketRoom(r *http.Request) string {
 // answered under another name would sync nothing. ygo is handed the request under the room's
 // name, and the socket's frames are renamed between the two on their way in and out
 // (roomAliasWriter).
+//
+// A retired document takes no socket, which the admission reads of the document asked for twice:
+// first, before it reserves anything (refusedDocument), so a browser that keeps coming back to a
+// retired document costs a read and no load of the document; and again once the room is reserved
+// and the socket held (refuseRetired), the last step before ygo loads or joins the room, so a
+// retirement that commits while the socket reserves its room and loads the document refuses it
+// too.
 //
 // The name asked for has to be the document's id as Dispatch writes it, lower case and
 // hyphenated, and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free
@@ -288,7 +295,7 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "document not found", http.StatusNotFound)
 		return
 	case retired:
-		http.Error(w, "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable", http.StatusConflict)
+		http.Error(w, documentRetiredRefusal, http.StatusConflict)
 		return
 	case query:
 		http.Error(w, "DECISIONS_QUERY: the issue's decisions query renders the issue's decisions and takes no text; write a decision as a `decision` block of the issue's spec", http.StatusConflict)
@@ -364,6 +371,16 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		refuseSwitchedAdmission(w, r, room)
 		return
 	}
+	// The retirement is read again here, once the room is reserved and the socket held, as the last
+	// step before ygo loads or joins the room: a retirement that committed after the read above,
+	// while this socket took its places and loaded the document, refuses it as that read would
+	// have. One that commits after this read closes the room once ygo has handed it out
+	// (documentRemoved, which closes a room GetDoc answers, so not one ygo is still loading). A
+	// room whose retirement it missed takes no version of the retired document: settlement writes
+	// none (settlement.commitVersion), and the room's text is kept in its stored updates.
+	if s.refuseRetired(w, r, asked) {
+		return
+	}
 	// The awareness clients the socket's peer may announce are bounded before ygo reads its
 	// frames (awareness_limit.go). ygo serves the socket under the room's name, which its peer's
 	// frames are renamed to and from where the socket asked for another (room_alias.go).
@@ -374,6 +391,25 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	routed := r.Clone(ctx)
 	routed.SetPathValue("room", room)
 	s.srv.ServeHTTP(served, routed)
+}
+
+// documentRetiredRefusal is the 409 a socket asking for a retired document is refused with, by the
+// admission's first read (refusedDocument) and by its read once the room is held (refuseRetired).
+const documentRetiredRefusal = "DOCUMENT_RETIRED: the document was retired; it takes no new text, and its versions stay readable"
+
+// refuseRetired refuses a socket that asked for document 409 DOCUMENT_RETIRED while that document
+// is retired (RetireDocument, documentRetired), before the upgrade, and answers whether it refused
+// it. A read that fails refuses it 404, as a document the admission cannot read is.
+func (s *Service) refuseRetired(w http.ResponseWriter, r *http.Request, document string) bool {
+	retired, err := documentRetired(r.Context(), s.queryFrom(r.Context()), document)
+	if err != nil {
+		http.Error(w, "document not found", http.StatusNotFound)
+		return true
+	}
+	if retired {
+		http.Error(w, documentRetiredRefusal, http.StatusConflict)
+	}
+	return retired
 }
 
 // ProcessHeader names, on every answer to a document socket's request and on its upgrade above

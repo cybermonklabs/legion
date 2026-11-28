@@ -27,7 +27,10 @@
 # ports; (f) each instance's broker trusts the dev-oidc-issuer that instance started, lists
 # its dev caller, its exchange account and its read entry (BROKER_EXCHANGE_READ_ACCOUNTS),
 # exports the caller token that issuer wrote, has that issuer write the read entry's pod token
-# at the exchange's audience, names that token's file in its banner, and stops the
+# at the exchange's audience, names that token's file in its banner, gives its broker the two job
+# entries (BROKER_EXCHANGE_JOB_ACCOUNTS and BROKER_EXCHANGE_JOB_WORKFLOWS) with that issuer as
+# the GitHub issuer, has the issuer write the job pod's token and the workflow run's request
+# token, names both files and the request URL in its banner, and stops the
 # issuer on exit; (g) that same issuer serves the code flow for the broker's own sign-in
 # client and signs the approver in, the broker's BROKER_SIGNIN_* naming that issuer, client,
 # domain and a 0600 secret file in the run's workdir, and the banner names the broker's own
@@ -42,10 +45,13 @@
 # service login's account as the registrar of its pod's account and of no other
 # (BROKER_POD_REGISTRARS), without which the broker refuses the one registration the script
 # makes, and exits on, 403 POD_REGISTRAR_NOT_LISTED; (k) each instance writes a profiles file
-# that names every github-app secret of its store, DEMO_GITHUB_APP the source of the two proxied
-# profiles, and starts its broker with it and with a proxy named by a front it bound first,
-# pointed at the port the broker logged, signing with the stands' authority and outside any
-# cluster although the run was started as a pod's, and stops that front on exit; (l)
+# that declares the one kind github, api.github.test for GET and HEAD with the token in
+# Authorization by the way mint, and names every github-app secret of its store, the copy of
+# DEMO_GITHUB_APP its store tags proxy=github the source of the two proxied profiles, which are
+# behind that kind by that tag alone, and DEMO_GITHUB_APP itself untagged, so its own profile is
+# released as its value; and starts its broker with that file and with a proxy named by a front
+# it bound first, pointed at the port the broker logged, signing with the stands' authority and
+# outside any cluster although the run was started as a pod's, and stops that front on exit; (l)
 # DEV_BROKER_PROXIED_GITHUB_IP puts the proxied GitHub on that address's port 443 and points the
 # proxy at it, and DEV_BROKER_GITHUB_PERMISSIONS reaches the stands one owner at a time; (m)
 # DEV_BROKER_BROKER_BIN is the broker started, and no broker is built; (n) each of those two
@@ -143,18 +149,21 @@ chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake go: "go build -o <path> ./cmd/<pkg>" installs a stub executable at <path> instead of
 # compiling. The client stubs are never run by dev-broker.sh (it only prints their directory); the
-# broker stub logs the issuer, the callers, the exchange's account and read entries, the service
-# logins, the services, the pod registrars, the sign-in client and the metrics address it was
+# broker stub logs the issuer, the callers, the exchange's account, read and job entries, the
+# GitHub issuer, the service logins, the services, the pod registrars, the sign-in client and the
+# metrics address it was
 # configured with, then the JSON "broker listening" line with its addr field, exactly like the
 # real cmd/cipherd does once it binds — using its own PID as a stand-in for the kernel-assigned
 # port a real Listen would report, since two concurrently running stub processes always have
 # distinct PIDs — and the "broker metrics listening" line after it, 2<PID> standing in for that
 # port, with the "airlock proxy listening" line between the two for a broker given a profiles file
-# that gives a profile a proxy block, 1<PID> standing in for its proxy's port, as the real broker
-# binds a proxy only for a deployment whose profiles hold one, and then stays alive as the
+# that declares a kind or holds a dpop block, 1<PID> standing in for its proxy's port, as the real
+# broker binds a proxy only for such a file (config.AirlockSubjects), and then stays alive as the
 # backgrounded "server" process dev-broker.sh waits on and kills during cleanup. The
 # dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the mode of the
-# secret file it would read, its callback and the --sign-in-as person, then logs
+# secret file it would read, its callback and the --sign-in-as person, writes each
+# --actions-token's request token file and logs the line the real one logs for it, its request
+# URL on the issuer's own address, then logs
 # "issuer listening url=..." as the real one does, its own PID standing in for its port the
 # same way, and stays alive until cleanup kills it. The dev-airlock-stands stub serves its stands
 # and its front mode alike (below). Each build names its package in the caller's own
@@ -182,7 +191,7 @@ DEVRELAY
   */dev-oidc-issuer)
     cat >"$out" <<'ISSUER'
 #!/usr/bin/env bash
-client="" secret_file="" redirect_uri="" sign_in_as=""
+client="" secret_file="" redirect_uri="" sign_in_as="" actions_runs=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --token)
@@ -203,6 +212,19 @@ while [[ $# -gt 0 ]]; do
       redirect_uri="${secret_and_uri#*=}"
       ;;
     --sign-in-as) sign_in_as="$2" ;;
+    --actions-token)
+      # <repository>=<workflow path>=<ref>=<request token file>, and the real issuer's own line
+      # for it, which dev-broker.sh reads the request URL out of.
+      actions_runs=$((actions_runs + 1))
+      repository="${2%%=*}"
+      rest="${2#*=}"
+      workflow="${rest%%=*}"
+      rest="${rest#*=}"
+      ref="${rest%%=*}"
+      request_token_file="${rest#*=}"
+      printf 'fake-request-token-for-%s\n' "$repository" >"$request_token_file"
+      echo "dev-oidc-issuer: ${request_token_file} holds the request token of ${repository}/${workflow}@${ref}'s Actions run (request URL http://127.0.0.1:$$/_actions/token/${actions_runs}?api-version=2.0)" >&2
+      ;;
     *)
       echo "fake dev-oidc-issuer: unexpected argument $1" >&2
       exit 2
@@ -295,12 +317,13 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} read-exchange=${BROKER_EXCHANGE_READ_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} pod-registrars=${BROKER_POD_REGISTRARS:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
+echo "fake broker jobs: job-accounts=${BROKER_EXCHANGE_JOB_ACCOUNTS:-} job-workflows=${BROKER_EXCHANGE_JOB_WORKFLOWS:-} github-issuer=${BROKER_EXCHANGE_GITHUB_ISSUER:-} github-audience=${BROKER_EXCHANGE_GITHUB_AUDIENCE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
 echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker: store=${BROKER_SECRETS_STORE:-} prefix=${BROKER_SECRETS_PREFIX:-} key-arn=${BROKER_SECRETS_KMS_KEY_ARN:-} key-name=${BROKER_SECRETS_KMS_KEY_NAME:-} fake-secrets=${BROKER_FAKE_SECRETS_FILE:-}" >&2
 echo "fake broker airlock: profiles=${BROKER_PROFILES_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}] dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] kubernetes_service_host=[${KUBERNETES_SERVICE_HOST-unset}]" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
-if [[ -n "${BROKER_PROFILES_FILE:-}" ]] && jq -e 'any(.profiles[]; .proxy != null)' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
+if [[ -n "${BROKER_PROFILES_FILE:-}" ]] && jq -e '(.kinds // []) != [] or any(.profiles[]; .proxy | type == "object" and .kind == "dpop")' "$BROKER_PROFILES_FILE" >/dev/null 2>&1; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
 fi
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
@@ -660,12 +683,46 @@ assert_instance_isolated() {
   local read_token="${workdir}/read-token"
   if [[ "$(cat "$read_token" 2>/dev/null)" != "fake-token-for-${reader}" ]] \
     || ! grep -qF "dev-oidc-issuer: ${read_token} holds ${reader}'s token for audience legion-broker-exchange (pod pod-uid-of-${reader##*:})" "$log_file" \
-    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on GET /api/v1/projects/{key}/architecture and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
+    || ! grep -qF "  read token:          ${read_token}  (${reader}'s pod, audience legion-broker-exchange: exchanges under example-reader-session for a token of the scope read alone, which Dispatch serves on every GET route it classes as a read and answers 403 READ_ONLY_TOKEN on every other route)" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's issuer does not write the read entry's pod token at the exchange's audience into ${read_token}, or its banner does not name that file and what its token may do" >&2
     exit 1
   fi
   printf 'PASS: %s has its issuer write the read entry'"'"'s pod token for the exchange and names that file in its banner\n' "$label"
+
+  # The two job entries. The job pod's account is a pod account of its own, whose token the
+  # issuer mints at the exchange's audience into the workdir's job-token; the workflow's run asks
+  # the issuer, standing in for GitHub, for its token with the request token the issuer wrote into
+  # actions-request-token, at the request URL the issuer logged. The broker is given both entries,
+  # each with the session it fixes, and that same issuer as GitHub's, with the audience the run
+  # asks for; the banner names both files and the request URL the issuer logged.
+  local job_account="system:serviceaccount:example-ns:example-job"
+  local job_token="${workdir}/job-token"
+  local request_token="${workdir}/actions-request-token"
+  local job_run="example-org/example-repo/.github/workflows/example-job.yaml@refs/heads/main"
+  local request_url="${issuer}/_actions/token/1?api-version=2.0"
+  if [[ "$(cat "$job_token" 2>/dev/null)" != "fake-token-for-${job_account}" ]] \
+    || ! grep -qF "dev-oidc-issuer: ${job_token} holds ${job_account}'s token for audience legion-broker-exchange (pod pod-uid-of-${job_account##*:})" "$log_file" \
+    || [[ "$(cat "$request_token" 2>/dev/null)" != "fake-request-token-for-example-org/example-repo" ]] \
+    || ! grep -qF "dev-oidc-issuer: ${request_token} holds the request token of ${job_run}'s Actions run (request URL ${request_url})" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's issuer does not write the job pod's token at the exchange's audience into ${job_token} and the workflow run's request token into ${request_token}" >&2
+    exit 1
+  fi
+  if ! grep -qxF "fake broker jobs: job-accounts=${job_account}=EXAMPLE=example-job-session job-workflows=example-org/example-repo=.github/workflows/example-job.yaml=refs/heads/main=public=example-workflow-session github-issuer=${issuer} github-audience=legion-broker-github" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's broker is not given the job pod entry, the job workflow entry and its own issuer as GitHub's (want BROKER_EXCHANGE_GITHUB_AUDIENCE=legion-broker-github)" >&2
+    exit 1
+  fi
+  if ! grep -qxF "  job token:           ${job_token}  (${job_account}'s pod, audience legion-broker-exchange: a job entry, BROKER_EXCHANGE_JOB_ACCOUNTS, that exchanges under example-job-session for a token naming that account as its service, no person, and the project EXAMPLE)" "$log_file" \
+    || ! grep -qxF "  actions request URL: ${request_url}  (ACTIONS_ID_TOKEN_REQUEST_URL of ${job_run}'s run, served by dev-oidc-issuer in GitHub's place)" "$log_file" \
+    || ! grep -qxF "  actions request token: ${request_token}  (ACTIONS_ID_TOKEN_REQUEST_TOKEN of that run)" "$log_file" \
+    || ! grep -qF "  github audience:     legion-broker-github  (" "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label's banner does not name the job token file, the actions request URL and token file, and the GitHub audience" >&2
+    exit 1
+  fi
+  printf 'PASS: %s gives its broker both job entries with its own issuer as GitHub'"'"'s, has that issuer write the job pod'"'"'s token and the run'"'"'s request token, and names both files and the request URL in its banner\n' "$label"
 
   # The registered service's two halves. A stack that logs the daemon account in
   # (BROKER_SERVICE_LOGINS) and binds no pod account to that service (BROKER_SERVICES) serves no
@@ -706,13 +763,14 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s lists %s as the one registrar of %s'"'"'s pods (BROKER_POD_REGISTRARS)\n' "$label" "$registrar" "$pod_account"
-  # The stand-in GitHub and the three github-app secrets it mints: the stands are started for the
+  # The stand-in GitHub and the four github-app secrets it mints: the stands are started for the
   # three installations the case pair needs, the broker is pointed at that stand's own address,
-  # and the fake store holds all three with the type, the tier, the owner and the github-owners
-  # tag each one's release rests on - the two the registered service owns, which a pod session of
-  # it gets without asking, and the approver's own human-tier one, whose release a person
-  # decides. The App key is the file the stands reported, so a report that named another file
-  # would leave the store holding something else.
+  # and the fake store holds all four with the type, the tier, the owner, the github-owners tag
+  # and the proxy tags each one's release rests on - the three the registered service owns, which
+  # a pod session of it gets without asking, one of them DEMO_GITHUB_APP's copy and the only one
+  # tagged proxy=github, and the approver's own human-tier one, whose release a person decides.
+  # No secret is tagged proxy-narrowed. The App key is the file the stands reported, so a report
+  # that named another file would leave the store holding something else.
   local stands_url stands_owners
   stands_url="$(grep -o 'github stand: *http://127\.0\.0\.1:[0-9]\+' "$log_file" | head -n1 | grep -o 'http://.*' || true)"
   stands_owners="$(grep -o 'fake stands: dir=[^ ]* owners=\[[^]]*\]' "$log_file" | head -n1 | sed -E 's/.*owners=\[(.*)\]$/\1/' || true)"
@@ -722,20 +780,24 @@ assert_instance_isolated() {
     echo "FAIL: $label's broker does not mint github-app secrets at its own stand-in (owners '${stands_owners:-none}', stand ${stands_url:-none})" >&2
     exit 1
   fi
-  local tags want_tags
+  local tags want_tags keyed
   tags="$(jq -r '
     [.secrets[] | select(.tags.type == "github-app")
-     | "\(.name) \(.tags.type) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.value | fromjson | .app_id)"] | sort | join("; ")
+     | "\(.name) \(.tags.type) \(.tags.tier) \(.tags.owner) \(.tags["github-owners"]) \(.tags.proxy // "-") \(.tags["proxy-narrowed"] // "-") \(.value | fromjson | .app_id)"] | sort | join("; ")
     ' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
-  want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org 123456"
-  want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada 123456"
-  want_tags="${want_tags}; example/agent-secrets/demo-github-app-human github-app human ada@example.com acme-org 123456"
+  want_tags="example/agent-secrets/demo-github-app github-app agent legion-daemon acme-org - - 123456"
+  want_tags="${want_tags}; example/agent-secrets/demo-github-app-case-pair github-app agent legion-daemon ada - - 123456"
+  want_tags="${want_tags}; example/agent-secrets/demo-github-app-human github-app human ada@example.com acme-org - - 123456"
+  want_tags="${want_tags}; example/agent-secrets/demo-github-app-proxied github-app agent legion-daemon acme-org github - 123456"
   if [[ "$tags" != "$want_tags" ]]; then
-    echo "FAIL: $label's fake store holds no such three github-app secrets: ${tags:-none}" >&2
+    echo "FAIL: $label's fake store holds no such four github-app secrets: ${tags:-none}" >&2
     exit 1
   fi
-  if ! grep -qF -- "-----BEGIN PRIVATE KEY-----" <(jq -r --arg prefix "example/agent-secrets/" '.secrets[] | select(.name == ($prefix + "demo-github-app")) | .value | fromjson | .private_key' "${workdir}/fake-secrets.json"); then
-    echo "FAIL: $label's github-app secret holds no App key from the stands' report" >&2
+  keyed="$(jq -r --arg prefix "example/agent-secrets/" '
+    [.secrets[] | select(.name == ($prefix + "demo-github-app") or .name == ($prefix + "demo-github-app-proxied"))
+     | select(.value | fromjson | .private_key | contains("-----BEGIN " + "PRIVATE KEY-----"))] | length' "${workdir}/fake-secrets.json" 2>/dev/null || true)"
+  if [[ "$keyed" != 2 ]]; then
+    echo "FAIL: $label's DEMO_GITHUB_APP and its copy do not each hold an App key from the stands' report (${keyed:-none} do)" >&2
     exit 1
   fi
   # The banner exports the name of each github-app secret, the approver's own beside the two the
@@ -747,25 +809,50 @@ assert_instance_isolated() {
     echo "FAIL: $label's banner does not export the name of each of its three github-app secrets" >&2
     exit 1
   fi
-  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, holds its three github-app secrets and exports each name\n' "$label"
-  # The profiles file the broker is given: each github-app secret a profile of its own name, and
-  # DEMO_GITHUB_APP the source of the two proxied ones, each the one account's bare token bound
-  # to the github-tls stand's name for GET and HEAD alone. Every github-app secret of the store
-  # is a profile's, since the broker refuses one no profile names (github-app-no-profile), and
-  # the stands' certificate for github-tls carries the name the proxied ones bind. With no
-  # DEV_BROKER_PROXIED_GITHUB_IP the github-tls stand keeps a port the system picks and the broker
-  # is told of no address for that name, and with no DEV_BROKER_GITHUB_PERMISSIONS the stands are
-  # given no map, so each installation holds the stand's own.
-  local profiles want_profiles unnamed
-  profiles="$(jq -r '[.profiles[] | "\(.name) \(.source // .name) \(.github.value // "installations") \((.proxy.hosts // []) | join(",")) \((.proxy.allow // []) | map(.method) | join(","))"] | join("; ")' "${workdir}/profiles.json" 2>/dev/null || true)"
-  want_profiles="DEMO_GITHUB_APP DEMO_GITHUB_APP installations  ; DEMO_GITHUB_READ DEMO_GITHUB_APP token api.github.test GET,HEAD"
-  want_profiles="${want_profiles}; DEMO_GITHUB_ADMIN_READ DEMO_GITHUB_APP token api.github.test GET,HEAD"
-  want_profiles="${want_profiles}; DEMO_GITHUB_APP_CASE_PAIR DEMO_GITHUB_APP_CASE_PAIR installations  ; DEMO_GITHUB_APP_HUMAN DEMO_GITHUB_APP_HUMAN installations  "
+  printf 'PASS: %s starts a stand-in GitHub for three installations, mints against it, holds its four github-app secrets, the copy of DEMO_GITHUB_APP alone tagged proxy=github, and exports each name\n' "$label"
+  # The profiles file the broker is given, each profile read as the broker reads it: the kind its
+  # source's proxy tag names in the store (or, for a source with no tag, its own proxy string), and
+  # that kind's hosts, headers, ways and allow. It declares one kind, github, the github-tls
+  # stand's name for GET and HEAD alone with the token in Authorization, by the way mint a
+  # github-app source's credential takes. Each github-app secret but the tagged copy is a profile
+  # of its own name, behind no kind, so DEMO_GITHUB_APP is released as its value; the copy is the
+  # source of the two proxied ones, each the one account's bare token behind github by the copy's
+  # tag, with no allow of its own (the kind's is theirs) and no proxy-narrowed tag on its source,
+  # and no profile holds a proxy block. Every github-app secret of the store is a profile's, since
+  # the broker refuses one no profile names (github-app-no-profile), and the stands' certificate
+  # for github-tls carries the kind's host. With no DEV_BROKER_PROXIED_GITHUB_IP the github-tls
+  # stand keeps a port the system picks and the broker is told of no address for that name, and
+  # with no DEV_BROKER_GITHUB_PERMISSIONS the stands are given no map, so each installation holds
+  # the stand's own.
+  local kinds profiles want_profiles unnamed
+  kinds="$(jq -r '[(.kinds // [])[].name] | join(",")' "${workdir}/profiles.json" 2>/dev/null || true)"
+  profiles="$(jq -rn --slurpfile store "${workdir}/fake-secrets.json" --slurpfile file "${workdir}/profiles.json" '
+    def words: if length == 0 then "-" else join(",") end;
+    ([$store[0].secrets[] | {key: (.name | sub("^example/agent-secrets/"; "") | ascii_upcase | gsub("-"; "_")), value: .tags}] | from_entries) as $tags
+    | ([($file[0].kinds // [])[] | {key: .name, value: .}] | from_entries) as $kinds
+    | [$file[0].profiles[]
+       | (.source // .name) as $source
+       | ($tags[$source].proxy // (if (.proxy | type) == "string" then .proxy else null end)) as $kind
+       | ($kinds[$kind // ""] // {}) as $k
+       | [.name, $source, (.github.value // "installations"), ($kind // "-"),
+          (($k.hosts // []) | words),
+          (if $kind == null then "-" else (($k.headers // ["authorization"]) | words) end),
+          (($k.ways // []) | words),
+          (($k.allow // []) | map(.method + .pathPrefix) | words),
+          (if .allow == null then "-" else (.allow | map(.method + .pathPrefix) | words) end),
+          ($tags[$source]["proxy-narrowed"] // "-"),
+          (if (.proxy | type) == "object" then "block" else "-" end)]
+       | join(" ")] | join("; ")' 2>/dev/null || true)"
+  want_profiles="DEMO_GITHUB_APP DEMO_GITHUB_APP installations - - - - - - - -"
+  want_profiles="${want_profiles}; DEMO_GITHUB_READ DEMO_GITHUB_APP_PROXIED token github api.github.test authorization mint GET/,HEAD/ - - -"
+  want_profiles="${want_profiles}; DEMO_GITHUB_ADMIN_READ DEMO_GITHUB_APP_PROXIED token github api.github.test authorization mint GET/,HEAD/ - - -"
+  want_profiles="${want_profiles}; DEMO_GITHUB_APP_CASE_PAIR DEMO_GITHUB_APP_CASE_PAIR installations - - - - - - - -"
+  want_profiles="${want_profiles}; DEMO_GITHUB_APP_HUMAN DEMO_GITHUB_APP_HUMAN installations - - - - - - - -"
   unnamed="$(jq -rn --slurpfile store "${workdir}/fake-secrets.json" --slurpfile file "${workdir}/profiles.json" '
     ([$file[0].profiles[] | (.source // .name)]) as $named
     | [$store[0].secrets[] | select(.tags.type == "github-app") | .name | sub("^example/agent-secrets/"; "") | ascii_upcase | gsub("-"; "_")
        | select(. as $n | $named | index($n) | not)] | join(" ")' 2>/dev/null || echo unread)"
-  if [[ "$profiles" != "$want_profiles" ]] || [[ -n "$unnamed" ]] \
+  if [[ "$kinds" != github ]] || [[ "$profiles" != "$want_profiles" ]] || [[ -n "$unnamed" ]] \
     || ! grep -qF "fake stands: dir=${workdir}/stands owners=[acme-org=7 ada=8 Ada=9] hosts=[github-tls=api.github.test] addresses=[] held=[]" "$log_file" \
     || ! grep -qF "export DEV_BROKER_PROFILES_FILE=${workdir}/profiles.json" "$log_file" \
     || ! grep -qF "export DEV_BROKER_GITHUB_READ_PROFILE=DEMO_GITHUB_READ" "$log_file" \
@@ -773,11 +860,11 @@ assert_instance_isolated() {
     || ! grep -qF "export DEV_BROKER_GITHUB_PROXIED_URL=https://api.github.test" "$log_file" \
     || ! grep -qF "export DEV_BROKER_GITHUB_COMMIT=5fd1c0a5a4e3b2c1d0e9f8a7b6c5d4e3f2a1b0c9" "$log_file"; then
     cat "$log_file" >&2
-    echo "FAIL: $label's profiles file is [${profiles:-unread}], want [$want_profiles]; github-app secrets no profile names: [${unnamed}]" >&2
+    echo "FAIL: $label's profiles file declares the kinds [${kinds:-none}], want [github], and serves [${profiles:-unread}], want [$want_profiles]; github-app secrets no profile names: [${unnamed}]" >&2
     exit 1
   fi
-  printf 'PASS: %s writes a profiles file naming every github-app secret, with the two proxied profiles of DEMO_GITHUB_APP, and exports their names\n' "$label"
-  # The broker's proxy, which a profiles file with a proxy block needs: the file, a port the
+  printf 'PASS: %s writes a profiles file of the one kind github, naming every github-app secret, with the two proxied profiles behind github by the tag on DEMO_GITHUB_APP'"'"'s copy, and exports their names\n' "$label"
+  # The broker's proxy, which a profiles file that declares a kind needs: the file, a port the
   # kernel picks, the URL of the front this run bound before the broker, the stands' authority to
   # sign with and trust upstream, no address for the proxied GitHub (none was asked for), and
   # KUBERNETES_SERVICE_HOST empty although the run was started with it set, as in a pod. The front
@@ -1006,7 +1093,7 @@ DEV_BROKER_GCP_PREFIX="$gcp_prefix" DEV_BROKER_GCP_KMS_KEY_NAME="$gcp_key" \
   run_instance 1 "$log1" "$docker_calls1" "$curl_calls1"
 if ! wait_for_ready "$log1"; then
   cat "$log1" >&2
-  echo "FAIL: a DEV_BROKER_GCP_* run, whose profiles file gives no profile a proxy block, never reached ready" >&2
+  echo "FAIL: a DEV_BROKER_GCP_* run, whose profiles file declares no kind and holds no dpop block, never reached ready" >&2
   exit 1
 fi
 gcp_workdir="$(grep -o 'dev-broker: workdir [^ ]*' "$log1" | head -n1 | cut -d' ' -f3 || true)"
@@ -1020,23 +1107,23 @@ if ! grep -qF "fake broker: store=gcp-secret-manager prefix=${gcp_prefix} key-ar
 fi
 printf 'PASS: DEV_BROKER_GCP_PREFIX and DEV_BROKER_GCP_KMS_KEY_NAME start the broker on Secret Manager under them, with an empty fake secrets file and a profiles file naming no profile\n'
 
-# --- A profiles file that gives no profile a proxy block, as the one under DEV_BROKER_GCP_* is:
-# the broker binds no proxy port for it and logs no line for one (the fake broker does as the real
-# one does), so the stack starts without waiting for that line, points the proxy's front at
-# nothing, and its banner says there is no proxy port. A stack that waited for the line would
-# stop 15 seconds in, never ready. ---
+# --- A profiles file that declares no kind and holds no dpop block, as the one under
+# DEV_BROKER_GCP_* is: the broker binds no proxy port for it and logs no line for one (the fake
+# broker does as the real one does), so the stack starts without waiting for that line, points the
+# proxy's front at nothing, and its banner says there is no proxy port. A stack that waited for the
+# line would stop 15 seconds in, never ready. ---
 if grep -qF "dev-broker: broker never logged its proxy's address" "$log1" \
   || grep -qF '"message":"airlock proxy listening"' "$log1" \
   || [[ -s "${gcp_workdir}/proxy-backends" ]] \
-  || ! grep -qF "  proxy:               none  (no profile of the profiles file has a proxy block, so the broker binds no proxy port)" "$log1"; then
+  || ! grep -qF "  proxy:               none  (the profiles file declares no kind and holds no dpop block, so the broker binds no proxy port)" "$log1"; then
   cat "$log1" >&2
-  echo "FAIL: a stack whose profiles file gives no profile a proxy block waited for a proxy port, pointed its front at one, or did not say it has none" >&2
+  echo "FAIL: a stack whose profiles file declares no kind and holds no dpop block waited for a proxy port, pointed its front at one, or did not say it has none" >&2
   exit 1
 fi
 kill -TERM "${instance_pid[1]}"
 wait "${instance_pid[1]}" 2>/dev/null || true
 instance_pid[1]=""
-printf 'PASS: a profiles file with no proxy block starts the stack without waiting for a proxy port, and the banner says it has none\n'
+printf 'PASS: a profiles file of no kind and no dpop block starts the stack without waiting for a proxy port, and the banner says it has none\n'
 
 for half in DEV_BROKER_GCP_PREFIX DEV_BROKER_GCP_KMS_KEY_NAME; do
   : >"$docker_calls1"

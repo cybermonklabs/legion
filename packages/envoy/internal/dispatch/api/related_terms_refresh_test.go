@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // refreshTermStatsPass runs one refresh of the project and answers what it did: whether it
@@ -191,12 +192,7 @@ func queuedChanges(t *testing.T, database *store.Store) int {
 // whose item belongs to project (searchTermQueueProjectSQL).
 func queuedChangesOf(t *testing.T, database *store.Store, project string) int {
 	t.Helper()
-	var queued int
-	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from search_term_queue q where `+searchTermQueueProjectSQL+` = $1`, project).Scan(&queued); err != nil {
-		t.Fatalf("count the queued changes of %s: %v", project, err)
-	}
-	return queued
+	return int(countRows(t, database, `select count(*) from search_term_queue q where `+searchTermQueueProjectSQL+` = $1`, project))
 }
 
 // A1. The counts a pass applies from the queue are the counts a full rebuild writes, after an
@@ -332,13 +328,8 @@ func TestRefreshFromTheRelatedCheckAppliesTheQueuedChanges(t *testing.T) {
 	`, issue.Key); err != nil {
 		t.Fatalf("write a comment: %v", err)
 	}
-	select {
-	case result := <-srv.ensureSearchTermStats(project):
-		if result.Err != nil {
-			t.Fatalf("the check's refresh failed: %v", result.Err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the check's refresh did not end")
+	if result := testwait.Receive(t, "the check's refresh of the term statistics to end", srv.ensureSearchTermStats(project)); result.Err != nil {
+		t.Fatalf("the check's refresh failed: %v", result.Err)
 	}
 	// The issue is born converted, so its tree and its decisions query write versions, whose
 	// document_search rows queue changes too; those name no project (searchTermDocument) and wait

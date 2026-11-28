@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/contracts/fixtures/capability-redaction.json redactionBranches
+
 import (
 	"bytes"
 	"context"

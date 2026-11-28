@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  `PATCH /api/v1/issues/{key}/nodes/{id}` moves a node under another parent or among its siblings,
+  and `DELETE /api/v1/issues/{key}/nodes/{id}` takes a node and its subtree out in one write, with
+  `?dry_run=true` to count first. Both take the placement the caller read in `If-Match`: the
+  `placement_seq` the tree read answers on each node, which for a child issue that no move has
+  placed yet is the seq of its `child_of`. Both write each changed document one version, and refuse
+  a move or a delete an agent may not make of a person's decision (409 ANSWERED_ASK_KEPT).
+time: 2026-11-25T12:22:14Z
+custom:
+    Issue: pr4180

@@ -20,6 +20,12 @@ import {
   thread,
 } from "./ask-card-fixture";
 
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
+
 // A write the reader stopped on the card: a hand-on, an answer, a question back and a reply may
 // each have been made, so the card says what its Retry does rather than that the write failed;
 // and what that Retry is of once a host draws the same card for another ask.

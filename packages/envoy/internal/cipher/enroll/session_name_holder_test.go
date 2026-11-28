@@ -515,7 +515,10 @@ func TestARevokedSignInTradesNothingSoItsBoxReachesNoEnrollment(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tx.Rollback(ctx)
-	if err := store.RecordPersonSignIn(ctx, tx, "ada@example.com", thumbprint, "fleet@example.iam.gserviceaccount.com"); !errors.Is(err, store.ErrSignInRevoked) {
+	if err := RecordPersonSignIn(ctx, tx, store.SignInTrade{
+		Person: "ada@example.com", Thumbprint: thumbprint, MachineAccount: "fleet@example.iam.gserviceaccount.com",
+		Account: store.IssuerSubject{Issuer: "https://accounts.google.com", Subject: "109ada@example.com"}, EndUnrecorded: true,
+	}); !errors.Is(err, store.ErrSignInRevoked) {
 		t.Fatalf("the revoked box key's next trade = %v, want %v: the box trades nothing, so it is minted no credential to enrol with", err, store.ErrSignInRevoked)
 	}
 	if _, err := svc.Create(ctx, cred, Enrollment{Kind: "session", RuntimeID: "revoked-box", Thumbprint: "tp-revoked-box", SessionID: str("revoked-box-session")}); !errors.Is(err, ErrUnauthenticated) {

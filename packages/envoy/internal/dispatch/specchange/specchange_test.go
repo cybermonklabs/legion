@@ -84,8 +84,7 @@ func approvedOf(t *testing.T, removed map[string]bool, blocks map[string][]strin
 	t.Helper()
 	approved := specgraph.Approved{Nodes: map[string]specgraph.ApprovedNode{}}
 	for id, texts := range blocks {
-		gone, kept := removed[id], false
-		node := specgraph.ApprovedNode{ID: id, Removed: &gone, PartlyChecked: &kept}
+		node := specgraph.ApprovedNode{ID: id, Removed: removed[id]}
 		for index, text := range texts {
 			node.Versions = append(node.Versions, specgraph.ApprovedVersion{Version: index + 1, At: time.Date(2026, 11, 1+index, 0, 0, 0, 0, time.UTC), Block: text})
 		}

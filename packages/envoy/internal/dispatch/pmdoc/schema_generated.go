@@ -158,10 +158,10 @@ const (
 // BlockAttributeKind is the kind of value a typed block attribute holds. A `block[]` attribute
 // points at blocks: canonical block references (parseBlockPointerValue in @legion/contracts'
 // dispatch-block-ref.ts), each making an edge of the attribute's name. An `ask` attribute names one
-// ask of the block's own issue, as `dispatch://<ISSUE>/ask/<id>`, never a part of one. A `days`
-// attribute holds a duration in days: a positive decimal number with at most two digits after its
-// point (`0.25`, `1`, `2.5`), with no sign, no exponent and no leading zero but the one before a
-// point.
+// ask of the block's own issue, as `dispatch://<ISSUE>/ask/<id>`, never a part of one. A `minutes`
+// attribute holds a duration: a whole number of hours, a whole number of minutes, or both with the
+// hours first (`45m`, `2h`, `1h30m`), each number positive, with no sign and no leading zero, and
+// at most 10000 minutes in all, which the block's node holds as its whole number of minutes.
 type BlockAttributeKind string
 
 const (
@@ -173,5 +173,5 @@ const (
 	BlockAttributeActor      BlockAttributeKind = "actor"
 	BlockAttributeTimestamp  BlockAttributeKind = "timestamp"
 	BlockAttributeAsk        BlockAttributeKind = "ask"
-	BlockAttributeDays       BlockAttributeKind = "days"
+	BlockAttributeMinutes    BlockAttributeKind = "minutes"
 )

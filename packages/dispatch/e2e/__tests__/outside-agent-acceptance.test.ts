@@ -26,7 +26,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -393,6 +393,126 @@ done
       // The shape script, a bounded child under the short bound.
       rowLimit("short")
     );
+
+    // await_child looks at its child, pauses (`pause`, a `sleep 0.1`) and looks again, and returns
+    // once the child has ended, or at its bound (outside-agent-lib.sh, end_within). The row reads
+    // each wait in its pauses rather than in seconds: a `sleep` of the row's own stands ahead on
+    // PATH, writes a line for each sleep the waits run, with its argument and whether the child
+    // the script names in WAITED had ended as it began, and runs the real one. A child that never
+    // ends is the control: its wait returns with no exit status, the child still listed, after at
+    // least a second of its 2 s bound. A child that ends at 0.2 s ends its wait then, with its own
+    // exit status: every sleep of the waits is a pause, so the wait looks every pause, and no
+    // more than one pause begins once the child has ended, since the shell reaps the child while
+    // it waits for that pause and the next look finds it gone. A wait that looked only every 5 s,
+    // the slow wait #5247 removed, sleeps 5; one that looked on past the child's end pauses again
+    // with it ended. stop_child's TERM ends the first child inside its 10 s bound: the status its
+    // wait read (end_within_exit, which stop_child holds local and kill_child, run next, sees) is
+    // 143, where a child its TERM did not end is still running at the bound, and nothing is left
+    // running. No clock decides a verdict: in a builds pod running this row beside the whole
+    // harness, the wait came back 3.02 s to 5.24 s after the child's end in 12 of 768 runs, past
+    // the 3 s the row once held it to, and the stop took up to 8.53 s of its 9, each look of each
+    // wait a fork the load slowed (dispatch://INFRA-3904).
+    test(
+      "await_child ends as its child ends, and at its bound for one that never does",
+      async () => {
+        const base = `9${Math.floor(Math.random() * 1e6)
+          .toString()
+          .padStart(6, "0")}`;
+        const sleep = hostTool("sleep") as string;
+        const directory = scratch("waits");
+        const sleeps = join(directory, "sleeps");
+        const shims = scratch("shims");
+        script(
+          join(shims, "sleep"),
+          `#!/usr/bin/env bash
+state=running
+if [ -e /proc/self/stat ]; then
+  { read -r stat <"/proc/$WAITED/stat"; } 2>/dev/null || stat=''
+  case $stat in '' | *') Z '*) state=ended ;; esac
+else
+  stat=$(ps -o stat= -p "$WAITED" 2>/dev/null)
+  case $stat in '' | Z*) state=ended ;; esac
+fi
+printf '%s %s %s\\n' "$WAITED" "$*" "$state" >>'${sleeps}'
+exec '${sleep}' "$@"
+`
+        );
+        const waits = script(
+          join(directory, "waits.sh"),
+          `#!/usr/bin/env bash
+set -u
+. '${join(acceptance, "outside-agent-lib.sh")}'
+background=''
+clock() { printf '%s' "\${EPOCHREALTIME:-$(date +%s.%N)}"; }
+since() { awk -v a="$1" -v b="$(clock)" 'BEGIN { printf "%.2f", b - a }'; }
+listed() { case " $background " in *" $1 "*) echo yes ;; *) echo no ;; esac; }
+'${sleep}' ${base}1 &
+never=$!
+background="$background $never"
+export WAITED=$never
+began=$(clock)
+await_child "$never" 2
+echo "never pid=$never exit=\${child_exit:-none} seconds=$(since "$began") listed=$(listed "$never")"
+( '${sleep}' 0.2; exit 7 ) &
+seven=$!
+background="$background $seven"
+WAITED=$seven
+await_child "$seven" 30
+echo "seven pid=$seven exit=\${child_exit:-none} listed=$(listed "$seven")"
+eval "lib_$(declare -f kill_child)"
+kill_child() { stop_exit=\${end_within_exit:-running}; lib_kill_child "$@"; }
+WAITED=$never
+stop_child "$never"
+echo "stopped exit=\${stop_exit:-none} left=$(pgrep -f "^${sleep} ${base}1\\$" | wc -l | tr -d ' ')"
+`
+        );
+        const { code, stdout } = await runBounded({
+          argv: ["bash", waits],
+          bound: "short",
+          cwd: scratch("cwd"),
+          env: { PATH: `${shims}:${process.env.PATH ?? ""}` },
+          from: import.meta.url,
+        });
+        const read = (name: string) =>
+          Object.fromEntries(
+            (stdout.split("\n").find((line) => line.startsWith(`${name} `)) ?? "")
+              .split(" ")
+              .slice(1)
+              .map((pair) => pair.split("=") as [string, string])
+          );
+        const never = read("never");
+        const seven = read("seven");
+        const stopped = read("stopped");
+        const slept = (existsSync(sleeps) ? readFileSync(sleeps, "utf8") : "")
+          .split("\n")
+          .filter((line) => line !== "")
+          .map((line) => line.split(" "));
+        const pausesOnceSevenEnded = slept.filter(
+          ([pid, , state]) => pid === seven.pid && state === "ended"
+        ).length;
+        expect({
+          code,
+          never: { exit: never.exit, listed: never.listed, atTheBound: Number(never.seconds) >= 1 },
+          seven: {
+            exit: seven.exit,
+            listed: seven.listed,
+            atMostOnePauseOnceEnded: pausesOnceSevenEnded <= 1,
+          },
+          sleepsThatAreNoPause: slept.filter(([, seconds]) => seconds !== "0.1"),
+          stopped: { exit: stopped.exit, left: stopped.left },
+          stdout,
+          sleeps: slept.map((line) => line.join(" ")),
+        }).toMatchObject({
+          code: 0,
+          never: { exit: "none", listed: "yes", atTheBound: true },
+          seven: { exit: "7", listed: "no", atMostOnePauseOnceEnded: true },
+          sleepsThatAreNoPause: [],
+          stopped: { exit: "143", left: "0" },
+        });
+      },
+      // The script, a bounded child under the short bound.
+      rowLimit("short")
+    );
   }
 );
 
@@ -436,31 +556,63 @@ function squatterPid(printed: string): number {
   return pid;
 }
 
+/** What one squat's wait did (`squatTrial`): the squatter's pid; whether the squatter answered as
+ *  another run's stand-in; the wait's deadline and each of its reads, as the wait's shell wrote
+ *  them, its clock (`SECONDS`, whole seconds since the shell started) as each read began and the
+ *  exit status of that read's `curl`, 28 where its own `--max-time` ended it. */
+interface SquatTrial {
+  readonly pid: number;
+  readonly took: boolean;
+  readonly deadline: number;
+  readonly reads: readonly { readonly at: number; readonly exit: number }[];
+}
+
 /** Starts a process that binds `port` and answers there as another run's stand-in Dispatch does
- *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there; returns
- *  the squatter's pid, or stops it and throws. The squatter tries the port for at most 10 s by the
- *  clock, and the wait reads it for at most 10 s by the clock, plus the 1 s of its last read, so a
- *  port that takes connections and never answers holds the wait for 11 s at most. It is
- *  synchronous because the listener stop it follows is: the port is taken before that stop
- *  returns. */
-function squat(port: number): number {
+ *  (`/_ready` "ready", /healthz commit `another-run`), and waits until it answers there. The
+ *  squatter tries the port for at most 10 s by the clock, and the wait reads it while its clock
+ *  is under 10 s, each read ended by `curl`'s own 1 s, so the wait's clock and its reads' timers
+ *  end it on a port that takes connections and never answers. On a machine whose forks are slow
+ *  the wall time of that is longer, and no verdict rests on it. It is synchronous because the
+ *  listener stop it follows is: the port is taken before that stop returns. */
+function squatTrial(port: number): SquatTrial {
   const squatter = `const port = Number(process.argv[1]); const until = Date.now() + 10000; while (Date.now() < until) { try { Bun.serve({ hostname: "127.0.0.1", port, fetch: (r) => new URL(r.url).pathname === "/_ready" ? new Response("ready") : Response.json({ ok: true, commit: "another-run", fleet_commit: "another-run" }) }); break; } catch { await Bun.sleep(25); } }`;
-  const started = Bun.spawnSync([
-    "bash",
-    "-c",
-    `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); while [ "$SECONDS" -lt "$deadline" ]; do [ "$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready")" = ready ] && exit 0; sleep 0.05; done; exit 1`,
-    process.execPath,
-    squatter,
-    String(port),
-  ]);
+  const started = Bun.spawnSync(
+    [
+      "bash",
+      "-c",
+      `nohup "$0" -e "$1" "$2" >/dev/null 2>&1 & echo $!; deadline=$((SECONDS + 10)); echo "deadline $deadline" >&2; while at=$SECONDS; [ "$at" -lt "$deadline" ]; do answer=$(curl -q -s --max-time 1 "http://127.0.0.1:$2/_ready"); code=$?; echo "read $at $code" >&2; [ "$answer" = ready ] && exit 0; sleep 0.05; done; exit 1`,
+      process.execPath,
+      squatter,
+      String(port),
+    ],
+    { stderr: "pipe" }
+  );
   const pid = squatterPid(started.stdout.toString());
-  if (!started.success) {
+  const report = String(started.stderr ?? "").split("\n");
+  const deadline = /^deadline (\d+)$/.exec(
+    report.find((line) => line.startsWith("deadline ")) ?? ""
+  );
+  return {
+    pid,
+    took: started.success,
+    deadline: deadline === null ? Number.NaN : Number(deadline[1]),
+    reads: report.flatMap((line) => {
+      const read = /^read (\d+) (\d+)$/.exec(line);
+      return read === null ? [] : [{ at: Number(read[1]), exit: Number(read[2]) }];
+    }),
+  };
+}
+
+/** `squatTrial`: the squatter's pid where it took the port, or it stops the squatter and throws. */
+function squat(port: number): number {
+  const trial = squatTrial(port);
+  if (!trial.took) {
     try {
-      process.kill(pid, "SIGKILL");
+      process.kill(trial.pid, "SIGKILL");
     } catch {}
     throw new Error(`the squatter did not take port ${port}`);
   }
-  return pid;
+  return trial.pid;
 }
 
 /** Runs `body` with the next loopback listener this process stops taken over at once by another
@@ -501,26 +653,20 @@ async function withSquat<T>(body: () => Promise<T>): Promise<{ result: T; squatt
 describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
   "the stand-in Dispatch's port and readiness",
   () => {
-    test(
-      "control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in",
-      async () => {
-        const { result, squatted } = await withSquat(async () => {
-          const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-          const { port } = listener;
-          listener.stop(true);
-          return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
-        });
-        expect({ squatted, ready: result.ready }).toEqual({
-          squatted: [result.port],
-          ready: "ready",
-        });
-      },
-      {
-        // It drives one squat, a synchronous wait its own clock ends within 11 s, which Bun's 5 s
-        // default of a plain `bun test` would cut short; 20 s leaves that wait room under load.
-        timeout: 20_000,
-      }
-    );
+    test("control: the squat takes a port a listener of this process closed, and answers there as another run's stand-in", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+        const { port } = listener;
+        listener.stop(true);
+        return { port, ready: await (await fetch(`http://127.0.0.1:${port}/_ready`)).text() };
+      });
+      expect({ squatted, ready: result.ready }).toEqual({
+        squatted: [result.port],
+        ready: "ready",
+      });
+    });
+    // One squat, a synchronous wait its own clock ends, under the command's guard: its wall time
+    // is the machine's, and Bun's timeout reads a synchronous wait only once it has returned.
 
     test("squat throws on a squatter pid it cannot read, before any kill: an empty line, 0 and -1 are refused, and a whole number above 0 is read", () => {
       // squat's shell stands in printing each line as its pid and failing, which is the path that
@@ -562,84 +708,83 @@ describe.skipIf(skipWithout("bash", "curl", "git", "bun"))(
       });
     });
 
-    test(
-      "the squat's wait is held by the clock: on a port that takes connections and never answers, it gives up within 15 s",
-      () => {
-        // The kernel takes each connection into this listener's queue while the wait blocks this
-        // file's event loop, so every read connects and then hears nothing until its 1 s passes.
-        const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-        const began = performance.now();
-        let thrown = "";
-        try {
-          squat(holder.port);
-        } catch (error) {
-          thrown = String(error);
-        } finally {
-          holder.stop(true);
-        }
-        const seconds = (performance.now() - began) / 1000;
-        expect({ thrown, withinTheCap: seconds < 15, seconds }).toEqual({
-          thrown: `Error: the squatter did not take port ${holder.port}`,
-          withinTheCap: true,
-          seconds: expect.any(Number),
-        });
-      },
-      {
-        // It drives one squat against a port that never answers, which the squat's own clock ends
-        // within 11 s by design; 20 s is past the 15 s it asserts, so the assertion fails first.
-        timeout: 20_000,
+    // The wait's clock and its reads' own timers end it, and the row reads those, not the wall
+    // time: every read began while the wait's clock was under its deadline, each read ended by its
+    // `curl`'s own 1 s (exit 28), and the squatter never answered. The kernel takes each
+    // connection into this listener's queue while the wait blocks this file's event loop, so
+    // every read connects and then hears nothing until its 1 s passes. A wall-time cap of 15 s
+    // read the machine, since each look and each read of the wait is a fork, which load slows: in
+    // builds pods with ten fork-exec loops beside the whole harness, at main `b47ad6c75c`, the row
+    // failed at 16.0 s and 16.5 s in 2 of 458 runs, and at 16.8 s in another such run
+    // (dispatch://INFRA-3904).
+    test("the squat's wait is held by the clock: on a port that takes connections and never answers, each read ends at its own 1 s and none begins past the wait's deadline", () => {
+      const holder = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+      let trial: SquatTrial;
+      try {
+        trial = squatTrial(holder.port);
+      } finally {
+        holder.stop(true);
       }
-    );
+      try {
+        process.kill(trial.pid, "SIGKILL");
+      } catch {}
+      expect({
+        took: trial.took,
+        read: trial.reads.length > 0,
+        readsPastTheDeadline: trial.reads.filter(({ at }) => !(at < trial.deadline)),
+        readsNotEndedByTheirTimer: trial.reads.filter(({ exit }) => exit !== 28),
+        trial,
+      }).toMatchObject({
+        took: false,
+        read: true,
+        readsPastTheDeadline: [],
+        readsNotEndedByTheirTimer: [],
+      });
+    });
 
-    test(
-      "a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed",
-      async () => {
-        const { result, squatted } = await withSquat(async () => {
-          let prepared: PreparedStandIn;
-          try {
-            prepared = await prepareStandIn(scratch, passingControls);
-          } catch (error) {
-            return { thrown: String(error) };
-          }
-          try {
-            const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
-              commit?: string;
-            };
-            // The settings the stand-in runs with, as the kernel holds them: a port handed to it
-            // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
-            // show here as a `port` of its settings.
-            const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
-              .split("\0")
-              .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
-              .map(
-                (entry) =>
-                  JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
-                    string,
-                    unknown
-                  >
-              );
-            return {
-              built: prepared.repo.built,
-              served: answer.commit,
-              handed: settings.map((each) => each.port ?? null),
-            };
-          } finally {
-            prepared.dispatch.stop();
-          }
-        });
-        expect({ ...result, squatted }).toEqual({
-          built: expect.any(String),
-          served: "built" in result ? result.built : "the run's own build",
-          handed: [null],
-          squatted: [],
-        });
-      },
-      {
-        // It drives a preparation (a git checkout, and the stand-in's start, whose readiness its own
-        // clock ends within 11 s) and at most one squat, also 11 s by its clock; 30 s holds both.
-        timeout: 30_000,
-      }
-    );
+    test("a prepared run's origin serves its own stand-in Dispatch under the squat, and the stand-in is given no port: no port of it is one this process chose and closed", async () => {
+      const { result, squatted } = await withSquat(async () => {
+        let prepared: PreparedStandIn;
+        try {
+          prepared = await prepareStandIn(scratch, passingControls);
+        } catch (error) {
+          return { thrown: String(error) };
+        }
+        try {
+          const answer = (await (await fetch(`${prepared.dispatch.origin}/healthz`)).json()) as {
+            commit?: string;
+          };
+          // The settings the stand-in runs with, as the kernel holds them: a port handed to it
+          // by any means the squat of `Bun.listen` cannot see (`Bun.serve`, `node:net`) would
+          // show here as a `port` of its settings.
+          const settings = readFileSync(`/proc/${prepared.dispatch.pid}/environ`, "utf8")
+            .split("\0")
+            .filter((entry) => entry.startsWith("OUTSIDE_STAND_IN_DISPATCH="))
+            .map(
+              (entry) =>
+                JSON.parse(entry.slice("OUTSIDE_STAND_IN_DISPATCH=".length)) as Record<
+                  string,
+                  unknown
+                >
+            );
+          return {
+            built: prepared.repo.built,
+            served: answer.commit,
+            handed: settings.map((each) => each.port ?? null),
+          };
+        } finally {
+          prepared.dispatch.stop();
+        }
+      });
+      expect({ ...result, squatted }).toEqual({
+        built: expect.any(String),
+        served: "built" in result ? result.built : "the run's own build",
+        handed: [null],
+        squatted: [],
+      });
+    });
+    // A preparation and at most one squat, each a wait its own clock ends, under the command's
+    // guard, as the two rows above.
   }
 );
 
@@ -1128,6 +1273,37 @@ describe.skipIf(skipWithout("bash", "curl", "git", "base64", "bun"))(
       },
       // The four runs at once, each a bounded child under the short bound.
       rowLimit({ atOnce: ["short", "short", "short", "short"] })
+    );
+
+    // The leg links, at its start, the real program behind each tool its helper, its probe and
+    // its peer run under its PATH. A program it found and could not link leaves them to whatever
+    // PATH holds, so every row from the pins on reads UNKNOWN naming the program and the reason,
+    // and the gate with them.
+    test(
+      "a tailnet leg that cannot link a program it found reads every row UNKNOWN naming it",
+      async () => {
+        const prepared = await prepareStandIn(scratch, passingControls);
+        try {
+          rmSync(join(prepared.env.PATH as string, "ln"), { force: true });
+        } catch (error) {
+          prepared.dispatch.stop();
+          throw error;
+        }
+        const run = await runStandIn(prepared);
+        expect({ problems: unknownProblems(run, tailnetRows), stdout: run.stdout }).toEqual({
+          problems: [],
+          stdout: run.stdout,
+        });
+        const rows = rowsOf(run.stdout);
+        for (const name of tailnetRows.filter((name) => name !== "gate")) {
+          const got = rows.get(name)?.got ?? "";
+          for (const part of ["bun (", "was not linked into", "command not found"]) {
+            expect({ name, got }).toEqual({ name, got: expect.stringContaining(part) });
+          }
+        }
+      },
+      // The run, a bounded child under the short bound.
+      rowLimit("short")
     );
 
     test(

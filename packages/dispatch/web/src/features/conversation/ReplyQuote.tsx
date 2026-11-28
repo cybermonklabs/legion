@@ -4,6 +4,10 @@ import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { DeletedBody, EditedMark } from "../refs/PostMarks";
+import type { PostDeletion } from "../refs/post-marks";
+import { ReferenceHostIs } from "../refs/reference-host";
+import type { TextSource } from "../refs/text-references";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
 // its own text; the quote therefore truncates in an inner element, whatever the link is.
@@ -29,7 +33,13 @@ export function passageItem<T extends { readonly id: string }>(
  *
  *  A reply that names one block of its parent (`block`, the reply's `reply_block`) quotes that
  *  passage instead, worded `Replying to <author>'s passage — <text>`; once the parent's edit
- *  removed the passage, the quote says so in place of its text.
+ *  removed the passage, the quote says so in place of its text. Once the parent's author
+ *  deleted the parent, the quote says that instead of either: no read of the parent gives its
+ *  body, and a reply's read carries the quote with the parent's mark and no text (only the
+ *  reply's own events keep the preview they froze).
+ *
+ *  A parent its author edited carries ` · edited` after its author's name, as its own byline
+ *  does (`edited`); without a loaded parent there is no author and no edit to mark.
  *
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
@@ -37,19 +47,31 @@ export function ReplyQuote({
   author,
   block,
   className = "",
+  deleted = null,
+  edited,
   excerpt,
   excerptTree,
+  source,
   to,
 }: {
   author: Actor | undefined;
   /** The block of the parent the reply answers; null or absent when it answers the whole. */
   block?: ReplyBlockWithTrees | null;
   className?: string;
+  /** The parent's deletion, where the host read one; null for a parent nobody deleted. */
+  deleted?: PostDeletion | null;
+  /** When the parent's author last replaced its body, where the host read the parent; null or
+   *  absent for a parent nobody edited. */
+  edited?: string | null;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
   /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
    *  tree for it (a draft quoting a write the server has not stored yet). */
   excerptTree?: DisplayTree;
+  /** The record the quoted text is - the parent message or comment, whose own passage a block
+   *  quote is (`TextSource`) - so a `#id` in it resolves against that record's document, as it
+   *  does where the parent itself is drawn. */
+  source?: TextSource;
   to?: string;
 }): ReactNode {
   const passage = block !== undefined && block !== null;
@@ -59,7 +81,12 @@ export function ReplyQuote({
   // The dash opens the quoted body, so the body is never an element of its own text: a reader
   // (or a test) matching the parent's body finds the parent's turn, not its every quote.
   const quoted =
-    passage && block.removed ? (
+    deleted !== null ? (
+      <span className="block truncate">
+        {author === undefined ? `${unknownParent} — ` : "— "}
+        <DeletedBody deleted={deleted} />
+      </span>
+    ) : passage && block.removed ? (
       <span className="block truncate">
         {author === undefined ? `${unknownParent} — ` : "— "}
         This passage was removed.
@@ -70,6 +97,8 @@ export function ReplyQuote({
         lead={author === undefined ? `${unknownParent}${quotedText === "" ? "" : " — "}` : "— "}
         lines={1}
         markdown={quotedText}
+        source={source}
+        surface="reply-quote"
         tree={quotedTree}
       />
     ) : null;
@@ -79,15 +108,20 @@ export function ReplyQuote({
         <span className="min-w-0 truncate">
           Replying to <AgentName actor={author} inline />
           {passage ? "'s passage" : ""}
+          <EditedMark at={edited} deleted={deleted} />
           {quoted === null ? "" : " "}
         </span>
       )}
       {quoted === null ? null : to === undefined ? (
         <span className="min-w-0 flex-1">{quoted}</span>
       ) : (
-        <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
-          {quoted}
-        </Link>
+        // The quote is the one link here, so the parent's own references read as links inside
+        // it and are none: the click belongs to the turn this quote opens.
+        <ReferenceHostIs host="control">
+          <Link className={`min-w-0 flex-1 ${linkHoverText}`} to={to}>
+            {quoted}
+          </Link>
+        </ReferenceHostIs>
       )}
     </span>
   );

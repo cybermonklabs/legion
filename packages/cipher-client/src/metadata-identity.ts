@@ -144,7 +144,11 @@ export function metadataIdentity(
       }
       return { token, tokenType: SUBJECT_TOKEN_TYPE_GOOGLE };
     },
+    // A Compute Engine VM's metadata server is at Google's own address, which no setting names,
+    // so the variable is named only while it is set (as the Go client's MetadataIdentity.Describe).
     describe: () =>
-      `this machine's Google identity token for ${audience} (${METADATA_HOST_VAR} names the metadata server)`,
+      (env[METADATA_HOST_VAR] ?? "").trim() === ""
+        ? `this machine's Google identity token for ${audience}`
+        : `this machine's Google identity token for ${audience} (${METADATA_HOST_VAR} names the metadata server)`,
   };
 }

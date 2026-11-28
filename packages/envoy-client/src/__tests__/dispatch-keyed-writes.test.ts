@@ -17,6 +17,7 @@ import {
 import { bearerCredential, type RequestCredential } from "../bearer";
 import {
   DISPATCH_WRITE_RETRY,
+  DispatchAnswerNotKeptError,
   DispatchClient,
   DispatchGatewayError,
   DispatchServiceError,
@@ -1892,8 +1893,8 @@ describe("DispatchClient's writes", () => {
     expect(await (form.get("file") as Blob).text()).toBe("# Spec");
   });
 
-  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer larger
-  // than Dispatch keeps (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
+  // A write Dispatch made whose answer is gone is no refusal: a replay of a first answer Dispatch
+  // gives no copy of (2xx ANSWER_NOT_KEPT), or 409 KEY_COMMITTED (the write landed before its
   // answer was lost, and Dispatch will not run it again). It is never asked again, and its one line
   // says what was made and to read it back.
   test("a write whose answer is gone is a landing, never resent", async () => {
@@ -1905,7 +1906,8 @@ describe("DispatchClient's writes", () => {
         }),
         IDEMPOTENCY_ANSWER_NOT_KEPT,
         201,
-        "Dispatch kept no copy of its answer, which was too large",
+        "Dispatch gives no copy of its answer, which was too large to keep or holds a comment " +
+          "or a message that was deleted, or a document version name a delete replaced",
       ],
       [
         refusal(409, IDEMPOTENCY_KEY_COMMITTED, "the write landed and its answer was lost"),
@@ -1935,6 +1937,89 @@ describe("DispatchClient's writes", () => {
     }
   });
 
+  // A call that writes nothing (the round trips of a text and of a file, the related-item check, a
+  // result's dry run) made nothing, so a replay of an answer Dispatch kept no copy of is no landing
+  // and names nothing to read back: the call is asked once more under a new key, which runs it
+  // afresh, and that ask's answer is the call's. A second such replay is thrown as an answer not
+  // kept, never asked a third time.
+  test("a call that writes nothing whose answer Dispatch did not keep is asked once more under a new key", async () => {
+    const notKept = () =>
+      json({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, error: "not kept" }, 200, {
+        "Idempotency-Replayed": "?1",
+      });
+    const unavailable = () => refusal(503, "UNAVAILABLE", "database unavailable");
+    const checked = { outcome: "none", search: "meaning_and_keywords", related: [] };
+    const dryRun = { line: "- [x] k1 (implementer): pass at 1111111" };
+    for (const [call, url, answer, result] of [
+      [
+        (dispatch: DispatchClient) => dispatch.markdownRoundTrip("# Notes\n", false),
+        "http://dispatch.test/api/v1/markdown/round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.fileRoundTrip(new TextEncoder().encode("# Notes\n"), false),
+        "http://dispatch.test/api/v1/markdown/file-round-trip",
+        { markdown: "# Notes\n" },
+        "# Notes\n",
+      ],
+      [
+        (dispatch: DispatchClient) => dispatch.related("DSP", { title: "Retry webhooks" }),
+        "http://dispatch.test/api/v1/projects/DSP/related",
+        checked,
+        checked,
+      ],
+      [
+        (dispatch: DispatchClient) =>
+          dispatch.dryRunResult("DSP-1", {
+            actor,
+            check: "k1",
+            role: "implementer",
+            verdict: "pass",
+            commit: "1111111111111111111111111111111111111111",
+          }),
+        "http://dispatch.test/api/v1/issues/DSP-1/results/dry-run",
+        dryRun,
+        dryRun,
+      ],
+    ] as const) {
+      const answered = scripted([unavailable(), notKept(), json(answer)]);
+
+      await expect(call(client(answered.fetchImpl, pacing().retry))).resolves.toEqual(result);
+
+      const keys = answered.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(answered.sent.map((request) => [request.method, request.url])).toEqual([
+        ["POST", url],
+        ["POST", url],
+        ["POST", url],
+      ]);
+      // The repeat after the 503 goes under the first key; the ask after the replay, under a new one.
+      expect(keys[1]).toBe(keys[0] as string);
+      expect(keys[2]).toMatch(IDEMPOTENCY_KEY_PATTERN);
+      expect(keys[2]).not.toBe(keys[0] as string);
+      expect(answered.sent[2]?.body).toBe(answered.sent[0]?.body as string);
+
+      const unkept = scripted([unavailable(), notKept(), unavailable(), notKept(), json(answer)]);
+
+      const error = await failure(call(client(unkept.fetchImpl, pacing().retry)));
+
+      const asked = unkept.sent.map((request) => request.headers["Idempotency-Key"]);
+      expect(asked).toHaveLength(4);
+      expect(new Set(asked).size).toBe(2);
+      expect(error).toBeInstanceOf(DispatchAnswerNotKeptError);
+      expect(error).not.toBeInstanceOf(DispatchWriteLandedError);
+      expect(error).not.toBeInstanceOf(DispatchServiceError);
+      expect(error).toEqual(
+        expect.objectContaining({ code: IDEMPOTENCY_ANSWER_NOT_KEPT, status: 200 })
+      );
+      expect(error.message).toBe(
+        `POST ${url} wrote nothing, and Dispatch kept no copy of its answer (ANSWER_NOT_KEPT), so ` +
+          "this command has no answer to print: run it again, which asks under a new key."
+      );
+    }
+  });
+
   test("the production pacing is five attempts within 30 s, each cut off after 20 s of silence, and asks every 3 s until 55 s while Dispatch may be running the write", () => {
     expect(DISPATCH_WRITE_RETRY).toEqual({
       pausesMs: [1_000, 2_000, 4_000, 8_000],
@@ -1949,12 +2034,19 @@ describe("DispatchClient's writes", () => {
 /** How one write's connection to `socketDispatch` takes its body. */
 type Intake = "full" | "stall" | { readonly pauses: number; readonly pauseMs: number };
 
-/** One write `socketDispatch` took: the key it carried, its `Content-Length` and what arrived. */
+/**
+ * One write `socketDispatch` took: the key it carried, its `Content-Length`, what arrived, and the
+ * attempt number its `fetch` sent in `ATTEMPT_HEADER`.
+ */
 interface Taken {
   readonly key: string | undefined;
   readonly length: number;
   received: number;
+  readonly attempt: string | undefined;
 }
+
+/** The header in which `socketDispatch`'s `fetch` numbers each attempt, for its window. */
+const ATTEMPT_HEADER = "x-test-attempt";
 
 /** Answers `socket` with `status` and a JSON `body`, carrying back `key`, and closes it. */
 function answerOn(socket: Socket, status: number, body: unknown, key?: string): void {
@@ -1968,13 +2060,27 @@ function answerOn(socket: Socket, status: number, body: unknown, key?: string): 
 }
 
 /**
+ * How far past what the server has read of a write the connection to `socketDispatch` takes its
+ * body, give or take a 64 KiB chunk read ahead. On loopback the connection's buffers are the
+ * kernel's send and receive buffers, and the receive buffer grows to tcp_rmem's maximum: 4 MiB in
+ * a gVisor pod, and 32 MiB by Linux 7.0's default, which CI's runner has. They hold most of a body
+ * of tens of MiB while the server reads none of it, so the client's progress would be the
+ * machine's buffers. A fixed window makes it the server's reads.
+ */
+const WINDOW = 1 << 20;
+
+/**
  * A Dispatch on a real socket, so a request's body goes out at the pace the connection takes it.
  * Each write's connection takes its body as the next of `intakes` says - at once, in a fixed number
  * of paced steps, or nothing past the first of it - and answers 201 carrying back its key once it
- * holds all of it.
+ * holds all of it. Its `fetch` is Bun's, with each stream body's next chunk read only while what was
+ * read is at most `WINDOW` past what the server has taken of that attempt, so the connection takes
+ * the body only as the server reads it, whatever the machine's socket buffers hold.
  */
 async function socketDispatch(intakes: readonly Intake[]) {
   const writes: Taken[] = [];
+  // Each waits for its write to have taken enough, and looks again whenever any write takes more.
+  const waiting = new Set<() => void>();
   const sockets = new Set<Socket>();
   const server = createServer((socket) => {
     sockets.add(socket);
@@ -2002,12 +2108,15 @@ async function socketDispatch(intakes: readonly Intake[]) {
           key: header("idempotency-key"),
           length: Number(header("content-length")),
           received: 0,
+          attempt: header(ATTEMPT_HEADER),
         };
         intake = intakes[writes.length] ?? "full";
         writes.push(taken);
         chunk = head.subarray(end + 4);
       }
       taken.received += chunk.length;
+      for (const wake of waiting) wake();
+      waiting.clear();
       if (intake === "stall") {
         // What the connection took is counted before it stops, so a row can tell an attempt that
         // went out and was cut off part way from one that never started. It stops once the first
@@ -2020,9 +2129,8 @@ async function socketDispatch(intakes: readonly Intake[]) {
       } else if (typeof intake === "object") {
         // A step of the body, not a rate: what must stay under the write's silence bound is the
         // length of one wait, and a fixed number of waits is a fixed number of chances to pass it.
-        // The waits sit in the first half of the body, so however much of it the socket buffers
-        // already hold when the last wait ends, the connection is still taking bytes and the client
-        // still sees progress.
+        // The waits sit in the first half of the body, so when the last wait ends the connection is
+        // still taking bytes and the client still sees progress.
         const step = taken.length / 2 / intake.pauses;
         if (paused < intake.pauses && taken.received >= (paused + 1) * step) {
           paused++;
@@ -2037,9 +2145,56 @@ async function socketDispatch(intakes: readonly Intake[]) {
   server.listen(0, "127.0.0.1", resolve);
   await listening;
   const { port } = server.address() as AddressInfo;
+
+  /** Settles once attempt `attempt` has had `bytes` of its body taken; rejects as `signal` aborts. */
+  async function took(attempt: string, bytes: number, signal: AbortSignal) {
+    while ((writes.find((write) => write.attempt === attempt)?.received ?? 0) < bytes) {
+      signal.throwIfAborted();
+      const { promise, resolve: settle } = Promise.withResolvers<void>();
+      // One function wakes it from `waiting` and on abort: the listener added is the one removed.
+      const wake = (): void => settle();
+      waiting.add(wake);
+      signal.addEventListener("abort", wake, { once: true });
+      await promise;
+      signal.removeEventListener("abort", wake);
+    }
+  }
+
+  let attempts = 0;
   return {
     url: `http://127.0.0.1:${port}`,
     writes,
+    fetch: ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const attempt = String(attempts++);
+      const body = init?.body;
+      if (!(body instanceof ReadableStream)) return fetch(input, init);
+      const headers = new Headers(init?.headers);
+      headers.set(ATTEMPT_HEADER, attempt);
+      const reader = (body as ReadableStream<Uint8Array>).getReader();
+      // The window's wait ends with the attempt: its abort, or Bun's cancel of the body.
+      const cancelled = new AbortController();
+      const ended = init?.signal
+        ? AbortSignal.any([init.signal, cancelled.signal])
+        : cancelled.signal;
+      let read = 0;
+      const windowed = new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          await took(attempt, read - WINDOW, ended);
+          const next = await reader.read();
+          if (next.done) {
+            controller.close();
+            return;
+          }
+          read += next.value.byteLength;
+          controller.enqueue(next.value);
+        },
+        cancel(reason) {
+          cancelled.abort(reason);
+          return reader.cancel(reason);
+        },
+      });
+      return fetch(input, { ...init, headers, body: windowed });
+    }) as typeof fetch,
     close(): void {
       for (const socket of sockets) socket.destroy();
       server.close();
@@ -2050,8 +2205,8 @@ async function socketDispatch(intakes: readonly Intake[]) {
 // An attempt's silence bound counts the connection taking its body as progress, so an upload is
 // bounded by how long it goes unheard, never by how long it takes; one whose connection stops
 // taking it is cut off and sent again under its key. Only a real socket shows that: the pace is
-// the kernel's backpressure on the connection, which no fake clock drives, so these run in real
-// time.
+// the connection's backpressure, which no fake clock drives, so these run in real time. What the
+// connection holds past the server's reads is `WINDOW` and a chunk, not the machine's buffers.
 describe("DispatchClient's uploads on a real connection", () => {
   const opened: { close(): void }[] = [];
 
@@ -2068,8 +2223,12 @@ describe("DispatchClient's uploads on a real connection", () => {
     return made;
   };
 
-  const upload = (url: string, silenceMs: number, size: number) =>
-    new DispatchClient(url, bearerCredential("secret"), fetch, {
+  const upload = (
+    dispatch: { url: string; fetch: typeof fetch },
+    silenceMs: number,
+    size: number
+  ) =>
+    new DispatchClient(dispatch.url, bearerCredential("secret"), dispatch.fetch, {
       writeRetry: { ...DISPATCH_WRITE_RETRY, silenceMs },
     }).artifact("DSP-1", {
       name: "build.tar",
@@ -2088,19 +2247,24 @@ describe("DispatchClient's uploads on a real connection", () => {
   // overshoot is not the timer, which was late by 224.9 ms at most over 180 rounds under the same
   // loops; it is the suite process's own work while 24 MiB streams through it, which only a
   // whole-suite run has. Four waits of 2,200 ms against 8,000 ms leave 5,800 ms, five and a half
-  // times that overshoot, and keep the number of waits at four. The body stays at 24 MiB, and the
-  // steps sit in its first half, because what the client counts as progress is the connection
-  // taking its bytes: a body the socket buffers swallow whole leaves the client silent for every
-  // pause that follows, and measured in this pod a 4 MiB body was swallowed whole and cut off 3
-  // runs of 3 under that load. The 60 s limit is a hang guard, not a budget: it fires only if the
-  // server's resume or the client's stream never comes. Measured in that pod: 9.01 s idle; under
-  // those 16 loops, 9.62 s at most over the three whole-suite runs that sized the step and 11.25 s
-  // over the twenty that proved it, since the row's cost is mostly its own pacing.
+  // times that overshoot, and keep the number of waits at four. What the client counts as progress
+  // is the connection taking its bytes, so a body the connection holds whole leaves the client
+  // silent for every pause that follows: that pod's socket buffers took a 4 MiB body whole and cut
+  // it off 3 runs of 3 under that load. CI's runner has Linux 7.0, whose receive buffer grows to
+  // 32 MiB. In a pod at Linux 7.0's tcp_rmem the client read up to 13.75 MiB more than the server
+  // had at its first pause, and with the buffer at 32 MiB from the start it read this whole 24 MiB
+  // body within 210 ms of that pause, so it heard nothing until the 8 s bound cut it off and the
+  // upload landed in two, failing as the row did on CI at 9,355.68 ms. So the connection holds at
+  // most `WINDOW` and a chunk past the server's reads, whatever the machine's buffers, and the
+  // steps sit in the body's first half. The 60 s limit is a hang guard, not a budget: it fires only
+  // if the server's resume or the client's stream never comes. Measured in that pod: 9.01 s idle;
+  // under those 16 loops, 9.62 s at most over the three whole-suite runs that sized the step and
+  // 11.25 s over the twenty that proved it, since the row's cost is mostly its own pacing.
   test("an upload going out for longer than silenceMs lands in one attempt", async () => {
     const silenceMs = 8_000;
     const dispatch = await dispatchOn([{ pauses: 4, pauseMs: 2_200 }]);
     const started = performance.now();
-    await upload(dispatch.url, silenceMs, 24 << 20);
+    await upload(dispatch, silenceMs, 24 << 20);
 
     expect(performance.now() - started).toBeGreaterThan(silenceMs);
     expect(dispatch.writes).toHaveLength(1);
@@ -2112,22 +2276,19 @@ describe("DispatchClient's uploads on a real connection", () => {
   // and the client is right to send a third, which is how this row failed. So it asserts what it
   // means - the first attempt reached the server incomplete, the last one landed whole, every
   // attempt carried the one key - and not the count, which is the machine's answer rather than the
-  // client's. The body is 16 MiB rather than 2 MiB, twice `STREAMED_BODY_MIN`, because the
-  // socket buffers in this pod took 2 MiB and 512 bytes whole 1 round of 5: at that size the first
-  // attempt can leave the client entirely, and what cuts it off is then the silence after the body
-  // went rather than a connection that stopped taking it. At 16 MiB the connection stops taking it
-  // part way, which is the row's subject. No assertion sees how much of the body left the client,
-  // so that size is what keeps the stall in the middle of the upload: `received` shows only that
-  // the server read the first of the attempt and then stopped, so it is above nothing and below
-  // the body. The silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy
-  // attempt. The 30 s limit is a hang guard, not a budget: it fires only if the resend never lands.
-  // Measured in a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a
-  // whole-suite run.
+  // client's. The body is 16 MiB, far past `WINDOW`, so the connection stops taking it part way,
+  // which is the row's subject. Held by the machine's own buffers, a body can go whole (2 MiB did
+  // in a gVisor pod 1 round of 5), and the silence after the body went is then what cuts it off. No
+  // assertion sees how much of the body left the client: `received` shows only that the server
+  // read the first of the attempt and then stopped, so it is above nothing and below the body. The
+  // silence bound is 1,000 ms so a stall of the machine's own does not cut a healthy attempt. The
+  // 30 s limit is a hang guard, not a budget: it fires only if the resend never lands. Measured in
+  // a 2-CPU pod: 2.18 s idle; under 16 busy loops (8 x nproc), 3.68 s at most in a whole-suite run.
   test("an upload its connection stops taking is cut off and sent again under its key", async () => {
     const silenceMs = 1_000;
     const dispatch = await dispatchOn(["stall", "full"]);
     const started = performance.now();
-    await upload(dispatch.url, silenceMs, 16 << 20);
+    await upload(dispatch, silenceMs, 16 << 20);
 
     expect(performance.now() - started).toBeGreaterThanOrEqual(silenceMs);
     const { writes } = dispatch;

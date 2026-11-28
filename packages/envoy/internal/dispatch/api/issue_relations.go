@@ -1,9 +1,9 @@
 // issue_relations.go is an issue's relations to other nodes as POST /api/v1/issues and PATCH
-// /api/v1/issues/{key} write them (dispatch://INFRA-1253 R9, R10): its parent (child_of), the
+// /api/v1/issues/{key} write them (R9, R10 of the issue-tree spec): its parent (child_of), the
 // issues it waits on (needs, which the request may also name blocked_by), the issue of its project
 // it repeats (duplicate_of) and the ask, comment or message it was filed out of (filed_from). Each
 // is a tuple out of the issue's node, which the write appends in its own transaction, caused by
-// the issue's own event, once that event is appended (stateIssueRelations); issues.parent_key and
+// the issue's own event, once that event is appended (queueIssueRelations); issues.parent_key and
 // the issue_links rows, which project child_of and needs, are written before that event in the
 // same transaction. No row projects duplicate_of or filed_from, so the issue read reads both off
 // the store (issueDuplicateOfColumn, issueFiledFromColumn).
@@ -81,7 +81,8 @@ func resolveIssueWaits(needs, blockedBy *[]string) (issueWaits, bool, error) {
 	if needs == nil {
 		waits.member, waits.code, named = blockedByMember, codeBlockedByInput, blockedBy
 	}
-	if needs != nil && blockedBy != nil && !slices.Equal(onceEach(*needs), onceEach(*blockedBy)) {
+	targets := onceEach(*named)
+	if needs != nil && blockedBy != nil && !slices.Equal(targets, onceEach(*blockedBy)) {
 		return issueWaits{}, true, errorf(http.StatusBadRequest, codeNeedsInput,
 			"needs [%s] and blocked_by [%s] name different issues: a request that names both names the same issues in each",
 			strings.Join(*needs, ", "), strings.Join(*blockedBy, ", "))
@@ -89,7 +90,7 @@ func resolveIssueWaits(needs, blockedBy *[]string) (issueWaits, bool, error) {
 	if len(*named) > contracts.MaxIssueBlockers {
 		return issueWaits{}, true, countExceededError(waits.code, waits.member, len(*named), contracts.MaxIssueBlockers)
 	}
-	waits.targets = onceEach(*named)
+	waits.targets = targets
 	return waits, true, nil
 }
 
@@ -314,7 +315,7 @@ func readFiledFromItem(ctx context.Context, q queryer, project string, ref text.
 		// comments never reads it (graphcensus' readCommentRows): no node, no fact and no stamp,
 		// and the old comments arm answers both of its edges. The issue's filed_from still names
 		// it, as it names any item.
-		anchor, owner := derefString(row.anchor), derefString(row.owner)
+		anchor, owner := deref(row.anchor), deref(row.owner)
 		if !graphstore.AddressFits(anchor) || !graphstore.AddressFits(owner) {
 			return item, true, nil
 		}
@@ -359,13 +360,6 @@ func filedFromCommentEvent(ctx context.Context, q queryer, row filedFromRow, id 
 	return event, nil
 }
 
-func derefString(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return *value
-}
-
 // stateFiledFromNode states the node of the item a write's filed_from names where the store held
 // none of it (filedFromItem.node), in the write's transaction, as its kind's own writer states it:
 // an ask's or a message's node as the backfill of the nodes an older build wrote no node of writes
@@ -380,15 +374,18 @@ func stateFiledFromNode(ctx context.Context, tx pgx.Tx, item *filedFromItem) err
 	if item == nil || item.node == nil {
 		return nil
 	}
-	if err := graphstore.Write(ctx, tx, item.node.nodes, item.node.tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, item.node.nodes, item.node.tuples)
+		if item.kind == graphstore.KindComment {
+			b.Queue("", `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null and `+graphstore.KeptHeadRows,
+				item.id, graphstore.KindComment)
+		}
+		graphstore.QueueHeads(b, graphstore.HeadsOf(item.node.nodes, item.node.tuples))
+		return nil
+	}); err != nil {
 		return fmt.Errorf("state the node of the %s filed_from names: %w", item.kind, err)
 	}
-	if item.kind != graphstore.KindComment {
-		return nil
-	}
-	_, err := tx.Exec(ctx, `update comments set node_kind = $2, node_address = $1 where id = $1::uuid and node_kind is null`,
-		item.id, graphstore.KindComment)
-	return err
+	return nil
 }
 
 // issueRelationFacts is what one create or PATCH states of an issue's relations, held until the
@@ -414,7 +411,8 @@ func (f *issueRelationFacts) claim(issue, kind, toKind, toID string, at time.Tim
 // claims as single-valued relations, which append only what moved (graphstore.Claim), and the
 // tuples as they are, in one statement of the store's arms (graphstore.WriteArms). The projection
 // rows - issues.parent_key, the issue_links rows and the issue_component_members rows - were
-// written before the event, in the same transaction, so the two commit together.
+// written before the event, in the same transaction, so the two commit together. Its callers queue
+// the head write of the nodes it states the relations of (heads) right after it, beside their own.
 func queueIssueRelations(b *store.WriteBatch, facts issueRelationFacts, who model.Actor) error {
 	if len(facts.claims) == 0 && len(facts.tuples) == 0 {
 		return nil
@@ -439,6 +437,11 @@ func (f issueRelationFacts) issue() string {
 		return f.claims[0].FromID
 	}
 	return f.tuples[0].FromID
+}
+
+// heads is the nodes the facts state relations out of, whose head rows they move.
+func (f issueRelationFacts) heads() []graphstore.NodeKey {
+	return append(graphstore.HeadsOfClaims(f.claims), graphstore.HeadsOf(nil, f.tuples)...)
 }
 
 // strandedWords answers the retraction, dated at, of each part_of out of issue child's node to a
@@ -520,13 +523,13 @@ func conversationItemIssue(ctx context.Context, q queryer, kind, id string) (str
 	}
 	var issue *string
 	err := q.QueryRow(ctx, statement, id).Scan(&issue)
-	if errors.Is(err, pgx.ErrNoRows) || issue == nil {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read the issue the %s is on: %w", kind, err)
 	}
-	return *issue, nil
+	return deref(issue), nil
 }
 
 // issueDuplicateOfColumn is the key the duplicate_of tuple of the issue aliased `i` names now, null

@@ -68,7 +68,7 @@ func Run(ctx context.Context, importer *Importer, leases duty.Leases, atStart bo
 // the context the lease handed the pass, so a pass this process's shutdown cut short records
 // nothing.
 func syncAllLeased(ctx context.Context, importer *Importer, leases duty.Leases, due time.Time) {
-	duty.Exclusive(ctx, leases, architectureImportLease, due, duty.LeasePeriod(SyncInterval), func(caller context.Context) {
+	duty.Exclusive(ctx, nil, leases, architectureImportLease, due, duty.LeasePeriod(SyncInterval), func(caller context.Context) {
 		ctx, attempt := githubreads.Begin(caller)
 		defer githubreads.Finish(caller, githubreads.ArchitectureImport, attempt, importer.GitHubReads, nil)
 		syncAll(ctx, importer)

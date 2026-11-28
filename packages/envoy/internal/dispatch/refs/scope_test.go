@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
@@ -75,6 +76,7 @@ func insertScopeBlockAsk(t *testing.T, tx pgx.Tx, issueKey any, artifactID, bloc
 // each document lists exactly the sources ScopeOf puts in it, and a direct message, like a reply
 // whose thread loops back on itself before naming a document, belongs to none.
 func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -216,6 +218,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 // order changed on one side, a field the pending shape stops carrying - the edges a new ask,
 // comment, reply or message stores would stop matching the ones its stored row says it should.
 func TestPendingScopeAgreesWithScopeOf(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -344,16 +347,20 @@ func replyToOf(t *testing.T, tx pgx.Tx, parent string) string {
 }
 
 // A document's question map is the question blocks its latest version declares: a block settlement
-// made a row for, a copied block under the ask it was copied from, a block in a quote, and a block
-// after a closed code fence; never a block not settled yet, one whose copied_from names no ask, an
-// id an older version alone declares, a `#` inside an attribute's value, or a directive inside
-// fenced code - backticks or tildes, in a quote, a fence a shorter run or the other character does
-// not close, one nothing closes - even one whose copied_from names an ask that exists. An id is
-// read as pmdoc reads a block's `#id` shortcut, to the first character such an id cannot hold, so
-// a block whose id holds one no bare `#id` in prose can name (`q:1`) is mapped under the whole id
-// its row carries. Each maps to the reference text.Extract reads from that ask's dispatch://
-// address, which for a question of a project document is that document's and not an issue's.
+// made a row for, a copied block under the ask it was copied from, a block in a quote, a block
+// after a closed code fence, and a footnote's later block, four columns in; never a block not
+// settled yet, one whose copied_from names no ask, an id an older version alone declares, a `#`
+// inside an attribute's value, a directive inside fenced code - backticks or tildes, in a quote,
+// opened on a footnote's label line, one whose label holds an escaped bracket among them, a fence a
+// shorter run or the other character does not close, one nothing closes - a directive in indented
+// code, or a line of the front matter the document opens with, even one whose copied_from names an
+// ask that exists. An id is read as pmdoc reads a block's `#id` shortcut, to the first character
+// such an id cannot hold, so a block whose id holds one no bare `#id` in prose can name (`q:1`) is
+// mapped under the whole id its row carries. Each maps to the reference text.Extract reads from
+// that ask's dispatch:// address, which for a question of a project document is that document's
+// and not an issue's.
 func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -384,7 +391,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 	// - the browser editor's parser ends the value at the escaped quote and reads the whole line
 	// as a paragraph, so the document service refuses it by name rather than storing an ask no
 	// browser draws (packages/envoy/internal/dispatch/pmdoc, "A typed block's attributes").
-	insertScopeVersion(t, tx, spec, 2, "# Spec\n\n"+
+	insertScopeVersion(t, tx, spec, 2, "---\ntitle: Spec\n"+copiedFrom("fronted", source)+"--- \n\n# Spec\n\n"+
 		`:::ask{#q1 urgency="med" answer="see #fake and &quot;#q9&quot;" state="answered"}`+"\nWhich?\n:::\n\n"+
 		`:::ask{#q2 state="open" copied_from="`+source+`" copied_from_document="dispatch://ACME-1/artifact/record"}`+"\nWhich?\n:::\n\n"+
 		"> :::ask{#quoted}\n> Which?\n> :::\n\n"+
@@ -395,18 +402,23 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 		"~~~md\n```\n"+copiedFrom("tilde", source)+"~~~\n\n"+
 		"> ```\n> "+copiedFrom("quotedfence", source)+"> ```\n\n"+
 		"````\n```\n"+copiedFrom("longer", source)+"````\n\n"+
+		"Footnoted.[^n]\n\n[^n]: ```\n    "+copiedFrom("footnoted", source)+"    ```\n\n"+
 		copiedFrom("after", source)+"Which?\n:::\n\n"+
+		"Escaped.[^a\\]b]\n\n[^a\\]b]: ```\n    "+copiedFrom("escaped", source)+"    ```\n\n"+
+		"    "+copiedFrom("noteblock", source)+"    Which?\n    :::\n\n"+
+		"Indented.\n\n    "+copiedFrom("indented", source)+"    Which?\n    :::\n\n"+
 		"```\n"+copiedFrom("unclosed", source))
 	insertScopeVersion(t, tx, handbook, 1, ":::ask{#rule}\nWhich?\n:::\n")
 
 	issueAsk := func(id string) text.Ref { return text.Extract("dispatch://ACME-1/ask/"+id, "")[0] }
 	for doc, want := range map[string]map[string]text.Ref{
 		spec: {
-			"q1":     issueAsk(q1),
-			"q2":     issueAsk(source),
-			"quoted": issueAsk(quoted),
-			"q:1":    issueAsk(colon),
-			"after":  issueAsk(source),
+			"q1":        issueAsk(q1),
+			"q2":        issueAsk(source),
+			"quoted":    issueAsk(quoted),
+			"q:1":       issueAsk(colon),
+			"after":     issueAsk(source),
+			"noteblock": issueAsk(source),
 		},
 		record:   nil,
 		handbook: {"rule": text.Extract("dispatch://ACME/artifact/handbook/ask/"+projectQuestion, "")[0]},
@@ -426,6 +438,7 @@ func TestQuestionMapReadsTheLatestVersionsQuestionBlocks(t *testing.T) {
 // parse does: the same parser reads both spellings (pmdoc.ParseTypedDirectiveOpen), so a
 // question written either way is in the map its `#id`s resolve against.
 func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	tx, err := database.Pool.Begin(ctx)
@@ -451,5 +464,77 @@ func TestQuestionMapReadsABlockIDWrittenQuoted(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("question map of the spec = %#v; want %#v", got, want)
+	}
+}
+
+// queuedVersion is the Pending of a transaction that has queued a version of document artifact
+// holding markdown, and no other row.
+type queuedVersion struct{ artifact, markdown string }
+
+func (v queuedVersion) PendingIssue(string) bool                      { return false }
+func (v queuedVersion) PendingArtifact(string) (string, string, bool) { return "", "", false }
+func (v queuedVersion) PendingDocument(string) (DocumentAddress, bool) {
+	return DocumentAddress{}, false
+}
+func (v queuedVersion) PendingRoom(string) (string, bool)                { return "", false }
+func (v queuedVersion) PendingAuthors(string, int) ([]model.Actor, bool) { return nil, false }
+func (v queuedVersion) PendingBlockAsks(string) []PendingBlockAsk        { return nil }
+func (v queuedVersion) PendingAsk(string) (PendingBlockAsk, bool)        { return PendingBlockAsk{}, false }
+func (v queuedVersion) PendingMarkdown(artifactID string) (string, bool) {
+	return v.markdown, artifactID == v.artifact
+}
+
+// A copy's source is the ask its block node's copied_from tuple names before the one its opening
+// line names, since a stored version's line may be one the release before wrote. A version the
+// reading transaction has queued is read before that transaction claims its copies, so there a
+// line that names a source is the newer of the two. Over one text, in which the copy c names
+// the second source on its line and the copy d names none, and whose nodes' tuples both name the
+// first: the stored version maps both to the first source, and the queued one maps c to the
+// second and d to the first.
+func TestAQueuedVersionsCopyResolvesToTheSourceItsLineNames(t *testing.T) {
+	database := parentDatabase(t)
+	ctx := context.Background()
+	document := newParentDocument(t, database, "COPY", "notes")
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the sources: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	first := insertScopeAsk(t, tx, document.issue, "", nil)
+	second := insertScopeAsk(t, tx, document.issue, "", nil)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the sources: %v", err)
+	}
+	markdown := `:::ask{#c copied_from="` + second + `"}` + "\nWhich?\n:::\n\n:::ask{#d}\nWhich too?\n:::\n"
+	version := renderTypedVersion(t, markdown)
+	record := document.writeVersion(t, 1, version.markdown, alice)
+	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, record.at), version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
+		for _, block := range []string{"c", "d"} {
+			write.State(graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+				FromKind: BlockNodeKind, FromID: document.address(block), Kind: graphstore.TupleCopiedFrom,
+				ToKind: graphstore.KindAsk, ToID: first, At: record.at, Who: alice, Asserted: true,
+			}})
+		}
+		return write, err
+	}, record.event)
+
+	ref := func(ask string) text.Ref { return text.Extract("dispatch://"+document.issue+"/ask/"+ask, "")[0] }
+	for _, read := range []struct {
+		name string
+		ctx  context.Context
+		want map[string]text.Ref
+	}{
+		{"the stored version", ctx, map[string]text.Ref{"c": ref(first), "d": ref(first)}},
+		{"the queued version", WithPending(ctx, queuedVersion{artifact: document.artifact, markdown: markdown}), map[string]text.Ref{"c": ref(second), "d": ref(first)}},
+	} {
+		got, err := questionMap(read.ctx, database.Pool, nil, document.artifact)
+		if err != nil {
+			t.Fatalf("the question map of %s: %v", read.name, err)
+		}
+		if !reflect.DeepEqual(got, read.want) {
+			t.Errorf("the question map of %s = %#v; want %#v", read.name, got, read.want)
+		}
 	}
 }

@@ -39,19 +39,19 @@
 # asks for and how it reads every page), each call through gh-read.sh's gh_wait_reset, which waits
 # out a spent API budget (REST's or GraphQL's) within the JOB_TIMEOUT_MINUTES both jobs that run
 # this script set, and fails by name past it. The title, body and branch name are the pull request's
-# as it has them now, not the payload's: ci.yaml's `pr-title` job checks at a push and can finish
+# as it has them now, not the payload's: `.github/workflows/ci.yaml#pr-title` job checks at a push and can finish
 # long after a later edit's pr-title.yaml run, and both carry pr-title on the head, so a check of
 # the push's own text would report a pass over the edit's refusal. The commits are those from the
 # base branch to the event's head, and the issue comments, reviews and review comments every one
 # the pull request holds. GitHub reports a total for each list, and a list read short of its total
 # is refused loudly here, naming the list, instead of silently scanning part of it. A list that
 # changes between two pages of one run's read can miss its total that way too; the next push or
-# edit run and ci.yaml's `pr-title` job's next run (ci.yaml says when it runs) read it again, and
+# edit run and `.github/workflows/ci.yaml#pr-title` job's next run (ci.yaml says when it runs) read it again, and
 # those runs' checks are the ones the merge reads. A NUL byte in any of them, which would make
 # `grep -I` treat the file as binary and skip it, is stripped first.
 #
 # Usage: GITHUB_EVENT_PATH=<payload> GITHUB_REPOSITORY=<owner>/<repo> .github/scripts/check-pr-text.sh
-# CI runs it in ci.yaml's `pr-title` job at every push to a pull request that is not a draft, when
+# CI runs it in `.github/workflows/ci.yaml#pr-title` job at every push to a pull request that is not a draft, when
 # a draft is marked ready, and on the merge queue's group, where that job finds the queued pull
 # request with find-pr-payload.sh; that job's own check run carries the verdict as pr-title on
 # each. It runs in pr-title.yaml when a pull request is edited, the event ci.yaml does not run on

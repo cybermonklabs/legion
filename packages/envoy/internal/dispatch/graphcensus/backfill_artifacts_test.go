@@ -16,21 +16,22 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
 // TestTheBackfillHangsAnOlderArtifactUnderItsIssue is the backfill's half of R16 of
-// dispatch://INFRA-1253 (T2a of its plan), under INFRA-1149's r-view-end contract. A database holds
-// the rows a build before this one wrote, by SQL in their old shape: an issue, its markdown
-// document and its image of two versions, and a project's document, none with a node or a
-// marker; and a document an INFRA-3862 build wrote, whose node stands with no part_of and whose row
-// names none. The run gives each row its node and names it on the row; each of the issue's
-// documents is part_of its issue, dated at its row's own created_at and made by its row's author,
-// at the sentinel; the project's document hangs under nothing; and the image's node holds the mime,
-// the size and the sha256 of its newest version, dated at that version. A second run writes no
-// node, no tuple and no row.
+// the issue-tree spec (T2a of its plan), under the graph-store spec's r-view-end contract. A
+// database holds the rows a build before this one wrote, by SQL in their old shape: an issue, its
+// markdown document and its image of two versions, and a project's document, none with a node or a
+// marker; and a document a build of the closed-project spec wrote, whose node stands with no
+// part_of and whose row names none. The run gives each row its node and names it on the row; each
+// of the issue's documents is part_of its issue, dated at its row's own created_at and made by its
+// row's author, at the sentinel; the project's document hangs under nothing; and the image's node
+// holds the mime, the size and the sha256 of its newest version, dated at that version. A second
+// run writes no node, no tuple and no row.
 func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
@@ -90,9 +91,9 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 		t.Fatalf("the long image's ref_key fits %t and its version's address fits %t, want the ref_key inside the bound and the version past it",
 			graphstore.AddressFits(long), graphstore.AddressFits(graphstore.VersionID(long, 1)))
 	}
-	// INFRA-3862's upload wrote the document's node before its row and named it nowhere, and stated
-	// no part_of: its row's missing marker is what the run walks.
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	// The closed-project spec's upload wrote the document's node before its row and named it
+	// nowhere, and stated no part_of: its row's missing marker is what the run walks.
+	drivenTx(t, database, "seed the document a build of the closed-project spec wrote", func(tx pgx.Tx) error {
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.ArtifactNode("OLD-1/plan-md", "OLD", "", alice, created),
 		}, nil); err != nil {
@@ -103,9 +104,7 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 			values ('OLD-1', 'OLD', 'plan-md', 'plan.md', 'doc', '{"kind":"user","id":"alice"}', $1)
 		`, created)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the document an INFRA-3862 build wrote: %v", err)
-	}
+	})
 	documents := []string{"OLD-1/notes-md", "OLD-1/shot-png", "OLD-1/plan-md", "OLD/runbook-md", long}
 	for _, refKey := range documents {
 		if partOf := artifactPartOf(t, database, refKey); len(partOf) != 0 {
@@ -192,7 +191,7 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 	report := storeCensusOf(t, database)
 	for _, name := range []string{graphstore.KindArtifact, graphstore.KindVersion} {
 		kind := censusKind(t, report, name)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
+		for _, difference := range differencesOf(kind) {
 			t.Errorf("after the run the census reads a difference of kind %s at %s: %s", name, difference.At, difference.Cause)
 		}
 		if kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
@@ -219,14 +218,54 @@ func TestTheBackfillHangsAnOlderArtifactUnderItsIssue(t *testing.T) {
 		t.Errorf("the second run left %d nodes, %d tuples and the highest sequence %d, want the %d, %d and %d the first left",
 			after.nodes, after.tuples, after.highest, before.nodes, before.tuples, before.highest)
 	}
-	if !maps.Equal(after.versions, before.versions) {
-		for _, row := range slices.Sorted(maps.Keys(before.versions)) {
-			if after.versions[row] != before.versions[row] {
-				t.Errorf("the second run wrote %s (row version %s, then %s): it reads and writes no marked row",
-					row, before.versions[row], after.versions[row])
-			}
+	for _, written := range rowsRewritten(before.versions, after.versions) {
+		t.Errorf("the second run wrote %s: it reads and writes no marked row", written)
+	}
+	// The check's control, over the rows the second run left: a row it had added reads as a row it
+	// wrote, as a row it rewrote does, and so does a row it had taken away.
+	added, rewritten, removed := maps.Clone(after.versions), maps.Clone(after.versions), maps.Clone(after.versions)
+	added["issues PLANTED-1"] = "1"
+	rewritten["issues OLD-1"] += "0"
+	delete(removed, "issues OLD-1")
+	for _, control := range []struct {
+		name     string
+		versions map[string]string
+		want     string
+	}{
+		{"an added row", added, "issues PLANTED-1 (row version none, then 1)"},
+		{"a rewritten row", rewritten, "issues OLD-1 (row version " + after.versions["issues OLD-1"] + ", then " + rewritten["issues OLD-1"] + ")"},
+		{"a removed row", removed, "issues OLD-1 (row version " + after.versions["issues OLD-1"] + ", then none)"},
+	} {
+		if got := rowsRewritten(after.versions, control.versions); !slices.Equal(got, []string{control.want}) {
+			t.Errorf("the second run's check over %s reads %q, want %q", control.name, got, control.want)
 		}
 	}
+}
+
+// rowsRewritten is each row whose version after holds apart from before, sorted: a row whose
+// version moved, a row after holds that before did not, and a row before held that after does not,
+// each with its version on both sides ("none" where a side holds no such row).
+func rowsRewritten(before, after map[string]string) []string {
+	version := func(versions map[string]string, row string) string {
+		if held, ok := versions[row]; ok {
+			return held
+		}
+		return "none"
+	}
+	rows := slices.Collect(maps.Keys(before))
+	for row := range after {
+		if _, held := before[row]; !held {
+			rows = append(rows, row)
+		}
+	}
+	slices.Sort(rows)
+	var written []string
+	for _, row := range rows {
+		if was, is := version(before, row), version(after, row); was != is {
+			written = append(written, row+" (row version "+was+", then "+is+")")
+		}
+	}
+	return written
 }
 
 // artifactPartOf answers every part_of tuple out of the document's node, in the order appended.
@@ -305,22 +344,7 @@ func takeArtifactSnapshot(t *testing.T, database *store.Store) artifactSnapshot 
 func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
-	seedLockProject(t, database)
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	// The issue is one this build's create wrote, so the issue pass reads none of its rows and
-	// the first batch that takes its row is the document pass's.
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode("LOCK-1", "LOCK", alice, time.Now())}, nil); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, `
-			insert into issues (key, project_key, number, title, created_by, rank, node_kind, node_address)
-			values ('LOCK-1', 'LOCK', 1, 'One', '{"kind":"user","id":"alice"}', 'U', 'issue', 'LOCK-1')
-		`)
-		return err
-	}); err != nil {
-		t.Fatalf("seed the issue: %v", err)
-	}
+	seedMarkedLockIssue(t, database)
 	const removed, kept = "LOCK-1/removed-md", "LOCK-1/kept-md"
 	if _, err := database.Pool.Exec(ctx, `
 		insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
@@ -343,7 +367,7 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, removal, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the removal's owner lock", early.report, early.err)
 	}
 	t.Logf("the backfill waits behind the removal at: %s", lockstep.WaitingStatement(t, database, pid))
@@ -375,7 +399,7 @@ func TestTheBackfillWritesNoNodeForADocumentRemovedWhileItWaited(t *testing.T) {
 }
 
 // TestTheObjectBatchTakesTheStoreLockOrder holds writeObjectBatch, which names an issue's and a
-// document's node on its row (dispatch://INFRA-1253), to the store's lock order, as
+// document's node on its row (the issue-tree spec), to the store's lock order, as
 // TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches: the owner row the batch's
 // rows stand under first, then the node rows, then, for a document, its own artifacts row. An
 // issue's own row is its owner row, so its batch holds it from the start and names the node on it
@@ -407,21 +431,8 @@ func TestTheObjectBatchTakesTheStoreLockOrder(t *testing.T) {
 	t.Run("a document's batch takes its issue's row, then its node row, then its own row", func(t *testing.T) {
 		database := storetest.Open(t)
 		ctx := context.Background()
-		seedLockProject(t, database)
+		seedMarkedLockIssue(t, database)
 		alice := model.Actor{Kind: "user", ID: "alice"}
-		// The issue is one this build's create wrote, so no batch but the document's reads it.
-		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-			if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode("LOCK-1", "LOCK", alice, time.Now())}, nil); err != nil {
-				return err
-			}
-			_, err := tx.Exec(ctx, `
-				insert into issues (key, project_key, number, title, created_by, rank, node_kind, node_address)
-				values ('LOCK-1', 'LOCK', 1, 'One', '{"kind":"user","id":"alice"}', 'U', 'issue', 'LOCK-1')
-			`)
-			return err
-		}); err != nil {
-			t.Fatalf("seed the issue: %v", err)
-		}
 		const refKey = "LOCK-1/notes-md"
 		if _, err := database.Pool.Exec(ctx, `
 			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
@@ -459,6 +470,48 @@ func seedLockProject(t *testing.T, database *store.Store) {
 		`insert into projects (key, name, default_assignee) values ('LOCK', 'Lock steps', 'alice')`); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}
+}
+
+// seedMarkedLockIssue writes project LOCK and its issue LOCK-1 as this build's create writes
+// them, the issue's node and then its row naming that node, so the issue pass reads none of its
+// rows and the first batch that takes the issue's row is the one over its documents.
+func seedMarkedLockIssue(t *testing.T, database *store.Store) {
+	t.Helper()
+	seedLockProject(t, database)
+	ctx := context.Background()
+	drivenTx(t, database, "seed the issue", func(tx pgx.Tx) error {
+		if err := graphstore.Write(ctx, tx, []graphstore.Node{graphstore.IssueNode("LOCK-1", "LOCK", model.Actor{Kind: "user", ID: "alice"}, time.Now())}, nil); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `
+			insert into issues (key, project_key, number, title, created_by, rank, node_kind, node_address)
+			values ('LOCK-1', 'LOCK', 1, 'One', '{"kind":"user","id":"alice"}', 'U', 'issue', 'LOCK-1')
+		`)
+		return err
+	})
+}
+
+// seedLockSpec writes project LOCK, its issue LOCK-1 and the issue's spec as a build before the
+// store writes them, rows that name no node, before any decision of the spec, and answers the
+// spec's id, its ref_key and the address of its block r1.
+func seedLockSpec(t *testing.T, database *store.Store) (document, refKey, pointer string) {
+	t.Helper()
+	seedLockProject(t, database)
+	drivenTx(t, database, "write issue LOCK-1 and its spec", func(tx pgx.Tx) error {
+		if _, err := tx.Exec(context.Background(), `
+			insert into issues (key, project_key, number, title, created_by, rank)
+			values ('LOCK-1', 'LOCK', 1, 'Kept', '{"kind":"user","id":"alice"}', 'U')
+		`); err != nil {
+			return err
+		}
+		return tx.QueryRow(context.Background(), `
+			insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+			values ('LOCK-1', 'LOCK', 'spec', 'spec.md', 'doc', true, '{"kind":"user","id":"alice"}')
+			returning id::text, ref_key
+		`).Scan(&document, &refKey)
+	})
+	issue := "LOCK-1"
+	return document, refKey, refs.BlockRef(refs.ArtifactRef(&issue, "LOCK", nil, "spec", "doc", true), "r1")
 }
 
 // holdLockOwner holds issue LOCK-1's owner lock, the owner lock every batch here takes first

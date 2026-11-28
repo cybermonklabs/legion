@@ -40,6 +40,7 @@ const (
 // record it changed -- the one head's record, which an ordinary completed check run, the review
 // App's `tester` verdict and the head's check suite all write.
 func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seedCIReconcileDefault(t, database)
 	_, natsURL := testnats.Start(t)

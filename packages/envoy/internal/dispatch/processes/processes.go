@@ -88,15 +88,22 @@ const pruneLease = "server-processes"
 // names the other process.
 var ErrKeySetMismatch = errors.New("this process's signing key set does not match a live server process's")
 
-// CapabilityIssueRoom is the capability of a build that serves the issue room (dispatch://INFRA-1253
-// R5): it admits a converted document's socket to its issue's room and settles that room, so an
+// CapabilityIssueRoom is the capability of a build that serves the issue room (R5 of the issue-tree
+// spec): it admits a converted document's socket to its issue's room and settles that room, so an
 // issue is born converted only while every live process lists it (decision 7 of that plan).
 const CapabilityIssueRoom = "issue_room"
+
+// CapabilityTypedBlockSupertags is the capability of a build whose every writer of a block node
+// gives the node its type's supertag (R26 of the issue-tree spec, `r-block-type-supertag`): the
+// boot step that restates block_pointer_targets and block_node_listed to read a block's type from
+// its node runs only where the newest announcement that names another commit lists it, or on a
+// database the boot created from empty.
+const CapabilityTypedBlockSupertags = "typed_block_supertags"
 
 // Capabilities is what this build serves, as Register writes it into
 // server_processes.capabilities and the build's announcement lists it (refs.TupleKinds). A process
 // of a build before the column holds null there, which lists nothing.
-var Capabilities = []string{CapabilityIssueRoom}
+var Capabilities = []string{CapabilityIssueRoom, CapabilityTypedBlockSupertags}
 
 // Instance is what a process registers: the build it serves, the keys it signs and verifies with,
 // and what the decisions over the fleet read (migration 20261101030537).
@@ -291,12 +298,24 @@ func Register(ctx context.Context, pool *store.Pool, instance Instance) (*Regist
 // process, or until LiveWindow and one HeartbeatInterval have passed since its first refusal, when
 // that last refusal is returned. A refusal naming another process than the one before is logged
 // again, so the log names every process the wait was on.
+//
+// ctx ending ends the wait with an error wrapping ctx's error, whether it ends between two tries
+// or during one. A try's own error does not always carry it: when ctx ends while a statement is
+// being written, pgx's context watcher sets a deadline on the socket and the statement fails with
+// the write's error ("write failed: … i/o timeout", pgproto3's writeError), which wraps no context
+// error (TestRegistersWaitEndsWithItsContext, CI run 43596122521). So a try
+// that fails once ctx has ended returns an error wrapping both ctx's error and the try's: a caller
+// tells a stop from a failure by ctx's error - cmd/dispatch logs a SIGTERM during the wait as a
+// clean stop - and the log still reads what the statement hit.
 func waitForAdmission(ctx context.Context, pool *pgxpool.Pool, id string, instance Instance) error {
 	var giveUp time.Time
 	logged := ""
 	for {
 		refusal, err := tryRegister(ctx, pool, id, instance)
 		if err != nil {
+			if ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+				return fmt.Errorf("register this server process: %w: %w", ctx.Err(), err)
+			}
 			return fmt.Errorf("register this server process: %w", err)
 		}
 		if refusal == nil {

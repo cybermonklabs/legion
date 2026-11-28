@@ -107,6 +107,7 @@ type runReads struct {
 // the removed document's node: neither document's references hold a changed_by_run, to either
 // run.
 func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -446,6 +447,7 @@ func TestTheReferencesReadAnswersARunToThePersonWhoseRunItWas(t *testing.T) {
 // the issue holds no comment more, and no tuple points at the run. The refusal claims no
 // Idempotency-Key: the same request under the same key, without the header, then writes.
 func TestAWriteNamingARunItMayNotWriteForStoresNothing(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -528,6 +530,7 @@ func TestAWriteNamingARunItMayNotWriteForStoresNothing(t *testing.T) {
 // run header part of what the repeat is judged by. The rig is the key layer alone, with the
 // refusal put on each refused request's context as withinGoingRun puts it there.
 func TestTheKeyLayerNeverRunsTheHandlerOfARefusedRun(t *testing.T) {
+	t.Parallel()
 	running := make(chan struct{})
 	release, releaseOnce := heldUntilReleased(t)
 	rig := newKeyedRig(t, func(run int32, w http.ResponseWriter, r *http.Request) {
@@ -612,6 +615,7 @@ func TestTheKeyLayerNeverRunsTheHandlerOfARefusedRun(t *testing.T) {
 // 201 and holds the one changed_by_run its write appended, to the run's canonical id, and no
 // tuple points at the spelling as the header wrote it.
 func TestAWriteNamingARunInAnotherUuidSpellingIsAdmittedAsTheCanonicalID(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()
@@ -653,6 +657,7 @@ func TestAWriteNamingARunInAnotherUuidSpellingIsAdmittedAsTheCanonicalID(t *test
 // A version written for a run names as changed by it each block whose words it changed and each
 // block it dropped, and not a block it left as it was.
 func TestAVersionWrittenForARunNamesTheBlocksItChanged(t *testing.T) {
+	t.Parallel()
 	handler, database, deps, _ := newRegisteredTestServer(t, testServerOptions{})
 	server := directServer(deps)
 	ctx := context.Background()

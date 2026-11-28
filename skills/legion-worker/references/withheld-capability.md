@@ -18,4 +18,4 @@ An install of your own (an interpreter, a browser, a second toolchain, an extrac
 
 ## The Dispatch browser suite
 
-A spec you add or change in `packages/dispatch` runs in the pod one spec a command (`bun run e2e -- e2e/<spec file>`), against the pod's own Postgres (*The database your tests use* in `skill://legion-worker/references/tools.md`). The change's proof is CI's `dispatch-browser` run at the head: an unlabelled pull request runs only the rows tagged `@pr`, and every other row runs under the label `full-ci`.
+A spec you add or change in `packages/dispatch` runs in the pod one spec a command (`bun run e2e -- e2e/<spec file>`), against the pod's own Postgres (*The database your tests use* in `skill://legion-worker/references/tools.md`). The change's proof is CI at the head: a pull request runs the rows tagged `@pr` in the `dispatch-browser-pr` checks, and every other row runs in the `dispatch-browser` checks, which the merge queue runs and a pull request runs only under the label `full-ci` or `lane:dispatch_browser`.

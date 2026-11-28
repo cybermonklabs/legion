@@ -13,7 +13,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
 )
 
-// TestTheIssueLinkBatchTakesTheStoreLockOrder holds writeIssueLinkBatch (dispatch://INFRA-1253) to
+// TestTheIssueLinkBatchTakesTheStoreLockOrder holds writeIssueLinkBatch (the issue-tree spec) to
 // the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches:
 // the owner row the link stands under, its issue's row, first, then the needs tuple, then the
 // issue_links row that names the issue's node. The tuple is stated at the sentinel, which no repeat
@@ -27,7 +27,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 	ctx := context.Background()
 	seedLockProject(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the two issues", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now), graphstore.IssueNode("LOCK-2", "LOCK", alice, now),
@@ -40,9 +40,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 				('LOCK-2', 'LOCK', 2, 'Waited on', '{"kind":"user","id":"alice"}', 'V', 'issue', 'LOCK-2')
 		`)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the two issues: %v", err)
-	}
+	})
 	var createdAt time.Time
 	if err := database.Pool.QueryRow(ctx, `
 		insert into issue_links (issue_key, kind, target_key, created_at)
@@ -76,7 +74,7 @@ func TestTheIssueLinkBatchTakesTheStoreLockOrder(t *testing.T) {
 }
 
 // TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited holds the object pass to the parent an
-// issue's row names under the issue's own row (dispatch://INFRA-1253 R9): a batch reads its rows
+// issue's row names under the issue's own row (R9 of the issue-tree spec): a batch reads its rows
 // outside its transaction, so a reparent can commit between that read and the issue's lock. A
 // second transaction stands for the release before's PATCH: it takes the issue's row, as
 // lockPatchRows does, and moves the issue, whose row names no node, from LOCK-1 to LOCK-2. That
@@ -96,7 +94,7 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 	ctx := context.Background()
 	seedLockProject(t, database)
 	alice := model.Actor{Kind: "user", ID: "alice"}
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the issues", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now), graphstore.IssueNode("LOCK-2", "LOCK", alice, now),
@@ -112,9 +110,7 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 				('LOCK-4', 'LOCK', 4, 'Moved in place before the pass', '{"kind":"user","id":"alice"}', 'X', 'LOCK-2', 'issue', 'LOCK-4')
 		`)
 		return err
-	}); err != nil {
-		t.Fatalf("seed the issues: %v", err)
-	}
+	})
 	// A process of the release before, registered as that release registers: no
 	// owner_lock_protocol, so the column's default 0, which keeps it in the owner lock's fleet.
 	if _, err := database.Pool.Exec(ctx, `
@@ -138,7 +134,7 @@ func TestTheObjectPassStatesTheParentAReparentMovedWhileItWaited(t *testing.T) {
 	}
 
 	pid, answered := startBackfill(t, database)
-	if early, done := storetest.WaitForQueuedBehind(t, reparent, pid, answered, 30*time.Second); done {
+	if early, done := storetest.WaitForQueuedBehind(t, reparent, pid, answered); done {
 		t.Fatalf("the backfill answered (report %#v, err %v) without waiting on the reparent's row", early.report, early.err)
 	}
 	t.Logf("the backfill waits behind the reparent at: %s", lockstep.WaitingStatement(t, database, pid))

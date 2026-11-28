@@ -35,12 +35,14 @@ const sendStateSender = "ses_state_sender"
 // connection of its own (sessionConsumerRig), so a registration gets the consumer every
 // registration needs, and with the known-session store open, as main wires the routes with every
 // store open. clock is what that store stamps each record with and reads its 30-day retention and
-// its refresh age against; a test moves it.
+// its refresh age against; a test moves it. The store's own goroutines read it too - its sweeper's
+// marker pass, every kvchunk.MarkerGrace until the store stops - so it is a listenerClock, moved
+// under a lock.
 type knownSessionRig struct {
 	*sessionConsumerRig
 	known *session.KnownSessions
 	url   string
-	clock time.Time
+	clock *listenerClock
 }
 
 func newKnownSessionRig(t *testing.T) *knownSessionRig {
@@ -58,8 +60,8 @@ func newKnownSessionRig(t *testing.T) *knownSessionRig {
 // one whose grant it set among them.
 func newKnownSessionRigOn(t *testing.T, client *bus.Client, url string) *knownSessionRig {
 	t.Helper()
-	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: time.Now()}
-	rig.known = openKnownSessionsOn(t, client.Conn, func() time.Time { return rig.clock })
+	rig := &knownSessionRig{sessionConsumerRig: newSessionConsumerRigOn(t, client, url), url: url, clock: &listenerClock{now: time.Now()}}
+	rig.known = openKnownSessionsOn(t, client.Conn, rig.clock.Now)
 	// The routes read the deps they were built over at each request, so the store set here is the
 	// one every route below answers from. The confirmation record is the publish route's own, as
 	// main wires it, for a role send.
@@ -278,7 +280,7 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 	t.Helper()
 	conn := testnats.Connect(t, uri)
 	defer conn.Close()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		msg := natsgo.NewMsg(bus.DeliverSubject(sessionID))
 		msg.Header.Set(bus.ConnectionProbeHeader, "1")
@@ -303,6 +305,8 @@ func awaitNoRelaySubscriber(t *testing.T, uri, sessionID string) {
 // can only come from the closed connection. The plugin's connection runs through a proxy, whose
 // cut closes it as a network that ends it does.
 func TestASendReadsASessionWhoseConnectionClosedAsStopped(t *testing.T) {
+	// Not parallel: it requires the send to answer within 1.5 s of a session whose connection
+	// closed, half a second past the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -356,6 +360,8 @@ func asListenerUser(t *testing.T, uri string) string {
 // probed, because the publish never leaves this listener, so connected here is the denial's
 // answer and not a reply's.
 func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
+	// Not parallel: it requires the send whose probe the server denies to answer within 1.5 s,
+	// half a second past the probe's 1 s connectionProbeTimeout.
 	_, uri := testnats.StartConfig(t, listenerGrant(bus.DeliverSubjectPrefix+">"), []string{"-js"}, false)
 	uri = asListenerUser(t, uri)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
@@ -391,6 +397,8 @@ func TestASendAnswersConnectedWhenTheListenerMayNotProbe(t *testing.T) {
 // control is the same session registered in consumer mode, its entry now recording consumer
 // delivery, with still nothing on its relay subject: that one is probed, and reads stopped.
 func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
+	// Not parallel: it requires the send to an entry it must not probe to answer within 900 ms,
+	// just under the probe's 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -419,6 +427,8 @@ func TestASendToAnEntryWithoutConsumerDeliveryIsNotProbed(t *testing.T) {
 // probe is sent: the one header Envoy-Probe: 1, none of a relay frame's headers - which would have
 // it decode as a frame and move the session's resume point - and no body.
 func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
+	// Not parallel: it requires the send to answer within the 3.5 s sendRequestBudget after a
+	// probe that waits out its 1 s connectionProbeTimeout.
 	rig := newKnownSessionRig(t)
 	startSecondListener(t, rig.url)
 
@@ -478,6 +488,7 @@ func TestASilentRelaySubscriberReadsConnected(t *testing.T) {
 // record at all, so a session the store has aged out is that same 404 and not a stopped answer
 // with a month-old last_seen.
 func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	unknown := rig.send(t, "ses_never_registered", nil)
@@ -496,7 +507,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 	young := rig.send(t, aged, nil)
 	young.requireAnswer(t, "a send to a session with a fresh record", sessionStateStopped, session.Gone)
 
-	rig.clock = rig.clock.Add(session.KnownSessionRetention + time.Hour)
+	rig.clock.Advance(session.KnownSessionRetention + time.Hour)
 	if _, known := rig.known.Get(aged); known {
 		t.Fatalf("the store still answers a record of %s past its retention, so the route's answer shows nothing", aged)
 	}
@@ -516,6 +527,7 @@ func TestASendToASessionNeitherStoreKnowsIsTheNotFound(t *testing.T) {
 // that advertises nothing, so its send is accepted and the mode is left to the session to judge
 // when it runs again.
 func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const steerFrame = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"steer"}}`
 
@@ -562,6 +574,7 @@ func TestASendToAStoppedSessionIsJudgedByItsRecordsCapabilities(t *testing.T) {
 // only its record is left. A connected target is the ordinary 200, and a send with the flag absent
 // stores for a stopped target.
 func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 
 	const cleanlyStopped = "ses_switch_stopped"
@@ -611,7 +624,7 @@ func TestConnectedOnlyRefusesAStoppedTargetAndStoresNothing(t *testing.T) {
 // other report, and fails the test when none arrives within the bound.
 func awaitWake(t *testing.T, wakes *natsgo.Subscription, kind, name string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		msg, err := wakes.NextMsg(time.Until(deadline))
 		if err != nil {
@@ -660,6 +673,7 @@ func wakeNamed(report wakeReport, kind, name string) bool {
 // and whose probe met no responders raises none, as no lingering entry does, and answers stopped
 // with its entry's age and last_seen.
 func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	wakesCtx, stopWakes := context.WithCancel(context.Background())
 	t.Cleanup(stopWakes)
@@ -685,7 +699,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 
 	const cleanlyStopped = "ses_wake_clean_stop"
 	rig.register(t, cleanlyStopped, nil)
-	rig.clock = rig.clock.Add(time.Minute)
+	rig.clock.Advance(time.Minute)
 	rig.stop(t, cleanlyStopped)
 	record := rig.record(t, cleanlyStopped)
 	stopped := rig.send(t, cleanlyStopped, nil)
@@ -733,6 +747,7 @@ func TestASendRaisesTheWakeWhereTheEntryIsGoneAndNotForAProbeStoppedEntry(t *tes
 // in the window (newQuietKnownSessionRig), so what the probe counts is the send route's, however
 // long the sends take.
 func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
+	t.Parallel()
 	rig := newQuietKnownSessionRig(t)
 	const gone = "ses_stopped_api_free"
 	rig.register(t, gone, nil)
@@ -764,6 +779,7 @@ func TestAHundredSendsToAStoppedSessionSendNoJetStreamAPIRequest(t *testing.T) {
 // own fields and no port and no host at all, a live session is its ordinary body, and a session
 // neither store knows is still the 404.
 func TestTheRegistryRouteAnswersAStoppedSessionOnlyWhenAsked(t *testing.T) {
+	t.Parallel()
 	rig := newKnownSessionRig(t)
 	const gone = "ses_registry_stopped"
 	rig.register(t, gone, map[string]any{

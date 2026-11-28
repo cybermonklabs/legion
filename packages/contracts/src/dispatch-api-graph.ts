@@ -1,10 +1,22 @@
-import type { GraphNode, IssueReferences, ReferenceLink } from "./dispatch-api.generated";
+import type {
+  GraphEdgeWithTrees,
+  GraphExcerpt,
+  GraphNode,
+  IssueReferences,
+  ReferenceLink,
+} from "./dispatch-api.generated";
 
 /**
  * The reference graph: what points at what, read by `GET /api/v1/references`,
  * `GET /api/v1/block-links` and an issue's `GET /api/v1/issues/{key}/references`, and the
  * document lists built on it.
  */
+
+/** One edge of the reference graph without the tree a dashboard read carries: the edge the route
+ *  table holds (`GraphEdgeWithTrees`) with its excerpt back to the plain `GraphExcerpt`, which the
+ *  document declares again because the proposed node's excerpt (`ProposedNode.excerpt`) reaches
+ *  model.GraphExcerpt. A `GraphEdgeWithTrees` is a `GraphEdge` wherever one is wanted. */
+export type GraphEdge = Omit<GraphEdgeWithTrees, "excerpt"> & { readonly excerpt?: GraphExcerpt };
 
 // GraphEdgeKind is an edge's kind: one of the structural kinds (Go's model.GraphEdgeKinds, six of
 // which the store states with no projection row behind them, and an issue's duplicate_of and

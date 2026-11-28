@@ -1,4 +1,13 @@
-import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from "react";
+import { dispatchWritingBox } from "@legion/contracts";
+import {
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 
 import { type ArtifactOwner, api, type DeclineAskInput, type WriteBounds } from "../../api/client";
 import type {
@@ -26,9 +35,7 @@ import {
   card,
   cardHoverBorder,
   focusBorder,
-  growingField,
   inlineWarningText,
-  inputClasses,
   linkHoverText,
   linkText,
   pageFailedText,
@@ -50,6 +57,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField, type MentionFieldHandle } from "../conversation/MentionField";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
@@ -81,7 +89,6 @@ import { askTurnHolder } from "./ask-turn";
 import { askUrgency, URGENCY_LABELS } from "./ask-urgency";
 import { DeclineControl } from "./DeclineControl";
 import { EarlierApproval } from "./EarlierApproval";
-import { handOffFocus, useAnswerFormFocus } from "./useAnswerFormFocus";
 import { useAskAnswerForm } from "./useAskAnswerForm";
 
 const answerAsk = (id: string, input: AnswerAskInput, bounds: WriteBounds): Promise<Ask> =>
@@ -212,6 +219,37 @@ const PAGE_URGENCY_NOTCH_TEXT: Record<AskUrgency, string> = {
   med: "text-page-question",
 };
 
+/** Moves focus from inside the form to the nearest focusable ancestor (in the Inbox, the row, so
+ *  j/k/Escape still start from the same place) instead of letting it fall to the document body. */
+function handOffFocus(form: HTMLElement): void {
+  if (!form.contains(document.activeElement)) return;
+  form.parentElement?.closest<HTMLElement>("[tabindex]")?.focus({ preventScroll: true });
+}
+
+/** The form's callback ref. When the form leaves while a control inside it has focus - the ask
+ *  was answered or resolved elsewhere and the card swaps to its record - focus is handed off
+ *  without any event; React detaches a ref before removing its node, so the form is still in the
+ *  document when this cleanup runs. The form is also kept in `formRef` for the disabled-control
+ *  hand-off below: in the compact variant the answer field is unmounted while its disclosure is
+ *  closed, so the field's `.form` is not a reliable way to reach it. The callback must be stable
+ *  across renders: React re-runs a changed callback ref's cleanup on every commit, and that
+ *  cleanup moves focus. */
+function useFormRef(): [
+  { current: HTMLFormElement | null },
+  (form: HTMLFormElement | null) => (() => void) | undefined,
+] {
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const track = useCallback((form: HTMLFormElement | null) => {
+    formRef.current = form;
+    if (form === null) return undefined;
+    return () => {
+      formRef.current = null;
+      handOffFocus(form);
+    };
+  }, []);
+  return [formRef, track];
+}
+
 export function AskCard({
   artifactSlug,
   ask,
@@ -247,12 +285,12 @@ export function AskCard({
     completed,
     displayedAsk,
     edits,
-    formRefusal,
     isApproval,
     isSubmitting,
     mutation,
     otherSelected,
     questionChoice,
+    questionReads,
     reasonRequired,
     requiresReason,
     selectRealOption,
@@ -267,7 +305,6 @@ export function AskCard({
     submitHint,
     toggleOther,
     submitGuard,
-    takeFormRefusalFocus,
     threadQuery,
     trimmedAnswer,
     unsentAnswer,
@@ -292,15 +329,6 @@ export function AskCard({
     setSeededFor(changing);
     if (changing && variant === "compact" && answerText.trim() !== "") setOwnWordsOpen(true);
   }
-  // A refusal of the form fills the reason of Request changes with what Dispatch wrote for the
-  // author (`useAskAnswerForm`); a compact card shows that reason too rather than folding the
-  // text the next press sends behind its disclosure. The same pattern as the change above, from
-  // no refusal, so a card drawn again with a kept refusal opens it too.
-  const [shownFormRefusal, setShownFormRefusal] = useState<typeof formRefusal>(null);
-  if (formRefusal !== shownFormRefusal) {
-    setShownFormRefusal(formRefusal);
-    if (formRefusal !== null && variant === "compact") setOwnWordsOpen(true);
-  }
   // One page can host the same ask twice (a decision block and the margin sheet), so the
   // panel each control names is this instance's.
   const referencesPanelId = useId();
@@ -311,7 +339,7 @@ export function AskCard({
   const reference = itemRoute("ask", displayedAsk, ask.document ?? owner);
   // Where a `#id` in the ask's own text resolves: the document the server scopes this ask to -
   // the one its block is on, the one it is anchored to, else its issue's spec (`refs.ScopeOf`).
-  const source = textSourceOf("ask", displayedAsk.id);
+  const source = textSourceOf("ask", displayedAsk.id, displayedAsk.issue_key);
   // Where a file pasted or dropped into the answer, or into a reply under the ask, goes: the
   // ask's issue, or the project of the document it was asked on.
   const documentProject = (ask.document ?? owner ?? displayedAsk.anchor_artifact)?.project;
@@ -329,19 +357,15 @@ export function AskCard({
     if (askId === ask.id) setQuestionChoice(false);
   });
   const uploading = upload.pending > 0;
-  const answerFieldRef = useRef<HTMLTextAreaElement>(null);
-  // Picking Request changes moves the person straight to the field the server insists on. Keyed
-  // on the field actually being mounted, not just on the option: the compact variant mounts the
-  // field when its disclosure opens (reopening it is the disclosure's own move, below). Only the
-  // person's own pick moves the focus, so the intent is recorded as the option is picked: a
-  // refusal of the form also picks Request changes, in each card of the ask, and leaves the focus
-  // where the person pressed (`useAnswerFormFocus`).
+  const answerFieldRef = useRef<MentionFieldHandle | null>(null);
+  // Picking Request changes moves the person straight to the field the server insists
+  // on. Keyed on the field actually being mounted, not just on the option: the compact variant
+  // unmounts the field when its disclosure closes, and reopening it must refocus.
   const reasonFieldShown = reasonRequired && (!isCompact || ownWordsOpen);
-  const focusReasonOnShow = useRef(false);
   useEffect(() => {
-    if (!reasonFieldShown) return;
-    if (focusReasonOnShow.current) answerFieldRef.current?.focus();
-    focusReasonOnShow.current = false;
+    if (reasonFieldShown) {
+      answerFieldRef.current?.textarea()?.focus();
+    }
   }, [reasonFieldShown]);
   // Opening the disclosure is a move into the field it reveals, whoever opened it: the reader's
   // own click, and the Inbox's Enter, which presses this same control (`Inbox.tsx`). The field
@@ -355,13 +379,20 @@ export function AskCard({
     if (!focusNoteOnOpen.current) return;
     focusNoteOnOpen.current = false;
     if (ownWordsOpen) {
-      answerFieldRef.current?.focus();
+      answerFieldRef.current?.textarea()?.focus();
     }
   }, [ownWordsOpen]);
-  const [formRef, trackForm] = useAnswerFormFocus({
-    formRefusal,
-    pending: mutation.isPending,
-    takeFormRefusalFocus,
+  // A control that disables itself under the reader's focus - Ask back while sending and once
+  // its text is sent - would have the browser drop focus to the document body (in the Inbox, out
+  // of the row, which then lets the row go) with nothing the card could act on afterwards; the
+  // same hand-off as a vanishing form, in the commit that disables it, before the browser looks.
+  const [formRef, trackForm] = useFormRef();
+  useLayoutEffect(() => {
+    const form = formRef.current;
+    const active = document.activeElement;
+    if (form !== null && active instanceof HTMLElement && active.matches(":disabled")) {
+      handOffFocus(form);
+    }
   });
   const tooltips = useTooltips();
   // Inside `NoTooltips` the card refuses its form from the press of an answer or a clarification
@@ -564,50 +595,47 @@ export function AskCard({
     : ON_PAGE.action;
   const answerField = (
     <>
-      <label className="block" htmlFor={answerFieldId}>
-        <span
-          className={
-            reasonRequired
-              ? `mb-1 block text-sm font-medium ${tooltips ? textSecondaryOnSurface : ON_PAGE.muted}`
-              : "sr-only"
-          }
-        >
-          {reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
-        </span>
-        {/* It grows with its text up to half the window (`growingField`). So a reason that
-            Dispatch wrote after a form refusal shows whole, and Answer stays on the screen.
-            `min-h-16!` keeps an empty field two lines tall over styles.css's unlayered touch floor. */}
-        <textarea
-          className={`block min-h-16! w-full rounded-lg px-3 py-2 font-normal outline-none ${growingField} ${tooltips ? inputClasses(true) : ON_PAGE.field}`}
-          data-ask-answer=""
-          disabled={disabledWhileOut}
-          id={answerFieldId}
-          onChange={(event) => {
-            setAnswerText(event.target.value);
-            setQuestionChoice(false);
-          }}
-          onDrop={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.drop(event, uploadOwner, ask.id);
-                }
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
-          onPaste={
-            uploadOwner === undefined
-              ? undefined
-              : (event) => {
-                  if (!refusing) upload.paste(event, uploadOwner, ask.id);
-                }
-          }
-          placeholder={answerPlaceholder}
-          readOnly={holdsFocus && refusing}
-          ref={answerFieldRef}
-          rows={2}
-          value={answerText}
-        />
-      </label>
+      {/* Inside `NoTooltips` the box is the page's (`ON_PAGE.field`), with its label and the line
+          under it in the page's words, and while the card refuses it is `readOnly` rather than
+          `disabled`, and takes no Ctrl+Enter, paste or drop (`refusing`). Outside it is
+          `disabled` while the write is out, as on `main`. */}
+      <MentionField
+        askAnswer={true}
+        body={answerText}
+        className="font-normal"
+        disabled={disabledWhileOut}
+        fieldClassName={tooltips ? undefined : ON_PAGE.field}
+        fieldRef={answerFieldRef}
+        hintClassName={tooltips ? undefined : `text-xs ${ON_PAGE.quiet}`}
+        issueKey={displayedAsk.issue_key ?? undefined}
+        label={reasonRequired ? "Reason (required)" : isApproval ? "Reason" : "Your answer"}
+        labelClassName={tooltips ? undefined : `block text-sm font-medium ${ON_PAGE.muted}`}
+        labelHidden={!reasonRequired}
+        onChange={(change) => {
+          setAnswerText(change.body);
+          setQuestionChoice(false);
+        }}
+        onDrop={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.drop(event, uploadOwner, ask.id);
+              }
+        }
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading || refusing })}
+        onPaste={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => {
+                if (!refusing) upload.paste(event, uploadOwner, ask.id);
+              }
+        }
+        placeholder={answerPlaceholder}
+        project={documentProject}
+        readOnly={holdsFocus && refusing}
+        rows={2}
+        writing={dispatchWritingBox("ask-answer", "ask-answer")}
+      />
       <DraftUploadStatus upload={upload} />
     </>
   );
@@ -703,6 +731,7 @@ export function AskCard({
   if (completed !== null) {
     return (
       <>
+        {questionReads}
         <AskCompletionCard
           answers={answers}
           artifactSlug={artifactSlug}
@@ -756,6 +785,7 @@ export function AskCard({
       data-ask-card={displayedAsk.id}
       data-testid={`ask-${displayedAsk.id}`}
     >
+      {questionReads}
       {hasUrgencyNotch ? (
         <span
           aria-hidden="true"
@@ -794,6 +824,7 @@ export function AskCard({
             <MarkdownBody
               markdown={displayedAsk.question}
               source={source}
+              surface="ask-card-question"
               tree={displayedAsk.question_tree}
             />
           </div>
@@ -945,12 +976,12 @@ export function AskCard({
                 name={`ask-${displayedAsk.id}`}
                 onChange={() => {
                   if (refusing) return;
-                  focusReasonOnShow.current = requiresReason(option.label);
                   selectRealOption(option.label);
                   if (isCompact)
                     setOwnWordsOpen(requiresReason(option.label) || trimmedAnswer !== "");
                 }}
                 option={option}
+                source={source}
               />
             ))}
             {isApproval ? null : (
@@ -965,6 +996,7 @@ export function AskCard({
                   if (isCompact && !otherSelected) setOwnWordsOpen(true);
                 }}
                 option={{ label: "Other" }}
+                source={source}
               />
             )}
           </fieldset>

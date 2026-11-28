@@ -12,7 +12,7 @@ import (
 )
 
 // TestTheImportTakesTheStoreLockOrder holds an import's write of the store (stateComponents,
-// dispatch://INFRA-1253 R9) to the store's lock order, written on api/inbox_read.go's
+// R9 of the issue-tree spec) to the store's lock order, written on api/inbox_read.go's
 // markInboxReadThreads: the owner rows first - the row of every source of the project, which every
 // writer of a component's node and rows takes first - then the component nodes, then the
 // components rows it replaces, and the project of its event last. The tuples are stated at the

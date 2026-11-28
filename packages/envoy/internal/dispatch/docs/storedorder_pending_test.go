@@ -91,6 +91,7 @@ func mergeStoredOrder(t *testing.T, updates ...[]byte) []byte {
 }
 
 func TestStoredOrderPendingRows(t *testing.T) {
+	t.Parallel()
 	seed := newDocumentCopy(crdt.WithClientID(100))
 	seed.Transact(typeParagraph(seed, "base"))
 	base := crdt.EncodeStateAsUpdateV1(seed, nil)
@@ -163,6 +164,7 @@ func TestStoredOrderPendingRows(t *testing.T) {
 }
 
 func TestStoredOrderReusesThePrefixBeforeParkedRows(t *testing.T) {
+	t.Parallel()
 	seed := newDocumentCopy(crdt.WithClientID(100))
 	seed.Transact(typeParagraph(seed, "base"))
 	updates := [][]byte{
@@ -192,6 +194,7 @@ func TestStoredOrderReusesThePrefixBeforeParkedRows(t *testing.T) {
 }
 
 func TestStoredOrderComparesParkedContent(t *testing.T) {
+	t.Parallel()
 	full, without := newDocumentCopy(), newDocumentCopy()
 	delete1 := storedOrderHex(t, "000114010101")
 	delete2 := storedOrderHex(t, "000114010201")

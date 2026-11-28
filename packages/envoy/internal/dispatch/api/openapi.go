@@ -1,11 +1,11 @@
-// openapi.go emits the OpenAPI 3.1 document of the Dispatch HTTP API from the route table and the
-// Go types routeShapes gives each of its rows (INFRA-1406). It is the one generator between the
+// openapi.go emits the OpenAPI 3.1 document of the Dispatch HTTP API from the route declarations
+// and the Go types each states as its Shape (INFRA-1406). It is the one generator between the
 // server and its clients: the dashboard's and the CLI's TypeScript types are rendered from the
 // document this file writes, so a route the table grows reaches them without anyone hand-writing a
 // type for it, and a shape that changes cannot quietly disagree with the handler that answers it.
 //
-// Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the table
-// with its test hooks in, routeShapes beside it and reflection over the Go types are the whole
+// Nothing here reads the database or opens a listener, as WriteRouteIndex needs neither: the
+// declarations with the test hooks' in and reflection over the Go types they name are the whole
 // input. `envoy-dispatch openapi` prints it and `--check` holds the committed artifact to it.
 package api
 
@@ -13,7 +13,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"reflect"
 	"slices"
@@ -35,7 +34,7 @@ const openAPISchemaPrefix = "#/components/schemas/"
 
 // openAPISessionParameter is the one query parameter every operation carries. It is read by
 // actingPerson (server.go) on every route that resolves a person rather than by any one handler,
-// so it belongs to the whole API and routeShapes names it on no row.
+// so it belongs to the whole API and no route's Shape names it.
 const openAPISessionParameter = "the session the caller's credential acts for, where that " +
 	"credential proved none; a credential that proved a session is refused a parameter naming " +
 	"another (403 ACTOR_SESSION_MISMATCH)"
@@ -101,98 +100,6 @@ func newOpenAPIEmitter() (*openAPIEmitter, []reflect.Type) {
 		jsonschema.InterceptProp(emitter.interceptProp),
 	)
 	return emitter, bothDirections
-}
-
-// openAPIDocument builds the document. It walks the table with its test hooks in, since a hook's
-// row is a row of the table wherever a deployment leaves it out (scopedRoutesNotMounted), and
-// marks each hook row x-test-hook so a reader of the document can tell the twelve apart.
-func openAPIDocument() (*openapi31.Spec, error) {
-	emitter, bothDirections := newOpenAPIEmitter()
-	for _, body := range bothDirections {
-		emitter.fail("%s is reflected both as a request body and as a response, and one schema "+
-			"cannot answer for both: a request body requires the fields tagged required:\"true\" "+
-			"and a response the fields Go's marshaller always writes, so either reading is wrong "+
-			"for one of its two directions. Give each direction a Go type of its own.",
-			openAPIGoTypeName(body))
-	}
-
-	spec := emitter.reflector.SpecEns()
-	spec.Openapi = "3.1.0"
-	spec.Info.WithTitle("Dispatch HTTP API")
-	spec.Info.WithVersion("1")
-	spec.Info.WithDescription(
-		"Generated from the Go route table (internal/dispatch/api/routes_table.go) and the Go " +
-			"types beside it (routes_shapes.go) by `envoy-dispatch openapi`. Edit those, never " +
-			"this document: it is committed so a client's types can be rendered from it, and " +
-			"`envoy-dispatch openapi --check` refuses a tree where it is stale.")
-
-	if err := emitter.resolveRawFields(); err != nil {
-		return nil, err
-	}
-
-	hooks := openAPIHookRoutes()
-	paths := map[string]*openapi31.PathItem{}
-	operationIDs := map[string]string{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		operation, err := emitter.operation(route, hooks[name])
-		if err != nil {
-			return nil, err
-		}
-		id := *operation.ID
-		if taken, clash := operationIDs[id]; clash {
-			emitter.fail("operationId %s is taken by both %s and %s", id, taken, name)
-		}
-		operationIDs[id] = name
-		item := paths[route.Pattern]
-		if item == nil {
-			item = &openapi31.PathItem{}
-			paths[route.Pattern] = item
-		}
-		if err := item.SetOperation(strings.ToLower(route.Method), operation); err != nil {
-			return nil, fmt.Errorf("%s: %w", name, err)
-		}
-	}
-	for pattern, item := range paths {
-		spec.PathsEns().WithMapOfPathItemValuesItem(pattern, *item)
-	}
-
-	for key := range rawFieldSchemas {
-		if !emitter.rawFieldsSeen[key] {
-			emitter.fail("rawFieldSchemas names %s, which is no field of any type the document "+
-				"describes: drop the row or name the field it meant", key)
-		}
-	}
-	for goType, name := range schemaNames {
-		if emitter.schemaOwners[name] != goType {
-			emitter.fail("schemaNames gives %s the name %s, and the document declares no schema "+
-				"of that type: drop the row or name the type it meant", openAPIGoTypeName(goType), name)
-		}
-	}
-	if len(emitter.failures) > 0 {
-		sort.Strings(emitter.failures)
-		return nil, fmt.Errorf("emit the OpenAPI document:\n\t%s",
-			strings.Join(slices.Compact(emitter.failures), "\n\t"))
-	}
-	return spec, nil
-}
-
-// openAPIHookRoutes names every row the table mounts only with Deps.TestHooksEnabled, read as the
-// difference between the two tables rather than listed, so a hook added to routes() is marked
-// without this file being touched.
-func openAPIHookRoutes() map[string]bool {
-	served := map[string]bool{}
-	for _, route := range (&server{}).routes() {
-		served[route.Method+" "+route.Pattern] = true
-	}
-	hooks := map[string]bool{}
-	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
-		name := route.Method + " " + route.Pattern
-		if !served[name] {
-			hooks[name] = true
-		}
-	}
-	return hooks
 }
 
 // fail records a refusal the whole emit carries.
@@ -265,9 +172,9 @@ func openAPIRequestBodyTypes() (map[reflect.Type]bool, []reflect.Type) {
 			openAPIReach(reflect.TypeOf(value), into, carried)
 		}
 	}
-	// In the table's key order, so a refusal names the same type whichever run reads it.
-	for _, name := range slices.Sorted(maps.Keys(routeShapes)) {
-		shape := routeShapes[name]
+	// In the table's order, so a refusal names the same type whichever run reads it.
+	for _, route := range (&server{deps: Deps{TestHooksEnabled: true}}).routes() {
+		shape := route.Shape
 		if shape.Request != nil {
 			bodies = append(bodies, reflect.TypeOf(shape.Request))
 			reach(shape.Request, request, &bodies)
@@ -375,11 +282,10 @@ func openAPIStructOf(t reflect.Type) reflect.Type {
 // schema that table gives it.
 //
 // A name is added to required once however often it is reflected. A shaped read shadows a field
-// of the row it embeds - architectureTreeRead declares `components` in front of the
-// model.ArchitectureTree it embeds - and the reflector walks the embedded struct's fields into
-// the object beside the shadowing one, so both reach this with the same json name. JSON Schema
-// 2020-12 §6.5.3 says the entries of required are unique, and the first of the two keeps the
-// place the emitter gave it.
+// of the row it embeds - shapedAsk declares `options` in front of the model.Ask it embeds - and
+// the reflector walks the embedded struct's fields into the object beside the shadowing one, so
+// both reach this with the same json name. JSON Schema 2020-12 §6.5.3 says the entries of
+// required are unique, and the first of the two keeps the place the emitter gave it.
 func (e *openAPIEmitter) interceptProp(p jsonschema.InterceptPropParams) error {
 	if !p.Processed {
 		return nil
@@ -620,21 +526,21 @@ func (e *openAPIEmitter) define(name string, schema jsonschema.Schema) {
 
 // operation builds one row's operation: what it is called, what it says of itself, what it takes
 // and every answer it gives.
-func (e *openAPIEmitter) operation(route apiRoute, hook bool) (*openapi31.Operation, error) {
+func (e *openAPIEmitter) operation(route apiRoute) (*openapi31.Operation, error) {
 	name := route.Method + " " + route.Pattern
-	shape := routeShapes[name]
+	shape := route.Shape
 	operation := &openapi31.Operation{}
 	operation.WithID(openAPIOperationID(route.Method, route.Pattern))
 	operation.WithDescription(route.Description)
 
 	extensions := map[string]any{"x-auth": string(route.Auth)}
-	if route.Scope != "" {
-		extensions["x-write-scope"] = string(route.Scope)
+	if route.WriteClass != "" {
+		extensions["x-write-scope"] = string(route.WriteClass)
 	}
 	if len(route.OAuthScopes) > 0 {
 		extensions["x-oauth-scopes"] = []string(route.OAuthScopes)
 	}
-	if hook {
+	if route.TestHook {
 		extensions["x-test-hook"] = true
 	}
 	operation.WithMapOfAnything(extensions)
@@ -704,8 +610,8 @@ func openAPICamel(segment string) string {
 }
 
 // parameters are the row's path parameters, in the pattern's own order, then the keys the shape's
-// query struct declares, in the struct's own order, then the `session` parameter every operation
-// carries.
+// query struct declares, in the struct's own order, then the headers the shape names, in its own
+// order, then the `session` parameter every operation carries.
 func (e *openAPIEmitter) parameters(
 	route apiRoute,
 	shape routeShape,
@@ -726,6 +632,16 @@ func (e *openAPIEmitter) parameters(
 			return nil, err
 		}
 		parameters = append(parameters, query...)
+	}
+	for _, header := range shape.Headers {
+		parameter := openapi31.Parameter{
+			Name:   header.Name,
+			In:     openapi31.ParameterInHeader,
+			Schema: map[string]any{"type": "string"},
+		}
+		parameter.WithRequired(header.Required)
+		parameter.WithDescription(header.Description)
+		parameters = append(parameters, openapi31.ParameterOrReference{Parameter: &parameter})
 	}
 	session := openapi31.Parameter{
 		Name:   "session",

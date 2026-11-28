@@ -10,13 +10,16 @@ import (
 
 // A plan is approved by the plan review that read it, never by a person: the review route records
 // that approval of one version, the document then reads as approved, a later version makes it
-// stale, and no approval request for a plan ever reaches a human.
+// stale, and no approval request for a plan ever reaches a human. The plan holds a plan task and
+// the later version rewords it: R14's approval covers the Plan query's record, which takes plan
+// tasks and plan roles, so a later version that changed a plan's prose alone would leave it
+// approved.
 func TestPlanReviewApprovesAPlanVersionAndNoPersonIsAsked(t *testing.T) {
 	t.Parallel()
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "PLAN", "Approve the plan", "A spec\n")
 	owner := "/api/v1/issues/" + issue.Key
-	plan := uploadDocument(t, handler, owner, "plan.md", "# Plan\n\nOne.\n")
+	plan := uploadDocument(t, handler, owner, "plan.md", "# Plan\n\n:::plan_task{#t1}\nOne.\n:::\n")
 
 	recorded := sessionRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews", map[string]any{"actor": sessionActor(), "version": 1})
@@ -41,8 +44,9 @@ func TestPlanReviewApprovesAPlanVersionAndNoPersonIsAsked(t *testing.T) {
 		t.Fatalf("approval request on a plan: status=%d code=%s body=%s", refused.Code, code, refused.Body.String())
 	}
 
-	// A later plan version makes the review's approval stale, as a spec's approval goes stale.
-	uploadDocument(t, handler, owner, "plan.md", "# Plan\n\nTwo.\n")
+	// A later plan version that rewords the plan task makes the review's approval stale, as a
+	// spec's approval goes stale.
+	uploadDocument(t, handler, owner, "plan.md", "# Plan\n\n:::plan_task{#t1}\nTwo.\n:::\n")
 	if read := readApproval(t, handler, plan.Artifact.ID); read.Approval.State != "stale" || read.Approval.LatestVersion != 2 {
 		t.Fatalf("plan approval after a new version = %#v, want stale at version 2", read.Approval)
 	}
@@ -59,12 +63,14 @@ func TestPlanReviewApprovesAPlanVersionAndNoPersonIsAsked(t *testing.T) {
 // (docs.carryApproval's restore), and the carry stays the plan review's: the carried review and
 // the artifact.approved it emits both record kind plan_review, so the document's chip still reads
 // "Approved by plan review" and the agent that restored the text is never recorded as a person
-// approving a plan.
+// approving a plan. The agent's edit rewords the plan's task: under R14 an edit of a plan's prose
+// alone changes nothing the Plan query takes, so the record carry would carry the approval to it
+// and the restore would have nothing to carry.
 func TestARestoredPlanVersionCarriesThePlanReviewsOwnKind(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
 	issue := createInteractionIssue(t, handler, "PLAN", "Restore the approved plan", "A spec\n")
-	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\nThe service ships behind a flag.\n")
+	plan := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "plan.md", "# Plan\n\n:::plan_task{#t1}\nThe service ships behind a flag.\n:::\n")
 	if recorded := sessionRequest(t, handler, http.MethodPost,
 		"/api/v1/artifacts/"+plan.Artifact.ID+"/plan-reviews",
 		map[string]any{"actor": sessionActor(), "version": 1}); recorded.Code != http.StatusCreated {

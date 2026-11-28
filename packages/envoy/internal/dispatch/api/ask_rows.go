@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -105,15 +106,22 @@ end`
 // issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
+// ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar. Both askedOfPersonJoins and projectOfComment (api/project_scope.go) append
+// it so the join has one spelling across the module.
+const ownerProjectJoin = `
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
-// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
-// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
-// its own.
+// p. Six FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
+// read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
+// (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
+// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
+// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
+// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
+// expression to its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
@@ -123,8 +131,7 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -180,10 +187,46 @@ func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *st
 // rather than evaluating the rule a second time; LastReply still names the newest comment.
 // WaitingOnPerson is askedOfPersonExpression, the person that turn waits on, aliased
 // waiting_on_person for the same reason; every project names a default assignee, so it is null
-// only for a question whose project row the read could not reach. Queries selecting them read
-// from askReadFrom. Event payloads are built from askRowColumns instead: they carry neither.
+// only for a question whose project row the read could not reach. node_answer is the ask's
+// answer state as its node holds it (asks.NodeAnswerColumn), which scanAskRead lays over the row's:
+// every read of an answer reads the node (R3). Queries selecting them read from askReadFrom.
+// Event payloads are built from askRowColumns instead: they carry none of the three. So is the
+// read a transition decides on under its owner's lock (readAskForTransition), whose state is the
+// row's, as the one writer of an answer state checks the state it moves from against the row
+// (asks.Settle, Change.From).
 var askReadColumns = askRowColumns + `, lr.author, lr.created_at, ` + waitingOnExpression +
-	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person`
+	` as waiting_on, ` + askedOfPersonExpression + ` as waiting_on_person, ` + asks.NodeAnswerColumn("a") + ` as node_answer`
+
+// askOpenOf is how a statement that reads open asks across owners - the Inbox (listInbox), the
+// asks the Replies list leaves out for it (myRepliesOwner), a session's or a project's open asks
+// (listOpenAsks) and the open approval requests of a list of documents
+// (openApprovalAsksStatement) - picks the open ask aliased ask: its row's state open, which the
+// partial index asks_open (0001) holds, so the index picks the candidates out of every ask
+// stored, and its node's state open (asks.NodeStateOf), which decides (R3). An ask its node holds
+// anything but open is never picked. The two agree outside a roll; inside its window the row is
+// the newer of the two, written by a process of the release before and not yet stated on the node
+// by the decisions step's catch-up, so an ask that process answered is left out until then.
+func askOpenOf(ask string) string {
+	return ask + `.state = '` + asks.StateOpen + `' and ` + asks.NodeStateOf(ask) + ` = '` + asks.StateOpen + `'`
+}
+
+// askSearchTextOf is the text of the ask aliased ask that a search hit shows (search's txt
+// lateral) and an answer is given to read for the hit (goingItemTextQuery): its question, a space,
+// and ask_search_suffix of its options and of its answer as its node holds it
+// (asks.NodeAnswerJSONOf), as every read of an answer reads the node (R3).
+//
+// The vector search ranks the ask by is still built from its row (asks_search, over asks.answer:
+// migrations 0087 and 20261120021308). The row is the node's projection, which the one writer of
+// an answer state writes in the same transaction (asks.Settle), so the two hold the same words but
+// in two cases: inside a roll's window, where a process of the release before wrote the row alone
+// and the decisions step's catch-up has not stated it on the node yet, and on an ask its node holds
+// resolved, whose row keeps the answer it held, which no read shows. A query can match such words,
+// and the hit then shows the question and the options without them; the vector ranks and shows no
+// answer, and moving it onto the node would take a trigger over graph_tuples and a rewrite of every
+// ask's vector, a migration of its own.
+func askSearchTextOf(ask string) string {
+	return ask + `.question || ' ' || ask_search_suffix(` + ask + `.options, ` + asks.NodeAnswerJSONOf(ask) + `)`
+}
 
 // askReadFrom is askRowFrom with the three joins askedOfPersonExpression reads beside the ask
 // (askedOfPersonJoins) and the ask's newest reply. A query over it that wants the issue's or
@@ -381,19 +424,27 @@ func (s *server) loadAskAnchorArtifact(
 	return &artifact, nil
 }
 
-// scanAskRead decodes one askReadColumns row; an open ask gets WaitingOn from
-// waitingOnExpression, WaitingOnPerson comes from askedOfPersonExpression, the three steps that
-// end at the project's default assignee, and the newest reply is returned separately (nil when
-// the thread is empty).
+// scanAskRead decodes one askReadColumns row; its state, answer and resolution are its node's
+// (asks.NodeAnswer.ApplyTo), an open ask gets WaitingOn from waitingOnExpression, WaitingOnPerson
+// comes from askedOfPersonExpression, the three steps that end at the project's default assignee,
+// and the newest reply is returned separately (nil when the thread is empty). A stored value that
+// does not decode - a column of the row, the answer its node holds, or the newest reply's author -
+// answers a docs.UndecodableAskError naming the ask, as docs.ScanAsk answers one for the row.
 func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, error) {
 	var replyAuthor []byte
 	var repliedAt *time.Time
 	var turn string
 	var waitingOnPerson *string
-	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson}, extra...)...)
+	var nodeAnswer []byte
+	ask, err := scanAskRow(row, append([]any{&replyAuthor, &repliedAt, &turn, &waitingOnPerson, &nodeAnswer}, extra...)...)
 	if err != nil {
 		return model.Ask{}, nil, err
 	}
+	node, err := asks.ReadNodeAnswer(nodeAnswer)
+	if err != nil {
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "node's answer", Err: err}
+	}
+	node.ApplyTo(&ask)
 	if ask.State == "open" {
 		ask.WaitingOn = turn
 	}
@@ -405,7 +456,7 @@ func scanAskRead(row pgx.Row, extra ...any) (model.Ask, *model.AskLastReply, err
 	}
 	var reply model.AskLastReply
 	if err := json.Unmarshal(replyAuthor, &reply.Author); err != nil {
-		return model.Ask{}, nil, fmt.Errorf("decode ask last reply author: %w", err)
+		return model.Ask{}, nil, &docs.UndecodableAskError{AskID: ask.ID, Value: "newest reply's author", Err: err}
 	}
 	reply.CreatedAt = timestampValue(*repliedAt)
 	return ask, &reply, nil

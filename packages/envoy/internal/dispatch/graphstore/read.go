@@ -25,20 +25,29 @@ const tupleColumns = `seq, from_kind, from_id, kind, to_kind, to_id, at, who, so
 // counts' test of one tuple - and the rule written out in each of them was several readings to
 // keep in step, as prioritystore.AdvancesTupleRead's own store found.
 //
-// It reads graph_tuples as t. relation is the columns of t that tell one relation from another
-// among the rows narrow keeps - the relation's key, (from_kind, from_id, kind, to_kind, to_id),
-// less the columns narrow binds to one value - written in the order of the index the read walks:
-// graph_tuples_current's for a read out of a node, whose last column is the seq the order by
-// ends at, so the planner takes the newest row of each relation off the index and sorts
-// nothing, where narrow proves the index's predicate; a read that cannot, and a read into a
-// node, which graph_tuples_as_of_in serves, sort the node's tuples the index condition reaches.
-// columns is what each row answers, t.asserted among it for the cut. narrow is the predicate that
-// bounds the read, written inside the `where` so it cuts the rows the `distinct on` sorts rather
-// than its answer. The caller writes all three from its own text and never from a value a request
-// carried.
+// It reads graph_tuples as t (CurrentTupleReadIn). relation is the columns of t that tell one
+// relation from another among the rows narrow keeps - the relation's key, (from_kind, from_id,
+// kind, to_kind, to_id), less the columns narrow binds to one value - written in the order of the
+// index the read walks: graph_tuples_current's for a read out of a node, whose last column is the
+// seq the order by ends at, so the planner takes the newest row of each relation off the index
+// and sorts nothing, where narrow proves the index's predicate; a read that cannot, and a read
+// into a node, which graph_tuples_as_of_in serves, sort the node's tuples the index condition
+// reaches. columns is what each row answers, t.asserted among it for the cut. narrow is the
+// predicate that bounds the read, written inside the `where` so it cuts the rows the `distinct on`
+// sorts rather than its answer. The caller writes all three from its own text and never from a
+// value a request carried.
 func CurrentTupleRead(relation, columns, narrow string) string {
+	return CurrentTupleReadIn(`graph_tuples`, relation, columns, narrow)
+}
+
+// CurrentTupleReadIn is CurrentTupleRead over table, read as t: graph_tuples under the name the
+// calling statement gives it, which a statement that names the schema of every table it reads
+// qualifies by that schema (loadtest's servedAnswersQuery reads public.graph_tuples, through
+// asks.NodeAnswerTuplesIn). table is a constant of the caller's own text, never a request's value,
+// as relation, columns and narrow are.
+func CurrentTupleReadIn(table, relation, columns, narrow string) string {
 	return `select distinct on (` + relation + `) ` + columns + `
-			from graph_tuples t
+			from ` + table + ` t
 			where ` + narrow + `
 			order by ` + relation + `, t.seq desc`
 }
@@ -283,7 +292,7 @@ const nodesOfKind = `
 		order by id
 	`
 
-// NodesBeneath answers the row of each node that stands beneath the node whose kind and id are
+// nodesBeneath answers the row of each node that stands beneath the node whose kind and id are
 // kind and id, as the store keys it, and is not gone, at every depth and of every kind, in (kind,
 // id) order, in one statement however deep the tree: each node whose current part_of tuple
 // (CurrentTupleRead) points at that node, each whose current part_of points at one of those, and
@@ -294,10 +303,10 @@ const nodesOfKind = `
 // that node's row out of the answer, since what still stands under a gone node stands beneath the
 // start too. The statement binds `to_kind <> 'value'` as a literal, as CurrentIn does, so the
 // planner proves the predicate of graph_tuples_as_of_in for an end the walk reads off a row it
-// reached, and walks that index from each such end. The write that takes a node to gone reads
-// what stands beneath it so (api's writeNodeState).
-func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
-	rows, err := q.Query(ctx, nodesBeneath, kind, id, StateGone)
+// reached, and walks that index from each such end. WriteState reads what stands beneath each node
+// it takes gone so, through withBeneath.
+func nodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, error) {
+	rows, err := q.Query(ctx, nodesBeneathStatement, kind, id, StateGone)
 	if err != nil {
 		return nil, fmt.Errorf("read the nodes beneath %s/%s: %w", kind, id, err)
 	}
@@ -308,14 +317,42 @@ func NodesBeneath(ctx context.Context, q Queryer, kind, id string) ([]Node, erro
 	return beneath, nil
 }
 
-// nodesBeneath is the statement of NodesBeneath: $1 and $2 the start's kind and id and $3 the gone
-// state. walked is the start and each node the walk has reached, each once, as the store keys it:
-// its recursive step is the current part_of tuples into one node it holds, under the node's kind
-// and its address kind, read in a lateral subquery keyed by that node, and its `union` drops a
-// node it holds already, so a part_of cycle ends the walk rather than looping. The relation each
-// step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does not
-// key, so it sorts that node's part_of tuples by node. The start itself is no answer.
-var nodesBeneath = `
+// withBeneath answers roots, each followed by what nodesBeneath reads beneath it, root by root in
+// the order roots holds them, and each node once, as the store keys it, by kind and id: where a node
+// is met twice - a root an earlier root's subtree holds, or a node two roots' subtrees share - the
+// answer keeps it where it was first met, as that read answered it. It reads beneath every root, one
+// nodesBeneath each, whether or not it met the root already. It is WriteState's read of what a
+// write into gone takes with it.
+func withBeneath(ctx context.Context, q Queryer, roots []Node) ([]Node, error) {
+	var nodes []Node
+	taken := map[[2]string]bool{}
+	take := func(node Node) {
+		if key := [2]string{node.Kind, node.ID}; !taken[key] {
+			taken[key] = true
+			nodes = append(nodes, node)
+		}
+	}
+	for _, root := range roots {
+		take(root)
+		beneath, err := nodesBeneath(ctx, q, root.Kind, root.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, node := range beneath {
+			take(node)
+		}
+	}
+	return nodes, nil
+}
+
+// nodesBeneathStatement is the statement of nodesBeneath: $1 and $2 the start's kind and id and $3
+// the gone state. walked is the start and each node the walk has reached, each once, as the store
+// keys it: its recursive step is the current part_of tuples into one node it holds, under the
+// node's kind and its address kind, read in a lateral subquery keyed by that node, and its `union`
+// drops a node it holds already, so a part_of cycle ends the walk rather than looping. The relation
+// each step keeps is the near end and the spelling of the far end, which graph_tuples_as_of_in does
+// not key, so it sorts that node's part_of tuples by node. The start itself is no answer.
+var nodesBeneathStatement = `
 		with recursive walked (node_kind, node_id) as (
 			select $1::text, $2::text
 			union
@@ -351,7 +388,7 @@ func scanNodesOfKind(rows pgx.Rows, kind string) ([]Node, error) {
 	return nodes, nil
 }
 
-// ScanNode reads one node row, as ReadNode, NodesOfKind and NodesBeneath take it: a row whose
+// ScanNode reads one node row, as ReadNode, NodesOfKind and nodesBeneath take it: a row whose
 // first columns are nodeColumns, in their order, as a statement of another package selects them
 // through NodeColumnsOf, and whose columns after those, where it selects any, it reads into more.
 // A null project_key is the empty Project, and a null parties nil Parties.

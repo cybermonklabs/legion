@@ -2,6 +2,7 @@ package refs
 
 import (
 	"context"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -12,10 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The tests of this file hold the block index to the rank, the text and the placement it states of
-// every block (R1 and R15 of dispatch://INFRA-1253, D1, D9 and D15 of its plan). Each writes its
+// every block (R1 and R15 of the issue-tree spec, D1, D9 and D15 of its plan). Each writes its
 // versions as a version write does and indexes them through IndexBlocks, as block_parent_test.go
 // does, and reads the values back through the store's own current read (graphstore.CurrentValue).
 // The attribute names are spelled out rather than read off the writer, so a writer that renamed
@@ -24,6 +26,8 @@ const (
 	rankAttribute      = "rank"
 	textAttribute      = "text"
 	placementAttribute = "placement"
+	textRankAttribute  = "text_rank"
+	textParentKind     = "text_parent"
 )
 
 // issueDocuments are the four documents of one issue: its spec, its Verification document, its
@@ -159,11 +163,9 @@ func stateValue(t *testing.T, document parentDocument, blockID, attribute, value
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, document.database.Pool, func(tx pgx.Tx) error {
-		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
-			FromKind: BlockNodeKind, FromID: document.address(blockID), Kind: attribute,
-			ToKind: graphstore.KindValue, ToID: value,
-			At: time.Now(), Who: model.Actor{Kind: "user", ID: "alice"}, SourceEvent: graphstore.NoEvent, Asserted: true,
-		}})
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{
+			valueTuple(document.address(blockID), attribute, value, time.Now(), model.Actor{Kind: "user", ID: "alice"}, true),
+		})
 	}); err != nil {
 		t.Fatalf("state the %s of %s: %v", attribute, blockID, err)
 	}
@@ -399,7 +401,7 @@ func TestEveryBlocksTextValueIsItsDocumentBlockTextsRow(t *testing.T) {
 	document.requireTextsProjected(t, "the pass that gave mid its text", second)
 }
 
-// A state dispatch://INFRA-1950 sets stands through every pass of the block index that moves the
+// A state the node-visibility spec sets stands through every pass of the block index that moves the
 // block's text or its place, and the pass states the block's values all the same: a settled
 // requirement whose words change and that moves after its sibling stays settled and takes its new
 // text and its new rank; an overtaken one stays overtaken; and a requirement the version drops is
@@ -427,7 +429,7 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 		t.Helper()
 		if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
 			return graphstore.Write(ctx, tx, []graphstore.Node{{
-				Kind: BlockNodeKind, ID: document.address(requirement), Supertag: BlockSupertag,
+				Kind: BlockNodeKind, ID: document.address(requirement), Supertag: requirementType,
 				Visibility: graphstore.VisibilityProject, State: state,
 				MadeAt: time.Now(), MadeBy: writer, SourceEvent: graphstore.NoEvent,
 			}}, nil)
@@ -440,7 +442,7 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 	mark(graphstore.StateSettled)
 	moved := version("We ship it today.", false)
 	indexed(t, document, 2, moved)
-	requireRestatedBlock(t, document, requirement, graphstore.StateSettled,
+	requireBlockState(t, document, requirement, graphstore.StateSettled, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled})
 	if text, _ := document.currentValue(t, requirement, textAttribute); text != "We ship it today.\n" {
 		t.Errorf("the settled requirement's text is %q after the version that changed it, want the new words", text)
@@ -451,13 +453,199 @@ func TestAReindexKeepsTheStateANodeWasGiven(t *testing.T) {
 
 	mark(graphstore.StateOvertaken)
 	indexed(t, document, 3, version("We ship it this week.", false))
-	requireRestatedBlock(t, document, requirement, graphstore.StateOvertaken,
+	requireBlockState(t, document, requirement, graphstore.StateOvertaken, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken})
 
 	indexed(t, document, 4, blockDoc{markdown: "bb\n", blocks: []model.ArtifactBlock{{ID: "b", Type: "paragraph", From: 0, To: 3}}})
-	requireRestatedBlock(t, document, requirement, graphstore.StateGone,
+	requireBlockState(t, document, requirement, graphstore.StateGone, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken, graphstore.StateGone})
 	indexed(t, document, 5, moved)
-	requireRestatedBlock(t, document, requirement, graphstore.StateLive,
+	requireBlockState(t, document, requirement, graphstore.StateLive, graphstore.VisibilityProject,
 		[]string{graphstore.StateLive, graphstore.StateSettled, graphstore.StateOvertaken, graphstore.StateGone, graphstore.StateLive})
+}
+
+// currentTextParent is the one far end a block's text_parent names now, failing unless the
+// block holds exactly one: a block stands in one place of its document's text at a time.
+func (d parentDocument) currentTextParent(t *testing.T, blockID string) graphstore.Tuple {
+	t.Helper()
+	held, err := graphstore.CurrentOut(context.Background(), d.database.Pool, BlockNodeKind, d.address(blockID), []string{textParentKind})
+	if err != nil {
+		t.Fatalf("read the text parent of %s: %v", blockID, err)
+	}
+	if len(held) != 1 {
+		t.Fatalf("block %s holds %d current text_parent tuples, want exactly one", blockID, len(held))
+	}
+	return held[0]
+}
+
+// textRankOf is a block's current text_rank, failing the test where it holds none.
+func (d parentDocument) textRankOf(t *testing.T, blockID string) string {
+	t.Helper()
+	held, ok := d.currentValue(t, blockID, textRankAttribute)
+	if !ok {
+		t.Fatalf("block %s holds no text_rank", d.address(blockID))
+	}
+	return held
+}
+
+// textPlaceDocument is a version of a spec whose box holds a paragraph, a block whose id is past
+// text.MaxBlockIDBytes holding a paragraph of its own, and a requirement that names no parent,
+// followed by the top-level paragraphs given, in order, each one line.
+func textPlaceDocument(paragraphs ...string) blockDoc {
+	const (
+		inner = "inner words\n"
+		deep  = "deep words\n"
+		req   = "req words\n"
+	)
+	long := strings.Repeat("l", text.MaxBlockIDBytes+1)
+	holder := "long:" + deep
+	box := "box:" + inner + holder + req
+	doc := blockDoc{markdown: box, blocks: []model.ArtifactBlock{
+		{ID: "box", Type: "paragraph", From: 0, To: len(box)},
+		{ID: "inner", Type: "paragraph", From: 4, To: 4 + len(inner)},
+		{ID: long, Type: "paragraph", From: 4 + len(inner), To: 4 + len(inner) + len(holder)},
+		{ID: "deep", Type: "paragraph", From: 4 + len(inner) + 5, To: 4 + len(inner) + len(holder)},
+		{ID: "req", Type: "requirement", From: 4 + len(inner) + len(holder), To: len(box)},
+	}}
+	for _, id := range paragraphs {
+		line := id + " words\n"
+		doc.blocks = append(doc.blocks, model.ArtifactBlock{ID: id, Type: "paragraph", From: len(doc.markdown), To: len(doc.markdown) + len(line)})
+		doc.markdown += line
+	}
+	return doc
+}
+
+// Every block that is a node holds its place in its document's text as two dated facts beside its
+// rank: a text_parent tuple to the tightest block of the version that holds it and is a node, or
+// to its document's node where no such block holds it, and a text_rank value among the blocks
+// that share that text parent, in the version's text order.
+//
+// The first index of a spec states both of every block, dated at the pass's own time by the
+// version's writer: the box's paragraph, its requirement and the paragraph inside the block whose
+// id is past the bound, which is no node, each name the box, whose own text parent and the
+// top-level paragraphs' is the spec's node; the requirement's part_of is the issue (it names no
+// parent of its own), which its text parent is not; and the text ranks of each text parent's
+// children increase in text order, in the spec's band. graph_edges renders no text_parent. A
+// re-index nothing moved states neither fact. A version that swaps two top-level paragraphs states
+// one text_rank, the one that moved forward, no text_parent, and moves no changed_version. A
+// version of the plan that moves a block under another holder, changing no text, retracts its old
+// text parent and asserts the new one at one time, the pass's own, and states no text_rank, the
+// block being the one text child of either holder. And a block whose text facts were taken out,
+// as a build before this one leaves a block, takes both again at the next pass, and no other block
+// takes either.
+func TestEveryBlockHoldsItsPlaceInItsDocumentsText(t *testing.T) {
+	ctx := context.Background()
+	database := parentDatabase(t)
+	issue := newIssueDocuments(t, database, "PLACE")
+	spec := issue.spec
+	writer := model.Actor{Kind: "user", ID: "alice"}
+	document := Target{Kind: graphstore.KindArtifact, ID: spec.refKey}
+	box := Target{Kind: BlockNodeKind, ID: spec.address("box")}
+
+	first := textPlaceDocument("p1", "p2")
+	record := spec.writeVersion(t, 1, first.markdown, writer)
+	won, stated, passAt := spec.indexVersionAt(t, 1, first, record)
+	if !won {
+		t.Fatalf("the spec's first index did not become the version its blocks stand at")
+	}
+	want := map[string]Target{"box": document, "inner": box, "deep": box, "req": box, "p1": document, "p2": document}
+	for id, parent := range want {
+		if held := spec.currentTextParent(t, id); held.ToKind != parent.Kind || held.ToID != parent.ID {
+			t.Errorf("after the first index %s's text parent is %s/%s, want %s/%s", id, held.ToKind, held.ToID, parent.Kind, parent.ID)
+		}
+	}
+	if parent := spec.currentParent(t, "req"); parent.ToKind != graphstore.KindIssue || parent.ToID != spec.issue {
+		t.Errorf("the requirement that names no parent is part of %s/%s, want the issue %s: its text parent is no part_of", parent.ToKind, parent.ToID, spec.issue)
+	}
+	for _, run := range [][]string{{"box", "p1", "p2"}, {"inner", "deep", "req"}} {
+		for index, id := range run {
+			held := spec.textRankOf(t, id)
+			if held[0] != '1' {
+				t.Errorf("%s's text_rank is %q, want one of the spec's band 1", id, held)
+			}
+			if index > 0 && spec.textRankOf(t, run[index-1]) >= held {
+				t.Errorf("%s's text_rank %q does not stand after %s's %q, the block before it in the text", id, held, run[index-1], spec.textRankOf(t, run[index-1]))
+			}
+		}
+	}
+	facts := statedOutOf(stated, spec, textParentKind, textRankAttribute)
+	if len(facts) != 2*len(want) {
+		t.Errorf("the first index stated %d text facts, want a text_parent and a text_rank of each of the %d blocks that are nodes: %+v", len(facts), len(want), facts)
+	}
+	for _, fact := range facts {
+		if !fact.Asserted || fact.At.Before(passAt) || !fact.Who.SameAs(record.writer) || fact.SourceEvent != record.event {
+			t.Errorf("the first index stated %+v, want an assertion at or after the pass's time %s by %+v under event %d", fact, passAt, record.writer, record.event)
+		}
+	}
+	var edges int
+	if err := database.Pool.QueryRow(ctx, `select count(*) from graph_edges where kind = $1`, textParentKind).Scan(&edges); err != nil {
+		t.Fatalf("read graph_edges: %v", err)
+	}
+	if edges != 0 {
+		t.Errorf("graph_edges holds %d text_parent edges, want none: no block_refs row projects one", edges)
+	}
+
+	if stated := indexed(t, spec, 2, first); len(statedOutOf(stated, spec, textParentKind, textRankAttribute)) != 0 {
+		t.Errorf("a re-index nothing moved stated %+v, want no text fact", statedOutOf(stated, spec, textParentKind, textRankAttribute))
+	}
+
+	ranks := map[string]string{"box": spec.textRankOf(t, "box"), "p1": spec.textRankOf(t, "p1")}
+	changed := spec.changes(t)
+	swapped := textPlaceDocument("p2", "p1")
+	stated = indexed(t, spec, 3, swapped)
+	if got := statedOutOf(stated, spec, textParentKind); len(got) != 0 {
+		t.Errorf("the version that swapped two paragraphs stated the text parents %+v, want none", got)
+	}
+	if got := statedOutOf(stated, spec, textRankAttribute); len(got) != 1 || got[0].FromID != spec.address("p2") {
+		t.Errorf("the version that swapped two paragraphs stated the text ranks %+v, want one, of p2, which moved forward", got)
+	}
+	if now := spec.textRankOf(t, "p2"); !(ranks["box"] < now && now < ranks["p1"]) || spec.textRankOf(t, "p1") != ranks["p1"] {
+		t.Errorf("after the swap p2's text_rank is %q and p1's %q, want p2's between the box's %q and p1's kept %q",
+			now, spec.textRankOf(t, "p1"), ranks["box"], ranks["p1"])
+	}
+	if now := spec.changes(t); !maps.Equal(now, changed) {
+		t.Errorf("the swap moved the blocks' changed versions from %v to %v, want none moved", changed, now)
+	}
+
+	plan := issue.plan
+	planWriter := model.Actor{Kind: "user", ID: "bob"}
+	indexed(t, plan, 1, moverUnderLeft())
+	rank := plan.textRankOf(t, "mover")
+	planChanged := plan.changes(t)
+	moved := plan.writeVersion(t, 2, moverUnderRight().markdown, planWriter)
+	_, stated, passAt = plan.indexVersionAt(t, 2, moverUnderRight(), moved)
+	parents := statedOutOf(stated, plan, textParentKind)
+	if len(parents) != 2 || parents[0].Asserted || parents[0].ToID != plan.address("left") ||
+		!parents[1].Asserted || parents[1].ToID != plan.address("right") || !parents[0].At.Equal(parents[1].At) {
+		t.Fatalf("the version that moved mover under right stated the text parents %+v, want left's retraction and right's assertion at one time", parents)
+	}
+	for _, parent := range parents {
+		if parent.At.Before(passAt) || !parent.Who.SameAs(moved.writer) || parent.SourceEvent != moved.event {
+			t.Errorf("the move stated %+v, want it at or after the pass's time %s by %+v under event %d", parent, passAt, moved.writer, moved.event)
+		}
+	}
+	if got := statedOutOf(stated, plan, textRankAttribute); len(got) != 0 || plan.textRankOf(t, "mover") != rank {
+		t.Errorf("the move stated the text ranks %+v and left mover at %q, want none stated and its %q kept: it is the one text child of either holder",
+			got, plan.textRankOf(t, "mover"), rank)
+	}
+	if now := plan.changes(t); !maps.Equal(now, planChanged) {
+		t.Errorf("the move changed the plan's changed versions from %v to %v, want none moved", planChanged, now)
+	}
+
+	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+		held := spec.currentTextParent(t, "p1")
+		return graphstore.Write(ctx, tx, nil, []graphstore.Tuple{{
+			FromKind: BlockNodeKind, FromID: spec.address("p1"), Kind: textParentKind, ToKind: held.ToKind, ToID: held.ToID,
+			At: time.Now(), Who: writer, SourceEvent: graphstore.NoEvent, Asserted: false,
+		}, valueTuple(spec.address("p1"), textRankAttribute, ranks["p1"], time.Now(), writer, false)})
+	}); err != nil {
+		t.Fatalf("take p1's text facts out as a build before this one leaves a block: %v", err)
+	}
+	stated = indexed(t, spec, 4, swapped)
+	if got := statedOutOf(stated, spec, textParentKind, textRankAttribute); len(got) != 2 || got[0].FromID != spec.address("p1") || got[1].FromID != spec.address("p1") {
+		t.Errorf("the pass over a block holding no text facts stated %+v, want p1's text_parent and text_rank alone", got)
+	}
+	if held := spec.currentTextParent(t, "p1"); held.ToKind != document.Kind || held.ToID != document.ID {
+		t.Errorf("p1's text parent is %s/%s after the pass, want the spec's node", held.ToKind, held.ToID)
+	}
 }

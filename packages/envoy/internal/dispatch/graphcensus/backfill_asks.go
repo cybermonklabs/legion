@@ -18,7 +18,7 @@ import (
 // The asks and their followers. An ask's node holds the documents it is
 // anchored to, owned by and part of, who asked it, its answer and the sessions that follow it, and
 // asks and ask_followers are the projection of those tuples from the moment a row names its node
-// (20261116094058's node_kind and node_address). A row a build before this release wrote names
+// (20261125163550's node_kind and node_address). A row a build before this release wrote names
 // none, and graph_edges' old arms answer it until these two passes state the row on the node and
 // mark it, on the store's backfill contract: each walks only the rows its marker does not mark,
 // states every fact of a row in the transaction that marks it, and reads no marked row, so a run
@@ -86,6 +86,7 @@ var askRowsLock = `
 var askRowsRead = `
 	select k.id::text, k.author, k.created_at, k.state, k.answer, k.resolution,
 	       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), coalesce(document.ref_key, ''),
+	       coalesce(k.block_id, ''),
 	       coalesce((select e.id from events e
 	                 where e.payload->>'id' = k.id::text and e.type = 'ask.opened'
 	                 order by e.id limit 1), $2),
@@ -95,14 +96,26 @@ var askRowsRead = `
 	  and k.id = any($1::uuid[])
 	order by k.id`
 
-// askBatchRow is one row of a batch the asks or the follower pass read without a lock
-// (askBatchRead, askFollowerBatchRead): the ask, the session that follows it for a follower row,
-// and the ask's owner - its issue, or the document an ask on no issue belongs to - which is the
-// owner a follower row stands under too.
+// askBatchRow is one row of a batch an ask pass reads without a lock (scanAskBatchRow): the asks
+// pass's (askBatchRead), the asked_on pass's (owedAskBlocksStatement), the approvals pass's
+// (owedApprovesRowsStatement) or the follower pass's (askFollowerBatchRead). It holds the ask, the
+// session that follows it for a follower row and none for any other, and the ask's owner - its
+// issue, or the document an ask on no issue belongs to - which is the owner a follower row stands
+// under too.
 type askBatchRow struct {
 	askID, session  string
 	issue, document string
 }
+
+// scanAskBatchRow reads one askBatchRow, its four columns in the order of the type's fields.
+func scanAskBatchRow(row pgx.CollectableRow) (askBatchRow, error) {
+	var batched askBatchRow
+	err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
+	return batched, err
+}
+
+// askBatchKey is the key a walk of the asks (walkBatches) starts its next batch past: the ask.
+func askBatchKey(row askBatchRow) string { return row.askID }
 
 // readAskBatch runs read, a pass's read of one batch that locks nothing, on the pool with args.
 func readAskBatch(ctx context.Context, database *store.Store, read string, args ...any) ([]askBatchRow, error) {
@@ -110,11 +123,7 @@ func readAskBatch(ctx context.Context, database *store.Store, read string, args 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (askBatchRow, error) {
-		var batched askBatchRow
-		err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
-		return batched, err
-	})
+	return pgx.CollectRows(rows, scanAskBatchRow)
 }
 
 // lockAskOwners takes the owner row of every ask of batch, each once, in ascending owner key
@@ -139,26 +148,17 @@ func lockAskOwners(ctx context.Context, tx pgx.Tx, batch []askBatchRow) error {
 // it (backfillObjectNodes), which runs before this.
 func backfillAsks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "asks"}
-	after := zeroUUID
-	for {
-		batch, err := readAskBatch(ctx, database, askBatchRead, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the asks naming no node: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].askID
+	if err := walkBatches(ctx, database, askBatchRead, "the asks naming no node", zeroUUID, scanAskBatchRow, askBatchKey, func(batch []askBatchRow) error {
 		rows, nodes, tuples, err := writeAskBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += rows
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+askRowsOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the asks still naming no node: %w", err)
@@ -207,13 +207,13 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 		}
 	}
 	for rows.Next() {
-		var id, state string
+		var id, state, blockID string
 		var authorJSON, answerJSON, resolutionJSON []byte
 		var createdAt time.Time
 		var places graphstore.AskPlaces
 		var opened, settled int64
 		if err := rows.Scan(&id, &authorJSON, &createdAt, &state, &answerJSON, &resolutionJSON,
-			&places.Anchor, &places.Owner, &places.Document, &opened, &settled); err != nil {
+			&places.Anchor, &places.Owner, &places.Document, &blockID, &opened, &settled); err != nil {
 			rows.Close()
 			return 0, 0, 0, fmt.Errorf("read an ask naming no node: %w", err)
 		}
@@ -239,7 +239,7 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 			}
 		}
 		// The ask's node is the object pass's, written already; its facts are what this states.
-		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places)
+		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places.On(blockID))
 		addNodes(askNodes[1:])
 		tuples = append(tuples, facts...)
 		who, at := backfillActor, createdAt
@@ -265,14 +265,16 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 	if len(ids) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask batch on their rows", `
+			update asks set node_kind = $2, node_address = id::text
+			where id = any($1::uuid[]) and node_kind is null
+		`, ids, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of asks: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update asks set node_kind = $2, node_address = id::text
-		where id = any($1::uuid[]) and node_kind is null
-	`, ids, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask batch: %w", err)
@@ -383,11 +385,7 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 			made[session] = struct{}{}
 			nodes = append(nodes, graphstore.SessionNode(session, backfillActor, since, graphstore.NoEvent))
 		}
-		tuples = append(tuples, graphstore.Tuple{
-			FromKind: graphstore.KindAsk, FromID: askID, Kind: graphstore.TupleFollowedBy,
-			ToKind: graphstore.KindSession, ToID: session,
-			At: since, Who: backfillActor, SourceEvent: graphstore.NoEvent, Asserted: true,
-		})
+		tuples = append(tuples, asks.FollowedBy(askID, session, true, backfillActor, since, graphstore.NoEvent))
 		askIDs = append(askIDs, askID)
 		sessions = append(sessions, session)
 	}
@@ -398,15 +396,17 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	if len(askIDs) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask follower batch on their rows", `
+			update ask_followers f set node_kind = $3, node_address = p.ask_id
+			from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
+			where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
+		`, askIDs, sessions, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of ask followers: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update ask_followers f set node_kind = $3, node_address = p.ask_id
-		from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
-		where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
-	`, askIDs, sessions, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask follower batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask follower batch: %w", err)
@@ -414,24 +414,40 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
 
-// askPasses are the asks pass and the follower pass, in the order Backfill and BackfillAsks both
-// run them.
-var askPasses = []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers}
+// AsksBackfill is what one run of BackfillAsks did: what each of its passes did (Kinds), and
+// every row its object pass left because the store holds the row's node in another project
+// (Moved, nil where there is none), as ObjectPass answers them.
+//
+// kept for one release: decisions-step
+type AsksBackfill struct {
+	Kinds []KindBackfill
+	Moved error
+}
 
 // BackfillAsks is the boot step's first phase (docs' decision step): the object nodes of every
 // issue, document, ask and message written before their writers wrote one (backfillObjectNodes),
 // so every ask a build before this release wrote has its node before a mark names it, then the
 // asks and the ask_followers rows that name no node, each in committed batches of backfillBatch.
-// It answers what each pass did; an error stops it where it stands, and every batch committed
-// before it stays.
-func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, error) {
-	done, err := backfillObjectNodes(ctx, database)
-	if err != nil {
+// It answers what each pass did. A row the object pass leaves because the store holds its node in
+// another project (graphstore.ErrProjectMoved) is one no run cures, so it holds back neither the
+// rest of that pass nor the asks passes after it, as backfillAt runs them past it: the run answers
+// every such row in Moved, after all of them, and no error. Any other error stops it where it
+// stands, and every batch committed before it stays.
+//
+// kept for one release: decisions-step
+func BackfillAsks(ctx context.Context, database *store.Store) (AsksBackfill, error) {
+	objects, err := backfillObjectNodes(ctx, database)
+	done := AsksBackfill{Kinds: objects}
+	_, onlyMoved := OnlyProjectMoved(err)
+	switch {
+	case onlyMoved:
+		done.Moved = err
+	case err != nil:
 		return done, err
 	}
-	for _, write := range askPasses {
+	for _, write := range decisionBackfills {
 		report, err := write(ctx, database)
-		done = append(done, report)
+		done.Kinds = append(done.Kinds, report...)
 		if err != nil {
 			return done, err
 		}
@@ -440,23 +456,25 @@ func BackfillAsks(ctx context.Context, database *store.Store) ([]KindBackfill, e
 }
 
 // AsksOwed reports whether BackfillAsks has anything to do: a row of an object kind that names no
-// node, or an asks or ask_followers row the passes would mark. Each read stops at its first owed
-// row, so a store that owes one costs little, but a store that owes nothing is read to the end: an
-// anti-join of issues, artifacts, asks and messages to graph_nodes, then asks and ask_followers,
-// which no index keys on a null marker. The decisions step reads it only where another build can
-// have written such a row (docs' decision step, probe).
-func AsksOwed(ctx context.Context, q graphstore.Queryer) (bool, error) {
+// node and that its pass can write (writableRowLeft), or an asks or ask_followers row the passes
+// would mark. A row the object pass leaves - one whose node the store holds in another project,
+// or one naming a party the store refuses (writableRows) - is owed nothing, since no run cures it:
+// owed, it would have the decisions step run the backfill again at every boot and on every tick,
+// and the project census names it until a person reads it. Each read stops at its first batch
+// that holds an owed row, so a store that owes one costs little, but a store that owes nothing is
+// read to the end: an anti-join of issues, artifacts, asks and messages to graph_nodes, then asks
+// and ask_followers, which no index keys on a null marker. The decisions step reads it only where
+// another build can have written such a row (docs' decision step, probe).
+//
+// kept for one release: decisions-step
+func AsksOwed(ctx context.Context, database *store.Store) (bool, error) {
 	for _, kind := range objectKinds {
-		var owed bool
-		if err := q.QueryRow(ctx, `select exists (`+kind.read+`)`, kind.start, 1).Scan(&owed); err != nil {
-			return false, fmt.Errorf("read whether a %s row names no node: %w", kind.kind, err)
-		}
-		if owed {
-			return true, nil
+		if owed, err := writableRowLeft(ctx, database, kind, kind.start); err != nil || owed {
+			return owed, err
 		}
 	}
 	var owed bool
-	if err := q.QueryRow(ctx, `
+	if err := database.Pool.QueryRow(ctx, `
 		select exists (select 1 `+askRowsOwed+`) or exists (select 1 `+askFollowerRowsOwed+`)
 	`).Scan(&owed); err != nil {
 		return false, fmt.Errorf("read whether an ask or a follower names no node: %w", err)

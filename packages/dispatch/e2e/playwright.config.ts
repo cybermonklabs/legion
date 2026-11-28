@@ -15,7 +15,6 @@ import { measuring } from "./measure";
 import { plainHttpHost, plainHttpOrigin } from "./plain-http-origin";
 import { stubOrigin } from "./stub/origin";
 import { stubSelection } from "./stub/selection";
-import { inVisualOrder, visualOrder } from "./visual-order";
 
 // The plain-HTTP project's origin is a proxy on PLAIN_HTTP_PORT, reached by a host name Chromium
 // maps to loopback. The page is a non-loopback plain-HTTP origin, while the proxy forwards to the
@@ -348,6 +347,9 @@ const parallelProjects = [
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
   // WebKit writes each space of the name it read from `filename*` as `_`, which the row of a name
   // with spaces reads.
+  // HTML drag and drop, which the engine dispatches to the element under the pointer by its own
+  // rule and which the target must take with `preventDefault` for a drop to land: `priorities`'
+  // one drag row, which drags a row of the priorities table by its grip and reads the order back.
   // Without a `testMatch` the project would see every spec in this directory, so it names the
   // same `testIgnore` as `chromium`: no tagged row may sit in a plain-HTTP, multiprocess or
   // clock-read spec, and `heavy-bodies.e2e.ts` belongs to `webkit-alone` alone. That ignore is
@@ -420,6 +422,9 @@ const parallelProjects = [
   // How the engine names a download from the `filename*` and `filename` of its
   // `Content-Disposition`, and whether it asks the server again for a download address it holds,
   // where an older version's name changes once a newer one exists: `download-names`'s six rows.
+  // HTML drag and drop, where Firefox starts no drag whose `dragstart` carries no data, so the
+  // grip writes the id it moves into the drag: `priorities`' one drag row, which drags a row of the
+  // priorities table by its grip and reads the order back.
   // The `testIgnore` is `chromium`'s, for the reason given above `webkit`.
   {
     name: "firefox",
@@ -804,9 +809,8 @@ export default defineConfig({
       : [
           ...parallelProjects,
           ...aloneProjects,
-          // The phone project first in a reverse run, so the whole run is the other way round
-          // (e2e/visual-order.ts). Both are declared in every run, as their comment says.
-          ...inVisualOrder(visualProjects, visualOrder()),
+          // Both are declared in every run, as their comment says.
+          ...visualProjects,
           ...(stub.declared ? stubProjects : []),
         ],
 });

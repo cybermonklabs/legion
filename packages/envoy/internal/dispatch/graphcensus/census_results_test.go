@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest/lockstep"
@@ -31,7 +32,7 @@ func seedLockResult(t *testing.T, database *store.Store) (string, time.Time) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	var id string
 	var createdAt time.Time
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the issue, its Verification document and the earlier release's result", func(tx pgx.Tx) error {
 		now := time.Now().UTC()
 		if err := graphstore.Write(ctx, tx, []graphstore.Node{
 			graphstore.IssueNode("LOCK-1", "LOCK", alice, now),
@@ -58,13 +59,11 @@ func seedLockResult(t *testing.T, database *store.Store) (string, time.Time) {
 			from document
 			returning id::text, created_at
 		`, resultLockDocument).Scan(&id, &createdAt)
-	}); err != nil {
-		t.Fatalf("seed the issue, its Verification document and the earlier release's result: %v", err)
-	}
+	})
 	return id, createdAt
 }
 
-// TestTheResultBatchTakesTheStoreLockOrder holds writeResultBatch (T11 of this branch's plan) to
+// TestTheResultBatchTakesTheStoreLockOrder holds writeResultBatch (T11 of the issue-tree plan) to
 // the store's lock order, as TestEveryBackfillBatchTakesTheStoreLockOrder holds the other batches:
 // the owner row the result stands under, its check's issue's row, first, then the result's node
 // row, with the recorder's and the tuples in the same write. The result is one an earlier release
@@ -96,7 +95,7 @@ func TestTheResultBatchTakesTheStoreLockOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the result's check: %v", err)
 	}
-	if !madeAt.Equal(createdAt) || len(checks) != 1 || checks[0].ToKind != "block" || checks[0].ToID != resultLockCheck {
+	if !madeAt.Equal(createdAt) || len(checks) != 1 || checks[0].ToKind != refs.BlockNodeKind || checks[0].ToID != resultLockCheck {
 		t.Errorf("the result's node is made at %s and states result_of %+v, want made at the row's %s and one result_of to block:%s",
 			madeAt, checks, createdAt, resultLockCheck)
 	}
@@ -123,7 +122,7 @@ func TestTheResultRetractionBatchTakesTheStoreLockOrder(t *testing.T) {
 		Recorder: alice, At: createdAt,
 	})
 	var retractedAt time.Time
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
+	drivenTx(t, database, "seed the result's node and the earlier release's retraction", func(tx pgx.Tx) error {
 		if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
 			return err
 		}
@@ -132,9 +131,7 @@ func TestTheResultRetractionBatchTakesTheStoreLockOrder(t *testing.T) {
 			values ($1::uuid, 'The run measured the wrong build.', '{"kind":"user","id":"alice"}', now() - interval '1 day')
 			returning created_at
 		`, id).Scan(&retractedAt)
-	}); err != nil {
-		t.Fatalf("seed the result's node and the earlier release's retraction: %v", err)
-	}
+	})
 
 	owner, project := holdLockOwner(t, database)
 	report := followTheBackfill(t, database, "writeResultRetractionBatch", []*lockstep.Hold{owner, project})

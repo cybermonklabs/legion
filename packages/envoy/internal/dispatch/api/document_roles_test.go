@@ -187,8 +187,8 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 // its slug only when it is a `doc`, the row a rolling deploy leaves, so a file uploaded as plan.md,
 // which carries no role and whose slug is plan-md, plays no role in either reader, nor does a
 // picture stored under that slug. A row whose role is set plays that role. No row plays the role
-// decisions any more (dispatch://INFRA-1150 R11): a role-less doc slugged decisions-md plays none,
-// and the issue read names it as the decisions document the release before reads only through
+// decisions any more (R11 of the decisions-tree spec): a role-less doc slugged decisions-md plays
+// none, and the issue read names it as the decisions document the release before reads only through
 // decisions_documents(). Both readers are asked about the same rows and answer the same about each
 // one, which is the role it plays or none.
 func TestBothRoleReadersGiveAFileNamedLikeARoleDocumentNoRole(t *testing.T) {

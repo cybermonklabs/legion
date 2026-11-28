@@ -54,19 +54,24 @@ export function SpecToolbar({
         {toolbar.versions.map((item) => (
           <option key={item.number} value={item.number}>
             Version {item.number}
+            {/* A version's summary, as its writer gave it: the reading list's
+                `spec-version-summary`. */}
             {item.named && item.summary !== null ? ` — ${item.summary}` : ""}
           </option>
         ))}
       </select>
-      <button
-        aria-label="Name version"
-        className={`${toolbarButton} ${secondaryButtonDisabledText}`}
-        disabled={isClosed || toolbar.isNamingVersion}
-        onClick={toolbar.requestNamedVersion}
-        type="button"
-      >
-        Name
-      </button>
+      {/* None where the toolbar names no version (`DocumentToolbar.requestNamedVersion`). */}
+      {toolbar.requestNamedVersion === undefined ? null : (
+        <button
+          aria-label="Name version"
+          className={`${toolbarButton} ${secondaryButtonDisabledText}`}
+          disabled={isClosed || toolbar.isNamingVersion}
+          onClick={toolbar.requestNamedVersion}
+          type="button"
+        >
+          Name
+        </button>
+      )}
       <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
       <CopyRefButton route={reference} />
       {version === undefined ? (

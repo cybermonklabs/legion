@@ -294,7 +294,7 @@ func (r *outbox) giveUpReason(row record.OutboxRow, err error, what string) (rea
 }
 
 // changesFromDispatch is Dispatch's answer for pair as the record keeps it, read at at: whether the
-// decision blocks were the whole change, whether nothing changed, and each changed unit and block,
+// ask blocks were the whole change, whether nothing changed, and each changed unit and block,
 // a run of the text outside every section with the place Dispatch named it at.
 func changesFromDispatch(pair record.VersionPair, answer dispatch.ArtifactChanges, at time.Time) record.DesignChanges {
 	changes := record.DesignChanges{VersionPair: pair, State: record.DesignChangesRead, DecisionOnly: answer.DecisionOnly,
@@ -320,7 +320,7 @@ const (
 	// settles it then.
 	settleLater newsSettlement = iota
 	// settleRaise raises the told versions directly and sends nothing: no pair changed anything of
-	// the work, each changing decision blocks alone or nothing at all, which tells nobody anything,
+	// the work, each changing ask blocks alone or nothing at all, which tells nobody anything,
 	// and no opening is owed. Each pair is raised over as a credit counted from its From
 	// (record.Store.RaiseTold), so a raise read off a version an unfinal delivery's credit gave the
 	// row reaches nothing once that credit is given back, and the news before it stays owed.
@@ -332,7 +332,7 @@ const (
 // settlementOf is what the reconcile does for one told row owed items, given what is recorded:
 // settleLater while the record cannot yet tell some item (newsRecorded.change); settleRaise, which
 // raises the row past items, when no pair changed anything of the work
-// (record.DesignChanges.WorkUnchanged: decision blocks alone, or nothing at all) and the row owes
+// (record.DesignChanges.WorkUnchanged: ask blocks alone, or nothing at all) and the row owes
 // no opening; and settleSend otherwise. An item whose review history could not be read is sent,
 // never raised: nothing says what changed since the version its holder took. A pair that changed
 // no work, owed with the opening, is sent, not raised: the gate closed on that version, the holder
@@ -462,15 +462,15 @@ func (n newsRecorded) change(item record.NewsItem) (workflow.NewsChange, bool) {
 // the fact lock, it reads again what tree owes, the change sets recorded and the review histories
 // recorded unread that stand (readNewsRecorded), and settles each told row owed news (settlementOf):
 //
-//   - a row whose every pair changed decision blocks alone or nothing at all, and that owes no
+//   - a row whose every pair changed ask blocks alone or nothing at all, and that owes no
 //     opening, has its versions raised directly (record.Store.RaiseTold), and nothing is sent;
 //   - otherwise a member's news goes to the holder of its phase by a news-only start
 //     (record.SuperviseRequest.News), queued as a row of its own on the member's issue, unless one
 //     is queued for that claim already, or the claim holds a task its worker has not taken yet
 //     (holdsUntakenTask), or the claim is one a news-only start may not reach
 //     (recordedClaimTakesNews): none, behind the entry its phases row names — owed its phase start,
-//     which carries the news — retired, failed, or suspended by an operator, each of which the
-//     start that revives the claim tells;
+//     which carries the news — retired, failed, or one a suspension that holds (the operator's or
+//     the controller's) is over, each of which the start that brings its agent back tells;
 //   - a member in accepting is held by the architect that owns it (newsClaims.holderOf, the owner
 //     walk over the architect claims the record holds: its own architect while that claim holds its
 //     role, else the nearest one above it whose claim does, else the tree root's), and its news

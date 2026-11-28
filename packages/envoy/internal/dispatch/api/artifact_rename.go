@@ -20,7 +20,7 @@ type renameArtifactInput struct {
 // slug, the reference key that slug gives and the role the document plays are its address and
 // its part, which the first title fixed. A correction moves none of them, so every
 // `dispatch://KEY/artifact/<slug>` reference, every anchored comment and the issue's plan or
-// Verification document still name the same row. It needs the person scope (routeScopes)
+// Verification document still name the same row. It needs the person scope (its route's OAuthScopes)
 // because a title is what every reader of the issue sees the document by, so only a credential
 // acting as its person corrects one.
 //
@@ -98,8 +98,9 @@ func (s *server) renameArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The row as it now is, with the versions and the approval every artifact read carries, is
-	// what GET /api/v1/artifacts/{id} answers and what this route answers too.
-	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}); err != nil {
+	// what GET /api/v1/artifacts/{id} answers, but for the digest of each version that read alone
+	// adds, and what this route answers too.
+	if err := loadArtifactDetails(r.Context(), tx, []*model.Artifact{&renamed}, artifactVersionsStatement); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}

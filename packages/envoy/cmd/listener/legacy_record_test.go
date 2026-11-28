@@ -59,7 +59,7 @@ func rewriteAsEarlierBuild(t *testing.T, conn *natsgo.Conn, sessionID string) {
 // awaitEarlierBuildRecord waits until registry reads sessionID's record as live and naming no key.
 func awaitEarlierBuildRecord(t *testing.T, registry *session.SessionRegistry, sessionID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		entry, state := registry.Lookup(sessionID)
 		if state == session.Live && entry.SessionID == "" && entry.MachineID != "" {
@@ -77,6 +77,7 @@ func awaitEarlierBuildRecord(t *testing.T, registry *session.SessionRegistry, se
 // as live, as before, and so does the reapers' test (sessionMayBeLive). The control is the same
 // session's record deleted: the same pass deletes the consumer of a session that is gone.
 func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testing.T) {
+	t.Parallel()
 	for _, gone := range []bool{false, true} {
 		name := "its record as an earlier build writes it"
 		if gone {
@@ -128,6 +129,7 @@ func TestTheSweepKeepsTheConsumerOfALiveSessionAnEarlierBuildRegistered(t *testi
 // is answered as to a missing session. The control is the same session's record as this build
 // writes it, naming its key: the edge lists it and takes the send.
 func TestAnEdgeGrantsNoScopeToARecordNamingNoKey(t *testing.T) {
+	t.Parallel()
 	for _, earlier := range []bool{true, false} {
 		name := "a record an earlier build wrote"
 		if !earlier {

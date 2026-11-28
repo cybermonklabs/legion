@@ -312,14 +312,11 @@ func chmodDirectory(path string, mode uint32) error {
 // colocates no workspace at all (0.44). Such a workspace is one a caller is answered a reason for
 // rather than one it sweeps.
 func WorkspaceOf(dir string) (Workspace, error) {
-	dir = filepath.Clean(dir)
-	if !filepath.IsAbs(dir) {
-		return Workspace{}, fmt.Errorf("the workspace %s is no absolute path, so the clone it belongs to cannot be derived", dir)
-	}
-	workspace, err := locationOf(dir)
+	workspace, err := layoutWorkspace(dir)
 	if err != nil {
-		return Workspace{}, fmt.Errorf("the workspace %s is in no state directory's workspace layout: %w", dir, err)
+		return Workspace{}, err
 	}
+	dir = workspace.Dir
 	if _, err := guardWorkspace(workspace.Dir, workspace.Clone, false); err != nil {
 		return Workspace{}, err
 	}
