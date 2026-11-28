@@ -1,6 +1,7 @@
--- 20261127104032_outbox_kinds_after_the_state_events.up.sql — the outbox's kind check once more,
--- above dispatch://INFRA-3931's state events (20261126163320), with the kinds of every list
--- below it: the merge's union of main's state events and dispatch://INFRA-4730's retention end.
+-- 20261128030241_outbox_kinds_after_the_state_events.up.sql — the outbox's kind check once more,
+-- above dispatch://INFRA-3931's state events (20261126163320) and dispatch://INFRA-3144's claim
+-- left (20261127193428, #5908), with the kinds of every list below it: the merge's union of main's
+-- state events and dispatch://INFRA-4730's retention end.
 --
 -- The check is one list, so the migration that sets it names every kind: 20261126163320's
 -- thirty-seven, its three state kinds (state_change, state_admission, state_boot), merge_holds_changed
@@ -8,14 +9,17 @@
 -- 20261126163320 name these same kinds (each file says why), so on every database the check
 -- stands as this list whichever of them was applied last, and a row of any of them pending at the
 -- upgrade is kept through it: the constraint validates every row the table holds, and a kind left
--- out would fail the upgrade over its pending row.
+-- out would fail the upgrade over its pending row. 20261127193428_claim_left writes no kind (it
+-- adds issues.claim_left alone), so this list is the same above it as it was above
+-- 20261126163320.
 --
 -- Its version is what the merge needs beside the list. Migrate applies every migration a database
 -- has not recorded, below its newest version as above it (store.Migrate), and the store reports
 -- its schema version as the newest it recorded (store.SchemaVersion), which each boot's state
--- event carries (stateevent.Boot). A database main migrated at #4432 records 20261126163320 as its
--- newest, and dispatch://INFRA-4730's migrations stand below it, so without this one the first boot
--- of the merge would announce the schema version the earlier daemon announced. Dispatch reads a
+-- event carries (stateevent.Boot). A database main migrated at #5908 records
+-- 20261127193428_claim_left as its newest, and dispatch://INFRA-4730's migrations stand below it,
+-- so without this one the first boot of the merge would announce the schema version the earlier
+-- daemon announced; this version stands above 20261127193428 for that reason. Dispatch reads a
 -- daemon whole at a boot whose schema version differs from the one it read last (its state
 -- intake's movesSchema), and at no other boot. The earlier daemon's state events named each
 -- issue's tree as its record stored it; this release names the tree the Dispatch chain gives

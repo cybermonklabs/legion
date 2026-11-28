@@ -225,6 +225,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 		SeenSeq:      90,
 		HeldSessionWrites: []record.HeldSessionWrite{{Session: "ses_planner_LEGION-501", Status: "done", Seq: 87,
 			At: projectedAt.Add(-3 * time.Hour)}},
+		// A person's claim a release left. Its instant is in a zone other than UTC, so the view's
+		// `at` is held to the UTC the projection writes it in.
+		ClaimLeft: &record.ClaimLeft{Holder: "user:alice", Reason: record.ClaimLeftPerson,
+			At: projectedAt.Add(-15 * time.Minute).In(time.FixedZone("UTC-5", -5*60*60))},
 	}
 	// The root of the issue's stored tree, which holds the draw the child took its copy of.
 	tree := record.Issue{
@@ -412,6 +416,10 @@ func TestEveryRecordFieldIsServedOrExcluded(t *testing.T) {
 			// The priority Dispatch resolves it to and the issue it comes from, beside its own.
 			"resolvedPriority": 0,
 			"priorityFrom":     "OTHER-1",
+			// The entry of the claim a release left: its holder, its reason and its instant in UTC.
+			"claimLeft": map[string]any{
+				"holder": issue.ClaimLeft.Holder, "reason": issue.ClaimLeft.Reason, "at": issue.ClaimLeft.At.UTC(),
+			},
 			"waitingOn": map[string]any{
 				"kind": "ask", "ask": issue.Awaiting.Ask, "since": issue.Awaiting.Since.At,
 				"answeredAt": issue.Awaiting.AnsweredAt, "answeredBy": issue.Awaiting.AnsweredBy,

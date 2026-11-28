@@ -8,24 +8,25 @@ import (
 
 // kindsAfterTheStateEventsVersion is the version of the migration this file tests, so the test can
 // migrate through everything before it whatever lands beside it.
-const kindsAfterTheStateEventsVersion = 20261127104032
+const kindsAfterTheStateEventsVersion = 20261128030241
 
-// The merge's union of the state events and the retention end (20261127104032) writes the kind
+// The merge's union of the state events and the retention end (20261128030241) writes the kind
 // check again with every kind of 20261126163320's list, and its version stands above every other,
-// so the store's schema version (SchemaVersion), which each boot's state event carries, moves on
-// a database whose newest version was 20261126163320: the first boot of the merge announces a
-// schema version the earlier daemon did not, which is what has Dispatch read it whole (the
-// migration's file says why). The negative control is the version read before the migration,
-// 20261126163320's own. A row of each kind, a state row and a retention_end among them, pending
-// before the migration is kept through it, and once those rows are gone (some kinds hold one row
-// per project or issue) every kind is queued after it; a kind that is none is still refused.
+// main's claim left (20261127193428) among them, so the store's schema version (SchemaVersion),
+// which each boot's state event carries, moves on a database whose newest version was main's
+// newest, 20261127193428: the first boot of the merge announces a schema version the earlier
+// daemon did not, which is what has Dispatch read it whole (the migration's file says why). The
+// negative control is the version read before the migration, 20261127193428's own. A row of each
+// kind, a state row and a retention_end among them, pending before the migration is kept through
+// it, and once those rows are gone (some kinds hold one row per project or issue) every kind is
+// queued after it; a kind that is none is still refused.
 func TestTheUnionKindListMovesTheSchemaVersionAboveTheStateEvents(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	store := emptyStore(t)
 	migrateThrough(t, store, kindsAfterTheStateEventsVersion-1)
-	if version, err := store.SchemaVersion(ctx); err != nil || version != stateEventsVersion {
-		t.Fatalf("the schema version before the migration = %d, %v; want the state events' %d, the version the earlier daemon announces", version, err, stateEventsVersion)
+	if version, err := store.SchemaVersion(ctx); err != nil || version != claimLeftVersion {
+		t.Fatalf("the schema version before the migration = %d, %v; want main's claim left's %d, the version the earlier daemon announces", version, err, claimLeftVersion)
 	}
 	kinds := []string{
 		"dispatch_status", "dispatch_message", "notice", "controller_notice", "supervise", "gate_seed",
@@ -57,7 +58,7 @@ func TestTheUnionKindListMovesTheSchemaVersionAboveTheStateEvents(t *testing.T) 
 		t.Fatalf("migrate through the union of the kind lists: %v", err)
 	}
 	if version, err := store.SchemaVersion(ctx); err != nil || version != kindsAfterTheStateEventsVersion {
-		t.Fatalf("the schema version after the migration = %d, %v; want %d, above the state events'", version, err, kindsAfterTheStateEventsVersion)
+		t.Fatalf("the schema version after the migration = %d, %v; want %d, above main's claim left's", version, err, kindsAfterTheStateEventsVersion)
 	}
 	for _, kind := range kinds {
 		var pending int

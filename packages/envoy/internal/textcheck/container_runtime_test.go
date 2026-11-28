@@ -28,13 +28,15 @@ const (
 	envoyRoot   = "../.."
 )
 
-// containerRigs are the packages of this module that may reach testcontainers: the NATS rig, and the
-// two whose containers are not NATS (internal/testpg runs pgvector, internal/tests3 SeaweedFS). Every
-// other package is a finding, whichever testcontainers package it imports: modules/nats is the
-// obvious way to start a NATS container, and testcontainers.Run(ctx, testnats.Image) is the one
-// that needs no such import.
+// containerRigs are the packages of this module that may reach testcontainers in an untagged build:
+// the two whose containers are not NATS (internal/testpg runs pgvector, internal/tests3 SeaweedFS).
+// The NATS rig, internal/testnats, is not among them: its container half (image.go,
+// callout_image.go and their tests) is built only under natslive, so the untagged walk reads no
+// testcontainers import of it, and one there means that half lost its tag. Every other package is
+// a finding, whichever testcontainers package it imports: modules/nats is the obvious way to start
+// a NATS container, and testcontainers.Run(ctx, testnats.Image) is the one that needs no such
+// import.
 var containerRigs = []string{
-	envoyModule + "/internal/testnats",
 	envoyModule + "/internal/testpg",
 	envoyModule + "/internal/tests3",
 }

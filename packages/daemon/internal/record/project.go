@@ -1662,7 +1662,8 @@ func TreeStarted(root Issue, gate TreeGate) bool {
 // it.
 //
 // It is the one statement of that rule, and every reader that must agree calls it: the park of
-// such an issue (workflow.Engine.leave), the claim release row every other park queues
+// such an issue (workflow.Engine.leave), the claim release row every park queues, such an issue's
+// own among them, and the one each session a claim write leaves behind queues
 // (outbox.releaseClaim), and the boot's answer to whether a run no start counted is open
 // (workflow.Engine.uncountedRunOpen).
 func OperatorHolds(ctx context.Context, store Store, tx pgx.Tx, issue Issue) (bool, error) {

@@ -171,6 +171,12 @@ func TestEachWriterOfARecordThePassReadsKeepsTheMark(t *testing.T) {
 		{name: "the release for a wait cleared", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
 			must(t, store.ClearReleasedForWait(ctx, tx, key))
 		}, marks: true},
+		{name: "the claim a release left", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.RecordClaimLeft(ctx, tx, key, &ClaimLeft{Holder: "user:alice", Reason: ClaimLeftPerson, At: at}))
+		}, marks: true},
+		{name: "control: the claim left of an issue with no record", write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {
+			must(t, store.RecordClaimLeft(ctx, tx, "LEGION-999", &ClaimLeft{Holder: "user:alice", Reason: ClaimLeftPerson, At: at}))
+		}},
 		{name: "control: the repository backfill, outside any fact",
 			seed: sql(`update issues set github_repo = '' where key = 'LEGION-310'`),
 			write: func(t *testing.T, ctx context.Context, tx pgx.Tx) {

@@ -63,13 +63,13 @@
 -- Migrate applies every unrecorded migration in version order, so of the lists a database has not
 -- recorded, the one with the higher version is applied last. 20261122154643 says its list is the
 -- last word because of its version; this file stands above it. Main's 20261126110259 and
--- 20261126163320 stand above this file and name retention_end too, and the merge's 20261127104032
+-- 20261126163320 stand above this file and name retention_end too, and the merge's 20261128030241
 -- stands above every other version with the same kinds as this list, so its list is applied last
 -- on every database: a fresh one, one an earlier build of this branch migrated, and one main
 -- migrated. On a database main migrated, which recorded 20261126110259 and can hold a
 -- merge_holds_changed row, and which, where it recorded 20261126163320 too, can hold a state row,
 -- this file is applied after them, so it names merge_holds_changed and the three state kinds: a
--- list without one of them would fail the upgrade over a pending row of it before 20261127104032
+-- list without one of them would fail the upgrade over a pending row of it before 20261128030241
 -- ran. A list here that left out design_changes, pending_basis_seed or reparent_seed would fail
 -- the upgrade of a database that holds one pending in the same way.
 --

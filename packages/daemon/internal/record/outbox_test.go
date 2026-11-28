@@ -95,6 +95,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		GatedStepsPublish{Project: "LEGION", Steps: []DesignStep{DesignStepCriteria, DesignStepSpec}},
 		DesignGatesPublish{Issue: "LEGION-208", Gates: []DesignGateDocument{{Step: DesignStepCriteria, ArtifactID: "artifact-criteria", Holds: new(false)}, {Step: DesignStepSpec, ArtifactID: "artifact-208", Holds: new(true)}}},
 		RoleHoldersPublish{Issue: "LEGION-208"},
+		// The move out of the workflow's release, and the release of a session the daemon left
+		// behind, which names that session (store's putClaim queues it).
+		ClaimRelease{},
+		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
@@ -809,6 +813,96 @@ func TestEveryOutboxKindNamesItsRunOrSaysWhyNot(t *testing.T) {
 	}
 }
 
+// The claim release of a session the daemon left behind (ClaimRelease.Session, which store's
+// putClaim queues in the claim write that moved the claim off that session) carries no fence: the
+// left session is dead to the daemon whatever run or phase entry the issue stands at. FenceOf says
+// it carries none, NewOutboxRow takes it with no run and no entry, and no later run or phase entry
+// makes it late (LateAt), not even where a writer stamped one on it. The row of a move out of the
+// workflow names no session and carries its fence as every effect does, so NewOutboxRow still
+// refuses it without its run.
+func TestALeftSessionsClaimReleaseCarriesNoFence(t *testing.T) {
+	now := time.Date(2026, 11, 28, 3, 0, 0, 0, time.UTC)
+	left := ClaimRelease{Session: "ses_x"}
+	if fence, carries := FenceOf(left); carries || fence != (Fence{}) {
+		t.Errorf("FenceOf(%+v) = %+v, %t, want no fence: the release of a left session is fenced by no run and no entry", left, fence, carries)
+	}
+	switch row, err := NewOutboxRow("LEGION-208", left, now); {
+	case err != nil:
+		t.Errorf("NewOutboxRow refuses the release of a left session, which names no run and no entry: %v", err)
+	case row.Kind != OutboxKindClaimRelease || string(row.Payload) != `{"session":"ses_x"}`:
+		t.Errorf("the release row of a left session = %s %s, want claim_release {\"session\":\"ses_x\"}", row.Kind, row.Payload)
+	}
+	stamped := ClaimRelease{Session: "ses_x", Generation: 2, Entry: 3}
+	for _, at := range []Fence{{Generation: 1, Entry: 1}, {Generation: 2, Entry: 3}, {Generation: 3, Entry: 3}, {Generation: 2, Entry: 4}, {Generation: 9, Entry: 9}} {
+		for _, payload := range []ClaimRelease{left, stamped} {
+			if LateAt(at, payload) {
+				t.Errorf("the release %+v of a left session is late at %+v, want it run at every run and phase entry", payload, at)
+			}
+		}
+	}
+	if _, err := NewOutboxRow("LEGION-208", ClaimRelease{}, now); err == nil {
+		t.Fatal("NewOutboxRow takes the release of a move that names no session and no run, want it refused: such a row could be queued unfenced")
+	}
+}
+
+// The first boot's conversion stamps the fence its kind carries on each unfinished row the release
+// before queued without one (StampReleaseBeforeFences), and stamps none on the claim release of a
+// session the daemon left behind, which main's daemon (#5908) queues as {"session": …} with no
+// fence: such a row releases that session's claim at whatever run or phase entry the issue stands
+// (FenceOf). Beside it, a move's claim release, {}, is stamped with the run and the phase entry the
+// issue stands at, and the left session's row is still read as fenced by nothing.
+func TestTheConversionStampsNoFenceOnALeftSessionsClaimRelease(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	issue := issueFixture("LEGION-208")
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, issue))
+	})
+	queue := func(payload string) int64 {
+		t.Helper()
+		var id int64
+		if err := st.Pool().QueryRow(ctx, `insert into outbox (kind, issue, payload, attempts, next_at, last_error)
+			values ('claim_release', $1, $2::jsonb, 0, now(), '') returning id`, issue.Key, payload).Scan(&id); err != nil {
+			t.Fatalf("queue the claim release %s as main's daemon queued it: %v", payload, err)
+		}
+		return id
+	}
+	move, left := queue(`{}`), queue(`{"session": "ses-left"}`)
+
+	var stamped int64
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		stamped, err = StampReleaseBeforeFences(ctx, tx, records, "LEGION")
+		must(t, err)
+	})
+	read := func(id int64) string {
+		t.Helper()
+		var payload string
+		if err := st.Pool().QueryRow(ctx, `select payload::text from outbox where id = $1`, id).Scan(&payload); err != nil {
+			t.Fatalf("read the claim release %d: %v", id, err)
+		}
+		return payload
+	}
+	if got, want := read(move), `{"entry": 1, "generation": 3}`; got != want {
+		t.Errorf("the move's claim release after the conversion = %s, want %s: the run and the phase entry %s stands at", got, want, issue.Key)
+	}
+	got := read(left)
+	if want := `{"session": "ses-left"}`; got != want {
+		t.Errorf("the left session's claim release after the conversion = %s, want %s as it was queued: it carries no fence", got, want)
+	}
+	if stamped != 1 {
+		t.Errorf("the conversion stamped %d rows, want the move's alone", stamped)
+	}
+	payload, err := DecodeOutboxPayload(OutboxRow{ID: left, Kind: OutboxKindClaimRelease, Issue: issue.Key, Payload: []byte(got)})
+	if err != nil {
+		t.Fatalf("decode the left session's claim release as the executor does: %v", err)
+	}
+	if fence, carries := FenceOf(payload); carries {
+		t.Errorf("the left session's claim release reads fence %+v after the conversion, want none", fence)
+	}
+}
+
 func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 	now := time.Date(2026, 9, 23, 1, 0, 0, 0, time.UTC)
 	for _, tc := range []struct {
@@ -1223,7 +1317,7 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 		{name: "a conflict confirm with an unknown field", row: OutboxRow{ID: 63, Kind: OutboxKindConflictConfirm, Payload: json.RawMessage(`{"number":42,"head":"c0de","firstReadAt":"2026-09-23T00:59:00Z","base":"main"}`)}, reason: "unknown field"},
 		{name: "a merge-forward message of an unknown step", row: OutboxRow{ID: 64, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"merge","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next"}`)}, reason: "is an ask, a hold, a landed or a review"},
 		{name: "a merge-forward message with an unknown field", row: OutboxRow{ID: 65, Kind: OutboxKindMergeForward, Payload: json.RawMessage(`{"role":"implementer","step":"ask","head":"c0de","base":"main","phase":"testing","pullRequest":42,"why":"merge-next","task":"Merge main."}`)}, reason: "unknown field"},
-		{name: "a claim release with a field", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
+		{name: "a claim release naming an issue", row: OutboxRow{ID: 54, Kind: OutboxKindClaimRelease, Payload: json.RawMessage(`{"issue":"LEGION-208"}`)}, reason: "unknown field"},
 		{name: "a retro's stored reason without its rating", row: OutboxRow{ID: 62, Kind: OutboxKindStepRecord, Payload: json.RawMessage(`{"id":"` + stepRecordID +
 			`","task":"default","step":0,"kind":"retro","role":"implementer","type":"","agent":"legion-leg-leg-1-implementer","generation":1,"rating_reason":"The plan put the tests after the review."}`)},
 			reason: "its reason or neither"},
@@ -1243,6 +1337,12 @@ func TestDecodeOutboxPayloadRefusesInvalidRows(t *testing.T) {
 				t.Fatalf("DecodeOutboxPayload error = %v, want row %d and %q", err, tc.row.ID, tc.reason)
 			}
 		})
+	}
+	// The one field a claim release carries, the session the daemon left behind, decodes beside the
+	// refused row above.
+	row := OutboxRow{ID: 67, Kind: OutboxKindClaimRelease, Issue: "LEGION-208", Payload: json.RawMessage(`{"session":"ses-1"}`)}
+	if got, err := DecodeOutboxPayload(row); err != nil || got != (ClaimRelease{Session: "ses-1"}) {
+		t.Fatalf("a claim release naming its session decodes as %#v, %v; want %#v", got, err, ClaimRelease{Session: "ses-1"})
 	}
 }
 

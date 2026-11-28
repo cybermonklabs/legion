@@ -58,7 +58,10 @@ import (
 //
 // An issue whose own lifecycle the operator holds (record.OperatorHolds) has claims, a pod and a
 // cleanup that are the operator's, which share the issue's tokens and names, so nothing of them is
-// queued for the workflow's record.
+// queued for the workflow's record. The one row such a leave queues is the move's Dispatch claim
+// release (releaseParkedClaim), as every move short of a close does: it releases nothing while the
+// operator holds the issue and writes why into the issue's record (operator-tree), and if the
+// operator's hold has ended by the time it runs, it judges the claim as any move's row does.
 //
 // Whatever the departure, the issue carries no mark of a slot released for a wait afterwards.
 // The mark is the daemon's answer to "this issue was started and its row is gone because it
@@ -90,12 +93,18 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err := e.stopTaskAtLeave(ctx, tx, issue, status); err != nil {
 		return err
 	}
-	if held, err := record.OperatorHolds(ctx, e.store, tx, issue); err != nil || held {
-		if held {
-			e.logOnCommit(ctx, "workflow: an issue left Legion's work while the operator holds its lifecycle; its claims and pod are the operator's",
-				"issue", issue.Key, "status", status)
-		}
+	held, err := record.OperatorHolds(ctx, e.store, tx, issue)
+	if err != nil {
 		return err
+	}
+	if held {
+		e.logOnCommit(ctx, "workflow: an issue left Legion's work while the operator holds its lifecycle; its claims and pod are the operator's",
+			"issue", issue.Key, "status", status)
+		// The move's claim release is queued all the same: its executor leaves the claim while
+		// the operator holds the issue and writes that reason (operator-tree) into the issue's
+		// record, so a role that reads the record learns why the claim stays without the
+		// daemon's log.
+		return e.releaseParkedClaim(ctx, tx, issue, status)
 	}
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {

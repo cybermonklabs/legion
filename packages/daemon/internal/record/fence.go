@@ -145,7 +145,9 @@ func (r SuperviseRequest) Stops() bool {
 }
 
 // FenceOf is the fence payload names, and whether its kind carries one at all: the parts of
-// Fence it carries, each zero where it names none.
+// Fence it carries, each zero where it names none. The claim release of a session the daemon left
+// behind (ClaimRelease.Session) carries none: it releases that session's claim whatever run or
+// phase entry the issue stands at, since the left session is dead to the daemon either way.
 func FenceOf(payload OutboxPayload) (Fence, bool) {
 	switch value := payload.(type) {
 	case StatusWrite:
@@ -194,6 +196,9 @@ func FenceOf(payload OutboxPayload) (Fence, bool) {
 	case MergeQueueRemoval:
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	case ClaimRelease:
+		if value.Session != "" {
+			return Fence{}, false
+		}
 		return Fence{Generation: value.Generation, Entry: value.Entry}, true
 	}
 	return Fence{}, false

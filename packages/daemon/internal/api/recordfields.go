@@ -263,6 +263,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "SeenSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "HeldSessionWrites", Column: ColumnWithheld,
 		Reason: "the status writes of sessions the repair holds while the issue's Dispatch chain is unknown, which the first pass that knows the chain judges and clears: the daemon's own record of what it owes a decision, reaching no surface"},
+	{Field: "ClaimLeft", Column: ColumnAgents, Keys: []string{"claimLeft"},
+		Reason: "why the newest claim release that judged the issue's Dispatch holder left that holder's claim, with the holder and when: a role reads there why a claim stays on its issue, which otherwise only the daemon's log says"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

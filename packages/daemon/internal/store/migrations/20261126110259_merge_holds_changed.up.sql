@@ -17,8 +17,8 @@
 -- those on any database: Migrate applies every unrecorded migration in version order, and at a
 -- lower version any of those lists, none of which names merge_holds_changed, could be applied
 -- after this one and refuse the kind. The state events' 20261126163320 and then the merge's
--- 20261127104032 write the list again above this one, each with merge_holds_changed, and
--- 20261127104032's list is the one applied last on every database.
+-- 20261128030241 write the list again above this one, each with merge_holds_changed, and
+-- 20261128030241's list is the one applied last on every database.
 --
 -- This list must name step_record, plan_record, conflict_confirm, merge_forward, design_changes,
 -- phase_ended, pending_basis_seed and reparent_seed, because a database main's release migrated
@@ -44,9 +44,9 @@
 --
 -- The list names retention_end too, the kind dispatch://INFRA-4730's 20261122154645 adds, which
 -- stands below this version: on a fresh database, and on one a build of that branch migrated,
--- this list is applied after that one, and 20261127104032's, which names retention_end too, is
+-- this list is applied after that one, and 20261128030241's, which names retention_end too, is
 -- applied last; a list here without retention_end would fail the upgrade over a pending end of an
--- issue's retention before 20261127104032 ran. Thirty-four kinds in all. On a database main
+-- issue's retention before 20261128030241 ran. Thirty-four kinds in all. On a database main
 -- migrated before that branch's merge, 20261122154645 is applied after this one, and its list
 -- names merge_holds_changed for that reason.
 alter table outbox drop constraint if exists outbox_kind_check;

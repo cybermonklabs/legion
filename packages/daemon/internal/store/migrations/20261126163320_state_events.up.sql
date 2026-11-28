@@ -20,7 +20,7 @@
 -- version order, so of the lists a database has not recorded, the one with the higher version is
 -- applied last. A version below 20261126110259 would let that migration run after this one on a
 -- fresh database and write its list without the three state kinds, and the check would refuse
--- every state row until a later list named them. The merge's 20261127104032 writes this list's
+-- every state row until a later list named them. The merge's 20261128030241 writes this list's
 -- kinds once more, above every other version, so its list is the one applied last on every
 -- database (that file says why). A list that left out one of 20261126110259's kinds would fail the
 -- upgrade of a database that holds a row of it pending, such as a merge_holds_changed row on a
@@ -28,9 +28,9 @@
 --
 -- The list names retention_end, the kind dispatch://INFRA-4730's 20261122154645 adds, which stands
 -- below this version: on a fresh database, and on one a build of that branch migrated, this list is
--- applied after that one and before the merge's 20261127104032, whose list is applied last and
+-- applied after that one and before the merge's 20261128030241, whose list is applied last and
 -- names retention_end too. A list here without retention_end would fail the upgrade over a pending
--- end of an issue's retention, and 20261127104032 could not mend that upgrade, since this file
+-- end of an issue's retention, and 20261128030241 could not mend that upgrade, since this file
 -- would fail before it ran. The daemon's runner records each migration by its version alone
 -- (store.Migrate), so a database that applied this file before retention_end was added keeps its
 -- record and runs nothing again: on such a database, which main migrated before that branch's

@@ -11,12 +11,13 @@ import (
 // through everything before it whatever lands beside it.
 const claimsTreeVersion = 20261125212800
 
-// 20261125212800 adds claims_tree, a btree index of claims on tree, the column
-// record.Store.SessionClaimsTree and record.Store.ArchitectIssueOfSession read a session's claims
-// in one tree by, and leaves every claim the table holds as it stands. It builds over a claim whose
-// session is 3,200 bytes of incompressible text, past the size of a btree row, which an index that
-// holds session too cannot be built over. The negative control is the store before the migration,
-// whose claims carry no such index.
+// 20261125212800 adds claims_tree, a btree index of claims on tree, the column the release that
+// added it read a session's claims in one tree by (record.Store.SessionClaimsTree and
+// ArchitectIssueOfSession, both gone since: this release reads a session's claims by the claim's
+// issue, 20261126035722_claims_issue_and_project), and leaves every claim the table holds as it
+// stands. It builds over a claim whose session is 3,200 bytes of incompressible text, past the size
+// of a btree row, which an index that holds session too cannot be built over. The negative control
+// is the store before the migration, whose claims carry no such index.
 func TestTheClaimsOfATreeAreIndexedFrom20261125212800(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

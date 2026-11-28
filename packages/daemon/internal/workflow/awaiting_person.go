@@ -17,8 +17,13 @@ import (
 // returns why it may not, or "" when it may.
 // Its hand-over label gone, or its leaving the workflow, ends that, and so does a Dispatch claim
 // held by a person or by a session outside its tree, which owns the issue instead; the daemon's own
-// session and a session that claims within the tree are legitimate holders. The daemon's own
-// session is the session of project, the daemon's own Dispatch project (dispatch.DaemonSession).
+// session and a session of its tree are legitimate holders. The daemon's own session is the
+// session of project, the daemon's own Dispatch project (dispatch.DaemonSession). A session of its
+// tree is one a claim of an issue whose gate root the root is on the Dispatch chain
+// (record.Chains.GateTree) names now, or one such a claim left behind (record.Store.SessionOf),
+// the read the claim release executor judges a holder by: the daemon queued a left session's claim
+// release when it left the session, so the root keeps its row until that release takes the claim,
+// rather than being removed for a claim of its own tree's.
 // The claim is the one the daemon's mirror of Dispatch's issues shows (record.Store.DispatchClaim).
 // ReconcileAwaiting keeps a root it answers no for at admitted, where it holds its slot unless it
 // waits on another issue (blockers.waitsOf), and admission removes an awaiting root, and skips an
@@ -44,10 +49,10 @@ func Unresumable(ctx context.Context, store record.Store, tx pgx.Tx, project str
 		return "", nil
 	}
 	if kind == "session" {
-		// A session that claims within the root's tree is one of the issues whose gate root the
-		// root is on the Dispatch chain (record.Chains.GateTree).
-		ownsTree, err := store.SessionClaimsOf(ctx, tx, chains.GateTree(issue.Key), id)
-		if err != nil || ownsTree {
+		// A session of the root's tree is one a claim of one of the issues whose gate root the root
+		// is on the Dispatch chain (record.Chains.GateTree) names now or left behind.
+		ofTree, err := store.SessionOf(ctx, tx, chains.GateTree(issue.Key), id)
+		if err != nil || ofTree {
 			return "", err
 		}
 	}

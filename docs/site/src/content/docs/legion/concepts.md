@@ -815,6 +815,26 @@ instead, and a held review whose round is already decided goes where that decisi
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
 does the same at the cost of that session.
 
+**The Dispatch claim of a session the daemon leaves behind.** A fresh session leaves the claim's
+old session behind, and so does a retry or any other start of the claim in a new session. The
+daemon then releases the Dispatch claim that the old session holds on the claim's issue, so the
+new session can claim the issue. It leaves that claim where the operator holds the issue (an
+operator's spawn opened a lifetime under the issue's key, and its cleanup is not yet confirmed),
+and the issue's record says why (`operator-tree`). It also leaves the claim, and writes nothing,
+where the workflow does not record the issue: an operator can put a claim on such an issue with
+`legion claims spawn`. A move of an issue out of the workflow, to `backlog`, `icebox` or `triage`,
+releases the Dispatch claim that a session of the issue holds, or a session of the tree of the
+gate root it stands under (the nearest issue above it that holds its own design gate): the current
+session of a claim of one of those issues, or a session that such a claim left behind. Dispatch
+keeps a claim while it reads the holder as live, and refuses the release with 409 `ISSUE_CLAIMED`.
+The daemon tries again for up to an hour. A release that leaves the claim of an issue the workflow
+records writes why into the issue's record, and the `legion` tool's `read_record` returns it as
+`claimLeft`: the holder, the reason and the time. The reason is one word, such as `person` (a
+person holds the claim), `other-tree` (a session under another gate root holds it) or
+`held-an-hour` (Dispatch refused the release for an hour).
+[Contract entry 20261127202231 (claim-left)](https://github.com/cybermonklabs/legion/blob/main/packages/daemon/internal/api/contract_20261127202231_claim-left.go)
+lists all eleven reasons.
+
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A
 launch the runtime refused is tried again after it, and so is a process that died or was retired at

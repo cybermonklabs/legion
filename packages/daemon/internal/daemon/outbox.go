@@ -658,10 +658,20 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		}
 	case record.ClaimRelease:
 		// Nobody is told: the claim stands where it was, which is the state the daemon would
-		// have left behind had the row never run, and the issue's tree is over. The line is
-		// what says the row ended, since without it a 404 — an issue Dispatch no longer has —
-		// would end it in silence.
+		// have left behind had the row never run. The line is what says the row ended, since
+		// without it a 404 — an issue Dispatch no longer has — would end it in silence. The
+		// issue's record says why the claim stands (refused), so a role reading it learns that
+		// without the log; it names the holder whose release Dispatch refused
+		// (claimReleaseFailure), and none for a read Dispatch refused, which named none.
 		refusal, _ := dispatch.PermanentRefusal(cause)
+		holder := ""
+		var failure *claimReleaseFailure
+		if errors.As(cause, &failure) {
+			holder = failure.holder
+		}
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			return r.recordClaimLeft(ctx, tx, row.Issue, holder, record.ClaimLeftRefused)
+		}
 		told = func() {
 			r.log.Warn("outbox claim release refused by Dispatch and dropped", "row", row.ID, "issue", row.Issue,
 				"status", refusal.Status, "code", refusal.Code, "error", kept)
@@ -1116,7 +1126,7 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 	case record.MessagePost:
 		return r.message(ctx, row, value)
 	case record.ClaimRelease:
-		return r.releaseClaim(ctx, row)
+		return r.releaseClaim(ctx, row, value)
 	case record.Notice:
 		return r.notice(ctx, row, value)
 	case record.ControllerNotice:

@@ -359,6 +359,13 @@ type Issue struct {
 	// write clears it, and the daemon's own echo leaves it. Nil for every other record. It is no
 	// part of Store.PendingStatusWrites, which is the outbox's queued status writes.
 	HeldSessionWrites []HeldSessionWrite
+	// ClaimLeft is why the newest claim release that judged the issue's Dispatch holder left that
+	// holder's claim (ClaimRelease, which the outbox's releaseClaim runs), nil for none: a release
+	// that took the claim, or that found none, clears it. Only Store.RecordClaimLeft writes it, and
+	// PutIssue keeps the stored value, as it does for released_for_wait_at: the release runs on a
+	// lane of its own, and every write site that records the issue holds a copy read before its own
+	// fact, which would otherwise write the entry away or write an older one back.
+	ClaimLeft *ClaimLeft
 }
 
 // HeldSessionWrite is one status write of a session the repair holds (Issue.HeldSessionWrites):
@@ -383,6 +390,75 @@ type PendingClose struct {
 	Kind       string `json:"kind"`
 	Reason     string `json:"reason"`
 	Refused    bool   `json:"refused,omitempty"`
+}
+
+// ClaimLeftReason is why a claim release left the issue's Dispatch claim where it stands: one word
+// for each arm of the release that leaves a claim on purpose. ClaimLeftReasons lists them all. The
+// words are values of the daemon API (contract entry 20261127202231, claim-left), which deployed
+// plugins read, so each keeps the word it was served with although the daemon stores no tree: a
+// "tree" in a word is the issue and the gate root it stands under on the Dispatch chain
+// (Chains.StateTree, GateTree).
+type ClaimLeftReason string
+
+const (
+	// ClaimLeftUnread is a claim Dispatch shows with no actor named for it.
+	ClaimLeftUnread ClaimLeftReason = "unread"
+	// ClaimLeftPerson is a claim a person holds.
+	ClaimLeftPerson ClaimLeftReason = "person"
+	// ClaimLeftDaemon is a claim the daemon's own session holds.
+	ClaimLeftDaemon ClaimLeftReason = "daemon"
+	// ClaimLeftController is a claim a session the project controller's claim recorded holds.
+	ClaimLeftController ClaimLeftReason = "controller"
+	// ClaimLeftOtherTree is a claim a session a claim under another gate root recorded holds: that
+	// claim's current session, or one it left behind.
+	ClaimLeftOtherTree ClaimLeftReason = "other-tree"
+	// ClaimLeftUnattributed is a claim whose holder's name no claim of the daemon's project holds
+	// in claim_sessions (Store.SessionClaim finds none), so the daemon cannot attribute it.
+	ClaimLeftUnattributed ClaimLeftReason = "unattributed"
+	// ClaimLeftOperatorTree is a claim on an issue the operator holds (OperatorHolds).
+	ClaimLeftOperatorTree ClaimLeftReason = "operator-tree"
+	// ClaimLeftIssueRuns is a move's row that ran after the issue was in the workflow again.
+	ClaimLeftIssueRuns ClaimLeftReason = "issue-runs"
+	// ClaimLeftWorksNow is a left session's row that found a claim of the issue, or of the gate
+	// root it stands under on the Dispatch chain, naming that session as its current session again.
+	ClaimLeftWorksNow ClaimLeftReason = "works-now"
+	// ClaimLeftHeldAnHour is a release Dispatch kept refusing (409 ISSUE_CLAIMED) for an hour.
+	ClaimLeftHeldAnHour ClaimLeftReason = "held-an-hour"
+	// ClaimLeftRefused is a read or a release Dispatch refused with an answer no retry repairs.
+	ClaimLeftRefused ClaimLeftReason = "refused"
+)
+
+// ClaimLeftReasons is every ClaimLeftReason, in the order they are declared: the values the API's
+// enumerated row of claimLeft.reason names, which its tests iterate.
+func ClaimLeftReasons() []ClaimLeftReason {
+	return []ClaimLeftReason{ClaimLeftUnread, ClaimLeftPerson, ClaimLeftDaemon, ClaimLeftController, ClaimLeftOtherTree,
+		ClaimLeftUnattributed, ClaimLeftOperatorTree, ClaimLeftIssueRuns, ClaimLeftWorksNow, ClaimLeftHeldAnHour, ClaimLeftRefused}
+}
+
+// ClaimLeft is the entry Issue.ClaimLeft holds, as issues.claim_left stores it in JSON: the holder a
+// claim release left the claim with, why, and when.
+type ClaimLeft struct {
+	// Holder is the holder Dispatch named (dispatch.Claim.Holder, "<kind>:<id>"), empty where it
+	// named none: a claim with no actor (ClaimLeftUnread) and a read Dispatch refused
+	// (ClaimLeftRefused).
+	Holder string          `json:"holder,omitempty"`
+	Reason ClaimLeftReason `json:"reason"`
+	// At is the executor's clock when its row left the claim.
+	At time.Time `json:"at"`
+}
+
+// SessionClaim is the claim claim_sessions holds a session's name for (kind session), read with
+// that claim's row (Store.SessionClaim). Session tells whether the claim names that session now or
+// left it behind. It carries no tree: a caller holds Issue against the issues it reads from its
+// Chains, never the tree a claim stores (R18 of dispatch://INFRA-3320).
+type SessionClaim struct {
+	Token string
+	// Issue is "" for the project controller's claim, which stands on no issue.
+	Issue string
+	Role  claim.Role
+	// Session is the claim's current session (claims.session): the asked name when the claim names
+	// it now, and another name, or "", when the claim left it behind.
+	Session string
 }
 
 // Repository is the repository the record names (Repo) in the spelling the record keeps: what
@@ -2695,6 +2771,30 @@ type Store interface {
 	// whose gate root is one issue's, which the caller reads from its Chains, never the tree a
 	// claim stores (R18 of dispatch://INFRA-3320). No issues reads false.
 	SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error)
+	// SessionOf says whether a claim of one of issues recorded the agent session: as its session
+	// now, or as one it left behind, which claim_sessions still holds for that claim (kind
+	// session) while the claim names another. issues are the ones a caller reads from its Chains,
+	// never the tree a claim stores (R18 of dispatch://INFRA-3320): the issue a claim release
+	// judges and the tree of the gate holder it stands under on the Dispatch chain
+	// (Chains.StateTree, GateTree), or a waiting root's gate tree (Chains.GateTree). Every name a
+	// claim records as its session is held for it in claim_sessions first (supervise's
+	// holdRecorded), so the claim the hold names is the only claim that can name the session now.
+	// A name held for no claim (claim = '', a conflict the boot logs) is a session of the issues
+	// only where a claim of one of them names it as its session now: the statement reads that off
+	// claims, whatever claim_sessions holds, and a hold of no claim is no claim's left session. It
+	// reads a claim's hold under that claim's own project, so it takes no project, in one
+	// statement that reads by claims_issue, claim_sessions' primary key and claims' own. An empty
+	// session, and no issues, answer false.
+	//
+	// It answers whose claim stands on an issue, and two readers ask that: the claim release
+	// executor, which may release a left session's claim as the leftover of the issue or of its
+	// gate tree, and workflow.Unresumable, which keeps a waiting root whose claim such a session
+	// holds. A reader that asks whether an act carries the tree's authority (sessionStatusWrite's
+	// judgeSessionWrite, and the ask mirror's dispatchAskOpened, closer and replyToAsk through
+	// sessionOfGateTree) reads SessionClaimsOf instead: a left session works no claim of the tree
+	// now, and the session that replaced it holds that authority, so a status write or an ask of a
+	// left session is an outsider's (dispatch://INFRA-3144/comment/5e38193d-eb7b-4eef-b740-e4b42c1f96ed).
+	SessionOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error)
 	// HeldSessionWriteIssues is every issue of the Dispatch project whose record holds session
 	// writes the repair held on an unknown chain (Issue.HeldSessionWrites), by key: the issues the
 	// admission pass judges once their chains are known.
@@ -2703,10 +2803,15 @@ type Store interface {
 	// issues beneath it (HoldForChildren), by key: the parents a fact's settle asks whether their
 	// retro may start.
 	HeldForChildrenIssues(ctx context.Context, tx pgx.Tx, project string) ([]Issue, error)
-	// SessionClaimsAnywhere says whether the agent session holds a claim the daemon records,
-	// on any issue. It is what tells a holder the daemon records under another gate root from one
-	// it records nowhere, which SessionClaimsOf's one boolean cannot.
-	SessionClaimsAnywhere(ctx context.Context, tx pgx.Tx, session string) (bool, error)
+	// SessionClaim is the claim of project that claim_sessions holds the agent session's name for
+	// (kind session), with that claim's issue, role and current session, and whether there is one:
+	// what tells the project controller's claim (claim.IsController) from a claim of another issue,
+	// and a current session from a left one. It reads no stored tree: a caller holds the claim's
+	// issue against the issues it reads from its Chains. project is the spelling claims.project
+	// holds, the claim project token, which the outbox carries as its project. A name held for no
+	// claim (claim = ''), a name not held, a hold whose claim has no row and an empty session answer
+	// false. It reads the hold by claim_sessions' primary key and the claim by claims' own.
+	SessionClaim(ctx context.Context, tx pgx.Tx, project, session string) (SessionClaim, bool, error)
 	// ProjectClaims is every claim of the project that stands on an issue, as the quiet measure
 	// reads one (TreeClaim): the issue, the claim's state and its two step times, in no order. It
 	// is what the admission pass's own measure reads (admit's quietTrees) — one read of what the
@@ -3086,6 +3191,10 @@ type Store interface {
 	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
 	// again, or holds none for a reason that is not a wait.
 	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
+	// RecordClaimLeft writes Issue.ClaimLeft of key, nil clearing it: a claim release's entry of why
+	// it left the issue's claim, and its only writer. A key with no record writes nothing and is
+	// no error, since the release runs for an issue the daemon may not record.
+	RecordClaimLeft(ctx context.Context, tx pgx.Tx, key string, left *ClaimLeft) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.

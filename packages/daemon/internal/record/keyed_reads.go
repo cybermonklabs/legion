@@ -108,6 +108,32 @@ func (s *Postgres) SessionClaimsOf(ctx context.Context, tx pgx.Tx, issues []stri
 	return claims, nil
 }
 
+// SessionOf reads both halves in one statement, a case that asks the current half first and the
+// left half only where the current one finds no claim: PostgreSQL evaluates a case's branches in
+// order, where a select list of two exists would compute both. The current half is
+// SessionClaimsOf's read, the issues' claims by claims_issue. The left half joins the issues'
+// claims to their holds of the name, each under the claim's own project, so it needs no project
+// argument. Neither half may scan a table whole: claims has no index on session, and
+// claim_sessions holds every name each claim of every project sharing the database recorded, so
+// the statement reads by claims_issue, claim_sessions' primary key and claims' own, and never by
+// the tree a claim stores.
+func (s *Postgres) SessionOf(ctx context.Context, tx pgx.Tx, issues []string, session string) (bool, error) {
+	if len(issues) == 0 || session == "" {
+		return false, nil
+	}
+	var of bool
+	if err := tx.QueryRow(ctx, `select case
+		when exists (select 1 from claims where issue = any($1) and session = $2 and session <> '') then true
+		when exists (select 1 from claims
+			join claim_sessions held on held.project = claims.project and held.kind = 'session' and held.name = $2
+			where claims.issue = any($1) and held.claim = claims.token and claims.session <> $2) then true
+		else false end`,
+		issues, session).Scan(&of); err != nil {
+		return false, fmt.Errorf("read whether session %s is one of the claims of %v: %w", session, issues, err)
+	}
+	return of, nil
+}
+
 // keptCountsFor is the validity rule as SQL, over the decisions owed to one architect: the claim and the hold a
 // kept row carries count only while the claiming outbox row is root's own and the holding claim is
 // a claim of root, the issue whose architect the caller's members are owed to. row is the kept

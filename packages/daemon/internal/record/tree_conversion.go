@@ -79,6 +79,11 @@ func RecordTreeConversionStep(ctx context.Context, tx pgx.Tx, project string, st
 	return nil
 }
 
+// leftSessionRelease is the SQL test for a claim release row that names a session the daemon left
+// behind (ClaimRelease.Session): such a row releases that session's Dispatch claim whatever run or
+// phase entry the issue stands at, so no fence is stamped on it (FenceOf).
+const leftSessionRelease = `(kind = 'claim_release' and payload ? 'session')`
+
 // StampReleaseBeforeFences gives every unfinished row of project that names a fenced kind and
 // lacks a part of its fence that part (FencedKinds), in SQL and with no decode of the payload,
 // which the release before queued without it: the run and the phase entry its issue stands at now
@@ -86,7 +91,8 @@ func RecordTreeConversionStep(ctx context.Context, tx pgx.Tx, project string, st
 // own cleanup and save rows (ReadFence), the one the row's own claim records for a stop. A pod no
 // claim records (a tmux claim, one with no locator) stays unnamed, which fences no pod, as the row
 // fenced none before. A row keyed by the project itself stands at the first fence (FirstFence).
-// It answers how many rows it stamped; a row that carries its whole fence is left as it is.
+// It answers how many rows it stamped; a row that carries its whole fence is left as it is, and so
+// is the claim release of a session the daemon left behind (leftSessionRelease).
 func StampReleaseBeforeFences(ctx context.Context, tx pgx.Tx, store Store, project string) (int64, error) {
 	var generationKinds, entryKinds, podKinds []string
 	var stopOps []string
@@ -107,7 +113,7 @@ func StampReleaseBeforeFences(ctx context.Context, tx pgx.Tx, store Store, proje
 			podKinds = append(podKinds, string(keys.Kind))
 		}
 	}
-	rows, err := tx.Query(ctx, `select distinct issue from outbox where split_part(issue, '-', 1) = $1 and (
+	rows, err := tx.Query(ctx, `select distinct issue from outbox where split_part(issue, '-', 1) = $1 and not `+leftSessionRelease+` and (
 			((kind = any($2) or (kind = 'supervise' and payload->>'op' = any($5))) and coalesce((payload->>'generation')::bigint, 0) = 0)
 			or ((kind = any($3) or (kind = 'supervise' and payload->>'op' = any($5))) and coalesce((payload->>'entry')::bigint, 0) = 0)
 			or ((kind = any($4) or (kind = 'supervise' and payload->>'op' = any($5))) and coalesce(payload->>'podUid', '') = ''))
@@ -136,7 +142,7 @@ func StampReleaseBeforeFences(ctx context.Context, tx pgx.Tx, store Store, proje
 							where c.issue = outbox.issue and c.role = outbox.payload->>'role' and c.locator->>'runtime' = 'sandbox'), '')
 						else ''
 					end as pod
-				from outbox where issue = $1
+				from outbox where issue = $1 and not `+leftSessionRelease+`
 			)
 			update outbox o set payload = o.payload
 				|| case when f.generation then jsonb_build_object('generation', $6::bigint) else '{}'::jsonb end
