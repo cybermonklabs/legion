@@ -14,33 +14,32 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/pgmigrate"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // waitForInvalidIndex waits for the INVALID catalog entry a concurrent build writes before it
 // waits for the transactions it must see out, and returns that index's oid. A build's ungranted
-// wait is on a virtualxid rather than on the relation, so waitForQueuedLock cannot see it.
+// wait is on a virtualxid rather than on the relation, so waitForQueuedLock cannot see it. Its one
+// bound is the test binary's deadline less testwait's margin (testwait.Until): what comes before
+// the build, the runner's first parse of a marked migration among it, takes as long as it takes.
 func waitForInvalidIndex(t *testing.T, store *Store, name string) uint32 {
 	t.Helper()
 	ctx := context.Background()
-	deadline := time.Now().Add(pgmigrate.LockTimeout)
-	for {
+	return testwait.Until(t, fmt.Sprintf("an INVALID %s while the concurrent build waits", name), func() (uint32, bool) {
 		var oid uint32
 		var valid bool
 		err := store.Pool.QueryRow(ctx, `select i.indexrelid, i.indisvalid from pg_index i
 			join pg_class c on c.oid = i.indexrelid where c.relname = $1`, name).Scan(&oid, &valid)
 		switch {
 		case err == nil && !valid:
-			return oid
+			return oid, true
 		case err == nil || errors.Is(err, pgx.ErrNoRows):
 			// Not built yet, or already valid on a database this test cannot have reached.
 		default:
 			t.Fatalf("read %s from pg_index: %v", name, err)
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("no INVALID %s appeared while the concurrent build waited", name)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return oid, false
+	})
 }
 
 // migrationKeyRows selects the rows of pg_locks that are advisory locks on migrationLockKey in
