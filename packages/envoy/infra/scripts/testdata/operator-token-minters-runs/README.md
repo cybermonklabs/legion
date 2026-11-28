@@ -34,4 +34,4 @@ copy of the scripts so that each check run writes a record `<out>/rows-<file>.<n
 | no-step-ran-row-bc.txt | rows-run.0001 of out2 | (bc), `output.sh` | 0 | 1 | `operator-token-minters: no step ran, 1 unknown: exit 2` (a copy missing a part: `operator-token-minters.sh:713-723`, not the exit block) |
 | report-unwritable-row-co.txt | rows-run.0029 of out2 | (co), `report-unwritable` (pasted_row: the row holds stdout, then stderr) | 0 | 1 | `operator-token-minters: --report cannot be written` (`output.sh:59`, after the crash report's `stopped before its end, 1 unknown: exit 2`) |
 
-From dispatch://INFRA-6357/artifact/minters-summary-fixtures-tar-gz version 2; row (df) of `operator-token-minters/test-rows-run.sh` reads them.
+From dispatch://INFRA-6357/artifact/minters-summary-fixtures-tar-gz version 2; row (df) of `operator-token-minters/test-rows-run-2.sh` reads them.

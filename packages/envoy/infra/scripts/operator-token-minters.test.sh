@@ -32,27 +32,37 @@
 # the run to its exit and to the line naming what it planted. A row of a list of rights instead
 # plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
 # each permission through a role of its own on one member (plant_permissions), and holds one run a
-# world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
-# operator-token-minters/, by concern, each listing its rows in its header. After the world and its
-# helpers, each file's rows run in a process of their own, beside the other files' (run_row_file):
+# world to each right's line (want_planted); row bf is two worlds. The rows are in 24 files of
+# operator-token-minters/, by concern, each listing its rows in its header; a concern whose rows
+# take more than 26 CPU-seconds is split into numbered files of at most that each, but a row over
+# it, alone in its file. After the world and its helpers, each file's rows run in a process of
+# their own, beside the other files' (run_row_file):
 #
-#   - test-rows-run.sh: the run as a whole: a clean world, the permission names, reads that saw
-#     nothing, each step's witness, a refused identity, the admin tag, the report and its fixture,
-#     and a copy missing a part;
+#   - test-rows-run-1.sh: the run as a whole: a clean world, each step's witness, the report;
+#   - test-rows-run-2.sh: the run as a whole: pasted text, broken parts, the test's own readings;
 #   - test-rows-code.sh: the code read of the RBAC render and the IAM preview;
-#   - test-rows-rbac.sh: Kubernetes RBAC: each right of the list, who can become a holder, rights
-#     limited by name, custom resources, and the subjects a binding names;
-#   - test-rows-iam.sh: Google IAM: GKE IAM, the minters of the operator's and the broker's
-#     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
-#   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
-#     project's own clusters, and the fleet's members;
-#   - test-rows-admission.sh: admission power: the rights on the admission objects, and outside
-#     them a webhook's backend, a policy engine's resources, and an admission policy's parameter
-#     objects;
+#   - test-rows-rbac-1.sh: Kubernetes RBAC: each right of the list, and who can become a holder;
+#   - test-rows-rbac-2.sh: Kubernetes RBAC: custom resources, and rights limited by name;
+#   - test-rows-rbac-3.sh: Kubernetes RBAC: the Users and Groups a binding names;
+#   - test-rows-rbac-4.sh: Kubernetes RBAC: writes to a binding, and client certificates;
+#   - test-rows-rbac-5.sh: Kubernetes RBAC: token Secrets, and rights a live role limits by name;
+#   - test-rows-iam-1.sh: Google IAM: GKE IAM, the accounts' minters, and the hold writers;
+#   - test-rows-iam-2.sh: Google IAM: IAM writers, and a fleet member's project;
+#   - test-rows-iam-3.sh: Google IAM: Google's service agents, and Deployment Manager;
+#   - test-rows-pool-1.sh: the pool's other clusters: the project's, and the fleet's members;
+#   - test-rows-pool-2.sh: the pool's other clusters: a fleet member's subjects, escalation rights;
+#   - test-rows-pool-3.sh: the pool's other clusters: the pool project's own, and the settings;
+#   - test-rows-admission-1.sh: admission power: the rights on the admission objects;
+#   - test-rows-admission-2.sh: admission power: a webhook's backend;
+#   - test-rows-admission-3.sh: admission power: policy engines, and a policy's parameters;
+#   - test-rows-admission-4.sh: each kubectl -o json answer not as the API server wrote it;
+#   - test-rows-admission-5.sh: the answer to the reviews, review's calls, and their CPU pins;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
 #     limits by name;
-#   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
-#     renders and the cluster hold it as reviewed.
+#   - test-rows-fence-1.sh: the broker's pod fence as reviewed, its writers, and its residual;
+#   - test-rows-fence-2.sh: the broker's pod fence: each way it fails and credits nothing;
+#   - test-rows-fence-3.sh: the broker's pod fence: each binding spec its contract holds;
+#   - test-rows-fence-4.sh: the broker's pod fence: its verdict's fields, rules, and other grants.
 #
 # Every name here is an example name: example-project, example.com, and the namespaces and
 # accounts below. Run from anywhere: bash packages/envoy/infra/scripts/operator-token-minters.test.sh
@@ -79,13 +89,20 @@ readonly check="${OPERATOR_MINTERS_SCRIPT:-$script_dir/operator-token-minters.sh
 
 # The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
 # is the order their rows print in. Each is a part, which the command line below names.
-readonly row_files=(run code rbac iam pool admission become fence)
+readonly row_files=(run-1 run-2 code rbac-1 rbac-2 rbac-3 rbac-4 rbac-5 iam-1 iam-2 iam-3 pool-1
+  pool-2 pool-3 admission-1 admission-2 admission-3 admission-4 admission-5 become fence-1 fence-2
+  fence-3 fence-4)
 # The same files longest first, the order their processes start in, so a file started last is not
-# the one the run waits for, and the order --parts prints them in. The seconds are what each file's
-# rows took in envoy-go-checks job 140612446150 (artifact harness-times-140612446150), where the
-# whole test took 475.0 s in one process: rbac 109, run 101, iam 88, pool 58, fence 47, admission
-# 45, code 17, become 9.
-readonly row_file_schedule=(rbac run iam pool fence admission code become)
+# the one the run waits for, and the order --parts prints them in. The CPU-seconds are what each
+# file's rows took, one process at a time, in Job infra6357-profile-z6vrd (the PERROW lines of the
+# harness at 83341d57), where the whole test took 478.1: fence-2 36.9, admission-4 35.7,
+# admission-2 33.4, rbac-2 22.5, run-2 22.5, pool-2 21.9, pool-3 21.3, run-1 21.3, rbac-1 21.2,
+# pool-1 20.3, rbac-3 19.9, admission-3 19.7, admission-5 19.4, fence-1 18.9, rbac-4 18.8, iam-1
+# 18.1, rbac-5 17.5, fence-3 17.1, iam-2 16.0, iam-3 15.9, code 11.3, admission-1 10.1, fence-4
+# 9.4, become 8.8.
+readonly row_file_schedule=(fence-2 admission-4 admission-2 rbac-2 run-2 pool-2 pool-3 run-1 rbac-1
+  pool-1 rbac-3 admission-3 admission-5 fence-1 rbac-4 iam-1 rbac-5 fence-3 iam-2 iam-3 code
+  admission-1 fence-4 become)
 # The two lists and the files on disk must hold the same names, so that a row file on disk is a
 # part and every part is listed; the test stops before anything else when they do not.
 on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
@@ -244,6 +261,7 @@ grade_member() {
 # cluster_admin CLUSTER SUBJECT: the built-in cluster-admin role bound to SUBJECT there.
 cluster_admin() { subject_grant "$1" "$2" "*" "*" "*" "*" "" ""; }
 grade_step="live: Workload Identity on fleet member grade (cluster example-grade/us-east1/grade-cluster)"
+fleet_step="live: Workload Identity: the fleet of project $project"
 # A fleet member that is no GKE cluster, edge, on the cluster edge-cluster.
 edge_member() {
   make_cluster edge-cluster
@@ -255,9 +273,21 @@ refuse_live() {
   : >"$world/clusters/operator-cluster/refuse-sar"
   : >"$world/refuse-analyze"
 }
-# The broker's pod fence's world (broker-fence.sh), which test-rows-fence.sh's rows and the report
-# fixture's (z) run in: comment-delivery's Google account, the broker's Workload Identity member,
-# and the contract the check under test carries.
+# hook_config SELECTOR CLIENT [RULES]: one MutatingWebhookConfiguration, hook-config, of one webhook,
+# pods.example.com, calling CLIENT; SELECTOR exclude names the guarded namespaces out, legion names
+# legion alone in, and empty sets none; RULES, a JSON array, its rules (none when absent).
+hook_config() {
+  jq -n --arg selector "${1:-}" --argjson client "$2" --argjson rules "${3:-null}" '[{kind: "MutatingWebhookConfiguration", metadata: {name: "hook-config"},
+    webhooks: [{name: "pods.example.com", clientConfig: $client}
+      + (if $selector == "exclude" then {namespaceSelector: {matchExpressions: [{key: "kubernetes.io/metadata.name", operator: "NotIn",
+          values: ["envoy-operator", "secrets-broker"]}]}}
+         elif $selector == "legion" then {namespaceSelector: {matchLabels: {"kubernetes.io/metadata.name": "legion"}}}
+         else {} end)
+      + (if $rules != null then {rules: $rules} else {} end)]}]'
+}
+# The broker's pod fence's world (broker-fence.sh), which the rows of test-rows-fence-1.sh to
+# test-rows-fence-4.sh and the report fixture's (z) run in: comment-delivery's Google account, the
+# broker's Workload Identity member, and the contract the check under test carries.
 readonly comment_delivery=comment-delivery@example-project.iam.gserviceaccount.com
 readonly fence_wi_member="serviceAccount:example-project.svc.id.goog[dispatch/envoy-broker]"
 fence_contract="$(dirname "$check")/operator-token-minters/broker-fence.json"
@@ -357,6 +387,38 @@ fence_edit() {
 # names one) with the full flags, the broker as dispatch/envoy-broker with its database login there,
 # then ARGS, against the current world; sets output and status as run does.
 fence_run() { run_script="${run_script:-$fence_check}" run --broker-workload dispatch/envoy-broker --db-secret dispatch/envoy-broker-db "$@"; }
+# The CREDIT and ALLOWANCE lines (fa) wants, and the FINDING lines the same grants are once the fence
+# is not credited. A credit's sentence names the use the policy refuses; the allowance's, the
+# residual of broker-fence.json.
+credit_line() { echo "CREDIT $1: $2, its use on envoy-broker-* pods refused by the ValidatingAdmissionPolicy $3 (bound Deny, failurePolicy Fail), declared and live alike"; }
+fence_residual="$(jq -r .residual.text "$fence_contract")"
+readonly fence_residual
+allowance_line() { echo "ALLOWANCE $1: $2, $fence_residual"; }
+fence_credits_want=(
+  "serviceAccount:$comment_delivery|create pods/exec in dispatch|broker-pod-connect"
+  "serviceAccount:$comment_delivery|get pods/exec in dispatch|broker-pod-connect"
+  "system:serviceaccount:legion:dispatch-measure|create pods/exec in dispatch|broker-pod-connect"
+  "system:serviceaccount:legion:worker|create pods/portforward in dispatch|broker-pod-connect"
+  "serviceAccount:$comment_delivery|create pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
+  "serviceAccount:$comment_delivery|get pods/exec in dispatch, declared by RoleBinding dispatch/comment-delivery|broker-pod-connect"
+)
+want_fence_credits() {
+  local entry principal right policy
+  for entry in "${fence_credits_want[@]}"; do
+    IFS='|' read -r principal right policy <<<"$entry"
+    want_line "$(credit_line "$principal" "$right" "$policy")" "$1"
+    want_line "$(allowance_line "$principal" "$right")" "$1"
+  done
+}
+want_fence_findings() {
+  local entry principal right policy
+  for entry in "${fence_credits_want[@]}"; do
+    IFS='|' read -r principal right policy <<<"$entry"
+    want_line "FINDING $principal: $right" "$1"
+  done
+  [ "$(count_prefix "CREDIT ")" -eq 0 ] || fail "$1: a CREDIT line"
+  [ "$(count_prefix "ALLOWANCE ")" -eq 0 ] || fail "$1: an ALLOWANCE line"
+}
 
 # The checked permissions of roles/container.admin, as `gcloud iam roles describe` lists them, with
 # a few beside them it also holds.
@@ -707,6 +769,18 @@ want_planted() {
   fi
   OWN_FINDINGS=()
 }
+# new_container_rows PERMISSION...: each permission held by an agent's Google service account on the
+# project through a role of its own that grants nothing else (plant_permissions), all in one world
+# and one run; each is a finding naming its role.
+new_container_rows() {
+  base_world
+  plant_permissions "$project_res" "serviceAccount:$worker_gsa" "$@"
+  run
+  want_planted "$* held by $worker_gsa, each through a role of its own" lines
+  # An UNKNOWN beside the findings (a permission name the role does not hold) leaves exit 1 but
+  # means the world is not the clean one plus these grants.
+  [ "$(count_prefix 'UNKNOWN ')" -eq 0 ] || fail "$* held by $worker_gsa: an UNKNOWN beside the findings"
+}
 # recorded_differ: why the counts of the check's last line do not stand, one line, or nothing when
 # they do. A run that reaches the exit block (operator-token-minters.sh's result) ends on one of its
 # three lines, since nothing prints after it; any other last line (the crash report's, a copy
@@ -802,7 +876,7 @@ now_ms() {
 # file's rows wrote; what they print goes to the function's own stdout and stderr, which its caller
 # names, and how many passed, the process's exit and its milliseconds go to files of its own under
 # test_root. The process runs under set -e, as `each` runs an item: a subshell an `||` tested would
-# run with it off. A row file's rows set variables of any name at its top level (test-rows-rbac.sh
+# run with it off. A row file's rows set variables of any name at its top level (test-rows-rbac-2.sh
 # reads a `name` there), so the file the count goes to is named, and made readonly, before they run.
 run_row_file() {
   local name="$1" started

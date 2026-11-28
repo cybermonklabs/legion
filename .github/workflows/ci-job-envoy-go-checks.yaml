@@ -109,7 +109,7 @@ jobs:
       # entry for each of its parts (its row files, which the harness lists with --parts): the pool
       # admits entries in queue order, and vm.test.sh and cluster.test.sh each hold a slot for 361 to
       # 587 s at main (merge-group jobs 140883927377 to 140901259898, 2026-11-27/28), so queued after
-      # a dozen short minter entries they would start a minute or more later and end the job later;
+      # 24 minter entries they would start a minute or more later and end the job later;
       # queued first, they run beside the minter parts on the other two slots. Each minter part is
       # one pool entry of one process (OPERATOR_MINTERS_TEST_SLOTS=1), so the pool's one slot for it
       # is true.
