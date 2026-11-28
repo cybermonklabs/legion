@@ -280,6 +280,12 @@ func (c *Conn) TokenReads() int {
 	return c.tokenReads
 }
 
+// ModelTotals answers the daemon reading what the agent's shim counted. The double counts nothing,
+// so every read fails, and a test sees the read go unanswered rather than a launch with no calls.
+func (c *Conn) ModelTotals(_ context.Context) (runtime.LaunchTotals, error) {
+	return runtime.LaunchTotals{}, errors.New("fake: the shim was asked for its model totals, and the double counts none")
+}
+
 // Prompts is every prompt frame sent over this connection, in order.
 func (c *Conn) Prompts() []Prompt {
 	c.mu.Lock()

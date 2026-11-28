@@ -1,3 +1,5 @@
+import { answeredText, setModelText } from "@legion/contracts";
+
 import type { IssueSteps, StepRecord } from "../../api/types";
 
 /** One planned step as the server answers it. */
@@ -36,8 +38,10 @@ export type StepEnd =
 /** One run of one step, as the Steps tab draws it: the fields of its row, and nothing the row
  *  does not show (the task is the table's, `StepTaskRows`). `label` names the step: its place in
  *  the task for a step of the plan, and `Retro` or `Merge` for the two runs that no plan names
- *  (step 0). An empty `agent`, `model` or `type` is a field the record does not hold, as is a
- *  null `started` or `ended`; `attempt` is the server's count of this step's runs in its task. */
+ *  (step 0). `model` is the model that answered last, and `setModel` the model the run's role was
+ *  set to. An empty `agent`, `model`, `setModel` or `type` is a field the record does not hold, as
+ *  is a null `started` or `ended`; `attempt` is the server's count of this step's runs in its
+ *  task. `answered` is the models that answered the run's agent, as `answeredText` writes them. */
 export type StepRow = StepEnd & {
   id: string;
   label: string;
@@ -45,6 +49,8 @@ export type StepRow = StepEnd & {
   type: string;
   agent: string;
   model: string;
+  setModel: string;
+  answered: string;
   attempt: number;
   started: string | null;
   ended: string | null;
@@ -102,6 +108,7 @@ function stepRow(record: StepRecord): StepRow {
   return {
     ...stepEnd(record),
     agent: record.agent,
+    answered: answeredText(record),
     attempt: record.attempt,
     ended: record.ended_at,
     id: record.id,
@@ -110,6 +117,7 @@ function stepRow(record: StepRecord): StepRow {
     label: record.kind === "step" ? String(record.step) : (KIND_LABELS[record.kind] ?? record.kind),
     model: record.model,
     role: record.role,
+    setModel: setModelText(record) ?? "",
     started: record.started_at,
     type: record.type,
   };
