@@ -73,6 +73,7 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 			"DISPATCH_REVIEWER_APP_ID": ciReconcileReviewerApp,
 			// Five minutes is longer than any test may wait for a pass.
 			"DISPATCH_TEST_CI_RECONCILE_INTERVAL": "1s",
+			"DISPATCH_TEST_CI_RECONCILE_AT_START": "1",
 		},
 	})
 	process.waitHealthy(t)

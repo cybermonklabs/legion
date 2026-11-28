@@ -2098,6 +2098,18 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_CI_RECONCILE_AT_START": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1"}); boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START unset: CIReconcileAtStart true")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CI_RECONCILE_AT_START": "1"}); !boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START=1: CIReconcileAtStart false")
+			}
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_CI_RECONCILE_AT_START": "true"}); boot.CIReconcileAtStart {
+				t.Error("DISPATCH_TEST_CI_RECONCILE_AT_START=true: CIReconcileAtStart true, want only 1 to set it")
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_CI_RECONCILE_AT_START": "1"}, "DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_CI_RECONCILE_AT_START")
+		},
 		"DISPATCH_TEST_CI_RECONCILE_INTERVAL": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CIReconcileInterval != 0 {
 				t.Errorf("DISPATCH_TEST_CI_RECONCILE_INTERVAL unset: CIReconcileInterval = %v, want 0 (cireconcile.Interval's five minutes)", boot.CIReconcileInterval)

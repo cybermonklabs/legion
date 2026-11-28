@@ -141,9 +141,8 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 // loop. A loop left without its recorder leaves its entry no_attempt, and two loops given each
 // other's names put a cause under the wrong key; either fails naming the entry.
 //
-// The test settings bring every loop's pass inside the test's window: the sweep's and the CI
-// reconcile's intervals, and a first pass at start for the delivery reconcile and the
-// architecture import, whose first ticks are otherwise jittered over five minutes.
+// The test settings shorten the sweep's and CI reconcile's intervals and make the CI reconcile,
+// delivery reconcile and architecture import tick at startup.
 func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -167,6 +166,7 @@ func TestHealthzNamesEachGitHubReadThroughTheServersWiring(t *testing.T) {
 	env["DISPATCH_TEST_HOOKS"] = "1"
 	env["DISPATCH_TEST_REDELIVERY_INTERVAL"] = "1s"
 	env["DISPATCH_TEST_CI_RECONCILE_INTERVAL"] = "1s"
+	env["DISPATCH_TEST_CI_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_RECONCILE_AT_START"] = "1"
 	env["DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START"] = "1"
 	process := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{NATSURL: natsURL, Env: env})

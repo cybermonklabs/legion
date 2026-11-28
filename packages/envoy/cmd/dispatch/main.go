@@ -183,6 +183,9 @@ type bootConfig struct {
 	// five minutes; only DISPATCH_TEST_CI_RECONCILE_INTERVAL, under the test hooks, sets it, since
 	// no process-level test can wait five minutes for a pass.
 	CIReconcileInterval time.Duration
+	// CIReconcileAtStart makes the CI reconcile loop tick at startup instead of waiting one
+	// interval. Only DISPATCH_TEST_CI_RECONCILE_AT_START=1, under the test hooks, sets it.
+	CIReconcileAtStart bool
 	// RedeliveryInterval is how often the webhook redelivery sweep runs, zero for
 	// redeliver.Interval's two minutes; only DISPATCH_TEST_REDELIVERY_INTERVAL, under the test
 	// hooks, sets it, since no process-level test can wait two minutes for a sweep.
@@ -1269,10 +1272,15 @@ func main() {
 			slog.Info("dispatch: the CI reconcile pass leaves no App's check suites out: DISPATCH_VERDICT_APP_ID is unset; give it the listener's ENVOY_VERDICT_APP_ID")
 		}
 		reconciler.GitHubReads = recordGitHubRead
+		// ciReconcileFirstTick selects when the loop first tries to run a leased pass.
+		ciReconcileFirstTick := duty.TickAfterInterval
+		if boot.CIReconcileAtStart {
+			ciReconcileFirstTick = duty.TickAtStart
+		}
 		// The period argument is what makes one process serve each period (duty_passes): the
 		// lease alone only keeps two passes from overlapping, and the App's budget pays for every
 		// pass that runs.
-		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, duty.TickAfterInterval, reconciler.Pass)
+		go duty.RunLeased(ctx, ciReconcileLeases, cireconcile.Lease, ciReconcileInterval, ciReconcileFirstTick, reconciler.Pass)
 		// A listener with ENVOY_CI_VERIFY on publishes a head's settlement only after this loop has
 		// read the head from GitHub after it asked. It lists the requests every VerifyInterval with
 		// no lease, and answers any it finds under a lease of its own (VerifyLeases), so a pass with
@@ -1934,6 +1942,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_CREATE_STAGED", &boot.CreateStaged},
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
+		{"DISPATCH_TEST_CI_RECONCILE_AT_START", &boot.CIReconcileAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
