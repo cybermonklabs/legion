@@ -975,6 +975,19 @@ func (s *Service) purgeSuppressedPersistence(room string) {
 // cost in production is one nil check per service.
 var newServiceHook func(*Service)
 
+// shutdownStartedHook is nil outside this package's own tests, where the leak check installs it
+// beside newServiceHook. Shutdown calls it first, before anything else it does: the service's own
+// report that a shutdown of it began, which tells the leak check a service a test shut down from
+// one no test ever did. The cost in production is one nil check per shutdown.
+var shutdownStartedHook func(*Service)
+
+// shutdownServiceHook is nil outside this package's own tests, where the leak check installs it
+// beside newServiceHook. Shutdown calls it last, once everything else it does has returned: the
+// service's own report that its shutdown finished, which tells the leak check a service whose
+// shutdown finished from one whose shutdown is still running. The cost in production is one nil
+// check per shutdown.
+var shutdownServiceHook func(*Service)
+
 // New constructs the ygo server used by Dispatch's document API and websocket
 // endpoint.
 func New(deps Deps) *Service {
@@ -1314,6 +1327,15 @@ const ShutdownDrainBudget = 9 * time.Second
 // ctx, and is cancelled once ctx ends; either way Shutdown returns only after the queue's worker
 // has, so nothing of it outlives the store's pools, which its caller closes next.
 func (s *Service) Shutdown(ctx context.Context) error {
+	if shutdownStartedHook != nil {
+		shutdownStartedHook(s)
+	}
+	// Registered first, so it runs after every other deferred step of the shutdown.
+	defer func() {
+		if shutdownServiceHook != nil {
+			shutdownServiceHook(s)
+		}
+	}()
 	// Last, whichever way Shutdown returns: closing a room may yet have something to send. The
 	// awareness relay sends what it still holds - the removals the rooms' closes made, and what
 	// ygo's shutdown drained from the rooms' relay lanes - through the sender, so it closes first.

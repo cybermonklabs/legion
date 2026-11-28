@@ -997,8 +997,12 @@ CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
 Both are slow suites: the merge queue runs each when the queue's own generator selects it against the queue's base, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
-The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
-the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
+The race run streams the test binary's own output (`go test -json`) and carries a check Go's detector does not make.
+After the tests, `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>`.
+For each service in that count, it prints the test that built it and whether shutdown never started, is still running, or returned.
+A service whose shutdown never started fails the run before the report waits for collection.
+Otherwise the report waits for shutdown and collection through `testwait.InMain`.
+Its only bound is the test binary's deadline less the shared spare. With `-timeout 0`, the wait has no deadline.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
 A service that was shut down is still alive at the end of the run when a callback of one of its stopped timers holds it.
