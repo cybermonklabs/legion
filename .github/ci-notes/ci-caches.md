@@ -87,7 +87,10 @@ the go-envoy entry's build of the listener and natsd alone does not hold, the tw
 out of that same set, and dispatch-memory and dispatch-multiprocess, whose ceiling step and tests
 read its modules and objects), go-browser-binaries (the binaries job of
 .github/workflows/dispatch-browser.yaml, which runs for every caller of the file and on every
-lane, and whose `CGO_ENABLED=0` builds share no cache key with a cgo build), go-envoy-smoke
+lane, and whose `CGO_ENABLED=0` builds share most of their cache keys with a cgo build: net and
+os/user build other files without cgo, so they and every package above them have other keys, and
+on a go-envoy-test entry 427 of the 1,034 packages of the job's closure were stale;
+.github/ci-notes/ci-caches.md#the-go-browser-binaries-family), go-envoy-smoke
 (envoy-smoke, whose three go commands build in two
 workspaces: the smoke test in the root one, envoy-infra's host live tests and plugin in the infra
 module's; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of
@@ -549,8 +552,10 @@ every lane. Each of the fill's two steps runs the text of the job's step whose n
 with, in its directory, so the entry holds each object under the key that job asks for:
 ci_job_reads.py's BINARIES_FILLS gives the two texts, the binaries job's own Exact entries pin
 them, and rule 25 of check-ci-filters.sh fails the check when a step of either side runs another
-text, in another directory or under an env or an earlier step that can move what go compiles. So
-a change to the job's step changes the table and the fill with it.
+text, in another directory or under an env or an earlier step that can move what go compiles,
+when the two jobs set Go up from another go-version-file or go-version, which the readers'
+restore-keys do not carry, and when the job runs a go command in a step no pair names. So a
+change to the job's step changes the table and the fill with it.
 
 The job restored go-envoy-test before, whose objects are compiled with cgo on. With
 `CGO_ENABLED=0`, net and os/user build other files, so every package above them has other cache

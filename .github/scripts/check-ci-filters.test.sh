@@ -5603,17 +5603,21 @@ check "naming the filter and where it is declared" \
   "$(contains "$out" "::error file=.github/ci-gates::no file of .github/ci-gates declares the filter dispatch_references")"
 
 # binaries_fill <root>: the shape rule 25 holds - dispatch-browser.yaml's binaries job, and the
-# browser-binaries job of ci-caches.yaml that fills the family it restores, each running one
-# BINARIES_FILLS entry's two texts in its directory: a build of two go commands, and the real
-# connections step's shape, whose `echo` names a go command it does not run. The workflow is
-# references_lane's, which rule 24 needs of any dispatch-browser.yaml, with the binaries job added
-# after its shard job.
+# browser-binaries job of ci-caches.yaml that fills the family it restores, each setting Go up from
+# mod/go.mod and then running one BINARIES_FILLS entry's two texts in its directory: a build of two
+# go commands, and the real connections step's shape, whose `echo` names a go command it does not
+# run. The workflow is references_lane's, which rule 24 needs of any dispatch-browser.yaml, with
+# the binaries job added after its shard job.
 binaries_fill() {
   references_lane "$1"
   cat >> "$1/.github/workflows/dispatch-browser.yaml" <<'YAML'
   binaries:
     runs-on: ubuntu-24.04
     steps:
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: mod/go.mod
       - name: Build the binaries the browser suite runs
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -5632,6 +5636,10 @@ YAML
   browser-binaries:
     runs-on: ubuntu-24.04
     steps:
+      - id: setup-go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: mod/go.mod
       - name: Build the binaries the browser suite runs, as the binaries job does
         run: |
           mkdir -p "$RUNNER_TEMP/bin"
@@ -5789,6 +5797,61 @@ run_check "$root"
 check "fails" "$(is "$status" 1)"
 check "naming the reader's file, its job and the step the table pairs" \
   "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job binaries has no step \"Build the binaries the browser suite runs\", which .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs with \"Build the binaries the browser suite runs, as the binaries job does\" of the other side")"
+
+# The readers' restore-keys carry no Go version, so an entry a fill on another Go saved is restored
+# and every object of it misses: each job's last actions/setup-go step before its first paired
+# step gives the same go-version-file and go-version, and a job with no such step fails.
+setup_go_step=$'      - id: setup-go\n        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0\n        with:\n          go-version-file: mod/go.mod\n'
+go_reason="the restore-keys of .github/workflows/dispatch-browser.yaml's binaries job carry no Go version, so that job restores an entry a fill on another Go saved, and every object of it misses, with nothing failing"
+
+echo "case: the fill sets Go up from another file than the reader's"
+binaries_case binaries-fill-go-file
+replace "$root/.github/workflows/ci-caches.yaml" "go-version-file: mod/go.mod" "go-version-file: packages/daemon/go.mod"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the fill's file, its job and both values" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job browser-binaries's actions/setup-go step gives \`go-version-file: packages/daemon/go.mod\`, where .github/workflows/dispatch-browser.yaml's binaries job's gives \`go-version-file: mod/go.mod\`, each the last before the first step .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs: ")"
+check "and why another Go goes unseen" "$(contains "$out" "BINARIES_FILLS pairs: $go_reason; set both jobs' Go up from one go-version-file or go-version")"
+check "and not the reader, which keeps its file" \
+  "$(is "$(contains "$out" "file=.github/workflows/dispatch-browser.yaml::")" false)"
+
+echo "case: the fill job sets no Go up before its paired steps"
+binaries_case binaries-fill-no-setup-go
+replace "$root/.github/workflows/ci-caches.yaml" "$setup_go_step" ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the fill's file, its job, the step it builds in first and the runner's Go" \
+  "$(contains "$out" "::error file=.github/workflows/ci-caches.yaml::job browser-binaries has no actions/setup-go step before \"Build the binaries the browser suite runs, as the binaries job does\", the first step .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs, so it builds on whatever Go the runner carries: $go_reason")"
+check "and not the reader, which sets Go up" \
+  "$(is "$(contains "$out" "file=.github/workflows/dispatch-browser.yaml::")" false)"
+
+echo "case: the reader job sets no Go up before its paired steps"
+binaries_case binaries-fill-reader-no-setup-go
+replace "$root/.github/workflows/dispatch-browser.yaml" "$setup_go_step" ""
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the reader's file, its job, the step it builds in first and the runner's Go" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job binaries has no actions/setup-go step before \"Build the binaries the browser suite runs\", the first step .github/scripts/ci_job_reads.py's BINARIES_FILLS pairs, so it builds on whatever Go the runner carries: $go_reason")"
+check "and not the fill, which sets Go up" \
+  "$(is "$(contains "$out" "file=.github/workflows/ci-caches.yaml::")" false)"
+
+# A go command of the reader's job that no pair names is one the fill does not run, so its own
+# packages miss on every run while every pair's text still matches.
+echo "case: the reader job runs a go command no pair names"
+binaries_case binaries-fill-reader-unpaired
+cat >> "$root/.github/workflows/dispatch-browser.yaml" <<'YAML'
+      - name: Build the seed
+        run: go build -o seed ./cmd/app
+        working-directory: mod
+YAML
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "naming the reader's file, its job, the step and its go command" \
+  "$(contains "$out" "::error file=.github/workflows/dispatch-browser.yaml::job binaries's step \"Build the seed\" runs \`go build -o seed ./cmd/app\`, and no pair of .github/scripts/ci_job_reads.py's BINARIES_FILLS names it: ")"
+check "and why its packages miss" \
+  "$(contains "$out" "names it: job browser-binaries of .github/workflows/ci-caches.yaml does not run that step, so this job restores the entry and that step's own packages miss on every run, with nothing failing; add it to BINARIES_FILLS and run its text in the fill, or move it out of this job")"
+check "and not the fill, which runs every pair's text" \
+  "$(is "$(contains "$out" "file=.github/workflows/ci-caches.yaml::")" false)"
 
 echo "case: an entry whose text is empty holds the fill to nothing, and fails"
 binaries_case binaries-fill-empty-text

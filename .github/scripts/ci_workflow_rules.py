@@ -25,7 +25,8 @@ It sits beside that engine (and workflow_paths.py, the path model) in the reposi
 and imports the engine's names for ci.yaml, ci-caches.yaml and the fill workflows rule 11 reads,
 the repository root, the checks
 main's ruleset requires, the reader of a job's `uses:` and the three
-helpers that read an `if:`, the comparison an Exact entry makes of a pinned step's text and the
+helpers that read an `if:`, the comparison an Exact entry makes of a pinned step's text, the
+reader of the lines of a script that hold a go command, a step's label and the
 readers of what surrounds a step (its directory, its env, the steps before it), and the path
 model's reader of a workflow's `on:`. main()
 imports this module rather than the other way round, so the one import of the engine here is of
@@ -50,12 +51,14 @@ from ci_filter_coverage import (
     clean_dir,
     conditions,
     error,
+    go_lines,
     job_up_to,
     load_repository_yaml,
     pin_difference,
     read_repository_text,
     script_lines,
     squash,
+    step_label,
     step_workdir,
     where_if,
 )
@@ -655,11 +658,11 @@ def check_race_fill_scripts(fills: list, problems: list) -> None:
 # end then deletes what the restore brought, so the fill saves an empty entry while every text
 # matches; on the reader's step it sends the objects the restore brought somewhere the build does
 # not read. GOPROXY is left alone: both files set it in their workflow env, and where a module
-# comes from changes no key. An `if:` is refused for the same reason as GOCACHE: a step that does
-# not run compiles nothing, and the rule would say the fill runs what the job runs.
+# comes from changes no key. A step's `if:` is refused for the same reason as GOCACHE: a step that
+# does not run compiles nothing, and the rule would say the fill runs what the job runs.
 def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
-    """What a rule 25 step carries that leaves its text saying nothing about what ran: an `if:`,
-    or a GOCACHE of the workflow, the job or the step; else around_reason's first reason."""
+    """What a rule 25 step carries that leaves its text saying nothing about what ran: an `if:` of
+    its own, or a GOCACHE of the workflow, the job or the step; else around_reason's first reason."""
     if step.get("if") is not None:
         given = step["if"]
         # YAML reads an unquoted true or false as a boolean; name it as the workflow spells it.
@@ -671,6 +674,33 @@ def binaries_step_reason(document: dict, job: dict, step: dict) -> str:
             return (f"{where} env sets GOCACHE, which moves go's build cache off the ~/.cache/go-build the "
                     "family is saved from and restored into")
     return around_reason(document, job_up_to(job, step, including=False), [step])
+
+
+# The inputs of actions/setup-go that name the Go a job builds with. Rule 25 holds them alike on
+# both sides of an entry, since the readers' restore-keys carry no Go version.
+SETUP_GO_INPUTS = ("go-version-file", "go-version")
+
+
+def setup_go_before(job: dict, names: set) -> tuple:
+    """(The last actions/setup-go step of `job` before the first of its steps named in `names`,
+    or None; the label of that first step, or '' when no step of the job is named so.)"""
+    steps = [step or {} for step in job.get("steps") or []]
+    first = next((i for i, step in enumerate(steps) if str(step.get("name", "")) in names), len(steps))
+    setup = next((step for step in reversed(steps[:first])
+                  if str(step.get("uses", "")).split("@")[0] == "actions/setup-go"), None)
+    return setup, (step_label(steps[first]) if first < len(steps) else "")
+
+
+def setup_go_given(step: dict) -> tuple:
+    """A setup-go step's SETUP_GO_INPUTS, each as its text, an absent one as ''."""
+    given = step.get("with") if isinstance(step.get("with"), dict) else {}
+    return tuple("" if given.get(name) is None else str(given[name]) for name in SETUP_GO_INPUTS)
+
+
+def setup_go_shown(given: tuple) -> str:
+    """SETUP_GO_INPUTS as a setup-go step gives them, for a message."""
+    named = [f"{name}: {value}" for name, value in zip(SETUP_GO_INPUTS, given) if value]
+    return f"`{', '.join(named)}`" if named else "neither go-version-file nor go-version"
 
 
 def check_binaries_fill(fills: list, problems: list) -> None:
@@ -686,21 +716,36 @@ def check_binaries_fill(fills: list, problems: list) -> None:
     So each step of a pair, the fill's and the reader's, must exist and run the entry's text,
     compared as an Exact entry compares a step's (pin_difference: the whole text, nothing parsed),
     in the entry's directory (step_workdir), with nothing around it that can move what its go
-    commands compile or whether they run at all (binaries_step_reason: an `if:`, a GOCACHE, and
-    around_reason's own - an env: name outside ENV_ALLOWED, an earlier step writing $GITHUB_ENV
-    or $GITHUB_PATH or running `go env -w`, a shell or a container). Holding whole texts rather
-    than the go commands read out of them leaves no shape of a command this rule cannot read: a
-    `GOFLAGS=` prefix, a `time`, a continued line and an `export` each make the text another one,
-    named by its first line that differs. The reader's steps are pinned to the same texts by
-    their own Exact entries too; this rule holds them as well, so a fill is never held to a text
-    its reader left, and a drift there is named by both. A missing job or step of either side
-    fails, each in its own words, and so does an entry that names no step pair, or a text that is
-    empty, or a workflow the repository does not have: each would hold the fill to nothing.
+    commands compile or whether they run at all (binaries_step_reason: the step's own `if:`, a
+    GOCACHE, and around_reason's own - an env: name outside ENV_ALLOWED, an earlier step writing
+    $GITHUB_ENV or $GITHUB_PATH or running `go env -w`, a shell or a container). Holding whole
+    texts rather than the go commands read out of them leaves no shape of a command this rule
+    cannot read: a `GOFLAGS=` prefix, a `time`, a continued line and an `export` each make the
+    text another one, named by its first line that differs. The reader's steps are pinned to the
+    same texts by their own Exact entries too; this rule holds them as well, so a fill is never
+    held to a text its reader left, and a drift there is named by both. A missing job or step of
+    either side fails, each in its own words, and so does an entry that names no step pair, or a
+    text that is empty, or a workflow the repository does not have: each would hold the fill to
+    nothing.
 
-    What this rule does not compare: the runner and the Go version, which the family's key
-    carries, so a fill on another runner or another Go saves under a key the reader never asks
-    for; and GOPROXY, which decides where a module comes from and enters no key. A tree with no
-    ci-caches.yaml fills nothing, and so has nothing to hold.
+    Both jobs must set Go up alike: each one's last actions/setup-go step before its first
+    paired step (setup_go_before) must give the same go-version-file and go-version, each
+    compared as text, an absent one as empty, and a job with no such step fails, since it then
+    builds on whatever Go the runner carries. Go keys every object on the toolchain that compiled
+    it, and the readers' restore-keys carry no Go version, so an entry a fill on another Go saved
+    is restored, and every object of it misses. And each step of the reader's job whose run: holds
+    a go command (go_lines) must be the reader's step of a pair: the fill does not run any other,
+    so the job restores the entry and that step's own packages miss on every run, with nothing
+    failing.
+
+    What this rule does not compare: a job's `if:` - the fill job's is
+    `inputs.only != 'dispatch-builds'`, the selection every fill job of ci-caches.yaml but
+    dispatch-builds carries, and no rule holds a fill job's `if:` for any family; the runner,
+    whose OS and architecture the readers' restore-keys carry too, so an entry another OS or
+    architecture filled is never restored - the binaries job then compiles everything, and its
+    restore step shows the miss as "Cache not found" - and no rule holds the runner of any other
+    fill family either; and GOPROXY, which decides where a module comes from and enters no key. A
+    tree with no ci-caches.yaml fills nothing, and so has nothing to hold.
 
     The table is an argument, as check_race_fill_packages' is: main() holds ci_job_reads.py, and
     nothing here imports it."""
@@ -761,6 +806,38 @@ def check_binaries_fill(fills: list, problems: list) -> None:
                                                 f"{reader_path}'s {reader_job} job finds and does not hit, and that job "
                                                 f"compiles from nothing with nothing failing; make both steps run the "
                                                 f"pair's text there again, or change the table with both"))
+        # The Go each side builds with: its last setup-go step before its first paired step, the
+        # version the readers' restore-keys do not carry.
+        why = (f"the restore-keys of {reader_path}'s {reader_job} job carry no Go version, so that job restores an "
+               f"entry a fill on another Go saved, and every object of it misses, with nothing failing")
+        setups = []
+        for (path, _, job_id, _), job, names in zip(sides, jobs, ({str(f) for _, f, _ in pairs},
+                                                                  {str(r) for r, _, _ in pairs})):
+            setup, first = setup_go_before(job, names)
+            if setup is None:
+                before = f"\"{first}\", the first step" if first else "the steps"
+                problems.append(error(path, f"job {job_id} has no actions/setup-go step before {before} {TABLE}'s "
+                                            f"BINARIES_FILLS pairs, so it builds on whatever Go the runner carries: "
+                                            f"{why}; set Go up there as the other side's job does"))
+            setups.append(setup)
+        if None not in setups and setup_go_given(setups[0]) != setup_go_given(setups[1]):
+            problems.append(error(CACHE_WORKFLOW, f"job {fill_job}'s actions/setup-go step gives "
+                                                  f"{setup_go_shown(setup_go_given(setups[0]))}, where {reader_path}'s "
+                                                  f"{reader_job} job's gives {setup_go_shown(setup_go_given(setups[1]))}, "
+                                                  f"each the last before the first step {TABLE}'s BINARIES_FILLS pairs: "
+                                                  f"{why}; set both jobs' Go up from one go-version-file or go-version"))
+        # A go command of the reader's job (jobs[1]) that no pair names is one the fill does not run.
+        paired = {str(reader_step) for reader_step, _, _ in pairs}
+        for step in jobs[1].get("steps") or []:
+            step = step or {}
+            commands = go_lines(str(step.get("run", "")))
+            if commands and str(step.get("name", "")) not in paired:
+                problems.append(error(reader_path, f"job {reader_job}'s step \"{step_label(step)}\" runs `{commands[0]}`, "
+                                                   f"and no pair of {TABLE}'s BINARIES_FILLS names it: job {fill_job} of "
+                                                   f"{CACHE_WORKFLOW} does not run that step, so this job restores the "
+                                                   f"entry and that step's own packages miss on every run, with nothing "
+                                                   f"failing; add it to BINARIES_FILLS and run its text in the fill, or "
+                                                   f"move it out of this job"))
 
 
 # ---------------------------------------------------------------- the workspaces and the table

@@ -399,27 +399,39 @@
 #      .github/workflows/ci-caches.yaml's browser-binaries job, and the two steps of
 #      dispatch-browser.yaml's binaries job they fill the cache family for - that does not run the
 #      pair's text (compared as an Exact entry compares a step's, the whole text), in the pair's
-#      directory, with no `if:`, no GOCACHE of the workflow, the job or the step, no other env:
-#      name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or running
-#      `go env -w`, and no shell or container, naming the file, the step and its first line that
-#      differs; a job or step of either side that is gone, each in its own words; and an entry
-#      that names no pair, an empty text or a workflow the tree does not have. An object's cache
-#      key holds the compiler's flags, CGO_ENABLED and the other GO* variables that enter the
-#      build, with the source it compiles, so a fill that drifts saves an entry the job finds and
-#      does not hit: it compiles everything from nothing, and nothing fails - the shape measured
-#      on a go-envoy-test entry, a family filled with cgo on, which left 427 of the job's 1,034
-#      packages to compile. GOCACHE and an `if:` are refused although neither enters a key: a
-#      GOCACHE sends the objects away from the `~/.cache/go-build` the fill saves, which leaves
-#      the fill saving an empty entry, and a step that does not run compiles nothing, while every
-#      text still matches. Whole texts
+#      directory, with no `if:` of its own, no GOCACHE of the workflow, the job or the step, no
+#      other env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or
+#      running `go env -w`, and no shell or container, naming the file, the step and its first
+#      line that differs; a fill job whose last actions/setup-go step before its first paired step
+#      gives another go-version-file or go-version than the reader job's, each compared as text,
+#      naming both, and a job of either side with no such step, which then builds on whatever Go
+#      the runner carries; a step of the reader job whose run: holds a go command and that no pair
+#      names, naming the file, the job and the step: the fill does not run it, so the job restores
+#      the entry and that step's own packages miss on every run; a job or step of either side that
+#      is gone, each in its own words; and an entry that names no pair, an empty text or a
+#      workflow the tree does not have. An object's cache key holds the compiler's flags,
+#      CGO_ENABLED and the other GO* variables that enter the build, with the source it compiles,
+#      so a fill that drifts saves an entry the job finds and does not hit: it compiles everything
+#      from nothing, and nothing fails - the shape measured on a go-envoy-test entry, a family
+#      filled with cgo on, which left 427 of the job's 1,034 packages to compile. GOCACHE and a
+#      step's `if:` are refused although neither enters a key: a GOCACHE sends the objects away
+#      from the `~/.cache/go-build` the fill saves, which leaves the fill saving an empty entry,
+#      and a step that does not run compiles nothing, while every text still matches. Whole texts
 #      rather than the go commands read out of them, so that no shape of a command (a `GOFLAGS=`
 #      prefix, a `time`, a continued line, an `export`) can read as no command on both sides and
 #      pass. The two steps of a pair are two copies of one text rather than one script: a Run
 #      pinned to a script's text is reduced over every job of the called workflow, and the shard
 #      and alone jobs run in a container, so a shared script would make that filter read every Go
 #      file of the repository (ci_job_reads.py's browser gate says so where it lists no script
-#      Run). Not compared: the runner and the Go version, which the family's key carries, and
-#      GOPROXY, which decides where a module comes from and enters no key.
+#      Run). The Go version is compared because the readers' restore-keys do not carry it: an
+#      entry a fill on another Go saved is restored, and every object of it misses. Not compared:
+#      a job's `if:` - the fill job's is `inputs.only != 'dispatch-builds'`, the selection every
+#      fill job of ci-caches.yaml but dispatch-builds carries, and no rule holds a fill job's
+#      `if:` for any family; the runner, whose OS and architecture the readers' restore-keys carry
+#      too, so an entry another OS or architecture filled is never restored - the binaries job
+#      then compiles everything, and its restore step shows the miss as "Cache not found" - and no
+#      rule holds the runner of any other fill family either; and GOPROXY, which decides where a
+#      module comes from and enters no key.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

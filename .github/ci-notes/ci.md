@@ -1308,8 +1308,9 @@ that same set, the two jobs of ci-job-dispatch-two-builds.yaml,
 whose ceiling step and twobuild test step build out of it too, and dispatch-memory and
 dispatch-multiprocess; .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test),
 go-browser-binaries (the binaries job of dispatch-browser.yaml, whose CGO_ENABLED=0 builds of
-the Dispatch server and the real broker's commands share no cache key with a cgo build: on a
-go-envoy-test entry 427 of the 1,034 packages they build missed;
+the Dispatch server and the real broker's commands share most of their cache keys with a cgo
+build: net and os/user build other files without cgo, so they and every package above them have
+other keys, and on a go-envoy-test entry 427 of the 1,034 packages they build were stale;
 .github/ci-notes/ci-caches.md#the-go-browser-binaries-family), go-envoy-smoke
 (envoy-smoke, whose smoke test, envoy-infra live tests and plugin build no other family holds
 together; .github/ci-notes/ci-caches.md#the-envoy-smoke-family), go-envoy-race (every leg of

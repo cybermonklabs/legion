@@ -550,6 +550,8 @@ jobs:
         with:
           persist-credentials: false
 
+      # The binaries job's Go: its restore-keys carry no Go version, so rule 25 of
+      # check-ci-filters.sh holds this go-version-file to that job's.
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:

@@ -162,8 +162,9 @@ go-envoy is no answer: it is filled by a build of ./cmd/listener and
 and builds these four downloads and compiles their closure on a key that hit: 115 `go:
 downloading` lines in job 129055096326 of run 42585736615. The job restored go-envoy-test before,
 which is filled by `go test -count=1 -run '^$' ./...` over the whole envoy module with cgo on, so
-it carries every module these builds read but few of their objects: with `CGO_ENABLED=0`, net and
-os/user build other files, so most packages above them have other cache keys
+it carries every module these builds read but not every object: with `CGO_ENABLED=0`, net and
+os/user build other files, so every package above them has other cache keys, and on a
+go-envoy-test entry 427 of the 1,034 packages of this job's closure were stale
 (.github/ci-notes/ci-caches.md#the-go-browser-binaries-family has the measurements).
 
 ## What the binaries build writes, and why it is static
@@ -977,9 +978,9 @@ go-envoy-test-Linux-go1.27.3, 677,668,128 bytes, 22 s of those 96.
 
 go-envoy-test, restored only: this job's `go build -o ./dispatch-e2e ./cmd/dispatch` builds with
 cgo on, as go-envoy-test's fill does, so that family's entry holds its closure. Measured in the
-pod the binaries job's step names: 6.2 s and 1 compile on a go-envoy-test entry, against 26.7 s
-and 250 compiles on a go-browser-binaries entry, whose objects are `CGO_ENABLED=0` ones. It
-saves none.
+4-CPU build-cluster pod of .github/ci-notes/ci-caches.md#the-go-browser-binaries-family (main
+1cd586b462b): 6.2 s and 1 compile on a go-envoy-test entry, against 26.7 s and 250 compiles on a
+go-browser-binaries entry, whose objects are `CGO_ENABLED=0` ones. It saves none.
 
 ## Why the two-process job builds contracts
 
