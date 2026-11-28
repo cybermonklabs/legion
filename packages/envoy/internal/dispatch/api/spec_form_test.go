@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // The setting that names the roots of The Spec (DISPATCH_SPEC_ROOTS) holds issue keys separated by
@@ -39,11 +40,11 @@ func TestParseSpecRoots(t *testing.T) {
 	// document service: one over no store serves, as this test opens no document.
 	documents := docs.New(docs.Deps{})
 	t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
-	if _, err := NewSpecForm("ACME-1,,ACME-2", "", documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+	if _, err := NewSpecForm("ACME-1,,ACME-2", text.Origins{}, documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
 		t.Fatalf("NewSpecForm with an empty item = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
 	}
-	form, err := NewSpecForm(" ACME-1 , ACME-5", "https://dispatch.example/", documents)
-	if err != nil || !reflect.DeepEqual(form, SpecForm{roots: []string{"ACME-1", "ACME-5"}, serverURL: "https://dispatch.example"}) {
+	form, err := NewSpecForm(" ACME-1 , ACME-5", text.ServerOrigins("https://dispatch.example/", nil, nil), documents)
+	if err != nil || !reflect.DeepEqual(form, SpecForm{roots: []string{"ACME-1", "ACME-5"}, origins: testOrigins}) {
 		t.Fatalf("NewSpecForm(%q) = %+v, %v; want the roots [ACME-1 ACME-5] and the address with no trailing slash", " ACME-1 , ACME-5", form, err)
 	}
 	deps, err := NewDeps(DepsInput{SpecForm: &form, Docs: documents})
@@ -57,9 +58,9 @@ func TestParseSpecRoots(t *testing.T) {
 
 // specFormOn is the form of The Spec that specRoots names, with its gate set on documents, as main
 // builds the server's (NewSpecForm).
-func specFormOn(t testing.TB, specRoots, serverURL string, documents docs.API) *SpecForm {
+func specFormOn(t testing.TB, specRoots string, origins text.Origins, documents docs.API) *SpecForm {
 	t.Helper()
-	form, err := NewSpecForm(specRoots, serverURL, documents)
+	form, err := NewSpecForm(specRoots, origins, documents)
 	if err != nil {
 		t.Fatalf("build the form of The Spec from %q: %v", specRoots, err)
 	}
