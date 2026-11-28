@@ -381,7 +381,8 @@ export function waitingForPausedReads<T>(client: QueryClient, read: () => T): T 
  * Reads again every query under `queryKey` (`invalidateQueries`), waiting on a fetch the network
  * has paused and past one a bare cancel gave up (`waitingForPausedReads`), and answers once that
  * read has. It is for a write that holds its control through the read its landing starts, under
- * a bound of its own (`useReadBound`'s `holdThrough`): a retry's read of an agent's conversation.
+ * a bound of its own (`useReadBound`'s `holdThrough`): a retry's read of an agent's conversation,
+ * and a table action's read of the issues.
  */
 export function invalidateWaitingForPaused(client: QueryClient, queryKey: QueryKey): Promise<void> {
   return waitingForPausedReads(client, () => client.invalidateQueries({ queryKey }));
