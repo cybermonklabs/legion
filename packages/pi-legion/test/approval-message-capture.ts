@@ -1972,7 +1972,10 @@ const relaunches: CaptureCase = {
         continue;
       }
       for (const request of after) kept(request, first, label, true);
-      const at = first.kind === "system" ? `message ${first.place}` : "the end of the top-level system prompt";
+      const at =
+        first.kind === "system"
+          ? `message ${first.place}`
+          : "the end of the top-level system prompt";
       setup.note(`${label}, ${after.length} requests hold the one copy at ${at}`);
     }
     const second = placedLast(
@@ -2904,12 +2907,7 @@ async function topLevelSession(
         PI_CONFIG_FILES: run.overlay,
         ...(process.env.TMPDIR === undefined ? {} : { TMPDIR: process.env.TMPDIR }),
       },
-      args: [
-        "--model",
-        selectorOf(model),
-        "--append-system-prompt",
-        contractFile,
-      ],
+      args: ["--model", selectorOf(model), "--append-system-prompt", contractFile],
       onFrame: (frame) => {
         const record = frame as Record<string, unknown>;
         if (isTerminalEnd(record)) ends += 1;

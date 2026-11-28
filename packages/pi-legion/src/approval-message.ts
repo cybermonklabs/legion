@@ -273,8 +273,12 @@ type HostRequestModel = NonNullable<SessionContext["model"]>;
  * itself rather than narrowing `model`, since a type predicate would narrow its `false` side to a
  * context that names no model, where a model that takes a system message is one too.
  */
-function refusingMidConversationSystem(model: SessionContext["model"]): HostRequestModel | undefined {
-  return model !== undefined && model.compat?.supportsMidConversationSystem !== true ? model : undefined;
+function refusingMidConversationSystem(
+  model: SessionContext["model"]
+): HostRequestModel | undefined {
+  return model !== undefined && model.compat?.supportsMidConversationSystem !== true
+    ? model
+    : undefined;
 }
 
 /** Whether `data` is a mark (`ApprovalTopLevel`) as this plugin writes it. */
