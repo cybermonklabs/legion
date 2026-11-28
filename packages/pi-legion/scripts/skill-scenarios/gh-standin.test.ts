@@ -579,8 +579,8 @@ test("the merge-queue routes answer the merger's reads and its enqueue, and reco
 });
 
 /** A commit pushed to branch `branch` of the run's remote (git-world.ts's `remote.git`), made in a
- * clone of the row's own; its sha. */
-function pushed(run: string, branch: string): string {
+ * clone of the row's own, writing `file` (its name and text) where given; its sha. */
+function pushed(run: string, branch: string, file?: [string, string]): string {
   const remote = path.join(run, "remote.git");
   const clone = path.join(run, "clone");
   const env = {
@@ -601,10 +601,130 @@ function pushed(run: string, branch: string): string {
     git(run, "init", "-q", "--bare", remote);
     git(run, "init", "-q", clone);
   }
+  if (file !== undefined) {
+    writeFileSync(path.join(clone, file[0]), file[1]);
+    git(clone, "add", file[0]);
+  }
   git(clone, "commit", "-q", "--allow-empty", "-m", `on ${branch}`);
   git(clone, "push", "-q", remote, `HEAD:refs/heads/${branch}`);
   return git(clone, "rev-parse", "HEAD");
 }
+
+// A pull request the role opens is a world pull request with the values GitHub gives a new one:
+// open, its head mergeable (`CLEAN`) with no auto-merge, no review and no check, its node id, and
+// its diff from its base. So it answers each read a world pull request answers, as a world pull
+// request of those values does (githubFixtures): by number, branch, URL and no selector, its
+// checks and its diff, over REST with its node id and merge state, GraphQL's read of it and of its
+// review threads, and in the lists; the merge queue's enqueue names it by its node id; and once
+// its branch moves on, its head and its diff are the new head's in every read.
+test("a pull request the role opens answers each read a world pull request answers, with its own values", () => {
+  const mergeQueue = [
+    { pullRequest: 1, request: "enqueuePullRequest", answer: "queued" as const, detail: "" },
+  ];
+  const withIssue = (run: string) => {
+    writeFileSync(
+      path.join(run, "world.json"),
+      JSON.stringify({ dispatch: { issue: { key: "ACME-12" } } })
+    );
+    return run;
+  };
+  const opening = withIssue(
+    runWith(
+      githubFixtures(
+        { repository: "acme/widgets", pullRequests: [], mergeQueue },
+        "main",
+        "ACME-12"
+      ).routes
+    )
+  );
+  const remote = path.join(opening, "remote.git");
+  /** What GitHub's diff of a pull request at `sha` into main is: git's from their merge base. */
+  const diffAt = (sha: string) =>
+    Bun.spawnSync([
+      "git",
+      "--git-dir",
+      remote,
+      "diff",
+      `refs/heads/main...${sha}`,
+    ]).stdout.toString();
+  pushed(opening, "main");
+  const sha = pushed(opening, "legion/ACME-12", ["widget.txt", "one widget\n"]);
+  expect(gh(opening, "pr", "create", "--base", "main", "--title", "T", "--body", "B").code).toBe(0);
+  const diff = diffAt(sha);
+  expect(diff).toContain("+one widget");
+  const world = withIssue(
+    runWith(
+      githubFixtures(
+        {
+          repository: "acme/widgets",
+          pullRequests: [
+            {
+              ...worldPull(1, "legion/ACME-12", "B"),
+              title: "T",
+              head: { ref: "legion/ACME-12", sha },
+              mergeStateStatus: "CLEAN",
+              autoMergeRequest: null,
+              diff,
+            },
+          ],
+          mergeQueue,
+        },
+        "main",
+        "ACME-12"
+      ).routes
+    )
+  );
+  const read = (more: string) =>
+    `query=query($number:Int!){repository(owner:"acme",name:"widgets"){pullRequest(number:$number){id mergeStateStatus autoMergeRequest headRefOid ${more}}}}`;
+  const reads = [
+    ["pr", "view", "1"],
+    ["pr", "view", "legion/ACME-12"],
+    ["pr", "view", "https://github.com/acme/widgets/pull/1"],
+    ["pr", "view"],
+    ["pr", "view", "1", "--json", "mergeStateStatus,id"],
+    ["pr", "checks", "1"],
+    ["pr", "diff", "1"],
+    ["pr", "diff"],
+    ["api", "repos/acme/widgets/pulls/1"],
+    ["api", "repos/acme/widgets/pulls/1/reviews"],
+    ["api", "repos/acme/widgets/pulls/1/comments"],
+    ["api", "graphql", "-F", "number=1", "-f", read("")],
+    ["api", "graphql", "-F", "number=1", "-f", read("reviewThreads(first:100){nodes{id}}")],
+    ["pr", "list"],
+    ["pr", "list", "--head", "legion/ACME-12"],
+    ["pr", "list", "--state", "all"],
+    ["api", "repos/acme/widgets/pulls"],
+  ];
+  for (const args of reads)
+    expect([args, gh(opening, ...args)]).toEqual([args, gh(world, ...args)]);
+  expect(
+    gh(
+      opening,
+      "api",
+      "repos/acme/widgets/pulls/1",
+      "--jq",
+      "{node_id, mergeable_state, auto_merge}"
+    ).stdout
+  ).toBe('{"auto_merge":null,"mergeable_state":"clean","node_id":"PR_1"}\n');
+  const enqueue = [
+    "api",
+    "graphql",
+    "-f",
+    "query=mutation($pr:ID!){enqueuePullRequest(input:{pullRequestId:$pr}){mergeQueueEntry{position}}}",
+    "-f",
+    "pr=PR_1",
+  ];
+  expect(gh(opening, ...enqueue)).toEqual(gh(world, ...enqueue));
+  expect(pullChanges(opening).at(-1)).toEqual({ action: "enqueue", number: 1, id: "PR_1" });
+
+  const moved = pushed(opening, "legion/ACME-12", ["widget.txt", "two widgets\n"]);
+  expect(gh(opening, "pr", "diff", "1").stdout).toBe(diffAt(moved));
+  expect(gh(opening, "pr", "diff").stdout).toContain("+two widgets");
+  expect(
+    JSON.parse(gh(opening, "api", "graphql", "-F", "number=1", "-f", read("")).stdout).data
+      .repository.pullRequest.headRefOid
+  ).toBe(moved);
+}, 60_000);
 
 // A pull request the role opens is kept as GitHub keeps it: every read of it answers with it, by
 // number, by branch, with no selector on the issue branch, in the open lists and over REST; its

@@ -38,18 +38,23 @@
 // with that pull request or with its review list then holds the review, the pull request's
 // `reviewDecision` following. `gh pr review` takes exactly one of `--approve`, `--request-changes`
 // and `--comment`, the last two with a body, or is refused with gh's words. A pull request opened is
-// kept as GitHub keeps it: from the next call on, every read of it (by number, branch or URL, its
-// reviews, its comments, `gh pr list` of its branch or of every open pull request, the REST list)
+// a world pull request (pullRequestAnswers, which case-world.ts's githubFixtures builds each world
+// pull request with) with the values GitHub gives a new one: open, its head mergeable (merge state
+// `CLEAN`, `DRAFT` for a draft) with no auto-merge, no review and no check, its node id
+// `PR_<number>`, and its diff from its base on the run's remote. It is kept as GitHub keeps it:
+// from the next call on, every read of it (by number, branch or URL, its reviews, its comments, its
+// diff, GraphQL's reads, `gh pr list` of its branch or of every open pull request, the REST list)
 // and every write to it answers with it, and its head is its branch's head on the run's remote,
-// moving with each push. Its number is one above every number the routes hold, as lane D numbers
-// it; it opens the issue's branch when no head is named. GitHub's refusals hold: a head the remote
-// does not hold, or a branch that has an open pull request into the same base, is refused with gh's
-// own words, exit status 1. Help (`--help` or `-h` as a flag of the call, as readGhArgs reads it,
-// and `gh help`) and `gh --version` (`gh version`) reach no GitHub: the real gh answers them, the
-// first executable `gh` on PATH outside the run's own bin directory that is no script (the daemon's
-// rule for the real gh: this stand-in's wrapper and Legion's `legion gh` wrapper are scripts). They
-// are recorded to gh-local.jsonl, not calls.jsonl, so none of them is a GitHub call: `gh pr create
-// --help` opens no pull request, and `gh pr create --body -h` opens one whose body is `-h`.
+// moving with each push, and its diff with it. Its number is one above every number the routes
+// hold, as lane D numbers it; it opens the issue's branch when no head is named. GitHub's refusals
+// hold: a head the remote does not hold, or a branch that has an open pull request into the same
+// base, is refused with gh's own words, exit status 1. Help (`--help` or `-h` as a flag of the
+// call, as readGhArgs reads it, and `gh help`) and `gh --version` (`gh version`) reach no GitHub:
+// the real gh answers them, the first executable `gh` on PATH outside the run's own bin directory
+// that is no script (the daemon's rule for the real gh: this stand-in's wrapper and Legion's
+// `legion gh` wrapper are scripts). They are recorded to gh-local.jsonl, not calls.jsonl, so none
+// of them is a GitHub call: `gh pr create --help` opens no pull request, and `gh pr create --body
+// -h` opens one whose body is `-h`.
 // A route that holds `pages` (each page the whole JSON answer as GitHub sends it: a GraphQL answer
 // with its `pageInfo {hasNextPage endCursor}`, or a list) answers a paged read as gh does. With
 // `--paginate`: every page, as one JSON text per page with nothing between them (plain), each
@@ -70,6 +75,7 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
+import type { World } from "./heldout-case";
 
 /** Each command whose flags the stand-in reads, with its flags as gh 2.98.0 prints them in `gh
  * <command> --help` (testdata/f9-gh-help.json): `<letter> <name>`, or `<name>` for a flag with no
@@ -479,8 +485,8 @@ const GH_PR_REVIEW_USAGE = [
 const PR_READS = ["pr view", "pr list", "pr checks", "pr diff", "pr status", "pr checkout"];
 
 /** rig.sh's worker_fixture writes each route as {match, stdout?, pages?, stderr?, exit?}; the
- * stand-in adds `created`, the pull requests the run opened, each with its branch and the head it
- * last answered with. */
+ * stand-in adds `created`, the pull requests the run opened, each with its branch, the head it
+ * last answered with, its base and its URL. */
 const Fixtures = z.looseObject({
   routes: z.array(
     z.object({
@@ -491,9 +497,202 @@ const Fixtures = z.looseObject({
       exit: z.number().optional(),
     })
   ),
-  created: z.array(z.object({ number: z.number(), head: z.string(), sha: z.string() })).optional(),
+  created: z
+    .array(
+      z.object({
+        number: z.number(),
+        head: z.string(),
+        sha: z.string(),
+        base: z.string(),
+        url: z.string(),
+      })
+    )
+    .optional(),
 });
 type Route = z.infer<typeof Fixtures>["routes"][number];
+
+/** A pull request of a case's world (heldout-case.ts PullRequest). */
+export type WorldPullRequest = NonNullable<World["github"]>["pullRequests"][number];
+
+/** The match of a `gh pr <command>` call that names the pull request numbered `number`, on the
+ * branch `ref`, at `url`, as gh reads a selector: its number, its branch or its URL. */
+export function namesPull(command: string, number: number, ref: string, url: string): string {
+  return `^gh pr ${command}(?=.* (?:${number}|${RegExp.escape(ref)}|${RegExp.escape(url)})(?: |$))`;
+}
+
+/**
+ * Pull request `pr` of `repository` as GitHub answers it: a case world's (case-world.ts
+ * githubFixtures) and one the run opens alike. `view` is its `gh pr view` shape, with its node id
+ * (`nodeId`, else `PR_<number>`), and its merge state and its auto-merge request where `pr` states
+ * them (GraphQL's `mergeStateStatus` and `autoMergeRequest`, REST's `mergeable_state` and
+ * `auto_merge`). `routes` answer each read of it and each write that names it: `gh pr view`,
+ * `gh pr checks`, `gh pr diff` with its `diff`, a merge (`gh pr merge`, `PUT …/pulls/<n>/merge`)
+ * with its `mergeResult`, its reviews, its comments, its REST read, the other writes that name it,
+ * and GraphQL's reads of its review threads and of it (`repository.pullRequest`), which must name
+ * its number where `numbered`. `branch` answers a `gh pr` call that names no pull request, where
+ * `pr` is the one of the issue's branch.
+ */
+export function pullRequestAnswers(pr: WorldPullRequest, repository: string, numbered: boolean) {
+  const n = pr.number;
+  const ref = pr.head.ref;
+  const url = `https://github.com/${repository}/pull/${n}`;
+  const reviews = pr.reviews.map((review) => ({
+    id: review.id,
+    author: { login: review.author },
+    user: { login: review.author },
+    body: review.body,
+    state: review.state,
+    commit_id: review.commit,
+    commit: { oid: review.commit },
+    submitted_at: review.at,
+    submittedAt: review.at,
+  }));
+  const checks = pr.checks.filter(({ commit }) => commit === pr.head.sha);
+  const rollup = checks.map((check) => ({
+    name: check.name,
+    status: check.status.toUpperCase(),
+    conclusion: check.conclusion?.toUpperCase() ?? "",
+    __typename: "CheckRun",
+  }));
+  const approval = reviews
+    .filter(({ state }) => ["APPROVED", "CHANGES_REQUESTED"].includes(state))
+    .at(-1)?.state;
+  const view = {
+    number: n,
+    url,
+    html_url: url,
+    id: pr.nodeId ?? `PR_${n}`,
+    node_id: pr.nodeId ?? `PR_${n}`,
+    title: pr.title,
+    body: pr.body,
+    state: pr.state.toUpperCase(),
+    draft: pr.draft,
+    isDraft: pr.draft,
+    merged: pr.state === "merged",
+    head: pr.head,
+    base: { ref: pr.base },
+    headRefName: ref,
+    headRefOid: pr.head.sha,
+    baseRefName: pr.base,
+    mergeCommit: pr.mergeCommit && { oid: pr.mergeCommit },
+    merge_commit_sha: pr.mergeCommit,
+    reviews,
+    reviewDecision: approval ?? "",
+    statusCheckRollup: rollup,
+    mergeable: "MERGEABLE",
+    ...(pr.mergeStateStatus === undefined
+      ? {}
+      : {
+          mergeStateStatus: pr.mergeStateStatus,
+          mergeable_state: pr.mergeStateStatus.toLowerCase(),
+        }),
+    ...(pr.autoMergeRequest === undefined
+      ? {}
+      : { autoMergeRequest: pr.autoMergeRequest, auto_merge: pr.autoMergeRequest }),
+  };
+  const rest = `repos/${RegExp.escape(repository)}/pulls/${n}`;
+  const pages = (pr.reviewThreads.length ? pr.reviewThreads : [[]]).map((page, i, all) => ({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: {
+              hasNextPage: i + 1 < all.length,
+              endCursor: i + 1 < all.length ? `thread-page-${i + 1}` : null,
+            },
+            nodes: page.map((thread) => ({
+              id: thread.id,
+              path: thread.path,
+              line: thread.line,
+              isResolved: thread.resolved,
+              isOutdated: thread.outdated,
+              comments: {
+                nodes: thread.comments.map((c) => ({
+                  body: c.body,
+                  createdAt: c.at,
+                  author: { login: c.author },
+                })),
+              },
+            })),
+          },
+        },
+      },
+    },
+  }));
+  const byNumber = numbered ? `(?=.*(?:number:\\s*|number=)${n}\\b)` : "";
+  const routes: Route[] = [
+    { match: namesPull("view", n, ref, url), stdout: view },
+    {
+      match: namesPull("checks", n, ref, url),
+      stdout: rollup
+        .map(
+          (c) =>
+            `${c.name}\t${c.conclusion === "SUCCESS" ? "pass" : c.conclusion === "" ? "pending" : "fail"}`
+        )
+        .join("\n"),
+    },
+    ...(pr.diff === undefined ? [] : [{ match: namesPull("diff", n, ref, url), stdout: pr.diff }]),
+    ...(pr.mergeResult === undefined
+      ? []
+      : [
+          { match: namesPull("merge", n, ref, url), stdout: pr.mergeResult },
+          {
+            match: `^gh api (?=.*${rest}/merge(?: |$))(?=.*(?:-X|--method)[ =]PUT(?: |$))`,
+            stdout: pr.mergeResult,
+          },
+        ]),
+    { match: `^gh api .*${rest}/reviews(?: |$)`, stdout: reviews },
+    { match: `^gh api .*${rest}/comments(?: |$)`, stdout: [] },
+    {
+      match: `^gh api .*${rest}(?: |$)`,
+      stdout: { ...view, state: pr.state === "open" ? "open" : "closed" },
+    },
+    { match: namesPull("(edit|comment|review|ready|merge)", n, ref, url), stdout: url },
+    { match: `^gh api .*graphql(?=.*reviewThreads)${byNumber}`, pages },
+    // GraphQL's read of the pull request (`repository.pullRequest`): no mutation, which the merge
+    // queue's routes and gh-standin's change rules answer.
+    {
+      match: `^gh api .*graphql(?!.*\\bmutation\\b)(?=.*\\bpullRequest\\s*\\()${byNumber}`,
+      stdout: {
+        data: {
+          repository: {
+            pullRequest: {
+              id: view.id,
+              number: n,
+              url,
+              title: view.title,
+              body: view.body,
+              state: view.state,
+              isDraft: view.isDraft,
+              merged: view.merged,
+              headRefName: ref,
+              headRefOid: view.headRefOid,
+              baseRefName: view.baseRefName,
+              mergeCommit: view.mergeCommit,
+              mergeable: view.mergeable,
+              reviewDecision: view.reviewDecision,
+              ...(pr.mergeStateStatus === undefined
+                ? {}
+                : { mergeStateStatus: pr.mergeStateStatus }),
+              ...(pr.autoMergeRequest === undefined
+                ? {}
+                : { autoMergeRequest: pr.autoMergeRequest }),
+            },
+          },
+        },
+      },
+    },
+  ];
+  const branch: Route[] = [
+    { match: "^gh pr view( |$)", stdout: view },
+    ...(pr.diff === undefined ? [] : [{ match: "^gh pr diff( |$)", stdout: pr.diff }]),
+    ...(pr.mergeResult === undefined
+      ? []
+      : [{ match: "^gh pr merge( |$)", stdout: pr.mergeResult }]),
+    { match: "^gh pr (edit|comment|review|ready)( |$)", stdout: url },
+  ];
+  return { view, routes, branch };
+}
 
 /** An object a route answers with that is a pull request: one with a number and the head branch,
  * the head or the reviews of a pull request. */
@@ -594,19 +793,56 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
     );
     return result.exitCode === 0 ? result.stdout.toString().trim() : undefined;
   };
+  /** The diff of `sha` from its merge base with branch `base` on the run's remote, as GitHub gives
+   * a pull request's diff; undefined where git gives none. */
+  const diffOf = (base: string, sha: string): string | undefined => {
+    const result = Bun.spawnSync(
+      [
+        "git",
+        "--git-dir",
+        remote,
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        `refs/heads/${base}...${sha}`,
+      ],
+      { stdout: "pipe", stderr: "ignore" }
+    );
+    return result.exitCode === 0 ? result.stdout.toString() : undefined;
+  };
   // A pull request the run opened has its branch's head as its own, as GitHub's does: its head
-  // follows each push to the branch, in every answer that holds it, a list's included.
+  // follows each push to the branch, in every answer that holds it, a list's and GraphQL's
+  // included, and its diff follows its head.
   const created = fixtures.created ?? [];
   for (const pull of created) {
     const sha = remoteHead(pull.head);
     if (sha === undefined || sha === pull.sha) continue;
-    const moved = (value: unknown): unknown => {
-      if (Array.isArray(value)) return value.map(moved);
-      if (typeof value !== "object" || value === null) return value;
-      if (Reflect.get(value, "number") !== pull.number || !("headRefOid" in value)) return value;
-      return { ...value, headRefOid: sha, head: { ref: pull.head, sha } };
-    };
-    routes = routes.map((candidate) => ({ ...candidate, stdout: moved(candidate.stdout) }));
+    const diff = diffOf(pull.base, sha);
+    // Its `gh pr diff`, and the one that names no pull request where it answers that call.
+    const plain = routes.some(
+      (candidate) =>
+        candidate.match === "^gh pr view( |$)" &&
+        isPull(candidate.stdout) &&
+        candidate.stdout.number === pull.number
+    );
+    const diffs = [
+      namesPull("diff", pull.number, pull.head, pull.url),
+      ...(plain ? ["^gh pr diff( |$)"] : []),
+    ];
+    routes = routes.map((candidate) => ({
+      ...candidate,
+      stdout: diffs.includes(candidate.match)
+        ? diff
+        : everywhere(candidate.stdout, (object) =>
+            object.number === pull.number && "headRefOid" in object
+              ? {
+                  ...object,
+                  headRefOid: sha,
+                  ...("head" in object ? { head: { ref: pull.head, sha } } : {}),
+                }
+              : object
+          ),
+    }));
     pull.sha = sha;
     writeFileSync(`${run}/fixtures.json`, JSON.stringify({ ...fixtures, routes, created }));
   }
@@ -914,7 +1150,7 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
       return exit(1);
     };
     if (sha === undefined)
-      refuseCreate(
+      return refuseCreate(
         `pull request create failed: GraphQL: Head sha can't be blank, Base sha can't be blank, No commits between ${base} and ${head}, Head ref must be a branch (createPullRequest)\n`,
         { field: "head", code: "invalid" }
       );
@@ -927,43 +1163,36 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
         }
       );
     const number = Math.max(0, ...views.map((view) => view.number)) + 1;
-    const url = `https://github.com/${repository.full_name}/pull/${number}`;
-    const view = {
-      number,
-      url,
-      html_url: url,
-      id: `PR_${number}`,
-      title,
-      body: prBody,
-      state: "OPEN",
-      draft,
-      isDraft: draft,
-      merged: false,
-      head: { ref: head, sha },
-      base: { ref: base },
-      headRefName: head,
-      headRefOid: sha,
-      baseRefName: base,
-      mergeCommit: null,
-      merge_commit_sha: null,
-      reviews: [],
-      reviewDecision: "",
-      statusCheckRollup: [],
-      mergeable: "MERGEABLE",
-    };
+    // A world pull request with the values GitHub gives a new one: open, its head mergeable with
+    // no auto-merge, no review and no check, and its diff from its base on the run's remote.
+    const diff = diffOf(base, sha);
+    const built = pullRequestAnswers(
+      {
+        number,
+        state: "open",
+        draft,
+        head: { ref: head, sha },
+        base,
+        title,
+        body: prBody,
+        mergeCommit: null,
+        reviews: [],
+        reviewThreads: [],
+        checks: [],
+        mergeStateStatus: draft ? "DRAFT" : "CLEAN",
+        autoMergeRequest: null,
+        ...(diff === undefined ? {} : { diff }),
+      },
+      repository.full_name,
+      true
+    );
+    const { view } = built;
     opened = { ...view, state: "open" };
-    // Its own routes, as case-world.ts githubFixtures writes a world pull request's.
-    const own = `repos/${RegExp.escape(repository.full_name)}/pulls/${number}`;
-    const selector = `(?:${number}|${RegExp.escape(head)}|${RegExp.escape(url)})`;
+    // Its own routes, and its branch's lists of open pull requests and of every one.
     const state = "(?:--state[ =]|-s )";
     const branch = `(?:--head[ =]|-H )${RegExp.escape(head)}(?: |$)`;
     const ownRoutes = [
-      { match: `^gh pr view(?=.* ${selector}(?: |$))`, stdout: view },
-      { match: `^gh pr checks(?=.* ${selector}(?: |$))`, stdout: "" },
-      { match: `^gh api .*${own}/reviews(?: |$)`, stdout: [] },
-      { match: `^gh api .*${own}/comments(?: |$)`, stdout: [] },
-      { match: `^gh api .*${own}(?: |$)`, stdout: opened },
-      { match: `^gh pr (edit|comment|review|ready|merge)(?=.* ${selector}(?: |$))`, stdout: url },
+      ...built.routes,
       {
         match: `^gh pr list(?!.* ${state}(?:closed|merged|all)(?: |$))(?=.* ${branch})`,
         stdout: [view],
@@ -990,17 +1219,11 @@ async function main(run: string, as: string, args: string[]): Promise<never> {
         return { ...candidate, stdout: [...candidate.stdout, view] };
       return candidate;
     });
-    const plain =
-      head === issueBranch && answering("gh pr view") === undefined
-        ? [
-            { match: "^gh pr view( |$)", stdout: view },
-            { match: "^gh pr (edit|comment|review|ready)( |$)", stdout: url },
-          ]
-        : [];
+    const plain = head === issueBranch && answering("gh pr view") === undefined ? built.branch : [];
     next = {
       ...fixtures,
       routes: [...ownRoutes, ...updated, ...plain],
-      created: [...created, { number, head, sha: sha ?? "" }],
+      created: [...created, { number, head, sha, base, url: view.url }],
     };
     change = { action: "open", number, head, base, sha, title, body: prBody, draft };
   }

@@ -5247,6 +5247,7 @@ the run's work directory, the driver binary among it, is under `TMPDIR` too.
 export LEGION_OMP_PATH=/opt/omp/bin/omp
 export LEGION_TEST_PG_DSN='postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable'
 bash scripts/e2e/teardown-effects.sh --controls --cases packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json
+bash scripts/e2e/teardown-effects.sh --controls --cases <case file> --supplemental packages/pi-legion/scripts/skill-scenarios/testdata/heldout-case-example.json
 bash scripts/e2e/teardown-effects.sh --runs <lane-R-run-directory-or-parent>
 bash scripts/e2e/teardown-effects.sh --runs packages/daemon/internal/daemon/testdata/teardown-effects/local-only-head   # → "ok replay <id>", exit 0
 ```
@@ -5316,6 +5317,19 @@ Each of the two writes `<case id>/<check>/effects.json`.
 It fails, and names each control, where a control that it promised did not execute.
 It writes `daemon-answers.json`, the four answers of fixture row F3 that the checks captured, only where every control executed.
 `internal/daemon/testdata/teardown-effects/controls` holds the trace records of the example's controls, as the proof Job's `--controls` wrote them.
+
+`--supplemental <file>` adds the cases of a second case file to the same run, as controls beside the case file's.
+The file must be public: the commit the run records (`LEGION_E2E_TEARDOWN_COMMIT`, `daemon-answers.json`'s `captured.commit`) holds it at its path in the checkout, unchanged.
+So a copy under `$TMPDIR`, a file that no commit holds and a file changed since the commit are refused.
+The run refuses before any replay, and names the cause, a file that is not public, a file that does not parse or holds no case, a case id that both files hold, and a case of the case file named `supplemental`.
+The check that the controls show each check at least once counts the controls of both files together.
+A supplemental case is a control, not a case.
+Its records go to `supplemental/<case id>/<good or bad>` and `supplemental/<case id>/<check>`, and the answers that its checks capture go to `supplemental/daemon-answers.json`.
+`daemon-answers.json` holds the case file's answers alone, so a held-out stand-in overlay that reads it reads no supplemental answer.
+`heldout-reader.ts --controls` reads the records of the case file's ids alone, at the evidence directory, so it reads no supplemental record.
+The run prints each supplemental case on a line of its own, and names each of its controls as supplemental.
+A supplemental control that did not execute fails the run, as any other control does.
+A case file that shows no Dispatch comment on a production-check look that is not the last can take T0's example as `--supplemental`, whose P10 shows one.
 
 `--runs` starts each run from its case's starting state, never from the state the run left.
 It builds the case's Git with lane R's own builder (`git-world.ts build`) and refuses a run whose `commit-map.json` names other commits, seeds Dispatch with the records the run's `dispatch-readback.json` holds at or below its seed cursor, and gives GitHub the world's pull requests.
@@ -5468,6 +5482,7 @@ A read of a fact that no part holds answers as it did (404 where no record exist
   It writes the id the scratch Dispatch gives each gate step's document to `dispatch-fixture.json`, which the stand-in reads, and names that id in the prompt.
 
 - Lane R's GitHub (`case-world.ts githubFixtures`, which `gh-standin.ts` serves) answers the repository's read with the settings, each branch's rules (`[]` for a branch they do not name), and a pull request's node id, merge state, auto-merge request, GraphQL read, diff and merge from the world.
+  A pull request that the run opens is built by the function that builds a world one (`gh-standin.ts pullRequestAnswers`), with the values GitHub gives a new one: open, its head mergeable (`CLEAN`, or `DRAFT` for a draft) with no auto-merge, no review and no check, the node id `PR_<number>`, and its diff from its base on the run's remote, which follows its head.
 
 - Lane D's seed (`teardown_effects_live_test.go`) writes the daemon parts into the real daemon's store and reads each back through `read_record` and `read_state`.
   It admits the claim on `claim.issue` in `claim.tree`, writes the case's record, each record with its architect claim in its state, the phases row with its entry and owed task, a slot for each active issue and the gate rows.

@@ -294,6 +294,46 @@ func promptPartSource(t *testing.T, stateDir, path string) string {
 	return source
 }
 
+// promptSnapshotPart is part, a prompt part as promptInputsLaunch.Parts names it, as the path
+// prompts.New snapshots it to below the state directory's prompts/: roles/<file> at
+// shared/<file>, and go/<file> at go/<file>. promptPartSource reads the other way.
+func promptSnapshotPart(part string) string {
+	if file, ok := strings.CutPrefix(part, "roles/"); ok {
+		return "shared/" + file
+	}
+	return part
+}
+
+// composedParts, which the live proofs hold a launch's role prompt to, names for each role the
+// daemon composes on the omp backend the parts of the composer's snapshot that the launch of that
+// role is given, in its order: each a part the snapshot holds with the bytes of the repository's
+// part of that name. So a live proof and the render proof read the same list.
+func TestComposedPartsAreEveryOmpLaunchsSnapshotParts(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	if _, err := prompts.New(stateDir); err != nil {
+		t.Fatalf("compose the shipped prompts: %v", err)
+	}
+	held := 0
+	for _, launch := range composedLaunches(t) {
+		if launch.Backend != runtime.BackendOmp || launch.Role == claim.RoleController {
+			continue
+		}
+		held++
+		shape, _, _ := strings.Cut(launch.Name, "/")
+		var sources []string
+		for _, part := range composedParts[composedRole{launch.Role, shape == "architect-root"}] {
+			sources = append(sources, promptPartSource(t, stateDir, filepath.Join(stateDir, "prompts", filepath.FromSlash(part))))
+		}
+		if !slices.Equal(sources, launch.Parts) {
+			t.Errorf("composedParts gives %s the parts %q; the daemon launches it with %q", launch.Name, sources, launch.Parts)
+		}
+	}
+	if held != len(composedParts) {
+		t.Errorf("composedParts holds %d roles, and the daemon composes %d on the omp backend", len(composedParts), held)
+	}
+}
+
 // A row of the prompt-inputs proof's evidence reads from the JSON line prompt-inputs.sh writes,
 // with no field this type lacks, and writes back to that line byte for byte, so the driver and
 // the script agree on every field's name.

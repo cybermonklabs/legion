@@ -13,6 +13,7 @@ import { parseArgs } from "node:util";
 import { isLegionRole } from "@legion/contracts";
 import { workerPane } from "./daemon-pane";
 import { recorderScript } from "./diff-recorder";
+import { pullRequestAnswers } from "./gh-standin";
 import { buildGitWorld, defaultBranch, stageJob, translateCommits } from "./git-world";
 import { caseFileGaps, parseHeldoutFile, parseSkillUseFile, type World } from "./heldout-case";
 
@@ -49,9 +50,10 @@ interface Route {
 }
 
 /** Compile the case's GitHub world to the recording stand-in's first-match route list. Each pull
- * request is answered as GitHub answers it: `gh pr view` and the REST read with its node id
- * (`nodeId`, else `PR_<number>`), its merge state and its auto-merge request where the world
- * states them (GraphQL's `mergeStateStatus` and `autoMergeRequest`, REST's `mergeable_state` and
+ * request is answered as GitHub answers it (gh-standin.ts pullRequestAnswers, which builds a pull
+ * request the run opens too): `gh pr view` and the REST read with its node id (`nodeId`, else
+ * `PR_<number>`), its merge state and its auto-merge request where the world states them
+ * (GraphQL's `mergeStateStatus` and `autoMergeRequest`, REST's `mergeable_state` and
  * `auto_merge`), GraphQL's read of it (`repository.pullRequest`), `gh pr diff` with its `diff`,
  * and a merge (`gh pr merge`, `PUT …/pulls/<n>/merge`) with its `mergeResult`. The repository's
  * read (`GET repos/<repository>`) answers the world's `settings` over the stand-in's own members,
@@ -62,63 +64,11 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
   const routes: Route[] = [];
   if (github === null) return { routes };
   const { pullRequests, mergeQueue, repository } = github;
-  const pulls = pullRequests.map((pr) => {
-    const url = `https://github.com/${repository}/pull/${pr.number}`;
-    const reviews = pr.reviews.map((review) => ({
-      id: review.id,
-      author: { login: review.author },
-      user: { login: review.author },
-      body: review.body,
-      state: review.state,
-      commit_id: review.commit,
-      commit: { oid: review.commit },
-      submitted_at: review.at,
-      submittedAt: review.at,
-    }));
-    const checks = pr.checks.filter(({ commit }) => commit === pr.head.sha);
-    const rollup = checks.map((check) => ({
-      name: check.name,
-      status: check.status.toUpperCase(),
-      conclusion: check.conclusion?.toUpperCase() ?? "",
-      __typename: "CheckRun",
-    }));
-    const approval = reviews
-      .filter(({ state }) => ["APPROVED", "CHANGES_REQUESTED"].includes(state))
-      .at(-1)?.state;
-    return {
-      number: pr.number,
-      url,
-      html_url: url,
-      id: pr.nodeId ?? `PR_${pr.number}`,
-      node_id: pr.nodeId ?? `PR_${pr.number}`,
-      title: pr.title,
-      body: pr.body,
-      state: pr.state.toUpperCase(),
-      draft: pr.draft,
-      isDraft: pr.draft,
-      merged: pr.state === "merged",
-      head: pr.head,
-      base: { ref: pr.base },
-      headRefName: pr.head.ref,
-      headRefOid: pr.head.sha,
-      baseRefName: pr.base,
-      mergeCommit: pr.mergeCommit && { oid: pr.mergeCommit },
-      merge_commit_sha: pr.mergeCommit,
-      reviews,
-      reviewDecision: approval ?? "",
-      statusCheckRollup: rollup,
-      mergeable: "MERGEABLE",
-      ...(pr.mergeStateStatus === undefined
-        ? {}
-        : {
-            mergeStateStatus: pr.mergeStateStatus,
-            mergeable_state: pr.mergeStateStatus.toLowerCase(),
-          }),
-      ...(pr.autoMergeRequest === undefined
-        ? {}
-        : { autoMergeRequest: pr.autoMergeRequest, auto_merge: pr.autoMergeRequest }),
-    };
-  });
+  // GraphQL's reads name the pull request's number where the world holds more than one.
+  const answers = pullRequests.map((pr) =>
+    pullRequestAnswers(pr, repository, pullRequests.length !== 1)
+  );
+  const pulls = answers.map(({ view }) => view);
   for (const entry of mergeQueue) {
     const op = RegExp.escape(entry.request);
     routes.push({
@@ -127,111 +77,7 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
       exit: entry.answer === "refused" ? 1 : 0,
     });
   }
-  for (const pr of pullRequests) {
-    const view = pulls.find(({ number }) => number === pr.number);
-    const n = pr.number;
-    const rest = `repos/${RegExp.escape(repository)}/pulls/${n}`;
-    const selector = `(?:${n}|${RegExp.escape(pr.head.ref)}|${RegExp.escape(view?.url ?? "")})`;
-    routes.push(
-      { match: `^gh pr view(?=.* ${selector}(?: |$))`, stdout: view },
-      {
-        match: `^gh pr checks(?=.* ${selector}(?: |$))`,
-        stdout: view?.statusCheckRollup
-          .map(
-            (c) =>
-              `${c.name}\t${c.conclusion === "SUCCESS" ? "pass" : c.conclusion === "" ? "pending" : "fail"}`
-          )
-          .join("\n"),
-      },
-      ...(pr.diff === undefined
-        ? []
-        : [{ match: `^gh pr diff(?=.* ${selector}(?: |$))`, stdout: pr.diff }]),
-      ...(pr.mergeResult === undefined
-        ? []
-        : [
-            { match: `^gh pr merge(?=.* ${selector}(?: |$))`, stdout: pr.mergeResult },
-            {
-              match: `^gh api (?=.*${rest}/merge(?: |$))(?=.*(?:-X|--method)[ =]PUT(?: |$))`,
-              stdout: pr.mergeResult,
-            },
-          ]),
-      { match: `^gh api .*${rest}/reviews(?: |$)`, stdout: view?.reviews },
-      { match: `^gh api .*${rest}/comments(?: |$)`, stdout: [] },
-      {
-        match: `^gh api .*${rest}(?: |$)`,
-        stdout: { ...view, state: pr.state === "open" ? "open" : "closed" },
-      },
-      {
-        match: `^gh pr (edit|comment|review|ready|merge)(?=.* ${selector}(?: |$))`,
-        stdout: view?.url,
-      }
-    );
-    const pages = (pr.reviewThreads.length ? pr.reviewThreads : [[]]).map((page, i, all) => ({
-      data: {
-        repository: {
-          pullRequest: {
-            reviewThreads: {
-              pageInfo: {
-                hasNextPage: i + 1 < all.length,
-                endCursor: i + 1 < all.length ? `thread-page-${i + 1}` : null,
-              },
-              nodes: page.map((thread) => ({
-                id: thread.id,
-                path: thread.path,
-                line: thread.line,
-                isResolved: thread.resolved,
-                isOutdated: thread.outdated,
-                comments: {
-                  nodes: thread.comments.map((c) => ({
-                    body: c.body,
-                    createdAt: c.at,
-                    author: { login: c.author },
-                  })),
-                },
-              })),
-            },
-          },
-        },
-      },
-    }));
-    const numbered = pullRequests.length === 1 ? "" : `(?=.*(?:number:\\s*|number=)${n}\\b)`;
-    routes.push(
-      { match: `^gh api .*graphql(?=.*reviewThreads)${numbered}`, pages },
-      // GraphQL's read of the pull request (`repository.pullRequest`): no mutation, which the
-      // merge queue's routes and gh-standin's change rules answer.
-      {
-        match: `^gh api .*graphql(?!.*\\bmutation\\b)(?=.*\\bpullRequest\\s*\\()${numbered}`,
-        stdout: {
-          data: {
-            repository: {
-              pullRequest: view && {
-                id: view.id,
-                number: view.number,
-                url: view.url,
-                title: view.title,
-                body: view.body,
-                state: view.state,
-                isDraft: view.isDraft,
-                merged: view.merged,
-                headRefName: view.headRefName,
-                headRefOid: view.headRefOid,
-                baseRefName: view.baseRefName,
-                mergeCommit: view.mergeCommit,
-                mergeable: view.mergeable,
-                reviewDecision: view.reviewDecision,
-                ...(pr.mergeStateStatus === undefined
-                  ? {}
-                  : { mergeStateStatus: pr.mergeStateStatus }),
-                ...(pr.autoMergeRequest === undefined
-                  ? {}
-                  : { autoMergeRequest: pr.autoMergeRequest }),
-              },
-            },
-          },
-        },
-      }
-    );
-  }
+  for (const answer of answers) routes.push(...answer.routes);
   for (const sha of new Set(pullRequests.flatMap((pr) => pr.checks.map(({ commit }) => commit)))) {
     const runs = pullRequests.flatMap((pr) => pr.checks.filter(({ commit }) => commit === sha));
     routes.push({
@@ -285,15 +131,8 @@ export function githubFixtures(github: World["github"], branch: string, issue: s
       : [{ match: `^gh api .*repos/${repo}/rules/branches/[^ ?]+(?:[ ?]|$)`, stdout: [] }]),
     { match: "^gh (api user|auth status)", stdout: { login: "rig[bot]" } }
   );
-  const issuePr = pulls.find((pr) => pr.headRefName === `legion/${issue}`);
-  if (issuePr) {
-    const world = pullRequests.find((pr) => pr.number === issuePr.number);
-    routes.push({ match: "^gh pr view( |$)", stdout: issuePr });
-    if (world?.diff !== undefined) routes.push({ match: "^gh pr diff( |$)", stdout: world.diff });
-    if (world?.mergeResult !== undefined)
-      routes.push({ match: "^gh pr merge( |$)", stdout: world.mergeResult });
-    routes.push({ match: "^gh pr (edit|comment|review|ready)( |$)", stdout: issuePr.url });
-  }
+  const issuePr = answers.find(({ view }) => view.headRefName === `legion/${issue}`);
+  if (issuePr) routes.push(...issuePr.branch);
   return { routes };
 }
 
