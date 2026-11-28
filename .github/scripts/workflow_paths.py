@@ -2,11 +2,11 @@
 them: a walk of the repository's files, a path glob as a regex, an ordered pattern list where `!`
 negates, a dorny/paths-filter filter under its predicate quantifier, and a workflow's events; the
 YAML those filters are written in, read as strictly as those readers read it: a mapping's repeated
-keys, a loader that refuses a file holding one, and the readers of a composed node (mapping_get,
-scalar) every rule of check-workflow-files.sh reads a workflow with. And what a Docker build's
-context holds: a `.dockerignore` read as Docker reads it, and the instructions of a Dockerfile, the
-sources and the destination of a COPY or ADD, and the bind mounts of a RUN, each read one way for
-each check that reads them.
+keys, a loader that refuses a file holding one, and the composed-node readers (mapping_get,
+scalar) that rules 5, 6 and 7 of check-workflow-files.sh use. Rule 10 (bun_test_steps.py)
+imports those readers itself. And what a Docker build's context holds: a `.dockerignore` read
+as Docker reads it, the instructions of a Dockerfile, the sources and the destination of a COPY
+or ADD, and the bind mounts of a RUN, each read one way for each check that reads them.
 
 check-image-trigger-paths.sh, check-image-build-inputs.sh and check-ci-filters.sh (through
 ci_filter_coverage.py) import it from the repository they check, running
