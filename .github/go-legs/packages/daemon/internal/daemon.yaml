@@ -1527,7 +1527,7 @@
   - TestTheStallBackstopKeepsTheNewerNoticeOwedWhileTheSweepRetriedTheOlder  # 0.3 s
   - TestTheStallBackstopLeavesTheseClaimsAlone  # 1.5 s
   - TestTheStallBackstopTellsASuspendedEndAsSuspended  # 0.0 s
-  - TestTheStallBackstopTellsTheControllerOfATreeArchitectsStall  # 0.0 s
+  - TestTheStallBackstopTellsTheControllerOfATreeArchitectsStallOnlyWhenItFailedTheClaimOverAnUnconfirmedStop  # 0.0 s
   - TestTheStallBackstopTellsTheOwnerOfAnEndTheStoreWouldNotWrite  # 0.0 s
   - TestTheStateCarriesTheDaemonsSettingsAndNoSecret  # 1.1 s
   - TestTheStateCountsWhatADegradedDaemonCannotRefresh  # 2.5 s
