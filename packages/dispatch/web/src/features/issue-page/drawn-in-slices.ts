@@ -35,10 +35,13 @@ import { abortOnReaderAct } from "./useNodeEditing";
  * row up to it is drawn (`whenDrawnUpTo`): from the first drawing on it stands on screen alone
  * with the rows that fill a screen around it, and a reader who read the page from the focus would
  * find the rows above it still to come. Rows the given rows gain - a read that answers, an
- * unfold, a page's control pressed - are drawn as the rows around them are: where the row before
- * them is drawn, the first screen of them is drawn in the commit that brings them and the rest in
- * slices, and where it is not, they wait with it. A fold takes its rows out of the rows given, so
- * no slice draws them.
+ * unfold, a page's control pressed, an Indent - are drawn as the rows around them are: where the
+ * row before them is drawn, the first screen of them is drawn in the commit that brings them and
+ * the rest in slices, and where it is not, they wait with it. That first screen is as many rows as
+ * fill the window at the height the drawn rows measured last (`Ledger.rowPx`), counted with no
+ * read of a box, and the frame after that commit draws the rows that still leave the screen below
+ * them unfilled, before it is painted (`fillInFrame`). A fold takes its rows out of the rows
+ * given, so no slice draws them.
  *
  * A commit that draws rows above the row the reader reads leaves that row where it stood: the
  * focused row, or the first in the window where no row has the focus. The commit's layout effect
@@ -48,6 +51,13 @@ import { abortOnReaderAct } from "./useNodeEditing";
  * again only where the reader scrolled, the focus moved, or the rows above it changed: a commit
  * that draws rows below it alone reads no layout, so the rows a slice draws are laid out once, as
  * the browser paints, and not in each commit.
+ *
+ * A commit that changes the rows - a fold, an unfold, a page's control, an Indent, a read - reads
+ * no row's box and not the window's scroll to fill the screen, nor, once the reader has acted, to
+ * read the row they read again: a read there lays out every row of the view inside the task of
+ * the act that made the change. The frame after it reads them (`fillInFrame`), where the browser
+ * lays the change out anyway, and a slice reads the row the reader reads before it draws above
+ * it (`freshReference`).
  */
 
 /** How long one slice draws rows for: it ends once this much wall time is spent, read on
@@ -86,7 +96,9 @@ export interface RowSlices {
 /** One screen still to fill around a row the rows were drawn from: the anchor at the first
  *  drawing, both ways, and the first row of each run a later answer brought, downwards. A first
  *  drawing from the first row (`window`) fills the window from that row to its foot, rather than a
- *  screen's height from it. */
+ *  screen's height from it. The first drawing's is filled in the layout effect of the commit that
+ *  draws it; a later run's, downwards alone, in the frame after the commit that brings the run
+ *  (`fillInFrame`), so that commit reads no box. */
 interface Fill {
   readonly from: string;
   readonly up: boolean;
@@ -106,6 +118,18 @@ interface Ledger {
   anchor: string | undefined;
   /** The screens still to fill (`fillScreen`). */
   fills: Fill[];
+  /** The height of one row as the drawn rows last measured it (`fillScreen`), which tells the
+   *  commit that brings a later run how many of its rows fill a screen with no read of a box: 0
+   *  where nothing is laid out, so every row of the run is drawn, and undefined until a fill has
+   *  measured one. */
+  rowPx: number | undefined;
+  /** Whether the rows given changed since the last commit, other than to a first drawing: a fold,
+   *  an unfold, a page's control, an Indent or a read (`takeRows`). */
+  changed: boolean;
+  /** How to call off the frame asked for to read what a change of the rows left to read
+   *  (`fillInFrame`), while one is; and whether that frame's callback is running now. */
+  frame: (() => void) | undefined;
+  inFrame: boolean;
   /** The last commit's drawn keys and reference row. Its `top` is the desired viewport top
    *  plus the scroll position, not the realized top after a rounded scroll (`keepReference`). */
   drawnBefore: ReadonlySet<string>;
@@ -118,7 +142,7 @@ interface Ledger {
   scrollY: number | undefined;
   scrolled: boolean;
   /** The keys the hook itself has drawn since the last commit was laid out: a slice's, a key's,
-   *  a needed row's and a first screen's. */
+   *  a needed row's, and a fill's of a first screen or of a later run's screen. */
   readonly drew: Set<string>;
   /** Who waits for every row up to a row to be drawn (`RowSlices.whenDrawnUpTo`), by that row's
    *  key, each told once. */
@@ -138,14 +162,18 @@ function newLedger(): Ledger {
     anchor: undefined,
     at: new Map(),
     cancel: undefined,
+    changed: false,
     drawnBefore: new Set(),
     drew: new Set(),
     fills: [],
     focused: undefined,
+    frame: undefined,
     held: new Set(),
+    inFrame: false,
     keys: NO_KEYS,
     measure: () => undefined,
     reference: undefined,
+    rowPx: undefined,
     rows: undefined,
     scrollBefore: 0,
     scrolled: false,
@@ -236,6 +264,8 @@ export function useDrawnInSlices<Row>({
       acts.current?.abort();
       ledger.cancel?.();
       ledger.cancel = undefined;
+      ledger.frame?.();
+      ledger.frame = undefined;
       noteHeld(ledger, false);
       ledger.waiting.clear();
     };
@@ -246,10 +276,16 @@ export function useDrawnInSlices<Row>({
   // them, the screens still to fill are filled, and a slice is asked for the rows left. The row
   // the reader reads is read again only where it may have changed (`referenceStale`), so a commit
   // that draws rows below it alone, the reader not having scrolled, reads no layout: the browser
-  // lays the rows out once, as it paints.
+  // lays the rows out once, as it paints. A later run's screen, and the row the reader reads after
+  // a change their act made, are read in the frame after the commit (`fillInFrame`).
   useLayoutEffect(() => {
     const { focused: holding, measure: topOf } = ledger;
     const acted = acts.current?.signal.aborted === true;
+    // The commit of a change of the rows the reader's act made - a fold, an unfold, a page's
+    // control, an Indent - reads no row: a read of a box there lays out every row of the view
+    // inside the act's task.
+    const byAct = ledger.changed && acted;
+    ledger.changed = false;
     noteHeld(ledger, mounted.current);
     keepReference(ledger, topOf, acted);
     ledger.drew.clear();
@@ -262,6 +298,8 @@ export function useDrawnInSlices<Row>({
     let grew = false;
     if (ledger.fills.length > 0) {
       ledger.fills = ledger.fills.filter((fill) => {
+        // A later run's screen is filled in the frame after the commit that brought the run.
+        if (!fill.up && !ledger.inFrame) return true;
         const { done, drew } = fillScreen(ledger, fill, topOf);
         grew ||= drew;
         return !done;
@@ -271,8 +309,25 @@ export function useDrawnInSlices<Row>({
       setDrawing((drawings) => drawings + 1);
       return;
     }
+    let forgot = false;
     if ((ledger.held.size > 0 || !acted) && referenceStale(ledger, holding)) {
-      ledger.reference = referenceRow(ledger, holding, topOf);
+      // The act's commit forgets the row the reader reads rather than read it: the frame after it
+      // reads it again, and a slice that draws above it before that frame does
+      // (`freshReference`).
+      forgot = byAct;
+      ledger.reference = byAct ? undefined : referenceRow(ledger, holding, topOf);
+    }
+    if (
+      !ledger.inFrame &&
+      ledger.frame === undefined &&
+      (forgot || ledger.fills.some((fill) => !fill.up))
+    ) {
+      const frame = requestAnimationFrame(() => {
+        ledger.frame = undefined;
+        if (!mounted.current) return;
+        fillInFrame(ledger, () => flushSync(() => setDrawing((drawings) => drawings + 1)));
+      });
+      ledger.frame = () => cancelAnimationFrame(frame);
     }
     if (ledger.held.size === 0 || ledger.cancel !== undefined || ledger.slicing) return;
     const slice = (): void => {
@@ -367,7 +422,10 @@ function noteHeld(ledger: Ledger, mounted: boolean): void {
  * window's foot, as under the children's section at 390 px, none is drawn with it. Otherwise each
  * run of rows new to the ledger is drawn as the row before it is, or the row after it where it
  * comes first: held back where that row is, and else the first screen of it drawn and the rest
- * held back. A row that has left is forgotten.
+ * held back. That screen is as many rows as fill the window at the height the drawn rows measured
+ * last (`Ledger.rowPx`), every row of the run where they measured none, so the commit that brings
+ * the run reads no box; the frame after it fills what that screen leaves (`fillInFrame`). A row
+ * that has left is forgotten.
  */
 function takeRows(ledger: Ledger, keys: readonly string[], anchor: string | undefined): void {
   const before = ledger.at;
@@ -393,7 +451,14 @@ function takeRows(ledger: Ledger, keys: readonly string[], anchor: string | unde
     }
     return;
   }
+  ledger.changed = true;
   for (const key of ledger.held) if (!at.has(key)) ledger.held.delete(key);
+  const runScreen =
+    ledger.rowPx === undefined
+      ? screen
+      : ledger.rowPx > 0
+        ? Math.ceil(window.innerHeight / ledger.rowPx)
+        : keys.length;
   for (let start = 0; start < keys.length; start += 1) {
     if (before.has(keys[start] ?? "")) continue;
     let end = start;
@@ -402,7 +467,7 @@ function takeRows(ledger: Ledger, keys: readonly string[], anchor: string | unde
     const waits = beside !== undefined && ledger.held.has(beside);
     let heldAny = false;
     for (let index = start; index < end; index += 1) {
-      if (waits || index - start > screen) {
+      if (waits || index - start > runScreen) {
         ledger.held.add(keys[index] ?? "");
         heldAny = true;
       }
@@ -570,8 +635,9 @@ function referenceRow(
  * drawing from the first row, the rows that reach from it to the window's foot and no further than
  * a screen, and none where it stands below the foot. How many is read from the drawn rows'
  * measured height, `ROW_GUESS_PX` a row where the row stands alone, and where they measure no
- * height, as where nothing is laid out, every row not drawn that way is drawn. Answers whether the
- * screen is filled, or can fill no more, and whether it drew a row.
+ * height, as where nothing is laid out, every row not drawn that way is drawn; that height is kept
+ * for the later runs (`Ledger.rowPx`). Answers whether the screen is filled, or can fill no more,
+ * and whether it drew a row.
  */
 function fillScreen(
   ledger: Ledger,
@@ -609,6 +675,7 @@ function fillScreen(
       rows = Math.abs(index - from);
       if (reach >= screen) break;
     }
+    if (rows > 0) ledger.rowPx = reach / rows;
     if (reach >= screen) continue;
     const next = edge + by;
     if (next < 0 || next >= ledger.keys.length) continue;
@@ -631,6 +698,35 @@ function fillScreen(
     }
   }
   return { done, drew };
+}
+
+/**
+ * What the frame after a change of the rows reads, in its animation callback, before the browser
+ * lays the frame out and paints it: the row the reader reads, where the change's commit forgot it
+ * (`useDrawnInSlices`' layout effect), and the screen below the first row of each later run
+ * (`fillScreen`), whose rows `commit` draws in that frame (`flushSync`), the commit's own layout
+ * effect filling what they still leave (`Ledger.inFrame`). Its reads read the layout that frame
+ * makes anyway, so the change is laid out once, and outside the task of the act that made it.
+ * While the slices are held (`holdSlices`), it draws no row.
+ */
+function fillInFrame(ledger: Ledger, commit: () => void): void {
+  ledger.inFrame = true;
+  try {
+    if (ledger.reference === undefined && ledger.held.size > 0) {
+      ledger.reference = referenceRow(ledger, ledger.focused, ledger.measure);
+    }
+    if (slicesHeld) return;
+    let grew = false;
+    ledger.fills = ledger.fills.filter((fill) => {
+      if (fill.up) return true;
+      const { done, drew } = fillScreen(ledger, fill, ledger.measure);
+      grew ||= drew;
+      return !done;
+    });
+    if (grew) commit();
+  } finally {
+    ledger.inFrame = false;
+  }
 }
 
 /**
