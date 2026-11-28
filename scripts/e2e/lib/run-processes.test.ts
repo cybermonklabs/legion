@@ -475,50 +475,59 @@ byteOrder.test(
   }
 );
 
+// killedReaderWalks is a row's whole check that a walk whose reader a signal ended after part of its
+// output is no answer. A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its
+// own; neither does a grep that a signal ends. Read as a clean walk, either names what it printed
+// before and nothing after, and a teardown's wait then reads the run as ended. With IN_EXIT_TRAP
+// both walks run in an EXIT trap after `exit 0`, as a passing run's teardown runs them.
+function killedReaderWalks(name: string, inExitTrap: boolean) {
+  const work = join(dir, name);
+  mkdirSync(work);
+  const killed = join(dir, `${name}-bin`);
+  mkdirSync(killed);
+  writeFileSync(
+    join(killed, "find"),
+    `#!/bin/bash\n/usr/bin/find "$@" | head -c 2000\nkill -KILL $$\n`,
+    { mode: 0o755 }
+  );
+  writeFileSync(
+    join(killed, "grep"),
+    `#!/bin/bash\n/usr/bin/grep "$@" | head -c 0\nkill -KILL $$\n`,
+    { mode: 0o755 }
+  );
+  spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+  try {
+    const walks = `st=0; listening_holders ${listener.port} >/dev/null 2>"$work/lh.err" || st=$?; echo "listening_holders $st"
+st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $st"`;
+    const r = harness(work, inExitTrap ? `trap '${walks}' EXIT\nexit 0` : walks, killed);
+    expect(r.err).toBe("");
+    expect(r.out).toBe("listening_holders 2\nrun_processes 2\n");
+    expect(readFileSync(join(work, "lh.err"), "utf8")).toMatch(
+      /^listening_holders: find exited 137 reading \/\S+: /m
+    );
+    expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
+      /^procs_naming: xargs exited 125 reading /m
+    );
+  } finally {
+    listener.stop(true);
+  }
+}
+
 host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
-    // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
-    // a grep that a signal ends. Read as a clean walk, either names what it printed before and nothing
-    // after, and a teardown's wait then reads the run as ended.
-    const work = join(dir, "killed");
-    mkdirSync(work);
-    const killed = join(dir, "killed-bin");
-    mkdirSync(killed);
-    writeFileSync(
-      join(killed, "find"),
-      `#!/bin/bash\n/usr/bin/find "$@" | head -c 2000\nkill -KILL $$\n`,
-      {
-        mode: 0o755,
-      }
-    );
-    writeFileSync(
-      join(killed, "grep"),
-      `#!/bin/bash\n/usr/bin/grep "$@" | head -c 0\nkill -KILL $$\n`,
-      {
-        mode: 0o755,
-      }
-    );
-    spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
-    const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
-    try {
-      const r = harness(
-        work,
-        `st=0; listening_holders ${listener.port} >/dev/null 2>"$work/lh.err" || st=$?; echo "listening_holders $st"
-st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $st"`,
-        killed
-      );
-      expect(r.err).toBe("");
-      expect(r.out).toBe("listening_holders 2\nrun_processes 2\n");
-      expect(readFileSync(join(work, "lh.err"), "utf8")).toMatch(
-        /^listening_holders: find exited 137 reading \/\S+: /m
-      );
-      expect(readFileSync(join(work, "rp.err"), "utf8")).toMatch(
-        /^procs_naming: xargs exited 125 reading /m
-      );
-    } finally {
-      listener.stop(true);
-    }
+    killedReaderWalks("killed", false);
+  }
+);
+
+host.test(
+  "a walk whose reader a signal ended is no answer in an EXIT trap after a passing run either: listening_holders and run_processes exit 2",
+  () => {
+    // Inside an EXIT trap a bare `exit` exits with the status from before the trap, not the last
+    // command's. Each walk's substitution exited through one when its reader failed, so after
+    // `exit 0` a find or a grep that a signal ended read 0, and both walks answered 0.
+    killedReaderWalks("killed-trap", true);
   }
 );
 
@@ -600,6 +609,39 @@ host.test(
     await untilGone(escaped, "the escaped marked process", waits.end());
     // Running, and not left stopped either.
     expect({ shell: stateOf(shell), tail: stateOf(tail) }).toEqual({ shell: "S", tail: "S" });
+  }
+);
+
+host.test(
+  "a sweep in an EXIT trap after a failed command still stops the run's processes",
+  async () => {
+    // A driver's EXIT trap runs the sweep after `fail` has exited 1. Inside an EXIT trap a bare
+    // `exit` exits with the status from before the trap, not the last command's, and the walk's
+    // substitution exited through one when xargs exited 123: the walk read 1, printed `procs_naming:
+    // xargs exited 1`, and the sweep stopped no process. xargs exits 123 once a batch meets an
+    // environment this user may not read, as a walk of a machine with another user's processes
+    // does; the row's proc root holds one entry whose environ grep cannot read, a directory,
+    // whatever user runs the row, at pid 0, which is no process's.
+    const work = join(dir, "exit-trap");
+    mkdirSync(work);
+    const marked = spawn(["sleep", "60"], { cwd: dir, env: { LEGION_E2E_RUN: work } });
+    await untilExecDone(marked, "sleep");
+    const root = rowRoot();
+    mkdirSync(join(root, "0", "environ"), { recursive: true });
+    const r = harness(
+      work,
+      `fail() { echo "FAIL: $*" >&2; exit 1; }
+trap 'st=0; stop_marked_processes "$work" || st=$?; echo "sweep $st"' EXIT
+fail "a check of the run"`,
+      "",
+      root
+    );
+    expect({ code: r.code, out: r.out, err: r.err }).toEqual({
+      code: 1,
+      out: "sweep 0\n",
+      err: "FAIL: a check of the run\n",
+    });
+    expect(await gone(marked)).toBe(true);
   }
 );
 

@@ -60,12 +60,14 @@ function dockerListingNone(): string {
 }
 // check runs refuse_leftovers PREFIX over ROOT, with PATH's front directory BIN when given, and
 // answers its status and what its `fail` said (a driver's fail, here one that prints and returns).
-function check(root: string, bin = "") {
+// With IN_EXIT_TRAP the call runs in an EXIT trap after `exit 0`, as a passing run's teardown runs.
+function check(root: string, bin = "", inExitTrap = false) {
+  const call = `refuse_leftovers ${prefix}; echo "status $?"`;
   const ran = Bun.spawnSync(
     [
       "bash",
       "-c",
-      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\nrefuse_leftovers ${prefix}; echo "status $?"`,
+      `set -u\nfail() { printf '%s\\n' "$*"; return 1; }\n. ${JSON.stringify(leftovers)}\n${inExitTrap ? `trap '${call}' EXIT\nexit 0` : call}`,
     ],
     {
       env: {
@@ -172,5 +174,19 @@ host.test(
       findStub(`/usr/bin/find "$@"\necho "find: '$proc_root/1/cwd': Permission denied" >&2\nexit 1`)
     );
     expect(unreadable).toEqual({ out: "status 0\n", err: "" });
+  }
+);
+
+host.test(
+  "a find that a signal ends is reported with 2 from an EXIT trap after a passing run too",
+  async () => {
+    // Inside an EXIT trap a bare `exit` exits with the status from before the trap, not the last
+    // command's. The walk's substitution exited through one when its find failed, so after `exit 0`
+    // a find a signal ended read 0, and a walk that read nothing found no leftover.
+    const root = procRootOf(dir, [await sleeper()]);
+    expect(check(root, findStub("kill -KILL $$"), true)).toEqual({
+      out: `refuse_leftovers: find exited 137 reading the working directories under ${root}: find ended with status 137 and printed nothing\nstatus 2\n`,
+      err: "",
+    });
   }
 );

@@ -518,9 +518,11 @@ procs_naming() {
     return 2
   }
   for name in "${names[@]}"; do naming_patterns+=(-e "$name=$dir"); done
-  # `|| exit` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`) from
-  # firing inside the substitution for the batches every walk has with no match.
-  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit)
+  # `|| exit "$?"` keeps xargs's status for the wait below, and keeps a caller's ERR trap (`set -E`)
+  # from firing inside the substitution for the batches every walk has with no match. It names the
+  # status, since inside an EXIT trap a bare `exit` exits with the status from before the trap: in
+  # a sweep that an EXIT trap runs after `exit 1`, the walk read 1 and the sweep stopped no process.
+  mapfile -t naming_files < <(printf '%s\0' "${entries[@]}" | xargs -0 grep -lzsF "${naming_patterns[@]}" || exit "$?")
   wait "$!" || status=$?
   case $status in
     0 | 123) ;;
