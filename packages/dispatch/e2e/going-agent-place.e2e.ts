@@ -28,6 +28,8 @@ import {
 } from "./going-locators";
 import { countStartedRuns } from "./going-panel";
 import { COMPACT_VIEWPORT_WIDTH } from "./inbox-threads";
+import { gotoIssue } from "./issue-page";
+import { withIssuePage } from "./issue-page-option";
 import { expect, type Page, test } from "./test";
 import { withAlice } from "./users";
 
@@ -40,12 +42,16 @@ import { withAlice } from "./users";
 // its item in the page and the next request names that item; Ctrl-K brings the conversation back
 // over the page and Ctrl-Shift-K keeps it at the side; and the header's button widens the panel
 // to the app's content area, with the navigation beside it (below 1280 px, across the window under
-// the shell's top bar), and docks it back, with the same run and the unsent words. Do keeps its
-// conversation in the bar. The models lane runs it
+// the shell's top bar, which then spans the whole window; on the new issue page below 768 px,
+// under the issue's own row that holds Open navigation), and docks it back, with the same run and
+// the unsent words. Do keeps its conversation in the bar. The models lane runs it
 // (`bun run e2e:models`), and its Firefox row the `firefox` project
 // (`bun run e2e:models:firefox`). Negative controls: a panel that ignores navigation sends the
 // next request with no issue; a bar that opens its own full Ask conversation fails the handoff
-// rows, which find the bar still open.
+// rows, which find the bar still open; a shell that keeps the docked panel's 420 px while the
+// panel is wide leaves an empty band beside its top bar, which the 1024 x 768 row finds; and an
+// issue row that publishes no bottom edge lets the wide panel start at the window's top, over Open
+// navigation, which the 700 px row finds.
 
 async function seedList(): Promise<{ readonly first: string; readonly second: string }> {
   await createProject({ key: "CORE", name: "Core" });
@@ -447,6 +453,9 @@ test("at 1024 x 768 Widen fills the window under the shell's top bar and Dock pu
     const docked = await panel.boundingBox();
     expect(docked?.width).toBeCloseTo(420, 0);
     expect(docked?.x).toBeCloseTo(viewport.width - 420, 0);
+    // Docked, the shell keeps the panel's 420 px free: the top bar ends where the panel starts.
+    const dockedBar = await topBar.boundingBox();
+    expect((dockedBar?.x ?? 0) + (dockedBar?.width ?? 0)).toBeCloseTo(viewport.width - 420, 0);
     const widen = panel.getByRole("button", { name: "Widen the panel" });
     await expect(widen).toBeVisible();
     await widen.click();
@@ -460,6 +469,11 @@ test("at 1024 x 768 Widen fills the window under the shell's top bar and Dock pu
     expect((widened?.x ?? 0) + (widened?.width ?? 0)).toBeCloseTo(viewport.width, 0);
     expect(widened?.y).toBeCloseTo((bar?.y ?? 0) + (bar?.height ?? 0), 0);
     expect((widened?.y ?? 0) + (widened?.height ?? 0)).toBeCloseTo(viewport.height, 0);
+    // Wide, the panel takes no room of the shell's, so the top bar spans the whole window above it,
+    // from its left edge to its right, and the panel starts at the bar's bottom edge: no empty band
+    // of the docked panel's 420 px stands between the two at the window's right (review R1).
+    expect(bar?.x).toBeCloseTo(0, 0);
+    expect((bar?.x ?? 0) + (bar?.width ?? 0)).toBeCloseTo(viewport.width, 0);
     await expect(topBar).toBeVisible();
     // The same run, its answer and the unsent words, the focus on the button just pressed, and no
     // second run.
@@ -483,10 +497,78 @@ test("at 1024 x 768 Widen fills the window under the shell's top bar and Dock pu
     expect(back?.width).toBeCloseTo(420, 0);
     expect(back?.x).toBeCloseTo(viewport.width - 420, 0);
     expect(back?.y).toBeCloseTo(0, 0);
+    // Docked again, the shell keeps the panel's 420 px again.
+    const backBar = await topBar.boundingBox();
+    expect((backBar?.x ?? 0) + (backBar?.width ?? 0)).toBeCloseTo(viewport.width - 420, 0);
     await expect(newestRun(page)).toHaveAttribute("data-run", run ?? "");
     await expect(sidePanel(page).getByTestId("going-run")).toHaveCount(1);
     await expect(conversationBox(page)).toHaveValue("half a thought");
     expect(started.bodies).toHaveLength(1);
+  });
+});
+
+// SLOW(>=2s): the new issue page at 700 px, the panel kept at its side, widened and docked.
+test("at 700 px on the new issue page Widen starts the panel at the bottom edge of the issue's row that holds Open navigation, which stays usable, and Dock puts the panel back", async ({
+  browser,
+}) => {
+  modelsLane();
+  const { first } = await seedList();
+  await withAlice(browser, async (page) => {
+    // Below 768 px the new issue page draws no icon rail and the shell draws no top bar: the
+    // issue's own row holds Open navigation and publishes its bottom edge, where the widened
+    // panel starts (`IssueIdentityRow.tsx`, and `shellNavigation`'s `topBarRef` in `app.tsx`).
+    const viewport = { height: 768, width: 700 };
+    await withIssuePage(page.context(), "alice");
+    await page.setViewportSize(viewport);
+    await gotoIssue(page, `/issues/${first}`);
+    const openNavigation = { exact: true, name: "Open navigation" };
+    const menu = page.locator("[data-issue-header]").getByRole("button", openNavigation);
+    await expect(menu, "the issue's row holds no Open navigation at 700 px").toBeVisible();
+    await expect(
+      page.getByRole("button", openNavigation),
+      "the shell draws a navigation control of its own at 700 px"
+    ).toHaveCount(1);
+    const row = menu.locator("xpath=..");
+    await openBar(page);
+    await searchBox(page).press("Control+Shift+K");
+    await expect(bar(page)).toHaveCount(0);
+    const panel = sidePanel(page);
+    await expect(panel).toBeVisible();
+    expect((await panel.boundingBox())?.width).toBeCloseTo(420, 0);
+
+    await panel.getByRole("button", { name: "Widen the panel" }).click();
+    await expect(panel).toHaveAttribute("data-wide", "true");
+    // From the bottom edge of the issue's row, which the row publishes again as the page beside
+    // the panel widens and the row's words wrap onto fewer lines, to the window's right edge and
+    // foot, across the whole width: the row and its Open navigation stay in view above the panel.
+    await expect
+      .poll(
+        async () => {
+          const [rowBox, panelBox] = await Promise.all([row.boundingBox(), panel.boundingBox()]);
+          return (panelBox?.y ?? 0) - ((rowBox?.y ?? 0) + (rowBox?.height ?? 0));
+        },
+        { message: "the wide panel does not start at the bottom edge of the issue's row" }
+      )
+      .toBeCloseTo(0, 0);
+    const widened = await panel.boundingBox();
+    expect(widened?.x).toBeCloseTo(0, 0);
+    expect((widened?.x ?? 0) + (widened?.width ?? 0)).toBeCloseTo(viewport.width, 0);
+    expect((widened?.y ?? 0) + (widened?.height ?? 0)).toBeCloseTo(viewport.height, 0);
+    await expect(menu).toBeVisible();
+    // Open navigation takes the click above the wide panel, and its drawer opens over the panel.
+    await menu.click();
+    const navigation = page.getByRole("dialog", { name: "Navigation" });
+    await expect(navigation).toBeVisible();
+    await navigation.getByRole("button", { name: "Close navigation" }).click();
+    await expect(navigation).toHaveCount(0);
+    await expect(panel).toBeVisible();
+
+    await panel.getByRole("button", { name: "Dock at the side" }).click();
+    await expect(panel).toHaveAttribute("data-wide", "false");
+    const back = await panel.boundingBox();
+    expect(back?.width).toBeCloseTo(420, 0);
+    expect(back?.x).toBeCloseTo(viewport.width - 420, 0);
+    expect(back?.y).toBeCloseTo(0, 0);
   });
 });
 

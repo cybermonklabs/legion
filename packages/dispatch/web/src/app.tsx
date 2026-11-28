@@ -29,7 +29,7 @@ import { movePanel, resetGoingStore, setPlace, useGoingValue } from "./features/
 import { Notice } from "./features/going/Notice";
 import { RunChip } from "./features/going/RunChip";
 import { SidePanel } from "./features/going/SidePanel";
-import { wideInsetOf } from "./features/going/wide-inset";
+import { panelIsWide, wideInsetOf } from "./features/going/wide-inset";
 import { DraftsNotKept } from "./features/inbox/DraftsNotKept";
 import { useInboxFillsViewport } from "./features/inbox/fills-viewport";
 import { Inbox } from "./features/inbox/Inbox";
@@ -587,8 +587,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // over the page - this page's actions, the person's recent items, the projects a query names,
   // the hits and the conversation - with a chip saying what it will act on; `$mod+Shift+k` keeps
   // the conversation in a panel at the side, which stays open on every navigation. The shell
-  // reads where it is alone, so a frame of a run draws only the parts that show the run again.
+  // reads where it is and whether it is widened alone, so a frame of a run draws only the parts
+  // that show the run again.
   const place = useGoingValue((going) => going.place);
+  const widened = useGoingValue((going) => going.wide);
   const barOpen = place === "over";
   // What the person opened, for the bar to list back while its box is empty. It is recorded in
   // the shell rather than on each page, so every way into an item - a link, the bar itself, a
@@ -667,7 +669,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   // rail exists only where the route has a margin, so it is reserved from exactly the answer
   // `features/margin/Margin.tsx` renders from; two answers that disagree leave 80 px of
   // padding beside a rail that is not there. The side panel covers the rail, and the shell
-  // keeps the panel's width free instead. "Full width" means no expanded column on either
+  // keeps the docked panel's width free instead. "Full width" means no expanded column on either
   // side - on a route with no margin, a hidden sidebar is enough.
   const hasMargin = routeHasMargin(location.pathname, location.search);
   const marginRailShown = hasMargin && marginCollapsed && !panelAtSide;
@@ -752,11 +754,13 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   const isFirstRender = useRef(true);
   const isCompactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
   const fromSm = useMediaQuery(SM_VIEWPORT_QUERY);
-  // Where the panel at the side starts once the person widens it (A6), so the navigation stays
-  // reachable (`wide-inset.ts`): at the edge of the navigation that stands beside the page - the
-  // sidebar's 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue
-  // page's icon rail - or, below `xl`, where the navigation is a header and a drawer above the
-  // page, across the whole width under the top bar the shell draws there. Below `sm` the panel is
+  // Where the panel at the side starts once the person widens it (A6, `wide-inset.ts`): at the
+  // edge of the navigation that stands beside the page, which stays in view - the sidebar's
+  // 20 rem, or the 3.5 rem of the rail the sidebar collapses to and of the new issue page's icon
+  // rail - or, below `xl`, where the navigation is a header and a drawer above the page, across
+  // the whole width under the top bar there. That bar scrolls with the page: once the page has
+  // scrolled past it, the panel starts at the window's top and covers the window, and the bar's
+  // Menu is out of view until the person scrolls back or docks the panel. Below `sm` the panel is
   // the whole width already, and offers no widening.
   const wideInset = wideInsetOf({
     compact: isCompactViewport,
@@ -764,6 +768,10 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
     sidebarHidden,
     sm: fromSm,
   });
+  // The room the shell keeps for the panel at the side (`panelIsWide`): its 420 px at the page's
+  // right while it is docked, from `sm` up, so the page and the top bar stand beside it; none
+  // while it is wide, so the top bar spans the whole window above it.
+  const panelDocked = panelAtSide && !panelIsWide(widened, wideInset);
   // Publish the bottom edge of the compact navigation, whether the shell or the issue draws it.
   const shellBarRef = useShellBarBottom();
   // In the frame the navigation's sheet is what the rail's foot control and the header's `☰`
@@ -1012,7 +1020,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
   return (
     <ShellProviders drawer={detailsDrawer} navigation={shellNavigation} openHelp={openHelp}>
       <div
-        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${place === "side" ? "sm:pr-[420px]" : ""} ${canvasText}`}
+        className={`${fillsViewport ? "flex h-screen flex-col supports-[height:100dvh]:h-dvh xl:flex-row" : "xl:flex"} ${panelDocked ? "sm:pr-[420px]" : ""} ${canvasText}`}
         data-testid="app-shell"
       >
         <a

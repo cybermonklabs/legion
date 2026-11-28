@@ -56,3 +56,16 @@ export function wideInsetOf({
   if (!compact) return sidebarHidden ? BESIDE_RAIL : BESIDE_SIDEBAR;
   return sm ? BELOW_BAR : undefined;
 }
+
+/**
+ * Whether the panel at the side is wide (A6): the person has widened it (`widened`, the going
+ * store's `wide`, which only the side holds) where the shell leaves it room to widen (`inset`,
+ * from `wideInsetOf`). The panel draws itself from this, and so does the shell (`app.tsx`): while
+ * the panel is docked, the shell keeps its 420 px free at the page's right, from `sm` up, and the
+ * page and a top bar stand beside it; while it is wide, the panel covers the page from `inset` and
+ * the shell keeps no room for it, so a top bar above it spans the whole window, with no empty band
+ * between the bar and the panel.
+ */
+export function panelIsWide(widened: boolean, inset: WideInset | undefined): boolean {
+  return widened && inset !== undefined;
+}

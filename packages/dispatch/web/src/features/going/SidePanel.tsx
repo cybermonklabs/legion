@@ -38,7 +38,7 @@ import {
   focusConversationBox,
 } from "./RunControls";
 import { useAsk } from "./useAsk";
-import type { WideInset } from "./wide-inset";
+import { panelIsWide, type WideInset } from "./wide-inset";
 
 /** The side panel's element id. */
 const SIDE_PANEL_ID = "going-side-panel";
@@ -138,7 +138,7 @@ export function SidePanel({ wideInset }: { readonly wideInset?: WideInset }): Re
   const [history, setHistory] = useState(false);
   const panelRef = useRef<HTMLElement>(null);
   const side = going.place === "side";
-  const wide = going.wide && wideInset !== undefined;
+  const wide = panelIsWide(going.wide, wideInset);
   const clicked = going.clicked?.path === location.pathname ? going.clicked : undefined;
   const newPage = useIssuePageChoice()[0] === "outline";
   const context = contextOf(location.pathname, location.search, clicked, newPage);

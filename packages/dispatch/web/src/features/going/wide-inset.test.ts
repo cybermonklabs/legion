@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import { SHELL_BAR_BOTTOM_PROPERTY } from "../shell/useShellBarBottom";
-import { type ShellLayout, type WideInset, wideInsetOf } from "./wide-inset";
+import { panelIsWide, type ShellLayout, type WideInset, wideInsetOf } from "./wide-inset";
 
 // Where a widened side panel starts (spec R1, A6): at the edge of the navigation that stands beside
 // the page, and, below `xl`, where the navigation is a header and a drawer, under the shell's top
@@ -46,4 +46,23 @@ test("below xl the issue frame's icon rail keeps its edge, as it does from xl", 
 test("below sm the panel is the whole width already and offers no widening", () => {
   expect(wideInsetOf(layout({ compact: true, sm: false }))).toBeUndefined();
   expect(wideInsetOf(layout({ compact: true, sidebarHidden: true, sm: false }))).toBeUndefined();
+});
+
+// The panel and the shell read one answer to whether the panel is wide (`panelIsWide`): wide, the
+// shell keeps no 420 px for it, so a top bar above it spans the whole window and no empty band
+// stands between the bar and the panel (review R1 below `xl`); docked, the shell keeps them again.
+test("the panel is wide while the person has widened it where the shell leaves it room, so the shell keeps no room beside the page for it, and docked again it is not", () => {
+  for (const room of [
+    wideInsetOf(layout({})),
+    wideInsetOf(layout({ sidebarHidden: true })),
+    wideInsetOf(layout({ compact: true })),
+    wideInsetOf(layout({ compact: true, iconRail: true })),
+  ]) {
+    expect(room).toBeDefined();
+    expect(panelIsWide(true, room)).toBe(true);
+    expect(panelIsWide(false, room)).toBe(false);
+  }
+  // Below `sm` the shell leaves no room to widen into, and a stored wide state leaves the panel
+  // docked at the window's whole width.
+  expect(panelIsWide(true, wideInsetOf(layout({ compact: true, sm: false })))).toBe(false);
 });

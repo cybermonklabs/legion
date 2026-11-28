@@ -1,5 +1,12 @@
 import { setLiveSessions } from "./agents";
-import { claimIssue, listAgentMessages, listIssueMessages, mintAgentToken } from "./api";
+import {
+  claimIssue,
+  createIssue,
+  createProject,
+  listAgentMessages,
+  listIssueMessages,
+  mintAgentToken,
+} from "./api";
 import {
   chatCalls,
   decided,
@@ -17,12 +24,14 @@ import { withAlice } from "./users";
 
 // Check c2 of dispatch://INFRA-1588/artifact/verification-md (spec R2): a key gives its hit and
 // the fake models record no call; the fake Jev's action names the line on top - none gives Ask,
-// dispatch_issue_update gives Do, dispatch_issue gives File as a new issue; and with Jev holding
+// dispatch_issue_update gives Do, dispatch_issue gives File as a new issue, which names the
+// project it files in and, on an issue's page, the issue it files under; and with Jev holding
 // its answer the hits show at once and the line reads Ask after 500 ms. With c8's browser half
 // (spec R7): on an issue whose claim a live session holds, the fast tier offers no line that sends
 // to that session at once, and Enter on the line on top sends it nothing. Negative controls: a bar
 // that waits for Jev before it shows hits shows none for 5 s; one that keeps a row that sends to
-// the issue's session offers it, and the session gets the words with no plan.
+// the issue's session offers it, and the session gets the words with no plan; a File line that
+// names the parent and not the project (the tester's `m-fileline`) fails the DEMO-7 row.
 
 /** The hit of `key`, as the bar lists it: the option of the issue the key names. */
 function hitOf(page: Page, key: string) {
@@ -95,6 +104,41 @@ test("Jev answering dispatch_issue makes the line on top File as a new issue", a
     await openBarOver(page, "/projects/CORE/issues");
     await searchBox(page).fill("we need a dome for the telescope");
     await expect(lineOnTop(page)).toContainText("File as a new issue in CORE");
+  });
+});
+
+// SLOW(>=2s): seven seeded issues and Jev's answer.
+test("on an issue's page Jev answering dispatch_issue makes the line on top File as a new issue in the page's project, under the page's issue", async ({
+  browser,
+}) => {
+  modelsLane();
+  // The page the ruling names (dispatch://INFRA-1588/comment/2df72357-f9f5-44cb-9cf9-d6daa3ce6b5e):
+  // DEMO-7, the seventh issue of the project DEMO.
+  await createProject({ key: "DEMO", name: "Demo" });
+  let parent = "";
+  for (const title of [
+    "Polish the telescope",
+    "Grind the mirror",
+    "Align the finder scope",
+    "Oil the dome's rails",
+    "Count the moons of Saturn",
+    "Log the meteor shower",
+    "Map the lunar craters",
+  ]) {
+    parent = (await createIssue({ project: "DEMO", title })).key;
+  }
+  expect(parent, "the seed's seventh issue of DEMO").toBe("DEMO-7");
+  await scriptDecision({ default: decided("dispatch_issue", 0.99) });
+  await scriptChat({ default: prose("A new issue.") });
+  const words = "we need a dome for the telescope";
+  await withAlice(browser, async (page) => {
+    await openBarOver(page, `/issues/${parent}`);
+    await searchBox(page).fill(words);
+    await expect(lineOnTop(page)).toHaveAttribute("data-line", "file");
+    // The label whole, the project and then the parent, and the words it files after it.
+    await expect(lineOnTop(page).getByTestId("search-line-words")).toHaveText(
+      `File as a new issue in DEMO, under DEMO-7: ${words}`
+    );
   });
 });
 
