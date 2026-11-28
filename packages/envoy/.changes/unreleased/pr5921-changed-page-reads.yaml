@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  Every read of the deploy runs' jobs by name, the timeline's among them, is an index-only read
+  of the new index `delivery_run_jobs_named` (migration `20261117100023`), which keeps a
+  repository's jobs of one name together, rather than a read of a heap page for each run through
+  the primary key.

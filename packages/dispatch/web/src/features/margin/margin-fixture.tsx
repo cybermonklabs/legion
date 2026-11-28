@@ -58,6 +58,8 @@ export const issue: IssueDetails = {
   resolved_repo: null,
   status: "open",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   title: "Review the spec",
   open_asks: [],

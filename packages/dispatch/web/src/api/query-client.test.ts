@@ -1,6 +1,12 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
-import { onlineManager, QueryClient, QueryObserver, skipToken } from "@tanstack/react-query";
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryObserver,
+  skipToken,
+} from "@tanstack/react-query";
 
 import { SEND_DEADLINE_MS } from "../features/writes/keyed-write";
 import { ApiError, createApiClient, isRetryableQueryError } from "./client";
@@ -905,6 +911,304 @@ test("an attempt listener that throws fails no read: the read answers, and the o
     microtask.mockRestore();
     stopFirst();
     stopSecond();
+    queryClient.clear();
+  }
+});
+
+/** Dispatch's refusal of a search whose statement ran past its bound, and of one its database was
+ *  too busy to take. */
+const searchTimedOut = new ApiError(503, {
+  code: "SEARCH_TIMEOUT",
+  error: "the search statement ran past its 15s bound, so nothing was found",
+});
+const databaseBusy = new ApiError(503, { code: "DATABASE_BUSY", error: "the database is busy" });
+
+// A search that ran past the server's bound is never sent again on its own, at an interval
+// either: polled every second, a search answered `503 SEARCH_TIMEOUT` asks once, and one refused
+// for any other reason asks at every interval, as every polled read does.
+test("a polled search answered 503 SEARCH_TIMEOUT asks once, and one answered 503 DATABASE_BUSY at every interval", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const asked = { busy: 0, timedOut: 0 };
+  const polled = (queryKey: string[], ask: () => void, refusal: ApiError) =>
+    new QueryObserver(queryClient, {
+      queryFn: async () => {
+        ask();
+        throw refusal;
+      },
+      queryKey,
+      refetchInterval: 1_000,
+      refetchIntervalInBackground: true,
+    });
+  const observers = [
+    polled(["search", "astrolabe"], () => (asked.timedOut += 1), searchTimedOut),
+    polled(["search", "sextant"], () => (asked.busy += 1), databaseBusy),
+  ];
+  jest.useFakeTimers();
+  const unsubscribes = observers.map((observer) => observer.subscribe(() => {}));
+  try {
+    await settle();
+    expect(asked).toEqual({ busy: 1, timedOut: 1 });
+    for (let interval = 0; interval < 5; interval += 1) {
+      jest.advanceTimersByTime(1_000);
+      await settle();
+    }
+    expect(asked).toEqual({ busy: 6, timedOut: 1 });
+  } finally {
+    jest.useRealTimers();
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    queryClient.clear();
+  }
+});
+
+// TanStack passes a static query by only while an observer renders it (`Query.isStatic`), so the
+// hold is the client's own test: a search answered `503 SEARCH_TIMEOUT` that nothing renders, as
+// once the palette is closed, is sent by neither `refetchQueries` nor an invalidation of every
+// query, while a search refused for another reason is sent by each.
+test("a search answered 503 SEARCH_TIMEOUT that nothing renders is sent again by neither refetchQueries nor an invalidation of every query", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const asked = { busy: 0, timedOut: 0 };
+  try {
+    await queryClient
+      .fetchQuery({
+        queryFn: async () => {
+          asked.timedOut += 1;
+          throw searchTimedOut;
+        },
+        queryKey: ["search", "astrolabe"],
+      })
+      .catch(() => undefined);
+    await queryClient
+      .fetchQuery({
+        queryFn: async () => {
+          asked.busy += 1;
+          throw databaseBusy;
+        },
+        queryKey: ["search", "sextant"],
+      })
+      .catch(() => undefined);
+    expect(asked).toEqual({ busy: 1, timedOut: 1 });
+
+    await queryClient.refetchQueries();
+    expect(asked).toEqual({ busy: 2, timedOut: 1 });
+
+    await queryClient.invalidateQueries({ refetchType: "all" });
+    expect(asked).toEqual({ busy: 3, timedOut: 1 });
+  } finally {
+    queryClient.clear();
+  }
+});
+
+// An invalidation made while a read is out asks once more when that read settles (`#refetch`),
+// but not once a search's read answers that it ran past the server's bound.
+test("an invalidation made while a search is out asks again once it settles, but not once it answered 503 SEARCH_TIMEOUT", async () => {
+  const asked = { busy: 0, timedOut: 0 };
+  for (const [name, refusal] of [
+    ["busy", databaseBusy],
+    ["timedOut", searchTimedOut],
+  ] as const) {
+    const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+    const out: ((error: ApiError) => void)[] = [];
+    const observer = new QueryObserver(queryClient, {
+      queryFn: () => {
+        const { promise, reject } = Promise.withResolvers<string>();
+        out.push(reject);
+        return promise;
+      },
+      queryKey: ["search", "astrolabe"],
+    });
+    const unsubscribe = observer.subscribe(() => {});
+    try {
+      await settle();
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      await settle();
+      out[0]?.(refusal);
+      await settle();
+      asked[name] = out.length;
+    } finally {
+      for (const reject of out.slice(1)) reject(databaseBusy);
+      unsubscribe();
+      queryClient.clear();
+    }
+  }
+  expect(asked).toEqual({ busy: 2, timedOut: 1 });
+});
+
+// A search whose refetch answered `503 SEARCH_TIMEOUT` over its hits is held
+// (`heldAfterSearchTimeout`) until the reader asks again. A post's correction put over the
+// reader's read (`replaceQueryData`) cancels it, and the cancel puts the timeout back with the
+// state from before that read; the reader asked all the same, so the search is asked once more,
+// and its answer lands.
+test("a search the reader asks again after 503 SEARCH_TIMEOUT is asked once more when a value is put over that read, and its answer lands", async () => {
+  const queryClient = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+  const observer = new QueryObserver(queryClient, {
+    queryFn: () => {
+      const read = Promise.withResolvers<string>();
+      out.push(read);
+      return read.promise;
+    },
+    queryKey: ["search", "astrolabe"],
+  });
+  const unsubscribe = observer.subscribe(() => {});
+  try {
+    await settle();
+    out[0]?.resolve("hits");
+    await settle();
+    void queryClient.invalidateQueries({ queryKey: ["search"] });
+    await settle();
+    out[1]?.reject(searchTimedOut);
+    await settle();
+    expect(queryClient.getQueryState(["search", "astrolabe"])?.fetchFailureReason).toBe(
+      searchTimedOut
+    );
+
+    // The reader asks again, and a post in the hits is edited while that read is out.
+    void observer.refetch();
+    await settle();
+    expect(out).toHaveLength(3);
+    replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+    expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits, one edited");
+    await settle();
+    expect(out).toHaveLength(4);
+
+    // The cancelled read's answer is dropped, and the one asked after the edit lands.
+    out[2]?.resolve("hits before the edit");
+    out[3]?.resolve("hits after the edit");
+    await settle();
+    expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits after the edit");
+    expect(out).toHaveLength(4);
+  } finally {
+    unsubscribe();
+    queryClient.clear();
+  }
+});
+
+// A post's correction that lands on a search held after `503 SEARCH_TIMEOUT` while no read of it
+// is out is a write by hand (`replaceQueryData`), which keeps the timeout but marks the query
+// fresh for the app's 30 s `staleTime`. The write marks it stale again, so the reader who opens
+// the bar again and types the words, or types the same words again, straight after the
+// correction, asks for the search once. A letter typed and deleted is a search of other words, so
+// the row counts the requests by the words they ask for.
+test("a search held after 503 SEARCH_TIMEOUT that a value is put into with no read out is asked once when the bar is opened again and its words typed, and once when they are typed again", async () => {
+  const asked: Record<string, Record<string, number>> = {};
+  for (const act of ["reopened", "retyped"] as const) {
+    const queryClient = new DispatchQueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    const sent: Record<string, number> = {};
+    const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+    const search = (words: string) => ({
+      queryFn: () => {
+        sent[words] = (sent[words] ?? 0) + 1;
+        const read = Promise.withResolvers<string>();
+        out.push(read);
+        return read.promise;
+      },
+      queryKey: ["search", words],
+    });
+    const observer = new QueryObserver(queryClient, search("astrolabe"));
+    const unsubscribes = [observer.subscribe(() => {})];
+    try {
+      await settle();
+      out[0]?.resolve("hits");
+      await settle();
+      void queryClient.invalidateQueries({ queryKey: ["search"] });
+      await settle();
+      out[1]?.reject(searchTimedOut);
+      await settle();
+
+      // A post in the hits is edited while no read of them is out: the hits take the edit, and
+      // the search stays held.
+      replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+      expect(queryClient.getQueryData<string>(["search", "astrolabe"])).toBe("hits, one edited");
+      expect(queryClient.getQueryState(["search", "astrolabe"])?.fetchFailureReason).toBe(
+        searchTimedOut
+      );
+
+      if (act === "reopened") {
+        // The bar is closed, and opened again with the words typed: a new observer of the query.
+        unsubscribes.shift()?.();
+        unsubscribes.push(new QueryObserver(queryClient, search("astrolabe")).subscribe(() => {}));
+      } else {
+        // A letter typed and deleted brings the observer back to the query.
+        observer.setOptions(search("astrolabes"));
+        observer.setOptions(search("astrolabe"));
+      }
+      await settle();
+      asked[act] = { ...sent };
+    } finally {
+      for (const unsubscribe of unsubscribes) unsubscribe();
+      queryClient.clear();
+    }
+  }
+  expect(asked).toEqual({
+    reopened: { astrolabe: 3 },
+    retyped: { astrolabe: 3, astrolabes: 1 },
+  });
+});
+
+// The stale mark that write leaves sends nothing on its own: with no act of the reader's after
+// the correction, neither the tab's focus, the network's return, `refetchQueries` nor an
+// invalidation of every query sends the held search, while a search refused for another reason,
+// stale since its refusal, is sent by each.
+test("a search held after 503 SEARCH_TIMEOUT that a value is put into with no read out is sent again by neither focus, reconnect, refetchQueries nor an invalidation of every query", async () => {
+  const queryClient = new DispatchQueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+  });
+  // Mounted, as the page's provider mounts it, so its queries hear the tab's focus and the network.
+  queryClient.mount();
+  const asked = { busy: 0, timedOut: 0 };
+  const out: { resolve: (hits: string) => void; reject: (error: ApiError) => void }[] = [];
+  const observers = [
+    new QueryObserver(queryClient, {
+      queryFn: () => {
+        asked.timedOut += 1;
+        const read = Promise.withResolvers<string>();
+        out.push(read);
+        return read.promise;
+      },
+      queryKey: ["search", "astrolabe"],
+    }),
+    new QueryObserver(queryClient, {
+      queryFn: async (): Promise<string> => {
+        asked.busy += 1;
+        throw databaseBusy;
+      },
+      queryKey: ["search", "sextant"],
+    }),
+  ];
+  const unsubscribes = observers.map((observer) => observer.subscribe(() => {}));
+  try {
+    await settle();
+    out[0]?.resolve("hits");
+    await settle();
+    void queryClient.invalidateQueries({ queryKey: ["search", "astrolabe"] });
+    await settle();
+    out[1]?.reject(searchTimedOut);
+    await settle();
+    replaceQueryData<string>(queryClient, ["search", "astrolabe"], "hits, one edited");
+    expect(asked).toEqual({ busy: 1, timedOut: 2 });
+
+    focusManager.setFocused(false);
+    focusManager.setFocused(true);
+    await settle();
+    expect(asked).toEqual({ busy: 2, timedOut: 2 });
+
+    onlineManager.setOnline(false);
+    onlineManager.setOnline(true);
+    await settle();
+    expect(asked).toEqual({ busy: 3, timedOut: 2 });
+
+    await queryClient.refetchQueries();
+    expect(asked).toEqual({ busy: 4, timedOut: 2 });
+
+    await queryClient.invalidateQueries();
+    expect(asked).toEqual({ busy: 5, timedOut: 2 });
+  } finally {
+    focusManager.setFocused(undefined);
+    onlineManager.setOnline(true);
+    for (const unsubscribe of unsubscribes) unsubscribe();
+    queryClient.unmount();
     queryClient.clear();
   }
 });

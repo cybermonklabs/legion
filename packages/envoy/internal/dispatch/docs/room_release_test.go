@@ -180,7 +180,7 @@ func TestAStateReleasedAsALookupFindsItTakesNoWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the seed tree: %v", err)
 	}
-	ledger.seeded(id, renderedTree{tree: tree}, actor)
+	ledger.seeded(id, renderedTree{tree: tree}, actor, true)
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the seeding transaction: %v", err)
 	}
@@ -208,7 +208,7 @@ func newRoomReleaseService(t *testing.T) (*Service, *store.Store) {
 	service := New(Deps{
 		Store:     database,
 		Events:    events.NewBroker(),
-		Identity:  identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
+		Identity:  identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		ServerURL: "https://dispatch.example",
 		Settle:    20 * time.Millisecond,
 	})

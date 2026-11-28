@@ -3,8 +3,10 @@
 // priority of 0 on a new issue, or on an issue whose own priority is another or none, from any
 // other credential is refused 403 OAUTH_SCOPE_REQUIRED with the challenge naming p0, before every
 // refusal that reads the issue, and the write writes nothing of its request. A write that keeps P0,
-// lowers it, clears it or sets 1 to 3 needs no scope. The issue's own priority decides, never the
-// one it inherits.
+// lowers it or sets 1 to 3 needs no scope. For a priority of 0 the issue's own priority decides,
+// never the one it inherits. A clear, a move and a new issue with no priority can make work P0 by
+// the priority it takes from an issue above it, and then need p0 too: J2 of dispatch://INFRA-5793,
+// which issue_resolved_priority_test.go holds.
 //
 // The tests send their writes from the credentials of one inventory (p0Inventory): those of
 // newLegionStatusRigOn with R26's setting off, and three personal tokens. They need
@@ -192,12 +194,17 @@ func requireP0Refusal(t *testing.T, response *httptest.ResponseRecorder) {
 	}
 }
 
-// requireNoIssueTitled fails unless brokerTestProject holds no issue titled title: a refused
-// create made none.
-func requireNoIssueTitled(t *testing.T, database *store.Store, title string) {
+// requireNoIssueTitled fails unless a refused create left no issue titled title, in any project,
+// and no near_copy_checks row of that title. A create's near_copy_checks row may be written after
+// its answer (recordNearCopyCheck), so it waits out the server's detached writes first.
+func requireNoIssueTitled(t *testing.T, rig *brokerTokenRig, title string) {
 	t.Helper()
-	if made := countRows(t, database, `select count(*) from issues where project_key = $1 and title = $2`, brokerTestProject, title); made != 0 {
-		t.Errorf("the refused create left %d issues titled %q in %s, want none: a credential without p0 made an issue at priority 0", made, title, brokerTestProject)
+	awaitBackgroundWrites(t, rig.served)
+	if made := countRows(t, rig.database, `select count(*) from issues where title = $1`, title); made != 0 {
+		t.Errorf("the refused create left %d issues titled %q, want none", made, title)
+	}
+	if checks := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1`, title); checks != 0 {
+		t.Errorf("the refused create left %d near_copy_checks rows titled %q, want none", checks, title)
 	}
 }
 
@@ -245,10 +252,10 @@ var p0IssueWrites = map[string]p0IssueWrite{
 		switch credential.p0 {
 		case p0RefusedFirst:
 			requireRefused(t, response, http.StatusForbidden, credential.code)
-			requireNoIssueTitled(t, rig.database, title)
+			requireNoIssueTitled(t, rig.brokerTokenRig, title)
 		case p0Refused:
 			requireP0Refusal(t, response)
-			requireNoIssueTitled(t, rig.database, title)
+			requireNoIssueTitled(t, rig.brokerTokenRig, title)
 		case p0Written:
 			if response.Code != http.StatusCreated {
 				t.Fatalf("status=%d body=%s, want 201: the credential holds p0", response.Code, response.Body.String())
@@ -316,9 +323,9 @@ func committedOpenAPIDocuments(t *testing.T) map[string]map[string]any {
 	return documents
 }
 
-// priorityOperations answers each operation of document, as "METHOD path", whose request body,
-// under any of its media types, has a property named priority.
-func priorityOperations(t *testing.T, name string, document map[string]any) []string {
+// operationsTaking answers each operation of document, as "METHOD path", whose request body, under
+// any of its media types, has a property named one of names.
+func operationsTaking(t *testing.T, name string, document map[string]any, names ...string) []string {
 	t.Helper()
 	components, _ := document["components"].(map[string]any)
 	schemas, _ := components["schemas"].(map[string]any)
@@ -335,7 +342,7 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 			content, _ := body["content"].(map[string]any)
 			for _, media := range content {
 				schema, _ := media.(map[string]any)
-				if takesPriority(t, name, schema["schema"], schemas, map[string]bool{}) {
+				if takesAnyProperty(t, name, schema["schema"], schemas, map[string]bool{}, names...) {
 					found = append(found, strings.ToUpper(method)+" "+path)
 					break
 				}
@@ -345,10 +352,12 @@ func priorityOperations(t *testing.T, name string, document map[string]any) []st
 	return found
 }
 
-// takesPriority reports whether node, a schema of document name, has a property named priority:
-// its own, a nested object's, an array's items', or one a $ref, allOf, anyOf or oneOf reaches.
-// seen holds the component schemas already walked, so a schema that refers to itself ends.
-func takesPriority(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool) bool {
+// takesAnyProperty reports whether node, a schema of document name, has a property named one of
+// names: its own, a nested object's, an array's items', or one a $ref, allOf, anyOf or oneOf
+// reaches. seen holds the component schemas already walked, so a schema that refers to itself
+// ends. It is the one walk of both inventories (operationsTaking): G1's for priority, and
+// INFRA-5793's for priority or parent.
+func takesAnyProperty(t *testing.T, name string, node any, schemas map[string]any, seen map[string]bool, names ...string) bool {
 	t.Helper()
 	schema, ok := node.(map[string]any)
 	if !ok {
@@ -367,28 +376,30 @@ func takesPriority(t *testing.T, name string, node any, schemas map[string]any, 
 		if !declared {
 			t.Fatalf("%s holds the reference %s, which names no schema it declares", name, reference)
 		}
-		if takesPriority(t, name, target, schemas, seen) {
+		if takesAnyProperty(t, name, target, schemas, seen, names...) {
 			return true
 		}
 	}
 	for _, combinator := range []string{"allOf", "anyOf", "oneOf"} {
 		branches, _ := schema[combinator].([]any)
 		for _, branch := range branches {
-			if takesPriority(t, name, branch, schemas, seen) {
+			if takesAnyProperty(t, name, branch, schemas, seen, names...) {
 				return true
 			}
 		}
 	}
 	properties, _ := schema["properties"].(map[string]any)
-	if _, named := properties["priority"]; named {
-		return true
-	}
-	for _, property := range properties {
-		if takesPriority(t, name, property, schemas, seen) {
+	for _, property := range names {
+		if _, named := properties[property]; named {
 			return true
 		}
 	}
-	return takesPriority(t, name, schema["items"], schemas, seen)
+	for _, property := range properties {
+		if takesAnyProperty(t, name, property, schemas, seen, names...) {
+			return true
+		}
+	}
+	return takesAnyProperty(t, name, schema["items"], schemas, seen, names...)
 }
 
 // TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero is the inventory of G1. It reads every
@@ -409,7 +420,7 @@ func TestEveryOperationThatTakesAnIssuePriorityNeedsP0ForZero(t *testing.T) {
 	t.Parallel()
 	found := map[string][]string{}
 	for name, document := range committedOpenAPIDocuments(t) {
-		for _, operation := range priorityOperations(t, name, document) {
+		for _, operation := range operationsTaking(t, name, document, "priority") {
 			found[operation] = append(found[operation], name)
 		}
 	}
@@ -479,12 +490,7 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 			"project": brokerTestProject, "title": title, "labels": []string{"area", "ops"}, "priority": 0, "force": true,
 		})
 		requireP0Refusal(t, refused)
-		// A create's near_copy_checks row may be written after its answer (recordNearCopyCheck).
-		awaitBackgroundWrites(t, rig.served)
-		requireNoIssueTitled(t, rig.database, title)
-		if checks := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1`, title); checks != 0 {
-			t.Errorf("the refused create left %d near_copy_checks rows titled %q, want none", checks, title)
-		}
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 
 	t.Run("a close with priority 0 of an issue whose document holds an unsettled edit", func(t *testing.T) {
@@ -540,7 +546,8 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 // TestTheIssuesOwnPriorityDecidesTheP0Check: under a root that a browser made P0, the shared
 // token's write of priority 0 on a child with no own priority is refused 403 naming p0, and so is
 // a create of a child at priority 0: the priority the child inherits is not its own. A create of a
-// child that names no priority is written, with no own priority.
+// child that names no priority is refused too, since the new child would read P0 from the root and
+// the shared token's session is no architect of it (J2 of dispatch://INFRA-5793).
 func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 	t.Parallel()
 	rig := newLegionStatusRig(t, false)
@@ -564,23 +571,16 @@ func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 			"project": brokerTestProject, "title": title, "parent": root, "priority": 0, "force": true,
 		})
 		requireP0Refusal(t, refused)
-		requireNoIssueTitled(t, rig.database, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 
 	t.Run("a create of a child with no priority", func(t *testing.T) {
-		made := shared.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
-			"project": brokerTestProject, "title": rig.title(), "parent": root, "force": true,
+		title := rig.title()
+		refused := shared.send(t, http.MethodPost, "/api/v1/issues", map[string]any{
+			"project": brokerTestProject, "title": title, "parent": root, "force": true,
 		})
-		if made.Code != http.StatusCreated {
-			t.Fatalf("status=%d body=%s, want 201: the create names no priority", made.Code, made.Body.String())
-		}
-		child := decodeBody[model.Issue](t, made)
-		if child.Parent == nil || *child.Parent != root {
-			t.Errorf("the child's parent = %v, want %s", child.Parent, root)
-		}
-		if stored := readP0Issue(t, rig.database, child.Key); stored.priority != nil {
-			t.Errorf("%s as the create made it: %s, want no own priority", child.Key, stored)
-		}
+		requireP0Refusal(t, refused)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 }
 
