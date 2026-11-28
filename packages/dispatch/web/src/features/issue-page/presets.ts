@@ -36,12 +36,14 @@ import type { FILTER_SIGNAL_WORDS, NodeType, Preset } from "./page-words";
  */
 
 /** One of the four filters: every control of the row but Conversation, which turns them off,
- *  and Dashboard, which draws no view of the tree (dispatch://INFRA-5702/spec#b-r-new-page). */
-export type Filter = Exclude<Preset, "conversation" | "dashboard">;
+ *  Dashboard, which draws no view of the tree (dispatch://INFRA-5702/spec#b-r-new-page), and
+ *  Threads, which draws the issue's threads and no view of the tree either
+ *  (dispatch://INFRA-5704/spec#b-r-control). */
+export type Filter = Exclude<Preset, "conversation" | "dashboard" | "threads">;
 
-/** Whether `preset` is a filter rather than the page with no filter on or Dashboard. */
+/** Whether `preset` is a filter rather than the page with no filter on, Dashboard or Threads. */
 export function isFilter(preset: Preset): preset is Filter {
-  return preset !== "conversation" && preset !== "dashboard";
+  return preset !== "conversation" && preset !== "dashboard" && preset !== "threads";
 }
 
 /** The kinds each filter draws as rows of its own (R2). */
@@ -241,10 +243,12 @@ function filterView(
   };
 }
 
-/** What a filter control draws after its name (R2): its count, with a unit or a flag where
- *  applicable. Conversation draws no signal. */
+/** What a filter control or the Threads control draws after its name (R2,
+ *  dispatch://INFRA-5704/spec#b-r-control): its count, with a unit or a flag where applicable.
+ *  Dashboard and Conversation draw no signal. */
 export interface PresetSignal {
-  /** How many nodes of the filter's main kind it draws (R2). */
+  /** How many nodes of the filter's main kind it draws (R2), or for Threads how many rows Waiting
+   *  on me holds (`slots/view-row.tsx`). */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */

@@ -11,22 +11,30 @@ import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
 import { useOutlineReads } from "../outline-reads";
-import { filterSignals } from "../presets";
+import { filterSignals, type PresetSignal } from "../presets";
 import type { SlotProps } from "../slot-props";
+import { useWaitingCount } from "../threads/ThreadList";
 import { useIssueKeymap } from "../useIssueKeymap";
 
 /**
- * The view row (R2, R11): the six view controls - Dashboard first, Conversation with no count,
- * and the four filter controls with signals from the issue's tree - and Keys
- * (`IssuePresets.tsx`). Below 1024 px, with no view on, the Outline control stands beside the one
- * control (`contents-frame.tsx`). The row binds the views' chords (`useIssueKeymap.ts`).
+ * The view row (R2, R11): the view controls - Dashboard first, Conversation with no count, the
+ * four filter controls with signals from the issue's tree, and Threads with a count of its own -
+ * and Keys (`IssuePresets.tsx`). Below 1024 px, with no view on, the Outline control stands
+ * beside the one control (`contents-frame.tsx`). The row binds the views' chords
+ * (`useIssueKeymap.ts`).
  *
- * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
- * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
+ * The filter signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves
+ * nodes missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
  * decision `waiting` until the login answers, so the Decisions flag would omit decisions that
- * need review. Under a words filter (`?q=`) signals wait for the names (`namesHeld`), since
- * the names supply the words of plan tasks and callouts. Without a words filter the counts
- * do not depend on the names.
+ * need review. Under a words filter (`?q=`) they wait for the names (`namesHeld`), since the
+ * names supply the words of plan tasks and callouts. Without a words filter the counts do not
+ * depend on the names.
+ *
+ * The Threads control's count is read off no tree (dispatch://INFRA-5704/spec#b-r-control): it is
+ * the number of the rows of Waiting on me, which the row reads itself (`useWaitingCount`) over the
+ * read that Dashboard's threads and the header's count send, so the page still sends that read
+ * once. So it is drawn whether or not the tree's reads hold, and never at 0 or while that read
+ * has not answered.
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -49,6 +57,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
         : undefined,
     [address.filter, namesHeld, readsHeld, root, viewer]
   );
+  // The Threads control's count, by Threads' own rule over the reader's unread threads (R1).
+  const waiting = useWaitingCount(issue.key, issue.project);
+  const threads = threadsSignal(waiting);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
   useViewRowHeight(row);
@@ -67,9 +78,16 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
           paned || address.preset !== "conversation" ? undefined : <OutlineSheet slot={props} />
         }
         signals={signals}
+        threads={threads}
       />
     </div>
   );
+}
+
+/** The Threads control's signal (R1): its count, then `FILTER_SIGNAL_WORDS.new_replies`. None
+ *  where the count is 0 or its read has not answered, so the control then draws its name alone. */
+function threadsSignal(count: number | undefined): PresetSignal | undefined {
+  return count === undefined || count === 0 ? undefined : { count, unit: "new_replies" };
 }
 
 /**

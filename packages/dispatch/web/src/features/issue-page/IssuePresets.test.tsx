@@ -12,7 +12,7 @@ import { useDialog } from "../shell/useDialog";
 import { IssuePresets } from "./IssuePresets";
 import { presetPath } from "./issue-address";
 import { PRESET_NAMES, PRESET_ORDER, type Preset } from "./page-words";
-import type { Filter, PresetSignal } from "./presets";
+import { type Filter, isFilter, type PresetSignal } from "./presets";
 
 // The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
 // random order, so the file loads the engine before its first row, whichever row that is.
@@ -62,17 +62,21 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
       expect(document.activeElement, "Escape left the focus off the control").toBe(chooser);
     }
 
-    // Down and Up move one view, wrapping at each end; Home and End go to the ends.
+    // Down and Up move one view, wrapping at each end; Home and End go to the ends. The views are
+    // read in `PRESET_ORDER`, so the walk holds whichever view comes last.
+    const first = PRESET_ORDER[0];
+    const last = PRESET_ORDER[PRESET_ORDER.length - 1];
+    const beforeLast = PRESET_ORDER[PRESET_ORDER.length - 2];
     await user.keyboard("{ArrowDown}");
     for (const [key, to] of [
-      ["{ArrowDown}", "verification"],
-      ["{ArrowDown}", "plan"],
-      ["{ArrowDown}", "decisions"],
-      ["{ArrowDown}", "dashboard"],
-      ["{ArrowUp}", "decisions"],
-      ["{Home}", "dashboard"],
-      ["{End}", "decisions"],
-      ["{ArrowUp}", "plan"],
+      ...PRESET_ORDER.slice(PRESET_ORDER.indexOf("spec") + 1).map(
+        (preset) => ["{ArrowDown}", preset] as const
+      ),
+      ["{ArrowDown}", first],
+      ["{ArrowUp}", last],
+      ["{Home}", first],
+      ["{End}", last],
+      ["{ArrowUp}", beforeLast],
     ] as const) {
       await user.keyboard(key);
       expect(document.activeElement, `${key} did not move to ${PRESET_NAMES[to]}`).toBe(
@@ -83,7 +87,7 @@ test("the one control is a menu button: Enter, Space, Down and Up open it on the
     await user.keyboard("{Enter}");
     expect(screen.queryByRole("menu")).toBeNull();
     expect(screen.getByRole("status", { name: "address" }).textContent).toBe(
-      presetPath("CORE-1", "plan")
+      presetPath("CORE-1", beforeLast)
     );
     expect(document.activeElement, "a chosen view left the focus off the control").toBe(chooser);
 
@@ -380,13 +384,14 @@ function signalRoom(
 // aimed at one of them. So each filter control holds its signal's room from its first draw: drawn
 // empty and hidden from assistive technology until the signal is known, with the class that sizes
 // it, which it keeps once the signal is in it. Dashboard and Conversation draw no signal and hold
-// no room. From 1280 px the signal describes its toggle, so no toggle's name changes as it
-// arrives; below 1280 px the one control and each item of its menu are named by the signal beside
-// their name (WCAG 2.5.3), so each is named by its view's name alone before it and by that name
-// first after it. The case draws the row of six at 1440 px (`DESKTOP_WIDTH`) and the one control
-// and its menu at 390 px (`PHONE_WIDTH`).
+// no room, and Threads, which draws its count only where it has one (`IssuePresets`'s `threads`),
+// holds none either. From 1280 px the signal describes its toggle, so no toggle's name changes as
+// it arrives; below 1280 px the one control and each item of its menu are named by the signal
+// beside their name (WCAG 2.5.3), so each is named by its view's name alone before it and by that
+// name first after it. The case draws the row of seven at 1440 px (`DESKTOP_WIDTH`) and the one
+// control and its menu at 390 px (`PHONE_WIDTH`).
 test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
-  "before the counts arrive each filter control holds its signal's room, empty and hidden, in the class it keeps once they do, Dashboard and Conversation hold none, and no name changes but by the signal (width %i)",
+  "before the counts arrive each filter control holds its signal's room, empty and hidden, in the class it keeps once they do, Dashboard, Conversation and Threads hold none, and no name changes but by the signal (width %i)",
   async (width) => {
     const user = userEvent.setup();
     const restoreMatchMedia = stubViewport(width);
@@ -400,7 +405,7 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
       const row = width === DESKTOP_WIDTH;
       if (!row) await user.click(screen.getByRole("button", { name: PRESET_NAMES.spec }));
       // Each control by what it is and the view it is drawn for, found by `named`, its name: the
-      // row's six toggles, each read in the box it stands in with its signal's label, or the one
+      // row's seven toggles, each read in the box it stands in with its signal's label, or the one
       // control, which draws the view that is on, and each item of its menu.
       const controls = (
         named: (preset: Preset) => RegExp | string
@@ -431,8 +436,8 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
       const classes = new Map<string, string>();
       for (const [what, preset, control] of controls((preset) => PRESET_NAMES[preset])) {
         const room = signalRoom(control);
-        if (preset === "dashboard" || preset === "conversation") {
-          expect(room, `${what} holds a room for a signal it never draws`).toBeNull();
+        if (!isFilter(preset)) {
+          expect(room, `${what} holds a room for a signal before the counts arrive`).toBeNull();
           continue;
         }
         expect(
@@ -454,7 +459,7 @@ test.each([DESKTOP_WIDTH, PHONE_WIDTH])(
         row ? PRESET_NAMES[preset] : new RegExp(`^${PRESET_NAMES[preset]}\\b`)
       )) {
         const room = signalRoom(control);
-        if (preset === "dashboard" || preset === "conversation") {
+        if (!isFilter(preset)) {
           expect(room, `${what} holds a room for a signal once the counts arrive`).toBeNull();
           continue;
         }

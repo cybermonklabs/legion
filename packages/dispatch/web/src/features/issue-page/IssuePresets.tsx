@@ -31,10 +31,12 @@ import { type Filter, isFilter, type PresetSignal } from "./presets";
 import { useShortcutHelpOpener } from "./shortcut-help-opener";
 
 /**
- * The view row (R2, R11, R20, and the prototype's view tabs): six controls, Dashboard - the
+ * The view row (R2, R11, R20, and the prototype's view tabs): seven controls, Dashboard - the
  * page's opening view, which draws no signal (dispatch://INFRA-5702/spec#b-r-new-page) - and
- * Conversation - the page with no view on - then Spec, Verification, Plan and Decisions; the four
- * filters draw signals, and Dashboard and Conversation do not. Keys sits at the right end.
+ * Conversation - the page with no view on - then Spec, Verification, Plan, Decisions and Threads;
+ * the four filters draw signals, Threads draws its count where it has one
+ * (dispatch://INFRA-5704/spec#b-r-control), and Dashboard and Conversation draw none. Keys sits at
+ * the right end.
  *
  * The row is one line at every width (the architect's ruling 5, the 1440 and 390 px pictures).
  * At 760 px and below the row is the one control and Outline,
@@ -46,20 +48,21 @@ import { useShortcutHelpOpener } from "./shortcut-help-opener";
  * turns it off, and pressing Conversation turns every view off. Each control's state is an
  * address of its own (`issue-address.ts`'s `presetPath`), so pressing one is navigation and a
  * view survives a reload and a link. The toolbar is one tab stop, the control that is pressed;
- * the arrow keys, Home and End move between the six, and Enter and Space press.
+ * the arrow keys, Home and End move between the seven, and Enter and Space press.
  *
  * A toggle is the prototype's `.tab`: its name, which is the button, named by that word alone -
- * the word a voice user says. A filter's signal is beside the button in the same box, as a
+ * the word a voice user says. A control's signal is beside the button in the same box, as a
  * `<label>` so a press on the count presses the button too. The signal is the button's
  * description (`aria-describedby`), not a word drawn inside the button and missing from its
  * name (WCAG 2.5.3). Each filter holds its signal's room from its first draw, empty until the
- * counts are read (`Signal`), so no control moves when they arrive.
+ * counts are read (`Signal`), so no control moves when they arrive. Threads holds no room: it
+ * draws its signal only where it has one.
  *
- * The row has two shapes and no third. From 1280 px it is the row of six, which is where R2
+ * The row has two shapes and no third. From 1280 px it is the row of seven, which is where R2
  * says the views are one row; below it - R2's 1024 px and every width between, where the row of
  * five, before Dashboard, and the small controls measured up to 47 px wider than the row at
  * 1025 px with a view on - it is one control naming the one on, with its signal if drawn, which
- * opens a menu of the six, each a `menuitemradio` that says whether it is the one on; below
+ * opens a menu of the seven, each a `menuitemradio` that says whether it is the one on; below
  * 1024 px the Outline control stands beside it (R2, R14). One query and its negation decide the
  * two (`ONE_CONTROL_QUERY`), so no width answers both shapes or neither, and the row is one line
  * at every width. The one control is a WAI-ARIA menu button: Enter, Space, Down and Up open its
@@ -71,23 +74,29 @@ export function IssuePresets({
   issueKey,
   outline,
   signals,
+  threads,
 }: {
   active: Preset;
   issueKey: string;
   /** The Outline control, beside the one control below 1024 px where the Contents pane is not
    *  drawn (R14), and undefined wherever no Outline control is drawn. */
   outline?: ReactNode;
-  /** What each control draws after its name (`presets.ts`'s `filterSignals`). Dashboard draws no
-   *  signal, since what waits on the reader is counted in the header
+  /** What each filter control draws after its name (`presets.ts`'s `filterSignals`). Dashboard
+   *  draws no signal, since what waits on the reader is counted in the header
    *  (dispatch://INFRA-5702/spec#b-r-header-count), and nor does Conversation.
    *  The whole record is undefined until the counts can be read (`slots/view-row.tsx`), and until
    *  then each filter holds its signal's room empty. */
   signals?: Readonly<Record<Filter, PresetSignal>>;
+  /** What the Threads control draws after its name: the number of the rows of Waiting on me, in
+   *  the words `new_replies` (dispatch://INFRA-5704/spec#b-r-control). It is read off no tree, so
+   *  it is drawn whether or not `signals` is, and it is undefined at 0 and while its read has not
+   *  answered (`slots/view-row.tsx`): then the control draws its name alone, and holds no room. */
+  threads?: PresetSignal;
 }): ReactNode {
   const navigate = useNavigate();
   const { pathname } = useLocation();
   const openKeys = useShortcutHelpOpener();
-  // The row of six is drawn exactly where the one control is not.
+  // The row of seven is drawn exactly where the one control is not.
   const row = !useMediaQuery(ONE_CONTROL_QUERY);
   // Where the header scrolls away, the row holds the one control and Outline alone.
   const phone = useMediaQuery(HEADER_SCROLLS_QUERY);
@@ -108,6 +117,13 @@ export function IssuePresets({
   const nameId = (preset: Preset) => `${ids}-name-${preset}`;
   const signalId = (preset: Preset) => `${ids}-signal-${preset}`;
   const toggleId = (preset: Preset) => `${ids}-toggle-${preset}`;
+  // What `preset`'s control draws after its name: a filter its signal, in the room it holds from
+  // its first draw; Threads its count where it has one; Dashboard and Conversation nothing.
+  const drawnSignal = (preset: Preset): DrawnSignal | undefined => {
+    if (isFilter(preset)) return { preset, signal: signals?.[preset] };
+    return preset === "threads" && threads !== undefined ? { preset, signal: threads } : undefined;
+  };
+  const activeSignal = drawnSignal(active);
 
   useEffect(() => {
     const opened = wasOpen.current === undefined && open === "presets";
@@ -264,14 +280,17 @@ export function IssuePresets({
               <span data-preset-name="" {...pageChrome}>
                 {PRESET_NAMES[active]}
               </span>
-              {isFilter(active) ? <Signal preset={active} signal={signals?.[active]} /> : null}
+              {activeSignal === undefined ? null : (
+                <Signal preset={activeSignal.preset} signal={activeSignal.signal} />
+              )}
             </span>
             <MenuMark />
           </button>
           {open === "presets" ? (
             <div className={`${pageMenu} left-0`} onKeyDown={walkMenu} role="menu">
               {PRESET_ORDER.map((preset) => {
-                const signal = isFilter(preset) ? signals?.[preset] : undefined;
+                const drawn = drawnSignal(preset);
+                const signal = drawn?.signal;
                 return (
                   // Named by its name and any signal it draws; checked where it is the one on.
                   <button
@@ -297,9 +316,9 @@ export function IssuePresets({
                     <span id={nameId(preset)} {...pageChrome}>
                       {PRESET_NAMES[preset]}
                     </span>
-                    {isFilter(preset) ? (
-                      <Signal id={signalId(preset)} preset={preset} signal={signal} />
-                    ) : null}
+                    {drawn === undefined ? null : (
+                      <Signal id={signalId(preset)} preset={drawn.preset} signal={signal} />
+                    )}
                   </button>
                 );
               })}
@@ -328,7 +347,8 @@ export function IssuePresets({
       >
         {PRESET_ORDER.map((preset) => {
           const on = preset === active;
-          const signal = isFilter(preset) ? signals?.[preset] : undefined;
+          const drawn = drawnSignal(preset);
+          const signal = drawn?.signal;
           return (
             // The prototype's `.tab`: the name and any signal on one baseline, the rule under
             // both, ink and semibold for the one on.
@@ -380,9 +400,9 @@ export function IssuePresets({
                 }}
                 onMouseDown={(event) => event.preventDefault()}
               >
-                {isFilter(preset) ? (
-                  <Signal id={signalId(preset)} preset={preset} signal={signal} />
-                ) : null}
+                {drawn === undefined ? null : (
+                  <Signal id={signalId(preset)} preset={drawn.preset} signal={signal} />
+                )}
               </label>
             </span>
           );
@@ -454,7 +474,8 @@ function step(
  * insets) and the 1328 px it has at 1440 px hold on one line. Below 1280 px the one control's
  * widest name and room, Decisions', take 230 px of the 362 px it has at 390 px; the menu is at
  * least 260 px wide (`pageMenu`), and its widest item, Decisions with its room, takes 214 px of
- * the 246 px inside its padding and rule, so no item widens it when the signals arrive.
+ * the 246 px inside its padding and rule, so no item widens it when the signals arrive. Threads,
+ * the last control of the row, holds no room (`Signal`), so these widths leave it out.
  */
 const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
   decisions: "min-w-[14.5ch]",
@@ -463,15 +484,24 @@ const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
   verification: "min-w-[12ch]",
 };
 
+/** The signal a control draws after its name (`IssuePresets`'s `drawnSignal`): a filter's, which
+ *  is undefined until the counts are read, or Threads' count, which is drawn only where it has
+ *  one. */
+interface DrawnSignal {
+  readonly preset: Filter | "threads";
+  readonly signal: PresetSignal | undefined;
+}
+
 /**
- * What one filter control draws after its name, in its room (`SIGNAL_ROOM`): its count, then the
- * noun the count is in, or what of it asks something of the reader, in the prototype's `.sig`
- * (12 px, the quiet grey; the failed red for what failed and the decision violet for what waits
- * for review, each with its word, so the colour repeats what the word says). The count is the
- * author's number and carries `data-preset-count`, which the checks read it by. Until the signal
- * is known the room is drawn empty and hidden from assistive technology, so it holds the
- * control's width and no screen reader hears it or find-in-page matches in it. The room carries
- * `data-preset-signal` either way.
+ * What one control draws after its name: its count, then the noun the count is in, or what of
+ * it asks something of the reader, in the prototype's `.sig` (12 px, the quiet grey; the failed
+ * red for what failed and the decision violet for what waits for review, each with its word, so
+ * the colour repeats what the word says). The count is the author's number and carries
+ * `data-preset-count`, which the checks read it by. A filter's signal stands in its room
+ * (`SIGNAL_ROOM`): until the signal is known the room is drawn empty and hidden from assistive
+ * technology, so it holds the control's width and no screen reader hears it or find-in-page
+ * matches in it. The room carries `data-preset-signal` either way. Threads' signal holds no room,
+ * and is drawn only once it is known (`IssuePresets`'s `threads`).
  */
 function Signal({
   id,
@@ -479,13 +509,14 @@ function Signal({
   signal,
 }: {
   id?: string;
-  preset: Filter;
+  preset: DrawnSignal["preset"];
   signal: PresetSignal | undefined;
 }): ReactNode {
+  const room = preset === "threads" ? "" : ` ${SIGNAL_ROOM[preset]}`;
   return (
     <span
       aria-hidden={signal === undefined ? true : undefined}
-      className={`inline-block ${SIGNAL_ROOM[preset]} text-xs leading-4 font-medium ${pageQuietText}`}
+      className={`inline-block${room} text-xs leading-4 font-medium ${pageQuietText}`}
       data-preset-signal={preset}
       id={id}
     >

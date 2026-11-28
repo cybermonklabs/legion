@@ -5,11 +5,18 @@ import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../../api/client";
 import { issueResultsQuery, referenceTargetsQuery } from "../../../api/queries";
-import type { ArtifactBlock, ReferenceTarget } from "../../../api/types";
+import type {
+  ArtifactBlock,
+  MyRepliesResponse,
+  MyReplyRow,
+  ReferenceTarget,
+} from "../../../api/types";
+import { dashboardRepliesQuery } from "../../dashboard/useWaitingItems";
 import { decision, KEY } from "../../decision-card/decision-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
+import { replyRow } from "../../threads/replies-fixture";
 import { decisionsRead, issueDetails, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import { TWO_THREADS } from "../outline-fixtures";
@@ -64,7 +71,8 @@ function blocksWithStep(id: string): never {
 
 /** The counts once every read has answered: two statements and no decisions, steps or checks.
  *  Conversation draws no count, and nor does Dashboard: what waits on the reader is counted in
- *  the header. */
+ *  the header. Threads draws none: no unread thread of the reader's waits on them
+ *  (`answerReads`). */
 const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
   decisions: "0",
   plan: "0",
@@ -75,8 +83,32 @@ const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
 /** The row's text with each control's name alone, which is all it draws with no signals. */
 const NAMES_ALONE = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]).join("");
 
-/** Answers every read the row reaches: the tree's six reads, the documents' blocks, the reader
- *  and the names. A case changes the answer of the read it holds out or fails. */
+/** The replies read's answer (`dashboardRepliesQuery`): the reader's unread threads of the issue,
+ *  `rows`, which the Threads control counts by Waiting on me's rule. */
+function unreadReplies(rows: readonly MyReplyRow[]): MyRepliesResponse {
+  return {
+    as_of: "2026-10-12T00:00:00Z",
+    limit: 0,
+    offset: 0,
+    rows: [...rows],
+    total: rows.length,
+  };
+}
+
+/** The reader's unread thread `id`, which a person began, so it waits on the reader (R6). */
+function personThread(id: string): MyReplyRow {
+  return replyRow(id, { root_author: { id: "bob", kind: "user" } });
+}
+
+/** The reader's unread thread that the Legion daemon of the issue's project began, which Waiting
+ *  on me leaves out (`isDaemon`), so the Threads control does not count it. */
+const DAEMON_THREAD = replyRow("daemon-thread", {
+  root_author: { id: `legion-daemon:${issueDetails().project}`, kind: "session" },
+});
+
+/** Answers every read the row reaches: the tree's six reads, the documents' blocks, the reader,
+ *  the names, and the reader's unread threads, with no thread. A case changes the answer of the
+ *  read it holds out or fails. */
 function answerReads() {
   return {
     asks: spyOn(api, "listIssueAsks").mockResolvedValue([] as never),
@@ -95,14 +127,15 @@ function answerReads() {
     } as never),
     messages: spyOn(api, "listIssueMessages").mockResolvedValue([] as never),
     names: spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never),
+    replies: spyOn(api, "listMyReplies").mockResolvedValue(unreadReplies([])),
     results: spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     who: spyOn(api, "whoAmI").mockResolvedValue({ kind: "user", login: "alice" } as never),
   };
 }
 
 /** The view row of the fixtures' issue at `path`, its own address unless given, under the page's
- *  providers. Each case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row is
- *  the row of five. */
+ *  providers. Each case draws it at 1440 px (`DESKTOP_WIDTH`), from 1280 px up, where the row
+ *  draws the controls as toggles. */
 function renderViewRow(client: QueryClient, path = presetPath(KEY, "conversation")) {
   const issue = issueDetails();
   const route = { key: issue.key, kind: "conversation" } as const;
@@ -172,6 +205,84 @@ test("the view row draws no count, unit word or flag while a read of the tree is
     ).toContain(FILTER_SIGNAL_WORDS.steps);
   } finally {
     view.unmount();
+    restoreMatchMedia();
+    for (const spy of Object.values(reads)) spy.mockRestore();
+  }
+});
+
+// dispatch://INFRA-5704/spec#b-r-control (R1): the Threads control carries the number of the rows
+// of Waiting on me in the words "N with new replies to you", and draws no count where that
+// number is 0 or its read has not answered, even once every other control draws its count. The
+// number is read off no tree, so the control carries it while a read of the tree is out, when no
+// other control draws a count.
+test("the Threads control carries its count in R1's words while a read of the tree is out, and none at 0 or while its read is out", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  const reads = answerReads();
+  // The asks' read, held out until the case answers it.
+  const asks = Promise.withResolvers<never[]>();
+  reads.asks.mockReturnValue(asks.promise as never);
+  // Three of the reader's unread threads wait on them; the one the Legion daemon began does not.
+  reads.replies.mockResolvedValue(
+    unreadReplies([personThread("a"), personThread("b"), DAEMON_THREAD, personThread("c")])
+  );
+  try {
+    const counted = renderViewRow(newClient());
+    try {
+      await waitFor(() => expect(reads.asks, "the asks' read did not go out").toHaveBeenCalled());
+      await waitFor(() =>
+        expect(
+          drawnCounts(counted.container),
+          "the Threads control drew no count of 3 with the asks' read out"
+        ).toEqual({ threads: "3" })
+      );
+      expect(
+        counted.getByRole("button", { name: PRESET_NAMES.threads }),
+        "the Threads control is not described by its count in R1's words"
+      ).toHaveAccessibleDescription(`3 ${FILTER_SIGNAL_WORDS.new_replies}`);
+      await act(async () => asks.resolve([]));
+      await waitFor(() =>
+        expect(
+          drawnCounts(counted.container),
+          "the row did not draw the Threads count beside the others once every read had answered"
+        ).toEqual({ ...ANSWERED_COUNTS, threads: "3" })
+      );
+    } finally {
+      counted.unmount();
+    }
+    // At 0 the replies read has answered before the row is drawn, its one thread the daemon's;
+    // with no number that read is out for the rest of the case.
+    const uncounted = [
+      { answer: unreadReplies([DAEMON_THREAD]), count: 0, status: "success" },
+      { answer: undefined, count: undefined, status: "pending" },
+    ] as const;
+    for (const { answer, count, status } of uncounted) {
+      const client = newClient();
+      if (answer === undefined) {
+        reads.replies.mockReturnValue(Promise.withResolvers<never>().promise);
+      } else {
+        client.setQueryData(dashboardRepliesQuery(KEY).queryKey, answer);
+      }
+      const view = renderViewRow(client);
+      try {
+        await waitFor(() =>
+          expect(
+            drawnCounts(view.container),
+            `the row did not draw the other counts, and only them, with the Threads count ${count}`
+          ).toEqual(ANSWERED_COUNTS)
+        );
+        expect(
+          client.getQueryState(dashboardRepliesQuery(KEY).queryKey)?.status,
+          `the replies read is not ${status} with the Threads count ${count}`
+        ).toBe(status);
+        expect(
+          view.getByRole("toolbar").textContent,
+          `the Threads control drew its words with the count ${count}`
+        ).not.toContain(FILTER_SIGNAL_WORDS.new_replies);
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
     restoreMatchMedia();
     for (const spy of Object.values(reads)) spy.mockRestore();
   }

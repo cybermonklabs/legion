@@ -303,7 +303,7 @@ test("the three sentences stand with their labels in the Contents pane, the Spec
     );
 
     // Under a view, at both widths: no Contents pane; the Spec view draws the three, and the two
-    // rows under them, as its first group, above its first statement; the other three draw none.
+    // rows under them, as its first group, above its first statement; every other view draws none.
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
@@ -2462,7 +2462,7 @@ test("a comment the Spec view's address keeps is drawn whole with the focus on i
 // it moved right: Decisions from x 442-519 to x 537-615, so a press meant for it opened Plan.
 // Here those three reads are held from the page's load, so the row is drawn with no count
 // (`slots/view-row.tsx`), a press of the pointer on Decisions opens Decisions, and once the reads
-// are let go and every filter draws its count, each of the six controls - its toggle and the
+// are let go and every filter draws its count, each of the seven controls - its toggle and the
 // label beside it that holds its signal - stands where it stood, at 1440 px; at 390 px the one
 // control and each item of its open menu do too. The boxes are read after the press, since the
 // control that is on is drawn semibold, which is wider, and once the page's typeface has loaded,
@@ -2488,10 +2488,14 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
       });
       return () => held.resolve();
     };
+    // The four filters. Threads is no filter: its count comes from the reader's unread threads,
+    // which no held read answers, and it draws none at 0 (dispatch://INFRA-5704/spec#b-r-control).
     const filters = PRESET_ORDER.filter(
-      (preset) => preset !== "conversation" && preset !== "dashboard"
+      (preset) => preset !== "conversation" && preset !== "dashboard" && preset !== "threads"
     );
-    const counts = presetRow(page).locator("[data-preset-count]");
+    const counts = presetRow(page).locator(
+      filters.map((preset) => `[data-preset-count="${preset}"]`).join(", ")
+    );
     /** A control's left edge and its width. */
     type ControlBox = { readonly width: number; readonly x: number };
     /** The left edge and the width of each control of `controls`, by its name, read together. */
@@ -2536,7 +2540,7 @@ test("a press on Decisions before the counts arrive opens Decisions, and no cont
         .toEqual(["loaded"]);
     };
 
-    // At 1440 px: the row of six, each control its toggle and the label beside it.
+    // At 1440 px: the row of seven, each control its toggle and the label beside it.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
     const letGo = await holdCounts();
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);

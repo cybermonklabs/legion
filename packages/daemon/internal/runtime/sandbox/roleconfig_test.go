@@ -239,10 +239,12 @@ func TestAddingARoleOverlaysMountDriftsAnIssuePodMadeWithoutIt(t *testing.T) {
 }
 
 // Moving the overlay volume to another mount path (same volume, role_config_files pointed at the
-// new path) is a move too: the old pod mounts the volume where the role's file is not, so the role
-// is StaleAddress naming the new file. Restarting on the same configuration, a mount of the file's
-// parent directory, and a mount under the image's home (which an issue pod's roles container holds
-// at its HomeMountsDir view) are no move, for an issue pod and the controller's pod alike.
+// new path) is a move too: the old pod mounts the volume where the role's file is not, so
+// movedRoleOverlays names the new file: drift that the update round replaces for an issue pod, and
+// a moved address that the relaunch replaces for the controller's pod. Restarting on the same
+// configuration, a mount of the file's parent directory, and a mount under the image's home (which
+// an issue pod's roles container holds at its HomeMountsDir view) are no move, for an issue pod and
+// the controller's pod alike.
 func TestMovingARoleOverlaysMountPathIsAMove(t *testing.T) {
 	t.Parallel()
 	roles := corev1.Volume{Name: "operator-roles", VolumeSource: corev1.VolumeSource{ConfigMap: &corev1.ConfigMapVolumeSource{
