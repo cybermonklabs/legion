@@ -9,6 +9,7 @@ import {
   misnamedSkills,
   oversizedFiles,
   REPO_ROOT,
+  type SkillLink,
   skillLinks,
   stageSkills,
 } from "@legion/pi-shared/test/skills-guard";
@@ -23,9 +24,11 @@ import {
 const repoSkillsRoot = path.join(REPO_ROOT, "skills");
 const promptsRoot = path.join(REPO_ROOT, "packages/daemon/internal/prompts");
 let staged: string;
+let links: SkillLink[];
 
 beforeAll(() => {
   staged = stageSkills("@sjawhar/pi-legion");
+  links = skillLinks([staged, promptsRoot]);
 });
 
 afterAll(() => {
@@ -45,7 +48,7 @@ test("every skill's frontmatter name is its directory's name", () => {
 });
 
 test("every skill://<name>/<path> link names a file that exists, and its #anchor a heading in it", () => {
-  expect(brokenSkillLinks(skillLinks([staged, promptsRoot]), repoSkillsRoot)).toEqual([]);
+  expect(brokenSkillLinks(links, repoSkillsRoot)).toEqual([]);
 });
 
 test("every relative link resolves to a file inside the staged partition", () => {
@@ -57,9 +60,7 @@ test("every relative link resolves to a file inside the staged partition", () =>
 test("every legion-worker reference is linked from a skill or a prompt", () => {
   const workerRoot = path.join(staged, "legion-worker");
   const linked = new Set(
-    skillLinks([staged, promptsRoot])
-      .filter(({ name }) => name === "legion-worker")
-      .map(({ target }) => target)
+    links.filter(({ name }) => name === "legion-worker").map(({ target }) => target)
   );
   const unlinked = files(path.join(workerRoot, "references"))
     .map((file) => path.relative(workerRoot, file))
