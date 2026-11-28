@@ -1052,6 +1052,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
    *  named (R2). */
   presets: "Filters",
+  /** What the priority says before the key of the issue it is inherited from, after the level:
+   *  "P0 · from ACME-1" (`PrioritySource`), in the header's priority and in Details' row. */
+  priority_from: "from",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */
@@ -1113,9 +1116,6 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   set_parent: "Set parent issue",
   /** Ends that comparison and draws the pinned version itself (R16). */
   show_version: "Show version",
-  /** Opens the rest of a list of unbounded length in Details, which shows its first ten
-   *  entries and then this, with the whole count (R13): "Show all 14". */
-  show_all: "Show all",
   /** Opens a handoff's fields and every proof entry under its line in the history, and closes
    *  them again (the old conversation's handoff card, R19). */
   show_fields: "Show fields",

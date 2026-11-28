@@ -228,7 +228,8 @@ func (p *PgVersioned) AppendParkedUpdate(ctx context.Context, room string, updat
 }
 
 // AppendUpdateTx appends an already validated V1 update inside tx, recording whether it changes
-// the document's content: settlement versions a document only past a content update.
+// the document's content: settlement versions a document only past a content update. The append
+// marks the document owing a settlement, unless ctx marks it as owing none (withUnowedAppend).
 //
 // Every caller hands it an update this process encoded moments before - a new document's whole
 // tree (encodeDocumentTree), the transactions of one write's fork (mergeUpdates), a settlement's
@@ -243,7 +244,26 @@ func (p *PgVersioned) AppendUpdateTx(ctx context.Context, tx pgx.Tx, room string
 	if err := refuseUpdateItemCap(update); err != nil {
 		return 0, err
 	}
-	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived)
+	return p.appendUpdateTxClass(ctx, tx, room, update, contentChanged, appendDerived, !isUnowedAppend(ctx))
+}
+
+// unowedAppendContextKey marks an append that leaves its document owing no settlement
+// (withUnowedAppend).
+type unowedAppendContextKey struct{}
+
+// withUnowedAppend marks the append made with ctx (AppendUpdateTx) as one that leaves its document
+// owing no settlement: the seed of a document CreateDocument creates whose tree needs none
+// (SeedText). Such an append writes no pending-settlement row, as a room's parked bytes write none
+// (AppendParkedUpdate). The mark travels on ctx rather than as a parameter so that every store
+// standing in for PgVersioned sees the seed's append through AppendUpdateTx, as it sees any other.
+func withUnowedAppend(ctx context.Context) context.Context {
+	return context.WithValue(ctx, unowedAppendContextKey{}, true)
+}
+
+// isUnowedAppend is whether ctx marks its append as owing no settlement (withUnowedAppend).
+func isUnowedAppend(ctx context.Context) bool {
+	unowed, _ := ctx.Value(unowedAppendContextKey{}).(bool)
+	return unowed
 }
 
 // lockDocumentRoom serializes every durable mutation of one document, which holds because one
@@ -782,8 +802,8 @@ func (p *PgVersioned) head(ctx context.Context, q Queryer, room string) (persist
 
 // takePruneCheckpointStatement takes the checkpoint row a prune its crash left half done holds for
 // the room $1 names (PruneAfter commits it before it deletes), and answers its ceiling, or no row
-// when there is no prune to finish. A room's batch runs it under the document's advisory lock in
-// a pipeline of its own, and only where the gate's read found a checkpoint standing
+// when there is no prune to finish. A room's batch queues it in its writes pipeline, under the
+// document's advisory lock, where the gate's read found a checkpoint standing
 // (appendGateRead.pruneCeiling, appendRoomTx). It names doc_checkpoints alone. A statement that
 // names a delete from doc_updates takes that table's ROW EXCLUSIVE lock whether or not it deletes
 // a row, so folding finishPruneStatement into it would take that lock ahead of the insert on

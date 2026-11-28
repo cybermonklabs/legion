@@ -40,7 +40,7 @@ var testSigningKey = auth.SingleSigningKey("signing-key")
 
 // headerIdentity is the test header identity that records each named person in the database.
 func headerIdentity(database *store.Store) identity.HeaderIdentity {
-	return identity.HeaderIdentity{Header: "X-Dispatch-User", People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
+	return identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)}
 }
 
 // testServiceDeps are the dependencies every document service of this package's tests is built
@@ -5776,14 +5776,13 @@ func waitForDatabaseLock(t *testing.T, database *store.Store) {
 
 // databaseLockWaiters reads how many backends of database's own database wait on a lock, as the
 // reading of a wait for one: the tests beside this one hold the same tables and lock keys in
-// databases cloned from one template, so the predicate names this database (docs/testing.md).
+// databases cloned from one template, so the predicate names this database (docs/testing.md). It
+// reads the wait through lockwaittest (storetest.CountLockWaits), as every lock wait of the three
+// modules is read.
 func databaseLockWaiters(t *testing.T, database *store.Store) (string, bool) {
 	t.Helper()
-	var waiting int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock'
-	`).Scan(&waiting); err != nil {
+	waiting, err := storetest.CountLockWaits(context.Background(), database, "%")
+	if err != nil {
 		t.Fatalf("inspect database locks: %v", err)
 	}
 	return fmt.Sprintf("%d transactions wait on a lock", waiting), waiting > 0

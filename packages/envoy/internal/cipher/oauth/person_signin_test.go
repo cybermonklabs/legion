@@ -729,12 +729,14 @@ func postTokenWith(tokenURL string, form url.Values, headers http.Header) tokenA
 }
 
 // blockedPID is the backend running a statement matching like that waits on a lock blocker
-// holds, which waitForBlocked has already seen.
+// holds, which waitForBlocked has already seen. It reads the wait through pg_blocking_pids, the
+// queue pg_locks holds, and not through wait_event_type, which reads nothing each time the
+// waiting backend is woken (packages/envoy/lockwaittest, "Why pg_locks").
 func blockedPID(t *testing.T, f *fixture, blocker uint32, like string) uint32 {
 	t.Helper()
 	var pid int32
 	if err := f.pool.QueryRow(context.Background(), `select pid from pg_stat_activity
-		where wait_event_type = 'Lock' and $1 = any(pg_blocking_pids(pid)) and query like $2 limit 1`, int32(blocker), like).Scan(&pid); err != nil {
+		where $1 = any(pg_blocking_pids(pid)) and query like $2 limit 1`, int32(blocker), like).Scan(&pid); err != nil {
 		t.Fatalf("find the backend waiting on %d: %v", blocker, err)
 	}
 	return uint32(pid)

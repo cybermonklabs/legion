@@ -634,7 +634,7 @@ test("a read-only token's row shows its scopes and offers no box to change them"
 // mints. Each test below answers that read itself, in the state its name says.
 
 /** The line under the Set P0 box: what a token holding p0 may do. */
-const SET_P0_ALLOWS = "Set an issue's priority to P0.";
+const SET_P0_ALLOWS = "Makes work P0: sets P0, or moves, clears or files work under a P0 issue.";
 
 /** The plaintext Dispatch answers each mint of these tests with. */
 const MINTED = "dsp_abcdefghijklmnopqrstuvwxyz0123456789-ABCDEFG";

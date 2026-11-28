@@ -80,8 +80,8 @@ export interface DispatchCliLive {
    *  deployment's daemon publishes a gate record with, an agent records a plan review or opens an
    *  approval request with, and the CLI itself reaches the server with. */
   asMachine<T>(method: string, route: string, body?: unknown): Promise<T>;
-  /** An issue in the workflow, with a spec of its own: an issue Dispatch still shows in `triage`
-   *  is out of the workflow, and neither the advice's gates nor its approval requests name one. */
+  /** An issue in the workflow, with a spec of its own, which is where a running tree's gate
+   *  stands. */
   createIssue(project: string, title: string, parent?: string): Promise<CreatedIssue>;
   /** A document of the issue, uploaded as the person who owns it. */
   upload(issue: string, name: string, content: string): Promise<UploadedDocument>;

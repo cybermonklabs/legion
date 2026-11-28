@@ -538,7 +538,9 @@ Legion uses GitHub's own review mechanisms rather than labels:
   Legion footer, and its review decides the round only when that head is the pull request's current
   head: GitHub rewrites a review's `commit_id` to the current head, so the footer is the review's
   own word for the code it read, and a person's review, which carries no footer, decides by its
-  webhook alone. An approval counts for the head it names and no
+  webhook alone. A person's approval ends the round only once the reviewer has completed its round:
+  an agent can approve on a person's account, so until the completion a review the reviewer
+  submits decides the round instead. An approval counts for the head it names and no
   other, since any push may change code, and a push on its way from that head leaves the approval
   undecided until the new head arrives; anything else sets it aside, and only an approval of the
   head itself or a request for changes ends the round. An approval does not end it on its own:
@@ -577,10 +579,13 @@ Legion uses GitHub's own review mechanisms rather than labels:
   workspace and push, with no handoff and no completion for it, and the tester or the reviewer
   holding the phase is told to stop writing the workspace and not to complete its phase at the old
   head, and keeps its turn, its background jobs, its process and its session. In `merging` the
-  merger is asked: the merge is its own, and it resolves the conflict itself. The architect is told
-  once with a `checks-red` notice naming the phase the issue stays in and the role asked. In
-  `implementing` only the implementer is told. A parent that waits in `awaiting_children` is asked
-  nothing, and once it is back in a phase this rule reads it as any other issue.
+  merger is asked: the merge is its own, and it resolves the conflict itself. Each launch of the
+  merger is told the merge forward it owes one time, a launch that comes up in `merging` and the
+  launch that is up when the issue moves back into `merging` after its message ended outside
+  `merging` alike. The architect is told once with a `checks-red` notice naming the phase the
+  issue stays in and the role asked. In `implementing` only the implementer is told. A parent
+  that waits in `awaiting_children` is asked nothing, and once it is back in a phase this rule
+  reads it as any other issue.
   When the merge lands, the phase's worker is told both heads and goes on at the new one, and a
   completion of the phase the issue stands in that names the replaced head, or that names no head,
   is refused (`HANDOFF_HEAD_MERGED_FORWARD`) and is made again at the new head; a completion of a

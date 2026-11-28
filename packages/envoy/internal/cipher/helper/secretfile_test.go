@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // wantNamedNotPrinted fails t unless text names each of named and holds none of secrets.
@@ -281,7 +282,7 @@ func TestTheIdentityKeyIsNamedNeverByPath(t *testing.T) {
 	write := func(t *testing.T, name string, data []byte, mode os.FileMode) string {
 		t.Helper()
 		p := filepath.Join(dir, name)
-		if err := os.WriteFile(p, data, mode); err != nil {
+		if err := testexec.WriteFile(p, data, mode); err != nil {
 			t.Fatal(err)
 		}
 		return p

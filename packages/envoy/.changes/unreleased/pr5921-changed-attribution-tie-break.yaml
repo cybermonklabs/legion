@@ -1,0 +1,15 @@
+kind: Changed
+body: |-
+  When two issues tie for a pull request, Dispatch now credits the issue whose key sorts first
+  in byte order (`collate "C"`). Two issues for the pull request's repository tie when both
+  link its URL or the same source names both at the same position. Previously, the database's
+  link read order decided the tie.
+
+  After deployment, the reconcile uses rule 8 to re-judge each stored merged pull request it can
+  read from GitHub. It takes up to `delivery.RejudgedHeadsPerPass` (50) per pass and reads each
+  pull request once from GitHub. For each pull request it re-judges, the head row and the Delivery
+  row pick the same issue. If the repository is unreadable or the pull request no longer exists,
+  the reconcile stamps the head row with rule 8 and leaves its issue unchanged.
+  The reconcile's attribution pass rewrites the Delivery row's stored issue when the winning key
+  differs. The Delivery timeline can then show the other issue. When a reassigned pull request
+  later ships, its `issue.deployed` event goes to the new issue.

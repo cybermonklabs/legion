@@ -369,7 +369,7 @@ test("dispatch --help names dispatch login, and dispatch login --help says what 
   expect(one.stdout).toContain("It exits 0 once the login is kept");
   // What a sign-in may do whatever its person ticks, the same words the consent page says.
   expect(one.stdout).toContain(
-    "Whatever is ticked, the session writes in Dispatch and works on Envoy as its own session within its person's projects; the scope person adds acting as the person, the scope p0, which the page shows unticked until the person ticks it, adds making an issue's own priority 0, and --scope none asks for no scope."
+    "Whatever is ticked, the session writes in Dispatch and works on Envoy as its own session within its person's projects; the scope person adds acting as the person, the scope p0, which the page shows unticked until the person ticks it, adds making work P0 (setting P0, or moving, clearing or filing work under a P0 issue), and --scope none asks for no scope."
   );
   // The help is written out without @legion/cipher-client (dispatch-login-command.ts), so these
   // hold the names it gives to that package's constants.

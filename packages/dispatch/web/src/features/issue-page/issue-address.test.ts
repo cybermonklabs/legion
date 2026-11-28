@@ -4,7 +4,7 @@ import { screen, waitFor } from "@testing-library/react";
 import type { Message } from "../../api/types";
 import { KEY } from "../decision-card/decision-fixture";
 import { conversationPath } from "./decisions-filter/decisions-parts";
-import { agentsOnlyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
+import { historyItem, issueAddress, pathToTarget, presetPath } from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import { type NodeType, PRESET_ORDER, type Preset } from "./page-words";
 import { drawStage, stubReads } from "./slots/stage-fixtures";
@@ -282,20 +282,42 @@ test("an address naming an ask or a comment opens the outline, unless it pins a 
   expect(issueAddress(spec, "?v=3", "#b-p1", undefined).document).toBeUndefined();
 });
 
-// R20: a comment or a message agents wrote outside every thread a person wrote in lands in the
-// history, not the outline; one in a thread a person wrote in, and a reply under an ask, is a
-// node of the outline like any other.
-test("an item in a thread no person wrote in is the history's, and every other the outline's", () => {
+// The address of a turn of a thread the history holds lands in the history, not the outline: a
+// comment thread tied to no text that only agents wrote in, and a message thread the Legion
+// daemon began, a person's reply in it included. No other turn is the history's: a comment thread
+// a person wrote in, one whose head is tied to text and a reply under an ask are nodes of the
+// outline, and of the two agents' notes, Threads draws `agents-message`, which no person wrote
+// in, and the outline draws `asked-message`, which a person answered; `historyItem` leaves
+// both out of the history.
+test("an item of a thread the history holds is the history's, and no other item is", () => {
   const agent = { id: "session-1", kind: "session" } as const;
+  const daemon = { id: "legion-daemon:CORE", kind: "session" } as const;
   const person = { id: "alice", kind: "user" } as const;
+  const tied = {
+    artifact_id: "spec",
+    block_id: null,
+    mark_id: "mark-1",
+    orphaned: false,
+    quote: "The words it is tied to.",
+    version: 1,
+  };
   const comments = [
-    { ask_id: null, author: agent, id: "agents-root", reply_to: null },
-    { ask_id: null, author: agent, id: "agents-reply", reply_to: "agents-root" },
-    { ask_id: null, author: agent, id: "mixed-root", reply_to: null },
-    { ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
-    { ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "agents-root", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "agents-reply", reply_to: "agents-root" },
+    { anchor: null, ask_id: null, author: agent, id: "mixed-root", reply_to: null },
+    { anchor: null, ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
+    { anchor: tied, ask_id: null, author: agent, id: "tied-root", reply_to: null },
+    { anchor: null, ask_id: null, author: agent, id: "tied-reply", reply_to: "tied-root" },
+    { anchor: null, ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
   ];
   const messages = [
+    {
+      message: { ...messageFixture, author: daemon, id: "daemon-message" },
+      replies: [
+        { ...messageFixture, author: agent, id: "daemon-agent-reply" },
+        { ...messageFixture, author: person, id: "daemon-person-reply" },
+      ],
+    },
     {
       message: { ...messageFixture, author: agent, id: "agents-message" },
       replies: [{ ...messageFixture, author: agent, id: "agents-message-reply" }],
@@ -305,15 +327,24 @@ test("an item in a thread no person wrote in is the history's, and every other t
       replies: [{ ...messageFixture, author: person, id: "answered-message" }],
     },
   ];
-  const landing = (id: string) =>
-    agentsOnlyItem({ id, kind: "item" }, comments, messages, undefined);
-  for (const id of ["agents-root", "agents-reply", "agents-message", "agents-message-reply"]) {
+  const landing = (id: string) => historyItem({ id, kind: "item" }, comments, messages, undefined);
+  for (const id of [
+    "agents-root",
+    "agents-reply",
+    "daemon-message",
+    "daemon-agent-reply",
+    "daemon-person-reply",
+  ]) {
     expect(landing(id), `${id} is drawn in the outline`).toBe(id);
   }
   for (const id of [
     "mixed-root",
     "mixed-reply",
+    "tied-root",
+    "tied-reply",
     "under-ask",
+    "agents-message",
+    "agents-message-reply",
     "asked-message",
     "answered-message",
   ]) {
@@ -321,10 +352,10 @@ test("an item in a thread no person wrote in is the history's, and every other t
   }
   // Nothing lands in the history until the reads that tell have answered, nor for a block.
   expect(
-    agentsOnlyItem({ id: "agents-root", kind: "item" }, undefined, undefined, undefined)
+    historyItem({ id: "agents-root", kind: "item" }, undefined, undefined, undefined)
   ).toBeUndefined();
   expect(
-    agentsOnlyItem({ id: "agents-root", kind: "block" }, comments, messages, undefined)
+    historyItem({ id: "agents-root", kind: "block" }, comments, messages, undefined)
   ).toBeUndefined();
 });
 

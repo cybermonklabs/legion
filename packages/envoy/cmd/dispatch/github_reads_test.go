@@ -126,7 +126,7 @@ func TestHealthzNamesAFailedGitHubReadAndItsCause(t *testing.T) {
 		NATSURL: natsURL, SigningKey: gitHubReadsSigningKey,
 	})
 	withoutApp.waitHealthy(t)
-	answer := withoutApp.readHealthz(t)
+	answer := withoutApp.readHealthz(t, testwait.Context(t))
 	t.Logf("/healthz of the process with no GitHub App: %d %s", answer.status, answer.body)
 	if answer.status != http.StatusOK || !answer.OK || string(answer.GitHub) != "null" {
 		t.Fatalf("/healthz of a process with no GitHub App = %d %s, want 200 with ok true and github null", answer.status, answer.body)
@@ -221,11 +221,11 @@ type gitHubReadAnswer struct {
 	Cause *string `json:"cause"`
 }
 
-// readHealthz reads the process's /healthz once, bounded so a probe that hangs fails the test.
-func (p *dispatchProcess) readHealthz(t *testing.T) healthzAnswer {
+// readHealthz reads the process's /healthz once, under ctx: the shared wait's (testwait.Context),
+// so a probe that hangs fails the test near the binary's deadline. A wait that reads it on every
+// attempt makes ctx once, before the wait.
+func (p *dispatchProcess) readHealthz(t *testing.T, ctx context.Context) healthzAnswer {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, p.url("/healthz"), nil)
 	if err != nil {
 		t.Fatalf("build the /healthz request: %v", err)
@@ -251,23 +251,18 @@ func (p *dispatchProcess) readHealthz(t *testing.T) healthzAnswer {
 	return answer
 }
 
-// waitForGitHubReads polls /healthz until missing finds nothing lacking in an answer ("") and
-// returns that answer. Once its bound passes it fails the test with what missing last found
-// lacking and the last status and body /healthz answered, then the process's output.
+// waitForGitHubReads reads /healthz through the shared wait until missing finds nothing lacking in
+// an answer ("") and returns that answer. The wait's failure prints what missing last found
+// lacking, the last status and body /healthz answered, and the process's output.
 func (p *dispatchProcess) waitForGitHubReads(t *testing.T, missing func(healthzAnswer) string) healthzAnswer {
 	t.Helper()
-	bound := testwait.Bounded(t, 2*time.Minute, 5*time.Second)
-	var (
-		last healthzAnswer
-		lack string
-	)
-	if !testwait.Holds(bound, 200*time.Millisecond, func() bool {
-		last = p.readHealthz(t)
-		lack = missing(last)
-		return lack == ""
-	}) {
-		t.Fatalf("/healthz did not report it within %v: %s; last %d %s\n%s", bound, lack, last.status, last.body, p.Output.String())
-	}
+	reading := testwait.Context(t)
+	var last healthzAnswer
+	testwait.Until(t, "/healthz to report the GitHub reads", func() (withOutput[string], bool) {
+		last = p.readHealthz(t, reading)
+		lack := missing(last)
+		return readWith(fmt.Sprintf("%s; last %d %s", lack, last.status, last.body), p.Output), lack == ""
+	})
 	return last
 }
 
