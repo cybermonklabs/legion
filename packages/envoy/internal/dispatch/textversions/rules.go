@@ -10,6 +10,8 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // RulesVersion is the version of the event rules versionRules holds, which the fill writes in the
@@ -26,7 +28,10 @@ import (
 // than this one's; and only that pass raises the column, once it has read everything. Only a
 // build with these rules writes an event of the three types, so every one in the log was written
 // by the roll that brought them or later, and a read of them all up to the cursor misses none.
-const RulesVersion = 2
+// It is the version the relation's readers need (store.TextVersionsRules), which answers no cut
+// while the cursor row holds a lower one, so a search at a past time never reads a table that
+// lacks the versions the re-read has not written yet.
+const RulesVersion = store.TextVersionsRules
 
 // Where a version's body came from, the values of search_text_versions.body_from this build
 // writes: the event's payload, whole, which is also where a deleted post's empty body comes from

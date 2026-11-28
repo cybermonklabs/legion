@@ -1,0 +1,84 @@
+{
+  "id": 439794,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 63,
+  "type": "ask.resolved",
+  "actor": {
+    "kind": "session",
+    "id": "01a1cf47-f3f2-742e-b065-215184262fa7",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+      "session_title": "lorem ipsum dolor sit amet "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-12T15:58:58.608017Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": null,
+    "asked_of": null,
+    "asked_of_at": null,
+    "asked_of_by": null,
+    "author": {
+      "id": "01a1cf47-f3f2-742e-b065-215184262fa7",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet ",
+        "host": "lor",
+        "machine": "lorem ipsum dolor ",
+        "session_title": "lorem ipsum dolor sit amet "
+      }
+    },
+    "block_artifact": {
+      "id": "2c7f2beb-6884-4ef4-8c41-b12aab93e4e8",
+      "primary": true,
+      "slug": "lore"
+    },
+    "block_id": "bc730c45-56f7-40a1-94ad-cd92189579ee",
+    "created_at": "2026-11-12T11:03:39.744312Z",
+    "edited_at": null,
+    "id": "e2b03662-00b8-4cfc-ac62-3afabb72f947",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 428251,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit amet lorem ipsu"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit amet lorem ips"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ",
+    "referenced_by_count": 0,
+    "resolution": {
+      "actor": {
+        "id": "01a1cf47-f3f2-742e-b065-215184262fa7",
+        "kind": "session",
+        "origin": {
+          "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+          "host": "lor",
+          "machine": "lorem ipsum dolor ",
+          "session_title": "lorem ipsum dolor sit amet "
+        }
+      },
+      "at": "2026-11-12T15:58:58.638263409Z",
+      "kind": "retracted",
+      "reason": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit a"
+    },
+    "revision": 1,
+    "state": "resolved",
+    "thread_logins": [],
+    "urgency": "med"
+  }
+}

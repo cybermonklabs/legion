@@ -1,0 +1,57 @@
+{
+  "id": 106775,
+  "issue_key": null,
+  "artifact_id": "d7c7b6eb-e71b-4e13-aa55-6dd12bb4b449",
+  "project": "ACME",
+  "seq": 2,
+  "type": "ask.opened",
+  "actor": {
+    "kind": "session",
+    "id": "01a17ba7-66dd-7731-8dbc-2223f398c2b1",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+      "session_title": "lorem ipsum dolor sit amet lor"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-29T08:30:51.326725Z",
+  "payload": {
+    "anchor": null,
+    "answer": null,
+    "artifact_id": "d7c7b6eb-e71b-4e13-aa55-6dd12bb4b449",
+    "author": {
+      "id": "01a17ba7-66dd-7731-8dbc-2223f398c2b1",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum dolo",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "block_id": null,
+    "created_at": "2026-10-29T08:30:51.326725Z",
+    "edited_at": null,
+    "id": "1e3b89c6-91a8-4366-9293-14d71a66cbad",
+    "issue_key": null,
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 106775,
+    "options": [],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum ",
+    "referenced_by_count": 0,
+    "references_changed": [
+      {
+        "id": "d7c7b6eb-e71b-4e13-aa55-6dd12bb4b449",
+        "kind": "artifact",
+        "ref": "dispatch://ACME"
+      }
+    ],
+    "revision": 1,
+    "state": "open",
+    "thread_logins": [],
+    "urgency": "low"
+  }
+}
