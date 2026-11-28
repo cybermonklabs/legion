@@ -1,0 +1,3 @@
+A directory of the fixture module that holds no Go package. go-test.test.sh names it as
+./nogo/... beside a package, and go test prints `go: warning: "./nogo/..." matched no packages`
+on its own standard error: a line gotestsum's readStderr does not allow, which stops its rerun.

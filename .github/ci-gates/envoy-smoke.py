@@ -6,9 +6,9 @@
 # themselves. check-image-trigger-paths.sh holds the filter to the image's inputs from the
 # other side, proving the list complete; this gate proves no pattern of the filter is idle.
 GATE = gate("envoy_smoke", "envoy-smoke", runs=[
-    step_run("envoy-smoke", "Container smoke test (testcontainers)", "go test -tags smoke -v -timeout 5m ./internal/smoke/",
+    step_run("envoy-smoke", "Container smoke test (testcontainers)", "go test -tags smoke -timeout 5m ./internal/smoke/",
              ENVOY, ["./internal/smoke/"], tags="smoke"),
-    step_run("envoy-smoke", "Live tests of envoy-infra's host:Listener", "go test -tags pulumilive -v -timeout 15m ./host/",
+    step_run("envoy-smoke", "Live tests of envoy-infra's host:Listener", "go test -tags pulumilive -timeout 15m ./host/",
              INFRA, ["./host/"], tags="pulumilive"),
 ], exact=[
     pinned_step("envoy-smoke", SCHEMA_STEP, INFRA, SCHEMA_SCRIPT, [
@@ -70,4 +70,4 @@ GATE = gate("envoy_smoke", "envoy-smoke", runs=[
              "`packages/envoy/infra/host/heldportwrapper/Dockerfile#COPY packages/envoy /src/packages/envoy`")
       for path in files_but_tests(ENVOY, suffix="", tree=True, skip=(".changes",))
       if not path.startswith(tuple(f"{ENVOY}/{d}/" for d in ("internal/integration", "internal/smoke", "deploy")))],
-) + setup_go("envoy-smoke", f"{ENVOY}/go.mod"))
+) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + go_test_runner("envoy-smoke"))

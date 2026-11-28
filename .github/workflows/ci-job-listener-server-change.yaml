@@ -46,6 +46,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The soak's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy: the test binary, and the listener cmdtest.Build makes from the same packages.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -58,8 +60,13 @@ jobs:
       - name: Server-change soak of the listener
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh serverchange ./cmd/listener)
-          go test -tags serverchange -count=1 -timeout 15m -v -run "$pattern" ./cmd/listener
+          ../../.github/scripts/go-test.sh go test -tags serverchange -count=1 -timeout 15m -run "$pattern" ./cmd/listener
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: listener-server-change
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

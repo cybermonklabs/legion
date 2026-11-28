@@ -218,16 +218,25 @@ itself, whose tests import its sources by relative path.
   `socketDispatch` in `packages/envoy-client/src/__tests__/dispatch-keyed-writes.test.ts` reads a
   body only 1 MiB past what its server took.
 
-- A suite that needs a program this host may not have skips with that program's name. Call
-  `skipWithout("docker")` once, at the file's module scope, and hand the answer to every
-  `describe.skipIf` and `test.skipIf` of the file: it prints one line naming the missing programs
-  and the file whose tests did not run (`@legion/test-fixtures/host-tools`), and a call per test
-  would print that line per test. A suite that needs a service does the same with the variable that
-  names it, and makes a database of its own rather than reading the one it finds
-  (`LEGION_TEST_PG_DSN`, `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs
-  both builds the two halves into a single list and prints one line, rather than calling
-  `skipWithout` beside a warning of its own, so a host that has neither reads one line naming both
-  (`hostTool` with the variable, in that file and in `harness-stacks.test.ts`).
+- A suite that needs a program this host may not have calls `skipWithout("docker")` once, at the
+  file's module scope, and hands the answer to every `describe.skipIf` and `test.skipIf` of the
+  file (`@legion/test-fixtures/host-tools`). Off GitHub Actions a missing program skips the file's
+  tests: it prints one line naming the missing programs and the file whose tests did not run, and
+  a call per test would print that line per test. Under `GITHUB_ACTIONS=true` it throws instead,
+  naming the programs and the file, so the file fails to load and its job fails: a CI job gives
+  each test it runs what that test needs, and a skip there would pass the job with the proof gone.
+  `requireOrSkip(what, present)` of the same module is that rule for a prerequisite that is no
+  program on `PATH` (a variable that names a server, a database URL, a capability of the
+  machine), and `testprereq.Require` of `packages/envoy/testprereq` is that rule for a Go test of
+  either module: each fails the test in CI and skips it elsewhere, naming the prerequisite. A
+  suite that needs a service gates on the variable that names it, and makes a database of its own
+  rather than reading the one it finds (`LEGION_TEST_PG_DSN`,
+  `packages/dispatch/e2e/__tests__/psql-session.test.ts`). One that needs several such things, or
+  a program beside them, builds one list of what it lacks and hands it to `requireOrSkip` joined,
+  rather than calling `skipWithout` beside a gate of its own, so a host that lacks them all reads
+  one line naming each. `psql-session.test.ts` and `harness-stacks.test.ts` build that list,
+  `hostTool` beside the variable, but print the line themselves and so skip in CI, until their
+  entries in `.github/test-reach-unhomed.yaml` close.
 
 - A test under `scripts/e2e/lib` gates on a host program with `hostGate` from the same module
   instead, declaring its gated rows with the gate's own `test` and `describe`: outside CI each
@@ -265,7 +274,8 @@ itself, whose tests import its sources by relative path.
   machine the row cannot run on too: it prints one `signal probe:` line either way, skips outside
   CI and fails under `GITHUB_ACTIONS`, whose runner starts `go test` with every signal at its
   default (`requireStartedAtDefault` in the same file). A skip there would leave `go test` green
-  with nothing proved, since CI runs it without `-v`.
+  with nothing proved: go test counts a skip as a pass, and nobody reads the `--- SKIP` line in the
+  log of a green job.
 
 - Start a container with `docker run --rm` and register its removal the moment `docker run` returns,
   not once the whole start has succeeded: a start that throws half-way has already made the
@@ -911,7 +921,11 @@ NATS redelivery), so one made parallel needs its bound read again under the load
 beside it.
 
 CI's `envoy-go` unit step runs it with `-timeout 20m` (`.github/workflows/ci-job-envoy-go.yaml`),
-and a command that runs the whole package passes the same:
+in two legs, a group of its tests each (`.github/go-legs/packages/envoy/internal/dispatch/legion.yaml`):
+the seeded test has a leg to itself and the package's other tests the next. That split was
+measured before the seeds ran beside each other, when that test alone took 508 s of the package's
+919 s on CI's runner; with its seeds beside each other the whole package took 617 s in one leg
+(run 46059758378). A command that runs the whole package passes the same `-timeout`:
 
 ```sh
 cd packages/envoy
@@ -921,10 +935,10 @@ go test -timeout 20m ./internal/dispatch/legion/
 A Legion issue pod does not run that whole package either: `skills/legion-worker/references/tools.md` says what the pod runs and where the rest goes.
 
 Every package of `packages/daemon` and of `packages/envoy` runs in CI in exactly one leg that
-`.github/go-legs.yaml` names for it, or, as `internal/daemon` and `cmd/listener` do, in a group of
-its tests in each of several legs of one job (or under `elsewhere`, with the job that runs it). A
-package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs once in a
-leg of each of two jobs, a plain one and a race one, each in a mode of its own.
+`.github/go-legs.yaml` names for it, or, as `internal/daemon`, `cmd/listener` and `cmd/cipherd` do,
+in a group of its tests in each of several legs of one job (or under `elsewhere`, with the job that
+runs it). A package the module's `twice` names, as envoy's `internal/cipher/natscallout` is, runs
+once in a leg of each of two jobs, a plain one and a race one, each in a mode of its own.
 When you add, remove, rename or move a package of either module, change its line there in the same
 change. A package `go list ./...` prints and the file does not name still runs, in exactly one
 leg: the last leg of the job the module's `unlisted` names (daemon-go, envoy-go), and every leg
@@ -992,10 +1006,12 @@ The rule covers the cleanup's argument as well as its closure, so an argument th
 A run that reports nothing is no proof on its own: the check runs at a garbage collection, so a short run can pass with the path present.
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
-The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
+The `envoy_go_race_docs` and `envoy_go` filters, which the changes job computes from what each job reads when it runs (`.github/ci-notes/ci.md`, "The changes job computes its filters when it runs"), select them.
 Both are slow suites: the merge queue runs each when the queue's own generator selects it against the queue's base, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+CI hands the detector to the test binary alone, as `-exec 'env GODEBUG=checkfinalizers=1'` on the go test line.
+Set on the go command itself, `GODEBUG` makes the go tool run the detector too, and the `checkfinalizers: queue:` lines it prints to its own standard error land under `=== Errors` in gotestsum's summary and stop a merge group's retry (`.github/scripts/go-test.sh`'s header says which lines of go's standard error do).
 
-The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
+The race run prints the test binary's own output (gotestsum's standard-verbose format, over `go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.
 A test that builds a `*Service` registers a cleanup that shuts it down, with `testcleanup.Add`.
 A service a test left running holds its rooms, and their documents, for the rest of the binary's run.
@@ -1005,7 +1021,7 @@ A settlement timer's callback therefore holds the service and the room's state w
 
 `packages/envoy/internal/dispatch/docs` is the only package of this repository that registers a cleanup today, and no repository-wide check holds that true:
 `grep -rn "runtime.AddCleanup\|runtime.SetFinalizer" --include=*.go .` finds those two sites and nothing else.
-A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `GODEBUG=checkfinalizers=1` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
+A `runtime.AddCleanup` or `runtime.SetFinalizer` added in another package puts `-exec 'env GODEBUG=checkfinalizers=1'` on the go test line that already runs that package's tests, in the same pull request, rather than a job that runs them again; `.github/scripts/ci_job_reads.py`'s `CLEANUP_DETECTOR` is that text and its `CLEANUP_DETECTOR_PACKAGES` names the packages whose lines carry it.
 
 ## A database a Go test creates
 

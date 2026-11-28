@@ -14,7 +14,8 @@ on:
       migration-base:
         description: >-
           The commit main pointed at before the push this run tests. A run on main must name it;
-          a run on another branch that names none compares with the branch's merge base with main.
+          a run on another branch compares with the commit it names (its merge base with main
+          spares the fetch that finds it), or, naming none, with the branch's merge base with main.
         type: string
         required: false
       every-job:
@@ -94,6 +95,7 @@ env:
     [
       "changes",
       "lint",
+      "test-reach",
       "priority-conflicts"
     ]
   # why: .github/ci-notes/ci.md#the-jobs-outside-ci-oks-accounting
@@ -251,6 +253,8 @@ jobs:
         id: base
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -285,7 +289,7 @@ jobs:
         with:
           predicate-quantifier: some-with-excludes
           filters: ${{ runner.temp }}/ci-filters.yaml
-          base: ${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}
+          base: ${{ github.event_name == 'workflow_dispatch' && (inputs.migration-base || 'main') || '' }}
           ref: ${{ github.event_name == 'workflow_dispatch' && github.sha || '' }}
       # why: .github/ci-notes/ci.md#the-changes-job-says-what-decided-each-slow-suite
       - name: Say what decided each slow suite on this run
@@ -314,6 +318,34 @@ jobs:
       go_notices: ${{ needs.changes.outputs.go_notices }}
     secrets:
       PRIVATE_NAME_TERMS: ${{ secrets.PRIVATE_NAME_TERMS }}
+
+  # The test-reach search of dispatch://INFRA-3411/spec#b-r3: each test runs in a job ci-ok needs,
+  # or .github/test-reach-unhomed.yaml names it. It reads the tree and the workflows and runs no go,
+  # bun or build command, so it has no filter: it runs on every non-draft run, also when `changes`
+  # failed, in a job of its own so that lint, which an unlabelled pull request waits for, stays short.
+  test-reach:
+    needs: changes
+    if: ${{ !cancelled() && !github.event.pull_request.draft && (github.event_name != 'merge_group' || github.run_attempt == '1') }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
+    env:
+      JOB_TIMEOUT_MINUTES: 10 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check every test reaches a job ci-ok needs
+        run: .github/scripts/check-test-reach.sh
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
 
   # Runs on every non-draft run, also when `changes` failed, as lint does.
   # why: .github/ci-notes/ci.md#why-a-change-that-conflicts-with-a-priority-pull-request-fails
@@ -1070,6 +1102,7 @@ jobs:
     needs:
       - changes
       - lint
+      - test-reach
       - priority-conflicts
       - ci-images
       - tool-fallback
@@ -1124,7 +1157,8 @@ jobs:
     # arm64, as .github/ci-notes/ci.md#why-changes-pr-title-cancel-started-and-ci-ok-run-on-arm64 says.
     runs-on: ubuntu-24.04-arm
     # The verdict step's 10 and the hold step's 175 (the reconcile step's 10 runs only when the
-    # hold does not), with three over for the checkout and the two refusals.
+    # hold does not), with three over for the checkout, the two refusals and the step that names
+    # each Go test that passed only on its retry, which has no timeout-minutes of its own.
     timeout-minutes: 188
     env:
       JOB_TIMEOUT_MINUTES: 188 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
@@ -1153,6 +1187,12 @@ jobs:
         run: |
           echo "::error::ci-ok is failure on attempt $RUN_ATTEMPT of this merge-group run, whatever the jobs of it did: a merge group is tested once, the queue builds a new group rather than re-running one, and this attempt judges a tree the queue is no longer waiting on."
           exit 1
+
+      # why: .github/ci-notes/ci.md#the-job-reads-nothing-of-the-tree-but-ci-oksh-ci-okjq-ci-ok-reconcilesh-and
+      - name: Name each Go test that passed only on its retry
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        uses: ./.github/actions/ci-ok-retries
 
       # why: .github/ci-notes/ci.md#needs-is-tojsonneeds-changes-result-and-outputs-with-every-other-jobs-result
       - name: Judge every job of this run

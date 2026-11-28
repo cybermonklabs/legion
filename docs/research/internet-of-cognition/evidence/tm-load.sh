@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# legion: tool - runs test-maslab.md's commands in order when a person reruns that evaluation
 #  Every command of test-maslab.md, in order. Writes what it prints to maslab-load.txt:
 #    bash tm-load.sh > maslab-load.txt 2>&1
 #  This is the record of the run that wrote evidence/maslab-load.txt, and it names the paths of

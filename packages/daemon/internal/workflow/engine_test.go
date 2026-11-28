@@ -1,5 +1,9 @@
 package workflow
 
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/artifact-version.json TestCapturedArtifactVersionAndApprovalFlowThroughConsume reads the captured event through ../intake/testdata
+//ci:reads packages/daemon/internal/intake/testdata/dispatch/artifact-approved.json TestCapturedArtifactVersionAndApprovalFlowThroughConsume reads the captured event through ../intake/testdata
+//ci:reads packages/daemon/internal/intake/testdata/github/review.json TestCapturedApprovedReviewFlowsThroughConsumeToAccepting reads the captured event through ../intake/testdata
+
 import (
 	"context"
 	"crypto/rand"

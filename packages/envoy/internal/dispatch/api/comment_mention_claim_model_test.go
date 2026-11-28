@@ -90,7 +90,8 @@ import (
 //
 // Its runner is in comment_mention_claim_model_run_test.go, its steps in
 // comment_mention_claim_model_steps_test.go, its checks in comment_mention_claim_model_checks_test.go,
-// and its controls in TestTheMentionSenderClaimModel.
+// its search of the sender as built in TestTheMentionSenderClaimModel, and its controls in
+// TestTheClaimModelCatchesEachBrokenSender.
 
 // cmLapsePeriods is model.DeliveryClaimLapse in claim-refresh periods (mentionClaimRefresh), and
 // cmSlots how many slots of the model's time one period is.

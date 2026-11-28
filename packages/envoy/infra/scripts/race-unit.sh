@@ -4,7 +4,7 @@
 # The race build of envoy-infra's unit tests: the one command envoy-infra-build's unit step runs
 # and ci-caches.yaml's envoy-infra fill compiles into the build cache that step restores.
 #
-#   race-unit.sh run       go test -count=1 -race over PACKAGES (envoy-infra-build's unit step)
+#   race-unit.sh run       go test -count=1 -race over PACKAGES under .github/scripts/go-test.sh (envoy-infra-build's unit step)
 #   race-unit.sh compile   go test -c -o /dev/null -race over PACKAGES (the fill's arm64 leg)
 #
 # PACKAGES is every package of the module, from `go list ./...`, less those EXCLUDE matches: the
@@ -19,7 +19,8 @@
 #
 # It runs from the module whatever the caller's directory, takes exactly one argument, and exits
 # 2 on any other; it exits 1 when go list fails or keeps no package, and otherwise with go test's
-# own status.
+# own status, or go-test.sh's for a run. A run goes through go-test.sh so its tests run under
+# gotestsum as every Go test step's do, and a compile does not, since it runs no test.
 set -euo pipefail
 
 EXCLUDE='/internal/textcheck$'
@@ -43,5 +44,8 @@ mapfile -t packages < <(grep -Ev "$EXCLUDE" <<<"$listed" || true)
 if [ "${#packages[@]}" -eq 0 ]; then
 	echo "race-unit.sh: go list ./... kept no package once EXCLUDE ($EXCLUDE) was taken out" >&2
 	exit 1
+fi
+if [ "$1" = run ]; then
+	exec ../../../.github/scripts/go-test.sh go test "${flags[@]}" -race "${packages[@]}"
 fi
 exec go test "${flags[@]}" -race "${packages[@]}"

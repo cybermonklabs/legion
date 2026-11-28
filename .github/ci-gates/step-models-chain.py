@@ -12,8 +12,8 @@
 # internal/daemon/step_models_live_test.go and live_agent_proof_test.go. The job compiles both
 # under the e2e tag. What is declared here is what the job's own steps read. That is the two
 # harness installs and the jj install, the test images the package's broker pulls, and the
-# Postgres checks of every lane that starts a Dispatch process. It is also the Bun install and the
-# Go setup the step is built on.
+# Postgres checks of every lane that starts a Dispatch process. It is also the Bun install, the
+# Go setup the step is built on and the gotestsum runner its go test runs under.
 GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
     # The chain starts a Dispatch process, so the job checks that its Postgres service allows one,
     # as daemon-go-race does.
@@ -37,4 +37,5 @@ GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
                                             f"const Image, the image of the package's own broker"),
 ) + ceiling_reads(STEP_MODELS_CHAIN_JOB) + service_settings_reads(STEP_MODELS_CHAIN_JOB) + install_jj(STEP_MODELS_CHAIN_JOB)
   + install_omp(STEP_MODELS_CHAIN_JOB)
-  + setup_go(STEP_MODELS_CHAIN_JOB, f"{DAEMON}/go.mod") + bun_job(STEP_MODELS_CHAIN_JOB))
+  + setup_go(STEP_MODELS_CHAIN_JOB, f"{DAEMON}/go.mod") + bun_job(STEP_MODELS_CHAIN_JOB)
+  + go_test_runner(STEP_MODELS_CHAIN_JOB))

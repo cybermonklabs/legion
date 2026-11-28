@@ -1,5 +1,7 @@
 package kvrecords_test
 
+//ci:reads packages/envoy/infra/README.md TestTheRotationReadFindsTheCopiesTheOldKeySigned reads it through ../../../infra/README.md
+
 import (
 	"crypto/ed25519"
 	"os"

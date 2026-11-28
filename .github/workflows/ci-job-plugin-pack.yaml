@@ -109,6 +109,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The probes' go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
 
       # go-daemon, shared with typecheck, daemon-go, step-models-chain and pi-legion: this step
       # compiles internal/daemon's test binary, with no race detector, on the dependencies that
@@ -131,8 +133,13 @@ jobs:
       # daemon-go race step's `-skip` from PLUGIN_PACK_TESTS and holds both steps to what it
       # builds.
       - name: Pack the plugin releases and run the prompt probes on the real Oh My Pi
-        run: go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
+        run: ../../.github/scripts/go-test.sh go test -count=1 -timeout 15m -run '^(TestTheAgentModelCheckOnTheRealOhMyPi|TestTheImageProbeResolvesTheAgentsTheDaemonsPromptsName|TestTheRealPluginsOnTheRealOhMyPi)$' ./internal/daemon/
         working-directory: packages/daemon
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: plugin-pack
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
@@ -223,6 +230,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The chain's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
 
       # go-daemon, shared with typecheck, daemon-go, plugin-pack and pi-legion. This step compiles
       # internal/daemon's test binary under -tags e2e, with no -race. It reads the module cache and
@@ -272,9 +281,10 @@ jobs:
         run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
 
       # The two tests, by name. .github/scripts/ci_job_reads.py builds this text from
-      # STEP_MODELS_CHAIN_TESTS and holds the step to what it builds.
+      # STEP_MODELS_CHAIN_TESTS and holds the step to what it builds. gotestsum's standard-verbose
+      # format prints each test's lines and its result to the log, as -v did.
       - name: Run the step-models chain on the real harnesses
-        run: go test -tags e2e -count=1 -timeout 40m -v -run '^(TestStepModelsLive|TestTheStandInGivesEachResponseItsOwnID)$' ./internal/daemon/
+        run: ../../.github/scripts/go-test.sh go test -tags e2e -count=1 -timeout 40m -run '^(TestStepModelsLive|TestTheStandInGivesEachResponseItsOwnID)$' ./internal/daemon/
         working-directory: packages/daemon
         env:
           LEGION_E2E_DAEMON_LOG: ${{ runner.temp }}/step-models-evidence/daemon.log
@@ -294,6 +304,12 @@ jobs:
           name: step-models-evidence-${{ github.run_attempt }}
           path: ${{ runner.temp }}/step-models-evidence
           if-no-files-found: warn
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: step-models-chain
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

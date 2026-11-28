@@ -19,4 +19,5 @@ GATE = gate("envoy_infra_build", "envoy-infra-build", runs=[
     darwin_vet("envoy-infra-build", INFRA_DARWIN_VET, INFRA),
 ], reads=reads(
     (f"{INFRA}/**", f"{at('envoy-infra-build', 'Check Go formatting')}: gofmt -l . in packages/envoy/infra reads every .go file under it"),
-) + setup_go("envoy-infra-build", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-build", INFRA_DARWIN_VET, INFRA))
+) + setup_go("envoy-infra-build", f"{INFRA}/go.mod") + darwin_vet_reads("envoy-infra-build", INFRA_DARWIN_VET, INFRA)
+  + go_test_runner("envoy-infra-build"))

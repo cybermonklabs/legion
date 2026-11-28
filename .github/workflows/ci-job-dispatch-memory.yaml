@@ -62,6 +62,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The suite's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # why: .github/ci-notes/ci.md#why-the-envoy-lanes-with-a-database-restore-go-envoy-test
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -87,8 +89,14 @@ jobs:
           DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@${{ steps.service-address.outputs.address }}:5432/postgres?sslmode=disable
         run: |
           pattern=$(../../.github/scripts/go-tagged-tests.sh memory ./cmd/dispatch)
-          go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+          ../../.github/scripts/go-test.sh go test -tags memory -count=1 -timeout 60m -run "$pattern" ./cmd/dispatch
         working-directory: packages/envoy
+
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: dispatch-memory
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

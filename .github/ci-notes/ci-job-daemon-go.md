@@ -69,7 +69,7 @@ leg 611 s of job (run 45737777272, jobs 139637308654 and 139637308512). So the p
 three legs, a runner each: leg 1 is cmd/legion's with internal/leakguard, internal/record and
 internal/repocache; leg 2 is internal/store's with the small packages and the race-impossible
 tests, the session client's left-setting test (a step of its own, which runs that test of
-internal/ompsessions by name with -v so that its summary line reaches the log), the forced-order
+internal/ompsessions by name under go-test.sh so that its summary line stands in that step's log), the forced-order
 tests and Stage 1; leg 3 is internal/workspace, internal/runtime/sandbox, internal/workflow,
 internal/admit, internal/api and the rest, about 874 s of package time over four cores, and the
 stamped shape gate, which reuses the test build of internal/api that leg 3's plain step compiled.
@@ -201,9 +201,10 @@ test's clock when its function returns, before the parallel subtests it started 
 whose work is in parallel subtests reads close to 0 s by its own clock while it holds its leg for
 as long as they take.
 
-No leg's own run can feed it: this step runs `go test` without `-json`, and prints a package's
-one `ok` line, not each test's time. A rebalance therefore needs a run made for it — a throwaway
-`workflow_dispatch` of the lane's command with `-json`, or a build-cluster Job — on the runner
-the legs run on, and the run it came from goes in the file's header, as the current one names
-scratch run 45609991742. Rebalance when a leg's log shows the groups have drifted apart, and when
-the warnings above name tests the placement rule put somewhere arbitrary.
+A leg's own run can feed it: the step runs its `go test` under `.github/scripts/go-test.sh`,
+whose gotestsum jsonfile is a `go test -json` stream with each test's time, and the leg uploads it
+as the artifact `go-test-daemon-go-race-legs-<leg>`. A rebalance reads one run's jsonfile of every
+leg, from the runner the legs run on, and the run it came from goes in the file's header, as the
+current one names scratch run 45609991742, a run made for it before the legs kept their jsonfiles.
+Rebalance when a leg's log shows the groups have drifted apart, and when the warnings above name
+tests the placement rule put somewhere arbitrary.

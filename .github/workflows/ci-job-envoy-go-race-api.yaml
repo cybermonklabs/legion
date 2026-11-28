@@ -88,6 +88,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The race step runs its go test under .github/scripts/go-test.sh, through database-skips.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-race, restored only, as envoy-go-race restores it.
       # why: .github/ci-notes/ci-caches.md#the-envoy-race-lanes-family
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
@@ -117,8 +119,8 @@ jobs:
           # shellcheck disable=SC2016 # $1 and $2 are the inner bash's arguments, expanded there
           nohup bash -c 'while :; do docker exec "$1" psql -U postgres -Atc "select count(*) from pg_stat_activity where backend_type = '"'"'client backend'"'"'" >> "$2" 2>/dev/null; sleep 2; done' _ "${{ job.services.postgres.id }}" "$RUNNER_TEMP/pg-connections.txt" >/dev/null 2>&1 &
       # go test counts a skipped test as a pass and, without -v, prints nothing for it, so the
-      # package runs through packages/envoy/scripts/database-skips.sh, which runs it with -json
-      # and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
+      # package runs through packages/envoy/scripts/database-skips.sh, which runs it under gotestsum
+      # (.github/scripts/go-test.sh) and counts that run's skips: it fails on any skip but those its EXPECTED_SKIPS names for
       # this package (measurements and replays that need a database, a corpus or a variable no CI
       # run sets, and a subprocess helper), prints database_skips=UNKNOWN and runs nothing when either
       # database variable above is unset, and on a failed run prints the failed tests' output, a
@@ -153,6 +155,11 @@ jobs:
             echo "pg connections: UNKNOWN, no sample was taken (max_connections ${allowed:-UNKNOWN})"
           fi
 
+      - name: Upload this leg's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-race-api-legs-${{ matrix.leg }}
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

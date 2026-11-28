@@ -1,5 +1,9 @@
 package textcheck
 
+//ci:reads packages/envoy/cmd/dispatch/**/*.go !**/*_test.go !packages/envoy/cmd/dispatch/**/testdata/** TestOnlyOneConstructorBuildsTheServersOrigins goFiles walks it, testdata and node_modules passed over, and parses each .go file but the test files
+//ci:reads packages/envoy/cmd/dispatch-seed/**/*.go !**/*_test.go !packages/envoy/cmd/dispatch-seed/**/testdata/** TestOnlyOneConstructorBuildsTheServersOrigins goFiles walks it, testdata and node_modules passed over, and parses each .go file but the test files
+//ci:reads packages/envoy/internal/dispatch/**/*.go !**/*_test.go !packages/envoy/internal/dispatch/**/testdata/** TestOnlyOneConstructorBuildsTheServersOrigins goFiles walks it, testdata and node_modules passed over, and parses each .go file but the test files
+
 import (
 	"go/ast"
 	"go/token"

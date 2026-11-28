@@ -1,5 +1,7 @@
 package webhook
 
+//ci:reads packages/envoy/scripts/fixtures/github/* TestOneGUIDWithTwoInstallationsIsOneStreamMessage reads a delivery of each event through githubFixture, which joins ../../scripts/fixtures/github and the fixture's name
+
 import (
 	"bytes"
 	"encoding/json"

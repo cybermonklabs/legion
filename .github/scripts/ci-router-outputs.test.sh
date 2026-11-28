@@ -15,6 +15,15 @@
 # nothing. Two copies of ci.yaml, each with one label literal broken, show that a broken term
 # fails its case rather than leaving the set.
 #
+# It fixes the terms of three outputs the changes job does not have yet, each with the job it
+# gates (dispatch://INFRA-5794/spec#b-r8): daemon_live and agent_harness held, lifted on a pull
+# request by full-ci or lane:<own name> alone, and named as that label names them, with an
+# underscore; kind on no pull request whatever the labels, and on a merge group or a dispatch its
+# filter selects, or on every-job. A copy of ci.yaml with the three written so passes; a kind
+# written as a held output, an agent_harness lifted by lane:agent-harness, a daemon_live lifted by
+# lane:agent_harness and an agent_harness written agent-harness, with a dash, each fail, naming
+# the output; and this ci.yaml is held to the same terms for each of the three it has.
+#
 # It holds a dispatched run's selection and the workflow's cancel key the same way, through the
 # changes job's own steps and the workflow's own `concurrency:`
 # (.github/ci-notes/ci.md#what-a-dispatched-run-of-a-branch-selects-and-when-to-ask-for-every-job):
@@ -22,10 +31,11 @@
 # what a merge group with the same verdicts selects and diffs its own commit with main, the filter
 # generation measures a branch's dispatch against its merge base with main as it measures a merge
 # group against its base, and is handed that base only because the base step runs before it (the
-# runner evaluates a step's env when the step starts), `every-job` selects every job on a branch,
-# and a newer dispatch of a branch cancels that branch's older one while a dispatch of main is
-# never cancelled. Copies of ci.yaml with one of those terms broken, or the two steps swapped, show
-# that each case fails without it.
+# runner evaluates a step's env when the step starts), a dispatch that names a migration-base is
+# measured from that commit by the filter step and the generation alike, `every-job` selects every
+# job on a branch, and a newer dispatch of a branch cancels that branch's older one while a
+# dispatch of main is never cancelled. Copies of ci.yaml with one of those terms broken, or the two
+# steps swapped, show that each case fails without it.
 #
 # The filter names the outputs read verdicts of are the changes job's filters, which no file of the
 # repository holds: the job computes them when it runs. The script reads them from the file
@@ -113,12 +123,19 @@ off_under() {
 baseline=$(outputs --event pull_request)
 mapfile -t held < <(held_of "$repo/.github/workflows/ci.yaml")
 
-echo "case: exactly the sixteen gated outputs read the pull request's labels"
+echo "case: exactly the sixteen gated outputs, and the siblings' held ones, read the pull request's labels"
 # A count and the names, so an output whose label term is deleted outright fails here by name
-# rather than leaving the set. A seventeenth gated suite adds its name to this list.
+# rather than leaving the set. A seventeenth gated suite adds its name to this list. The two held
+# outputs dispatch://INFRA-5794/spec#b-r8 fixes for the sibling children, daemon_live and
+# agent_harness, join the set where the changes job writes them, so a sibling that adds its
+# output with those terms passes here, and the sibling cases below hold each one's terms.
 gated='daemon_go_tests dispatch_browser dispatch_memory dispatch_multiprocess dispatch_two_builds envoy_go envoy_go_checks envoy_go_claim_model envoy_go_race envoy_go_race_api envoy_go_race_docs envoy_infra_go envoy_smoke pi_legion step_models_chain test'
-check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" 16)"
-check "and they are the sixteen" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated ")"
+for sibling in agent_harness daemon_live; do
+  ! grep -qE "^      $sibling: " "$repo/.github/workflows/ci.yaml" || gated="$gated $sibling"
+done
+gated=$(tr ' ' '\n' <<<"$gated" | sort | tr '\n' ' ')
+check "the reader finds ${#held[@]}: ${held[*]}" "$(is "${#held[@]}" "$(wc -w <<<"$gated" | tr -d ' ')")"
+check "and they are the gated ones" "$(is "$(printf '%s\n' "${held[@]}" | sort | tr '\n' ' ')" "$gated")"
 
 echo "case: each of them is on for a merge group and for a push, where no label is read"
 check "a merge group leaves none off" \
@@ -199,6 +216,103 @@ open(path, "w").write(body)
 PY
   echo "$dir/.github/workflows/ci.yaml"
 }
+
+# sibling_terms <workflow> <filters file>: what keeps the outputs daemon_live, agent_harness and
+# kind from the terms dispatch://INFRA-5794/spec#b-r8 fixes, one line each; and `absent: <name>`
+# for each of them the workflow's changes job does not have yet, since each comes with the job it
+# gates. daemon_live and agent_harness are held: on a pull request each is true only where its
+# filter says yes and the pull request carries full-ci or lane:<its own name>, so the other's
+# label alone leaves it off. That label names each with an underscore, so an output the changes
+# job writes daemon-live or agent-harness, with a dash, is a fault, not an absent output. kind runs
+# on no pull request whatever the labels, and in a merge group and a dispatch of a branch where
+# its filter says yes, or on every-job.
+sibling_terms() {
+  local workflow=$1 filters=$2 name dashed listed other verdicts
+  verdict_of() { value "$(outputs_of "$workflow" "$@")" "$name"; }
+  # Every output of the changes job, under the name it writes it, in one evaluation; a workflow the
+  # reader refuses is a line naming it, so no case reads a refusal as nothing to report.
+  listed=$(outputs_of "$workflow" --event pull_request --verdicts false) \
+    || { echo "ci_router_outputs.py refuses $workflow"; return 0; }
+  for name in daemon_live agent_harness kind; do
+    dashed=${name//_/-}
+    if [ "$dashed" != "$name" ] && grep -q "^$dashed=" <<<"$listed"; then
+      echo "$name: the changes job writes it as $dashed, which lane:$name does not name"
+    elif ! grep -q "^$name=" <<<"$listed"; then
+      echo "absent: $name"
+    fi
+    grep -q "^$name=" <<<"$listed" || continue
+    verdicts=(--verdicts false --verdict "$name=true")
+    [ "$(verdict_of --event merge_group "${verdicts[@]}")" = true ] || echo "$name: a merge group its filter selects leaves it off"
+    [ "$(verdict_of --event merge_group --verdicts false)" = false ] || echo "$name: a merge group its filter does not select turns it on"
+    [ "$(verdict_of --event workflow_dispatch --ref refs/heads/feature --input every-job=true --verdicts false)" = true ] \
+      || echo "$name: a dispatch that asks for every job leaves it off"
+    [ "$(verdict_of --event workflow_dispatch --ref refs/heads/feature "${verdicts[@]}")" = true ] \
+      || echo "$name: a dispatch of a branch its filter selects leaves it off"
+    if [ "$name" = kind ]; then
+      for label in "" full-ci lane:kind; do
+        local labelled=()
+        [ -z "$label" ] || labelled=(--label "$label")
+        [ "$(verdict_of --event pull_request "${verdicts[@]}" "${labelled[@]}")" = false ] \
+          || echo "kind: a pull request${label:+ under $label} its filter selects turns it on"
+      done
+      continue
+    fi
+    [ "$(verdict_of --event pull_request "${verdicts[@]}")" = false ] || echo "$name: an unlabelled pull request turns it on"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label full-ci)" = true ] || echo "$name: full-ci leaves it off"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label "lane:$name")" = true ] || echo "$name: lane:$name leaves it off"
+    [ "$(verdict_of --event pull_request --verdicts false --label "lane:$name")" = false ] \
+      || echo "$name: lane:$name turns it on where its filter says no"
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label lane:envoy_go)" = false ] \
+      || echo "$name: another held output's label, lane:envoy_go, turns it on"
+    other=daemon_live
+    [ "$name" != daemon_live ] || other=agent_harness
+    [ "$(verdict_of --event pull_request "${verdicts[@]}" --label "lane:$other")" = false ] \
+      || echo "$name: the other sibling's label, lane:$other, turns it on"
+  done
+}
+
+# The three outputs as dispatch://INFRA-5794/spec#b-r8 has them written, in main's form, each on
+# a filter of its own name added to a copy of the computed filters.
+sibling_filters=$work/sibling-filters.yaml
+cp "$filters" "$sibling_filters"
+printf 'daemon_live:\n  - packages/daemon/**\nagent_harness:\n  - packages/daemon/**\nkind:\n  - packages/envoy/infra/**\n' >> "$sibling_filters"
+# held_term <output> <label>: an output line of the changes job, held as main's held outputs are.
+held_term() {
+  printf "      %s: \${{ steps.scope.outputs.every_job && 'true' || (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'full-ci') || contains(github.event.pull_request.labels.*.name, '%s')) && steps.filter.outputs.%s || 'false' }}" "$1" "$2" "$1"
+}
+kind_term="      kind: \${{ steps.scope.outputs.every_job && 'true' || github.event_name != 'pull_request' && steps.filter.outputs.kind || 'false' }}"
+ref_line="      ref_is_main: \${{ steps.ref.outputs.is_main }}"
+siblings=$(copy_with "$work/siblings" ci.yaml "$ref_line" \
+  "$(held_term daemon_live lane:daemon_live)"$'\n'"$(held_term agent_harness lane:agent_harness)"$'\n'"$kind_term"$'\n'"$ref_line")
+
+echo "case: the outputs the sibling children add keep the terms their base fixes"
+check "written as the base has them, all three hold" "$(is "$(sibling_terms "$siblings" "$sibling_filters")" "")"
+got=$(sibling_terms "$repo/.github/workflows/ci.yaml" "$filters")
+check "this ci.yaml breaks none of them (absent here: $(grep '^absent: ' <<<"$got" | cut -d' ' -f2 | tr '\n' ' '))" \
+  "$(is "$(grep -v '^absent: ' <<<"$got")" "")"
+
+echo "case: a kind output written as a held one fails its pull-request rows"
+broken=$(copy_with "$work/siblings-kind-held" ci.yaml "$ref_line" "$(held_term kind lane:kind)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "full-ci and lane:kind turn it on, and say so" \
+  "$(is "$(grep '^kind: ' <<<"$got" | tr '\n' '|')" "kind: a pull request under full-ci its filter selects turns it on|kind: a pull request under lane:kind its filter selects turns it on|")"
+
+echo "case: an agent_harness lifted by lane:agent-harness, a label with a dash, fails its lane row"
+broken=$(copy_with "$work/siblings-dashed" ci.yaml "$ref_line" "$(held_term agent_harness lane:agent-harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "lane:agent_harness leaves it off, and says so" "$(is "$(grep '^agent_harness: ' <<<"$got")" "agent_harness: lane:agent_harness leaves it off")"
+
+echo "case: a daemon_live lifted by lane:agent_harness, the other sibling's label, fails naming daemon_live"
+broken=$(copy_with "$work/siblings-crossed" ci.yaml "$ref_line" "$(held_term daemon_live lane:agent_harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "lane:daemon_live leaves it off and lane:agent_harness turns it on, and it says so" \
+  "$(is "$(grep '^daemon_live: ' <<<"$got" | tr '\n' '|')" "daemon_live: lane:daemon_live leaves it off|daemon_live: the other sibling's label, lane:agent_harness, turns it on|")"
+
+echo "case: an agent_harness written agent-harness, as 97c620377c names it, lifted by lane:agent_harness, fails naming both names"
+broken=$(copy_with "$work/siblings-dashed-name" ci.yaml "$ref_line" "$(held_term agent-harness lane:agent_harness)"$'\n'"$ref_line")
+got=$(sibling_terms "$broken" "$sibling_filters")
+check "the label names no output of the changes job, and it says so rather than calling agent_harness absent" \
+  "$(is "$(grep -E '^(agent_harness: |absent: agent_harness$)' <<<"$got")" "agent_harness: the changes job writes it as agent-harness, which lane:agent_harness does not name")"
 
 echo "case: an output whose full-ci literal is broken stays in the set and fails the full-ci case"
 broken=$(copy_with "$work/no-full-ci" ci.yaml \
@@ -544,12 +658,22 @@ check "  and ref_is_main is false" "$(is "$(value "$got" ref_is_main)" false)"
 got=$(outputs --event workflow_dispatch --ref refs/tags/v1 --verdicts false)
 check "another tag: every one of them is true" "$(is "$(off_of "$got")" "")"
 
-# filter_step <argument>...: whether the filter step runs, and the base and ref it is handed (the
-# filters file it reads is held by the statement cases, through statement_of).
-filter_step() { "$script_dir/ci_router_outputs.py" "$ci" --filters "$filters" --filter-step "$@" | grep -v '^filters=' | tr '\n' ' '; }
-echo "case: the filter step diffs a dispatched branch's own commit with main, and reads a merge group's and a pull request's own event"
+# filter_step_of <workflow> <argument>...: whether the filter step runs, and the base and ref it is
+# handed (the filters file it reads is held by the statement cases, through statement_of);
+# filter_step <argument>... reads this repository's own ci.yaml.
+filter_step_of() {
+  local workflow=$1
+  shift
+  "$script_dir/ci_router_outputs.py" "$workflow" --filters "$filters" --filter-step "$@" | grep -v '^filters=' | tr '\n' ' '
+}
+filter_step() { filter_step_of "$ci" "$@"; }
+# The commit a dispatch names as its migration-base, its merge base with main for one.
+named=5555555555555555555555555555555555555555
+echo "case: the filter step diffs a dispatched branch's own commit with main, or with the migration-base it names, and reads a merge group's and a pull request's own event"
 check "a dispatch of a branch: base main, ref its commit" \
   "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old")" "runs=true base=main ref=$old ")"
+check "a dispatch of a branch that names a migration-base: base that commit, which paths-filter diffs with no history fetched" \
+  "$(is "$(filter_step --event workflow_dispatch --ref refs/heads/feature --sha "$old" --input migration-base="$named")" "runs=true base=$named ref=$old ")"
 check "a dispatch of main skips the step" "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/main)" '^runs=false ')"
 check "every-job skips the step" \
   "$(contains "$(filter_step --event workflow_dispatch --ref refs/heads/feature --input every-job=true)" '^runs=false ')"
@@ -575,6 +699,8 @@ echo "case: the filter generation measures a change against the commit it lands 
 # the event's base.sha (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 check "a dispatch of a branch: the merge base the base step finds" \
   "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --base "$merge_base")" "filters-base=$merge_base")"
+check "  or the migration-base it names, which the filter step diffs with too" \
+  "$(is "$(generate_step_of "$ci" --event workflow_dispatch --ref refs/heads/feature --input migration-base="$named" --base "$merge_base")" "filters-base=$named")"
 check "a merge group: its base" "$(is "$(generate_step_of "$ci" --event merge_group --base "$merge_base")" "filters-base=$merge_base")"
 check "a pull request: the first parent the base step finds, not the event's own base" \
   "$(is "$(generate_step_of "$ci" --event pull_request --base "$merge_base" --pull-base "$event_base")" "filters-base=$merge_base")"
@@ -683,12 +809,25 @@ check "an approval's run then hands the generation no base" \
   "$(is "$(generate_step_of "$broken" --event pull_request_review --base "$merge_base" --pull-base "$event_base")" "filters-base=")"
 
 echo "case: a base step that runs on every dispatch fails the dispatch-of-main case"
-# edited-migrations-base.sh exits 2 on a dispatch of main that names no migration-base, which would
-# fail the changes job of every bypass check.
+# A dispatch of main selects every job and needs no base. edited-migrations-base.sh exits 2 on one
+# that names no migration-base, which would fail the changes job of such a dispatch.
 broken=$(copy_with "$work/base-every-dispatch" ci.yaml "github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job" \
   "github.event_name == 'workflow_dispatch'")
 check "a dispatch of main then runs the base step" \
   "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/main --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a base step that hands the script no MIGRATION_BASE fails the named-base case"
+broken=$(copy_with "$work/base-no-migration-base" ci.yaml \
+  $'        env:\n          MIGRATION_BASE: ${{ inputs.migration-base }}\n' '')
+check "a dispatch of a branch that names a migration-base then hands the generation the merge base instead" \
+  "$(is "$(generate_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --input migration-base="$named" --base "$merge_base")" "filters-base=$merge_base")"
+
+echo "case: a filter step whose base is main on every dispatch fails the named-base case"
+broken=$(copy_with "$work/filter-base-main" ci.yaml \
+  "base: \${{ github.event_name == 'workflow_dispatch' && (inputs.migration-base || 'main') || '' }}" \
+  "base: \${{ github.event_name == 'workflow_dispatch' && 'main' || '' }}")
+check "a dispatch of a branch that names a migration-base then diffs with main, fetching history to find the merge base" \
+  "$(is "$(filter_step_of "$broken" --event workflow_dispatch --ref refs/heads/feature --sha "$old" --input migration-base="$named")" "runs=true base=main ref=$old ")"
 
 echo "case: a generation step that starts before the base step is handed no merge base"
 # The runner evaluates a step's env: when that step starts, over the outputs of the steps before it
@@ -702,6 +841,8 @@ base_step=$(cat <<'YAML'
         id: base
         if: ${{ github.event_name == 'pull_request' || github.event_name == 'pull_request_review' || (github.event_name == 'workflow_dispatch' && !steps.scope.outputs.every_job) }}
         timeout-minutes: 3
+        env:
+          MIGRATION_BASE: ${{ inputs.migration-base }}
         run: |
           sha=$(.github/scripts/edited-migrations-base.sh)
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
@@ -855,6 +996,22 @@ tooling=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" -
 check "and run when it did" "$(is "$(running "$tooling")" "Check the guides' semantic line breaks")"
 got=$(steps --event pull_request --verdicts false --verdict test=true --verdict guide_layout=true)
 check "while the test job runs none of its harnesses on guide_layout" "$(is "$(running "$got")" "")"
+
+echo "case: envoy-refill, whose job of the shared file restates its legs behind !cancelled(), is read"
+# ci-job-envoy-e2e-local.yaml runs envoy-refill-legs and envoy-refill under the caller
+# envoy-refill, the second behind `${{ !cancelled() && inputs.job == 'envoy-refill' }}` so it runs
+# after a leg that failed. The reader evaluates that as for a run nobody cancelled, and no step of
+# the file is gated on what the changes job hands it, so each caller reads none, and neither is
+# refused.
+for caller in envoy-refill envoy-e2e-local; do
+  set +e
+  refill=$("$script_dir/ci_router_outputs.py" "$repo/.github/workflows/ci.yaml" --filters "$filters" --steps "$caller" \
+    --event pull_request --verdicts false --verdict envoy_refill=true --verdict envoy_e2e_local=true 2>&1)
+  status=$?
+  set -e
+  check "$caller: the file is read" "$(is "$status" 0)"
+  check "$caller: and gates no step" "$(is "$refill" "")"
+done
 
 echo "case: a list that is not all on a run that selects every job skips every step it gates there"
 broken=$(copy_with "$work/no-all" ci.yaml "steps.scope.outputs.every_job && 'all'" "steps.scope.outputs.every_job && '[]'")

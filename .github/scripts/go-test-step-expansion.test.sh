@@ -3,7 +3,8 @@
 # line runs, and which shapes it refuses rather than guesses at; that its step reader reads every
 # `go test` step of this head's workflows; that each script AUDITED_SCRIPTS reads still has the
 # SHA-256 its entry pins; and that it and check-ci-filters.sh's TAG_RUNS rule read every step that
-# is an audited script alike.
+# is an audited script alike. One case holds the refusals of go_test_steps.py's own reader, which
+# the script imports and the test-reach search reads its steps with.
 #
 # Only the reader, the pins and that agreement. What the script makes of a command - the packages a
 # `go test -list` names, the pairs two steps share, the exceptions - needs all three Go modules'
@@ -12,12 +13,10 @@
 # it, or a file's hash.
 #
 # The case that named this harness: a step whose line sets a variable before its command, or runs
-# it under the memory wrapper, was refused, and the refusal stopped the whole run at exit 2 with
-# no pair list at all - so the rule answered nothing about any pair while
-# `RACE_MEM_LIMIT_KB=… race_memory.py go test …` stood in ci-job-envoy-go-race-docs.yaml and
-# ci-job-envoy-go-docs-finalizers.yaml, a job since deleted, held
-# `GODEBUG=checkfinalizers=1 go test …`; both now stand on the race-docs line, which the case
-# below reads.
+# it under the memory wrapper, is read as the go command behind them, since a refusal stops the
+# whole run at exit 2 with no pair list at all, and the rule then answers nothing about any pair.
+# The race-docs legs' line is such a line, `env RACE_MEM_LIMIT_KB=… go-test.sh --race-memory go
+# test … -exec 'env GODEBUG=checkfinalizers=1' …`, which the cases below read.
 #
 # The module is imported from the directory it lives in, the way check-ci-filters.sh imports its
 # own (PYTHONPATH, no bytecode), so the code under test is the file a person runs. It needs a
@@ -37,7 +36,7 @@ source "$script_dir/test-lib.sh"
 # py <statements> [argument ...]: the statements with the module as `ex` and the arguments in
 # sys.argv[1:]. The file's name holds dashes, which no import statement can spell, so it is
 # loaded by path - the file a person runs, not a copy - with PYTHONPATH naming the directory
-# beside it so its own `from ci_filter_coverage import …` resolves as it does for the script.
+# beside it so its own `import go_test_steps` resolves as it does for the script.
 py() {
   local statements=$1
   shift
@@ -61,24 +60,34 @@ line='go test -count=1 ./internal/dispatch/docs/'
 check "its words are the command's" "$(is "$(command_of "$line")" "go test -count=1 ./internal/dispatch/docs/")"
 check "its text is the line" "$(is "$(text_of "$line")" "$line")"
 
-echo "case: a variable set before the command (the cleanup detector)"
-line='GODEBUG=checkfinalizers=1 go test -v -count=1 -timeout 29m ./internal/dispatch/docs/'
+echo "case: a variable set before the command"
+line='GO_TEST_RETRY=off go test -v -count=1 -timeout 29m ./internal/dispatch/docs/'
 check "the variable is dropped" "$(is "$(command_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 check "the text begins at go" "$(is "$(text_of "$line")" "go test -v -count=1 -timeout 29m ./internal/dispatch/docs/")"
 
-echo "case: two variables and the memory wrapper (the race-docs lane, under the cleanup detector)"
-line='GODEBUG=checkfinalizers=1 RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/race_memory.py go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/'
-check "all three are dropped" "$(is "$(command_of "$line")" "go test -json -race -count=1 -timeout 60m ./internal/dispatch/docs/")"
+echo "case: the cleanup detector rides on -exec, and its value is no package"
+line="go test -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 10m -run '^(TestOne|TestTwo)\$' ./internal/dispatch/docs"
+check "the line is the command, with nothing dropped" "$(is "$(text_of "$line")" "$line")"
+check "the -exec value is no package, and -run and the package are read past it" \
+  "$(is "$(py 'step = ex.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy", script="")
+command = ex.parse_go_test(step, sys.argv[1], [])
+print(" ".join(command.packages), command.run)' "$line")" \
+    "./internal/dispatch/docs ^(TestOne|TestTwo)\$")"
+
+echo "case: the variable and the memory wrapper before the command, and the detector on -exec (the race-docs lane)"
+line="env RACE_MEM_LIMIT_KB=8388608 ../../.github/scripts/go-test.sh --race-memory go test -race -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 60m"
+check "the env, the variable, the wrapper and its option are dropped" \
+  "$(is "$(command_of "$line")" "go test -race -count=1 -exec 'env GODEBUG=checkfinalizers=1' -timeout 60m")"
 
 echo "case: more than one variable before the command"
 check "each is dropped" "$(is "$(command_of 'A=1 B=2 go test ./pkg')" "go test ./pkg")"
 
 echo "case: the wrapper's own path is read from its end, as a step writes it"
 check "a deeper relative path is still the wrapper" \
-  "$(is "$(command_of '../../../.github/scripts/race_memory.py go test ./pkg')" "go test ./pkg")"
+  "$(is "$(command_of '../../../.github/scripts/go-test.sh go test ./pkg')" "go test ./pkg")"
 
 echo "case: a -run pattern keeps its quoting"
-line="GODEBUG=checkfinalizers=1 go test -run '^(TestOne|TestTwo)\$' ./pkg"
+line="GO_TEST_RETRY=off go test -run '^(TestOne|TestTwo)\$' ./pkg"
 check "the text keeps the quotes the line wrote" \
   "$(is "$(text_of "$line")" "go test -run '^(TestOne|TestTwo)\$' ./pkg")"
 
@@ -88,14 +97,43 @@ check "a value needing the shell is left in place" \
 check "a wrapper GO_WRAPPERS does not name is left in place" \
   "$(is "$(command_of 'timeout 60 go test ./pkg')" "timeout 60 go test ./pkg")"
 check "a wrapper with no go command behind it is left in place" \
-  "$(is "$(command_of '../../.github/scripts/race_memory.py --help')" "../../.github/scripts/race_memory.py --help")"
+  "$(is "$(command_of '../../.github/scripts/go-test.sh --help')" "../../.github/scripts/go-test.sh --help")"
 check "a bare assignment is left in place" "$(is "$(command_of 'NAME=value')" "NAME=value")"
+
+# The test-reach search reads every step with go_test_steps.py's reader, and a `go test` that
+# reader passed over would be a test the search reads as run by no step, or as run where it is
+# not. A line whose command behind `| xargs` is no go test, and a line that chains a command that
+# could start one to a go command that runs no test, are each refused, by step and line; a go
+# command that chains only a command starting no go is passed over, as such a line alone is.
+echo "case: go_test_steps' reader refuses a go test it would otherwise pass over"
+# steps_read <script>: the packages of each go test go_test_steps' reader reads in a step that
+# runs the script, each lister answered with ./pkg/, or the reader's refusal.
+steps_read() { py 'import go_test_steps as steps
+step = steps.Step(workflow="(a test case)", job="(a job)", name="(a step)", workdir="packages/envoy",
+                  script=sys.argv[1])
+try:
+    print("; ".join(" ".join(command.packages) for command in steps.commands_of(step, lambda _step, _text: "./pkg/")))
+except steps.Refused as refusal:
+    print(refusal)' "$1"; }
+check "a go test behind another command xargs runs is refused, by step and line" \
+  "$(is "$(steps_read 'go list ./... | xargs timeout 60 go test -count=1')" \
+    "(a test case)'s (a job) / (a step): \`timeout 60 go test -count=1\`, what \`go list ./... | xargs timeout 60 go test -count=1\` pipes into xargs, is no go test this reader reads")"
+check "a go command that runs no test behind xargs is refused" \
+  "$(is "$(steps_read 'go list ./... | xargs go vet')" \
+    "(a test case)'s (a job) / (a step): \`go vet\`, what \`go list ./... | xargs go vet\` pipes into xargs, is no go test this reader reads")"
+check "a go test chained to a go vet is refused, by step and line" \
+  "$(is "$(steps_read 'go vet ./... && go test ./internal/bus/')" \
+    "(a test case)'s (a job) / (a step): \`go vet ./... && go test ./internal/bus/\` chains to its \`go vet\` a command that may start a go test, which this reader does not read")"
+check "a go vet that chains only an echo is passed over, and the go test on the next line read" \
+  "$(is "$(steps_read $'go vet ./... && echo vetted\ngo test ./internal/bus/')" "./internal/bus/")"
+check "a go test behind xargs is read, with the packages its lister printed" \
+  "$(is "$(steps_read 'go list ./... | xargs go test -count=1')" "./pkg/")"
 
 echo "case: the step whose line this harness exists for is read as ci.yaml writes it"
 file=.github/workflows/ci-job-envoy-go-race-docs.yaml
 # Its go test is behind an xargs now: the step pipes go_legs.py's lines into `env NAME=value …
-# race_memory.py go test …`, so the reading is the xargs tail with the variables and the wrapper
-# dropped.
+# go-test.sh --race-memory go test …`, so the reading is the xargs tail with the variables, the
+# wrapper and its option dropped.
 found=$(py 'import pathlib, yaml
 document = yaml.safe_load(pathlib.Path(ex.ROOT / sys.argv[1]).read_text())
 lines = [line.strip() for job in document["jobs"].values() for step in job["steps"] if "run" in step
@@ -160,7 +198,7 @@ else:
     print("none" if read is None else f"{read.workdir} {read.script}")' "$@"; }
 unit_listing=$(py 'import audited_scripts
 print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go "
-      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -json -count=1 -skip " + audited_scripts.UNIT_SKIP + " -timeout 20m")')
+      "${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r go test -count=1 -skip " + audited_scripts.UNIT_SKIP + " -timeout 20m")')
 check "envoy-go's unit legs pipe go_legs.py's packages into the counter's go test, less the fixture's, the backend count's and the alone rows' tests" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go.yaml "Unit test envoy Go package" "")" "$unit_listing")"
 check "the unit legs' step with one more argument, which the entry's xargs does not list, is refused" \
@@ -168,7 +206,7 @@ check "the unit legs' step with one more argument, which the entry's xargs does 
 # The API's legs pipe their packages and their group's -run into the counter, through the same
 # entry's xargs argument lists, with the -race the counter spells `--race` handed to go_legs.py.
 api_listing=$(py 'print("packages/envoy set -o pipefail\npython3 ../../.github/scripts/go_legs.py packages/envoy envoy-go-race-api "
-      "${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -json -count=1 -race -timeout 70m")')
+      "${{ matrix.leg }} ${{ strategy.job-total }} -race | xargs -r go test -count=1 -race -timeout 70m")')
 check "envoy-go-race-api's legs pipe go_legs.py's group and package into the counter's go test under -race" \
   "$(is "$(read_audited .github/workflows/ci-job-envoy-go-race-api.yaml "Race-test the Dispatch API" "")" "$api_listing")"
 check "the API legs' step with one more argument, which the entry's xargs does not list, is refused" \
@@ -201,7 +239,7 @@ skipping = {name: {test for command in ex.commands_of(step) for test in ex.skip_
             for name, step in steps.items()}
 print(len(steps), " ".join(test + ":" + str(sum(test in tests for tests in skipping.values()))
                            for test in audited_scripts.BACKEND_COUNT_TESTS))')" \
-    "5 TestEverySecretFormNamesTheSourceItUses:5 TestNoSecretFormAsksTheBrokerForACredential:5 TestUseCommandOutsideASessionReachesTheMachineSource:5 TestTheChainSkipsAbsenceAndStopsOnABrokenSource:5 TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:5")"
+    "6 TestEverySecretFormNamesTheSourceItUses:6 TestNoSecretFormAsksTheBrokerForACredential:6 TestUseCommandOutsideASessionReachesTheMachineSource:6 TestTheChainSkipsAbsenceAndStopsOnABrokenSource:6 TestSettingsNameTheGoogleExchangeAudienceOnEitherStore:6")"
 
 # The script stops at exit 2 on the first step it cannot read, and it runs by hand, so nothing
 # told the pull request that made a step unreadable: #4319 moved the skips step behind

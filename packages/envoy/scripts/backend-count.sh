@@ -4,21 +4,30 @@
 # Counts, for each test it names, the runs that passed on each store backend: the test's own
 # `aws` and `gcp` subtests (onEachStore, cmd/cipher/secret_kind_test.go), so a store or
 # use change cannot pass on one backend alone. It takes the packages to run first, then `--`, then
-# the tests, and runs, from packages/envoy, only the named tests in only those packages:
+# the tests, and runs, from packages/envoy, only the named tests in only those packages, under
+# gotestsum through .github/scripts/go-test.sh:
 #
-#   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|...)$' [-skip "$GO_TEST_SKIP"] PACKAGE...
+#   go-test.sh go test -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|...)$' [-skip "$GO_TEST_SKIP"] PACKAGE...
 #
-# and prints one line per named test, `TEST aws=N gcp=M`, N and M counting the `pass` events of
-# `TEST/aws` and `TEST/gcp` in any of the packages, then `go_test_exit=E`. It counts only the tests
-# it is given, so the `aws` and `gcp` subtests of other tests cannot stand in for a named test's,
-# and a named test that lives in none of the packages reads aws=0 gcp=0. The database broker
-# suites' skips are database-skips.sh's count, not this one's.
+# which prints the test log to stdout as the tests run, each test's `=== RUN` line and its
+# `--- PASS`, `--- FAIL` or `--- SKIP` line, and in a merge group runs a failed test once more
+# from its root test (go-test.sh's header says when). Its jsonfile is
+# `<GITHUB_JOB>-backend-count.json` under go-test.sh's reports directory (GO_TEST_JSONFILE), which
+# the job uploads. Then it reads the jsonfile, taking each subtest's result from the last attempt
+# that ran it (.github/scripts/go-test.jq, last_attempt_results), and prints one line per named
+# test, `TEST aws=N gcp=M`, N and M counting the passes of `TEST/aws` and `TEST/gcp` in any of the
+# packages, then `go_test_exit=E`, go-test.sh's exit status. A test that failed once and passed on
+# its rerun is counted by its rerun. It counts only the tests it is given, so the `aws` and `gcp`
+# subtests of other tests cannot stand in for a named test's, and a named test that lives in none
+# of the packages reads aws=0 gcp=0. The database broker suites' skips are database-skips.sh's
+# count, not this one's.
 #
 # It exits 1 when no package or no test is named, when a package is not a ./ path, when a name is
-# not a Go test name, when a named test has no passing run on either backend, or when go test
-# failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
-# take the `aws` subtests away ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout,
-# 5m unless set: the named tests take seconds, and CI's job budget counts this step at that bound.
+# not a Go test name, when a named test has no passing run on either backend, when a test failed
+# in its last attempt, or when go-test.sh failed; 0 otherwise. GO_TEST_SKIP is go test's -skip
+# pattern, which a negative control sets to take the `aws` subtests away
+# ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout, 5m unless set: the named tests
+# take seconds, and CI's job budget counts this step at that bound.
 set -euo pipefail
 
 usage="usage: backend-count.sh PACKAGE... -- TEST..."
@@ -49,23 +58,29 @@ done
 run="^($(IFS='|'; echo "$*"))\$"
 
 cd "$(dirname "$0")/.."
+# go-test.sh and the go-test.jq it and this script read the jsonfile with.
+scripts="$(cd ../../.github/scripts && pwd)"
+jsonfile="${GITHUB_JOB:-local}-backend-count.json"
+events="$("$scripts/go-test.sh" --path "$jsonfile")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
-events="$work/events.json"
 
 go_test_exit=0
-go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" >"$events" 2>"$work/stderr" || go_test_exit=$?
+GO_TEST_JSONFILE="$jsonfile" "$scripts/go-test.sh" go test -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run "$run" \
+  ${GO_TEST_SKIP:+-skip "$GO_TEST_SKIP"} "${packages[@]}" 2>"$work/stderr" || go_test_exit=$?
 if [ ! -s "$events" ]; then
-  echo "backend-count.sh: go test wrote no events (exit $go_test_exit), so nothing was counted:" >&2
+  echo "backend-count.sh: go-test.sh wrote no events (exit $go_test_exit), so nothing was counted:" >&2
   cat "$work/stderr" >&2
   exit 1
 fi
+# Each test's and subtest's result in the last attempt that ran it.
+jq -n -c -L "$scripts" 'include "go-test"; last_attempt_results(inputs) | select(.Test != null)' "$events" >"$work/last"
 
 status=0
 for test in "$@"; do
   counts=()
   for backend in aws gcp; do
-    n="$(jq -r --arg name "$test/$backend" 'select(.Action == "pass" and .Test == $name) | .Test' "$events" | wc -l)"
+    n="$(jq -r --arg name "$test/$backend" 'select(.Action == "pass" and .Test == $name) | .Test' "$work/last" | wc -l)"
     counts+=("$backend=$n")
     [ "$n" -gt 0 ] || status=1
   done
@@ -73,10 +88,11 @@ for test in "$@"; do
 done
 
 echo "go_test_exit=$go_test_exit"
-if [ "$go_test_exit" -ne 0 ]; then
+failed="$(jq -r 'select(.Action == "fail") | "FAIL \(.Package) \(.Test)"' "$work/last")"
+if [ -n "$failed" ] || [ "$go_test_exit" -ne 0 ]; then
   status=1
-  jq -r 'select(.Action == "fail" and .Test != null) | "FAIL \(.Package) \(.Test)"' "$events" >&2
-  jq -rsj '[.[] | select(.Action == "fail" and .Test != null) | .Test] as $failed | .[] | select(.Action == "output" and .Test != null) | select(.Test as $t | any($failed[]; . == $t)) | .Output' "$events" >&2
+  [ -z "$failed" ] || echo "$failed" >&2
+  jq -rsj --slurpfile last "$work/last" '[$last[] | select(.Action == "fail") | .Test] as $failed | .[] | select(.Action == "output" and .Test != null) | select(.Test as $t | any($failed[]; . == $t)) | .Output' "$events" >&2
   cat "$work/stderr" >&2
 fi
 exit "$status"

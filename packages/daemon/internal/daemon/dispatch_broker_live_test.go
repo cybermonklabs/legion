@@ -41,6 +41,8 @@
 // Each test writes its tables to TMPDIR and logs the file's path.
 package daemon
 
+//ci:reads packages/daemon/internal/runtime/sandbox/testdata/golden/pod-with-dispatch-broker.json launchVariables reads the launch golden for each rig newDispatchBrokerRig starts
+
 import (
 	"bufio"
 	"bytes"

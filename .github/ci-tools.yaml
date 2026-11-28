@@ -8,9 +8,9 @@
 # the same literal, and a refusal names the source that served the bytes.
 #
 # Each row's `version` agrees with the pin that decides which version a job installs:
-# for crane, changie, elan and the Pulumi CLI the row is the pin itself, since install-crane,
-# install-changie, install-elan and install-pulumi hold no version of their own and install the
-# version this row names,
+# for crane, changie, gotestsum, elan and the Pulumi CLI the row is the pin itself, since
+# install-crane, install-changie, install-gotestsum, install-elan and install-pulumi hold no version
+# of their own and install the version this row names,
 # `packages/daemon/docker/worker.Dockerfile#ARG MISE_VERSION` for mise,
 # `packages/daemon/docker/worker.Dockerfile#ARG JJ_TOOL` for jj,
 # `packages/daemon/docker/worker.Dockerfile#ARG UV_VERSION` for uv, whose `primary_digest` is
@@ -221,6 +221,40 @@ tools:
     second_source: ghcr-mirror
     max_time: 60
     mirror_from: https://github.com/miniscruff/changie/releases/download/v1.26.0/changie_1.26.0_linux_arm64.tar.gz
+    mirror_member: ""
+
+  # gotestsum, which .github/scripts/go-test.sh runs every Go test of a job ci-ok needs under, so
+  # the log names each test's result and a merge group runs a failed test once more.
+  # .github/actions/install-gotestsum installs it. The digest is the one the release's own asset
+  # list gives for this tarball, read again from the bytes on 2026-11-26.
+  - name: gotestsum
+    version: 1.13.0
+    digest: 11ccddeaf708ef228889f9fe2f68291a75b27013ddfc3b18156e094f5f40e8ee
+    digest_of: the release tarball gotestsum_1.13.0_linux_amd64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_amd64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_amd64.tar.gz
+    mirror_member: ""
+
+  # gotestsum for an arm64 runner: the release of the row above, built for aarch64. The digest is
+  # the one the release's own asset list gives for this tarball, read again from the bytes.
+  - name: gotestsum-aarch64
+    version: 1.13.0
+    digest: 7644a4c5cd1bb978d56245aeab25a586ac5ac62adebed20a399548867c13499d
+    digest_of: the release tarball gotestsum_1.13.0_linux_arm64.tar.gz, whole
+    primary_source: github-release
+    primary: https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_arm64.tar.gz
+    primary_digest: ""
+    primary_digest_of: ""
+    primary_member: ""
+    second_source: ghcr-mirror
+    max_time: 60
+    mirror_from: https://github.com/gotestyourself/gotestsum/releases/download/v1.13.0/gotestsum_1.13.0_linux_arm64.tar.gz
     mirror_member: ""
 
   # mise, which .github/actions/install-jj installs jj with, and which the worker image's tools

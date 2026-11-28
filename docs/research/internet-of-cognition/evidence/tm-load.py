@@ -1,3 +1,4 @@
+# legion: tool - loads the Legion phase workflow with MAS Lab's loaders when a person reruns test-maslab.md
 #  Load the Legion phase workflow with MAS Lab's own loaders.
 #  Run from /legion/scratch/tmp/infra3134/in/out with the venv built in test-maslab.md.
 from __future__ import annotations

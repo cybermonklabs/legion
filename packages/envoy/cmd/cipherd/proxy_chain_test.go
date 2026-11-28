@@ -4,6 +4,8 @@
 // without, and a mounted intermediate with its chain; and what it refuses to start on.
 package main
 
+//ci:reads packages/envoy/scripts/lib/ca-policy.jq caPolicyNames runs jq -f ../../scripts/lib/ca-policy.jq for TestABrokerWithADpopBlockIsReadyUnderTheLocalCAPolicy
+
 import (
 	"crypto/ecdsa"
 	"crypto/elliptic"

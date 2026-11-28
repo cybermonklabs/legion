@@ -1,5 +1,7 @@
 package textcheck
 
+//ci:reads packages/envoy/internal/dispatch/routes/*.go !**/*_test.go TestNoCodeOutsideTheOriginTablePicksByHost goFiles parses ../dispatch/routes's own Go files, its test files aside
+
 import (
 	"go/ast"
 	"go/token"

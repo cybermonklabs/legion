@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/testdata/corpus/*.md markdownCorpus globs ../pmdoc/testdata/corpus/*.md for TestMarkdownRoundTripAnswersWhatTheStoreWouldHold and the decisions tests
+
 import (
 	"bytes"
 	"context"

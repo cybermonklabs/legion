@@ -352,33 +352,60 @@ def called_workflows(document: dict) -> dict:
     return {path: jobs[0] for path, jobs in workflow_callers(document).items()}
 
 
-# The input a workflow several jobs of ci.yaml call reads to run, under each caller, the job of it
-# named for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the
-# two halves of what was one job, and ci.yaml's job of each id passes its own id. A file that
-# several jobs call and that holds no job named for any of them (dispatch-browser.yaml, which
-# dispatch-browser, dispatch-browser-pr and dispatch-references call with a lane each) runs every
-# job under every caller.
+# The input a workflow several jobs of ci.yaml call reads to run, under each caller, the jobs of it
+# for that caller and no other: ci-job-test.yaml holds `test` and `tooling-checks`, the two halves
+# of what was one job, ci-job-envoy-e2e-local.yaml holds `envoy-e2e-local` for one caller and
+# `envoy-refill-legs` and `envoy-refill`, which restates the legs' result, for the other, and
+# ci.yaml's job of each id passes its own id. A file that several jobs call and that holds no job
+# named for any of them (dispatch-browser.yaml, which dispatch-browser, dispatch-browser-pr and
+# dispatch-references call with a lane each) runs every job under every caller.
 CALLER_INPUT = "job"
 
 
-def called_job_owners(callers: list, name: str) -> list:
-    """The ci.yaml jobs among `callers` that run job `name` of the workflow they call. A file one
-    job calls runs every job of it under that one. A file several call runs a job named for one of
-    them under that one alone, since its `if:` admits only that caller's CALLER_INPUT
-    (check_called_jobs holds both halves of that), and any other job under every caller."""
-    return [name] if len(callers) > 1 and name in callers else list(callers)
+def caller_ifs(name: str) -> tuple:
+    """The `if:`s, each as squash writes it, that run a job of a file several ci.yaml jobs call
+    under job `name` alone: the bare comparison of CALLER_INPUT with that id, and the same
+    comparison behind `!cancelled()`, which a job that restates the result of jobs it needs
+    carries (envoy-refill of ci-job-envoy-e2e-local.yaml, after its legs), since GitHub skips a
+    job whose needs did not all succeed unless its `if:` calls a status function. No other form is
+    read as admitting one caller, however GitHub would read it: a term beside the comparison, such
+    as an `||`, could admit another."""
+    compare = f"inputs.{CALLER_INPUT} == '{name}'"
+    return compare, f"${{{{ !cancelled() && {compare} }}}}"
+
+
+def called_job_owners(callers: list, name: str, jobs: dict) -> list:
+    """The ci.yaml jobs among `callers` that run job `name` of `jobs`, the jobs of the workflow they
+    call. A file one job calls runs every job of it under that one. A file several call runs a job
+    named for one of them under that one alone, since its `if:` admits only that caller's
+    CALLER_INPUT (check_called_jobs holds both halves of that). Once the file holds a job named for
+    any of its callers, so that each caller passes its own id, another job whose `if:` is one of
+    one caller's caller_ifs runs under that caller alone too, as envoy-refill-legs runs under
+    envoy-refill; any other job runs under every caller."""
+    if len(callers) < 2:
+        return list(callers)
+    if name in callers:
+        return [name]
+    if any(caller in jobs for caller in callers):
+        have_if = squash(str((jobs.get(name) or {}).get("if", "")))
+        alone = [caller for caller in callers if have_if in caller_ifs(caller)]
+        if alone:
+            return alone
+    return list(callers)
 
 
 def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
     """A workflow several ci.yaml jobs call is read job by job: each job named for one of its
-    callers is read as that caller's alone (called_job_owners), so the rules that hold a job's go
-    commands, its environment and its gated steps to its own gate hold it to that caller's. That
-    reading is sound only while the job really runs under that caller alone. So, once the file
-    holds a job named for any of its callers: each caller must have a job of the file named for
-    it, else no job of the file runs under that caller for this check to hold to its gate; that
-    job's `if:` must be exactly `inputs.job == '<its id>'`; and the caller must pass
-    `job: <its own id>`. A job that ran under a second caller would run go commands and read files
-    that caller's filter is never held to."""
+    callers, and each other job whose `if:` admits one of them alone, is read as that caller's
+    alone (called_job_owners), so the rules that hold a job's go commands, its environment and its
+    gated steps to its own gate hold it to that caller's. That reading is sound only while the job
+    really runs under that caller alone. So, once the file holds a job named for any of its
+    callers: each caller must have a job of the file named for it, else no job of the file runs
+    under that caller for this check to hold to its gate; that job's `if:` must be exactly one of
+    caller_ifs, `inputs.job == '<its id>'` or, after jobs it needs, `${{ !cancelled() &&
+    inputs.job == '<its id>' }}`; and the caller must pass `job: <its own id>`. A job that ran
+    under a second caller would run go commands and read files that caller's filter is never held
+    to."""
     for path, callers in workflow_callers(documents[WORKFLOW]).items():
         if len(callers) < 2:
             continue
@@ -393,11 +420,12 @@ def check_called_jobs(documents: dict, problems: list[Annotation]) -> None:
                                                 f"runs under {name} that this check can hold to {name}'s gate; give the "
                                                 f"file a job named {name}, or call another file"))
                 continue
-            want_if = f"inputs.{CALLER_INPUT} == '{name}'"
+            want_if, after_needs = caller_ifs(name)
             have_if = squash(str((called_jobs[name] or {}).get("if", "")))
-            if have_if != want_if:
+            if have_if not in (want_if, after_needs):
                 problems.append(error(path, f"job {name} of {path}, which jobs {', '.join(callers)} of {WORKFLOW} all "
-                                            f"call, carries `if: {have_if}`: give it `if: {want_if}`, so it runs under "
+                                            f"call, carries `if: {have_if}`: give it `if: {want_if}`, or "
+                                            f"`if: {after_needs}` when it restates jobs it needs, so it runs under "
                                             f"job {name} alone, which is the one caller this check holds its steps to"))
             passed = str((((documents[WORKFLOW].get("jobs") or {}).get(name) or {}).get("with") or {}).get(CALLER_INPUT, ""))
             if passed != name:
@@ -1923,6 +1951,8 @@ PACKAGE = re.compile(r"\.\.?(/[A-Za-z0-9_./-]*)?")
 FLAG = re.compile(r"-v|-race|-count=[0-9]+|-timeout=[0-9]+[smh]|-buildvcs=false")
 DURATION = re.compile(r"[0-9]+[smh]")
 TAGS = re.compile(r"[A-Za-z0-9_,]+")
+# .github/scripts/go-test.sh, written from the repository root or from a directory under it.
+GO_TEST_WRAPPER = re.compile(r"(?:\.\./)*\.github/scripts/go-test\.sh")
 
 
 def reduce_line(line: str) -> tuple:
@@ -1943,6 +1973,16 @@ def reduce_line(line: str) -> tuple:
         if assignment.group(1) not in ENV_ALLOWED:
             return *unreduced, f"it sets {assignment.group(1)}, which can change what go compiles"
         words = words[1:]
+    # .github/scripts/go-test.sh, the wrapper every Go test step runs its go test command under,
+    # takes the command as its own words after its one option, --race-memory, and runs it under
+    # gotestsum with the same packages and flags: it compiles what the bare command compiles, so
+    # the wrapper is dropped as an ENV_ALLOWED assignment is. Its path is the one file of that name,
+    # written relative to the step's directory.
+    wrapped = bool(words) and GO_TEST_WRAPPER.fullmatch(words[0]) is not None
+    if wrapped:
+        words = words[1:]
+        if words and words[0] == "--race-memory":
+            words = words[1:]
     if not words or words[0] != "go":
         return *unreduced, f"it starts with `{words[0] if words else line}`, not go"
     # `go -C <directory>` is reduced where a `cd` is not because it names the directory outright,
@@ -1956,6 +1996,8 @@ def reduce_line(line: str) -> tuple:
         chdir, words = words[2], ["go", *words[3:]]
     if len(words) < 2 or words[1] not in ("test", "vet", "build"):
         return *unreduced, f"`{' '.join(words[:2])}` is not go test, vet or build"
+    if wrapped and words[1] != "test":
+        return *unreduced, f"go-test.sh runs go test alone, not `go {words[1]}`"
     pkgs, tags, index = set(), None, 2
     while index < len(words):
         word, value = words[index], words[index + 1] if index + 1 < len(words) else ""
@@ -2018,6 +2060,10 @@ ENV_ALLOWED = frozenset({
     # land in a directory of their own, which the go-envoy-darwin-vet cache family holds.
     "GOCACHE",
     "GOPROXY",
+    # Read by .github/scripts/go-test.sh alone: whether a failed test runs once more, and how many
+    # failed root tests stop that rerun. A rerun runs the same compiled test binary again, so go
+    # compiles the same files with them set as without. go reads neither.
+    "GO_TEST_RERUN_MAX_FAILURES", "GO_TEST_RETRY",
     # The job's state, success, failure or cancelled, which the step "Wait for the script
     # harnesses and judge them" of envoy-go-checks and envoy-session-stall hands
     # .github/scripts/harness-pool.sh to choose --allow-none. go reads it nowhere.
@@ -2149,9 +2195,10 @@ def step_holders(documents: dict) -> list:
     units = [(job_id, WORKFLOW, job_id, ci, job or {}) for job_id, job in (ci.get("jobs") or {}).items()]
     for path, callers in workflow_callers(ci).items():
         called = documents.get(path) or {}
+        called_jobs = called.get("jobs") or {}
         units += [(owner, path, name, called, called_job or {})
-                  for name, called_job in (called.get("jobs") or {}).items()
-                  for owner in called_job_owners(callers, name)]
+                  for name, called_job in called_jobs.items()
+                  for owner in called_job_owners(callers, name, called_jobs)]
     return units
 
 
@@ -2333,6 +2380,16 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
     units = step_holders(documents)
     gated = defaultdict(set)  # (workflow, job) -> filters its job-level if: names
     refused = set()
+    # Rule 26: what claims each gated job and step. A filter's read set is computed from the
+    # gates that declare it, and each gate names one job (and, for a step's gate, one step), so a
+    # job gated on a filter that only another job's gate declares runs on a filter computed from
+    # that other job's reads: it passes every other rule while nothing holds its own reads, which
+    # is what deleting one of two gate files that declare one filter leaves (tool-fallback.py and
+    # tool-fallback-arm.py both declare tool_fallback). A gate of the filter names the job whether
+    # it holds the job or one step of it, and a step is held to a gate of its filter on its own job,
+    # not on itself: the steps that ready a gated step (a cache restore, a sysctl, a fetch) share
+    # its gate and read nothing the gated step's gate does not declare.
+    claimed_jobs = {(g.filter, g.job) for g in data.GATES}
     for own, path, job_id, _, job in units:
         for step, condition in conditions(job):
             resolved = resolve_condition(condition, inputs_of.get((path, own), {}))
@@ -2353,6 +2410,23 @@ def check_table(documents: dict, data, files: set, problems: list[Annotation]) -
                     problems.append(error(path, f"{where} is gated on filter {name}, which no file of "
                                                 f"{GATES_DIR} declares as a gate or as EXCLUDED; add the gate "
                                                 f"with its reads"))
+                    continue
+                if name not in gates or (path, where, name, "claim") in refused:
+                    continue
+                if step is None and path == WORKFLOW and (name, job_id) not in claimed_jobs:
+                    refused.add((path, where, name, "claim"))
+                    declaring = sorted({f"{g.job}" + (f' step "{g.step}"' if g.step else "")
+                                        for g in data.GATES if g.filter == name})
+                    problems.append(error(path, f"{where} is gated on filter {name}, but no file of {GATES_DIR} "
+                                                f"declares a gate of {name} for job {job_id} (the gates of {name} "
+                                                f"name {', '.join(declaring)}), so nothing holds what job {job_id} "
+                                                f"reads; add its gate file with its reads"))
+                elif step is not None and (name, own) not in claimed_jobs:
+                    refused.add((path, where, name, "claim"))
+                    problems.append(error(path, f"{where} is gated on filter {name}, but no file of {GATES_DIR} "
+                                                f"declares a gate of {name} for job {own}'s steps in {path}, so "
+                                                f"nothing holds what the step reads; add its gate file with its "
+                                                f"reads"))
             # A not-true test gates on no filter, but the output it reads must be one the changes
             # job writes: needs.changes.outputs of any other name is empty on every run, so the test
             # always holds. LIST_OUTPUT and filter_verdicts are left to their own refusals (rule 23
@@ -2908,9 +2982,10 @@ def check_ci_ok(documents: dict, problems: list[Annotation]) -> None:
             called = documents.get(path) or {}
             callers = workflow_callers(document).get(path, [job_id])
             # Only the jobs of that file this caller runs (called_job_owners): a file several
-            # jobs call holds one job per caller, each reporting under its own caller's id.
-            called_jobs = {name: j for name, j in (called.get("jobs") or {}).items()
-                           if job_id in called_job_owners(callers, name)}
+            # jobs call holds the jobs of each caller, each reporting under its own caller's id.
+            every_job = called.get("jobs") or {}
+            called_jobs = {name: j for name, j in every_job.items()
+                           if job_id in called_job_owners(callers, name, every_job)}
             # The job that reports is the called workflow's job whose last step is the report:
             # always() first, so it runs after a failed step too, and ended only by the call's own
             # condition (docs-site.yaml's input, worker-image.yaml's event). Its `job:` is the
@@ -3508,6 +3583,239 @@ def check_dead_patterns(data, expander: Expander, problems: list[Annotation]) ->
             problems.append(error(d.path, f"the //ci:reads line at {d.path}:{d.line} reads {' '.join(d.globs)}, "
                                           f"whose `!` globs leave none of the files its glob matches, so it holds its "
                                           f"filter to nothing; correct the globs or drop the line"))
+
+
+# Rule 27, what a Go test reads through `..`. A string of a Go file: a double-quoted literal with
+# its escapes, or a raw one.
+GO_STRING = r'"(?:[^"\\\n]|\\.)*"|`[^`]*`'
+# A filepath.Join or path.Join whose leading arguments are string literals, the first of them `..`
+# or `../...`: the function's name, and the literal prefix of the path it builds.
+GO_JOIN = re.compile(rf"\b((?:filepath|path)\.Join)\(\s*((?:(?:{GO_STRING})\s*,\s*)*(?:{GO_STRING}))")
+# A string literal that is a path up out of its directory, `"../..."`.
+GO_UP_LITERAL = re.compile(r'"(\.\./(?:[^"\\\n]|\\.)*)"|`(\.\./[^`]*)`')
+
+
+def go_without_comments(text: str) -> str:
+    """Go source with every comment blanked and its strings, runes and newlines kept, so a path a
+    comment mentions is no read and a `//` inside a string is no comment."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c in "\"'`":
+            end = i + 1
+            while end < n and text[end] != c and not (c != "`" and text[end] == "\n"):
+                end += 2 if c != "`" and text[end] == "\\" else 1
+            out.append(text[i:end + 1])
+            i = end + 1
+        elif text.startswith("//", i):
+            end = text.find("\n", i)
+            i = n if end < 0 else end
+        elif text.startswith("/*", i):
+            end = text.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            out.append("\n" * text.count("\n", i, end))
+            i = end
+        else:
+            out.append(c)
+            i += 1
+    return "".join(out)
+
+
+def go_up_reads(path: str, text: str) -> list:
+    """The paths a Go file reads up out of its own directory, as (the repository-relative path,
+    the source text it was read from): each filepath.Join or path.Join whose leading arguments are
+    string literals starting with `..`, taken as far as its literals go, and each `"../..."`
+    literal. A path the file then extends with a value it computes is read here as the directory
+    its literals reach, which is all the source says of it. Each of the two opens a string literal
+    with `..`, so a text holding neither `"..` nor `` `.. `` holds none, and is not scanned."""
+    if '"..' not in text and "`.." not in text:
+        return []
+    code, here, found = go_without_comments(text), os.path.dirname(path), []
+    for match in GO_JOIN.finditer(code):
+        parts = [part[1:-1] for part in re.findall(GO_STRING, match.group(2))]
+        if parts and (parts[0] == ".." or parts[0].startswith("../")):
+            found.append((os.path.normpath(os.path.join(here, *parts)), f"{match.group(1)}({match.group(2)})"))
+    for match in GO_UP_LITERAL.finditer(code):
+        literal = match.group(1) or match.group(2)
+        found.append((os.path.normpath(os.path.join(here, literal)), f'"{literal}"'))
+    return found
+
+
+def go_module_roots(files: list) -> list:
+    """The directory of every go.mod of the repository, the deepest first and a go.mod at the root
+    last, so a nested module (packages/envoy/infra) is found before the one around it."""
+    return sorted({os.path.dirname(f) or "." for f in files if os.path.basename(f) == "go.mod"},
+                  key=lambda d: (-(d.count("/") + (d != ".")), d))
+
+
+def under(path: str, directory: str) -> bool:
+    return directory == "." or path == directory or path.startswith(directory + "/")
+
+
+def module_of(path: str, roots: list):
+    """The Go module a path is in: the first of go_module_roots' roots it is under, which is the
+    deepest, or None."""
+    return next((root for root in roots if under(path, root)), None)
+
+
+def directive_covers(d, path: str, expander: Expander) -> bool:
+    """Whether one //ci: line of a file declares a read of `path`, a file or a directory: a reads
+    or reads-set line whose files include it or one under it, or a builds line whose go build
+    runs in it, builds a package at or above it, or builds a package under it (a directory the
+    source finishes with the name of the command it builds)."""
+    for entry in d.entries:
+        if isinstance(entry, Run):
+            for package in entry.pkgs:
+                built = os.path.normpath(os.path.join(entry.workdir, package.removesuffix("/...")))
+                if under(path, built) or under(built, path) or path == entry.workdir:
+                    return True
+        else:
+            declared = read_files(entry, expander)
+            if any(c in path for c in "*?["):
+                if declared & set(expander.expand(path)):
+                    return True
+            elif any(under(f, path) for f in declared):
+                return True
+    return False
+
+
+def check_declared_reads(data, session: Session, expander: Expander, files: list, unreduced: dict,
+                         problems: list[Annotation]) -> None:
+    """Rule 27: a test that reads a file outside its package through `..` names it in a //ci: line
+    of its own file, when go list sees no such read, since the filters are computed from those
+    lines: a line taken out leaves the read in no filter, and a change to that file then starts no
+    job that runs the test (packages/daemon/internal/prompts/roles_test.go's three lines are the
+    case this rule was written for, and packages/envoy/internal/dispatch/api/delivery_test.go's
+    read of the delivery package's testdata the case of a read inside the test's module). It reads
+    each Go test file, and each Go file that holds a //ci: line, for the paths go_up_reads finds,
+    and keeps those that name a file or a directory of the repository (a path the test makes up
+    names none). A path is in the deepest module whose directory holds it, so a read into a module
+    nested in the file's (packages/envoy/infra in packages/envoy) is outside the file's module.
+    Outside the file's module, the module's own root and a directory around it are passed over (a
+    path the source finishes with a value it computes cannot be named from the source), and a path
+    none of the file's //ci: lines covers fails. Inside it, a path in the file's own package
+    directory, that directory and one around it are passed over, and so is one every gate whose
+    test runs compile the file holds through go list alone (reads_inside_module): only one that
+    some such gate's go commands do not reach, and none of the file's //ci: lines covers, fails.
+    Each names the file, the path and the source text it came from."""
+    roots = go_module_roots(files)
+    known = expander.known
+    lines = defaultdict(list)
+    for d in getattr(data, "DIRECTIVES", ()):
+        lines[d.path].append(d)
+    inside: dict = {}  # a file -> its reads inside its module and outside its package no line of it names
+    for path in files:
+        if not path.endswith(".go") or not (path.endswith("_test.go") or path in lines):
+            continue
+        module = module_of(path, roots)
+        if module is None:
+            continue
+        try:
+            text = (REPO / path).read_text(encoding="utf-8")
+        except (OSError, UnicodeError):
+            continue
+        here, seen = os.path.dirname(path), set()
+        for read, source in go_up_reads(path, text):
+            if read in seen or read.startswith(".."):
+                continue
+            own = module_of(read, roots) == module
+            if (under(read, here) or under(here, read)) if own else under(module, read):
+                continue
+            seen.add(read)
+            if not (read in known or expander.expand(f"{read}/**") or
+                    (any(c in read for c in "*?[") and expander.expand(read))):
+                continue  # a path the test makes up (an escape it refuses, a fixture it writes)
+            if any(directive_covers(d, read, expander) for d in lines[path]):
+                continue
+            if own:
+                inside.setdefault(path, []).append((read, source))
+                continue
+            problems.append(error(path, f"{path} reads {read} through {source}, outside its module {module}, and no "
+                                        f"//ci:reads, //ci:reads-set or //ci:builds line of the file names it, so a "
+                                        f"change to it starts no job that runs this test; add `//ci:reads "
+                                        f"{suggested_read(read, known)} <the test that reads it>` to the file's //ci: "
+                                        f"block"))
+    for (path, read, source), wheres in reads_inside_module(data, session, expander, files, unreduced, inside):
+        problems.append(error(path, f"{path} reads {read} through {source}, outside its package "
+                                    f"{os.path.dirname(path)}, which no package that "
+                                    f"{' or '.join(f'job {w}' for w in wheres)} builds holds, and no //ci:reads, "
+                                    f"//ci:reads-set or //ci:builds line of the file names it, so a change to it "
+                                    f"does not start the job that runs this test; add `//ci:reads "
+                                    f"{suggested_read(read, known)} <the test that reads it>` to the file's //ci: "
+                                    f"block"))
+
+
+def suggested_read(read: str, known: set) -> str:
+    """The glob a //ci:reads line that declares `read` names: the path of a file or a glob as it
+    is, and a directory's whole tree."""
+    return read if read in known or any(c in read for c in "*?[") else f"{read}/**"
+
+
+def reads_inside_module(data, session: Session, expander: Expander, files: list, unreduced: dict,
+                        inside: dict) -> list:
+    """Rule 27's reads inside a test's module, ((the file, the path, the source text), the gates
+    that miss it), in the order of `files` and of the reads: a read some gate misses, of the gates
+    whose test runs compile the file. A test run compiles a file its listing names as a test file
+    of a package it tests, or as a source of a package of its closure, which are the files whose
+    //ci: lines closure applies. A gate holds a read when it reads every file of held_files(read)
+    through go list alone: closure without the RULES of any file, so the package directories of
+    each `go list -deps`, the files they embed and the testdata of each package a test run tests,
+    with every Go file and every file under a Go module's directory for a gate with a go command
+    this check does not reduce. A line of another test's file is no answer for this one: taking it
+    out would leave this read in no filter. Only a gate that compiles such a file walks its closure
+    again, and the problems that walk raises were reported when gate_read_sets walked it first."""
+    if not inside:
+        return []
+    needed = {(path, read, source): held_files(read, expander)
+              for path in files for read, source in inside.get(path, ())}
+    missed: dict = {key: [] for key in needed}
+    walked: dict = {}  # a Run -> the files its closure reads through go list alone
+    fallback = None
+    before = len(session.problems)
+    for g in data.GATES:
+        compiled = set()
+        for r in gate_runs(g):
+            if r.mode != "test":
+                continue
+            for pkg in session.listing(r):
+                d = rel(pkg["Dir"]) if pkg.get("Dir") and not pkg.get("Standard") else None
+                if d is not None and not pkg.get("ForTest"):
+                    compiled.update(f"{d}/{name}" for name in (pkg.get("GoFiles") or []) + (pkg.get("CgoFiles") or []))
+            for pkg in session.named(r):
+                d = rel(pkg["Dir"]) if pkg.get("Dir") else None
+                if d is not None:
+                    compiled.update(f"{d}/{name}" for name in (pkg.get("TestGoFiles") or []) + (pkg.get("XTestGoFiles") or []))
+        asked = [key for key in needed if key[0] in compiled]
+        if not asked:
+            continue
+        held = set()
+        for r in gate_runs(g):
+            if r not in walked:
+                walked[r] = set().union(*(read_files(read, expander) for read in closure(session, {}, r, set())))
+            held |= walked[r]
+        if unreduced.get(g.filter):
+            if fallback is None:
+                fallback = set(module_trees_and_go_files(files))
+            held |= fallback
+        for key in asked:
+            if not needed[key] <= held:
+                missed[key].append(g.job + (f' step "{g.step}"' if g.step else ""))
+    del session.problems[before:]
+    return [(key, list(dict.fromkeys(wheres))) for key, wheres in missed.items() if wheres]
+
+
+def held_files(read: str, expander: Expander) -> set:
+    """The files a gate's go commands must read for rule 27 to count a read inside a test's module
+    as one go list sees: the file a path names; the files a glob matches, its Go test files aside;
+    and the files directly in a directory, its Go test files aside, which are what go list reads
+    of the directory of a package a gate builds. Only where that leaves none - a glob of Go test
+    files alone, a directory holding nothing but directories - is it every file the path names."""
+    if read in expander.known:
+        return {read}
+    glob = any(c in read for c in "*?[")
+    named = expander.expand(read if glob else f"{read}/**")
+    sources = {f for f in named if not f.endswith(TEST_SUFFIX) and (glob or os.path.dirname(f) == read)}
+    return sources or set(named)
 
 
 def tag_step_files(entry, gate_files: dict, selection: Selection) -> tuple:
@@ -4118,6 +4426,7 @@ def check() -> int:
             problems.append(error(GATES_DIR, f"filter {name} has {unread_filter_patterns(filters[name])[0]}, "
                                              f"a brace picomatch expands and this check does not read"))
     check_dead_patterns(data, expander, problems)
+    check_declared_reads(data, session, expander, files, unreduced, problems)
     if mode == "generate":
         out = os.environ.get("CI_FILTERS_OUT", "")
         problems = list(dict.fromkeys(problems))

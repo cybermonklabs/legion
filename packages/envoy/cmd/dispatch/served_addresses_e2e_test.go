@@ -2,6 +2,8 @@
 
 package main
 
+//ci:reads packages/envoy-client/bin/dispatch.ts TestServedAddressesLive runs the real CLI at ../../../envoy-client/bin/dispatch.ts
+
 // The live proof of INFRA-5491's checks c-l-served, c-l-record, c-l-proxy, the API half of
 // c-l-refs and c-l-cli (the issue's Verification v16): each starts the real envoy-dispatch process
 // on a Postgres database of its own, behind a TLS front door the test serves, signs a person in

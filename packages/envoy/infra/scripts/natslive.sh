@@ -8,10 +8,17 @@
 #
 # Each package's -run is the list .github/scripts/go-tagged-tests.sh prints for it, and every list
 # is read before any run starts, so an empty or refused list ends the script with no test
-# running. Each run's output goes to a file in a directory of the script's own, removed on exit,
-# and is printed whole under its own heading as that run ends. It waits by process id, one run at
-# a time, and exits 1 naming each package whose run failed, 2 with no argument, and 0 otherwise.
-# Its -timeout fires before envoy-infra-go's job limit, so a hung test prints its dump.
+# running. Each run's go test runs under gotestsum through .github/scripts/go-test.sh, as every
+# Go test step of a job ci-ok needs runs its tests: its log names each test's result, a merge group
+# runs a failed test once more (go-test.sh's header says when), and the job uploads its jsonfile.
+# The runs go at once, so each names its own jsonfile (GO_TEST_JSONFILE): the job, `natslive`, the
+# package with its ./ dropped and each / made _, and this script's process id, as
+# `envoy-infra-go-natslive-core-<pid>.json`; left to go-test.sh, two runs that start together
+# could both take the same next free name. Each run's output goes to a file in a directory of the
+# script's own, removed on exit, and is printed whole under its own heading as that run ends. It
+# waits by process id, one run at a time, and exits 1 naming each package whose run failed, 2
+# with no argument, and 0 otherwise. Its -timeout fires before envoy-infra-go's job limit, so a
+# hung test prints its dump.
 #
 # .github/scripts/audited_scripts.py's AUDITED_SCRIPTS holds a person's reading of this file,
 # pinned by its SHA-256, and .github/scripts/ci_job_reads.py pins the step to this script and the
@@ -32,7 +39,10 @@ for pkg in "$@"; do
 	pattern[$pkg]=$(../../../.github/scripts/go-tagged-tests.sh natslive "$pkg")
 done
 for pkg in "$@"; do
-	go test -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "$pkg" >"$out/${pkg//\//_}.txt" 2>&1 &
+	name=${pkg#./}
+	GO_TEST_JSONFILE="${GITHUB_JOB:-local}-natslive-${name//\//_}-$$.json" \
+		../../../.github/scripts/go-test.sh go test -count=1 -timeout 25m -tags natslive -run "${pattern[$pkg]}" "$pkg" \
+		>"$out/${pkg//\//_}.txt" 2>&1 &
 	running[$!]=$pkg
 done
 failed=()

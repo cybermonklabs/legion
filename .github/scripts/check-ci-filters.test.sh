@@ -41,8 +41,9 @@
 # matches no file is refused, and every spec file the `references)` arm of
 # .github/scripts/dispatch-browser-shard-suite.sh lists in lane_files must be one the
 # dispatch_references filter matches. A script's go command is read under every step of each job
-# that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller
-# under that caller alone and reads its other jobs under every caller whose filter is not
+# that may run it, a workflow several jobs of ci.yaml call runs each job of it named for a caller,
+# and each other job whose if: admits one caller alone (a caller's legs), under that caller alone
+# and reads its other jobs under every caller whose filter is not
 # EXCLUDED, every gated step that names a declared script must have a Run that cites it in a gate
 # of each filter that gates the step, a run that changes a file of the tree, but those its mode
 # writes (the PUSH_WORKFLOWS workflows, generate's output and its .inputs file), fails naming each,
@@ -101,7 +102,7 @@ def derived(root, lane):
     reads.ENVOY_RACE_LANE = (reads.RaceJob("a-race-job", "Race-test the packages", "30m", tuple(
         reads.RacePackage(p.removesuffix("/..."), tree=p.endswith("/...")) for p in lane.split())),)
     try:
-        return reads.race_impossible_script(reads.race_impossible_tests(root))
+        return reads.race_impossible_script(reads.ENVOY, reads.race_impossible_tests(root))
     except ValueError as refusal:
         return f"RAISED: {refusal}"
 
@@ -1822,6 +1823,151 @@ run_check "$root"
 check "fails once they leave nothing" \
   "$(contains "$out" 'whose `!` globs leave none of the files its glob matches')"
 
+# Rule 26: a job gated on a filter needs a gate file that names it. Deleting one of two gate
+# files that declare one filter (tool-fallback-arm.py beside tool-fallback.py) passed every other
+# rule, while nothing held what the job left behind reads.
+echo "case: a job gated on a filter that only another job's gate file declares"
+root=$(fixture gate-claim)
+second_job=$(cat <<'YAML'
+  app2:
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Lint the app
+        run: echo app
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          changes: ${{ toJSON(needs.changes) }}
+          job-status: ${{ job.status }}
+  lint:
+YAML
+)
+replace "$root/.github/workflows/ci.yaml" $'\n  lint:\n' $'\n'"$second_job"$'\n'
+replace "$root/.github/workflows/ci.yaml" "'{\"app\": \"app\", \"image\": \"image\"}'" "'{\"app\": \"app\", \"app2\": \"app\", \"image\": \"image\"}'"
+replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, app2, image, lint]"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job no gate file claims, and the job the filter's gate names" \
+  "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app2 is gated on filter app, but no file of .github/ci-gates declares a gate of app for job app2 (the gates of app name app)')"
+cat > "$root/.github/ci-gates/app2.py" <<'PY'
+GATE = gate("app", "app2", reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")])
+PY
+run_check "$root"
+check "passes once a gate file of the filter names the job" "$(is "$status" 0)"
+
+# Rule 27: a test that reads a file outside its Go module through `..` names it in a //ci: line
+# of its own file. A line taken out (one of roles_test.go's three) passed every other rule while
+# the read left the filter, and a change to the file then started no job that runs the test.
+echo "case: a test that reads outside its module and no //ci: line of its file names the path"
+root=$(fixture declared-read)
+run_check "$root"
+check "the fixture's declared read passes" "$(is "$status" 0)"
+replace "$root/mod/lib/lib_test.go" $'//ci:reads fixtures/data.json TestData reads ../../fixtures/data.json\n' ""
+run_check "$root"
+check "fails once the line is taken out" "$(is "$status" 1)"
+check "names the test file, the path and the literal it read" \
+  "$(contains "$out" '::error file=mod/lib/lib_test.go::mod/lib/lib_test.go reads fixtures/data.json through "../../fixtures/data.json", outside its module mod, and no //ci:reads')"
+root=$(fixture declared-read-join)
+replace "$root/mod/lib/lib_test.go" $'\t"os"\n' $'\t"os"\n\t"path/filepath"\n'
+replace "$root/mod/lib/lib_test.go" 'os.ReadFile("../../fixtures/data.json")' 'os.ReadFile(filepath.Join("..", "..", "fixtures", name()))'
+printf '\nfunc name() string { return "data.json" }\n' >> "$root/mod/lib/lib_test.go"
+run_check "$root"
+check "a filepath.Join the line covers passes" "$(is "$status" 0)"
+replace "$root/mod/lib/lib_test.go" $'//ci:reads fixtures/data.json TestData reads ../../fixtures/data.json\n' ""
+run_check "$root"
+check "and fails without the line, naming the directory its literals reach" \
+  "$(contains "$out" 'mod/lib/lib_test.go reads fixtures through filepath.Join("..", "..", "fixtures"), outside its module mod')"
+root=$(fixture declared-read-made-up)
+cat > "$root/mod/lib/escape_test.go" <<'GO'
+package lib
+
+import (
+	"os"
+	"testing"
+)
+
+// TestEscapeRefused names a path outside the module that no file holds, as a test of a refusal
+// does; a comment's "../../fixtures/data.json" is no read either.
+func TestEscapeRefused(t *testing.T) {
+	if _, err := os.ReadFile("../../nowhere/secret.txt"); err == nil {
+		t.Fatal("read a file that is not there")
+	}
+}
+GO
+run_check "$root"
+check "a path no file holds, and one in a comment, are no reads" "$(is "$status" 0)"
+# A read into a module nested in the test's own, as packages/envoy/infra is in packages/envoy, is
+# outside the test's module: go list of the test's packages reaches no file of the nested one.
+root=$(fixture declared-read-nested)
+mkdir -p "$root/mod/nested"
+printf 'module example.com/nested\n\ngo 1.21\n' > "$root/mod/nested/go.mod"
+echo 'nested' > "$root/mod/nested/README.md"
+cat > "$root/mod/lib/nested_test.go" <<'GO'
+package lib
+
+import (
+	"os"
+	"testing"
+)
+
+func TestNestedReadme(t *testing.T) {
+	if _, err := os.ReadFile("../nested/README.md"); err != nil {
+		t.Fatal(err)
+	}
+}
+GO
+run_check "$root"
+check "a read into a nested module that no //ci: line names fails" "$(is "$status" 1)"
+check "naming the test file and the path" \
+  "$(contains "$out" '::error file=mod/lib/nested_test.go::mod/lib/nested_test.go reads mod/nested/README.md through "../nested/README.md", outside its module mod, and no //ci:reads')"
+replace "$root/mod/lib/nested_test.go" $'package lib\n\nimport (' \
+  $'package lib\n\n//ci:reads mod/nested/README.md TestNestedReadme reads ../nested/README.md\n\nimport ('
+run_check "$root"
+check "and passes once a //ci:reads line names it" "$(is "$status" 0)"
+
+# A test that reads a file of its own module outside its package names it in a //ci: line too, when
+# no package the job builds holds the file: go list sees no such read, so a line taken out drops the
+# file from the filter, and a change to it starts no job that runs the test
+# (dispatch://INFRA-5794/spec, Design, "It fails when a test file's //ci: lines no longer name a path
+# outside its package that the test reads"). At cab8a563 the check passed with
+# packages/envoy/internal/dispatch/api/delivery_test.go's line for
+# packages/envoy/internal/dispatch/delivery/testdata/dev-only-run-jobs.json taken out, and
+# envoy-go-race-api, which runs that test under -race, read 2737 files where it had read 2738.
+echo "case: a test that reads a file of its own module outside its package, which no package of the job holds, and no //ci: line of its file names the path"
+root=$(fixture declared-read-own-module)
+mkdir -p "$root/mod/assets"
+echo '{}' > "$root/mod/assets/data.json"
+cat > "$root/mod/lib/assets_test.go" <<'GO'
+package lib
+
+//ci:reads mod/assets/data.json TestAssets reads ../assets/data.json
+
+import (
+	"os"
+	"testing"
+)
+
+func TestAssets(t *testing.T) {
+	if _, err := os.ReadFile("../assets/data.json"); err != nil {
+		t.Fatal(err)
+	}
+}
+GO
+run_check "$root"
+check "the declared read of a file of its own module passes" "$(is "$status" 0)"
+run_generate "$root"
+check "and puts that file in the job's filter" "$(contains "$(filter_of app)" '^mod/assets/')"
+replace "$root/mod/lib/assets_test.go" $'//ci:reads mod/assets/data.json TestAssets reads ../assets/data.json\n' ""
+run_generate "$root"
+check "without the line the file leaves the job's filter" "$(is "$(contains "$(filter_of app)" '^mod/assets/')" false)"
+run_check "$root"
+check "so the check fails once the line is taken out" "$(is "$status" 1)"
+check "naming the test file and the path it reads" \
+  "$(contains "$out" '::error file=mod/lib/assets_test.go::mod/lib/assets_test.go reads mod/assets/data.json')"
+
 # Rule 22: a gate that reads a harness under .github/scripts reads every script that harness links
 # into its fixtures (through every `for linked in ...` loop of the harness, not the last one only),
 # runs or sources, every module it imports in any form, and what each script it reaches sources or
@@ -1960,6 +2106,11 @@ replace "$root/.github/workflows/ci.yaml" "  lint:" \
 replace "$root/.github/workflows/ci.yaml" "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\"}'" \
   "CI_OK_SELECTED_BY: '{\"app\": \"app\", \"image\": \"image\", \"called\": \"app\"}'"
 replace "$root/.github/workflows/ci.yaml" "needs: [changes, app, image, lint]" "needs: [changes, app, image, lint, called]"
+# Rule 26: the called job's gate file, which names it and reads its definition.
+cat > "$root/.github/ci-gates/called.py" <<'PY'
+GATE = gate("app", "called", reads=[Read(".github/workflows/called.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/called.yaml")
+PY
 run_check "$root"
 check "passes while the called file starts no go command" "$(is "$status" 0)"
 replace "$root/.github/workflows/called.yaml" "        run: echo nothing to compile" "        run: go test ./lib"
@@ -2158,6 +2309,11 @@ root=$(fixture list-gate-no-output)
 list_gate "$root"
 replace "$root/.github/ci-gates/called.app.py" 'GATE = gate("app", "called",' 'GATE = gate("library_test", "called",'
 replace "$root/.github/workflows/called.yaml" "'\"app\"'" "'\"library_test\"'"
+# Rule 26: the called job is still gated on app, so a gate of app names it.
+cat > "$root/.github/ci-gates/called.job.py" <<'PY'
+GATE = gate("app", "called", reads=[Read(".github/workflows/called.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/called.yaml")
+PY
 run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "reads the one gate on library_test" \
@@ -3481,8 +3637,10 @@ check "exits 0" "$(is "$status" 0)"
 # tooling-checks), and the check reads each such job as its own caller's alone, holding its go
 # commands, its env and its gated steps to that caller's filter. That reading holds only while the
 # job runs under that caller alone: each caller has a job of the file named for it, that job's
-# `if:` is exactly `inputs.job == '<its id>'`, and the caller passes `job: <its own id>`.
-# check_called_jobs holds all three, and each case below up to the report steps' one breaks one.
+# `if:` is exactly `inputs.job == '<its id>'` (or that comparison behind `!cancelled()`, for a job
+# that restates jobs it needs, as envoy-refill restates its legs), and the caller passes
+# `job: <its own id>`. check_called_jobs holds all three, and each case below up to the report
+# steps' one breaks one.
 
 # shared_file <root> <slow> <fast>: jobs <slow> and <fast> of ci.yaml both call
 # .github/workflows/shared.yaml, as test and tooling-checks call ci-job-test.yaml, each passing its
@@ -3539,6 +3697,13 @@ YAML
     "{\"app\": \"app\", \"image\": \"image\", \"$slow\": \"app\", \"$fast\": \"app\"}"
   replace "$root/.github/workflows/ci.yaml" "    needs: [changes, app, image, lint]" \
     "    needs: [changes, app, image, lint, $slow, $fast]"
+  # Rule 26: each caller's gate file, which names it on app and reads the steps it runs.
+  for job in "$slow" "$fast"; do
+    cat > "$root/.github/ci-gates/$job.py" <<PY
+GATE = gate("app", "$job", reads=[Read(".github/workflows/shared.yaml", "the job reads the definition of the steps it runs")],
+            workflow=".github/workflows/shared.yaml")
+PY
+  done
 }
 
 echo "case: a workflow two jobs call, each running the job of it named for itself"
@@ -3632,6 +3797,8 @@ split_callers() {
   replace "$root/.github/workflows/ci.yaml" '"tooling-checks": "app"' '"tooling-checks": "fast"'
   replace "$root/.github/workflows/shared.yaml" "        run: echo tooling-checks" \
     $'        run: go test ./cmd/app ./lib\n        working-directory: mod'
+  # The fast caller's gate is fast.py now, not shared_file's gate of it on app.
+  rm "$root/.github/ci-gates/tooling-checks.py"
   cat > "$root/.github/ci-gates/fast.py" <<'PY'
 GATE = gate("fast", "tooling-checks", runs=[
     run("mod", ["./cmd/app", "./lib"],
@@ -3681,7 +3848,79 @@ run_check "$root"
 check "fails once only the slow caller passes the fast output" "$(is "$status" 1)"
 check "names the gate and the step" \
   "$(has "$out" "::error file=.github/workflows/shared.yaml::gate fast names step \"Run the tooling-checks steps\" of tooling-checks, but no single step of that name has an if: on needs.changes.outputs.fast")"
-check "and is that one problem" "$(contains "$out" '^::error::1 CI filter problem(s)$')"
+# Rule 26 refuses the same step from the other side: read through its own caller's value it is
+# gated on app now, and no gate of app names tooling-checks, whose one gate is fast.py.
+check "and names the step that is now gated on a filter no gate of its job declares" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks step \"Run the tooling-checks steps\" is gated on filter app, but no file of .github/ci-gates declares a gate of app for job tooling-checks's steps in .github/workflows/shared.yaml")"
+check "and those are its two problems" "$(contains "$out" '^::error::2 CI filter problem(s)$')"
+
+# envoy-refill's caller runs two jobs of ci-job-envoy-e2e-local.yaml: envoy-refill-legs, whose
+# `if:` admits that caller alone, and envoy-refill, which restates the legs' result behind
+# `!cancelled()`, so a leg that failed still reaches it. legs_and_restater <root> gives
+# split_callers' fast caller that shape: its go test step moves into tooling-checks-legs, a
+# matrix job under `if: inputs.job == 'tooling-checks'`, and tooling-checks waits for those legs
+# under the second `if:` and reports. The fast gate's citation follows the step into the legs.
+legs_and_restater() {
+  local root=$1
+  replace "$root/.github/workflows/shared.yaml" $'  tooling-checks:\n    if: inputs.job == \'tooling-checks\'\n' \
+    $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\'\n    strategy:\n      matrix:\n        leg: [1, 2]\n'
+  cat >> "$root/.github/workflows/shared.yaml" <<'YAML'
+  tooling-checks:
+    needs: [tooling-checks-legs]
+    if: ${{ !cancelled() && inputs.job == 'tooling-checks' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pass only when every leg passed
+        run: test "${{ needs.tooling-checks-legs.result }}" = success
+      - name: Report ci-ok when this job decides a merge-group run
+        if: always()
+        uses: ./.github/actions/ci-ok-report
+        with:
+          job: tooling-checks
+          changes: ${{ inputs.ci-ok-changes }}
+          job-status: ${{ job.status }}
+YAML
+  replace "$root/.github/ci-gates/fast.py" 'at("tooling-checks", "Run the tooling-checks steps"' \
+    'at("tooling-checks-legs", "Run the tooling-checks steps"'
+}
+
+# The legs' go test is claimed by the fast gate alone, so a reading of the legs under the other
+# caller, test, whose gate claims no go command, would fail it as unclaimed there.
+echo "case: a caller of a shared workflow whose legs admit it alone and whose own job restates them behind !cancelled()"
+root=$(fixture shared-file-legs)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "and counts the legs' step under the fast filter" \
+  "$(contains "$out" '^report: tooling-checks: [0-9][0-9]* files (filter fast)$')"
+run_generate "$root"
+check "the fast filter takes the files the legs' test reads" "$(contains "$(filter_of fast)" '^fixtures/\*\*$')"
+
+echo "case: legs of a shared workflow whose if: could admit another caller"
+root=$(fixture shared-file-legs-either)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+replace "$root/.github/workflows/shared.yaml" $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\'\n' \
+  $'  tooling-checks-legs:\n    if: inputs.job == \'tooling-checks\' || inputs.job == \'test\'\n'
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "reads the legs under the other caller too, whose gate claims none of their go commands" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks-legs of .github/workflows/shared.yaml, which job test calls step \"Run the tooling-checks steps\" runs \`go test ./cmd/app ./lib\`, which no Run of a gate in .github/ci-gates lists")"
+
+echo "case: a job that restates its legs under always() rather than !cancelled()"
+root=$(fixture shared-file-legs-always)
+shared_file "$root" test tooling-checks
+split_callers "$root"
+legs_and_restater "$root"
+replace "$root/.github/workflows/shared.yaml" "    if: \${{ !cancelled() && inputs.job == 'tooling-checks' }}" \
+  "    if: \${{ always() && inputs.job == 'tooling-checks' }}"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the job, the if: it carries and the two it may carry" \
+  "$(has "$out" "::error file=.github/workflows/shared.yaml::job tooling-checks of .github/workflows/shared.yaml, which jobs test, tooling-checks of .github/workflows/ci.yaml all call, carries \`if: \${{ always() && inputs.job == 'tooling-checks' }}\`: give it \`if: inputs.job == 'tooling-checks'\`, or \`if: \${{ !cancelled() && inputs.job == 'tooling-checks' }}\` when it restates jobs it needs")"
 
 echo "case: a package added to a go command the table claims, outside the job's filter"
 root=$(fixture appended-package)
@@ -4550,6 +4789,37 @@ run_check "$root"
 check "passes" "$(is "$status" 0)"
 check "the report names the command, the name it sets and that the filter takes every Go file" \
   "$(contains "$out" "^report: app: [0-9]* files (filter app); every Go file and every file under a Go module's directory, since job app step \"Test the app\" runs \`GOOS=linux go test ./cmd/app ./lib\`, which this check does not reduce (it sets GOOS, which can change what go compiles)")"
+
+# .github/scripts/go-test.sh runs the go test command after it under gotestsum, compiling what the
+# bare command compiles, so the wrapper is read past as an ENV_ALLOWED assignment is; another
+# script in its place, and the wrapper before a go command that is not go test, are not.
+echo "case: a claimed simple go command under go-test.sh, with its option and its variables"
+root=$(fixture go-test-wrapper)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" \
+  "run: GO_TEST_RETRY=off ../.github/scripts/go-test.sh --race-memory go test ./cmd/app ./lib"
+run_check "$root"
+check "passes, the command reduced to the Run's closure" "$(is "$status" 0)"
+check "counts the job's files, as the bare command's" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+
+echo "case: another script in go-test.sh's place before a claimed simple go command"
+root=$(fixture go-test-other-wrapper)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go-run.sh go test ./cmd/app ./lib"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "the report says the filter takes every Go file, the command starting with that script" \
+  "$(contains "$out" "this check does not reduce (it starts with \`../.github/scripts/go-run.sh\`, not go)")"
+
+# The gate's Run claims the vet the step now runs, so the claim holds and what is left to read is
+# the line itself, which the reducer does not reduce.
+echo "case: go-test.sh before a go command that is not go test"
+root=$(fixture go-test-wrapper-vet)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: ../.github/scripts/go-test.sh go vet ./cmd/app ./lib"
+replace "$root/.github/ci-gates/app.py" ': go test ./cmd/app ./lib", step="Test the app",' ': go vet ./cmd/app ./lib", step="Test the app", mode="vet",'
+replace "$root/.github/ci-gates/app.py" 'text="go test ./cmd/app ./lib")' 'text="go vet ./cmd/app ./lib")'
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "the report says the filter takes every Go file, go-test.sh running go test alone" \
+  "$(contains "$out" "this check does not reduce (go-test.sh runs go test alone, not \`go vet\`)")"
 
 echo "case: an earlier step writes GOFLAGS to GITHUB_ENV before a claimed simple go command"
 root=$(fixture github-env-goflags)
@@ -6691,17 +6961,17 @@ GO
 echo "case: the plain step's -run lists are what the lane's packages hold"
 root=$(race_tree)
 out=$(derived "$root" "lane/a/... lane/b")
-check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones" \
+check "names every test of a !race file, sorted, TestMain aside, and the raceEnabled ones, each under go-test.sh" \
   "$(is "$out" "$(printf '%s\n%s' \
-    "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
-    "go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
+    "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a" \
+    "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestTheta)\$' ./lane/a/sub")")"
 check "passes over the testdata package" "$(is "$(contains "$out" 'TestIgnored')" false)"
 check "and leaves out a package with no such test" "$(is "$(contains "$out" './lane/b')" false)"
 
 echo "case: a package the lane names alone does not reach the packages under it"
 out=$(derived "$root" "lane/a")
 check "names the package alone" \
-  "$(is "$out" "go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
+  "$(is "$out" "../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(ExampleGamma|FuzzBeta|TestAlpha|TestEpsilon)\$' ./lane/a")"
 
 echo "case: a raceEnabled no top-level function encloses"
 root="$work/race-unattributable"
@@ -7312,7 +7582,7 @@ echo "case: the repository's go-legs.yaml entry for envoy is held"
 check "passes" "$(is "$(envoy_legs_held "$real_envoy")" held)"
 
 echo "case: an envoy go-legs.yaml job key no matrix job runs"
-typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go-typo"] = {"1": [e["envoy-go"]["5"].pop()]}; print(json.dumps(e))' "$real_envoy")
+typo=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); last = max(e["envoy-go"], key=int); e["envoy-go-typo"] = {"1": [e["envoy-go"][last].pop()]}; print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$typo")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the key and the jobs whose legs run" \
@@ -7326,7 +7596,7 @@ check "names the missing key" "$(contains "$out" "a package under a missing key 
 check "and the plain job it must name" "$(contains "$out" "its unlisted is None, and the job whose last leg runs a package no place names is envoy-go")"
 
 echo "case: a race lane package moved into a plain leg"
-moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"]["5"].append("natscred"); print(json.dumps(e))' "$real_envoy")
+moved=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go-race"].values() if "natscred" in v).remove("natscred"); e["envoy-go"][max(e["envoy-go"], key=int)].append("natscred"); print(json.dumps(e))' "$real_envoy")
 out=$(envoy_legs_held "$moved")
 check "is refused" "$(contains "$out" '^RAISED: ')"
 check "names the lane package no race leg runs" "$(contains "$out" "ENVOY_RACE_LANE's envoy-go-race names natscred, which no envoy-go-race leg runs")"
@@ -7387,7 +7657,7 @@ done
 # change to only an unlisted package's _test.go files starts the job that runs them, in a merge
 # group too. Each case takes one package out of the repository's own entry.
 echo "case: a package no line names is in the plain gate's Run (envoy-go)"
-unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); e["envoy-go"]["5"].remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
+unclock=$(python3 -c 'import json, sys; e = json.loads(sys.argv[1]); next(v for v in e["envoy-go"].values() if "internal/clock" in v).remove("internal/clock"); print(json.dumps(e))' "$real_envoy")
 check "the Run names it" "$(contains " $(ask plain_run packages/envoy envoy-go "$unclock") " ' internal/clock ')"
 check "and the race job's does not" "$(is "$(contains " $(ask plain_run packages/envoy envoy-go-race "$unclock") " ' internal/clock ')" false)"
 echo "case: a package no line names is in the plain gate's Run (daemon-go)"

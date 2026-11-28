@@ -1,5 +1,7 @@
 package docs
 
+//ci:reads packages/envoy/cmd/**/*.go !packages/envoy/cmd/**/*_test.go dispatchSourceFiles walks ../../../cmd for every non-test Go file, for requireOnlyTheFenceWritesTheOwedRow and requireEveryPassReadsItsSource
+
 import (
 	"context"
 	"encoding/json"

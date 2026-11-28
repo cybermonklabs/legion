@@ -500,6 +500,21 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-go-work-sum.test.sh .github/scripts/check-go-work-sum.test.sh
 
+      # After setup-go: its cases run the real go and the gotestsum .github/ci-tools.yaml pins over
+      # a fixture module of their own under their mktemp directory, the -race case with cgo.
+      - name: Install gotestsum for the Go test runner's harness
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_test"')
+        uses: ./.github/actions/install-gotestsum
+
+      - name: Test the Go test runner and its retry
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/go-test.test.sh .github/scripts/go-test.test.sh
+
+      # Needing no Go: its cases read the jsonfiles and rerun reports the runner's harness wrote.
+      - name: Test the report of the Go tests that passed only on their retry
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"ci_ok_retries_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/ci-ok-retries.test.sh .github/scripts/ci-ok-retries.test.sh
+
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
@@ -516,6 +531,12 @@ jobs:
       - name: Test the go test step expansion
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_test_step_expansion_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-test-step-expansion.test.sh .github/scripts/go-test-step-expansion.test.sh
+      # Beside the step reader's test above, and needing no Go and no Bun: its fixtures are
+      # miniature trees the real .github/scripts/check-test-reach.sh reads, one for each kind of
+      # finding it names, and the list of unhomed tests passing, failing and going stale.
+      - name: Test the test-reach search
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_test_reach_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-test-reach.test.sh .github/scripts/check-test-reach.test.sh
 
       # After setup-go too: the check's fixtures run go list over a scratch pair of modules, and
       # the build's build and list a scratch legion for two targets. One step and one filter for

@@ -72,6 +72,8 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+      # The search's go test runs under .github/scripts/go-test.sh.
+      - uses: ./.github/actions/install-gotestsum
       # go-envoy-test, restored only: this job builds the test binary of internal/dispatch/api,
       # which the entry .github/workflows/ci-caches.yaml fills with the test binary of every
       # package of the envoy module holds. It saves none.
@@ -90,16 +92,24 @@ jobs:
         run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
       # The mention sender's claim model (TestTheMentionSenderClaimModel): every order, within
       # three claim-refresh periods, of the real sender's locked sections, statements and timers
-      # with two comments' attempt rows, the delivery sweep and the outbox, the sender as built
-      # and its blind control; and the test that holds the four claim rules the model restates
-      # to the SQL they restate (TestTheClaimModelsRulesAreTheSQLsRules). Both carry
-      # `//go:build !race`, since the detector slows the search about sevenfold, so the race job
-      # of this package does not build them, and .github/scripts/ci_job_reads.py's
-      # CLAIM_MODEL_TESTS builds this -run and leaves exactly these two out of envoy-go's plain
-      # step. -v prints the model's table of states and checks to the log.
+      # with two comments' attempt rows, the delivery sweep and the outbox, for the sender as
+      # built; and the test that holds the four claim rules the model restates to the SQL they
+      # restate (TestTheClaimModelsRulesAreTheSQLsRules). Both carry `//go:build !race`, since the
+      # detector slows the search about sevenfold, so the race job of this package does not build
+      # them, and .github/scripts/ci_job_reads.py's CLAIM_MODEL_TESTS builds this -run and leaves
+      # exactly these two out of envoy-go's plain step. The model's blind control
+      # (TestTheClaimModelCatchesEachBrokenSender) is a test of its own, which envoy-go's
+      # race-impossible job runs at the same time as this one, so this job waits on the as-built
+      # search alone (dispatch://INFRA-5794/spec#b-r5). gotestsum's standard-verbose format prints
+      # the model's table of states and checks to the log.
       - name: Search every order of the mention sender's claims
-        run: go test -count=1 -timeout 40m -v -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
+        run: ../../.github/scripts/go-test.sh go test -count=1 -timeout 40m -run '^(TestTheClaimModelsRulesAreTheSQLsRules|TestTheMentionSenderClaimModel)$' ./internal/dispatch/api
         working-directory: packages/envoy
+      - name: Upload this job's gotestsum reports
+        if: always()
+        uses: ./.github/actions/go-test-upload
+        with:
+          name: envoy-go-claim-model
 
       - name: Report ci-ok when this job decides a merge-group run
         if: always()

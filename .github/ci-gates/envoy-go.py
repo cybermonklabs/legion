@@ -11,8 +11,8 @@ GATE = gate("envoy_go", "envoy-go", runs=[
              ["./agentloop/"], workflow=ENVOY_GO_FILE, tags="modellive", mode="vet"),
     step_run(ENVOY_SKIPS_JOB, "Vet agent-secrets' moto run (no moto)", "go vet -tags moto ./cmd/cipher/", ENVOY,
              ["./cmd/cipher/"], workflow=ENVOY_GO_FILE, tags="moto", mode="vet"),
-    # ADOPTER_PACKAGES' tests, -v, after install-jj, in envoy-go-skips, built from the one list
-    # that also puts the package with that job in the legs file (hold_envoy_legs).
+    # ADOPTER_PACKAGES' tests, under go-test.sh, after install-jj, in envoy-go-skips, built from the
+    # one list that also puts the package with that job in the legs file (hold_envoy_legs).
     step_run(ENVOY_SKIPS_JOB, ADOPTER_STEP, ADOPTER_TEXT, ENVOY, ADOPTER_PKGS, workflow=ENVOY_GO_FILE),
     # Each job of the file with a Postgres service checks its ceiling in a step of its own.
     *[ceiling_run(job, ENVOY_GO_FILE)
@@ -57,10 +57,10 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     # tree, its command and the writer hold's client among them (DATABASE_SKIPS_PKGS less
     # DEFAULT_EXCEPT; hold_envoy_legs holds each of those to a leg here). The Run names every
     # package the unit legs run (ENVOY_UNIT_PACKAGES, from leg_run_packages): those go-legs.yaml
-    # lists in them, and each package `go list ./...` prints that no place names, which leg 5, the
-    # job `unlisted` names, runs - so a change to only such a package's test files starts this
-    # job. Each leg runs the step over its own share, so the legs together compile and run those
-    # packages, each once.
+    # lists in them, and each package `go list ./...` prints that no place names, which leg 6, the
+    # last of the job `unlisted` names, runs - so a change to only such a package's test files
+    # starts this job. Each leg runs the step over its own share, so the legs together compile and
+    # run those packages, each once.
     # It names those and not the superset ./...: the module but the race lane's packages other
     # than those whose skips the legs count (the auth service's natscallout runs in a leg too),
     # internal/integration, which the integration step tests, the text checks, which the
@@ -109,7 +109,10 @@ GATE = gate("envoy_go", "envoy-go", runs=[
     (GO_LEGS, f"{GO_LEGS_SCRIPT} reads each leg's packages from it"),
 ) + ceiling_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + service_settings_reads(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
   + install_jj(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
-  + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE))
+  + setup_go(ENVOY_LEGS_JOB, f"{ENVOY}/go.mod", ENVOY_GO_FILE) + bun_job(ENVOY_LEGS_JOB, ENVOY_GO_FILE)
+  + go_test_runner(ENVOY_LEGS_JOB, ENVOY_GO_FILE) + go_test_runner(ENVOY_SKIPS_JOB, ENVOY_GO_FILE)
+  + go_test_runner(ENVOY_ALONE_JOB, ENVOY_GO_FILE) + go_test_runner(ENVOY_RACE_IMPOSSIBLE_JOB, ENVOY_GO_FILE)
+  + go_test_runner(ENVOY_NATSLIVE_JOB, ENVOY_GO_FILE))
 GATE = with_reads(GATE, [
     Read('packages/envoy/**', "filter envoy_go held packages/envoy/** by hand before the filters were computed: it selected 728 file(s) no other read of this gate declares", but=('**/*_test.go',)),
 ])
