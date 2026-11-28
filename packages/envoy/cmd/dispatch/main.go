@@ -249,6 +249,10 @@ type bootConfig struct {
 	// RateReadingBeforeReset sets how early the GitHub rate reading aims before a reset.
 	// Zero keeps githubrate.BeforeReset. Only the test hooks can set it.
 	RateReadingBeforeReset time.Duration
+	// OIDCDiscoveryRetry replaces the first background wait and the spacing between failed
+	// discovery attempts for both issuers. Zero keeps the production defaults. Only
+	// DISPATCH_TEST_OIDC_DISCOVERY_RETRY under the test hooks sets it.
+	OIDCDiscoveryRetry time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
 	// the test hooks, sets it.
@@ -1895,6 +1899,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY", &boot.SearchFillStandbyRetry},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 		{"DISPATCH_TEST_RATE_READING_BEFORE_RESET", &boot.RateReadingBeforeReset},
+		{"DISPATCH_TEST_OIDC_DISCOVERY_RETRY", &boot.OIDCDiscoveryRetry},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1926,6 +1931,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if boot.RateReadingBeforeReset > githubrate.LastMinute {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_RATE_READING_BEFORE_RESET=%q (expected at most %s, the last-minute reading window)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_RATE_READING_BEFORE_RESET")), githubrate.LastMinute)
+	}
+	if boot.OIDCDiscoveryRetry > oidc.MaxDiscoveryRetryOverride {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_OIDC_DISCOVERY_RETRY=%q (expected at most %s, the default first discovery retry wait)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_OIDC_DISCOVERY_RETRY")), oidc.MaxDiscoveryRetryOverride)
 	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
@@ -2782,7 +2791,8 @@ func serviceTokenVerifier(boot bootConfig) *oidc.LazyVerifier {
 	if boot.OIDCIssuer == "" {
 		return nil
 	}
-	return oidc.NewLazyVerifier(boot.OIDCIssuer, boot.OIDCAudience)
+	// A zero OIDCDiscoveryRetry, every deployment's, leaves discovery's waits as they are.
+	return oidc.NewLazyVerifier(boot.OIDCIssuer, boot.OIDCAudience, oidc.WithDiscoveryRetry(boot.OIDCDiscoveryRetry))
 }
 
 // brokerTokenVerifier decides callers presenting an access token the secrets broker issued, under

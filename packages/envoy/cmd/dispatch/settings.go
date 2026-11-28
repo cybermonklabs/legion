@@ -256,6 +256,8 @@ var settings = []setting{
 		Description: "How long a test process's shutdown waits for the requests in flight before its document service settles the documents owed with requests still running, in place of the eleven seconds a deployment waits; a positive Go duration of at most `11s`, so the document service's budget after it still ends at least five seconds inside the thirty-second stop grace, for an end-to-end test whose request holds the drain. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_RATE_READING_BEFORE_RESET", Default: "`45s`", Required: "no",
 		Description: "How long before a counter's reset a test process's GitHub rate reading takes its before-reset pass, in place of the forty-five seconds a deployment leads by; a positive Go duration of at most `60s`, the last minute before a reset, since a pass due earlier than that marks no reset tried and the process would read GitHub again at once, for an end-to-end test that waits for the before-reset reading. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_OIDC_DISCOVERY_RETRY", Default: "`1s` first wait, `5s` spacing", Required: "no",
+		Description: "The first background wait and the minimum time between failed OIDC discovery attempts for both issuers, in place of a deployment's one-second wait and five-second spacing; a positive Go duration of at most `1s`, so an end-to-end test can watch discovery recover without lengthening either wait. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

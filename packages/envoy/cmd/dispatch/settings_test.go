@@ -2381,6 +2381,35 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				name+`="61s" (expected at most 1m0s`)
 			refusedWith(t, map[string]string{name: "60s"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
 		},
+		"DISPATCH_TEST_OIDC_DISCOVERY_RETRY": func(t *testing.T) {
+			// name is the table row that resolveBootConfig reads in these cases.
+			const name = "DISPATCH_TEST_OIDC_DISCOVERY_RETRY"
+			t.Run("unset", func(t *testing.T) {
+				if boot := resolveWith(t, nil); boot.OIDCDiscoveryRetry != 0 {
+					t.Errorf("%s unset: OIDCDiscoveryRetry = %v, want 0 (the default waits)", name, boot.OIDCDiscoveryRetry)
+				}
+			})
+			t.Run("accepted", func(t *testing.T) {
+				for _, want := range []time.Duration{100 * time.Millisecond, time.Second} {
+					if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()}); boot.OIDCDiscoveryRetry != want {
+						t.Errorf("%s=%s: OIDCDiscoveryRetry = %v, want %v", name, want, boot.OIDCDiscoveryRetry, want)
+					}
+				}
+			})
+			t.Run("requires hooks", func(t *testing.T) {
+				refusedWith(t, map[string]string{name: "100ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+			})
+			t.Run("rejects above bound", func(t *testing.T) {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "2s"},
+					name+`="2s" (expected at most 1s,`)
+			})
+			t.Run("rejects invalid", func(t *testing.T) {
+				for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+					refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+						fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+				}
+			})
+		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_ROSTER_UNCACHED": "1"}); !boot.ListenerRosterUncached {
 				t.Error("DISPATCH_TEST_ROSTER_UNCACHED=1: ListenerRosterUncached false")

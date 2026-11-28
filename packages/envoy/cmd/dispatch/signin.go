@@ -185,7 +185,9 @@ func signInFlowOn(boot bootConfig, c clock.Clock) *oidc.CodeFlow {
 	if boot.SignInIssuer == "" {
 		return nil
 	}
-	return oidc.NewCodeFlowOn(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain, c)
+	// A zero OIDCDiscoveryRetry, every deployment's, leaves discovery's waits as they are.
+	return oidc.NewCodeFlowOn(boot.SignInIssuer, boot.SignInClientID, boot.SignInClientSecret, boot.SignInDomain, c,
+		oidc.WithDiscoveryRetry(boot.OIDCDiscoveryRetry))
 }
 
 // openPeople is the people store main serves boot with over pool, and the keys session cookies are

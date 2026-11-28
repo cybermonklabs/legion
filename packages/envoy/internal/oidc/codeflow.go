@@ -103,18 +103,19 @@ type codeFlowIssuer struct {
 // document is read by Discover, by Run, or by the first call that needs it. hostedDomain is the
 // Google Workspace domain of a domain-mode flow (Google's issuer), which asks for offline access
 // and reads the Workspace claims; empty, the flow is a Cognito sign-in pool's and does neither.
-func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string) *CodeFlow {
-	return NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain, clock.Real())
+// WithDiscoveryRetry can shorten the default discovery waits.
+func NewCodeFlow(issuer, clientID, clientSecret, hostedDomain string, opts ...DiscoveryOption) *CodeFlow {
+	return NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain, clock.Real(), opts...)
 }
 
 // NewCodeFlowOn is NewCodeFlow with each revocation's bound, TokenTimeout, armed on c: clock.Real
 // from NewCodeFlow, and a test's clocktest.Fake, which ends a revocation the issuer holds only
 // where the test moves it. Every other call keeps TokenTimeout on the wall clock (tokenClient).
-func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.Clock) *CodeFlow {
+func NewCodeFlowOn(issuer, clientID, clientSecret, hostedDomain string, c clock.Clock, opts ...DiscoveryOption) *CodeFlow {
 	return &CodeFlow{
 		discovery: newDiscovery(issuer, func(ctx context.Context) (*codeFlowIssuer, error) {
 			return discoverCodeFlow(ctx, issuer, clientID, clientSecret)
-		}),
+		}, opts...),
 		hostedDomain: hostedDomain,
 		http:         tokenClient(),
 		revocation:   revocationClient(),

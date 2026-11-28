@@ -1,6 +1,7 @@
 package oidc
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -36,18 +37,40 @@ const (
 	// failed attempt, which doubles after each one up to the most.
 	discoveryRetryFirst = time.Second
 	discoveryRetryMax   = 30 * time.Second
+	// MaxDiscoveryRetryOverride is the largest common override that does not lengthen either
+	// the first background retry wait or the spacing between failed discovery attempts.
+	MaxDiscoveryRetryOverride = discoveryRetryFirst
 	// discoveryLogInterval is the least time between two lines logging a failed discovery.
 	discoveryLogInterval = time.Minute
 )
+
+// DiscoveryOption changes how a verifier or code flow discovers its issuer. Its zero value
+// leaves discovery unchanged.
+type DiscoveryOption struct {
+	// retry overrides both retry durations when positive.
+	retry time.Duration
+}
+
+// WithDiscoveryRetry sets the first background retry wait and the spacing between failed
+// attempts to d, capped at MaxDiscoveryRetryOverride. A non-positive d leaves discovery unchanged.
+// Later background waits still double up to discoveryRetryMax.
+func WithDiscoveryRetry(d time.Duration) DiscoveryOption {
+	return DiscoveryOption{retry: min(d, MaxDiscoveryRetryOverride)}
+}
 
 // discovery reads one issuer's discovery document when it is first needed rather than at
 // construction, so a process starts and serves whatever does not need the issuer while the issuer
 // is down. Once read, the result is kept for the process's life. Concurrent attempts share one
 // read (single flight), each read is bounded by discoveryAttemptTimeout, and after a failed read
-// no other is made for discoveryRetrySpacing.
+// no other is made until the retry spacing passes.
 type discovery[T any] struct {
 	issuer string
 	read   func(ctx context.Context) (T, error)
+	// retryFirst is the first background retry wait. Zero keeps discoveryRetryFirst.
+	retryFirst time.Duration
+	// retrySpacing is the minimum time after a failed read before another can start.
+	// Zero keeps discoveryRetrySpacing.
+	retrySpacing time.Duration
 	// now is the clock the spacing between failed attempts and the log's rate are measured by.
 	now    func() time.Time
 	flight singleflight.Group
@@ -60,8 +83,15 @@ type discovery[T any] struct {
 	loggedAt   time.Time
 }
 
-func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error)) *discovery[T] {
-	return &discovery[T]{issuer: issuer, read: read, now: time.Now}
+// newDiscovery prepares a lazy discovery and applies its options before any caller can use it.
+func newDiscovery[T any](issuer string, read func(ctx context.Context) (T, error), opts ...DiscoveryOption) *discovery[T] {
+	d := &discovery[T]{issuer: issuer, read: read, now: time.Now}
+	for _, opt := range opts {
+		if opt.retry > 0 {
+			d.retryFirst, d.retrySpacing = opt.retry, opt.retry
+		}
+	}
+	return d
 }
 
 // done reports whether an attempt has succeeded.
@@ -72,10 +102,9 @@ func (d *discovery[T]) done() bool {
 }
 
 // discover reads the discovery document unless it has been read, joining an attempt already in
-// flight, or fails at once with the last attempt's error when that attempt failed less than
-// discoveryRetrySpacing ago. The attempt runs on a context of its own, detached from ctx's
-// cancellation, since its result belongs to every caller; ctx ending stops only this caller's
-// wait. Every error matches ErrIssuerUnavailable.
+// flight, or fails at once with the last attempt's error while the retry spacing has not passed.
+// The attempt runs on a context detached from ctx's cancellation because its result belongs to
+// every caller. When ctx ends, only this caller's wait ends. Every error matches ErrIssuerUnavailable.
 func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 	var zero T
 	if value, err, settled := d.settled(); settled {
@@ -110,27 +139,27 @@ func (d *discovery[T]) discover(ctx context.Context) (T, error) {
 	}
 }
 
-// settled is the discovered value, or the last attempt's error while it is younger than
-// discoveryRetrySpacing; settled is false when a new attempt is due.
+// settled returns the discovered value or the last attempt's error during the retry spacing.
+// It reports false when a new attempt is due.
 func (d *discovery[T]) settled() (value T, err error, settled bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.discovered {
 		return d.value, nil, true
 	}
-	if d.failure != nil && d.now().Sub(d.failedAt) < discoveryRetrySpacing {
+	if d.failure != nil && d.now().Sub(d.failedAt) < cmp.Or(d.retrySpacing, discoveryRetrySpacing) {
 		return value, d.failure, true
 	}
 	return value, nil, false
 }
 
 // run discovers the issuer from the process's start, so the first request that needs it does not
-// wait for the read: it attempts at once and, while attempts fail, again after a wait of
-// discoveryRetryFirst that doubles after each failure up to discoveryRetryMax. It logs a failure
-// at ERROR at most once per discoveryLogInterval, and the success once, and returns once the
-// issuer is discovered or ctx ends.
+// wait for the read. It attempts at once, then waits retryFirst (discoveryRetryFirst by default).
+// The wait doubles after each failure up to discoveryRetryMax. It logs a failure at ERROR at most
+// once per discoveryLogInterval, and the success once. It returns once the issuer is discovered
+// or ctx ends.
 func (d *discovery[T]) run(ctx context.Context) {
-	wait := discoveryRetryFirst
+	wait := cmp.Or(d.retryFirst, discoveryRetryFirst)
 	for {
 		if _, err := d.discover(ctx); err == nil {
 			slog.Info("oidc: discovered the issuer", "issuer", redact.URL(d.issuer))
@@ -169,10 +198,11 @@ type LazyVerifier struct {
 
 // NewLazyVerifier returns a verifier for tokens issuer issues to audience, and reads nothing: the
 // discovery document is read by Discover, by Run, or by the first Verify.
-func NewLazyVerifier(issuer, audience string) *LazyVerifier {
+// WithDiscoveryRetry can shorten the default discovery waits.
+func NewLazyVerifier(issuer, audience string, opts ...DiscoveryOption) *LazyVerifier {
 	return &LazyVerifier{discovery: newDiscovery(issuer, func(ctx context.Context) (*Verifier, error) {
 		return New(ctx, issuer, audience)
-	})}
+	}, opts...)}
 }
 
 // Verify is Verifier.Verify once the issuer is discovered, discovering it first when it is not

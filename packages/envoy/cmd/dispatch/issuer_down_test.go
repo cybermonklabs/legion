@@ -3,24 +3,20 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // issuerDownAudience is the audience the process verifies pods' service-account tokens for.
 const issuerDownAudience = "dispatch"
-
-// discoveryRetryWindow is how long a test waits for a process to discover an issuer that has begun
-// to answer: the background loop's longest wait between attempts (thirty seconds) and one attempt's
-// bound (ten seconds), with a margin.
-const discoveryRetryWindow = 45 * time.Second
 
 // A process started while both its sign-in issuer and its service-account token issuer are down
 // starts and serves: /healthz answers 200 with `signin` and `service_tokens` false, a shared agent
@@ -50,11 +46,15 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 			"DISPATCH_INSECURE_COOKIE":      "1",
 			"DISPATCH_OIDC_ISSUER":          podIssuer.URL(),
 			"DISPATCH_OIDC_AUDIENCE":        issuerDownAudience,
+			// Retry promptly without continuously reading the stand-ins while they are down.
+			"DISPATCH_TEST_OIDC_DISCOVERY_RETRY": "100ms",
 		},
 	})
 	process.waitHealthy(t)
 
-	if status, health := process.health(t); status != http.StatusOK || !health.OK || health.SignIn == nil || *health.SignIn || health.ServiceTokens == nil || *health.ServiceTokens {
+	// healthCtx bounds both the startup and recovery probes by the test's shared deadline.
+	healthCtx := testwait.Context(t)
+	if status, health := process.healthUnder(t, healthCtx); status != http.StatusOK || !health.OK || health.SignIn == nil || *health.SignIn || health.ServiceTokens == nil || *health.ServiceTokens {
 		t.Fatalf("/healthz while both issuers are down = %d %+v, want 200 ok with signin and service_tokens false", status, health)
 	}
 	if status, body := bearerWhoami(t, process, "shutdown-test-token"); status != http.StatusOK || !strings.Contains(body, `"kind":"agent"`) {
@@ -71,12 +71,19 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 	if started.StatusCode != http.StatusServiceUnavailable || errorCodeOf(string(body)) != "SIGNIN_UNAVAILABLE" {
 		t.Fatalf("/auth/start while the sign-in issuer is down: %d %s, want 503 SIGNIN_UNAVAILABLE", started.StatusCode, body)
 	}
-	process.waitForLog(t, 30*time.Second, `msg="oidc: discover the issuer`, "issuer="+signInIssuer.URL())
+	process.awaitLog(t, `msg="oidc: discover the issuer`, "issuer="+signInIssuer.URL())
 
 	signInIssuer.FailDiscovery(0)
 	podIssuer.FailDiscovery(0)
-	process.waitForHealth(t, discoveryRetryWindow, "signin and service_tokens true", func(health healthBody) bool {
-		return health.OK && health.SignIn != nil && *health.SignIn && health.ServiceTokens != nil && *health.ServiceTokens
+	testwait.Until(t, "/healthz to report signin and service_tokens true", func() (string, bool) {
+		select {
+		case <-process.Exited:
+			t.Fatalf("Dispatch exited (%s) before /healthz reported signin and service_tokens true:\n%s", process.Cmd.ProcessState, process.Output.String())
+		default:
+		}
+		status, health := process.healthUnder(t, healthCtx)
+		return fmt.Sprintf("%d %+v", status, health),
+			status == http.StatusOK && health.OK && health.SignIn != nil && *health.SignIn && health.ServiceTokens != nil && *health.ServiceTokens
 	})
 	if status, body := bearerWhoami(t, process, podToken); status != http.StatusOK || !strings.Contains(body, podSubject) {
 		t.Fatalf("a pod's JWT once its issuer answers: %d %s, want 200 naming %s", status, body, podSubject)
@@ -110,12 +117,12 @@ func TestAProcessStartedWhileTheSignInIssuerIsDownServesAgentTokensAndSignsInLat
 // bearerWhoami asks the process's API who token's bearer is, and answers the status and body.
 func bearerWhoami(t *testing.T, p *dispatchProcess, token string) (int, string) {
 	t.Helper()
-	request, err := http.NewRequest(http.MethodGet, p.url("/api/v1/whoami"), nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, p.url("/api/v1/whoami"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Authorization", "Bearer "+token)
-	response, err := (&http.Client{Timeout: 20 * time.Second}).Do(request)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET /api/v1/whoami: %v", err)
 	}
