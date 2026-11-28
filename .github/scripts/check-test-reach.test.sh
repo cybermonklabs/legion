@@ -2013,4 +2013,73 @@ check "release-script: fails" "$(is "$status" 1)"
 check "release-script: names the workflow and the step" \
   "$(contains "$out" '^check-test-reach: release: .github/workflows/release.yaml:[0-9]*: Check the packed tarball: ')"
 
+# The three cases of dispatch://INFRA-5794/comment/6fde181c-d78a-4dcd-8a32-234d9b1d6569, which
+# INFRA-3411's architect read into R3 and devbox-tests-md version 37 (parts 1 to 3): a Bun test file
+# or a Playwright spec that no required step runs, a Bun test that returns early where a variable is
+# unset, and a test that skips where CI is set, which every runner sets.
+echo "case: 6 - a Bun test file no required step runs"
+root=$(fixture bun-unrun)
+mkdir -p "$root/scripts/lost"
+cat > "$root/scripts/lost/lost.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+test("a row no job runs", () => {
+  expect(1 + 1).toBe(2);
+});
+TS
+run_check "$root"
+check "bun-unrun: fails" "$(is "$status" 1)"
+check "bun-unrun: names the file" "$(contains "$out" '^check-test-reach: [a-z]*: scripts/lost/lost.test.ts')"
+
+echo "case: 6 - a Playwright spec no required step runs"
+root=$(fixture playwright-unrun)
+mkdir -p "$root/packages/site/e2e"
+cat > "$root/packages/site/e2e/lost.e2e.ts" <<'TS'
+import { expect, test } from "@playwright/test";
+
+test("a row no job runs", async () => {
+  expect(1 + 1).toBe(2);
+});
+TS
+run_check "$root"
+check "playwright-unrun: fails" "$(is "$status" 1)"
+check "playwright-unrun: names the file" "$(contains "$out" '^check-test-reach: [a-z]*: packages/site/e2e/lost.e2e.ts')"
+
+echo "case: 3 - a Bun test that returns early on a variable no job sets"
+root=$(fixture bun-early-return)
+cat > "$root/packages/web/early.test.ts" <<'TS'
+import { expect, test } from "bun:test";
+
+test("asserts only where FIXTURE_EARLY is set", () => {
+  if (!process.env.FIXTURE_EARLY) return;
+  expect(1 + 1).toBe(2);
+});
+TS
+run_check "$root"
+check "bun-early-return: fails" "$(is "$status" 1)"
+check "bun-early-return: names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/web/early.test.ts:4: FIXTURE_EARLY: ')"
+
+echo "case: 3 - a Go test that skips wherever its set row's variable is set"
+root=$(fixture go-skips-where-set)
+cat > "$root/packages/envoy/unit/off_ci_test.go" <<'GO'
+package unit
+
+import (
+	"os"
+	"testing"
+)
+
+func TestRunsOnlyOffCI(t *testing.T) {
+	if os.Getenv("CI") != "" {
+		t.Skip("runs only off CI")
+	}
+}
+GO
+row "$root" CI 'class: set' 'jobs: [go]' 'why: GitHub sets it in every job.'
+run_check "$root"
+check "go-skips-where-set: fails" "$(is "$status" 1)"
+check "go-skips-where-set: names the file, the gate's line and the variable" \
+  "$(contains "$out" '^check-test-reach: variable: packages/envoy/unit/off_ci_test.go:9: CI: ')"
+
 summary "check-test-reach.sh"
