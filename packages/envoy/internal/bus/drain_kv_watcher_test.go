@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -75,12 +76,14 @@ func TestADrainEndsTheKVWatchersBeforeTheConnection(t *testing.T) {
 			}
 
 			watcher.Stop()
-			if err := client.Drain(10 * time.Second); err != nil {
+			if err := client.Drain(bus.UntilGiveUp(t)); err != nil {
 				t.Fatalf("drain: %v", err)
 			}
-			// nats.go runs an async error report after the drain's close only if it queued it before
-			// closing its callback queue; the wait gives one queued in time the moment to log.
-			time.Sleep(200 * time.Millisecond)
+			// nats.go dispatches callbacks in order, so any queued async error logs before close.
+			testwait.Until(t, "nats.go to finish dispatching callbacks queued before close (last read: all logs)", func() (string, bool) {
+				closed := logs.count(name, "envoy nats connection closed") >= 1
+				return logs.String(), closed
+			})
 			want, replaced := test.want, hold != nil && hold.Replaced(t)
 			if replaced {
 				// A stall past a whole heartbeat check let nats.go replace the lost consumer, which
@@ -117,13 +120,17 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
+	release := make(chan struct{})
+	releaseHandler := sync.OnceFunc(func() { close(release) })
+	t.Cleanup(releaseHandler)
 	started := make(chan struct{})
 	var delivered atomic.Bool
-	if _, err := client.SubscribeCore("notifications.role.drain-hook", func(*natsgo.Msg) {
+	sub, err := client.SubscribeCore("notifications.role.drain-hook", func(*natsgo.Msg) {
 		close(started)
-		time.Sleep(300 * time.Millisecond)
+		<-release
 		delivered.Store(true)
-	}, "drain-hook"); err != nil {
+	}, "drain-hook")
+	if err != nil {
 		t.Fatalf("subscribe the role lane: %v", err)
 	}
 	if err := client.Conn.Publish("notifications.role.drain-hook", nil); err != nil {
@@ -144,7 +151,21 @@ func TestDrainRunsItsHooksWhileTheConnectionCarriesRequests(t *testing.T) {
 			flush:     client.Conn.FlushWithContext(ctx),
 		}
 	})
-	if err := client.Drain(5 * time.Second); err != nil {
+	drained := make(chan error, 1)
+	go func() { drained <- client.Drain(bus.UntilGiveUp(t)) }()
+	testwait.Until(t, "the drain to start draining the delivery subscription", func() (bool, bool) {
+		select {
+		case got := <-ran:
+			t.Fatalf("drain hook ran while delivery was in flight (delivered=%v, draining=%v)", got.delivered, got.draining)
+		default:
+		}
+		draining := sub.IsDraining()
+		return draining, draining
+	})
+	testwait.Quiet(t, "the drain hook to run while the delivery handler is still in flight", ran, 300*time.Millisecond,
+		"synctest.Wait does not reach the real NATS connection; Drain exposes no state that distinguishes waiting for delivery from advancing to its hooks, and no later drain step can complete before the held handler returns")
+	releaseHandler()
+	if err := testwait.Receive(t, "client.Drain to return after the delivery handler finished", drained); err != nil {
 		t.Fatalf("drain: %v", err)
 	}
 	close(ran)
@@ -189,7 +210,7 @@ func TestWarnOrErrorRecordsTakesAClientThatHasLoggedNothing(t *testing.T) {
 // nothing), so a listing that read nothing is never taken for a stream that carries nothing.
 func consumerNames(t *testing.T, admin *natsgo.Conn, stream string) []string {
 	t.Helper()
-	js, err := jetstream.New(admin)
+	js, err := jetstream.New(admin, testnats.RequestTimeout(t))
 	if err != nil {
 		t.Fatalf("admin JetStream: %v", err)
 	}

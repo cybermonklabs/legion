@@ -12,7 +12,9 @@ import (
 // process can stretch.
 type deadlinePassedContext struct{ context.Context }
 
-func (deadlinePassedContext) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
+func (deadlinePassedContext) Deadline() (time.Time, bool) {
+	return time.Unix(1, 0), true // a moment long past, read from no clock
+}
 
 // A dial whose deadline has passed returns an error, never a nil connection with a nil error:
 // ensureConnWithContext takes a nil error to mean a connection it can use, and calling JetStream

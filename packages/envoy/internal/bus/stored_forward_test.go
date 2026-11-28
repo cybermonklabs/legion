@@ -13,9 +13,9 @@ import (
 )
 
 // A forward counts once the stream stores it: no session subscribes to its agent subject any more
-// (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement, well
-// inside the window, and stores the forward once however often it is sent (its Nats-Msg-Id). On a
-// subject no stream captures and nobody subscribes it returns ErrForwardNotStored.
+// (INFRA-771), so StartRequestStoredTo's wait returns nil on the stream's acknowledgement and
+// stores the forward once however often it is sent (its Nats-Msg-Id). On a subject no stream
+// captures and nobody subscribes it returns ErrForwardNotStored.
 func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) {
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
@@ -32,21 +32,20 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 		PayloadSummary: "a stored forward to a session's agent subject",
 		TraceID:        "trace_stored_only",
 	}
-	const window = 2 * time.Second
+	// The window outlasts the test run, so a wait that misses the acknowledgement fails
+	// at testwait.Returns rather than ending on the forward's window.
+	const window = 24 * time.Hour
 	subject := contracts.LegacyAgentSubject("ses_serving_port")
 	var acks []bus.StoredAck
 	for range 2 {
-		started := time.Now()
 		forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), window)
 		if err != nil {
 			t.Fatalf("StartRequestStoredTo: %v", err)
 		}
-		ack, err := forward.Wait()
+		var ack bus.StoredAck
+		testwait.Returns(t, "the stored forward's wait to end on the stream's acknowledgement", func() { ack, err = forward.Wait() })
 		if err != nil {
 			t.Fatalf("the stored forward's wait = %v, want nil on the stream's acknowledgement", err)
-		}
-		if elapsed := time.Since(started); elapsed >= window {
-			t.Fatalf("the stored forward's wait took %s, the whole window; want it to end on the acknowledgement", elapsed)
 		}
 		acks = append(acks, ack)
 	}
@@ -64,11 +63,12 @@ func TestStartRequestStoredToCountsTheStreamsAcknowledgementAlone(t *testing.T) 
 	}
 
 	const uncaptured = "test.uncaptured.serving-port"
-	forward, err := client.StartRequestStoredTo(uncaptured, item, bus.ForwardMsgID(item.DedupeKey, uncaptured), 300*time.Millisecond)
+	forward, err := client.StartRequestStoredTo(uncaptured, item, bus.ForwardMsgID(item.DedupeKey, uncaptured), window)
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo on %s: %v", uncaptured, err)
 	}
-	if _, err := forward.Wait(); !errors.Is(err, bus.ErrForwardNotStored) {
+	testwait.Returns(t, "the forward to the uncaptured subject to end on the server's no-responders reply", func() { _, err = forward.Wait() })
+	if !errors.Is(err, bus.ErrForwardNotStored) {
 		t.Fatalf("the wait of a forward no stream stores = %v, want ErrForwardNotStored", err)
 	}
 }
@@ -171,11 +171,12 @@ func TestStartRequestStoredToIsBoundedByItsWindowWhenTheFlushTimesOut(t *testing
 		TraceID:        "trace_stalled",
 	}
 	// Control: the same subject and envelope are stored while the server runs.
-	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), 2*time.Second)
+	forward, err := client.StartRequestStoredTo(subject, item, bus.ForwardMsgID(item.DedupeKey, subject), 24*time.Hour)
 	if err != nil {
 		t.Fatalf("StartRequestStoredTo against a healthy server: %v", err)
 	}
-	if _, err := forward.Wait(); err != nil {
+	testwait.Returns(t, "the control forward's wait to end on the stream's acknowledgement", func() { _, err = forward.Wait() })
+	if err != nil {
 		t.Fatalf("the stored forward's wait against a healthy server = %v, want nil", err)
 	}
 

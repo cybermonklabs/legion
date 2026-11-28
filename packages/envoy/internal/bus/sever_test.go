@@ -68,7 +68,7 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 		if _, err := subscriber.ChanSubscribe(subject, received); err != nil {
 			t.Fatalf("subscribe to the marker: %v", err)
 		}
-		if err := subscriber.Flush(); err != nil {
+		if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 			t.Fatalf("flush the marker's subscription: %v", err)
 		}
 		conn := client.Connection()
@@ -118,7 +118,7 @@ func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing
 		if err := replacement.Publish(subject, []byte("after")); err != nil {
 			t.Fatalf("publish the second marker on the replacement connection: %v", err)
 		}
-		if err := replacement.Flush(); err != nil {
+		if err := replacement.FlushWithContext(testnats.Context(t)); err != nil {
 			t.Fatalf("flush the replacement connection: %v", err)
 		}
 		if msg := testwait.Receive(t, "control: the second marker to reach the subscriber", received); string(msg.Data) != "after" {

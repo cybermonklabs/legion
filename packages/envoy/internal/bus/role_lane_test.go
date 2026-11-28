@@ -28,7 +28,7 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 	if err := publisher.Publish(topic, []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	if err := publisher.Flush(); err != nil {
+	if err := publisher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	if got := testwait.Receive(t, "the role lane to receive the role message", received); got != topic {
@@ -110,7 +110,7 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 	if err := sub.SetPendingLimits(1, -1); err != nil {
 		t.Fatalf("narrow the pending limits: %v", err)
 	}
-	if err := client.Conn.Flush(); err != nil {
+	if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush: %v", err)
 	}
 	publisher := testnats.Connect(t, uri)
@@ -120,7 +120,7 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 			t.Fatalf("publish: %v", err)
 		}
 	}
-	if err := publisher.Flush(); err != nil {
+	if err := publisher.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
 	waitFor(t, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })

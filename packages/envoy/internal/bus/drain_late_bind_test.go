@@ -2,10 +2,10 @@ package bus
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -57,7 +57,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 				if tc.late {
 					return
 				}
-				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), 2*time.Second)
+				forward, err := client.StartRequestStoredTo(holderSubject, contracts.Envelope{EventID: "drain-late-bind"}, ForwardMsgID("drain-late-bind", holderSubject), UntilGiveUp(t))
 				if err == nil {
 					_, err = forward.Wait()
 				}
@@ -80,7 +80,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			if err != nil {
 				t.Fatalf("bind: %v", err)
 			}
-			if err := client.Conn.Flush(); err != nil {
+			if err := client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush the bind: %v", err)
 			}
 			publisher := testnats.Connect(t, uri)
@@ -90,7 +90,7 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 					t.Fatalf("publish: %v", err)
 				}
 			}
-			if err := publisher.Flush(); err != nil {
+			if err := publisher.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush the publishes: %v", err)
 			}
 			testwait.Receive(t, "the first role message to reach the handler", started)
@@ -109,9 +109,17 @@ func TestDrainLetsTheDeliveriesOfABindEndingAfterTheStopFinish(t *testing.T) {
 			client.stop()
 			_ = client.endBind(slot, sub, nil, true)
 			drained := make(chan error, 1)
-			go func() { drained <- client.Drain(5 * time.Second) }()
-			// Well within this, a drain that takes no subscription has begun draining the connection.
-			time.Sleep(200 * time.Millisecond)
+			go func() { drained <- client.Drain(UntilGiveUp(t)) }()
+			// The early bind's subscription begins draining in Drain. For the late bind, endBind
+			// already started that drain, so wait for the connection itself to start draining.
+			testwait.Until(t, "Drain to begin", func() (string, bool) {
+				subscription, connection := sub.IsDraining(), client.Conn.IsDraining()
+				began := subscription
+				if tc.late {
+					began = connection
+				}
+				return fmt.Sprintf("subscription draining %t, connection draining %t", subscription, connection), began
+			})
 			releaseHandlers()
 			if err := testwait.Receive(t, "Drain to return", drained); err != nil {
 				t.Fatalf("drain: %v", err)
@@ -169,14 +177,14 @@ func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
 		name    string
-		stop    func(*Client) error
+		stop    func(*testing.T, *Client) error
 		stopped bool
 	}{
 		{name: "Running"},
 		{
 			name:    "Close",
 			stopped: true,
-			stop: func(client *Client) error {
+			stop: func(_ *testing.T, client *Client) error {
 				client.Close()
 				return nil
 			},
@@ -184,8 +192,8 @@ func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
 		{
 			name:    "Drain",
 			stopped: true,
-			stop: func(client *Client) error {
-				return client.Drain(5 * time.Second)
+			stop: func(t *testing.T, client *Client) error {
+				return client.Drain(UntilGiveUp(t))
 			},
 		},
 	} {
@@ -195,7 +203,7 @@ func TestStoppedClientRefusesNewSubscriptions(t *testing.T) {
 				t.Fatalf("connect: %v", err)
 			}
 			if tc.stop != nil {
-				if err := tc.stop(client); err != nil {
+				if err := tc.stop(t, client); err != nil {
 					t.Fatalf("stop: %v", err)
 				}
 			}

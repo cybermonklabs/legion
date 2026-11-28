@@ -46,14 +46,14 @@ func TestTheDefaultFollowingHandlerDropsARecordTheCurrentDefaultDoesNotTake(t *t
 	var logs logtest.Buffer
 	logtest.SetDefault(t, slog.NewJSONHandler(&logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
-	record := slog.NewRecord(time.Now(), slog.LevelInfo, "envoy nats connected", 0)
+	record := slog.NewRecord(time.Time{}, slog.LevelInfo, "envoy nats connected", 0)
 	if err := followsDefault.Handler().Handle(context.Background(), record); err != nil {
 		t.Fatalf("handle an INFO record: %v", err)
 	}
 	if got := logs.String(); got != "" {
 		t.Fatalf("a WARN-level default was handed an INFO record: %q", got)
 	}
-	warn := slog.NewRecord(time.Now(), slog.LevelWarn, "envoy nats disconnected", 0)
+	warn := slog.NewRecord(time.Time{}, slog.LevelWarn, "envoy nats disconnected", 0)
 	if err := followsDefault.Handler().Handle(context.Background(), warn); err != nil {
 		t.Fatalf("handle a WARN record: %v", err)
 	}

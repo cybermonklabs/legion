@@ -25,7 +25,7 @@ func markerSubscriber(t *testing.T, subject string) (*nats.Conn, chan *nats.Msg)
 	if _, err := subscriber.ChanSubscribe(subject, received); err != nil {
 		t.Fatalf("subscribe to the marker: %v", err)
 	}
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the marker's subscription: %v", err)
 	}
 	return subscriber, received
@@ -71,7 +71,7 @@ func receivedOnceSettled(t *testing.T, relay *testnats.StallRelay, subscriber *n
 	t.Helper()
 	relay.Move()
 	relay.AwaitEnded(t)
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriber: %v", err)
 	}
 	for {
@@ -148,6 +148,7 @@ func TestASocketWhoseWriteFailedSendsNothingMoreOnceTheLinkMoves(t *testing.T) {
 	dialer := newSeverableDialer((&net.Dialer{}).DialContext)
 	gaveUp := make(chan struct{}, 1)
 	conn, err := nats.Connect(relay.URL(),
+		nats.Timeout(UntilGiveUp(t)),
 		nats.SetCustomDialer(dialer),
 		nats.FlusherTimeout(500*time.Millisecond),
 		nats.PingInterval(silentCutPingInterval),
@@ -388,14 +389,14 @@ func TestConfirmMarkedConfirmsNoMarkedWriteNatsGoHasNotTaken(t *testing.T) {
 	}
 	t.Cleanup(client.Close)
 	written := client.MarkUnconfirmed()
-	if client.ConfirmMarked(10 * time.Second) {
+	if client.ConfirmMarked(UntilGiveUp(t)) {
 		t.Error("ConfirmMarked reported every mark confirmed while the marked write had not been taken by nats.go")
 	}
 	if !client.CarriesUnconfirmed() {
 		t.Error("the mark of a write nats.go had not taken was cleared")
 	}
 	written()
-	if !client.ConfirmMarked(10 * time.Second) {
+	if !client.ConfirmMarked(UntilGiveUp(t)) {
 		t.Error("control: ConfirmMarked did not confirm once the marked write was taken and the flush answered")
 	}
 	if client.CarriesUnconfirmed() {

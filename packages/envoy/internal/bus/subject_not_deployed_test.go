@@ -58,8 +58,8 @@ func awaitDeployedCapture(t *testing.T, client *Client, topic string, captures b
 // publish answered nil: the send route's 200 for a message nobody received.
 //
 // The subscriber holds notifications.>, so it receives a core publish of any of these topics and
-// the request of a JetStream publish too: its silence in step 2 is no blindness, which step 3 shows
-// on two topics that still take core NATS.
+// the request of a JetStream publish too. The first message it receives must be a control sent
+// after the refusals.
 func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *testing.T) {
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri}, WithStreamSubjectsRefresh(100*time.Millisecond))
@@ -80,7 +80,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := subscriber.Flush(); err != nil {
+	if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	before := deployedStream(t, js).State.LastSeq
@@ -137,20 +137,16 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 		}
 	}
 
-	// Step 2: nothing reached the wire, and the stream stored nothing.
-	if err := subscriber.Flush(); err != nil {
-		t.Fatalf("flush the subscriber: %v", err)
-	}
-	if msg, err := received.NextMsg(500 * time.Millisecond); err == nil {
-		t.Fatalf("the subscriber was handed %s (reply %q); a refused publish sends nothing", msg.Subject, msg.Reply)
-	} else if !errors.Is(err, nats.ErrTimeout) {
-		t.Fatalf("read the subscriber: %v", err)
+	// Step 2: flush any accidental write before checking that the stream stored nothing.
+	if err := client.Connection().FlushWithContext(testnats.Context(t)); err != nil {
+		t.Fatalf("flush the publisher: %v", err)
 	}
 	if after := deployedStream(t, js).State.LastSeq; after != before {
 		t.Fatalf("the stream's last sequence moved from %d to %d; a refused publish stores nothing", before, after)
 	}
 
-	// Step 3, the control: a topic that still takes core NATS reaches the same subscriber.
+	// Step 3: the first core control publish follows any accidental writes on the same connection,
+	// so if one reached the subscriber, it would be read before the control.
 	for _, topic := range []string{"notifications.lxspec.probe.all", contracts.RoleTopicPrefix + "reviewer"} {
 		if _, err := client.PublishAckWithin(context.Background(), envelope(topic, "control-"+topic)); err != nil {
 			t.Fatalf("the control publish of %s: %v", topic, err)
@@ -160,7 +156,7 @@ func TestNothingIsSentForATopicThisBuildStoresWhileTheDeployedStreamLacksIt(t *t
 			t.Fatalf("the subscriber received nothing of the control publish of %s: %v", topic, err)
 		}
 		if msg.Subject != topic {
-			t.Fatalf("the subscriber received %s, want the control publish of %s", msg.Subject, topic)
+			t.Fatalf("the subscriber received %s (reply %q), want the control publish of %s", msg.Subject, msg.Reply, topic)
 		}
 	}
 

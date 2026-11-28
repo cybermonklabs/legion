@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -44,7 +43,7 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 
 	// Closed underneath it, the client dials a replacement (recover).
 	named.Conn.Close()
-	testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("the server to list a new connection named dispatch-intake after the client replaced connection %d (the last read is what it listed)", first[0]), func() (map[string][]uint64, bool) {
+	testwait.Until(t, fmt.Sprintf("the server to list a new connection named dispatch-intake after the client replaced connection %d (the last read is what it listed)", first[0]), func() (map[string][]uint64, bool) {
 		listed := connections()
 		replaced := listed["dispatch-intake"]
 		return listed, len(replaced) == 1 && replaced[0] != first[0]
@@ -52,7 +51,7 @@ func TestWithNameNamesEveryConnectionTheClientDials(t *testing.T) {
 
 	// One line from a connection callback, one from the recovery.
 	for _, message := range []string{"envoy nats connection closed", "envoy nats recovery successful"} {
-		testwait.UntilPolling(t, 100*time.Millisecond, fmt.Sprintf("a %q record with name dispatch-intake (the last read is every record)", message), func() (string, bool) {
+		testwait.Until(t, fmt.Sprintf("a %q record with name dispatch-intake (the last read is every record)", message), func() (string, bool) {
 			return logs.String(), loggedWithName(logs, message, "dispatch-intake")
 		})
 	}

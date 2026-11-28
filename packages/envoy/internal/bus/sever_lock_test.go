@@ -44,7 +44,7 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			if _, err := subscriber.ChanSubscribe(subject, received); err != nil {
 				t.Fatalf("subscribe to the marker: %v", err)
 			}
-			if err := subscriber.Flush(); err != nil {
+			if err := subscriber.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush the marker's subscription: %v", err)
 			}
 			conn := client.Connection()
@@ -61,7 +61,7 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 				// the lock stays taken across three polls, which no caller that holds it only briefly
 				// does, so Sever runs once the read holds it.
 				taken := 0
-				testwait.UntilPolling(t, 5*time.Millisecond, "the read holding the client's lock (the last read is across how many polls in a row it was taken)", func() (int, bool) {
+				testwait.Until(t, "the read holding the client's lock (the last read is across how many polls in a row it was taken)", func() (int, bool) {
 					select {
 					case <-read:
 						t.Fatal("control: the read under the client's lock answered while a write held nats.go's lock")
@@ -93,7 +93,7 @@ func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
 			if err := replacement.Publish(subject, []byte("after")); err != nil {
 				t.Fatalf("publish the second marker on the replacement connection: %v", err)
 			}
-			if err := replacement.Flush(); err != nil {
+			if err := replacement.FlushWithContext(testnats.Context(t)); err != nil {
 				t.Fatalf("flush the replacement connection: %v", err)
 			}
 			if msg := testwait.Receive(t, "control: the second marker to reach the subscriber", received); string(msg.Data) != "after" {
@@ -148,7 +148,7 @@ func TestASeverableDialerKeepsNoSocketItsConnectionDropped(t *testing.T) {
 			if ended[i] {
 				continue
 			}
-			_ = peer.SetReadDeadline(time.Now().Add(5 * time.Millisecond))
+			_ = peer.SetReadDeadline(testwait.WallTime(testwait.Now().Add(5 * time.Millisecond)))
 			_, err := peer.Read(make([]byte, 1))
 			switch {
 			case errors.Is(err, io.EOF):

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // startTriesOf counts the connections server took from the client named name, open and closed, as
@@ -39,10 +40,10 @@ func TestAnEnsureThatFailsForAnotherReasonEndsTheStartAtItsFirstTry(t *testing.T
 	server, uri := testnats.Start(t)
 	name := "ensure-fails-" + t.Name()
 	var refused atomic.Int32
-	started := time.Now()
+	started := testwait.Now()
 	client, err := ConnectOwningStream([]string{uri}, WithName(name), WithReplicas(3),
-		WithCredentialWait(time.Minute, func(error) { refused.Add(1) }, nil))
-	took := time.Since(started)
+		WithCredentialWait(UntilGiveUp(t), func(error) { refused.Add(1) }, nil))
+	took := testwait.Now().Sub(started)
 	if client != nil {
 		client.Close()
 		t.Fatalf("a start whose ensure the server refused for its replica count started, after %s", took)

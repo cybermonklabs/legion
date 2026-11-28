@@ -70,7 +70,7 @@ func liveServerJetStream(t *testing.T, image string) (string, nats.JetStreamCont
 	_, uri := testnats.StartImageConfig(t, image, config, liveServerArgs, true)
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("open JetStream: %v", err)
 	}

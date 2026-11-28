@@ -40,7 +40,7 @@ func TestAFinishedTakeoverRecordIsReadOnceUntilItsSubjectChanges(t *testing.T) {
 			t.Fatalf("subscribe to %s: %v", subject, err)
 		}
 	}
-	if err := watcher.Conn.Flush(); err != nil {
+	if err := watcher.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the subscriptions: %v", err)
 	}
 
