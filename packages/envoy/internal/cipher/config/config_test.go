@@ -2415,7 +2415,7 @@ func TestSecondPrefixSetting(t *testing.T) {
 		says []string
 	}{
 		"under aws-secrets-manager": {with(validEnv(), "projects/111111111111/secrets/cipher-"),
-			[]string{"BROKER_SECRETS_STORE=gcp-secret-manager", "aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
+			[]string{"is not read with BROKER_SECRETS_STORE=aws-secrets-manager", "an AWS Secrets Manager source is an ARN", "a move to another name always changes"}},
 		"equal to BROKER_SECRETS_PREFIX": {with(onGCP(), prefix),
 			[]string{"is BROKER_SECRETS_PREFIX itself", prefix}},
 		"starting with BROKER_SECRETS_PREFIX": {with(onGCP(), prefix+"old-"),

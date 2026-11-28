@@ -65,7 +65,7 @@ func (Backend) ParseConfig(prefix string, getenv func(string) string) (secretsto
 		return nil, fmt.Errorf("%s must be a KMS key ARN, arn:aws:kms:<region>:<account>:key/<key id>, got %q", keyVariable, keyARN)
 	}
 	if getenv(secretstore.SecondPrefixVariable) != "" {
-		return nil, fmt.Errorf("%s is read only with BROKER_SECRETS_STORE=gcp-secret-manager, or the development store memory, and this broker's store is %s: an AWS Secrets Manager source is an ARN whose random suffix a move to another name always changes, so no second prefix carries a grant across one; unset it", secretstore.SecondPrefixVariable, Name)
+		return nil, fmt.Errorf("%s is not read with BROKER_SECRETS_STORE=%s: an AWS Secrets Manager source is an ARN whose random suffix a move to another name always changes, so no second prefix carries a grant across one; unset it", secretstore.SecondPrefixVariable, Name)
 	}
 	return config{prefix: prefix, keyARN: keyARN}, nil
 }
