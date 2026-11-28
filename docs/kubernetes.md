@@ -3026,7 +3026,7 @@ The release before refuses three kinds of `merge_forward` row that this release 
 
 - a hold or a landed row to the planner, since it sends those to the tester, the reviewer and the merger alone (`mergeForwardRoles` in `record/outbox.go`);
 
-- an `ask` row sent again to a role's later launch, which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
+- an `ask` row sent again to a role's later launch that no row of it reached (at that launch's ready, at the end of a row of the ask that did not reach it, or, for the merger, at the move into `merging`), which carries the key `sentLaunch` (the launch it was sent at), and the release before decodes the outbox strictly (`DecodeOutboxPayload`, `DisallowUnknownFields`, in `record/outbox.go`).
 
 Its decode refuses each one (`DecodeOutboxPayload` and `validateOutboxPayload` in `record/outbox.go`), which is no permanent refusal for that kind (`permanentRefusal` in `internal/daemon/outbox.go`), so it fails the row at every attempt and retries it on its backoff until the roll forward.
 Run this with the daemon stopped, before the earlier image is pinned:
@@ -3048,7 +3048,7 @@ The release before decodes that column without them (`json.Unmarshal` in `record
 Without `withdrawn` it reads a withdrawn ask as one its role still holds.
 Without `sentLaunch` it does what it always did: it asks once for each head, so an ask whose role's claim failed, was stopped or exited is not sent to that role's next launch, and the workers held for it wait for a landing.
 For such an issue, have its architect move it back to `implementing`, which drops the ask.
-A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
+A roll forward reads an ask with no `sentLaunch` as told to no launch, so the ready of the asked role's next launch, and for the merger a move into `merging` at its current launch, sends it once more while it is owed, unless a row of it is still queued; the end of that row, delivered or not, then sends it to that launch if the row did not reach it.
 The statements take the rows of the project that rolls back alone (`split_part(issue, '-', 1)` is a row's project), so one project can roll back while another stays on this release.
 
 #### Rolling back the release whose owner's plan picks the steps
