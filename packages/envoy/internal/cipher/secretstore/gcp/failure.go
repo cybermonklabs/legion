@@ -1,11 +1,10 @@
-// packages/envoy/cmd/cipher/secret_gcp_failure.go
-//
-// How the GCP forms word a Secret Manager call that failed: one gRPC interceptor every call goes
+// How the GCP writer words a Secret Manager call that failed: one gRPC interceptor every call goes
 // through, which names the call and the code Secret Manager answered, and the permission it says is
 // missing, never the rest of its message, which whoever answers writes, or the class of the
 // failure of a call that did not reach Secret Manager; and the token source the client signs with,
 // which keeps its last failure for an Unauthenticated it caused.
-package main
+
+package gcp
 
 import (
 	"context"
@@ -21,15 +20,16 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
 // storeInterceptor is the gRPC interceptor every Secret Manager call this client makes goes
-// through (gcpClientDial installs it): a call's failure is storeFailure's, named by the call's
+// through (dialClient installs it): a call's failure is storeFailure's, named by the call's
 // method, so no call site wraps a refusal by hand, and a call a later change adds cannot forget
 // to. It asks gRPC for the call's peer (grpc.Peer), which gRPC fills only once the call went out
 // on a connection it made, so storeFailure knows whether anything answered.
-func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+func (b *writer) storeInterceptor(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 	var answered peer.Peer
 	err := invoker(ctx, method, req, reply, cc, append(slices.Clip(opts), grpc.Peer(&answered))...)
 	return b.storeFailure(path.Base(method), answered.Addr != nil, err)
@@ -48,7 +48,7 @@ func (b *gcpBackend) storeInterceptor(ctx context.Context, method string, req, r
 // status.Code, isAccessDenied, gcpDefiniteRefusal and gax's retries still read the code, and gax,
 // which builds its APIError from that status and prints the status's details beside its text,
 // prints none of the server's.
-func (b *gcpBackend) storeFailure(method string, reached bool, err error) error {
+func (b *writer) storeFailure(method string, reached bool, err error) error {
 	if err == nil {
 		return nil
 	}
@@ -146,7 +146,7 @@ var gcpCallPermissions = map[string][]string{
 
 // gcpPermissions are the IAM permissions a message names by name (gcpMissingPermission): every one
 // some call of gcpCallPermissions needs, and no other.
-var gcpPermissions = permissionsOf(gcpCallPermissions)
+var gcpPermissions = secretstore.PermissionsOf(gcpCallPermissions)
 
 // gcpMissingPermission is the IAM permission message, Google's own text, says is denied, where it
 // names one in Google's shape (gcpPermission), else "": the permission where it is one this
@@ -162,7 +162,7 @@ func gcpMissingPermission(message string) string {
 	case gcpPermissions[match[1]]:
 		return match[1]
 	}
-	return permissionNotNamed
+	return secretstore.PermissionNotNamed
 }
 
 // storeTokens is the token source the Secret Manager client signs its calls with, which keeps its

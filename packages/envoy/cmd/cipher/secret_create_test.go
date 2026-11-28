@@ -1,7 +1,7 @@
 // packages/envoy/cmd/cipher/secret_create_test.go
 //
 // The deadline on each store call `secret create` makes from CreateSecret until the value is stored
-// or the discard is done (storeCallDeadline), on both stores: a call the store never answers ends
+// or the discard is done (secretstore.CallDeadline), on both stores: a call the store never answers ends
 // at the deadline, and the create then fails as it fails on any store error, never waiting on it.
 package main
 
@@ -26,15 +26,20 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 // useStoreCallDeadline makes d the deadline on each store call of a create, for the rest of t.
 func useStoreCallDeadline(t *testing.T, d time.Duration) {
 	t.Helper()
-	restore := storeCallDeadline
-	storeCallDeadline = d
-	t.Cleanup(func() { storeCallDeadline = restore })
+	restore := secretstore.CallDeadline
+	secretstore.CallDeadline = d
+	t.Cleanup(func() { secretstore.CallDeadline = restore })
 }
 
 // hungCreate is a Secrets Manager whose CreateSecret answers nothing until release is closed, and
@@ -55,42 +60,53 @@ func (h hungCreate) CreateSecret(ctx context.Context, in *secretsmanager.CreateS
 }
 
 // TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline: a store call of the create that the
-// store never answers - GCP's AddSecretVersion, AWS's one CreateSecret - ends at the deadline on
-// each such call, and the create fails as on any store error rather than waiting for it: on GCP,
-// where a call that ran out of time may have stored the value or may still, it lists the versions,
-// finds none, keeps the secret, says a late add may still land and names the command that checks
-// it, deleting nothing, and asks the broker to reread the name; on AWS, whose CreateSecret makes
-// the secret with its value in one call, it says that the store may hold the secret or not and
-// names the command that says which. Each exits 1 well before the store would answer.
+// store never answers - GCP's AddSecretVersion, AWS's one CreateSecret, the memory store's one
+// create (memory.Writer.HangNext) - ends at the deadline on each such call, and the create fails as
+// on any store error rather than waiting for it: on GCP, where a call that ran out of time may have
+// stored the value or may still, it lists the versions, finds none, keeps the secret, says a late
+// add may still land and names the command that checks it, deleting nothing, and asks the broker to
+// reread the name; on AWS and the memory store, whose create makes the secret with its value in one
+// call, it says that the store may hold the secret or not and names the command that says which.
+// Each exits 1 well before the store would answer. It runs on every store the registry holds.
 func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
-	for _, store := range []string{"gcp", "aws"} {
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.endsByItsDeadline, main.requireOnTime, onTimeWithin at waits_test.go:239).
+	for _, b := range backends.All() {
+		store := b.ID()
 		t.Run(store, func(t *testing.T) {
 			useStoreCallDeadline(t, 300*time.Millisecond)
 			release := make(chan struct{})
 			releaseOnce := sync.OnceFunc(func() { close(release) })
 			t.Cleanup(releaseOnce)
-			var fake *fakeSecretManager
+			var fake *gcptest.FakeSecretManager
 			var broker *secretBroker
 			var local *awstest.Local
+			var held typeStore
 			want := []string{}
 			switch store {
 			case "gcp":
-				fake = newFakeSecretManager()
-				fake.beforeCall = func(method string) {
+				fake = gcptest.NewFakeSecretManager()
+				fake.BeforeCall = func(method string) {
 					if method == "AddSecretVersion" {
 						<-release
 					}
 				}
-				startFakeSecretManager(t, fake)
-				useGCPIdentity(t, "authorized_user", "ada@example.com")
+				gcptest.UseFake(t, fake)
+				gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 				broker = startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 				want = append(want, "DeadlineExceeded", "a late add may still land", "`agent-secrets secret show NEW_TEST`")
 			case "aws":
 				local = awstest.NewLocal()
 				broker = startSecretBroker(t, servedBy(local))
-				useAWS(t, hungCreate{Local: local, release: release}, testAccount, adaSignIn)
+				awstest.Use(t, hungCreate{Local: local, release: release}, testAccount, adaSignIn)
 				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
+			case "memory":
+				rig := storeRigs["memory"](t)
+				held = rig.store
+				t.Cleanup(memory.SwapHooks(memory.Hooks{Opened: func(w *memory.Writer) { w.HangNext("create") }}))
+				broker = startSecretBrokerWith(t, rig.settings, rig.answer)
+				want = append(want, "context deadline exceeded", "did not answer within 300ms", "the store may hold NEW_TEST, made with its value, or no NEW_TEST at all", "`agent-secrets secret show NEW_TEST` says which")
+			default:
+				t.Fatalf("the registry holds the store %s, which this test has no hung call for", store)
 			}
 			useStdin(t, "shh")
 
@@ -102,7 +118,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			meter := startStallMeter(t)
 			start := time.Now()
 			go func() {
-				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
+				_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
 				done <- result{stderr, code}
 			}()
 			// The store never answers until the test ends (releaseOnce, a cleanup), so the create
@@ -118,9 +134,9 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			}
 			switch store {
 			case "gcp":
-				calls := fake.called()
-				if added, listed := slices.Index(calls, "AddSecretVersion"), slices.Index(calls, "ListSecretVersions"); added < 0 || listed < added || slices.Contains(calls, "DeleteSecret") || fake.written() != 1 {
-					t.Fatalf("Secret Manager calls %v, %d secrets held; want the add, then its versions listed, and the secret kept", calls, fake.written())
+				calls := fake.Called()
+				if added, listed := slices.Index(calls, "AddSecretVersion"), slices.Index(calls, "ListSecretVersions"); added < 0 || listed < added || slices.Contains(calls, "DeleteSecret") || fake.Written() != 1 {
+					t.Fatalf("Secret Manager calls %v, %d secrets held; want the add, then its versions listed, and the secret kept", calls, fake.Written())
 				}
 				if rereads, _ := broker.recorded(); !slices.Equal(rereads, []string{"NEW_TEST"}) {
 					t.Fatalf("rereads %v; want NEW_TEST once", rereads)
@@ -128,6 +144,13 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 			case "aws":
 				if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_TEST"))}); err == nil {
 					t.Fatal("the create whose CreateSecret ran out of time made NEW_TEST")
+				}
+				if rereads, _ := broker.recorded(); len(rereads) != 0 {
+					t.Fatalf("rereads %v; want none, the create having made nothing", rereads)
+				}
+			case "memory":
+				if held.has(t, "NEW_TEST") {
+					t.Fatal("the create whose store call ran out of time made NEW_TEST")
 				}
 				if rereads, _ := broker.recorded(); len(rereads) != 0 {
 					t.Fatalf("rereads %v; want none, the create having made nothing", rereads)
@@ -144,7 +167,7 @@ func TestSecretCreateEndsAStoreCallThatNeverAnswersAtItsDeadline(t *testing.T) {
 // nothing was stored, so it says the store may hold the secret, with its value, and names `secret
 // show`. A store that refuses the one attempt it sees says nothing was stored. Each exits 1.
 func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		name      string
 		dropFirst bool
@@ -183,7 +206,7 @@ func TestAWSSecretCreateReadsEveryAttemptTheSDKMade(t *testing.T) {
 				Credentials:  credentials.NewStaticCredentialsProvider("AKIDEXAMPLE", "not-a-secret", ""),
 			})
 			startSecretBroker(t, servedBy(awstest.NewLocal()))
-			useAWS(t, sm, testAccount, adaSignIn)
+			awstest.Use(t, sm, testAccount, adaSignIn)
 			useStdin(t, "shh")
 
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
@@ -222,7 +245,7 @@ func (f failedCreate) CreateSecret(ctx context.Context, in *secretsmanager.Creat
 // hold the secret with its value, or nothing, and names `secret show NAME`, which tells them apart.
 // Each exits 1.
 func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	// The two facts the refusal tells apart: a definite refusal says nothing was stored; any other
 	// says the store may hold the secret and names the command that tells.
 	const nothing = "nothing was stored"
@@ -248,11 +271,11 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 				local.Put(awstest.Secret("NEW_TEST", "ada@example.com", policy.TierAgent, "theirs"))
 			}
 			startSecretBroker(t, servedBy(local))
-			var sm secretsAPI = local
+			var sm awsstore.WriterAPI = local
 			if row.fail != nil {
 				sm = failedCreate{Local: local, stored: row.stored, err: row.fail}
 			}
-			useAWS(t, sm, testAccount, adaSignIn)
+			awstest.Use(t, sm, testAccount, adaSignIn)
 			useStdin(t, "shh")
 			_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
 			other := mayHold
@@ -275,17 +298,17 @@ func TestAWSSecretCreateSaysWhetherAFailedCreateMayHaveStoredTheValue(t *testing
 // naming the command that tells which. The cleanup is run here as the signal would run it, right
 // after the store's answer.
 func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.newGCPBackend, (*gcpBackend).signIn, main.gcloudLogins, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it signals the test process or changes its signal handling (main.openSession, main.openSecretBackend, main.runChild, main.watchSignalsWhileChildRuns, signal.Notify at children.go:120); it sets a package variable the package's other tests read (main.openSession, main.openSecretBackend, main.runChild, runningChildren set at children.go:78).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
 	s, err := openSession(context.Background(), io.Discard, "secret create")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
 	var stderr strings.Builder
-	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.prepareCreate("new-test", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent})}
+	p := &pendingCreate{s: s, form: "secret create", name: "NEW_TEST", stdout: io.Discard, stderr: &stderr, created: s.backend.PrepareCreate(s.id("new-test"), map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent})}
 	if err := p.begin(); err != nil {
 		t.Fatal(err)
 	}
@@ -302,10 +325,10 @@ func TestCreateSignalAfterAFailedAWSStoreSaysWhatTheStoreMayHold(t *testing.T) {
 // whether a failed CreateSecret made the secret carries the AWS_PROFILE prefix the create ran
 // under, so it reads the store as the identity that wrote to it.
 func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:309); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_create_test.go:332); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
+	awstest.Use(t, failedCreate{Local: local, stored: true, err: &types.InternalServiceError{Message: aws.String("oops")}}, testAccount, adaSignIn)
 	t.Setenv("AWS_PROFILE", "work")
 	useStdin(t, "shh")
 	_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent")
@@ -320,13 +343,13 @@ func TestAWSSecretCreateRecoveryCommandSignsInAsTheCreateDid(t *testing.T) {
 // a create given that deadline refuses the value, whenever it comes - a value piped in at once is
 // still stored on AWS.
 func TestAWSSecretCreateValueReadHasNoWindow(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (valueReadWindow set at secret_create_test.go:325).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (valueReadWindow set at secret_create_test.go:348).
 	restore := valueReadWindow
 	valueReadWindow = time.Nanosecond
 	t.Cleanup(func() { valueReadWindow = restore })
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "shh")
 
 	if _, stderr, code := runSecret("create", "NEW_TEST", "--owner", "ada@example.com", "--tier", "agent"); code != 0 {

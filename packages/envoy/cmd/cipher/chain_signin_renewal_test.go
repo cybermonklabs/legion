@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // helperEnrollment is the enrollment the fake helper's proofs name, so a broker records which
@@ -67,7 +66,7 @@ func withTheSignInsOwnClient(t *testing.T, r *chainRig) {
 // it took. Only a sign-in this machine cannot renew is checked, by one read signed with its own
 // box key; a live one, and one this machine can renew, serves as before.
 func TestASignInThisMachineCannotRenewGivesWay(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:139).
 	binary := chainBinary(t)
 	rows := []struct {
 		name string
@@ -170,7 +169,7 @@ func TestIdentitySourceNamesTheSourceAfterASignInThisMachineCannotRenew(t *testi
 // the line still says why the sign-in was passed over, and which source was tried next, before
 // that source's own refusal: the person learns that their sign-in is the cause.
 func TestAPassedOverSignInIsNamedWhenTheNextSourceFails(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:139).
 	binary := chainBinary(t)
 	for _, row := range []struct {
 		name, source, want string
@@ -256,7 +255,7 @@ func TestASignInIsPassedOverOnlyWhenItsEnrollmentIsNotLive(t *testing.T) {
 // sign-in: beside a live helper session it renews the sign-in's own enrollment, is refused for
 // good, and registers nothing.
 func TestRenewReportsASignInThisMachineCannotRenewAndActsAsNoOtherSession(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:136).
+	// Not parallel: it sets environment variables of the whole process ((*chainRig).withMetadata, main.startMetadataServer, t.Setenv at secret_gcp_order_test.go:139).
 	binary := chainBinary(t)
 	r, broker := signInRig(t, binary)
 	broker.endEnrollment("signin-enrollment")
@@ -287,7 +286,7 @@ func TestRenewReportsASignInThisMachineCannotRenewAndActsAsNoOtherSession(t *tes
 // with the helper's session, else with the machine session the cache holds, writes no line about
 // it, and registers nothing.
 func TestASecretFormsRereadPassesOverASignInThisMachineCannotRenew(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_signin_renewal_test.go:297); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at chain_signin_renewal_test.go:296); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		name     string
 		signedBy string
@@ -301,27 +300,26 @@ func TestASecretFormsRereadPassesOverASignInThisMachineCannotRenew(t *testing.T)
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal()
-			broker := startSecretBroker(t, servedBy(local))
-			withNoBrokerIdentity(t)
-			broker.endEnrollment("signin-enrollment")
-			writeSignInFixture(t, &chainRig{t: t, home: os.Getenv("HOME"), state: os.Getenv("XDG_STATE_HOME")}, "ada@example.com")
-			t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_ID", "")
-			t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE", "")
-			row.setup(t, os.Getenv("XDG_STATE_HOME"))
-			useAWS(t, local, testAccount, adaSignIn)
-			useStdin(t, "v1")
+			onEachStore(t, func(t *testing.T, _ typeStore, broker *secretBroker) {
+				withNoBrokerIdentity(t)
+				broker.endEnrollment("signin-enrollment")
+				writeSignInFixture(t, &chainRig{t: t, home: os.Getenv("HOME"), state: os.Getenv("XDG_STATE_HOME")}, "ada@example.com")
+				t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_ID", "")
+				t.Setenv("AGENT_SECRETS_SIGNIN_CLIENT_SECRET_FILE", "")
+				row.setup(t, os.Getenv("XDG_STATE_HOME"))
+				useStdin(t, "v1")
 
-			stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-			if code != 0 || !strings.Contains(stdout, "broker: serving NEW_KEY from ") {
-				t.Fatalf("create beside a dead sign-in: exit %d, stdout %q, stderr %q; want 0 and the broker serving NEW_KEY", code, stdout, stderr)
-			}
-			if signers, unsigned := broker.rereadSigners(), broker.rereadUnsigned(); !slices.Equal(signers, []string{row.signedBy}) || len(unsigned) != 0 {
-				t.Fatalf("the rereads were signed by %v, and %v went with no proof; want one, signed by %s", signers, unsigned, row.signedBy)
-			}
-			if strings.Contains(stderr, "; using the ") || strings.Contains(stderr, "; tried the ") {
-				t.Fatalf("stderr %q; the reread writes no line about the sign-in it passed over", stderr)
-			}
+				stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+				if code != 0 || !strings.Contains(stdout, "broker: serving NEW_KEY from ") {
+					t.Fatalf("create beside a dead sign-in: exit %d, stdout %q, stderr %q; want 0 and the broker serving NEW_KEY", code, stdout, stderr)
+				}
+				if signers, unsigned := broker.rereadSigners(), broker.rereadUnsigned(); !slices.Equal(signers, []string{row.signedBy}) || len(unsigned) != 0 {
+					t.Fatalf("the rereads were signed by %v, and %v went with no proof; want one, signed by %s", signers, unsigned, row.signedBy)
+				}
+				if strings.Contains(stderr, "; using the ") || strings.Contains(stderr, "; tried the ") {
+					t.Fatalf("stderr %q; the reread writes no line about the sign-in it passed over", stderr)
+				}
+			})
 		})
 	}
 }

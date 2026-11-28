@@ -1,7 +1,8 @@
 // Package secretstoretest holds what every secret store's tests share: StoreContract, the meaning
-// of each read the broker makes of a store, which each store runs against its fake and,
-// where it has a live tag, against its live service; and the wrappers a test of the policy or the
-// request machine puts around a store to count, hold or fail its calls.
+// of each read the broker and the agent-secrets CLI make of a store, and WriterContract, the
+// meaning of each write the CLI makes, which each store runs against its fake and, where it has a
+// live tag, against its live service; and the wrappers a test of the policy or the request
+// machine puts around a store to count, hold or fail its calls.
 package secretstoretest
 
 import (
@@ -101,14 +102,14 @@ func settle[T any](t *testing.T, what string, read func() (T, bool)) T {
 	return last
 }
 
-// listed waits until a List under r's prefix answers every slug of slugs, and answers that
-// listing by ID.
-func listed(t *testing.T, r StoreRig, slugs ...string) map[string]secretstore.Listing {
+// listed waits until a List under r's prefix with opts answers every slug of slugs, and answers
+// that listing by ID.
+func listed(t *testing.T, r StoreRig, opts secretstore.ReadOptions, slugs ...string) map[string]secretstore.Listing {
 	t.Helper()
-	return settle(t, fmt.Sprintf("List to answer %v", slugs), func() (map[string]secretstore.Listing, bool) {
-		listings, err := r.Store.List(context.Background(), r.Prefix)
+	return settle(t, fmt.Sprintf("List(%+v) to answer %v", opts, slugs), func() (map[string]secretstore.Listing, bool) {
+		listings, err := r.Store.List(context.Background(), r.Prefix, opts)
 		if err != nil {
-			t.Fatalf("List(%s): %v", r.Prefix, err)
+			t.Fatalf("List(%s, %+v): %v", r.Prefix, opts, err)
 		}
 		byID := map[string]secretstore.Listing{}
 		for _, ls := range listings {
@@ -149,7 +150,7 @@ var storeCases = []storeCase{
 		for _, f := range fixtures {
 			r.Put(t, f)
 		}
-		byID := listed(t, r, "deel-api-key", "other-key")
+		byID := listed(t, r, secretstore.ReadOptions{}, "deel-api-key", "other-key")
 		if len(byID) != len(fixtures) {
 			t.Errorf("List answered %d secrets, want the %d under the prefix: %+v", len(byID), len(fixtures), byID)
 		}
@@ -171,7 +172,7 @@ var storeCases = []storeCase{
 		outside.Outside = true
 		r.Put(t, outside)
 		r.Put(t, fixture("inside-key", "v"))
-		byID := listed(t, r, "inside-key")
+		byID := listed(t, r, secretstore.ReadOptions{}, "inside-key")
 		for id := range byID {
 			if !strings.HasPrefix(id, r.Prefix) {
 				t.Errorf("List(%s) answered %s, which does not start with the prefix", r.Prefix, id)
@@ -181,29 +182,35 @@ var storeCases = []storeCase{
 			t.Errorf("List answered %d secrets, want the one under the prefix: %+v", len(byID), byID)
 		}
 	}},
-	{"a secret scheduled for deletion is absent", func(t *testing.T, r StoreRig) {
-		r.Put(t, fixture("gone-key", "v"))
-		id := r.Prefix + "gone-key"
-		source := listed(t, r, "gone-key")[id].Source
+	{"a secret scheduled for deletion is absent unless the read asks for it", func(t *testing.T, r StoreRig) {
 		gone := fixture("gone-key", "v")
 		gone.Deleted = true
 		r.Put(t, gone)
 		r.Put(t, fixture("kept-key", "v"))
+		id := r.Prefix + gone.Slug
 		ctx := context.Background()
-		settle(t, "Describe("+id+") to answer ErrNotFound once it is scheduled for deletion", func() (error, bool) {
-			_, err := r.Store.Describe(ctx, id)
-			return err, errors.Is(err, secretstore.ErrNotFound)
-		})
-		if ls, held := listed(t, r, "kept-key")[id]; held {
+		all := listed(t, r, secretstore.ReadOptions{IncludeDeleted: true}, gone.Slug, "kept-key")
+		deleted := all[id]
+		if deleted.Deleted.IsZero() {
+			t.Errorf("List with IncludeDeleted answered %s with no Deleted time", id)
+		}
+		described, err := r.Store.Describe(ctx, id, secretstore.ReadOptions{IncludeDeleted: true})
+		if err != nil || described.Deleted.IsZero() {
+			t.Errorf("Describe(%s) with IncludeDeleted = %+v, %v; want it with its Deleted time", id, described, err)
+		}
+		if ls, held := listed(t, r, secretstore.ReadOptions{}, "kept-key")[id]; held {
 			t.Errorf("List answered %s, which is scheduled for deletion: %+v", id, ls)
 		}
-		if _, err := r.Store.Read(ctx, source); !errors.Is(err, secretstore.ErrNotFound) {
-			t.Errorf("Read(%s) = %v; want ErrNotFound for a secret scheduled for deletion", source, err)
+		if ls, err := r.Store.Describe(ctx, id, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
+			t.Errorf("Describe(%s) = %+v, %v; want ErrNotFound for a secret scheduled for deletion", id, ls, err)
+		}
+		if _, err := r.Store.Read(ctx, deleted.Source); !errors.Is(err, secretstore.ErrNotFound) {
+			t.Errorf("Read(%s) = %v; want ErrNotFound for a secret scheduled for deletion", deleted.Source, err)
 		}
 	}},
 	{"a secret with no value has no current value and no version", func(t *testing.T, r StoreRig) {
 		r.Put(t, fixture("empty-key", ""))
-		ls := listed(t, r, "empty-key")[r.Prefix+"empty-key"]
+		ls := listed(t, r, secretstore.ReadOptions{}, "empty-key")[r.Prefix+"empty-key"]
 		if ls.HasCurrentValue || ls.Version != "" {
 			t.Errorf("%s: HasCurrentValue %t, Version %q; want no value and no version", ls.ID, ls.HasCurrentValue, ls.Version)
 		}
@@ -213,8 +220,8 @@ var storeCases = []storeCase{
 	}},
 	{"Describe answers what List answers for one name", func(t *testing.T, r StoreRig) {
 		r.Put(t, fixture("deel-api-key", "deel-value"))
-		ls := listed(t, r, "deel-api-key")[r.Prefix+"deel-api-key"]
-		d, err := r.Store.Describe(context.Background(), ls.ID)
+		ls := listed(t, r, secretstore.ReadOptions{}, "deel-api-key")[r.Prefix+"deel-api-key"]
+		d, err := r.Store.Describe(context.Background(), ls.ID, secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatalf("Describe(%s): %v", ls.ID, err)
 		}
@@ -224,13 +231,13 @@ var storeCases = []storeCase{
 	}},
 	{"Describe of a name no secret carries is ErrNotFound", func(t *testing.T, r StoreRig) {
 		id := r.Prefix + "no-such-key"
-		if ls, err := r.Store.Describe(context.Background(), id); !errors.Is(err, secretstore.ErrNotFound) {
+		if ls, err := r.Store.Describe(context.Background(), id, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
 			t.Errorf("Describe(%s) = %+v, %v; want ErrNotFound", id, ls, err)
 		}
 	}},
 	{"Read of a source the store no longer holds is ErrNotFound", func(t *testing.T, r StoreRig) {
 		r.Put(t, fixture("removed-key", "v"))
-		source := listed(t, r, "removed-key")[r.Prefix+"removed-key"].Source
+		source := listed(t, r, secretstore.ReadOptions{}, "removed-key")[r.Prefix+"removed-key"].Source
 		r.Remove(t, "removed-key")
 		settle(t, "Read("+source+") to answer ErrNotFound once it is removed", func() (error, bool) {
 			_, err := r.Store.Read(context.Background(), source)
@@ -241,13 +248,13 @@ var storeCases = []storeCase{
 		ctx := context.Background()
 		r.Put(t, fixture("deel-api-key", "first-value"))
 		id := r.Prefix + "deel-api-key"
-		first := listed(t, r, "deel-api-key")[id]
+		first := listed(t, r, secretstore.ReadOptions{}, "deel-api-key")[id]
 		r.Put(t, fixture("deel-api-key", "second-value"))
 		settle(t, "Read("+first.Source+") to answer the new value", func() (int, bool) {
 			value, err := r.Store.Read(ctx, first.Source)
 			return len(value), err == nil && value == "second-value"
 		})
-		second, err := r.Store.Describe(ctx, id)
+		second, err := r.Store.Describe(ctx, id, secretstore.ReadOptions{})
 		if err != nil {
 			t.Fatalf("Describe(%s): %v", id, err)
 		}
@@ -264,7 +271,7 @@ var storeCases = []storeCase{
 			r.Put(t, off)
 			slugs = append(slugs, "off-key")
 		}
-		byID := listed(t, r, slugs...)
+		byID := listed(t, r, secretstore.ReadOptions{}, slugs...)
 		for id, ls := range byID {
 			if want := id != r.Prefix+"off-key"; onKey(t, ls) != want {
 				t.Errorf("%s: OnKey %t, want %t", id, !want, want)
@@ -281,7 +288,7 @@ var storeCases = []storeCase{
 			r.Put(t, waiting)
 			slugs = append(slugs, "waiting-key")
 		}
-		for id, ls := range listed(t, r, slugs...) {
+		for id, ls := range listed(t, r, secretstore.ReadOptions{}, slugs...) {
 			want := id == r.Prefix+"waiting-key"
 			if ls.Unfilled != want {
 				t.Errorf("%s: Unfilled %t, want %t", id, ls.Unfilled, want)
@@ -291,13 +298,32 @@ var storeCases = []storeCase{
 			}
 		}
 	}},
+	{"Versions answers the current version when asked", func(t *testing.T, r StoreRig) {
+		ctx := context.Background()
+		r.Put(t, fixture("deel-api-key", "v"))
+		id := listed(t, r, secretstore.ReadOptions{}, "deel-api-key")[r.Prefix+"deel-api-key"].ID
+		plain, err := r.Store.Describe(ctx, id, secretstore.ReadOptions{})
+		if err != nil {
+			t.Fatalf("Describe(%s): %v", id, err)
+		}
+		if plain.Versions != nil {
+			t.Errorf("Describe(%s) with no Versions option answered versions %v; want none", id, plain.Versions)
+		}
+		withVersions, err := r.Store.Describe(ctx, id, secretstore.ReadOptions{Versions: true})
+		if err != nil {
+			t.Fatalf("Describe(%s) with Versions: %v", id, err)
+		}
+		if _, ok := withVersions.Versions[withVersions.Version]; withVersions.Version == "" || !ok {
+			t.Errorf("Describe(%s) with Versions answered version %q and versions %v; want the version among them", id, withVersions.Version, withVersions.Versions)
+		}
+	}},
 	{"ValidName refuses a name past the store's limit and accepts every listed name", func(t *testing.T, r StoreRig) {
 		r.Put(t, fixture("deel-api-key", "v"))
 		r.Put(t, fixture("empty-key", ""))
 		if err := r.Store.ValidName(r.Prefix + strings.Repeat("a", 10000)); err == nil {
 			t.Error("ValidName accepted a name of 10000 bytes under the prefix")
 		}
-		for id := range listed(t, r, "deel-api-key", "empty-key") {
+		for id := range listed(t, r, secretstore.ReadOptions{}, "deel-api-key", "empty-key") {
 			if err := r.Store.ValidName(id); err != nil {
 				t.Errorf("ValidName(%s), a listed name: %v", id, err)
 			}
@@ -306,7 +332,7 @@ var storeCases = []storeCase{
 	{"no source starts with " + mintPrefix, func(t *testing.T, r StoreRig) {
 		r.Put(t, fixture("deel-api-key", "v"))
 		r.Put(t, fixture("empty-key", ""))
-		for id, ls := range listed(t, r, "deel-api-key", "empty-key") {
+		for id, ls := range listed(t, r, secretstore.ReadOptions{IncludeDeleted: true}, "deel-api-key", "empty-key") {
 			if strings.HasPrefix(ls.Source, mintPrefix) {
 				t.Errorf("%s: source %q starts with %s, which opens a minted secret's source", id, ls.Source, mintPrefix)
 			}

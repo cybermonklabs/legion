@@ -90,6 +90,30 @@ type Store struct {
 	// KeyARN is the agent-secrets key's ARN (BROKER_SECRETS_KMS_KEY_ARN); a secret encrypted with
 	// any other key is not OnKey.
 	KeyARN string
+	// ClientErrors answers each failure of Client as Client returned it, with no prefix of the
+	// store's, a not-found one still matching ErrNotFound (secretstore.NotFound), and a value that
+	// is no text in the CLI's words (secretstore.NotText): for a client that words its own
+	// failures and never prints the service's text, the agent-secrets CLI's. The broker's store
+	// leaves it false.
+	ClientErrors bool
+}
+
+// failed is err, Client's failure, as the store answers it: under prefix, or as the client
+// returned it with ClientErrors.
+func (a Store) failed(prefix string, err error) error {
+	if a.ClientErrors {
+		return err
+	}
+	return fmt.Errorf("%s: %w", prefix, err)
+}
+
+// missing is err, Client's failure saying the store holds no such secret, as ErrNotFound: itself,
+// or printing as the client worded it with ClientErrors.
+func (a Store) missing(err error) error {
+	if a.ClientErrors {
+		return secretstore.NotFound(err)
+	}
+	return secretstore.ErrNotFound
 }
 
 // awsListLag is how stale ListSecrets may be: AWS documents that it "might not reflect changes from
@@ -117,19 +141,24 @@ func (a Store) ValidName(id string) error {
 // keeps those whose name starts with prefix byte for byte, whatever the filter matched. Whether a
 // secret has a value, and the id of the version that holds it, are read from the same listing's
 // SecretVersionsToStages, with no call per secret; ListSecrets leaves out a secret scheduled for
-// deletion. A listing's OnKey reads the key's aliases at most once per List, the first time it is
-// asked about a secret that names its key by one, so a secret the policy refuses for its name or
-// tags costs no KMS call. A failed Secrets Manager call fails the whole List.
-func (a Store) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
+// deletion unless opts.IncludeDeleted asks it to include one (IncludePlannedDeletion). A
+// listing's OnKey reads the key's aliases at most once per List, the first time it is asked about
+// a secret that names its key by one, so a secret the policy refuses for its name or tags costs
+// no KMS call. A failed Secrets Manager call fails the whole List.
+func (a Store) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	var listings []secretstore.Listing
 	keys := a.keys()
-	pages := secretsmanager.NewListSecretsPaginator(a.Client, &secretsmanager.ListSecretsInput{
+	in := &secretsmanager.ListSecretsInput{
 		Filters: []types.Filter{{Key: types.FilterNameStringTypeName, Values: []string{prefix}}},
-	})
+	}
+	if opts.IncludeDeleted {
+		in.IncludePlannedDeletion = aws.Bool(true)
+	}
+	pages := secretsmanager.NewListSecretsPaginator(a.Client, in)
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
-			return nil, fmt.Errorf("list secrets under %s: %w", prefix, err)
+			return nil, a.failed("list secrets under "+prefix, err)
 		}
 		for _, e := range page.SecretList {
 			if !strings.HasPrefix(aws.ToString(e.Name), prefix) {
@@ -137,52 +166,71 @@ func (a Store) List(ctx context.Context, prefix string) ([]secretstore.Listing, 
 			}
 			listings = append(listings, a.listing(awsSecret{
 				name: e.Name, arn: e.ARN, kmsKeyID: e.KmsKeyId, tags: e.Tags, versions: e.SecretVersionsToStages,
-				created: e.CreatedDate,
-			}, keys))
+				created: e.CreatedDate, lastChanged: e.LastChangedDate, deleted: e.DeletedDate,
+			}, keys, opts))
 		}
 	}
 	return listings, nil
 }
 
 // Describe reads one secret with DescribeSecret, which is read-after-write consistent where
-// ListSecrets may lag a change by minutes: ErrNotFound for one Secrets Manager does not hold, and
-// for one scheduled for deletion, which DescribeSecret still answers with its DeletedDate. Its
-// version stages (VersionIdsToStages) answer whether it has a value and the version holding it.
-func (a Store) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
+// ListSecrets may lag a change by minutes: ErrNotFound for one Secrets Manager does not hold, and,
+// unless opts.IncludeDeleted asks for it, for one scheduled for deletion, which DescribeSecret
+// still answers with its DeletedDate. Its version stages (VersionIdsToStages) answer whether it
+// has a value and the version holding it.
+func (a Store) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	out, err := a.Client.DescribeSecret(ctx, &secretsmanager.DescribeSecretInput{SecretId: aws.String(id)})
 	var notFound *types.ResourceNotFoundException
 	switch {
 	case errors.As(err, &notFound):
-		return secretstore.Listing{}, secretstore.ErrNotFound
+		return secretstore.Listing{}, a.missing(err)
 	case err != nil:
-		return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, err)
-	case out.DeletedDate != nil:
+		return secretstore.Listing{}, a.failed("describe "+id, err)
+	case out.DeletedDate != nil && !opts.IncludeDeleted:
 		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
 	return a.listing(awsSecret{
 		name: out.Name, arn: out.ARN, kmsKeyID: out.KmsKeyId, tags: out.Tags, versions: out.VersionIdsToStages,
-		created: out.CreatedDate,
-	}, a.keys()), nil
+		created: out.CreatedDate, lastChanged: out.LastChangedDate, deleted: out.DeletedDate,
+	}, a.keys(), opts), nil
 }
 
 // awsSecret is what ListSecrets and DescribeSecret both answer of one secret, which listing reads.
 type awsSecret struct {
-	name, arn, kmsKeyID *string
-	tags                []types.Tag
-	versions            map[string][]string
-	created             *time.Time
+	name, arn, kmsKeyID           *string
+	tags                          []types.Tag
+	versions                      map[string][]string
+	created, lastChanged, deleted *time.Time
 }
 
-// listing is the Listing of s, its OnKey over keys.
-func (a Store) listing(s awsSecret, keys *keyIdentifiers) secretstore.Listing {
+// listing is the Listing of s, its OnKey over keys, with its versions when opts asks for them.
+func (a Store) listing(s awsSecret, keys *keyIdentifiers, opts secretstore.ReadOptions) secretstore.Listing {
 	version := currentVersion(s.versions)
 	tags := TagMap(s.tags)
-	return secretstore.Listing{
+	ls := secretstore.Listing{
 		ID: aws.ToString(s.name), Source: aws.ToString(s.arn), Tags: tags,
 		OnKey: a.onKey(aws.ToString(s.kmsKeyID), keys), HasCurrentValue: version != "", Version: version,
 		Created: aws.ToTime(s.created), Unfilled: unfilled(tags, s.versions),
+		LastChanged: aws.ToTime(s.lastChanged), Deleted: aws.ToTime(s.deleted),
 	}
+	if s.deleted != nil {
+		ls.EarliestPurge = s.deleted.AddDate(0, 0, minRecoveryWindowDays)
+	}
+	if opts.Versions {
+		ls.Versions = maps.Clone(s.versions)
+		if ls.Versions == nil {
+			ls.Versions = map[string][]string{}
+		}
+	}
+	return ls
 }
+
+// minRecoveryWindowDays is the shortest recovery window Secrets Manager allows a deletion, 7 days.
+// Neither DescribeSecret nor ListSecrets answers the window a delete used, which can be anything
+// from 7 to 30 days, so the earliest a secret scheduled for deletion can be gone is its
+// DeletedDate plus this minimum (Listing.EarliestPurge): a reader told that date never waits past
+// the purge to restore it.
+const minRecoveryWindowDays = 7
 
 // unfilled reports whether a Secrets Manager secret with tags and versions is Listing.Unfilled:
 // it carries the CreateLabel tag and holds no version at all.
@@ -268,12 +316,15 @@ func (a Store) Read(ctx context.Context, source string) (string, error) {
 	var notFound *types.ResourceNotFoundException
 	var deleting *types.InvalidRequestException
 	if errors.As(err, &notFound) || errors.As(err, &deleting) {
-		return "", secretstore.ErrNotFound
+		return "", a.missing(err)
 	}
 	if err != nil {
-		return "", fmt.Errorf("secrets manager %s: %w", source, err)
+		return "", a.failed("secrets manager "+source, err)
 	}
 	if out.SecretString == nil || *out.SecretString == "" {
+		if a.ClientErrors {
+			return "", secretstore.NotText("its value is not a non-empty string")
+		}
 		return "", fmt.Errorf("secrets manager %s: %w", source, secretstore.ErrValueNotText)
 	}
 	return *out.SecretString, nil

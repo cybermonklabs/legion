@@ -53,9 +53,10 @@ type Opened struct {
 	Close       func() error
 }
 
-// Backend is a store's entry in the registry (secretstore/backends): what cipherd knows of a store
-// beyond its Store. No code of cipherd's outside the store's own package and the registry names a
-// store; each reads it through this.
+// Backend is a store's entry in the registry (secretstore/backends): what cipherd and the
+// agent-secrets CLI know of a store beyond its Store. No package outside the store's own, the
+// registry and the test-support packages names a store (TestEachStoreStaysInItsPackage); each
+// reads it through this.
 type Backend interface {
 	// Name is the store's BROKER_SECRETS_STORE value and the store field of GET /v1/settings.
 	Name() string
@@ -63,6 +64,11 @@ type Backend interface {
 	// build tag that leaves it out (cipher_no_<id>), and the subtest name of every test that runs
 	// on each store.
 	ID() string
+	// ServiceSDKs are the import path prefixes of the store's service SDK. No package of the
+	// module but the store's own, the registry and the test-support packages imports them outside
+	// its tests (TestEachStoreStaysInItsPackage), so a build that leaves the store out links none
+	// of them (TestABuildWithoutAStoreLinksNoneOfItsSDK).
+	ServiceSDKs() []string
 	// Development is true for a store that serves tests and local runs alone, with which cipherd
 	// accepts its development-only settings.
 	Development() bool
@@ -80,4 +86,18 @@ type Backend interface {
 	ParseConfig(prefix string, getenv func(string) string) (Config, error)
 	// OpenStore opens the store cfg, a Config this Backend parsed, describes.
 	OpenStore(ctx context.Context, cfg Config) (Opened, error)
+
+	// Kind is the store's kind as the agent-secrets CLI's lines name it ("AWS Secrets Manager").
+	Kind() string
+	// Place is where the broker's settings s put the agent secrets, as a line names it after
+	// Kind ("account <id> in <region>"), "" where they name nowhere.
+	Place(s Settings) string
+	// OpenWriter checks s, then signs in as the CLI's caller and opens the store's writer.
+	OpenWriter(ctx context.Context, s Settings, opts WriterOptions) (Writer, error)
+	// HelpRows are this store's rows of the CLI's environment table, laid out as they print
+	// (two spaces, the name padded to column 29, wrapped lines indented to it), each line ending
+	// in \n; "" for none.
+	HelpRows() string
+	// ProfileHint is this store's clause of the CLI's --profile refusal; false for none.
+	ProfileHint() (ProfileHint, bool)
 }

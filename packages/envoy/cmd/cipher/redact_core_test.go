@@ -69,7 +69,7 @@ func TestMachineLoginPrintsTheApproveURLOnlyAsRedactPrintsIt(t *testing.T) {
 // prints the approve URL: a page that carries a user and a password, or a token in its query, is
 // not printed. Control: a plain https page still prints whole.
 func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:72).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:73).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	password := "hunter2pw-" + "verifypage-" + "6d1e"
 	withUser := (&url.URL{Scheme: "https", User: url.UserPassword("tokuser5b8c", password), Host: "dispatch.example", Path: "/credentials/machine"}).String()
@@ -95,7 +95,7 @@ func TestMachineLoginPrintsTheBrokersPageOnlyAsRedactPrintsIt(t *testing.T) {
 // help still says AGENT_SECRETS_KEY_DIR is --out's default, and still prints the default of
 // --pod-token-file, which is this program's own constant.
 func TestEnrollHelpPrintsNoKeyDirectory(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:99).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at redact_core_test.go:100).
 	const secret = "hunter2pw-keydir-6e2f18"
 	t.Setenv("AGENT_SECRETS_KEY_DIR", filepath.Join(t.TempDir(), secret))
 	for _, row := range []struct {

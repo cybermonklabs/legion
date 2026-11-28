@@ -721,7 +721,7 @@ func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
 // that calls it is one internal/testtmp's placement check refuses, since that is how a test
 // comes to place a directory wherever it runs.
 func TestTheSharedTemporaryRootNamesThisUser(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:611).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:730).
 	joined := func(environ []string) string {
 		base, elements := airlockRootParts(environ)
 		return filepath.Join(base, elements[0], elements[1])
@@ -810,7 +810,7 @@ func TestPrepareAirlockRefusesARootThatIsASymbolicLink(t *testing.T) {
 // A parent another user owns is the same hole and cannot be made here, since this test runs as
 // one unprivileged user; the mode is the shape of it this pod can stand up.
 func TestPrepareAirlockRefusesAParentOthersCanWriteIn(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:710).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at airlock_test.go:829).
 	for _, row := range []struct {
 		name   string
 		shared bool

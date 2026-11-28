@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // racingTagWrites is a awstest.Local whose first tag write lets another writer's write (race) land
@@ -59,7 +60,7 @@ func loginWithOwnersLeft(name string) map[string]string {
 // found, and the command that sets the secret right, and it writes nothing, so the other
 // writer's retag stands rather than being taken back.
 func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	t.Run("aws", func(t *testing.T) {
 		secret := awstest.TypeSecret("APP_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
 		secret.Tags = loginWithOwnersLeft("APP_KEY")
@@ -73,7 +74,7 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 				t.Errorf("the other writer's retag: %v", err)
 			}
 		}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
 		for _, said := range []string{
 			"another write changed the secret after this retag read it",
@@ -102,32 +103,32 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 		}
 	})
 	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
 		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
 		id := testGCPPrefix + "app-key"
-		fake.secrets[id] = &fakeSecret{
-			secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
-			versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-			payloads:    [][]byte{[]byte(policytest.TypeValue(policy.TypeGoogleLogin))},
-			etagCounter: 1,
+		fake.Secrets[id] = &gcptest.FakeSecret{
+			Secret:      &secretmanagerpb.Secret{Name: id, Annotations: loginWithOwnersLeft("APP_KEY"), Etag: "1"},
+			Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+			Payloads:    [][]byte{[]byte(policytest.TypeValue(policy.TypeGoogleLogin))},
+			EtagCounter: 1,
 		}
-		fake.race = func(entry *fakeSecret) {
-			annotations := maps.Clone(entry.secret.Annotations)
+		fake.Race = func(entry *gcptest.FakeSecret) {
+			annotations := maps.Clone(entry.Secret.Annotations)
 			annotations[policy.TagType] = policy.TypeGitHubApp
-			entry.secret.Annotations = annotations
-			entry.etagCounter++
-			entry.secret.Etag = "2"
+			entry.Secret.Annotations = annotations
+			entry.EtagCounter++
+			entry.Secret.Etag = "2"
 		}
 		_, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "none")
 		if code != 1 || !strings.Contains(stderr, "another write changed the secret after this retag read it") {
 			t.Fatalf("racing retag: exit %d stderr %q; want 1 naming the change", code, stderr)
 		}
-		fake.mu.Lock()
-		annotations, gets := fake.secrets[id].secret.GetAnnotations(), fake.gets
-		fake.mu.Unlock()
+		fake.Mu.Lock()
+		annotations, gets := fake.Secrets[id].Secret.GetAnnotations(), fake.Gets
+		fake.Mu.Unlock()
 		if annotations[policy.TagType] != policy.TypeGitHubApp || annotations[policy.TagGitHubOwners] != "ada" {
 			t.Fatalf("annotations after the race = %v; want the other writer's github-app with its owners", annotations)
 		}
@@ -152,7 +153,7 @@ func TestAConcurrentRetagIsReportedAndOverwritesNothing(t *testing.T) {
 // has to be run again or something else wrote the secret. A secret the broker serves with no
 // type at all is named "a stored secret" (typeName), the words the refusal uses for it.
 func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
 	for _, row := range []struct {
 		name, served string
 		args         []string
@@ -168,26 +169,28 @@ func TestARetagExitsOneWhileTheBrokerServesTheOldType(t *testing.T) {
 		{"removal read", "", []string{"--type", "none"}, 0, ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			local := awstest.NewLocal(awstest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin)))
-			if row.args[1] == "none" {
-				local = awstest.NewLocal(awstest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin)))
-			}
-			startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
-			useAWS(t, local, testAccount, adaSignIn)
-			stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
-			if code != row.code {
-				t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
-			}
-			stale := strings.Contains(stderr, "it still sees the old tags") && strings.Contains(stderr, "Run this retag again") && strings.Contains(stderr, "store no value in LOGIN_KEY")
-			if stale != (row.code == 1) {
-				t.Fatalf("stderr %q; want the stale-tags message exactly when the type is stale", stderr)
-			}
-			if row.refusal != "" && !strings.Contains(stderr, row.refusal) {
-				t.Fatalf("stderr %q does not say %q: the refusal has to name the type the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
-			}
-			if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+row.served+")")) {
-				t.Fatalf("stdout %q does not name the served type and the store it is in", stdout)
-			}
+			onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+				held := policytest.Secret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleLogin))
+				if row.args[1] == "none" {
+					held = policytest.TypeSecret("LOGIN_KEY", "ada@example.com", policy.TierAgent, policy.TypeGoogleLogin, policytest.TypeValue(policy.TypeGoogleLogin))
+				}
+				putSecret(t, store, held)
+				broker.answerAs(func(name string) Reread { return Reread{Name: name, Served: true, Type: row.served} })
+				stdout, stderr, code := runSecret(append([]string{"retag", "LOGIN_KEY"}, row.args...)...)
+				if code != row.code {
+					t.Fatalf("retag %v with the broker serving type %q: exit %d, stdout %q, stderr %q; want %d", row.args, row.served, code, stdout, stderr, row.code)
+				}
+				stale := strings.Contains(stderr, "it still sees the old tags") && strings.Contains(stderr, "Run this retag again") && strings.Contains(stderr, "store no value in LOGIN_KEY")
+				if stale != (row.code == 1) {
+					t.Fatalf("stderr %q; want the stale-tags message exactly when the type is stale", stderr)
+				}
+				if row.refusal != "" && !strings.Contains(stderr, row.refusal) {
+					t.Fatalf("stderr %q does not say %q: the refusal has to name the type the broker serves, which is what tells an operator whether to run the retag again", stderr, row.refusal)
+				}
+				if row.served != "" && (!strings.Contains(stdout, "broker: serving LOGIN_KEY from ") || !strings.Contains(stdout, "(type "+row.served+")")) {
+					t.Fatalf("stdout %q does not name the served type and the store it is in", stdout)
+				}
+			})
 		})
 	}
 }

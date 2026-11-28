@@ -1,9 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/printer"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -157,7 +161,74 @@ func checkExitCodes(root string, codes []docConst) error {
 			return true
 		})
 	}
+	storeExits, err := storeExitCalls(root)
+	if err != nil {
+		return err
+	}
+	problems = append(problems, storeExits...)
 	return refusedAt(problems)
+}
+
+// storeExitCalls is each call of os.Exit in a non-test file of a package under storesDir, said as
+// a problem: a store's code runs inside agent-secrets and cipherd alike, so an exit code it chose
+// would be one neither binary documents.
+func storeExitCalls(root string) ([]string, error) {
+	var problems []string
+	err := filepath.WalkDir(filepath.Join(root, storesDir), func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) && path == filepath.Join(root, storesDir) {
+				return fs.SkipDir
+			}
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if d.Name() == "testdata" {
+			return fs.SkipDir
+		}
+		if !hasGoSource(path) {
+			return nil
+		}
+		rel, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		src, err := parseDir(root, rel)
+		if err != nil {
+			return err
+		}
+		for _, f := range src.files {
+			ast.Inspect(f, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if !ok {
+					return true
+				}
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "Exit" {
+					if pkg, ok := sel.X.(*ast.Ident); ok && pkg.Name == "os" {
+						problems = append(problems, fmt.Sprintf("%s: os.Exit in a store package, whose code runs in agent-secrets and cipherd alike; answer an error, which the binary's own code turns into a documented exit code", src.at(call)))
+					}
+				}
+				return true
+			})
+		}
+		return nil
+	})
+	return problems, err
+}
+
+// hasGoSource reports whether dir holds a Go file that is not a test's.
+func hasGoSource(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if name := e.Name(); !e.IsDir() && strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+			return true
+		}
+	}
+	return false
 }
 
 // secretFormExitCalls follows the CLI's secret-form table rather than accepting

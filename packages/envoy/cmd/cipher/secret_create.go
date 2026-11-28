@@ -2,9 +2,9 @@
 //
 // The stretch of `secret create` between the store making a secret and that secret holding its
 // value, or being gone. On GCP the secret is made, empty, before its value is read
-// (newSecret.begin), and from then until store succeeds or discard has run, neither a failure
+// (secretstore.Create's Begin), and from then until Store succeeds or Discard has run, neither a failure
 // nor a signal may leave the empty secret behind, and nothing may delete a secret that may hold
-// the value. Each store call of the stretch has a deadline (storeCallDeadline), and a second
+// the value. Each store call of the stretch has a deadline (secretstore.CallDeadline), and a second
 // signal ends the form at once rather than waiting on the call the first one's cleanup waits on.
 package main
 
@@ -15,10 +15,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // promptBusy is held by the value prompt for as long as it reads (readHiddenAtTerminal locks it
@@ -30,30 +31,6 @@ var promptBusy sync.Mutex
 // createSignals are the signals that end a form while it holds a secret it has not seen through:
 // a hang-up, an interrupt, a quit and a termination.
 var createSignals = []os.Signal{syscall.SIGHUP, syscall.SIGINT, syscall.SIGQUIT, syscall.SIGTERM}
-
-// storeCallDeadline bounds each store call `secret create` makes from CreateSecret until the value
-// is stored or the discard is done, so that a call the store never answers holds neither the form
-// nor a signal waiting on it (pendingCreate) for longer. It is 60 s, Secret Manager's Go client's
-// own default on each of those calls (CreateSecret, AddSecretVersion, ListSecretVersions and
-// DeleteSecret: defaultCallOptions in cloud.google.com/go/secretmanager/apiv1), which that client
-// applies only to a call whose context carries no deadline of its own. The AWS SDK puts none on a
-// call - its defaults bound the dial, at 30 s, and the TLS handshake, at 10 s, not the wait for an
-// answer - so AWS's one CreateSecret takes the same 60 s. Tests shorten it.
-var storeCallDeadline = 60 * time.Second
-
-// withStoreDeadline is ctx bounded by storeCallDeadline, for one store call.
-func withStoreDeadline(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctx, storeCallDeadline)
-}
-
-// storeCallDeadlineText is storeCallDeadline as a line says it: whole seconds as such ("60s"),
-// any other length as Go writes it.
-func storeCallDeadlineText() string {
-	if storeCallDeadline >= time.Second && storeCallDeadline%time.Second == 0 {
-		return strconv.FormatInt(int64(storeCallDeadline/time.Second), 10) + "s"
-	}
-	return storeCallDeadline.String()
-}
 
 // onSecondSignal, while set, says what a second signal ends the form on (endAtOnce): the state the
 // store may be left in and the command that clears it. Create sets it beside onSignalDeath
@@ -147,12 +124,12 @@ func endAtOnce(sig os.Signal) {
 	exitBySignal(sig)
 }
 
-// exitBySignal ends the process by sig: it first kills each gcloud runGcloud is running, with its
-// group (killRunningGcloud), since gcloud, in a group of its own, does not get sig; then, back at
-// sig's default action, the platform raises it where it can (raiseSignal), and the exit status a
-// shell gives for sig is the fallback.
+// exitBySignal ends the process by sig: it first kills each child runChild is running, with its
+// group (killRunningChildren), since a child, in a group of its own, does not get sig; then, back
+// at sig's default action, the platform raises it where it can (raiseSignal), and the exit status
+// a shell gives for sig is the fallback.
 func exitBySignal(sig os.Signal) {
-	killRunningGcloud()
+	killRunningChildren()
 	signal.Reset(sig)
 	if raiseSignal(sig) {
 		time.Sleep(time.Second)
@@ -189,31 +166,6 @@ func signalNoun(sig os.Signal) string {
 	return sig.String()
 }
 
-// discardOutcome is what a failed newSecret.begin or a newSecret.discard left in the store. A
-// discard answers an error exactly when its outcome is one of the kept ones, the error naming what
-// stays and the command that clears or checks it; begin's own failure is an error whatever its
-// outcome. pendingCreate.rereadOutcome reads it to decide whether the broker rereads the name.
-type discardOutcome int
-
-const (
-	// madeNothing: nothing was made, so there was nothing to remove (AWS, or a create the store
-	// refused before acting).
-	madeNothing discardOutcome = iota
-	// deletedEmpty: the empty secret this create made is deleted, or was already gone.
-	deletedEmpty
-	// keptEmpty: the store refused the delete; this create's empty secret stays.
-	keptEmpty
-	// keptMayHoldValue: the secret holds a version, whether this create or another writer added
-	// it, or this create's add may still land, so it stays.
-	keptMayHoldValue
-	// keptOthers: the name is held by a secret this create did not make, or one that changed before
-	// the delete, so it is left as it is.
-	keptOthers
-	// keptUnknown: what the name holds could not be read, or the secret's versions could not be
-	// listed, so it stays.
-	keptUnknown
-)
-
 // pendingCreate owns a create from before its first store call until its value is stored or its
 // discard has run (runCreate holds that order). mu is held across begin, store and discard, so a
 // signal waits for the call in flight before cleaning up. The backend settles a failed begin
@@ -227,7 +179,7 @@ type pendingCreate struct {
 	secretType     string // the type tag the create writes, "" for none, which its reread is held to (rereadValue)
 	owner, tier    string // the owner and tier tags the created line names
 	stdout, stderr io.Writer
-	created        newSecret
+	created        secretstore.Create
 
 	mu        sync.Mutex
 	begun     bool
@@ -259,7 +211,7 @@ func runCreate(p *pendingCreate, readValue func(deadline time.Time) (string, err
 		return secretFailIn(p.stderr, p.form, p.s, err)
 	}
 	var deadline time.Time
-	if p.created.madeBeforeValue() {
+	if p.created.MadeBeforeValue() {
 		deadline = asked.Add(valueReadWindow)
 	}
 	value, err := readValue(deadline)
@@ -306,7 +258,7 @@ func (p *pendingCreate) begin() error {
 		return fmt.Errorf("the create of %s was interrupted before it began", p.name)
 	}
 	p.begun = true
-	outcome, err := p.created.begin(p.s.ctx)
+	outcome, err := p.created.Begin(p.s.ctx)
 	if err != nil {
 		p.discarded, p.failure = true, err
 		p.rereadOutcome(outcome)
@@ -323,7 +275,7 @@ func (p *pendingCreate) store(value string) error {
 	if p.discarded {
 		return fmt.Errorf("the secret %s was discarded before its value was stored", p.name)
 	}
-	err := p.created.store(p.s.ctx, value)
+	err := p.created.Store(p.s.ctx, value)
 	p.stored, p.failure = err == nil, err
 	return err
 }
@@ -354,21 +306,21 @@ func (p *pendingCreate) abandonLocked(err error) error {
 		return err
 	}
 	p.discarded = true
-	outcome, left := p.created.discard(p.s.ctx)
+	outcome, left := p.created.Discard(p.s.ctx)
 	p.rereadOutcome(outcome)
 	switch {
 	case left != nil && err != nil:
 		p.failure = fmt.Errorf("%v; %v", p.s.refusedAs(err), p.s.refusedAs(left))
 	case left != nil:
 		p.failure = left
-	case outcome == deletedEmpty && err != nil:
-		stated := fmt.Errorf("%v; %s", p.s.refusedAs(err), p.created.unsettled())
+	case outcome == secretstore.DeletedEmpty && err != nil:
+		stated := fmt.Errorf("%v; %s", p.s.refusedAs(err), p.created.Unsettled())
 		if errors.As(err, new(usageErr)) {
 			stated = usageErr{stated}
 		}
 		p.failure = stated
-	case outcome == deletedEmpty:
-		p.failure = errors.New(p.created.unsettled())
+	case outcome == secretstore.DeletedEmpty:
+		p.failure = errors.New(p.created.Unsettled())
 	default:
 		p.failure = err
 	}
@@ -400,18 +352,18 @@ func (p *pendingCreate) interrupted() {
 
 // endingAtOnce is onSecondSignal while p is pending: it says what the store may be left holding,
 // should the form end now without waiting on the store call in flight, and the command that clears
-// it (newSecret.unsettled). It takes no lock, since the first signal's cleanup may hold mu across
+// it (secretstore.Create.Unsettled). It takes no lock, since the first signal's cleanup may hold mu across
 // that very call.
 func (p *pendingCreate) endingAtOnce(sig os.Signal) {
-	fmt.Fprintf(p.stderr, "agent-secrets %s: a second signal (%s) ends the create before the first one's cleanup is done: %s\n", p.form, signalNoun(sig), p.created.unsettled())
+	fmt.Fprintf(p.stderr, "agent-secrets %s: a second signal (%s) ends the create before the first one's cleanup is done: %s\n", p.form, signalNoun(sig), p.created.Unsettled())
 }
 
 // rereadOutcome updates the broker after either recovery from begin or the later discard.
-func (p *pendingCreate) rereadOutcome(outcome discardOutcome) {
+func (p *pendingCreate) rereadOutcome(outcome secretstore.DiscardOutcome) {
 	switch outcome {
-	case deletedEmpty:
+	case secretstore.DeletedEmpty:
 		_, _, _ = p.s.askReread(context.WithoutCancel(p.s.ctx), p.name)
-	case keptMayHoldValue:
+	case secretstore.KeptMayHoldValue:
 		rereadAfter(p.s, p.stdout, p.stderr, p.form, p.name, true, nil)
 	}
 }

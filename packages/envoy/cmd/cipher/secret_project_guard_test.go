@@ -27,7 +27,7 @@ func guarded(list string) string {
 // without the guard: a google-service-account secret at agent tier names its one owner, and the
 // guard, which has no @, would otherwise read as a service listed below human tier.
 func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		for _, c := range []struct {
 			name  string
@@ -42,7 +42,7 @@ func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
 			{"PLAIN_LISTED", []string{"--tier", "human", "--requesters", "ada@example.com"}, "v", "ada@example.com"},
 		} {
 			useStdin(t, c.value)
-			args := append([]string{"create", c.name, "--owner", "me"}, c.args...)
+			args := append([]string{"create", c.name, "--owner", "ada@example.com"}, c.args...)
 			if _, stderr, code := runSecret(args...); code != 0 {
 				t.Fatalf("%v: exit %d, stderr %q", args, code, stderr)
 			}
@@ -51,7 +51,7 @@ func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
 			}
 		}
 		useStdin(t, "v")
-		if _, stderr, code := runSecret("create", "PLAIN_KEY", "--owner", "me", "--tier", "agent"); code != 0 {
+		if _, stderr, code := runSecret("create", "PLAIN_KEY", "--owner", "ada@example.com", "--tier", "agent"); code != 0 {
 			t.Fatalf("create with no project tag: exit %d, stderr %q", code, stderr)
 		}
 		if tags := store.tags(t, "PLAIN_KEY"); len(tags) != 2 {
@@ -67,7 +67,7 @@ func TestCreateWritesTheRollbackGuardBesideAProjectTag(t *testing.T) {
 // and keeps the guard, so the tag is written as the guard alone; beside another removal it is
 // refused before any write, since the guard's write is no removal and the two would be two calls.
 func TestRetagKeepsTheRollbackGuardWhileAProjectTagRemains(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "API_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagRequesters: "ada@example.com", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}, "v1")
 		step := func(want string, args ...string) {
@@ -109,7 +109,7 @@ func TestRetagKeepsTheRollbackGuardWhileAProjectTagRemains(t *testing.T) {
 // two writes, the removal and then the list's rewrite, in that order, so a failed second write
 // leaves the guard on a secret with no project tag, which no broker serves any differently.
 func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "LISTED_KEY", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierHuman, policy.TagProject: "PRIV", policy.TagRequesters: guarded("ada@example.com")}, "v1")
 		stdout, stderr, code := runSecret("retag", "LISTED_KEY", "--project", "none")
@@ -128,7 +128,7 @@ func TestRetagTakesTheGuardOutOfAListWithTheLastProjectTag(t *testing.T) {
 		local := awstest.NewLocal(listed)
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--project", "none"); code != 0 {
 			t.Fatalf("retag --project none: exit %d, stderr %q", code, stderr)
 		}
@@ -163,65 +163,66 @@ func TestTheGuardIsNoRequesterACommandCanName(t *testing.T) {
 // and field of its own, so a census of the store finds every secret carrying a project tag
 // without it.
 func TestShowPrintsRequestersWithoutTheGuard(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	guardedKey := awstest.Secret("GUARDED_KEY", "ada@example.com", policy.TierHuman, "v1")
-	guardedKey.Tags[policy.TagProject] = "PRIV"
-	guardedKey.Tags[policy.TagRequesters] = guarded("ada@example.com")
-	bare := awstest.Secret("BARE_KEY", "ada@example.com", policy.TierAgent, "v1")
-	bare.Tags[policy.TagProject] = "PRIV"
-	local := awstest.NewLocal(guardedKey, bare)
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	for _, c := range []struct {
-		name, requesters, line string
-		guard                  bool
-	}{
-		{"GUARDED_KEY", "ada@example.com", "yes", true},
-		{"BARE_KEY", "-", "-", false},
-	} {
-		stdout, stderr, code := runSecret("show", c.name)
-		if code != 0 {
-			t.Fatalf("show %s: exit %d, stderr %q", c.name, code, stderr)
-		}
-		for _, want := range []string{"\nrequesters: " + c.requesters + "\n", "\nrollback_guard: " + c.line + "\n"} {
-			if !strings.Contains(stdout, want) {
-				t.Errorf("show %s stdout %q must contain %q", c.name, stdout, want)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		guardedTags := ownerTier("ada@example.com", policy.TierHuman)
+		guardedTags[policy.TagProject] = "PRIV"
+		guardedTags[policy.TagRequesters] = guarded("ada@example.com")
+		store.put(t, "GUARDED_KEY", guardedTags, "v1")
+		bareTags := ownerTier("ada@example.com", policy.TierAgent)
+		bareTags[policy.TagProject] = "PRIV"
+		store.put(t, "BARE_KEY", bareTags, "v1")
+		for _, c := range []struct {
+			name, requesters, line string
+			guard                  bool
+		}{
+			{"GUARDED_KEY", "ada@example.com", "yes", true},
+			{"BARE_KEY", "-", "-", false},
+		} {
+			stdout, stderr, code := runSecret("show", c.name)
+			if code != 0 {
+				t.Fatalf("show %s: exit %d, stderr %q", c.name, code, stderr)
+			}
+			for _, want := range []string{"\nrequesters: " + c.requesters + "\n", "\nrollback_guard: " + c.line + "\n"} {
+				if !strings.Contains(stdout, want) {
+					t.Errorf("show %s stdout %q must contain %q", c.name, stdout, want)
+				}
+			}
+			jsonOut, stderr, code := runSecret("show", c.name, "--json")
+			if code != 0 {
+				t.Fatalf("show %s --json: exit %d, stderr %q", c.name, code, stderr)
+			}
+			var view struct {
+				Requesters    string `json:"requesters"`
+				RollbackGuard *bool  `json:"rollback_guard"`
+			}
+			if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
+				t.Fatalf("show %s --json: %v: %s", c.name, err, jsonOut)
+			}
+			if want := strings.TrimPrefix(c.requesters, "-"); view.Requesters != want || view.RollbackGuard == nil || *view.RollbackGuard != c.guard {
+				t.Errorf("show %s --json = %s; want requesters %q and rollback_guard %v", c.name, jsonOut, want, c.guard)
 			}
 		}
-		jsonOut, stderr, code := runSecret("show", c.name, "--json")
+		stdout, stderr, code := runSecret("list", "--json")
 		if code != 0 {
-			t.Fatalf("show %s --json: exit %d, stderr %q", c.name, code, stderr)
+			t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
 		}
-		var view struct {
-			Requesters    string `json:"requesters"`
-			RollbackGuard *bool  `json:"rollback_guard"`
+		var views []struct {
+			Name          string  `json:"name"`
+			Project       *string `json:"project"`
+			RollbackGuard bool    `json:"rollback_guard"`
 		}
-		if err := json.Unmarshal([]byte(jsonOut), &view); err != nil {
-			t.Fatalf("show %s --json: %v: %s", c.name, err, jsonOut)
+		if err := json.Unmarshal([]byte(stdout), &views); err != nil {
+			t.Fatalf("list --json: %v: %s", err, stdout)
 		}
-		if want := strings.TrimPrefix(c.requesters, "-"); view.Requesters != want || view.RollbackGuard == nil || *view.RollbackGuard != c.guard {
-			t.Errorf("show %s --json = %s; want requesters %q and rollback_guard %v", c.name, jsonOut, want, c.guard)
+		unguarded := 0
+		for _, v := range views {
+			if v.Project != nil && !v.RollbackGuard {
+				unguarded++
+			}
 		}
-	}
-	stdout, stderr, code := runSecret("list", "--json")
-	if code != 0 {
-		t.Fatalf("list --json: exit %d, stderr %q", code, stderr)
-	}
-	var views []struct {
-		Name          string  `json:"name"`
-		Project       *string `json:"project"`
-		RollbackGuard bool    `json:"rollback_guard"`
-	}
-	if err := json.Unmarshal([]byte(stdout), &views); err != nil {
-		t.Fatalf("list --json: %v: %s", err, stdout)
-	}
-	unguarded := 0
-	for _, v := range views {
-		if v.Project != nil && !v.RollbackGuard {
-			unguarded++
+		if len(views) != 2 || unguarded != 1 {
+			t.Fatalf("list --json = %s; want two rows and one project secret without the guard", stdout)
 		}
-	}
-	if len(views) != 2 || unguarded != 1 {
-		t.Fatalf("list --json = %s; want two rows and one project secret without the guard", stdout)
-	}
+	})
 }

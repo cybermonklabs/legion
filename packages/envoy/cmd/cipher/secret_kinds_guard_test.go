@@ -132,7 +132,7 @@ func TestCreateWritesTheKindsGuardBesideAProxyTag(t *testing.T) {
 			{"PLAIN_LISTED", []string{"--tier", "human", "--requesters", "ada@example.com"}, "v", "ada@example.com"},
 		} {
 			useStdin(t, c.value)
-			args := append([]string{"create", c.name, "--owner", "me"}, c.args...)
+			args := append([]string{"create", c.name, "--owner", "ada@example.com"}, c.args...)
 			if _, stderr, code := runSecret(args...); code != 0 {
 				t.Fatalf("%v: exit %d, stderr %q", args, code, stderr)
 			}
@@ -210,7 +210,7 @@ func TestRetagTakesTheKindsGuardOutOfAListWithTheLastProxyTag(t *testing.T) {
 		local := awstest.NewLocal(listed)
 		startSecretBroker(t, servedBy(local))
 		writes := &countingTagWrites{Local: local}
-		useAWS(t, writes, testAccount, adaSignIn)
+		awstest.Use(t, writes, testAccount, adaSignIn)
 		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--proxy", "none"); code != 0 {
 			t.Fatalf("retag --proxy none: exit %d, stderr %q", code, stderr)
 		}
@@ -290,7 +290,7 @@ func TestShowPrintsTheKindsGuardApart(t *testing.T) {
 	bare.Tags[policy.TagProxy] = "github"
 	local := awstest.NewLocal(both, proxied, bare)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	for _, c := range []struct {
 		name, requesters, project, kinds string
 		projectGuard, kindsGuard         bool

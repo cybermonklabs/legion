@@ -618,9 +618,11 @@ a hub that never drops the killed broker's connection fails line 6.
 
 ## backend-count.sh
 
-Counts, for each test it names, the runs that passed on each store backend: the test's
-own `aws` and `gcp` subtests (`onEachStore`, `cmd/cipher/secret_kind_test.go`),
-so a store or use change cannot pass on one backend alone.
+Counts, for each test it names, the runs that passed on each store the registry holds: the
+test's own subtest of each store (`onEachStore`, `cmd/cipher/secret_kind_test.go`), so a store or
+use change cannot pass on one store alone. The stores are the base names of the registry's files,
+`internal/cipher/secretstore/backends/*.go` other than `backends.go` and the tests; a registry
+with none prints `UNKNOWN: no registry file` and exits 1.
 
 ```bash
 packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
@@ -628,13 +630,16 @@ packages/envoy/scripts/backend-count.sh PACKAGE... -- TEST...
 
 It runs only the named tests in only the named packages, `go test -json -count=1 -timeout 5m
 -run '^(TEST|…)$' PACKAGE...`, each package a `./` path under `packages/envoy`, and prints
-`TEST aws=N gcp=M` for each, then `go_test_exit=E`. It exits 1 when no package or no test is
-named, when a package is not a `./` path, when a name is not a Go test name, when a named test
-has no passing run on either backend (a test in none of the named packages included), or when go
-test failed. It counts only the tests it names, so the `aws` and `gcp` subtests of other tests
-cannot stand in for a new test's.
+`TEST aws=N gcp=M memory=K` for each, then `go_test_exit=E`. It exits 1 when no package or no
+test is named, when a package is not a `./` path, when a name is not a Go test name, when a named
+test has no passing run on some store (a test in none of the named packages included), or when go
+test failed. It counts only the tests it names, so another test's store subtests cannot stand in
+for a new test's.
 `GO_TEST_SKIP` is go test's `-skip` pattern: the negative control
-`GO_TEST_SKIP='^(TestA|TestB)$/^aws$'` makes both lines read `aws=0` and the run exit 1.
+`GO_TEST_SKIP='^(TestA|TestB)$/^memory$'` makes both lines read `memory=0` and the run exit 1.
+`backend-count.test.sh` holds it to that behind a stub `go` on `PATH`, which `envoy-go-checks`
+runs as "Count test for backend-count.sh": a named test with no memory pass fails naming memory,
+and a registry directory with no store file (`BACKEND_COUNT_REGISTRY`) is `UNKNOWN`.
 `GO_TEST_TIMEOUT` replaces the 5-minute `-timeout`, which `ci.yaml`'s `envoy-go` job counts
 in its time budget; the job runs it as "Count the store-form rows on each backend", over
 `./cmd/cipher/` and `./internal/cipher/api/`, as those tests' one run: the job's unit
@@ -810,25 +815,64 @@ BROKER_GCP_LIVE_PROJECT=<project number> BROKER_GCP_LIVE_KMS_KEY=<key name> \
 
 The store is named by its registry id. Today the one store with live tests is `gcp`
 (`go test -tags gcplive -run Live ./internal/cipher/secretstore/gcp/`), whose
-`TestGCPLiveRunsTheStoreContract` makes each contract case's fixtures under a random
-`broker-live-<hex>-` prefix of that project and deletes them when the case ends.
+`TestGCPLiveRunsTheStoreContract` and `TestGCPLiveRunsTheWriterContract` make each contract
+case's secrets under a random `broker-live-<hex>-` prefix of that project and delete them when
+the case ends. The writer contract signs in from the environment, as `agent-secrets` does, and
+arms its lost answers and refusals between the writer and the wire.
 
 It prints `passed=N skipped=M failed=K`, each skipped or failed test's name, how many cases
-of the store's live contract passed, and where the event stream is kept
+of each of the store's two live contracts passed, and where the event stream is kept
 (`STORE_LIVE_CHECK_EVENTS`, else a file of its own). It exits 0 only when N is above zero, M
-and K are both zero, and the live contract itself (`TestGCPLiveRunsTheStoreContract` for
-`gcp`) passed with its store's level and at least one case, so a run of some other live test
-alone, the contract renamed or deleted, is no pass. A skip counts as a failure because a
+and K are both zero, and each live contract (`TestGCPLiveRunsTheStoreContract` and
+`TestGCPLiveRunsTheWriterContract` for `gcp`) passed with its store's level and at least one
+case, so a run of some other live test alone, or of one contract alone, a contract renamed or
+deleted, is no pass. A skip counts as a failure because a
 live test skips when its variables are unset, which is the shape a live run fails in: the
 tests pass, nothing ran, and the run looks green. A run that wrote no event at all prints
 `UNKNOWN: go test wrote no events` and exits 1, so an empty set is never read as a pass, and
 a run whose store variables are unset is refused by name before go test runs.
 `store-live-check.test.sh` holds it to its rows behind a stub `go` on `PATH`, which
 `envoy-go-checks` runs as "Isolation test for store-live-check.sh": a run whose tests all
-passed, with its cases counted and its events kept, also with no events path set; one of
-another live test alone; one of the contract with no case; one with a skip; one with a failed
-case; one that wrote no event; one with the store's variables unset; one naming no store;
-and one naming a store with no live tests.
+passed, with each contract's cases counted and its events kept, also with no events path set;
+one of another live test alone; one of the read contract alone; one of the contract with no
+case; one with a skip; one with a failed case; one that wrote no event; one with the store's
+variables unset; one naming no store; and one naming a store with no live tests.
+
+## store-forms-check.sh
+
+Runs every secret form of `agent-secrets` against a running broker on one store, the surface
+check of the CLI and the broker reading the same store:
+
+```bash
+packages/envoy/scripts/store-forms-check.sh --store memory
+DEV_BROKER_GCP_PREFIX=projects/<number>/secrets/<id prefix> DEV_BROKER_GCP_KMS_KEY_NAME=<key name> \
+  packages/envoy/scripts/store-forms-check.sh --store gcp
+```
+
+It starts `dev-broker.sh` in that store's mode, takes its banner's exports, enrolls a pod session
+under the stack's registrar (`dev-airlock-stands enroll-pod`, as the banner's own example does)
+whose key directory `AGENT_SECRETS_KEY_DIR` names, and with the `agent-secrets` the stack built
+runs, on a fresh name `STORE_CHECK_<hex>`: `secret create` (the value piped in), `show`, `list
+--json`, `set`, `retag --tier human`, `delete` and `restore`. Each write's reread is signed with
+that session, so the broker answers it with what it now serves, and a write's row needs that
+answer: `broker: serving ...` after create, set, retag and restore, `broker: ... is deleted in
+...` after delete. A reread the broker only accepted (HTTP 202, `broker: rereading ...`), its
+answer to an unsigned call, fails the row. The row also reads the write's effect back: `secret
+show --json` shows the tier retag set, the deletion delete scheduled and restore cleared (a
+restore only after a deletion is read), and the store itself, read without the CLI (the memory
+secrets file, or Secret Manager through `gcloud`), holds the value create and set wrote. `show`
+and `list --json` must name the secret. It prints `PASS <row>` (a write's with what it observed)
+or `FAIL <row>: <why>` per form and `store-forms-check: <n> rows ran, <m> passed`, and exits 0
+only when all seven passed; a stack that printed no banner, or that the session could not be
+enrolled in, runs no row and exits 1. `--control vanished` removes the secret behind the CLI's
+back after `create` (memory: from the file the broker follows; gcp: `gcloud secrets delete`), and
+the run must then fail on `show`. The GCP run leaves its secret deleted in Secret Manager's own
+sense (an expire time 30 days out); `gcloud secrets delete` removes it outright.
+`store-forms-check.test.sh` holds it to seven controls behind stand-ins for `dev-broker.sh`,
+`dev-airlock-stands` and `agent-secrets` on `PATH`, which `envoy-go-checks` runs as "Isolation
+test for store-forms-check.sh": a full pass on the broker's answers, a failed `show`, a banner
+without its exports, the vanished control, writes that change nothing, writes that take effect
+while the broker only accepts each reread, and a stack the session cannot be enrolled in.
 
 ## aws-moto-check.sh
 

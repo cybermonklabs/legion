@@ -1,8 +1,18 @@
-// Package backends is the registry of secret stores: the one map cipherd chooses a store from, by
-// the name BROKER_SECRETS_STORE and GET /v1/settings carry. Each store is one
+// Package backends is the registry of secret stores: the one map cipherd and agent-secrets choose
+// a store from, by the name BROKER_SECRETS_STORE and GET /v1/settings carry. Each store is one
 // file here, <id>.go, which starts //go:build !cipher_no_<id> and registers the store's Backend,
 // so this directory lists the stores of a build and a build tag leaves one out with its SDK. No
 // store registers itself from an init function.
+//
+// A new store is one package, internal/cipher/secretstore/<id>, and one file here, <id>.go, that
+// starts //go:build !cipher_no_<id> and registers the store's Backend with
+// var _ = register(<id>.Backend{}). Its rows of this package's storeRigs and writerRigs, keyed by
+// its ID, run the store contract and the writer contract on it against its fake. Only the
+// store's own package tree, this registry and the test-support packages (a name ending in test)
+// may import the store or its ServiceSDKs(). A store with a live service puts its live tests
+// behind a tag of its own and runs them with scripts/store-live-check.sh <id>. This package's
+// tests hold each of these rules, and cmd/cipher's onEachStore needs a rig for the new store in
+// that package's own storeRigs.
 package backends
 
 import (

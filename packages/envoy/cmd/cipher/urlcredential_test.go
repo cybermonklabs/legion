@@ -25,7 +25,7 @@ import (
 // prints that trade's failure on stderr. The line names the failure, and no part of a user name,
 // password, query or fragment AGENT_SECRETS_URL carries. The values are made up.
 func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:36); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:38); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	refused := testport.Refused(t)
 	for form, address := range map[string]string{
 		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@" + refused,
@@ -105,7 +105,7 @@ func TestTheCLIsBrokerClientFollowsNoRedirect(t *testing.T) {
 // answer id print on `agent-secrets status`'s stderr and in the client's error, and its code in a
 // pod login's refusal line.
 func TestABrokerRefusalPrintsNoCredentialItsWordsRepeat(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:127); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:129); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	const answerID = "demopass9z-not-a-secret"
 	var asked atomic.Int64
 	var words string

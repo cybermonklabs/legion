@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // promptShell gives the prompt a parent interactive shell in the same session, so
@@ -112,7 +114,7 @@ func (s *promptShell) send(text string) {
 func (s *promptShell) holdReads() (release func()) {
 	s.t.Helper()
 	file := filepath.Join(s.t.TempDir(), "release")
-	s.env += "AGENT_SECRETS_JOB_HOLD_READS=" + shellWord(file) + " "
+	s.env += "AGENT_SECRETS_JOB_HOLD_READS=" + secretstore.ShellWord(file) + " "
 	return func() {
 		s.t.Helper()
 		if err := os.WriteFile(file, nil, 0o600); err != nil {
@@ -223,13 +225,13 @@ func (s *promptShell) start(wrapper bool, background bool) {
 		reference = "AGENT_SECRETS_JOB_REFERENCE=" + s.foregroundState() + " "
 	}
 	// The helper's deadline is read after the probe above, so the probe's time is not in it.
-	command := reference + s.env + "AGENT_SECRETS_JOB_HELPER=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'" + helperTimeout(s.t)
+	command := reference + s.env + "AGENT_SECRETS_JOB_HELPER=1 " + secretstore.ShellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'" + helperTimeout(s.t)
 	if wrapper {
 		ignores := s.wrapperIgnores
 		if ignores == "" {
 			ignores = "TSTP"
 		}
-		command = "bash -c " + shellWord("trap '' "+ignores+"; "+command+"; echo WRAPPER_DONE")
+		command = "bash -c " + secretstore.ShellWord("trap '' "+ignores+"; "+command+"; echo WRAPPER_DONE")
 	}
 	if background {
 		command += " &"
@@ -265,7 +267,7 @@ func (s *promptShell) start(wrapper bool, background bool) {
 func (s *promptShell) foregroundState() string {
 	s.t.Helper()
 	s.reset()
-	probe := "AGENT_SECRETS_JOB_HELPER=1 AGENT_SECRETS_JOB_PROBE=1 " + shellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
+	probe := "AGENT_SECRETS_JOB_HELPER=1 AGENT_SECRETS_JOB_PROBE=1 " + secretstore.ShellWord(os.Args[0]) + " -test.run='^TestPromptJobHelper$'"
 	s.typed = append(s.typed, probe)
 	s.send(probe + "\r")
 	s.wait("FOREGROUND_STATE=")
@@ -370,7 +372,7 @@ func (c *labelCheck) Write(p []byte) (int, error) {
 }
 
 func TestPromptJobHelper(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.watchCreateSignals, signal.Notify at secret_create.go:92); it sets a package variable the package's other tests read (maxPasteDrain set at secret_job_harness_linux_test.go:391).
+	// Not parallel: it signals the test process or changes its signal handling (main.watchCreateSignals, signal.Notify at secret_create.go:69); it sets a package variable the package's other tests read (maxPasteDrain set at secret_job_harness_linux_test.go:393).
 	if os.Getenv("AGENT_SECRETS_JOB_HELPER") == "" {
 		t.Skip("subprocess helper")
 	}

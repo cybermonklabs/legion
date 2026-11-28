@@ -27,13 +27,14 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"net/url"
 	"time"
 
 	"github.com/sjawhar/envoy/cipheraddr"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 )
 
 // sourceSettingsTimeout bounds the settings read describe makes. It is short because naming the
@@ -94,32 +95,24 @@ func (c *client) source(ctx context.Context) source {
 	return brokerSource(c.baseURL).describe(ctx, c)
 }
 
-// withSettings is s naming the store the broker's settings describe: its kind, and the account
-// or project that holds the secrets, which is what tells two brokers' stores apart. A broker
-// from before the `store` field names none and holds them in AWS Secrets Manager (Settings). Each
-// field it names prints as the broker's address lets its answer print (Settings.words).
+// withSettings is s naming the store the broker's settings describe, as its registry entry names
+// it: its kind (Backend.Kind), and where the secrets are (Backend.Place: the account or project,
+// which is what tells two brokers' stores apart). A broker from before the `store` field names
+// none and holds them in AWS Secrets Manager (secretstore.DefaultName). Each field it names prints
+// as the broker's address lets its answer print (Settings.words).
 func (s source) withSettings(settings Settings) source {
-	switch settings.Store {
-	case "", aws.Name:
-		s.kind = "AWS Secrets Manager"
-		s.store = s.kind
-		if settings.AWSAccountID != "" {
-			s.store += " account " + settings.words(settings.AWSAccountID)
-		}
-		if settings.AWSRegion != "" {
-			s.store += " in " + settings.words(settings.AWSRegion)
-		}
-	case gcp.Name:
-		s.kind = "GCP Secret Manager"
-		s.store = s.kind
-		if settings.GCPProject != "" {
-			s.store += " project " + settings.words(settings.GCPProject)
-		}
-	default:
+	b, err := backends.Lookup(cmp.Or(settings.Store, secretstore.DefaultName))
+	if err != nil {
 		// A store this release does not know: name it as the broker spells it rather than
 		// leave the source silent about where the value came from.
 		s.kind = settings.words(settings.Store)
 		s.store = s.kind
+		return s
+	}
+	s.kind = b.Kind()
+	s.store = s.kind
+	if place := b.Place(settings.store()); place != "" {
+		s.store += " " + place
 	}
 	return s
 }

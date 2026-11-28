@@ -2,23 +2,28 @@
 # packages/envoy/scripts/backend-count.sh
 #
 # Counts, for each test it names, the runs that passed on each store backend: the test's own
-# `aws` and `gcp` subtests (onEachStore, cmd/cipher/secret_kind_test.go), so a store or
-# use change cannot pass on one backend alone. It takes the packages to run first, then `--`, then
-# the tests, and runs, from packages/envoy, only the named tests in only those packages:
+# subtest of each store the registry holds (onEachStore, cmd/cipher/secret_kind_test.go), so a
+# store or use change cannot pass on one backend alone. The stores are the base names of the
+# registry's files, internal/cipher/secretstore/backends/*.go other than backends.go and the
+# tests (BACKEND_COUNT_REGISTRY names another directory, for this script's own test); with none
+# it prints `UNKNOWN: no registry file` and exits 1. It takes the packages to run first, then
+# `--`, then the tests, and runs, from packages/envoy, only the named tests in only those
+# packages:
 #
 #   go test -json -count=1 -timeout "${GO_TEST_TIMEOUT:-5m}" -run '^(TEST|...)$' [-skip "$GO_TEST_SKIP"] PACKAGE...
 #
-# and prints one line per named test, `TEST aws=N gcp=M`, N and M counting the `pass` events of
-# `TEST/aws` and `TEST/gcp` in any of the packages, then `go_test_exit=E`. It counts only the tests
-# it is given, so the `aws` and `gcp` subtests of other tests cannot stand in for a named test's,
-# and a named test that lives in none of the packages reads aws=0 gcp=0. The database broker
-# suites' skips are database-skips.sh's count, not this one's.
+# and prints one line per named test, `TEST aws=N gcp=M memory=K`, each count the `pass` events
+# of `TEST/<store>` in any of the packages, then `go_test_exit=E`. It counts only the tests it is
+# given, so another test's store subtests cannot stand in for a named test's, and a named test
+# that lives in none of the packages reads 0 on every store. The database broker suites' skips
+# are database-skips.sh's count, not this one's.
 #
 # It exits 1 when no package or no test is named, when a package is not a ./ path, when a name is
-# not a Go test name, when a named test has no passing run on either backend, or when go test
-# failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which a negative control sets to
-# take the `aws` subtests away ('^(TestA|TestB)$/^aws$'). GO_TEST_TIMEOUT is go test's -timeout,
-# 5m unless set: the named tests take seconds, and CI's job budget counts this step at that bound.
+# not a Go test name, when the registry holds no store, when a named test has no passing run on
+# some store, or when go test failed; 0 otherwise. GO_TEST_SKIP is go test's -skip pattern, which
+# a negative control sets to take one store's subtests away ('^(TestA|TestB)$/^memory$').
+# GO_TEST_TIMEOUT is go test's -timeout, 5m unless set: the named tests take seconds, and CI's job
+# budget counts this step at that bound.
 set -euo pipefail
 
 usage="usage: backend-count.sh PACKAGE... -- TEST..."
@@ -37,7 +42,7 @@ if [ "${#packages[@]}" -eq 0 ] || [ "$#" -eq 0 ]; then
 fi
 shift
 if [ "$#" -eq 0 ]; then
-  echo "backend-count.sh: name at least one test whose aws and gcp subtests to count; $usage" >&2
+  echo "backend-count.sh: name at least one test whose store subtests to count; $usage" >&2
   exit 1
 fi
 for test in "$@"; do
@@ -49,6 +54,18 @@ done
 run="^($(IFS='|'; echo "$*"))\$"
 
 cd "$(dirname "$0")/.."
+registry="${BACKEND_COUNT_REGISTRY:-internal/cipher/secretstore/backends}"
+stores=()
+for file in "$registry"/*.go; do
+  [ -e "$file" ] || continue
+  store="$(basename "$file" .go)"
+  case "$store" in backends | *_test) continue ;; esac
+  stores+=("$store")
+done
+if [ "${#stores[@]}" -eq 0 ]; then
+  echo "UNKNOWN: no registry file in $registry, so there is no store to count"
+  exit 1
+fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 events="$work/events.json"
@@ -64,7 +81,7 @@ fi
 status=0
 for test in "$@"; do
   counts=()
-  for backend in aws gcp; do
+  for backend in "${stores[@]}"; do
     n="$(jq -r --arg name "$test/$backend" 'select(.Action == "pass" and .Test == $name) | .Test' "$events" | wc -l)"
     counts+=("$backend=$n")
     [ "$n" -gt 0 ] || status=1

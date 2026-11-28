@@ -12,6 +12,8 @@ package main
 import (
 	"context"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -28,6 +30,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 )
 
 // echoingList is a Secrets Manager whose ListSecrets refuses with code and message, which
@@ -53,7 +56,7 @@ func (e echoingList) ListSecrets(context.Context, *secretsmanager.ListSecretsInp
 // permission and a message with no permission in it are the controls: the check sees the store's
 // answer.
 func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useLentGCPAccessToken, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it signals the test process or changes its signal handling (main.gcpInterceptor, main.openSecretBackend, main.runChild, main.watchSignalsWhileChildRuns, signal.Notify at children.go:120); it sets a package variable the package's other tests read (main.gcpInterceptor, main.openSecretBackend, main.runChild, runningChildren set at children.go:78).
 	planted := "hunter2pw-" + "storeecho-" + "4b1f"
 	const arn = "arn:aws:iam::111122223333:user/"
 	hex64 := strings.Repeat("a1b2c3d4", 4) + strings.Repeat("e5f6a7b8", 4)
@@ -86,7 +89,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
+			awstest.Use(t, echoingList{Local: local, code: row.code, message: row.message}, testAccount, adaSignIn)
 			_, stderr, code := runSecret("list")
 			if code != 1 {
 				t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
@@ -108,7 +111,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			"Secret Manager ListSecrets answered PermissionDenied (its message is not printed)"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
+			fake := gcptest.NewFakeSecretManager()
 			lis, err := net.Listen("tcp", "127.0.0.1:0")
 			if err != nil {
 				t.Fatal(err)
@@ -119,10 +122,10 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 			secretmanagerpb.RegisterSecretManagerServiceServer(server, fake)
 			go func() { _ = server.Serve(lis) }()
 			t.Cleanup(server.Stop)
-			useGCPDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
-			useNoADC(t)
-			useNoGcloud(t)
-			useLentGCPAccessToken(t, "lent-store-token", "ada@example.com")
+			gcptest.UseDialTo(t, lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			gcptest.UseNoADC(t)
+			gcptest.UseNoGcloud(t)
+			gcptest.UseLentAccessToken(t, "lent-store-token", "ada@example.com")
 			startSecretBrokerWith(t, gcpTestSettings(), gcpServedBy(fake, gcpTestSettings()))
 			_, stderr, code := runSecret("list")
 			if code != 1 {
@@ -138,7 +141,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 		refused := func(context.Context, string, any, any, *grpc.ClientConn, ...grpc.CallOption) error {
 			return status.Error(codes.PermissionDenied, "Permission 'secretmanager.secrets.delete' denied on resource 'projects/100000000001/secrets/x'; echo: "+planted)
 		}
-		err := (&gcpBackend{}).storeInterceptor(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/DeleteSecret", nil, nil, nil, refused)
+		err := gcpInterceptor(t)(context.Background(), "/google.cloud.secretmanager.v1.SecretManagerService/DeleteSecret", nil, nil, nil, refused)
 		if err == nil {
 			t.Fatal("control: the refused DeleteSecret returned no error, so the row is blind")
 		}
@@ -153,7 +156,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 // repeat the credential in any of them. Control: from a clean address each field prints, so the
 // check sees the field.
 func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:179).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:182).
 	planted := "hunter2pw-" + "settings-" + "0d3a"
 	for _, row := range []struct {
 		name     string
@@ -161,10 +164,10 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 		says     string
 	}{
 		{"an unknown store", Settings{Store: planted, SecretsPrefix: policytest.Prefix}, "the broker's settings name an unknown secret store "},
-		{"an invalid KMS key ARN", Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: planted, AWSAccountID: testAccount, AWSRegion: "us-east-1"}, "the broker's settings name an invalid KMS key ARN "},
+		{"an invalid KMS key ARN", Settings{SecretsPrefix: policytest.Prefix, Fields: map[string]string{"kms_key_arn": planted, "aws_account_id": testAccount, "aws_region": "us-east-1"}}, "the broker's settings name an invalid KMS key ARN "},
 		{"a project its prefix does not name", func() Settings {
 			s := gcpTestSettings()
-			s.GCPProject = planted
+			s.Fields["gcp_project"] = planted
 			return s
 		}(), "the broker's settings name project "},
 	} {
@@ -194,12 +197,60 @@ func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
 	}
 }
 
+// TestTheMemoryStoresFilePrintsOnlyAsItsAddressLetsIt: memory_secrets_file is a field of the
+// broker's settings, so beside an AGENT_SECRETS_URL that carries a credential no line prints it:
+// not the line that names the store the form writes, nor a refusal of a file that is missing or is
+// no memory secrets file, which each name the file as cipheraddr.WordsNotPrinted. Control: beside a
+// clean address each prints the file, so the check sees it.
+func TestTheMemoryStoresFilePrintsOnlyAsItsAddressLetsIt(t *testing.T) {
+	planted := "hunter2pw-" + "memoryfile-" + "5c2e"
+	for _, row := range []struct {
+		name    string
+		content string // "" leaves the file missing
+		exit    int
+	}{
+		{"a file that exists", `{"secrets": []}`, 0},
+		{"a file that does not exist", "", 1},
+		{"a file that is no memory secrets file", "not json", 1},
+	} {
+		for _, clean := range []bool{false, true} {
+			name := row.name + ", beside a credentialed address"
+			if clean {
+				name = "control: " + row.name + ", beside a clean address"
+			}
+			t.Run(name, func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), planted+".json")
+				if row.content != "" {
+					if err := os.WriteFile(path, []byte(row.content), 0o600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				startSecretBrokerWith(t, memorySettings(path), func(string) Reread { return Reread{} })
+				if !clean {
+					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+				}
+				_, stderr, code := runSecret("list")
+				if code != row.exit {
+					t.Fatalf("exit %d, stderr %q; want %d", code, stderr, row.exit)
+				}
+				if clean {
+					if !strings.Contains(stderr, path) {
+						t.Fatalf("stderr %q does not name the file %s", stderr, path)
+					}
+					return
+				}
+				wantNamedNotPrinted(t, "stderr", stderr, []string{cipheraddr.WordsNotPrinted}, planted, "demopass9z")
+			})
+		}
+	}
+}
+
 // TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt: the reason a broker's reread refuses a
 // secret for, and the type it says it serves the secret as, are text of its answer, so beside an
 // AGENT_SECRETS_URL that carries a credential neither prints: the write's lines name them as
 // cipheraddr.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
 func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:222); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:274); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	planted := "hunter2pw-" + "reread-" + "7e5b"
 	for _, row := range []struct {
 		name   string
@@ -216,26 +267,27 @@ func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 				name, shown = "control: "+row.name+", beside a clean address", planted
 			}
 			t.Run(name, func(t *testing.T) {
-				local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-				startSecretBroker(t, row.answer)
-				if !clean {
-					t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
-				}
-				useAWS(t, local, testAccount, adaSignIn)
-				useStdin(t, "v2")
-				stdout, stderr, code := runSecret("set", "HELD_KEY")
-				if code != 1 {
-					t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
-				}
-				var want []string
-				for _, says := range row.says {
-					want = append(want, strings.ReplaceAll(says, "%s", shown))
-				}
-				forbidden := []string{"demopass9z"}
-				if !clean {
-					forbidden = append(forbidden, planted)
-				}
-				wantNamedNotPrinted(t, "the output", stdout+stderr, want, forbidden...)
+				onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+					putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					broker.answerAs(row.answer)
+					if !clean {
+						t.Setenv("AGENT_SECRETS_URL", strings.Replace(brokerURLFromEnv(t), "http://", "http://demouser7q:demopass9z-not-a-secret@", 1))
+					}
+					useStdin(t, "v2")
+					stdout, stderr, code := runSecret("set", "HELD_KEY")
+					if code != 1 {
+						t.Fatalf("exit %d, stdout %q, stderr %q; want 1", code, stdout, stderr)
+					}
+					var want []string
+					for _, says := range row.says {
+						want = append(want, strings.ReplaceAll(says, "%s", shown))
+					}
+					forbidden := []string{"demopass9z"}
+					if !clean {
+						forbidden = append(forbidden, planted)
+					}
+					wantNamedNotPrinted(t, "the output", stdout+stderr, want, forbidden...)
+				})
 			})
 		}
 	}

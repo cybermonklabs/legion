@@ -57,7 +57,7 @@ func (s *refStore) remove(slug string) {
 }
 
 // listing is id's Listing; the caller holds s.mu.
-func (s *refStore) listing(id string) secretstore.Listing {
+func (s *refStore) listing(id string, opts secretstore.ReadOptions) secretstore.Listing {
 	f := s.held[id]
 	tags := maps.Clone(f.Tags)
 	source := "ref:" + id
@@ -73,30 +73,39 @@ func (s *refStore) listing(id string) secretstore.Listing {
 	if ls.HasCurrentValue {
 		ls.Version = fmt.Sprintf("v%d", s.version[id])
 	}
+	if f.Deleted {
+		ls.Deleted = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	}
+	if opts.Versions {
+		ls.Versions = map[string][]string{}
+		if ls.Version != "" {
+			ls.Versions[ls.Version] = []string{"CURRENT"}
+		}
+	}
 	return ls
 }
 
-func (s *refStore) List(_ context.Context, prefix string) ([]secretstore.Listing, error) {
+func (s *refStore) List(_ context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var listings []secretstore.Listing
 	for id, held := range s.held {
-		if !strings.HasPrefix(id, prefix) || held.Deleted && s.mutant != "lists-deleted" {
+		if !strings.HasPrefix(id, prefix) || held.Deleted && !opts.IncludeDeleted && s.mutant != "lists-deleted" {
 			continue
 		}
-		listings = append(listings, s.listing(id))
+		listings = append(listings, s.listing(id, opts))
 	}
 	return listings, nil
 }
 
-func (s *refStore) Describe(_ context.Context, id string) (secretstore.Listing, error) {
+func (s *refStore) Describe(_ context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	held, ok := s.held[id]
-	if !ok || held.Deleted && s.mutant != "describes-deleted" {
+	if !ok || held.Deleted && !opts.IncludeDeleted && s.mutant != "describes-deleted" {
 		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
-	ls := s.listing(id)
+	ls := s.listing(id, opts)
 	if s.mutant == "describe-differs" {
 		ls.Tags["described"] = "yes"
 	}
@@ -147,9 +156,9 @@ func TestStoreContractOnMutant(t *testing.T) {
 func TestStoreContractOnMutants(t *testing.T) {
 	for mutant, breaks := range map[string]string{
 		"none":              "",
-		"lists-deleted":     "a secret scheduled for deletion is absent",
-		"describes-deleted": "a secret scheduled for deletion is absent",
-		"reads-deleted":     "a secret scheduled for deletion is absent",
+		"lists-deleted":     "a secret scheduled for deletion is absent unless the read asks for it",
+		"describes-deleted": "a secret scheduled for deletion is absent unless the read asks for it",
+		"reads-deleted":     "a secret scheduled for deletion is absent unless the read asks for it",
 		"version-stays":     "a new value moves Version",
 		"mint-source":       "no source starts with mint:",
 		"off-key-on":        "OnKey answers the agent-secrets key",

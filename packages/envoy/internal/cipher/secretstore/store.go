@@ -17,12 +17,43 @@ import (
 // and Read's for a source the store no longer holds or that has no current value.
 var ErrNotFound = errors.New("secret not found in the store")
 
+// NotFound is err, a client's failure that says the store holds no such secret, as a store
+// answers it where its client words its own failures (the agent-secrets CLI's do): it matches
+// ErrNotFound, prints as the client worded it, and unwraps to it.
+func NotFound(err error) error { return notFound{err} }
+
+type notFound struct{ err error }
+
+func (n notFound) Error() string        { return n.err.Error() }
+func (n notFound) Unwrap() error        { return n.err }
+func (n notFound) Is(target error) bool { return target == ErrNotFound }
+
 // ErrValueNotText is what Read's error wraps for a current value that is not text the broker can
 // hand a command - an empty value, a Secrets Manager SecretBinary with no SecretString, a Secret
 // Manager payload that is not UTF-8 - so no release and no mint could use it. It is the value's
 // fault and not the read's, so the policy refuses such a type secret as it refuses one its
 // decoder refuses (policy.ReasonValueMalformed), rather than reading it again at every load.
 var ErrValueNotText = errors.New("value is not a non-empty UTF-8 string")
+
+// NotText is ErrValueNotText as a store answers it where its client words its own failures (the
+// agent-secrets CLI's do): it prints words, the client's own, and matches ErrValueNotText.
+func NotText(words string) error { return notText(words) }
+
+type notText string
+
+func (n notText) Error() string        { return string(n) }
+func (n notText) Is(target error) bool { return target == ErrValueNotText }
+
+// SecretFailure is a List's failure on one secret it lists, as a store answers it where its
+// client words its own failures: ID is that secret's name, so the client can say which read
+// failed, and Err the client's failure, which it prints as and unwraps to.
+type SecretFailure struct {
+	ID  string
+	Err error
+}
+
+func (f SecretFailure) Error() string { return f.Err.Error() }
+func (f SecretFailure) Unwrap() error { return f.Err }
 
 // CreateLabel is the label `agent-secrets secret create` puts on a Secret Manager secret it makes
 // before its value, set to a random value of that create's own. The broker reads only whether a
@@ -50,17 +81,27 @@ type Reader interface {
 	Read(ctx context.Context, source string) (string, error)
 }
 
+// ReadOptions asks List and Describe for more than the policy reads. The broker sets neither; the
+// agent-secrets CLI's list and show do.
+type ReadOptions struct {
+	// IncludeDeleted also answers a secret scheduled for deletion, with Listing.Deleted set.
+	IncludeDeleted bool
+	// Versions fills Listing.Versions, which may cost a call of its own per secret.
+	Versions bool
+}
+
 // Store is what the broker reads agent secrets with. List and Describe answer the metadata the
 // policy decides from, and Read answers a granted value; nothing here writes a secret.
 type Store interface {
 	Reader
 	// List answers every secret whose full name starts with prefix, byte for byte, in no promised
-	// order. A secret scheduled for deletion is one the store does not hold: List leaves it out,
-	// Describe and Read answer ErrNotFound for it.
-	List(ctx context.Context, prefix string) ([]Listing, error)
-	// Describe answers one secret by its full name, or ErrNotFound when none exists or it is
-	// scheduled for deletion.
-	Describe(ctx context.Context, id string) (Listing, error)
+	// order. A secret scheduled for deletion is one the store does not hold unless
+	// opts.IncludeDeleted asks for it: List leaves it out, Describe and Read answer ErrNotFound for
+	// it.
+	List(ctx context.Context, prefix string, opts ReadOptions) ([]Listing, error)
+	// Describe answers one secret by its full name, or ErrNotFound when none exists or, unless
+	// opts.IncludeDeleted asks for it, it is scheduled for deletion.
+	Describe(ctx context.Context, id string, opts ReadOptions) (Listing, error)
 	// ValidName refuses, before any call is made, a full name no secret of this store can carry:
 	// one past its length limit, or outside its character set. The error names the rule and never
 	// wraps a lookup's failure.
@@ -103,4 +144,13 @@ type Listing struct {
 	// `agent-secrets secret create` made before its value and has not given one. A secret with any
 	// version (a disabled one included), or without the label, is not.
 	Unfilled bool
+	// LastChanged is when the secret was last changed; Deleted is the deletion time the store
+	// names for a secret scheduled for deletion (when the delete ran, or when the store will
+	// remove it), answered only to a read with ReadOptions.IncludeDeleted; and EarliestPurge is
+	// the earliest moment the store may remove it for good, where that is not Deleted itself. Each
+	// is the zero time where the store answers none.
+	LastChanged, Deleted, EarliestPurge time.Time
+	// Versions maps each version id to its labels or state, as the store names them; nil unless
+	// the read set ReadOptions.Versions. Version, when set, is one of its keys.
+	Versions map[string][]string
 }

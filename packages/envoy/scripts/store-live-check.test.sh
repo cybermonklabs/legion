@@ -2,11 +2,11 @@
 # packages/envoy/scripts/store-live-check.test.sh
 #
 # Drives store-live-check.sh over recorded `go test -json` streams through a stub `go` on PATH, so
-# it runs no live test and reaches no cloud: a run whose tests all passed, the store's live
-# contract and its cases among them, is a pass, and keeps its events; one with a skip or a failure
-# is not, nor one whose passing tests hold no live contract or no case of it, and a run that wrote
-# no event says UNKNOWN. Also checks that it refuses a run whose store variables are unset before
-# it runs anything.
+# it runs no live test and reaches no cloud: a run whose tests all passed, both of the store's live
+# contracts and their cases among them, is a pass, and keeps its events; one with a skip or a
+# failure is not, nor one whose passing tests hold no live contract, only one of the two, or no case
+# of one, and a run that wrote no event says UNKNOWN. Also checks that it refuses a run whose store
+# variables are unset before it runs anything.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,12 +60,17 @@ passed_events='{"Action":"run","Package":"p","Test":"TestGCPLiveRunsTheStoreCont
 {"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract/gcp/a_new_value_moves_Version"}
 {"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract/gcp"}
 {"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract"}
+{"Action":"run","Package":"p","Test":"TestGCPLiveRunsTheWriterContract"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheWriterContract/gcp/a_create_stores_its_first_value_with_its_tags"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheWriterContract/gcp"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheWriterContract"}
 {"Action":"pass","Package":"p","Elapsed":4.2}'
 
 stub_go "$passed_events" 0
 run_check
-check_row "a run whose live tests all passed" 0 "passed=4 skipped=0 failed=0"
-check_row "a passing run names its contract's cases" 0 "live contract TestGCPLiveRunsTheStoreContract: 2 cases passed"
+check_row "a run whose live tests all passed" 0 "passed=7 skipped=0 failed=0"
+check_row "a passing run names its read contract's cases" 0 "live contract TestGCPLiveRunsTheStoreContract: 2 cases passed"
+check_row "a passing run names its writer contract's cases" 0 "live contract TestGCPLiveRunsTheWriterContract: 1 cases passed"
 check_row "a passing run names where its events are kept" 0 "events: $WORK/events.json"
 if [ "$(cat "$WORK/events.json")" = "$passed_events" ]; then
   printf 'PASS: %s\n' "the run's events are kept"
@@ -82,7 +87,21 @@ legacy_events='{"Action":"run","Package":"p","Test":"TestGCPLive"}
 
 stub_go "$legacy_events" 0
 run_check
-check_row "a run of another live test alone" 1 "holds no passing TestGCPLiveRunsTheStoreContract with its cases"
+check_row "a run of another live test alone" 1 "holds no passing TestGCPLiveRunsTheStoreContract TestGCPLiveRunsTheWriterContract with its cases"
+
+# The read contract with its cases and no event of the writer contract: the store's writes never
+# ran against the service, which would otherwise count as a pass.
+read_only_events='{"Action":"run","Package":"p","Test":"TestGCPLiveRunsTheStoreContract"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract/gcp/Describe_answers_what_List_answers_for_one_name"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract/gcp/a_new_value_moves_Version"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract/gcp"}
+{"Action":"pass","Package":"p","Test":"TestGCPLiveRunsTheStoreContract"}
+{"Action":"pass","Package":"p","Elapsed":3.0}'
+
+stub_go "$read_only_events" 0
+run_check
+check_row "a run of the read contract alone" 1 "holds no passing TestGCPLiveRunsTheWriterContract with its cases"
+check_row "a run of the read contract alone counts no writer case" 1 "live contract TestGCPLiveRunsTheWriterContract: 0 cases passed"
 
 # The contract's test and its store's level pass with no case under them: a contract whose
 # cases all went, which runs nothing against the service.

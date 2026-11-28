@@ -1,12 +1,10 @@
-// packages/envoy/cmd/cipher/secret_gcp_create.go
-//
-// The GCP side of `secret create` and its recovery: the empty secret it makes, labelled with a
-// value of its own, before the value is read (gcpNewSecret), the add of that value, and every
-// cleanup that settles what a failed or lost call left - reading the secret back, listing its
-// versions, deleting only an empty secret this create made - with the commands it prints for
-// settling it by hand, signed in as the create was. The sign-in and the other forms are in
-// secret_gcp.go.
-package main
+// The GCP writer's create and its recovery: the empty secret it makes, labelled with a value of
+// its own, before the value is read (newSecret), the add of that value, and every cleanup that
+// settles what a failed or lost call left - reading the secret back, listing its versions,
+// deleting only an empty secret this create made - with the commands it prints for settling it by
+// hand, signed in as the create was. The sign-in and the other writes are in writer.go.
+
+package gcp
 
 import (
 	"context"
@@ -43,25 +41,25 @@ func newCreateToken() string {
 	return hex.EncodeToString(token[:])
 }
 
-// prepareCreate builds the state, including the ownership label, before the form installs its
-// signal cleanup. begin then makes the secret, so a signal during CreateSecret waits for its
-// answer and cleans up as it does during the later store step.
-func (b *gcpBackend) prepareCreate(slug string, tags map[string]string) newSecret {
-	return &gcpNewSecret{b: b, name: b.id(slug), secretID: b.secretID(slug), display: b.displayName(b.id(slug)), tags: tags, token: newCreateToken()}
+// PrepareCreate builds the state, including the ownership label, before the form installs its
+// signal cleanup. Begin then makes the secret, so a signal during CreateSecret waits for its
+// answer and cleans up as it does during the later Store step.
+func (b *writer) PrepareCreate(id string, tags map[string]string) secretstore.Create {
+	return &newSecret{b: b, name: id, secretID: strings.TrimPrefix(id, b.parent()+"/secrets/"), display: b.displayName(id), tags: tags, token: newCreateToken()}
 }
 
-// addPermission is the permission store needs on the secret begin makes.
+// addPermission is the permission Store needs on the secret Begin makes.
 const addPermission = "secretmanager.versions.add"
 
-// begin makes the secret, empty and labelled with this create's token, under storeCallDeadline,
+// Begin makes the secret, empty and labelled with this create's token, under secretstore.CallDeadline,
 // then asks IAM whether this sign-in may add its value (addPermission), so a sign-in that may
-// create but not add is told before it is asked for the value: begin then discards the empty
-// secret through discard and answers that refusal. Where IAM cannot be asked, begin goes on, and
-// store's add is the check. A CreateSecret whose answer leaves open whether the store made the
+// create but not add is told before it is asked for the value: Begin then discards the empty
+// secret through Discard and answers that refusal. Where IAM cannot be asked, Begin goes on, and
+// Store's add is the check. A CreateSecret whose answer leaves open whether the store made the
 // secret is settled by settleLostCreate.
-func (n *gcpNewSecret) begin(ctx context.Context) (discardOutcome, error) {
+func (n *newSecret) Begin(ctx context.Context) (secretstore.DiscardOutcome, error) {
 	b := n.b
-	callCtx, cancel := withStoreDeadline(ctx)
+	callCtx, cancel := secretstore.WithCallDeadline(ctx)
 	_, err := b.client.CreateSecret(callCtx, &secretmanagerpb.CreateSecretRequest{
 		Parent:   b.parent(),
 		SecretId: n.secretID,
@@ -82,26 +80,26 @@ func (n *gcpNewSecret) begin(ctx context.Context) (discardOutcome, error) {
 	cancel()
 	if err != nil {
 		if gcpDefiniteRefusal(err) {
-			return madeNothing, err
+			return secretstore.MadeNothing, err
 		}
 		outcome, left := n.settleLostCreate(ctx)
 		return outcome, fmt.Errorf("%w; %s", err, left)
 	}
 	if b.mayNotAdd(ctx, n.name) {
-		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for; %s", b.identity(), n.name, addPermission, b.chooseAnother())
-		outcome, left := n.discard(ctx)
+		refusal := fmt.Errorf("%s may create %s but not add its value: IAM grants it no %s on the secret, so no value was asked for; %s", b.Identity(), n.name, addPermission, b.ChooseAnother())
+		outcome, left := n.Discard(ctx)
 		if left != nil {
 			return outcome, fmt.Errorf("%w; %w", refusal, left)
 		}
 		return outcome, refusal
 	}
-	return madeNothing, nil
+	return secretstore.MadeNothing, nil
 }
 
-// mayNotAdd reports whether IAM answers, under storeCallDeadline, that this sign-in does not hold
+// mayNotAdd reports whether IAM answers, under secretstore.CallDeadline, that this sign-in does not hold
 // addPermission on the secret named id. A failed ask answers false: the add is then the check.
-func (b *gcpBackend) mayNotAdd(ctx context.Context, id string) bool {
-	ctx, cancel := withStoreDeadline(ctx)
+func (b *writer) mayNotAdd(ctx context.Context, id string) bool {
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	held, err := b.client.TestIamPermissions(ctx, &iampb.TestIamPermissionsRequest{Resource: id, Permissions: []string{addPermission}})
 	return err == nil && !slices.Contains(held.GetPermissions(), addPermission)
@@ -113,21 +111,21 @@ func (b *gcpBackend) mayNotAdd(ctx context.Context, id string) bool {
 // this create's token is another write's - one that held the name before, or another create's -
 // and is left as it is; one carrying the token goes through discard, which deletes it only where it
 // holds no version. A read that fails names the token and the gcloud commands that show a secret's
-// labels and clear it. Each call runs under storeCallDeadline.
-func (n *gcpNewSecret) settleLostCreate(ctx context.Context) (discardOutcome, string) {
+// labels and clear it. Each call runs under secretstore.CallDeadline.
+func (n *newSecret) settleLostCreate(ctx context.Context) (secretstore.DiscardOutcome, string) {
 	lost := "the store's answer leaves open whether it made " + n.name
-	getCtx, cancel := withStoreDeadline(ctx)
+	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
 	switch {
 	case status.Code(err) == codes.NotFound:
-		return keptUnknown, fmt.Sprintf("%s, and reading it back did not find it then, but a create the store has not finished may still land: `%s` shows whether it is there, and one whose %s label is %s, with `versions: none`, is this create's empty secret, which %s clears",
+		return secretstore.KeptUnknown, fmt.Sprintf("%s, and reading it back did not find it then, but a create the store has not finished may still land: `%s` shows whether it is there, and one whose %s label is %s, with `versions: none`, is this create's empty secret, which %s clears",
 			lost, n.agentSecrets("secret", "show", n.display), createLabel, n.token, n.clearCommand())
 	case err != nil:
-		return keptUnknown, fmt.Sprintf("%s, and reading it back failed, so whether this create made it is unknown: %s shows its labels, and one whose %s label is %s is this create's, and with no version it is an empty secret, which %s clears. Reading it failed: %v",
+		return secretstore.KeptUnknown, fmt.Sprintf("%s, and reading it back failed, so whether this create made it is unknown: %s shows its labels, and one whose %s label is %s is this create's, and with no version it is an empty secret, which %s clears. Reading it failed: %v",
 			lost, n.b.gcloud("secrets", "describe", n.secretID, "--project", n.b.settings.GCPProject), createLabel, n.token, n.clearCommand(), err)
 	case secret.GetLabels()[createLabel] != n.token:
-		return keptOthers, lost + "; reading it back finds a secret this create did not make (its " + createLabel + " label is not this create's), so it is left as it is"
+		return secretstore.KeptOthers, lost + "; reading it back finds a secret this create did not make (its " + createLabel + " label is not this create's), so it is left as it is"
 	}
 	outcome, left := n.discardRead(ctx, secret, lost+"; reading it back finds it made by this create")
 	if left != nil {
@@ -136,18 +134,18 @@ func (n *gcpNewSecret) settleLostCreate(ctx context.Context) (discardOutcome, st
 	return outcome, lost + "; reading it back finds it, made by this create and empty, so it is deleted again and nothing stays"
 }
 
-// countVersions is how many versions the secret named id holds, listed under storeCallDeadline.
-func (b *gcpBackend) countVersions(ctx context.Context, id string) (int, error) {
-	ctx, cancel := withStoreDeadline(ctx)
+// countVersions is how many versions the secret named id holds, listed under secretstore.CallDeadline.
+func (b *writer) countVersions(ctx context.Context, id string) (int, error) {
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	versions, err := b.versionsOf(ctx, id)
 	return len(versions), err
 }
 
-// deleteOutright deletes the observed secret outright, under storeCallDeadline, conditional on
+// deleteOutright deletes the observed secret outright, under secretstore.CallDeadline, conditional on
 // the etag read before listing its versions, so a replacement cannot be deleted by name alone.
-func (b *gcpBackend) deleteOutright(ctx context.Context, id, etag string) error {
-	ctx, cancel := withStoreDeadline(ctx)
+func (b *writer) deleteOutright(ctx context.Context, id, etag string) error {
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	return b.client.DeleteSecret(ctx, &secretmanagerpb.DeleteSecretRequest{Name: id, Etag: etag})
 }
@@ -155,12 +153,12 @@ func (b *gcpBackend) deleteOutright(ctx context.Context, id, etag string) error 
 // gcloud is a gcloud command line for printing, in backticks, pinned to the sign-in this command
 // used where gcloud can be told it (gcloudPin), and followed by that sign-in's name, so a person
 // runs it as the identity that made what it settles.
-func (b *gcpBackend) gcloud(args ...string) string {
+func (b *writer) gcloud(args ...string) string {
 	quoted := make([]string, len(args))
 	for i, arg := range args {
-		quoted[i] = shellWord(arg)
+		quoted[i] = secretstore.ShellWord(arg)
 	}
-	return fmt.Sprintf("`%sgcloud %s` (as %s)", b.gcloudPin(), strings.Join(quoted, " "), b.identity())
+	return fmt.Sprintf("`%sgcloud %s` (as %s)", b.gcloudPin(), strings.Join(quoted, " "), b.Identity())
 }
 
 // gcloudPin is the shell assignments that make gcloud sign in as this command did, each
@@ -168,47 +166,47 @@ func (b *gcpBackend) gcloud(args ...string) string {
 // configuration CLOUDSDK_ACTIVE_CONFIG_NAME named, the variables that chose a gcloud configuration or login as they
 // were set, CLOUDSDK_CORE_ACCOUNT for the active gcloud account's login, and
 // CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE for the key file GOOGLE_APPLICATION_CREDENTIALS named, as
-// the absolute path of the file this sign-in read (credentialsFile), as signInPrefix writes it;
+// the absolute path of the file this sign-in read (credentialsFile), as RerunPrefix writes it;
 // "" for a token CLOUDSDK_AUTH_ACCESS_TOKEN lent, which gcloud reads from the same environment,
 // and for credentials gcloud cannot be pointed at (the metadata server's, or the well-known
 // file's), which the name after the command (gcloud) says to use.
-func (b *gcpBackend) gcloudPin() string {
+func (b *writer) gcloudPin() string {
 	switch b.source {
 	case sourceChosenGcloud:
-		return b.signInPrefix()
+		return b.RerunPrefix()
 	case sourceActiveGcloud:
-		return "CLOUDSDK_CORE_ACCOUNT=" + shellWord(b.gcloudAccount) + " "
+		return "CLOUDSDK_CORE_ACCOUNT=" + secretstore.ShellWord(b.gcloudAccount) + " "
 	case sourceCredentialsFile:
-		return "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + shellWord(b.credentialsFile) + " "
+		return "CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE=" + secretstore.ShellWord(b.credentialsFile) + " "
 	}
 	return ""
 }
 
 // agentSecrets is an agent-secrets command line for printing, with the sign-in prefix that makes
-// it sign in as this command did (signInPrefix, pipeCommand).
-func (b *gcpBackend) agentSecrets(words ...string) string {
-	return pipeCommand(b.signInPrefix(), words...)
+// it sign in as this command did (RerunPrefix, secretstore.Command).
+func (b *writer) agentSecrets(words ...string) string {
+	return secretstore.Command(b.RerunPrefix(), words...)
 }
 
 // gcpNewSecret is the empty secret create made: name its whole resource name, secretID the id
 // under the project, display the NAME a session asks for it as, token its createLabel value.
-// mayHoldValue and deleted are what unsettled reads while a call of begin, store or discard may be
-// in flight: mayHoldValue is set from the moment store begins the add until a refusal the store
-// answered before acting on it, and from the moment discard finds a version; deleted once the
-// delete is done. An add whose answer was lost leaves mayHoldValue set, and discard then never
+// mayHoldValue and deleted are what Unsettled reads while a call of Begin, Store or Discard may be
+// in flight: mayHoldValue is set from the moment Store begins the add until a refusal the store
+// answered before acting on it, and from the moment Discard finds a version; deleted once the
+// delete is done. An add whose answer was lost leaves mayHoldValue set, and Discard then never
 // deletes the secret: the add may still land.
-type gcpNewSecret struct {
-	b                       *gcpBackend
+type newSecret struct {
+	b                       *writer
 	name, secretID, display string
 	token                   string
 	tags                    map[string]string
 	mayHoldValue, deleted   atomic.Bool
 }
 
-// store adds value as the secret's first version, under storeCallDeadline.
-func (n *gcpNewSecret) store(ctx context.Context, value string) error {
+// Store adds value as the secret's first version, under secretstore.CallDeadline.
+func (n *newSecret) Store(ctx context.Context, value string) error {
 	n.mayHoldValue.Store(true)
-	ctx, cancel := withStoreDeadline(ctx)
+	ctx, cancel := secretstore.WithCallDeadline(ctx)
 	defer cancel()
 	err := n.b.addVersion(ctx, n.name, value)
 	if err != nil && gcpDefiniteRefusal(err) {
@@ -217,19 +215,19 @@ func (n *gcpNewSecret) store(ctx context.Context, value string) error {
 	return err
 }
 
-// discard reads the secret back and goes on through discardRead, which deletes it only where it is
+// Discard reads the secret back and goes on through discardRead, which deletes it only where it is
 // this create's, empty, unchanged, and no add of this create's may still land. A secret already gone
 // is deleted, for this create.
-func (n *gcpNewSecret) discard(ctx context.Context) (discardOutcome, error) {
-	getCtx, cancel := withStoreDeadline(ctx)
+func (n *newSecret) Discard(ctx context.Context) (secretstore.DiscardOutcome, error) {
+	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
 	switch {
 	case status.Code(err) == codes.NotFound:
 		n.deleted.Store(true)
-		return deletedEmpty, nil
+		return secretstore.DeletedEmpty, nil
 	case err != nil:
-		return keptUnknown, fmt.Errorf("reading %s before cleanup failed, so it is left as it is: %s. Reading it failed: %w", n.name, n.unsettled(), err)
+		return secretstore.KeptUnknown, fmt.Errorf("reading %s before cleanup failed, so it is left as it is: %s. Reading it failed: %w", n.name, n.Unsettled(), err)
 	}
 	return n.discardRead(ctx, secret, "")
 }
@@ -238,86 +236,86 @@ func (n *gcpNewSecret) discard(ctx context.Context) (discardOutcome, error) {
 // no version, no add of this create's may still land (mayHoldValue), and its etag is unchanged at
 // the delete; otherwise it leaves it, saying why. Even when this form never added a value, another
 // writer may have filled or replaced the secret while its prompt was open. why, when set, opens
-// each refusal. Each call runs under storeCallDeadline. The one case it cannot see: a version
+// each refusal. Each call runs under secretstore.CallDeadline. The one case it cannot see: a version
 // another writer adds between the list and the delete, which the delete then takes with the secret.
-func (n *gcpNewSecret) discardRead(ctx context.Context, secret *secretmanagerpb.Secret, why string) (discardOutcome, error) {
+func (n *newSecret) discardRead(ctx context.Context, secret *secretmanagerpb.Secret, why string) (secretstore.DiscardOutcome, error) {
 	if why != "" {
 		why += "; "
 	}
 	if secret.GetLabels()[createLabel] != n.token {
-		return keptOthers, fmt.Errorf("%sanother writer now holds %s (its %s label is not this create's), so it is left as it is: `%s` shows it", why, n.name, createLabel, n.agentSecrets("secret", "show", n.display))
+		return secretstore.KeptOthers, fmt.Errorf("%sanother writer now holds %s (its %s label is not this create's), so it is left as it is: `%s` shows it", why, n.name, createLabel, n.agentSecrets("secret", "show", n.display))
 	}
 	addLost := n.mayHoldValue.Load()
 	versions, err := n.b.countVersions(ctx, n.name)
 	switch {
 	case err != nil:
-		return keptUnknown, fmt.Errorf("%slisting the secret's versions failed, so it stays: whether %s holds the value is unknown. `%s` settles it, under a sign-in that may list its versions: `versions: none` is an empty secret, which %s clears, and a version is the value stored. Listing the versions failed: %w",
+		return secretstore.KeptUnknown, fmt.Errorf("%slisting the secret's versions failed, so it stays: whether %s holds the value is unknown. `%s` settles it, under a sign-in that may list its versions: `versions: none` is an empty secret, which %s clears, and a version is the value stored. Listing the versions failed: %w",
 			why, n.name, n.agentSecrets("secret", "show", n.display), n.clearCommand(), err)
 	case versions > 0:
 		n.mayHoldValue.Store(true)
-		return keptMayHoldValue, fmt.Errorf("%s%s holds %d version(s) now, so it stays: the value may have been stored by this create or another writer. Check it with `%s`, and run `%s` to store it again",
+		return secretstore.KeptMayHoldValue, fmt.Errorf("%s%s holds %d version(s) now, so it stays: the value may have been stored by this create or another writer. Check it with `%s`, and run `%s` to store it again",
 			why, n.name, versions, n.agentSecrets("secret", "show", n.display), n.agentSecrets("secret", "set", n.display))
 	case addLost:
-		return keptMayHoldValue, fmt.Errorf("%sthe store's answer to the add leaves open whether it stored the value, and %s showed no version when listed, but a late add may still land, so it stays: `%s` shows whether the value is there, `versions: none` being an empty secret, which %s clears",
+		return secretstore.KeptMayHoldValue, fmt.Errorf("%sthe store's answer to the add leaves open whether it stored the value, and %s showed no version when listed, but a late add may still land, so it stays: `%s` shows whether the value is there, `versions: none` being an empty secret, which %s clears",
 			why, n.name, n.agentSecrets("secret", "show", n.display), n.clearCommand())
 	}
 	if err := n.b.deleteOutright(ctx, n.name, secret.GetEtag()); err != nil {
 		switch {
 		case status.Code(err) == codes.FailedPrecondition || status.Code(err) == codes.Aborted:
-			return keptOthers, fmt.Errorf("%s%s changed before cleanup could delete it, so it is left as it is: `%s` shows it. Deleting it failed: %w", why, n.name, n.agentSecrets("secret", "show", n.display), err)
+			return secretstore.KeptOthers, fmt.Errorf("%s%s changed before cleanup could delete it, so it is left as it is: `%s` shows it. Deleting it failed: %w", why, n.name, n.agentSecrets("secret", "show", n.display), err)
 		case gcpDefiniteRefusal(err):
-			return keptEmpty, fmt.Errorf("%san empty secret named %s stays in the store: clear it with %s. Deleting it failed: %w", why, n.name, n.clearCommand(), err)
+			return secretstore.KeptEmpty, fmt.Errorf("%san empty secret named %s stays in the store: clear it with %s. Deleting it failed: %w", why, n.name, n.clearCommand(), err)
 		}
 		return n.settleLostDelete(ctx, why, err)
 	}
 	n.deleted.Store(true)
-	return deletedEmpty, nil
+	return secretstore.DeletedEmpty, nil
 }
 
 // settleLostDelete answers what a DeleteSecret whose answer, deleteErr, leaves open whether the
 // store acted (no gcpDefiniteRefusal: a lost answer, a deadline, an outage) left, by reading the
-// secret back under storeCallDeadline: none found is the delete done; another writer's is left as
+// secret back under secretstore.CallDeadline: none found is the delete done; another writer's is left as
 // it is; and a read that fails leaves it unknown, so the store may still hold it. This create's
 // secret still there has its versions listed again, since another writer may have added one
 // between the cleanup's list and the delete: with none it stays, empty, though a delete the store
 // has not finished may yet land; with one it may hold a value, so it stays with no command that
-// deletes it (keptMayHoldValue, which the broker rereads); and a list that fails names the delete
+// deletes it (secretstore.KeptMayHoldValue, which the broker rereads); and a list that fails names the delete
 // only for a secret shown with no version. It says the secret stays only where the store showed it.
-func (n *gcpNewSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (discardOutcome, error) {
+func (n *newSecret) settleLostDelete(ctx context.Context, why string, deleteErr error) (secretstore.DiscardOutcome, error) {
 	lost := why + "the store's answer to the delete leaves open whether it deleted " + n.name
-	getCtx, cancel := withStoreDeadline(ctx)
+	getCtx, cancel := secretstore.WithCallDeadline(ctx)
 	secret, err := n.b.client.GetSecret(getCtx, &secretmanagerpb.GetSecretRequest{Name: n.name})
 	cancel()
 	switch {
 	case status.Code(err) == codes.NotFound:
 		n.deleted.Store(true)
-		return deletedEmpty, nil
+		return secretstore.DeletedEmpty, nil
 	case err != nil:
-		return keptUnknown, fmt.Errorf("%s, and reading it back failed, so the store may still hold it: `%s` says whether it is there, `versions: none` being this create's empty secret, which %s clears. Deleting it failed: %w; reading it back failed: %v",
+		return secretstore.KeptUnknown, fmt.Errorf("%s, and reading it back failed, so the store may still hold it: `%s` says whether it is there, `versions: none` being this create's empty secret, which %s clears. Deleting it failed: %w; reading it back failed: %v",
 			lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr, err)
 	case secret.GetLabels()[createLabel] != n.token:
-		return keptOthers, fmt.Errorf("%s, and reading it back finds a secret this create did not make (its %s label is not this create's), so it is left as it is: `%s` shows it. Deleting it failed: %w",
+		return secretstore.KeptOthers, fmt.Errorf("%s, and reading it back finds a secret this create did not make (its %s label is not this create's), so it is left as it is: `%s` shows it. Deleting it failed: %w",
 			lost, createLabel, n.agentSecrets("secret", "show", n.display), deleteErr)
 	}
 	versions, err := n.b.countVersions(ctx, n.name)
 	switch {
 	case err != nil:
-		return keptUnknown, fmt.Errorf("%s, and reading it back still finds it, but listing its versions failed, so whether it holds a value is unknown: `%s` says, and only with `versions: none` is it this create's empty secret, which %s then clears. Deleting it failed: %w; listing the versions failed: %v",
+		return secretstore.KeptUnknown, fmt.Errorf("%s, and reading it back still finds it, but listing its versions failed, so whether it holds a value is unknown: `%s` says, and only with `versions: none` is it this create's empty secret, which %s then clears. Deleting it failed: %w; listing the versions failed: %v",
 			lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr, err)
 	case versions > 0:
 		n.mayHoldValue.Store(true)
-		return keptMayHoldValue, fmt.Errorf("%s, and reading it back finds it, and it holds %d version(s) now, so it stays: another writer may have stored a value. Check it with `%s`, and run `%s` to store yours. Deleting it failed: %w",
+		return secretstore.KeptMayHoldValue, fmt.Errorf("%s, and reading it back finds it, and it holds %d version(s) now, so it stays: another writer may have stored a value. Check it with `%s`, and run `%s` to store yours. Deleting it failed: %w",
 			lost, versions, n.agentSecrets("secret", "show", n.display), n.agentSecrets("secret", "set", n.display), deleteErr)
 	}
-	return keptEmpty, fmt.Errorf("%s, and reading it back still finds it, with no version, so this create's empty secret stays in the store unless a delete the store has not finished lands: `%s` says whether it is there, and %s clears it. Deleting it failed: %w",
+	return secretstore.KeptEmpty, fmt.Errorf("%s, and reading it back still finds it, with no version, so this create's empty secret stays in the store unless a delete the store has not finished lands: `%s` says whether it is there, and %s clears it. Deleting it failed: %w",
 		lost, n.agentSecrets("secret", "show", n.display), n.clearCommand(), deleteErr)
 }
 
-// unsettled says what the store may hold should the form end now: nothing once the empty secret
+// Unsettled says what the store may hold should the form end now: nothing once the empty secret
 // is deleted; the secret, empty or holding the value, once the add has begun and nothing has shown
 // it empty, which `secret show` tells apart; else the empty secret, or another writer's secret of
 // that name. Each names the command that clears the empty secret.
-func (n *gcpNewSecret) unsettled() string {
+func (n *newSecret) Unsettled() string {
 	switch {
 	case n.deleted.Load():
 		return fmt.Sprintf("the empty secret %s is deleted, so nothing stays in the store", n.name)
@@ -330,15 +328,15 @@ func (n *gcpNewSecret) unsettled() string {
 }
 
 // clearCommand is the gcloud command that deletes the secret outright, as gcloud prints it.
-func (n *gcpNewSecret) clearCommand() string {
+func (n *newSecret) clearCommand() string {
 	return n.b.gcloud("secrets", "delete", n.secretID, "--project", n.b.settings.GCPProject)
 }
 
 // agentSecrets is an agent-secrets command line signing in as this create did.
-func (n *gcpNewSecret) agentSecrets(words ...string) string { return n.b.agentSecrets(words...) }
+func (n *newSecret) agentSecrets(words ...string) string { return n.b.agentSecrets(words...) }
 
-// madeBeforeValue is true: begin makes the empty secret, which waits in the store for its value.
-func (*gcpNewSecret) madeBeforeValue() bool { return true }
+// MadeBeforeValue is true: Begin makes the empty secret, which waits in the store for its value.
+func (*newSecret) MadeBeforeValue() bool { return true }
 
 // gcpDefiniteRefusal reports whether err is an answer Secret Manager gives before it acts on a
 // call: the request refused as malformed, unauthorized, out of quota or against the secret's state.

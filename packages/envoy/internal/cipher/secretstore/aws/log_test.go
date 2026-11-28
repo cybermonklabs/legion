@@ -1,8 +1,7 @@
-// packages/envoy/cmd/cipher/secret_aws_log_test.go
-//
 // The AWS SDK's own log: it writes WARN lines to the process's stderr itself, past every message
-// this client words, so the clients awsClients builds must log nothing.
-package main
+// the writer words, so the clients loadClients builds must log nothing.
+
+package aws_test
 
 import (
 	"context"
@@ -15,8 +14,11 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	sdkconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
+
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // captureStderr is what fn writes to the process's stderr, os.Stderr itself, while it runs.
@@ -46,7 +48,7 @@ func captureStderr(t *testing.T, fn func()) string {
 
 // TestTheAWSSDKsOwnLogWritesNothing: the AWS SDK logs a response's Date header it cannot parse,
 // quoted whole, as a WARN line on the process's stderr, and whoever answers at AWS_ENDPOINT_URL
-// writes that header: here a made-up secret. A call through the clients awsClients builds writes
+// writes that header: here a made-up secret. A call through the clients loadClients builds writes
 // none of it. Controls: the stand-in answered the call, which succeeded; the capture sees a line
 // written to the process's stderr; and the same call through a client the SDK builds with its
 // default logger writes the planted header there, so the SDK still logs that line and the row
@@ -64,13 +66,13 @@ func TestTheAWSSDKsOwnLogWritesNothing(t *testing.T) {
 			`</GetCallerIdentityResult><ResponseMetadata><RequestId>r5</RequestId></ResponseMetadata></GetCallerIdentityResponse>`))
 	}))
 	t.Cleanup(srv.Close)
-	awsSignInOnly(t)
+	awstest.SignInOnly(t)
 	t.Setenv("AWS_ENDPOINT_URL", srv.URL)
 	const seen = "control: a line the capture sees"
 	var callErr error
 	written := captureStderr(t, func() {
 		fmt.Fprintln(os.Stderr, seen)
-		_, identity, _, err := awsClients(context.Background(), "us-east-1")
+		_, identity, _, err := awsstore.LoadClients(context.Background(), "us-east-1")
 		if err != nil {
 			callErr = err
 			return
@@ -84,7 +86,7 @@ func TestTheAWSSDKsOwnLogWritesNothing(t *testing.T) {
 	t.Run("control: the SDK's default logger writes the planted header", func(t *testing.T) {
 		var callErr error
 		written := captureStderr(t, func() {
-			cfg, err := config.LoadDefaultConfig(context.Background(), config.WithRegion("us-east-1"))
+			cfg, err := sdkconfig.LoadDefaultConfig(context.Background(), sdkconfig.WithRegion("us-east-1"))
 			if err != nil {
 				callErr = err
 				return

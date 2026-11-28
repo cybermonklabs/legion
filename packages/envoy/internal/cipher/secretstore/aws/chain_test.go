@@ -1,8 +1,7 @@
-// packages/envoy/cmd/cipher/aws_chain_test.go
-//
 // A Secrets Manager call's failure and a sign-in's are printed by one chain (awsWords), so a call
 // that failed for a reason of its sign-in's says it as the sign-in would.
-package main
+
+package aws_test
 
 import (
 	"context"
@@ -14,10 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/config"
+	sdkconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+
+	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
 )
 
 // TestAStoreCallFailsInTheSignInsWords: a Secrets Manager call whose failure is one of its
@@ -42,7 +44,7 @@ func TestAStoreCallFailsInTheSignInsWords(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Setenv("AWS_CONFIG_FILE", dir)
-			return config.SharedConfigLoadError{Filename: dir, Err: errors.New("read all: read " + dir + ": is a directory")}
+			return sdkconfig.SharedConfigLoadError{Filename: dir, Err: errors.New("read all: read " + dir + ": is a directory")}
 		}, "Secrets Manager ListSecrets: read the file AWS_CONFIG_FILE names: read: is a directory"},
 		{"a container token file the refresh could not read", func(t *testing.T) error {
 			t.Setenv("AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", filepath.Join(t.TempDir(), planted))
@@ -60,7 +62,7 @@ func TestAStoreCallFailsInTheSignInsWords(t *testing.T) {
 			for _, name := range []string{"AWS_CONFIG_FILE", "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE", "AWS_MAX_ATTEMPTS"} {
 				t.Setenv(name, "")
 			}
-			wantNamedNotPrinted(t, "the store call's words", awsStoreFailure("ListSecrets", call(row.err(t))).Error(), []string{row.says}, planted)
+			wantNamedNotPrinted(t, "the store call's words", awsstore.StoreFailure("ListSecrets", call(row.err(t))).Error(), []string{row.says}, planted)
 		})
 	}
 }
@@ -78,11 +80,11 @@ func TestASignInThatTimedOutNamesTheAddressSettings(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = silent.Close() })
-	awsSignInOnly(t)
+	awstest.SignInOnly(t)
 	t.Setenv("AWS_ENDPOINT_URL_STS", "http://"+silent.Addr().String()+"/"+planted)
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_, identity, _, err := awsClients(ctx, "us-east-1")
+	_, identity, _, err := awsstore.LoadClients(ctx, "us-east-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +92,6 @@ func TestASignInThatTimedOutNamesTheAddressSettings(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("control: the call failed with %v, not its deadline, so the row is blind", err)
 	}
-	wantNamedNotPrinted(t, "the sign-in's failure", awsSignInFailure("read your AWS sign-in", err).Error(),
+	wantNamedNotPrinted(t, "the sign-in's failure", awsstore.SignInFailure("read your AWS sign-in", err).Error(),
 		[]string{"read your AWS sign-in: context deadline exceeded (the address is not printed; AWS_ENDPOINT_URL_STS is set)"}, planted)
 }

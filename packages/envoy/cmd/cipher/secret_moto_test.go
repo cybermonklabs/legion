@@ -4,7 +4,7 @@
 //
 // The built agent-secrets binary against moto's AWS (Secrets Manager, STS and IAM), with no AWS
 // account: the AWS SDK's own profile and credential-chain resolution, which the in-process tests
-// replace (useAWS), decides the sign-in, and moto's IAM checks decide what it may do. moto ignores
+// replace (awstest.Use), decides the sign-in, and moto's IAM checks decide what it may do. moto ignores
 // a policy's conditions, so no IAM policy is proved here (the decision
 // "AWS is proved without an AWS account"). packages/envoy/scripts/aws-moto-check.sh starts moto
 // and runs this test:
@@ -95,7 +95,7 @@ func motoUser(t *testing.T, endpoint string, root motoKeys, name, policy string)
 // the config holds with no credential of its own lets that endpoint sign in, and the using line
 // says so.
 func TestTheBuiltCLIAgainstMoto(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:293).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
 	endpoint := os.Getenv("AGENT_SECRETS_MOTO_URL")
 	if endpoint == "" {
 		t.Fatal("AGENT_SECRETS_MOTO_URL is unset: run packages/envoy/scripts/aws-moto-check.sh, which starts moto and names it")

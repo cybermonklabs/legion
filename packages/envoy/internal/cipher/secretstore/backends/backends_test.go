@@ -4,7 +4,9 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -102,5 +104,99 @@ func TestEachRegistryFileIsBehindItsStoresTag(t *testing.T) {
 	}
 	if checked == 0 {
 		t.Fatal("UNKNOWN: the registry directory holds no store file")
+	}
+}
+
+// module answers the path and the root directory of the module this package is in.
+func module(t *testing.T) (path, root string) {
+	t.Helper()
+	out, err := exec.Command("go", "list", "-f", "{{.Module.Path}} {{.Module.Dir}}", ".").Output()
+	if err != nil {
+		t.Fatalf("go list .: %v", err)
+	}
+	path, root, ok := strings.Cut(strings.TrimSpace(string(out)), " ")
+	if !ok || path == "" || root == "" {
+		t.Fatalf("UNKNOWN: go list answered %q, no module path and root", out)
+	}
+	return path, root
+}
+
+// under reports whether path is prefix or a package below it.
+func under(path, prefix string) bool {
+	return path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+// testSupport reports whether path is a test-support package: one whose last path element ends in
+// "test" (awstest, gcptest, policytest, secretstoretest, ciphertest, …).
+func testSupport(path string) bool {
+	return strings.HasSuffix(path[strings.LastIndex(path, "/")+1:], "test")
+}
+
+// goList runs go list with args from the module's root and answers its output's lines.
+func goList(t *testing.T, root string, args ...string) []string {
+	t.Helper()
+	cmd := exec.Command("go", append([]string{"list"}, args...)...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		var stderr string
+		if exit, ok := err.(*exec.ExitError); ok {
+			stderr = string(exit.Stderr)
+		}
+		t.Fatalf("go list %s: %v: %s", strings.Join(args, " "), err, stderr)
+	}
+	return strings.Split(strings.TrimSpace(string(out)), "\n")
+}
+
+// TestEachStoreStaysInItsPackage (c-store-boundary): no package of the module but a store's own
+// package and those under it, the registry and the test-support packages imports that store's
+// package or one of its ServiceSDKs, so a store's code and its SDK enter a binary through the
+// registry alone, and a build tag that leaves the store out leaves them out.
+func TestEachStoreStaysInItsPackage(t *testing.T) {
+	modulePath, root := module(t)
+	all := backends.All()
+	if len(all) == 0 {
+		t.Fatal("the registry holds no store")
+	}
+	registry := modulePath + "/internal/cipher/secretstore/backends"
+	lines := goList(t, root, "-f", "{{.ImportPath}} {{join .Imports \" \"}}", "./...")
+	if len(lines) < 10 {
+		t.Fatalf("go list listed %d packages of the module; the walk read nothing", len(lines))
+	}
+	for _, b := range all {
+		own := reflect.TypeOf(b).PkgPath()
+		forbidden := append([]string{own}, b.ServiceSDKs()...)
+		for _, line := range lines {
+			fields := strings.Fields(line)
+			if len(fields) == 0 {
+				continue
+			}
+			pkg := fields[0]
+			if under(pkg, own) || pkg == registry || testSupport(pkg) {
+				continue
+			}
+			for _, imp := range fields[1:] {
+				for _, f := range forbidden {
+					if under(imp, f) {
+						t.Errorf("%s imports %s, which only the %s store may import", pkg, imp, b.ID())
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestNoBinaryLinksATestSupportPackage: neither binary that carries a store (cipherd, agent-secrets)
+// links a test-support package, whose fakes stand in for a store.
+func TestNoBinaryLinksATestSupportPackage(t *testing.T) {
+	modulePath, root := module(t)
+	deps := goList(t, root, "-deps", "./cmd/cipherd", "./cmd/cipher")
+	if len(deps) < 10 {
+		t.Fatalf("go list -deps listed %d packages; the walk read nothing", len(deps))
+	}
+	for _, dep := range deps {
+		if under(dep, modulePath) && testSupport(dep) {
+			t.Errorf("a binary links %s, a test-support package", dep)
+		}
 	}
 }

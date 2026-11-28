@@ -114,7 +114,7 @@ func runResolved(t *testing.T, hosts map[string]string, broker, keyDir string, e
 // difference is TestMain's launchRenewer, which starts no sign-in renewer, and a row that
 // runResolved runs holds no sign-in to renew (hostIsolation).
 func TestAgentSecretsResolvedHelper(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it replaces a value of the whole process (main.useResolver, http.DefaultTransport set at resolver_test.go:83); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98); it exits the test binary with run's exit code (os.Exit at resolver_test.go:127).
+	// Not parallel: it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it replaces a value of the whole process (main.useResolver, http.DefaultTransport set at resolver_test.go:83); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
 	encoded := os.Getenv(resolvedHostsVar)
 	if encoded == "" {
 		t.Skip("subprocess helper")

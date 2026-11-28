@@ -1,11 +1,9 @@
-// packages/envoy/cmd/cipher/gcp_source.go
-//
-// The sources a store command on Google Cloud takes its credential from, in the order it tries
-// them (newGCPBackend): a token or a credentials file the environment names, then a gcloud
-// configuration or login it chooses, then a file the person set up, then the active gcloud login,
-// then the machine's own identity. A source that is absent is skipped; one that is present but
-// fails stops the command.
-package main
+// The sources the GCP writer takes its credential from, in the order it tries them (newWriter): a
+// token or a credentials file the environment names, then a gcloud configuration or login it
+// chooses, then a file the person set up, then the active gcloud login, then the machine's own
+// identity. A source that is absent is skipped; one that is present but fails stops the command.
+
+package gcp
 
 import (
 	"fmt"
@@ -18,7 +16,7 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// gcpSource is one Google credential source, in the order newGCPBackend tries them.
+// gcpSource is one Google credential source, in the order newWriter tries them.
 type gcpSource int
 
 const (
@@ -77,10 +75,10 @@ func gcloudConfigDir() string {
 	return ""
 }
 
-// wellKnownCredentialsFile is the Application Default Credentials file
+// WellKnownCredentialsFile is the Application Default Credentials file
 // `gcloud auth application-default login` writes, in gcloudConfigDir; "" where there is no such
 // directory.
-func wellKnownCredentialsFile() string {
+func WellKnownCredentialsFile() string {
 	dir := gcloudConfigDir()
 	if dir == "" {
 		return ""
@@ -144,7 +142,7 @@ func gcloudConfigurationList() string {
 // developer's Compute Engine VM on 2026-11-15, where `config list --configuration=<name>` for a
 // person's configuration named the VM's account and `config configurations describe <name>` named
 // none. A file it cannot read is an error, with the system's reason alone (redact.File): the name
-// is one this machine holds (newGCPBackend refuses any other first), and the path is gcloud's
+// is one this machine holds (newWriter refuses any other first), and the path is gcloud's
 // directory's.
 func gcloudConfigurationAccount(name string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(gcloudConfigDir(), "configurations", "config_"+name))

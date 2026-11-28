@@ -1,7 +1,7 @@
 // packages/envoy/cmd/cipher/secret_test.go
 //
 // The secret forms run in-process here, against a awstest.Local standing in for Secrets Manager,
-// a fakeSTS answering one sign-in, and a fake broker answering GET /v1/settings and the reread.
+// a awstest.STS answering one sign-in, and a fake broker answering GET /v1/settings and the reread.
 package main
 
 import (
@@ -18,63 +18,74 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	secretmanager "cloud.google.com/go/secretmanager/apiv1"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/grpc"
 
 	"github.com/sjawhar/envoy/internal/cipher/api"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 func TestSecretInvalidUTF8WritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, terminal := range []bool{false, true} {
-		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "HELD_KEY"}} {
 			t.Run(fmt.Sprintf("%s/terminal=%t", args[0], terminal), func(t *testing.T) {
-				local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-				broker := startSecretBroker(t, servedBy(local))
-				useAWS(t, local, testAccount, adaSignIn)
-				if terminal {
-					useTerminal(t, "private-\xff-value")
-				} else {
-					useStdin(t, "private-\xff-value\n")
-				}
-				out, errOut, code := runSecret(args...)
-				if code != exitUsageError || !strings.Contains(errOut, "UTF-8") {
-					t.Fatalf("exit=%d stderr=%q; want UTF-8 usage error", code, errOut)
-				}
-				if strings.Contains(out+errOut, "private-") {
-					t.Fatal("refusal printed the value")
-				}
-				if valueOf(t, local, "HELD_KEY") != "v1" {
-					t.Fatal("set changed the stored value")
-				}
-				if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-					t.Fatal("create wrote the invalid value")
-				}
-				if rereads, _ := broker.recorded(); len(rereads) != 0 {
-					t.Fatal("refused value reached the broker reread")
-				}
+				onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+					putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					if terminal {
+						useTerminal(t, "private-\xff-value")
+					} else {
+						useStdin(t, "private-\xff-value\n")
+					}
+					out, errOut, code := runSecret(args...)
+					if code != exitUsageError || !strings.Contains(errOut, "UTF-8") {
+						t.Fatalf("exit=%d stderr=%q; want UTF-8 usage error", code, errOut)
+					}
+					if strings.Contains(out+errOut, "private-") {
+						t.Fatal("refusal printed the value")
+					}
+					if store.value(t, "HELD_KEY") != "v1" {
+						t.Fatal("set changed the stored value")
+					}
+					if store.has(t, "NEW_KEY") {
+						t.Fatal("create wrote the invalid value")
+					}
+					// A store whose create makes the secret before the value (GCP's) discards the
+					// empty secret and asks the broker to reread it; that reread carries no value.
+					want := 0
+					if args[0] == "create" && store.madeBeforeValue() {
+						want = 1
+					}
+					if rereads, _ := broker.recorded(); len(rereads) != want {
+						t.Fatalf("rereads = %v; want %d: the refused value reached the broker reread", rereads, want)
+					}
+				})
 			})
 		}
 	}
 }
 
 func TestSecretDerivedOwnerMustBeAnEmailBeforeWriting(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, session := range []string{"ada", "shared", "ada@example", "ada..name", "ada@example.com/extra"} {
 		for _, form := range []string{"create", "retag"} {
 			t.Run(form+"/"+session, func(t *testing.T) {
 				local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 				startSecretBroker(t, servedBy(local))
-				useAWS(t, local, testAccount, strings.TrimSuffix(adaSignIn, "ada@example.com")+session)
+				awstest.Use(t, local, testAccount, strings.TrimSuffix(adaSignIn, "ada@example.com")+session)
 				useStdin(t, "value")
 				args := []string{"retag", "HELD_KEY", "--owner", "me"}
 				if form == "create" {
@@ -96,12 +107,12 @@ func TestSecretDerivedOwnerMustBeAnEmailBeforeWriting(t *testing.T) {
 }
 
 func TestSecretWriteSignInAcceptsAWSPartitions(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, partition := range []string{"aws", "aws-cn", "aws-us-gov", "aws-iso"} {
 		t.Run(partition, func(t *testing.T) {
 			local := awstest.NewLocal()
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, local, testAccount, strings.Replace(adaSignIn, "arn:aws:", "arn:"+partition+":", 1))
+			awstest.Use(t, local, testAccount, strings.Replace(adaSignIn, "arn:aws:", "arn:"+partition+":", 1))
 			useStdin(t, "value")
 			_, errOut, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 			if code != 0 {
@@ -115,14 +126,14 @@ func TestSecretWriteSignInAcceptsAWSPartitions(t *testing.T) {
 }
 
 func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:126); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:129).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:138); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:141).
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"},
 		{"set", "HELD_KEY"},
 	} {
 		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		if args[0] == "set" {
 			t.Setenv("AWS_PROFILE", "ada's work")
 		}
@@ -220,7 +231,13 @@ func (b *secretBroker) endEnrollment(enrollmentID string) {
 // about a form with no identity sets up the environment that has none (withNoBrokerIdentity).
 func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBroker {
 	t.Helper()
-	return startSecretBrokerWith(t, Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1", SecretTypeTag: true}, answer)
+	return startSecretBrokerWith(t, awsTestSettings(), answer)
+}
+
+// awsTestSettings are an AWS broker's settings: policytest's namespace in testAccount, as a broker
+// of this release that reads the type tag answers them.
+func awsTestSettings() Settings {
+	return Settings{SecretsPrefix: policytest.Prefix, SecretTypeTag: true, Fields: map[string]string{"kms_key_arn": awstest.KeyARN, "aws_account_id": testAccount, "aws_region": "us-east-1"}}
 }
 
 // readNoTypeTag makes the broker answer GET /v1/settings from now on as a broker from before the
@@ -258,7 +275,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
-			fail, failSigned, signedCode, signedError := b.fail, b.failSigned, b.signedCode, b.signedError
+			fail, failSigned, signedCode, signedError, answer := b.fail, b.failSigned, b.signedCode, b.signedError, b.answer
 			b.mu.Unlock()
 			if fail != 0 {
 				w.WriteHeader(fail)
@@ -279,7 +296,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 				writeJSON(w, map[string]string{"code": signedCode, "error": signedError})
 				return
 			}
-			reread := b.answer(name)
+			reread := answer(name)
 			b.mu.Lock()
 			b.rereads = append(b.rereads, name)
 			b.answers = append(b.answers, reread)
@@ -332,7 +349,7 @@ func (b *secretBroker) recorded() ([]string, []Reread) {
 // servedBy answers a reread as the broker would from what sm holds: absent for a secret it does
 // not hold or one scheduled for deletion, no-current-value for one with no AWSCURRENT version, and
 // otherwise what its tags answer (servedAs).
-func servedBy(sm secretsAPI) func(name string) Reread {
+func servedBy(sm awsstore.WriterAPI) func(name string) Reread {
 	return func(name string) Reread {
 		out, err := sm.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID(name))})
 		switch {
@@ -358,25 +375,6 @@ func servedAs(name string, tags map[string]string) Reread {
 		return Reread{Name: name, Reason: policy.ReasonGitHubOwnersMalformed}
 	}
 	return Reread{Name: name, Served: true, Type: secretType}
-}
-
-// useAWS makes the secret forms' AWS clients sm and a fakeSTS signed in as arn in account, with no
-// credential sources reported, for the rest of t, and clears every variable that chooses where the
-// AWS SDK takes the sign-in from, so a developer's own shell names no other source.
-func useAWS(t *testing.T, sm secretsAPI, account, arn string) {
-	t.Helper()
-	for _, name := range []string{
-		"AWS_ACCESS_KEY_ID", "AWS_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY", "AWS_SECRET_KEY",
-		"AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_PROFILE", "AWS_DEFAULT_PROFILE",
-		"AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI",
-	} {
-		t.Setenv(name, "")
-	}
-	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-		return sm, fakeSTS{account: account, arn: arn}, nil, nil
-	}
-	t.Cleanup(func() { awsClients = restore })
 }
 
 // useStdin makes value the secret forms' standard input for the rest of t.
@@ -454,13 +452,6 @@ func valueOf(t *testing.T, local *awstest.Local, name string) string {
 	return aws.ToString(out.SecretString)
 }
 
-// fakeSTS answers GetCallerIdentity with one sign-in.
-type fakeSTS struct{ account, arn string }
-
-func (f fakeSTS) GetCallerIdentity(context.Context, *sts.GetCallerIdentityInput, ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error) {
-	return &sts.GetCallerIdentityOutput{Account: aws.String(f.account), Arn: aws.String(f.arn)}, nil
-}
-
 // refusingCreates is a awstest.Local whose CreateSecret IAM refuses, as it refuses a sign-in no
 // policy grants secretsmanager:CreateSecret.
 type refusingCreates struct{ *awstest.Local }
@@ -479,7 +470,7 @@ func (refusingCreates) CreateSecret(context.Context, *secretsmanager.CreateSecre
 // names that too. A command it prints for running again carries the profile variable only where
 // that profile was chosen.
 func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:533); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:554).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:525); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:546).
 	const tokenFile = "/var/run/secrets/eks.amazonaws.com/serviceaccount/token"
 	const endpoint = "http://127.0.0.1:9/credentials"
 	for _, row := range []struct {
@@ -528,8 +519,8 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			startSecretBroker(t, servedBy(local))
-			useAWS(t, refusingCreates{local}, testAccount, adaSignIn)
-			useAWSSources(t, row.sources)
+			awstest.Use(t, refusingCreates{local}, testAccount, adaSignIn)
+			awstest.UseSources(t, row.sources)
 			for name, value := range row.env {
 				t.Setenv(name, value)
 			}
@@ -559,11 +550,11 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 			}
 
 			// A sign-in in another account is refused, and the refusal says how to choose another.
-			inner := awsClients
-			awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+			inner := awsstore.CurrentHooks().Clients
+			awstest.UseClients(t, func(ctx context.Context, region string) (awsstore.WriterAPI, awsstore.STSAPI, []aws.CredentialSource, error) {
 				sm, _, sources, err := inner(ctx, region)
-				return sm, fakeSTS{account: "999999999999", arn: "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"}, sources, err
-			}
+				return sm, awstest.STS{Account: "999999999999", ARN: "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"}, sources, err
+			})
 			_, stderr, code = runSecret("list")
 			if want := "sign in to account " + testAccount + "; " + row.another; code != 1 || !strings.Contains(stderr, want) {
 				t.Fatalf("list in another account: exit %d, stderr %q; want 1 naming %q", code, stderr, want)
@@ -572,23 +563,11 @@ func TestAWSRefusalNamesTheSourceAndTheChoice(t *testing.T) {
 	}
 }
 
-// useAWSSources makes the AWS clients awsClients answers for the rest of t report sources as the
-// sources the SDK resolved their credential from.
-func useAWSSources(t *testing.T, sources []aws.CredentialSource) {
-	t.Helper()
-	inner := awsClients
-	awsClients = func(ctx context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-		sm, st, _, err := inner(ctx, region)
-		return sm, st, sources, err
-	}
-	t.Cleanup(func() { awsClients = inner })
-}
-
 // TestEverySecretFormNamesTheSourceItUses: every secret form, on each store, prints exactly one
 // line naming the credential it signs in to the store with, and prints it before its first call of
 // the store.
 func TestEverySecretFormNamesTheSourceItUses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		store.put(t, "HELD_TEST", map[string]string{policy.TagOwner: "ada@example.com", policy.TagTier: policy.TierAgent}, "v1")
 		for _, form := range []struct {
@@ -658,23 +637,21 @@ func (w *usingWatch) String() string {
 // region in kms_key_arn, before any AWS call: the account the sign-in is checked against is the key
 // ARN's, not a field a spoofed or plain-http broker could set on its own.
 func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:687); it sets a package variable the package's other tests read (awsClients set at secret_test.go:663).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:665).
 	calledAWS := false
-	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+	awstest.UseClients(t, func(context.Context, string) (awsstore.WriterAPI, awsstore.STSAPI, []aws.CredentialSource, error) {
 		calledAWS = true
-		return nil, nil, nil, fmt.Errorf("awsClients must not run")
-	}
-	t.Cleanup(func() { awsClients = restore })
+		return nil, nil, nil, fmt.Errorf("the AWS clients must not load")
+	})
 	region, account := awsstore.KeyARNParts(awstest.KeyARN)
 	for _, tc := range []struct {
 		name     string
 		settings Settings
 		want     string
 	}{
-		{"account differs", Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: "999999999999", AWSRegion: region}, "999999999999"},
-		{"region differs", Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: account, AWSRegion: "eu-west-1"}, "eu-west-1"},
-		{"invalid key ARN", Settings{SecretsPrefix: policytest.Prefix, KMSKeyARN: "not-an-arn", AWSAccountID: account, AWSRegion: region}, "invalid KMS key ARN"},
+		{"account differs", Settings{SecretsPrefix: policytest.Prefix, Fields: map[string]string{"kms_key_arn": awstest.KeyARN, "aws_account_id": "999999999999", "aws_region": region}}, "999999999999"},
+		{"region differs", Settings{SecretsPrefix: policytest.Prefix, Fields: map[string]string{"kms_key_arn": awstest.KeyARN, "aws_account_id": account, "aws_region": "eu-west-1"}}, "eu-west-1"},
+		{"invalid key ARN", Settings{SecretsPrefix: policytest.Prefix, Fields: map[string]string{"kms_key_arn": "not-an-arn", "aws_account_id": account, "aws_region": region}}, "invalid KMS key ARN"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -700,39 +677,52 @@ func TestSecretRefusesSettingsInconsistentWithKeyARN(t *testing.T) {
 // The secret forms refuse a non-https broker URL unless its host is loopback: the forms trust the
 // broker's settings, so a plain-http broker on the network is refused before any call.
 func TestSecretRefusesNonLoopbackHTTPBrokerURL(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:710); it sets a package variable the package's other tests read (awsClients set at secret_test.go:705).
-	calledAWS := false
-	restore := awsClients
-	awsClients = func(context.Context, string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
-		calledAWS = true
-		return nil, nil, nil, fmt.Errorf("awsClients must not run")
-	}
-	t.Cleanup(func() { awsClients = restore })
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:682).
+	opened := storeOpens(t)
 	t.Setenv("AGENT_SECRETS_URL", "http://example.internal")
-	for _, form := range [][]string{{"list"}, {"show", "KEY"}, {"create", "KEY", "--owner", "me", "--tier", "agent"}, {"set", "KEY"}, {"retag", "KEY", "--owner", "me"}, {"delete", "KEY"}, {"restore", "KEY"}} {
+	for _, form := range [][]string{{"list"}, {"show", "KEY"}, {"create", "KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "KEY"}, {"retag", "KEY", "--owner", "ada@example.com"}, {"delete", "KEY"}, {"restore", "KEY"}} {
 		_, errOut, code := runSecret(form...)
 		if code != exitUsageError || !strings.Contains(errOut, "must be https") || !strings.Contains(errOut, "loopback") {
 			t.Fatalf("%v: exit=%d stderr=%q; want a usage error naming the https/loopback rule", form, code, errOut)
 		}
 	}
-	if calledAWS {
-		t.Fatal("the URL refusal must happen before any AWS call")
+	if n := opened(); n != 0 {
+		t.Fatalf("the URL refusal opened %d store clients; it must come before any store is opened", n)
 	}
+}
+
+// storeOpens counts, for the rest of t, each store client a form opens on any store the registry
+// holds: an AWS client loaded, a Secret Manager client dialled, a memory store opened. None of
+// them reaches a store: the AWS and GCP opens fail, and Google's sign-in is a lent token.
+func storeOpens(t *testing.T) func() int {
+	t.Helper()
+	var opened atomic.Int32
+	awstest.UseClients(t, func(context.Context, string) (awsstore.WriterAPI, awsstore.STSAPI, []aws.CredentialSource, error) {
+		opened.Add(1)
+		return nil, nil, nil, fmt.Errorf("the AWS clients must not load")
+	})
+	gcptest.UseDial(t, func(context.Context, *google.Credentials, grpc.UnaryClientInterceptor) (*secretmanager.Client, error) {
+		opened.Add(1)
+		return nil, fmt.Errorf("the Secret Manager client must not be dialled")
+	})
+	gcptest.UseLentAccessToken(t, "lent-store-opens-token", "ada@example.com")
+	t.Cleanup(memory.SwapHooks(memory.Hooks{Opened: func(*memory.Writer) { opened.Add(1) }}))
+	return func() int { return int(opened.Load()) }
 }
 
 // http on a loopback host is accepted: dev-broker.sh serves the broker there.
 func TestSecretAcceptsLoopbackHTTPBrokerURL(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, servedBy(local)) // httptest serves http://127.0.0.1:port
-	useAWS(t, local, testAccount, adaSignIn)
-	_, errOut, code := runSecret("show", "HELD_KEY")
-	if code != 0 {
-		t.Fatalf("exit=%d stderr=%q; want a loopback http broker accepted", code, errOut)
-	}
-	if strings.Contains(errOut, "must be https") {
-		t.Fatalf("loopback http was refused: %q", errOut)
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		_, errOut, code := runSecret("show", "HELD_KEY")
+		if code != 0 {
+			t.Fatalf("exit=%d stderr=%q; want a loopback http broker accepted", code, errOut)
+		}
+		if strings.Contains(errOut, "must be https") {
+			t.Fatalf("loopback http was refused: %q", errOut)
+		}
+	})
 }
 
 // TestSecretCreateResolvesOwnerMeFromTheSessionName: --owner me is the sign-in's session name, the
@@ -740,10 +730,10 @@ func TestSecretAcceptsLoopbackHTTPBrokerURL(t *testing.T) {
 // standard input less its trailing line ending (the shape rule,
 // TestTheValueReaderRemovesATrailingLineEndingBeforeItStores), and the broker is asked to serve it.
 func TestSecretCreateResolvesOwnerMeFromTheSessionName(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com")
+	awstest.Use(t, local, testAccount, "arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc123/Ada@Example.com")
 	useStdin(t, "v1\n")
 	stdout, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 	if code != 0 {
@@ -770,10 +760,10 @@ func TestSecretCreateResolvesOwnerMeFromTheSessionName(t *testing.T) {
 // TestSecretCreateRefusesAnotherAccount: a person's own sign-in in an account other than the
 // broker's is refused before anything is written, naming both accounts.
 func TestSecretCreateRefusesAnotherAccount(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal()
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
+	awstest.Use(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
 	useStdin(t, "v1")
 	_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
 	if code != 1 {
@@ -795,33 +785,32 @@ func TestSecretCreateRefusesAnotherAccount(t *testing.T) {
 // TestSecretFormsRefuseBadUsageWithExitTwo: a missing or malformed argument, or an empty value, is a
 // usage error that writes nothing.
 func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, tc := range []struct {
 		name, stdin, want string
 		args              []string
 	}{
-		{"empty value", "", "standard input, which was empty", []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}},
-		{"a newline alone", "\n", "standard input, which was empty", []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}},
-		{"malformed name", "v1", "not an agent secret name", []string{"create", "new-key", "--owner", "me", "--tier", "agent"}},
-		{"no name", "v1", "exactly one secret NAME", []string{"create", "--owner", "me", "--tier", "agent"}},
-		{"no tier", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "me"}},
+		{"empty value", "", "standard input, which was empty", []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}},
+		{"a newline alone", "\n", "standard input, which was empty", []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}},
+		{"malformed name", "v1", "not an agent secret name", []string{"create", "new-key", "--owner", "ada@example.com", "--tier", "agent"}},
+		{"no name", "v1", "exactly one secret NAME", []string{"create", "--owner", "ada@example.com", "--tier", "agent"}},
+		{"no tier", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "ada@example.com"}},
 		{"an owner that is neither", "v1", "--owner", []string{"create", "NEW_KEY", "--owner", "bob@example", "--tier", "agent"}},
-		{"a tier that is neither", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "me", "--tier", "robot"}},
+		{"a tier that is neither", "v1", "--tier", []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "robot"}},
 		{"no form", "", "a form is required", nil},
 		{"an unknown form", "", "unknown form", []string{"rename"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			local := awstest.NewLocal()
-			startSecretBroker(t, servedBy(local))
-			useAWS(t, local, testAccount, adaSignIn)
-			useStdin(t, tc.stdin)
-			_, stderr, code := runSecret(tc.args...)
-			if code != exitUsageError || !strings.Contains(stderr, tc.want) {
-				t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.want)
-			}
-			if out, _ := local.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{}); len(out.SecretList) != 0 {
-				t.Fatalf("a usage error wrote %d secrets", len(out.SecretList))
-			}
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				useStdin(t, tc.stdin)
+				_, stderr, code := runSecret(tc.args...)
+				if code != exitUsageError || !strings.Contains(stderr, tc.want) {
+					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.want)
+				}
+				if store.has(t, "NEW_KEY") {
+					t.Fatal("a usage error wrote NEW_KEY")
+				}
+			})
 		})
 	}
 }
@@ -836,7 +825,7 @@ func TestSecretFormsRefuseBadUsageWithExitTwo(t *testing.T) {
 // not emptied by the rule, so it keeps every line feed but the last, and a single one of them is
 // refused as an empty value.
 func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	const pem = "-----BEGIN KEY-----\nabc\n-----END KEY-----\n"
 	for _, tc := range []struct {
 		name, piped, stored, refusal string
@@ -850,26 +839,25 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 		{name: "two-line-feeds", piped: "\n\n", stored: "\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			local := awstest.NewLocal()
-			startSecretBroker(t, servedBy(local))
-			useAWS(t, local, testAccount, adaSignIn)
-			useStdin(t, tc.piped)
-			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent")
-			if tc.refusal != "" {
-				if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
-					t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				useStdin(t, tc.piped)
+				_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent")
+				if tc.refusal != "" {
+					if code != exitUsageError || !strings.Contains(stderr, tc.refusal) {
+						t.Fatalf("exit %d, stderr %q; want %d naming %q", code, stderr, exitUsageError, tc.refusal)
+					}
+					if store.has(t, "NEW_KEY") {
+						t.Fatal("a refused value wrote NEW_KEY")
+					}
+					return
 				}
-				if out, _ := local.ListSecrets(context.Background(), &secretsmanager.ListSecretsInput{}); len(out.SecretList) != 0 {
-					t.Fatalf("a refused value wrote %d secrets", len(out.SecretList))
+				if code != 0 {
+					t.Fatalf("create: exit %d, stderr %q", code, stderr)
 				}
-				return
-			}
-			if code != 0 {
-				t.Fatalf("create: exit %d, stderr %q", code, stderr)
-			}
-			if v := valueOf(t, local, "NEW_KEY"); v != tc.stored {
-				t.Fatalf("stored %q, want %q", v, tc.stored)
-			}
+				if v := store.value(t, "NEW_KEY"); v != tc.stored {
+					t.Fatalf("stored %q, want %q", v, tc.stored)
+				}
+			})
 		})
 	}
 }
@@ -880,7 +868,7 @@ func TestTheValueReaderRemovesATrailingLineEndingBeforeItStores(t *testing.T) {
 // value is never asked for, so a writer who typed the old flag loses nothing — and a retag that
 // names it is refused the same way, leaving the secret's tags as they were.
 func TestSecretCreateAndRetagRefuseShape(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:907).
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		store.put(t, "API_KEY", awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
 		before := store.tags(t, "API_KEY")
@@ -938,7 +926,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // refuses is refused in its words, and nothing is written; one it reads is stored, less its
 // trailing line ending.
 func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	notALogin := appValue(t, map[string]string{"type": "service_account"})
 	says := mintRefusal(t, policy.TypeGoogleLogin, notALogin)
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
@@ -967,9 +955,9 @@ func TestSecretSetReadsTheSecretsOwnType(t *testing.T) {
 // refuses that read, the refusal names the permission the read needs, and the value is never
 // asked for.
 func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:918).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.countingStdin, secretStdin set at secret_test.go:907).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
-		store.put(t, "API_KEY", awstest.Secret("API_KEY", "ada@example.com", policy.TierAgent, "").Tags, "v1")
+		store.put(t, "API_KEY", ownerTier("ada@example.com", policy.TierAgent), "v1")
 		read := countingStdin(t, "a-new-value")
 		store.refuseTagReads()
 		_, stderr, code := runSecret("set", "API_KEY")
@@ -989,11 +977,11 @@ func TestSecretSetRefusedTagReadNamesThePermission(t *testing.T) {
 // holds it, since the deployment repository's IAM statement that lets a person tag their own secret
 // conditions on both request tags.
 func TestSecretRetagSendsBothTags(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	local := awstest.NewLocal(awstest.Secret("OWNED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingTags{Local: local}
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, sent, testAccount, adaSignIn)
+	awstest.Use(t, sent, testAccount, adaSignIn)
 	stdout, stderr, code := runSecret("retag", "OWNED_KEY", "--tier", "human")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
@@ -1029,7 +1017,7 @@ func (r *recordingTags) TagResource(ctx context.Context, in *secretsmanager.TagR
 // refusingTags is a store (any secretsAPI, so it wraps the package's other fakes) whose TagResource
 // IAM refuses, as it refuses a person changing a shared secret's owner or tier: the SDK answers
 // AccessDeniedException as a generic API error, a definite refusal, so the store did not act.
-type refusingTags struct{ secretsAPI }
+type refusingTags struct{ awsstore.WriterAPI }
 
 // accessDenied is the refusal refusingTags answers.
 const accessDenied = "User: arn:aws:sts::111122223333:assumed-role/AWSReservedSSO_User_abc/ada@example.com is not authorized to perform: secretsmanager:TagResource"
@@ -1043,7 +1031,7 @@ func (refusingTags) TagResource(context.Context, *secretsmanager.TagResourceInpu
 // refusal, the sign-in AWS refused, and says whose change it is, and nothing changes. Any other
 // refused retag says only what AWS said, and whom it refused.
 func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:1050); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:1039).
 	local := awstest.NewLocal(
 		awstest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "v1"),
 		awstest.Secret("OWNED_KEY", "ada@example.com", policy.TierHuman, "v1"),
@@ -1051,7 +1039,7 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 	t.Setenv("AWS_PROFILE", "")
 	t.Setenv("AWS_DEFAULT_PROFILE", "")
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, refusingTags{local}, testAccount, adaSignIn)
+	awstest.Use(t, refusingTags{local}, testAccount, adaSignIn)
 	for _, args := range [][]string{{"retag", "SHARED_KEY", "--tier", "agent"}, {"retag", "OWNED_KEY", "--owner", "shared"}} {
 		_, stderr, code := runSecret(args...)
 		if code != 1 {
@@ -1082,10 +1070,10 @@ func TestSecretRetagOfASharedSecretSaysAnAdministratorChangesIt(t *testing.T) {
 // broker's are refused, naming both accounts, rather than reading that account's secrets as if
 // they were the agent secrets. Reads still take a machine's role in the broker's account.
 func TestSecretReadsRefuseAnotherAccount(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
+	awstest.Use(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
 	for _, args := range [][]string{{"list"}, {"list", "--json"}, {"show", "HELD_KEY"}} {
 		stdout, stderr, code := runSecret(args...)
 		if code != 1 || stdout != "" {
@@ -1111,7 +1099,7 @@ func (f failingStdin) Read([]byte) (int, error) {
 // account, and create refuses --owner me under a sign-in that names no person, before they read
 // the value, so nobody pastes a secret only to be refused.
 func TestSecretWritesCheckTheSignInBeforeReadingTheValue(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
 	refuseValueReads(t)
 	const otherAccount = "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com"
 	for _, row := range []struct {
@@ -1125,7 +1113,7 @@ func TestSecretWritesCheckTheSignInBeforeReadingTheValue(t *testing.T) {
 	} {
 		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, row.account, row.arn)
+		awstest.Use(t, local, row.account, row.arn)
 		_, stderr, code := runSecret(row.args...)
 		if code != row.code || !strings.Contains(stderr, row.refusal) {
 			t.Fatalf("%v as %s: exit %d, stderr %q; want %d naming %q", row.args, row.arn, code, stderr, row.code, row.refusal)
@@ -1179,40 +1167,60 @@ func useTerminal(t *testing.T, typed ...string) *[]int {
 
 // TestSecretCreateAndSetPromptForTheValueAtATerminal: with a terminal on standard input, create
 // and set print a prompt naming the secret on stderr and read one line with echo off, never
-// printing the value; a refused sign-in prompts for nothing.
+// printing the value. TestSecretSetUnderAnotherAccountPromptsForNothing: a refused sign-in
+// prompts for nothing.
 func TestSecretCreateAndSetPromptForTheValueAtATerminal(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useTerminal, secretStdin set at secret_test.go:1147).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		reads := useTerminal(t, "typed-new", "typed-held")
+		for _, tc := range []struct {
+			name, value string
+			args        []string
+		}{
+			{"NEW_KEY", "typed-new", []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}},
+			{"HELD_KEY", "typed-held", []string{"set", "HELD_KEY"}},
+		} {
+			stdout, stderr, code := runSecret(tc.args...)
+			if code != 0 {
+				t.Fatalf("%v: exit %d, stderr %q; want 0", tc.args, code, stderr)
+			}
+			// A store whose create makes the secret before the value (GCP's) says first by when the
+			// value must come; the prompt is the line after it.
+			said := afterUsing(t, stderr, "secret "+tc.args[0])
+			if tc.args[0] == "create" && store.madeBeforeValue() {
+				deadline, prompt, _ := strings.Cut(said, "\n")
+				if !strings.HasPrefix(deadline, "Enter the value by ") || !strings.HasSuffix(deadline, ", 10 minutes after the create, or nothing is stored.") {
+					t.Fatalf("%v: stderr %q; want the deadline line before the prompt", tc.args, stderr)
+				}
+				said = prompt
+			}
+			if want := "Value for " + tc.name + ": \n"; said != want {
+				t.Fatalf("%v: stderr %q, want exactly the prompt %q", tc.args, stderr, want)
+			}
+			if strings.Contains(stdout+stderr, tc.value) {
+				t.Fatalf("%v printed the value: stdout %q, stderr %q", tc.args, stdout, stderr)
+			}
+			if v := store.value(t, tc.name); v != tc.value {
+				t.Fatalf("%v: value = %q, want %q", tc.args, v, tc.value)
+			}
+		}
+		if len(*reads) != 2 || (*reads)[0] != terminalFD || (*reads)[1] != terminalFD {
+			t.Fatalf("hidden reads = %v, want two at the terminal's descriptor %d", *reads, terminalFD)
+		}
+	})
+}
+
+// TestSecretSetUnderAnotherAccountPromptsForNothing: at a terminal, a set whose AWS sign-in is in
+// another account than the broker's is refused before it prompts for the value or reads one.
+func TestSecretSetUnderAnotherAccountPromptsForNothing(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useTerminal, secretStdin set at secret_test.go:1147).
 	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	reads := useTerminal(t, "typed-new", "typed-held")
-	for _, tc := range []struct {
-		name, value string
-		args        []string
-	}{
-		{"NEW_KEY", "typed-new", []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}},
-		{"HELD_KEY", "typed-held", []string{"set", "HELD_KEY"}},
-	} {
-		stdout, stderr, code := runSecret(tc.args...)
-		if code != 0 {
-			t.Fatalf("%v: exit %d, stderr %q; want 0", tc.args, code, stderr)
-		}
-		if want := "Value for " + tc.name + ": \n"; afterUsing(t, stderr, "secret "+tc.args[0]) != want {
-			t.Fatalf("%v: stderr %q, want exactly the prompt %q", tc.args, stderr, want)
-		}
-		if strings.Contains(stdout+stderr, tc.value) {
-			t.Fatalf("%v printed the value: stdout %q, stderr %q", tc.args, stdout, stderr)
-		}
-		if v := valueOf(t, local, tc.name); v != tc.value {
-			t.Fatalf("%v: value = %q, want %q", tc.args, v, tc.value)
-		}
-	}
-	if len(*reads) != 2 || (*reads)[0] != terminalFD || (*reads)[1] != terminalFD {
-		t.Fatalf("hidden reads = %v, want two at the terminal's descriptor %d", *reads, terminalFD)
-	}
-	useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
+	awstest.Use(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/AWSReservedSSO_User_abc123/ada@example.com")
+	reads := useTerminal(t)
 	_, stderr, code := runSecret("set", "HELD_KEY")
-	if code != 1 || strings.Contains(stderr, "Value for") || len(*reads) != 2 {
+	if code != 1 || strings.Contains(stderr, "Value for") || len(*reads) != 0 {
 		t.Fatalf("set under a sign-in in another account: exit %d, stderr %q, hidden reads %v; want 1 with no prompt and no read", code, stderr, *reads)
 	}
 }
@@ -1221,30 +1229,30 @@ func TestSecretCreateAndSetPromptForTheValueAtATerminal(t *testing.T) {
 // terminal (a prompt started in the background, refused before fg) shows no label and no line
 // ending, so nothing is written over the shell's own line.
 func TestSecretAPromptThatNeverHoldsTheTerminalShowsNoLabel(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1228).
-	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useTerminal(t)
-	readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
-	_, stderr, code := runSecret("set", "HELD_KEY")
-	if code != 1 || strings.Contains(stderr, "Value for") || strings.HasPrefix(stderr, "\n") {
-		t.Fatalf("exit %d, stderr %q; want 1 with no label and no leading line ending", code, stderr)
-	}
-	if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-		t.Fatalf("value = %q, want v1 unchanged", v)
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1236).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		useTerminal(t)
+		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
+		_, stderr, code := runSecret("set", "HELD_KEY")
+		if code != 1 || strings.Contains(stderr, "Value for") || strings.HasPrefix(stderr, "\n") {
+			t.Fatalf("exit %d, stderr %q; want 1 with no label and no leading line ending", code, stderr)
+		}
+		if v := store.value(t, "HELD_KEY"); v != "v1" {
+			t.Fatalf("value = %q, want v1 unchanged", v)
+		}
+	})
 }
 
 // TestSecretAPromptThatCannotRunNamesThePipeCommand: a prompt no shell can bring to the
 // foreground, and a platform with no prompt, are usage errors naming the command that pipes the
 // value in, and write nothing.
 func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:1249); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1248).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_test.go:1258); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1257).
 	for _, refusal := range []error{errNoForeground, errNoValuePrompt} {
 		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+		awstest.Use(t, local, testAccount, adaSignIn)
 		useTerminal(t)
 		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, refusal }
 		t.Setenv("AWS_PROFILE", "work")
@@ -1263,18 +1271,18 @@ func TestSecretAPromptThatCannotRunNamesThePipeCommand(t *testing.T) {
 // the real reader answers as an empty line (TestPromptCtrlDEndsTheValue), is a usage error that
 // writes nothing.
 func TestSecretAnEmptyValueAtATerminalIsAUsageError(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useTerminal(t, "")
-	_, stderr, code := runSecret("set", "HELD_KEY")
-	if code != exitUsageError || !strings.Contains(stderr, "no value was entered") {
-		t.Fatalf("exit %d, stderr %q; want %d saying no value was entered", code, stderr, exitUsageError)
-	}
-	if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-		t.Fatalf("value = %q, want v1 unchanged", v)
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useTerminal, secretStdin set at secret_test.go:1147).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		useTerminal(t, "")
+		_, stderr, code := runSecret("set", "HELD_KEY")
+		if code != exitUsageError || !strings.Contains(stderr, "no value was entered") {
+			t.Fatalf("exit %d, stderr %q; want %d saying no value was entered", code, stderr, exitUsageError)
+		}
+		if v := store.value(t, "HELD_KEY"); v != "v1" {
+			t.Fatalf("value = %q, want v1 unchanged", v)
+		}
+	})
 }
 
 // TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused: when the reader answers that more than one
@@ -1282,30 +1290,32 @@ func TestSecretAnEmptyValueAtATerminalIsAUsageError(t *testing.T) {
 // create and set exit 2, write nothing, and name the command that pipes the value in: the form as
 // the person ran it, with the AWS_PROFILE prefix shell-quoted, so it signs in the way they chose.
 func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1296).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1305).
 	for _, tc := range []struct {
 		args []string
 		want string
 	}{
-		{[]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, "agent-secrets secret create NEW_KEY --owner me --tier agent < FILE"},
+		{[]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, "agent-secrets secret create NEW_KEY --owner ada@example.com --tier agent < FILE"},
 		{[]string{"set", "HELD_KEY"}, "agent-secrets secret set HELD_KEY < FILE"},
 	} {
-		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		useTerminal(t)
-		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
-		_, stderr, code := runSecret(tc.args...)
-		want := "a value of more than one line must be piped in: " + tc.want
-		if code != exitUsageError || !strings.Contains(stderr, want) {
-			t.Fatalf("%v: exit %d, stderr %q; want %d naming %q", tc.args, code, stderr, exitUsageError, want)
-		}
-		if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-			t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", tc.args, v)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatalf("%v created NEW_KEY", tc.args)
-		}
+		t.Run(tc.args[0], func(t *testing.T) {
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+				useTerminal(t)
+				readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errMoreThanOneLine }
+				_, stderr, code := runSecret(tc.args...)
+				want := "a value of more than one line must be piped in: " + tc.want
+				if code != exitUsageError || !strings.Contains(stderr, want) {
+					t.Fatalf("%v: exit %d, stderr %q; want %d naming %q", tc.args, code, stderr, exitUsageError, want)
+				}
+				if v := store.value(t, "HELD_KEY"); v != "v1" {
+					t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", tc.args, v)
+				}
+				if store.has(t, "NEW_KEY") {
+					t.Fatalf("%v created NEW_KEY", tc.args)
+				}
+			})
+		})
 	}
 }
 
@@ -1313,23 +1323,25 @@ func TestSecretAValueOfMoreThanOneLineAtATerminalIsRefused(t *testing.T) {
 // up inside a paste (TestPromptRefusesAPasteCutShortByAHangUp), create and set fail and write
 // nothing.
 func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1321).
-	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		useTerminal(t)
-		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errPasteCutShort }
-		_, stderr, code := runSecret(args...)
-		if code != 1 || !strings.Contains(stderr, errPasteCutShort.Error()) {
-			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errPasteCutShort)
-		}
-		if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-			t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatalf("%v created NEW_KEY", args)
-		}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1332).
+	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+		t.Run(args[0], func(t *testing.T) {
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+				useTerminal(t)
+				readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errPasteCutShort }
+				_, stderr, code := runSecret(args...)
+				if code != 1 || !strings.Contains(stderr, errPasteCutShort.Error()) {
+					t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errPasteCutShort)
+				}
+				if v := store.value(t, "HELD_KEY"); v != "v1" {
+					t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
+				}
+				if store.has(t, "NEW_KEY") {
+					t.Fatalf("%v created NEW_KEY", args)
+				}
+			})
+		})
 	}
 }
 
@@ -1339,7 +1351,7 @@ func TestSecretAPasteCutShortAtATerminalWritesNothing(t *testing.T) {
 // there; then what to do: enter the value again without it, or pipe the value in where the byte
 // is part of it, naming the command that does.
 func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1358).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1371).
 	for _, row := range []struct {
 		refused   promptControlByteError
 		want, not string
@@ -1351,23 +1363,25 @@ func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
 		{promptControlByteError{c: 0x1b}, "the control byte 0x1b cannot be typed at the prompt: an Escape as the whole value. Nothing was stored, and the value was not trimmed: enter it again without the Escape", "paste"},
 		{promptControlByteError{c: 0x1c, textBefore: true}, `the control byte 0x1c cannot be typed at the prompt: a Ctrl-\ at the end of the value. Nothing`, "paste"},
 	} {
-		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-			startSecretBroker(t, servedBy(local))
-			useAWS(t, local, testAccount, adaSignIn)
-			useTerminal(t)
-			readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, row.refused }
-			_, stderr, code := runSecret(args...)
-			pipe := "pipe the value in: agent-secrets secret " + args[0]
-			if code != exitUsageError || !strings.Contains(stderr, row.want) || !strings.Contains(stderr, pipe) || !strings.Contains(stderr, " < FILE") || (row.not != "" && strings.Contains(stderr, row.not)) {
-				t.Fatalf("%v, %+v: exit %d, stderr %q; want %d naming %q and %q ... < FILE, without %q", args, row.refused, code, stderr, exitUsageError, row.want, pipe, row.not)
-			}
-			if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-				t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
-			}
-			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-				t.Fatalf("%v created NEW_KEY", args)
-			}
+		for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+			t.Run(fmt.Sprintf("%#x %t %t %s", row.refused.c, row.refused.textBefore, row.refused.textAfter, args[0]), func(t *testing.T) {
+				onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+					putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+					useTerminal(t)
+					readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, row.refused }
+					_, stderr, code := runSecret(args...)
+					pipe := "pipe the value in: agent-secrets secret " + args[0]
+					if code != exitUsageError || !strings.Contains(stderr, row.want) || !strings.Contains(stderr, pipe) || !strings.Contains(stderr, " < FILE") || (row.not != "" && strings.Contains(stderr, row.not)) {
+						t.Fatalf("%v, %+v: exit %d, stderr %q; want %d naming %q and %q ... < FILE, without %q", args, row.refused, code, stderr, exitUsageError, row.want, pipe, row.not)
+					}
+					if v := store.value(t, "HELD_KEY"); v != "v1" {
+						t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
+					}
+					if store.has(t, "NEW_KEY") {
+						t.Fatalf("%v created NEW_KEY", args)
+					}
+				})
+			})
 		}
 	}
 }
@@ -1379,7 +1393,7 @@ func TestSecretAControlByteAtATerminalIsAUsageError(t *testing.T) {
 // stored as given, which names the secret and never prints the value. A value with a space inside
 // it alone prints no such line.
 func TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (main.useTerminal, var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	for _, row := range []struct {
 		value, where string // where is "" for a value that needs no notice
 	}{
@@ -1389,44 +1403,44 @@ func TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice(t *tes
 		{"sk in ner", ""},
 	} {
 		for _, route := range []string{"piped", "typed"} {
-			for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+			for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "HELD_KEY"}} {
 				t.Run(fmt.Sprintf("%q %s %s", row.value, route, args[0]), func(t *testing.T) {
-					local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-					startSecretBroker(t, servedBy(local))
-					useAWS(t, local, testAccount, adaSignIn)
-					if route == "piped" {
-						useStdin(t, row.value+"\n")
-					} else {
-						useTerminal(t, row.value)
-					}
-					stdout, stderr, code := runSecret(args...)
-					if code != 0 {
-						t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
-					}
-					if got := valueOf(t, local, args[1]); got != row.value {
-						t.Fatalf("%s = %q, want %q stored as given", args[1], got, row.value)
-					}
-					secretPart := strings.TrimSpace(row.value)
-					if strings.Contains(stdout+stderr, secretPart) {
-						t.Fatalf("stdout %q, stderr %q print the value", stdout, stderr)
-					}
-					if row.where == "" {
-						if strings.Contains(stderr, "space") {
-							t.Fatalf("stderr %q; want no notice for a space inside the value", stderr)
+					onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+						putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+						if route == "piped" {
+							useStdin(t, row.value+"\n")
+						} else {
+							useTerminal(t, row.value)
 						}
-						return
-					}
-					// The notice is one line naming the form, the secret and which end, and saying
-					// the value was stored as given; its wording is free.
-					var notices []string
-					for _, line := range strings.Split(stderr, "\n") {
-						if strings.Contains(line, "space") {
-							notices = append(notices, line)
+						stdout, stderr, code := runSecret(args...)
+						if code != 0 {
+							t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 						}
-					}
-					if len(notices) != 1 || !strings.Contains(notices[0], "secret "+args[0]) || !strings.Contains(notices[0], args[1]) || !strings.Contains(notices[0], " "+row.where+" ") || !strings.Contains(notices[0], "stored as given") {
-						t.Fatalf("stderr %q; want one line naming %s, %s, that the value %s with a space, and that it was stored as given", stderr, args[0], args[1], row.where)
-					}
+						if got := store.value(t, args[1]); got != row.value {
+							t.Fatalf("%s = %q, want %q stored as given", args[1], got, row.value)
+						}
+						secretPart := strings.TrimSpace(row.value)
+						if strings.Contains(stdout+stderr, secretPart) {
+							t.Fatalf("stdout %q, stderr %q print the value", stdout, stderr)
+						}
+						if row.where == "" {
+							if strings.Contains(stderr, "space") {
+								t.Fatalf("stderr %q; want no notice for a space inside the value", stderr)
+							}
+							return
+						}
+						// The notice is one line naming the form, the secret and which end, and saying
+						// the value was stored as given; its wording is free.
+						var notices []string
+						for _, line := range strings.Split(stderr, "\n") {
+							if strings.Contains(line, "space") {
+								notices = append(notices, line)
+							}
+						}
+						if len(notices) != 1 || !strings.Contains(notices[0], "secret "+args[0]) || !strings.Contains(notices[0], args[1]) || !strings.Contains(notices[0], " "+row.where+" ") || !strings.Contains(notices[0], "stored as given") {
+							t.Fatalf("stderr %q; want one line naming %s, %s, that the value %s with a space, and that it was stored as given", stderr, args[0], args[1], row.where)
+						}
+					})
 				})
 			}
 		}
@@ -1436,23 +1450,25 @@ func TestSecretAValueThatStartsOrEndsWithASpaceIsStoredAsGivenWithANotice(t *tes
 // TestSecretAValueCutShortAtATerminalWritesNothing: a terminal hang-up while a person still types
 // a value is a failure, never an implicit Enter that writes their partial text.
 func TestSecretAValueCutShortAtATerminalWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1444).
-	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"}, {"set", "HELD_KEY"}} {
-		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		useTerminal(t)
-		readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
-		_, stderr, code := runSecret(args...)
-		if code != 1 || !strings.Contains(stderr, errValueCutShort.Error()) {
-			t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errValueCutShort)
-		}
-		if v := valueOf(t, local, "HELD_KEY"); v != "v1" {
-			t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
-		}
-		if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-			t.Fatalf("%v created NEW_KEY", args)
-		}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it signals the test process or changes its signal handling (var main.readHidden, main.readHiddenAtTerminal, (*promptTerminal).raise, a signal to this process (unix.Kill) at secret_prompt_unix.go:520); it sets a package variable the package's other tests read (readHidden set at secret_test.go:1459).
+	for _, args := range [][]string{{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent"}, {"set", "HELD_KEY"}} {
+		t.Run(args[0], func(t *testing.T) {
+			onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+				putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
+				useTerminal(t)
+				readHidden = func(int, time.Time, func(), func(error)) ([]byte, error) { return nil, errValueCutShort }
+				_, stderr, code := runSecret(args...)
+				if code != 1 || !strings.Contains(stderr, errValueCutShort.Error()) {
+					t.Fatalf("%v: exit %d, stderr %q; want 1 naming %q", args, code, stderr, errValueCutShort)
+				}
+				if v := store.value(t, "HELD_KEY"); v != "v1" {
+					t.Fatalf("%v: HELD_KEY = %q, want v1 unchanged", args, v)
+				}
+				if store.has(t, "NEW_KEY") {
+					t.Fatalf("%v created NEW_KEY", args)
+				}
+			})
+		})
 	}
 }
 
@@ -1479,7 +1495,7 @@ func TestStdinIsATerminalOnlyAtATerminal(t *testing.T) {
 // the listing does not say which window the delete used), whether each has a value, and a missing
 // date or tag as absent; nothing outside the prefix, and never a value.
 func TestSecretListShowsValueAndDeletion(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	gone := awstest.Secret("GONE_KEY", "ada@example.com", policy.TierAgent, "gone-value")
 	gone.DeletedAt = &deletedAt
@@ -1494,7 +1510,7 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 		awstest.LocalSecret{Name: "example/other/outside", KmsKeyID: awstest.KeyARN, Value: "outside-value"},
 	)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	stdout, stderr, code := runSecret("list")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
@@ -1563,18 +1579,18 @@ func TestSecretListShowsValueAndDeletion(t *testing.T) {
 // prints when it was deleted and the earliest Secrets Manager can purge it, DeletedDate plus 7
 // days, labelled as the earliest rather than the exact purge, and never DeletedDate plus 30.
 func TestSecretShowOfADeletedSecretNamesTheEarliestPurge(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 	gone := awstest.Secret("GONE_KEY", "ada@example.com", policy.TierAgent, "gone-value")
 	gone.DeletedAt = &deletedAt
 	local := awstest.NewLocal(gone)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	stdout, stderr, code := runSecret("show", "GONE_KEY")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 	}
-	for _, want := range []string{"deleted: 2026-10-01T12:00:00Z\n", "earliest_purge: 2026-10-08T12:00:00Z (", "at least"} {
+	for _, want := range []string{"deleted: 2026-10-01T12:00:00Z\n", "earliest_purge: 2026-10-08T12:00:00Z (the deletion plus Secrets Manager's 7-day minimum recovery window", "at least"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout %q must contain %q", stdout, want)
 		}
@@ -1584,29 +1600,15 @@ func TestSecretShowOfADeletedSecretNamesTheEarliestPurge(t *testing.T) {
 	}
 }
 
-// TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead pins earliestPurge's reading of DeletedDate: the
-// moment the delete ran (measured against Secrets Manager) plus AWS's 7-day minimum recovery
-// window, the earliest the secret can be purged whatever window its delete used; never plus 30.
-func TestEarliestPurgeIsTheOnePlaceDeletedDateIsRead(t *testing.T) {
-	t.Parallel()
-	if earliestPurge(nil) != nil {
-		t.Fatal("earliestPurge(nil) must be nil: the secret is not scheduled for deletion")
-	}
-	deletedAt := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
-	if got := earliestPurge(&deletedAt); !got.Equal(time.Date(2026, 10, 8, 12, 0, 0, 0, time.UTC)) {
-		t.Fatalf("earliestPurge = %v, want the delete's time plus 7 days", got)
-	}
-}
-
 // TestSecretShowNeverPrintsTheValue: show prints a secret's name, secret name, owner, tier,
 // requesters, created and last-changed times and versions, a field the secret holds none of as
 // "-", no deletion for a secret not scheduled for one, and never the value, as text or as JSON.
 func TestSecretShowNeverPrintsTheValue(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	const value = "show-must-not-print-this"
 	local := awstest.NewLocal(awstest.Secret("SHOWN_KEY", "ada@example.com", policy.TierHuman, value))
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	stdout, stderr, code := runSecret("show", "SHOWN_KEY")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
@@ -1646,43 +1648,45 @@ func TestSecretShowNeverPrintsTheValue(t *testing.T) {
 // agent-tier key, nobody for a session its tags allow, since only another session's request
 // waits at all.
 func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	admin := awstest.Judged(awstest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a"), 900, "grant for anything")
-	admin.Tags[policy.TagAdmin] = "true"
-	federation := awstest.Judged(awstest.Secret("FEDERATION_JUDGED_KEY", "ada@example.com", policy.TierHuman, "f"), 900, "grant for anything")
-	federation.Tags[policy.TagType] = policy.TypeAnthropicFederation
-	local := awstest.NewLocal(
-		awstest.Judged(awstest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"), 900, "grant for the release job named in the reason"),
-		awstest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
-		admin,
-		federation,
-		awstest.Judged(awstest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"), 300, ""),
-		awstest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
-	)
-	startSecretBrokerWith(t, Settings{
-		SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
-		JudgeKeys: map[string]JudgeKey{
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStoreRig(t, func(t *testing.T, rig storeRig) {
+		admin := policytest.Judged(policytest.Secret("ADMIN_JUDGED_KEY", "ada@example.com", policy.TierHuman, "a"), 900, "grant for anything")
+		admin.Tags[policy.TagAdmin] = "true"
+		federation := policytest.Judged(policytest.Secret("FEDERATION_JUDGED_KEY", "ada@example.com", policy.TierHuman, "f"), 900, "grant for anything")
+		federation.Tags[policy.TagType] = policy.TypeAnthropicFederation
+		for _, s := range []memory.Secret{
+			policytest.Judged(policytest.Secret("JUDGED_KEY", "ada@example.com", policy.TierHuman, "j"), 900, "grant for the release job named in the reason"),
+			policytest.Secret("PAGE_KEY", "ada@example.com", policy.TierHuman, "p"),
+			admin,
+			federation,
+			policytest.Judged(policytest.Secret("SHARED_JUDGED_KEY", policy.OwnerShared, policy.TierHuman, "s"), 300, ""),
+			policytest.Secret("AGENT_KEY", "ada@example.com", policy.TierAgent, "g"),
+		} {
+			putSecret(t, rig.store, s)
+		}
+		settings := rig.settings
+		settings.JudgeKeys = map[string]JudgeKey{
 			"JUDGED_KEY":            {Seconds: 900, Guidance: "grant for the release job named in the reason"},
 			"ADMIN_JUDGED_KEY":      {Seconds: 900, Guidance: "grant for anything"},
 			"FEDERATION_JUDGED_KEY": {Seconds: 900, Guidance: "grant for anything"},
 			"SHARED_JUDGED_KEY":     {Seconds: 300},
-		},
-	}, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	const person = "judge: -\nguidance: -\ndecides: a person, on the broker page\n"
-	for name, want := range map[string]string{
-		"JUDGED_KEY":            "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\n",
-		"PAGE_KEY":              person,
-		"ADMIN_JUDGED_KEY":      "judge: 900\nguidance: grant for anything\ndecides: a person, on the broker page: an administrator's key, which the judge never decides\n",
-		"FEDERATION_JUDGED_KEY": "judge: 900\nguidance: grant for anything\ndecides: a person, on the broker page: an Anthropic federation key, which the judge never decides\n",
-		"SHARED_JUDGED_KEY":     "judge: 300\nguidance: -\ndecides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\n",
-		"AGENT_KEY":             "judge: -\nguidance: -\ndecides: nobody, for a session its tags allow; otherwise a person, on the broker page\n",
-	} {
-		stdout, stderr, code := runSecret("show", name)
-		if code != 0 || !strings.Contains(stdout, want) {
-			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
 		}
-	}
+		startSecretBrokerWith(t, settings, rig.answer)
+		const person = "judge: -\nguidance: -\ndecides: a person, on the broker page\n"
+		for name, want := range map[string]string{
+			"JUDGED_KEY":            "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, against its guidance; the key's person only if the judge cannot decide\n",
+			"PAGE_KEY":              person,
+			"ADMIN_JUDGED_KEY":      "judge: 900\nguidance: grant for anything\ndecides: a person, on the broker page: an administrator's key, which the judge never decides\n",
+			"FEDERATION_JUDGED_KEY": "judge: 900\nguidance: grant for anything\ndecides: a person, on the broker page: an Anthropic federation key, which the judge never decides\n",
+			"SHARED_JUDGED_KEY":     "judge: 300\nguidance: -\ndecides: the model judge, up to 5m0s, against its guidance; the key's person only if the judge cannot decide\n",
+			"AGENT_KEY":             "judge: -\nguidance: -\ndecides: nobody, for a session its tags allow; otherwise a person, on the broker page\n",
+		} {
+			stdout, stderr, code := runSecret("show", name)
+			if code != 0 || !strings.Contains(stdout, want) {
+				t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+			}
+		}
+	})
 }
 
 // TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles: show prints the key's own judge and
@@ -1692,26 +1696,25 @@ func TestSecretShowSaysWhoDecidesAndOnWhatGuidance(t *testing.T) {
 // says so, and a person decides it: the broker may serve no name from it, or be older than the
 // judge tags and read none.
 func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
-	source := awstest.Judged(awstest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason")
-	unserved := awstest.Judged(awstest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, "")
-	local := awstest.NewLocal(source, unserved)
-	startSecretBrokerWith(t, Settings{
-		SecretsPrefix: policytest.Prefix, KMSKeyARN: awstest.KeyARN, AWSAccountID: testAccount, AWSRegion: "us-east-1",
-		JudgeKeys: map[string]JudgeKey{
+	onEachStoreRig(t, func(t *testing.T, rig storeRig) {
+		putSecret(t, rig.store, policytest.Judged(policytest.Secret("RELEASE_PAT", "ada@example.com", policy.TierHuman, "s"), 900, "grant for the release job named in the reason"))
+		putSecret(t, rig.store, policytest.Judged(policytest.Secret("UNSERVED_KEY", "ada@example.com", policy.TierHuman, "u"), 600, ""))
+		settings := rig.settings
+		settings.JudgeKeys = map[string]JudgeKey{
 			"RELEASE_READ":  {Seconds: 900, Guidance: "grant for the release job named in the reason", Source: "RELEASE_PAT"},
 			"RELEASE_WRITE": {Seconds: 900, Guidance: "grant for the release job named in the reason", Source: "RELEASE_PAT"},
-		},
-	}, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	for name, want := range map[string]string{
-		"RELEASE_PAT":  "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, for the profiles made from this key (RELEASE_READ, RELEASE_WRITE), against its guidance; the key's person only if the judge cannot decide\n",
-		"UNSERVED_KEY": "judge: 600\nguidance: -\ndecides: a person, on the broker page: the broker gives the judge nothing of this key now\n",
-	} {
-		stdout, stderr, code := runSecret("show", name)
-		if code != 0 || !strings.Contains(stdout, want) {
-			t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
 		}
-	}
+		startSecretBrokerWith(t, settings, rig.answer)
+		for name, want := range map[string]string{
+			"RELEASE_PAT":  "judge: 900\nguidance: grant for the release job named in the reason\ndecides: the model judge, up to 15m0s, for the profiles made from this key (RELEASE_READ, RELEASE_WRITE), against its guidance; the key's person only if the judge cannot decide\n",
+			"UNSERVED_KEY": "judge: 600\nguidance: -\ndecides: a person, on the broker page: the broker gives the judge nothing of this key now\n",
+		} {
+			stdout, stderr, code := runSecret("show", name)
+			if code != 0 || !strings.Contains(stdout, want) {
+				t.Errorf("show %s = exit %d stdout %q stderr %q; want it to print %q", name, code, stdout, stderr, want)
+			}
+		}
+	})
 }
 
 // TestSecretShowAndListNameNoShape: this CLI reads no shape tag, so a secret a writer left one
@@ -1719,9 +1722,9 @@ func TestSecretShowPrintsTheKeysJudgeTagsAndItsJudgedProfiles(t *testing.T) {
 // holds no `shape` key, and list's header carries no SHAPE column. The leftover tag is left in
 // the store untouched; nothing here removes it.
 func TestSecretShowAndListNameNoShape(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
-		leftover := awstest.Secret("LEFTOVER_KEY", "ada@example.com", policy.TierAgent, "v1").Tags
+		leftover := ownerTier("ada@example.com", policy.TierAgent)
 		leftover["shape"] = "token"
 		store.put(t, "LEFTOVER_KEY", leftover, "tok-abc")
 
@@ -1764,11 +1767,11 @@ func TestSecretShowAndListNameNoShape(t *testing.T) {
 // stops serving the secret; restore brings it back and the broker serves it again. Each write
 // rereads once, in order.
 func TestSecretDeleteThenRestoreRereads(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	local := awstest.NewLocal(awstest.Secret("DOOMED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingDeletes{Local: local}
 	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, sent, testAccount, adaSignIn)
+	awstest.Use(t, sent, testAccount, adaSignIn)
 	stdout, stderr, code := runSecret("delete", "DOOMED_KEY")
 	if code != 0 {
 		t.Fatalf("delete: exit %d, stderr %q; want 0", code, stderr)
@@ -1783,7 +1786,7 @@ func TestSecretDeleteThenRestoreRereads(t *testing.T) {
 	// delete prints DeleteSecret's own UTC DeletionDate, the exact end of the 30-day duration it
 	// scheduled. DescribeSecret can only answer its DeletedDate, which is the UTC instant delete ran.
 	deadline := aws.ToTime(sent.outputs[0].DeletionDate)
-	if want := aws.ToTime(held.DeletedDate).Add(recoveryWindowDays * 24 * time.Hour); !deadline.Equal(want) {
+	if want := aws.ToTime(held.DeletedDate).Add(30 * 24 * time.Hour); !deadline.Equal(want) {
 		t.Fatalf("DeletionDate = %s, want DeletedDate plus 30*24h = %s", deadline, want)
 	}
 	want := "broker: DOOMED_KEY is deleted in "
@@ -1810,11 +1813,11 @@ func TestSecretDeleteThenRestoreRereads(t *testing.T) {
 // TestSecretDeleteNeverForces: delete schedules the deletion with the longest recovery window and
 // never forces it.
 func TestSecretDeleteNeverForces(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
 	local := awstest.NewLocal(awstest.Secret("DOOMED_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	sent := &recordingDeletes{Local: local}
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, sent, testAccount, adaSignIn)
+	awstest.Use(t, sent, testAccount, adaSignIn)
 	if _, stderr, code := runSecret("delete", "DOOMED_KEY"); code != 0 {
 		t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 	}
@@ -1842,44 +1845,45 @@ func (r *recordingDeletes) DeleteSecret(ctx context.Context, in *secretsmanager.
 // TestSecretWriteExitsOneWhenTheBrokerRefuses: a write the broker's reread contradicts exits 1
 // naming the broker's reason: a set it refuses (no-current-value), a delete it still serves.
 func TestSecretWriteExitsOneWhenTheBrokerRefuses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("REFUSED_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonNoCurrentValue} })
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, "v2")
-	stdout, stderr, code := runSecret("set", "REFUSED_KEY")
-	if code != 1 {
-		t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
-	}
-	if !strings.Contains(stderr, "no-current-value") || !strings.Contains(stdout, "broker: refusing REFUSED_KEY from ") || !strings.Contains(stdout, "(reason=no-current-value)") {
-		t.Fatalf("stdout %q stderr %q must name the broker's reason", stdout, stderr)
-	}
-	if v := valueOf(t, local, "REFUSED_KEY"); v != "v2" {
-		t.Fatalf("value = %q, want the write to stand at %q", v, "v2")
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+		putSecret(t, store, policytest.Secret("REFUSED_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		broker.answerAs(func(name string) Reread { return Reread{Name: name, Reason: policy.ReasonNoCurrentValue} })
+		useStdin(t, "v2")
+		stdout, stderr, code := runSecret("set", "REFUSED_KEY")
+		if code != 1 {
+			t.Fatalf("exit %d, stderr %q; want 1", code, stderr)
+		}
+		if !strings.Contains(stderr, "no-current-value") || !strings.Contains(stdout, "broker: refusing REFUSED_KEY from ") || !strings.Contains(stdout, "(reason=no-current-value)") {
+			t.Fatalf("stdout %q stderr %q must name the broker's reason", stdout, stderr)
+		}
+		if v := store.value(t, "REFUSED_KEY"); v != "v2" {
+			t.Fatalf("value = %q, want the write to stand at %q", v, "v2")
+		}
 
-	startSecretBroker(t, func(name string) Reread { return Reread{Name: name, Served: true} })
-	if _, stderr, code := runSecret("delete", "REFUSED_KEY"); code != 1 || !strings.Contains(stderr, "still serves REFUSED_KEY") {
-		t.Fatalf("a delete the broker still serves: exit %d, stderr %q; want 1 saying so", code, stderr)
-	}
+		broker.answerAs(func(name string) Reread { return Reread{Name: name, Served: true} })
+		if _, stderr, code := runSecret("delete", "REFUSED_KEY"); code != 1 || !strings.Contains(stderr, "still serves REFUSED_KEY") {
+			t.Fatalf("a delete the broker still serves: exit %d, stderr %q; want 1 saying so", code, stderr)
+		}
+	})
 }
 
 // TestSecretWriteExitsOneWhenTheBrokerCannotBeAsked: a write whose reread the broker refuses (here
 // rate-limited) exits 1 saying the write stands and is served only from the broker's next reload.
 func TestSecretWriteExitsOneWhenTheBrokerCannotBeAsked(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("SET_KEY", "ada@example.com", policy.TierAgent, "v1"))
-	broker := startSecretBroker(t, servedBy(local))
-	broker.failRereads(http.StatusTooManyRequests)
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, "v2")
-	_, stderr, code := runSecret("set", "SET_KEY")
-	if code != 1 || !strings.Contains(stderr, "the write to AWS Secrets Manager account ") || !strings.Contains(stderr, "stands, but the broker at ") || !strings.Contains(stderr, "RATE_LIMITED") {
-		t.Fatalf("exit %d, stderr %q; want 1 saying the write stands and naming the refusal", code, stderr)
-	}
-	if v := valueOf(t, local, "SET_KEY"); v != "v2" {
-		t.Fatalf("value = %q, want %q", v, "v2")
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+		putSecret(t, store, policytest.Secret("SET_KEY", "ada@example.com", policy.TierAgent, "v1"))
+		broker.failRereads(http.StatusTooManyRequests)
+		useStdin(t, "v2")
+		_, stderr, code := runSecret("set", "SET_KEY")
+		if code != 1 || !strings.Contains(stderr, "the write to "+store.storeName()+" ") || !strings.Contains(stderr, "stands, but the broker at ") || !strings.Contains(stderr, "RATE_LIMITED") {
+			t.Fatalf("exit %d, stderr %q; want 1 saying the write to %s stands and naming the refusal", code, stderr, store.storeName())
+		}
+		if v := store.value(t, "SET_KEY"); v != "v2" {
+			t.Fatalf("value = %q, want %q", v, "v2")
+		}
+	})
 }
 
 // TestSecretWritesRunUnderAnyRoleInTheBrokersAccount: a sign-in in the broker's account writes
@@ -1889,12 +1893,12 @@ func TestSecretWriteExitsOneWhenTheBrokerCannotBeAsked(t *testing.T) {
 // naming --owner <email>, before a value is read or anything is written, because the role names no
 // person. A sign-in in another account is still refused (exit 1), naming both accounts.
 func TestSecretWritesRunUnderAnyRoleInTheBrokersAccount(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
 	const machine = "arn:aws:sts::111122223333:assumed-role/example-service-role/session"
 	t.Run("writes", func(t *testing.T) {
 		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		broker := startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, machine)
+		awstest.Use(t, local, testAccount, machine)
 		for _, step := range []struct {
 			stdin string
 			args  []string
@@ -1925,7 +1929,7 @@ func TestSecretWritesRunUnderAnyRoleInTheBrokersAccount(t *testing.T) {
 		t.Run(args[0]+" --owner me", func(t *testing.T) {
 			local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 			broker := startSecretBroker(t, servedBy(local))
-			useAWS(t, local, testAccount, machine)
+			awstest.Use(t, local, testAccount, machine)
 			refuseValueReads(t)
 			_, stderr, code := runSecret(args...)
 			if code != exitUsageError || !strings.Contains(stderr, "--owner <email>") || !strings.Contains(stderr, "example-service-role") {
@@ -1945,7 +1949,7 @@ func TestSecretWritesRunUnderAnyRoleInTheBrokersAccount(t *testing.T) {
 	t.Run("another account", func(t *testing.T) {
 		local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 		broker := startSecretBroker(t, servedBy(local))
-		useAWS(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/example-service-role/session")
+		awstest.Use(t, local, "999999999999", "arn:aws:sts::999999999999:assumed-role/example-service-role/session")
 		_, stderr, code := runSecret("retag", "HELD_KEY", "--tier", "human")
 		if code != 1 || !strings.Contains(stderr, "in account 999999999999") || !strings.Contains(stderr, "account "+testAccount) {
 			t.Fatalf("exit %d, stderr %q; want 1 naming both accounts", code, stderr)
@@ -1962,10 +1966,10 @@ func TestSecretWritesRunUnderAnyRoleInTheBrokersAccount(t *testing.T) {
 // TestSecretSetOrCreateWithASharedOwner: create --owner shared tags the secret shared, whoever is
 // signed in, and set replaces the value of a secret already held.
 func TestSecretSetOrCreateWithASharedOwner(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal()
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
+	awstest.Use(t, local, testAccount, adaSignIn)
 	useStdin(t, "first")
 	if _, stderr, code := runSecret("create", "TEAM_KEY", "--owner", "shared", "--tier", "human"); code != 0 {
 		t.Fatalf("create: exit %d, stderr %q", code, stderr)
@@ -1990,16 +1994,14 @@ func TestSecretSetOrCreateWithASharedOwner(t *testing.T) {
 // region the broker's settings answer; the SDK reads AWS_PROFILE (and the rest of its chain) from
 // the environment itself, so the forms pass it no profile.
 func TestSecretFormsSignInInTheBrokersRegion(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it sets a package variable the package's other tests read (awsClients set at secret_test.go:1961).
+	// Not parallel: it sets environment variables of the whole process (main.startSecretBroker, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "v1"))
 	startSecretBroker(t, servedBy(local))
 	var regions []string
-	restore := awsClients
-	awsClients = func(_ context.Context, region string) (secretsAPI, stsAPI, []aws.CredentialSource, error) {
+	awstest.UseClients(t, func(_ context.Context, region string) (awsstore.WriterAPI, awsstore.STSAPI, []aws.CredentialSource, error) {
 		regions = append(regions, region)
-		return local, fakeSTS{account: testAccount, arn: adaSignIn}, nil, nil
-	}
-	t.Cleanup(func() { awsClients = restore })
+		return local, awstest.STS{Account: testAccount, ARN: adaSignIn}, nil, nil
+	})
 	useStdin(t, "v2")
 	for _, args := range [][]string{{"list"}, {"set", "HELD_KEY"}, {"show", "HELD_KEY"}} {
 		if _, stderr, code := runSecret(args...); code != 0 {

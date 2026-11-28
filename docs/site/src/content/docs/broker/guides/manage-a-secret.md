@@ -6,12 +6,15 @@ sidebar:
 ---
 
 An agent secret is a secret in the broker's own store - AWS Secrets Manager or GCP Secret
-Manager, whichever the broker's deployment uses - under the broker's namespace, encrypted with
-its key, and tagged with owner, tier, optional type and optional max grant
-([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)).
-`agent-secrets secret` manages them. It reads and writes the store itself, under whatever cloud
-credential its environment gives it, so that cloud's own IAM decides what it may do; the broker
-never writes a secret. After every write the CLI asks the broker to reread that one secret, and the
+Manager, whichever the broker's deployment uses, or the memory store's file on a local stack
+([Run locally](/legion/broker/guides/run-locally/#write-a-secret-and-see-it-served)) - under the
+broker's namespace and tagged with owner, tier, optional type and optional max grant
+([Concepts](/legion/broker/concepts/#owner-and-tier-who-may-have-which-secret)). On AWS and GCP
+the secret is encrypted with the broker's key, and `agent-secrets secret` reads and writes the
+store under whatever cloud credential its environment gives it, so that cloud's own IAM decides
+what it may do. The memory store is a plaintext JSON file that the file system's permissions
+alone guard, with no key and no sign-in, for a local stack only. The broker never writes a secret.
+After every write the CLI asks the broker to reread that one secret, and the
 broker that answers tells
 every other broker process serving the same database to reread it too, so the change is served
 across the whole deployment within seconds rather than at each process's next read of the
@@ -903,7 +906,8 @@ which says to store no key or login in NAME until the retag it names, run where 
 broker identity, prints `broker: serving NAME from … (type <type>)`. It exits 0.
 
 `<store>` is the store the broker's settings name: `AWS Secrets Manager account <id> in <region>`,
-or `GCP Secret Manager project <number>`. The command exits 0 when the answer is what the write
+`GCP Secret Manager project <number>`, or, on a local stack, `memory file <path>`. The
+command exits 0 when the answer is what the write
 meant. It exits 1 when the answer contradicts the write, and says so on standard error: `the
 broker at <host> refuses NAME after the write to <store> (reason=…)` after a create, set, retag or
 restore, or `the broker at <host> still serves NAME after its delete in <store>`. The write itself

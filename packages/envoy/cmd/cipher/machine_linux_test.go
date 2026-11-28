@@ -70,7 +70,7 @@ func loggedInElsewhere(t *testing.T, rig *ciphertest.Rig, host string) (*helper.
 // case (the broker reads any case), warns that it ends this machine's access, and the broker
 // refuses the next command, which says to log the machine in again.
 func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling ((*Broker).EnrollSessionKey, (*Broker).enroll, (*Broker).enrollAs, (*Broker).enrolAuthority, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read ((*Broker).EnrollSessionKey, (*Broker).enroll, (*Broker).enrollAs, (*Broker).enrolAuthority, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -143,7 +143,7 @@ func TestMachineListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // the secret, which now names a reason because the revoke withheld the name and so put it to a
 // person, waits for approval.
 func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -212,7 +212,7 @@ func TestGrantListAndRevokeUnderTheMachinesLogin(t *testing.T) {
 // `grant list` run from inside one say so and exit 1. `grant revoke` is no longer here: a session
 // ends a grant it was given from inside the session (TestGrantRevokeInsideASessionEndsItsOwnGrant).
 func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.realHelper, main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	sock, broker := realHelper(t)
 	for _, args := range [][]string{{"machine", "list"}, {"machine", "revoke", uuid.NewString()}, {"grant", "list"}} {
@@ -227,7 +227,7 @@ func TestMachineAndGrantCommandsRefusedInsideASession(t *testing.T) {
 // TestMachineAndGrantCommandsOnAMachineNotLoggedIn: from the operator's own shell on a machine
 // whose helper holds no machine login, every machine and grant command says to log it in.
 func TestMachineAndGrantCommandsOnAMachineNotLoggedIn(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	binary := buildAgentSecrets(t)
 	// broker is a port this test holds that refuses each dial.
 	broker := "http://" + testport.Refused(t)
@@ -384,7 +384,7 @@ func (s *grantSession) requestAutoSecret() string {
 // grant it was given, with `grant revoke`, from inside the session — where before it answered
 // IN_SESSION and the grant lived to its expiry.
 func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)
@@ -421,7 +421,7 @@ func TestGrantRevokeInsideASessionEndsItsOwnGrant(t *testing.T) {
 // printed a failure here. TestGrantRevokeTriesNoOtherRouteAfterNotYours holds the case where the
 // helper would sign the operator's route.
 func TestGrantRevokeInsideASessionRefusesAnotherEnrollmentsGrant(t *testing.T) {
-	// Not parallel: it signals the test process or changes its signal handling (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.serveRealHelper, main.serveRealHelperWith, (*Server).Serve, (*Server).handle, (*Server).unenrollSessionKey, (*Broker).Revoke, (*Broker).signingAuthority, (*SignInAuthority).Current, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	binary := buildAgentSecrets(t)
 	_, sock := serveRealHelper(t, rig.URL, rig.Operator)

@@ -37,8 +37,14 @@ var RereadBudget = ratelimit.Limit{Every: time.Second, Burst: 10}
 // Backend is the GCP store's registry entry.
 type Backend struct{}
 
-func (Backend) Name() string                  { return Name }
-func (Backend) ID() string                    { return "gcp" }
+func (Backend) Name() string { return Name }
+func (Backend) ID() string   { return "gcp" }
+
+// ServiceSDKs is Secret Manager's client, which this store alone imports.
+func (Backend) ServiceSDKs() []string {
+	return []string{"cloud.google.com/go/secretmanager"}
+}
+
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return RereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }
@@ -51,4 +57,54 @@ func (Backend) OpenStore(ctx context.Context, cfg secretstore.Config) (secretsto
 		return secretstore.Opened{}, err
 	}
 	return secretstore.Opened{Store: New(client, cfg.(config).keyName), Credentials: "application-default", Close: client.Close}, nil
+}
+
+// Kind is the store's kind as the CLI's lines name it.
+func (Backend) Kind() string { return "GCP Secret Manager" }
+
+// Place is the project the broker's settings put the agent secrets in, as a line names it after
+// Kind: "project <number>", "" where they name none; as the broker's address lets its answer
+// print (Settings.Words).
+func (Backend) Place(s secretstore.Settings) string {
+	settings := settingsOf(s)
+	if settings.GCPProject == "" {
+		return ""
+	}
+	return "project " + settings.words(settings.GCPProject)
+}
+
+// OpenWriter refuses settings whose prefix, project or key name do not agree
+// (checkSettingsKMSKeyName), then signs in with the first Google credential source present
+// (newWriter), running every gcloud through opts.Run.
+func (Backend) OpenWriter(ctx context.Context, s secretstore.Settings, opts secretstore.WriterOptions) (secretstore.Writer, error) {
+	settings := settingsOf(s)
+	if err := checkSettingsKMSKeyName(settings); err != nil {
+		return nil, err
+	}
+	w, err := newWriter(ctx, settings, opts.Run)
+	if err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+// HelpRows are the Google variables of the CLI's environment table.
+func (Backend) HelpRows() string {
+	return `  CLOUDSDK_AUTH_ACCESS_TOKEN a Google access token the secret forms sign in with against a broker
+                             on Google Cloud; it outranks every other Google source
+  GOOGLE_APPLICATION_CREDENTIALS
+                             a Google credentials file the secret forms sign in with where no
+                             token is lent; it outranks the gcloud variables below
+  CLOUDSDK_ACTIVE_CONFIG_NAME
+                             the gcloud configuration whose login the secret forms sign in with,
+                             before the well-known credentials file, the active gcloud account
+                             and the metadata server
+  CLOUDSDK_CORE_ACCOUNT      the gcloud login the secret forms sign in with, at the same place in
+                             that order; the store's IAM decides what each may do
+`
+}
+
+// ProfileHint is the Google Cloud clause of the CLI's --profile refusal.
+func (Backend) ProfileHint() (secretstore.ProfileHint, bool) {
+	return secretstore.ProfileHint{Rank: 10, Clause: "on Google Cloud set CLOUDSDK_ACTIVE_CONFIG_NAME (a gcloud configuration) or CLOUDSDK_CORE_ACCOUNT (a gcloud account), which CLOUDSDK_AUTH_ACCESS_TOKEN and GOOGLE_APPLICATION_CREDENTIALS outrank when set"}, true
 }

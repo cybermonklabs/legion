@@ -29,6 +29,8 @@ import (
 
 	"google.golang.org/grpc/codes"
 
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testport"
 	"github.com/sjawhar/envoy/testexec"
@@ -173,14 +175,14 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		account, file := configs[name], "[core]\n"
 		if account != "" {
 			file += "account = " + account + "\n"
-			if !slices.Contains(accounts, shellWord(account)) {
-				accounts = append(accounts, shellWord(account))
+			if !slices.Contains(accounts, secretstore.ShellWord(account)) {
+				accounts = append(accounts, secretstore.ShellWord(account))
 			}
 		}
 		if err := os.WriteFile(filepath.Join(dir, "configurations", "config_"+name), []byte(file), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		cases = append(cases, shellWord(name)+") account="+shellWord(account)+" ;;")
+		cases = append(cases, secretstore.ShellWord(name)+") account="+secretstore.ShellWord(account)+" ;;")
 	}
 	if active != "" {
 		if err := os.WriteFile(filepath.Join(dir, "active_config"), []byte(active), 0o600); err != nil {
@@ -193,7 +195,7 @@ func useGcloudConfigurations(t *testing.T, active string, configs map[string]str
 		`config=`,
 		`for word; do case "$word" in --configuration=*) config=${word#--configuration=} ;; esac; done`,
 		`[ -n "$config" ] || config=$CLOUDSDK_ACTIVE_CONFIG_NAME`,
-		`[ -n "$config" ] || { [ -f ` + shellWord(filepath.Join(dir, "active_config")) + ` ] && read -r config <` + shellWord(filepath.Join(dir, "active_config")) + `; }`,
+		`[ -n "$config" ] || { [ -f ` + secretstore.ShellWord(filepath.Join(dir, "active_config")) + ` ] && read -r config <` + secretstore.ShellWord(filepath.Join(dir, "active_config")) + `; }`,
 		`account=`,
 		`case "$config" in ` + strings.Join(cases, " ") + ` *) ;; esac`,
 		`[ -n "$account" ] || case "` + active + `" in ` + strings.Join(cases, " ") + ` *) ;; esac`,
@@ -257,7 +259,7 @@ func useOrderSources(t *testing.T, dir, tokenURI string, setup orderSetup) {
 // configuration is the machine's own (box) and whose person's login is in another (person).
 // Each row adds one source to the row before it and reads the bearer token Secret Manager saw.
 func TestGCPSecretCredentialOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:290); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:293).
 	const (
 		wk           = "wk@example.iam.gserviceaccount.com"
 		gac          = "gac@example.iam.gserviceaccount.com"
@@ -281,8 +283,8 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 		{"7 lent token over credentials file", orderSetup{wellKnown: wk, chosenConfig: personConfig, credentialsFile: gac, lentToken: lent}, nil, lent},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			var dir string
@@ -298,7 +300,7 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 			if code != 0 {
 				t.Fatalf("exit %d, stderr %q; want 0", code, stderr)
 			}
-			if got, calls := fake.calledUnder(); got != "Bearer "+row.bearer || calls == 0 {
+			if got, calls := fake.CalledUnder(); got != "Bearer "+row.bearer || calls == 0 {
 				t.Fatalf("Secret Manager calls ran under %q (%d calls), want only Bearer %s", got, calls, row.bearer)
 			}
 		})
@@ -311,9 +313,9 @@ func TestGCPSecretCredentialOrder(t *testing.T) {
 // one refusal that names each of the six sources (the third by both its variables, the well-known
 // file by the setting that names its directory, never its path).
 func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:317); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:320); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	fake := gcptest.NewFakeSecretManager()
+	gcptest.UseFake(t, fake)
 	dir := useGcloudConfigurations(t, "", nil)
 	t.Setenv("PATH", t.TempDir())
 	// A port the test holds and nothing listens on, so no other process can take it and answer
@@ -339,7 +341,7 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 	if strings.Contains(stderr, dir) {
 		t.Fatalf("stderr %q names the gcloud configuration directory %s", stderr, dir)
 	}
-	if _, calls := fake.calledUnder(); calls != 0 {
+	if _, calls := fake.CalledUnder(); calls != 0 {
 		t.Fatalf("Secret Manager saw %d calls, want none", calls)
 	}
 }
@@ -349,10 +351,10 @@ func TestGCPSecretNoSourceListsEverySource(t *testing.T) {
 // source is never retried under another. The metadata server is there in every row, so a fall
 // through would show as a call under it.
 func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:363); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:366).
 	for _, row := range []struct {
 		name     string
-		use      func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager)
+		use      func(t *testing.T, dir, tokenURI string, fake *gcptest.FakeSecretManager)
 		args     []string
 		code     int
 		says     []string
@@ -360,14 +362,14 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 	}{
 		{
 			name: "core account not held",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, _, _ string, _ *gcptest.FakeSecretManager) {
 				t.Setenv("CLOUDSDK_CORE_ACCOUNT", "nobody@example.com")
 			},
 			code: 1, says: []string{"CLOUDSDK_CORE_ACCOUNT names an account gcloud holds no login for (not printed;"},
 		},
 		{
 			name: "credentials file does not parse",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, _, _ string, _ *gcptest.FakeSecretManager) {
 				path := filepath.Join(t.TempDir(), "credentials.json")
 				if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
 					t.Fatal(err)
@@ -378,7 +380,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 		},
 		{
 			name: "well-known file does not parse",
-			use: func(t *testing.T, dir, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, dir, _ string, _ *gcptest.FakeSecretManager) {
 				if err := os.WriteFile(filepath.Join(dir, "application_default_credentials.json"), []byte("not json"), 0o600); err != nil {
 					t.Fatal(err)
 				}
@@ -387,17 +389,17 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 		},
 		{
 			name: "refused under the first source",
-			use: func(t *testing.T, dir, tokenURI string, fake *fakeSecretManager) {
+			use: func(t *testing.T, dir, tokenURI string, fake *gcptest.FakeSecretManager) {
 				useOrderSources(t, dir, tokenURI, orderSetup{wellKnown: "wk@example.iam.gserviceaccount.com", chosenConfig: "person", credentialsFile: "gac@example.iam.gserviceaccount.com", lentToken: "lent-token"})
-				fake.mu.Lock()
-				fake.refuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
-				fake.mu.Unlock()
+				fake.Mu.Lock()
+				fake.RefuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
+				fake.Mu.Unlock()
 			},
 			code: 1, says: []string{"PermissionDenied"}, onlyCall: "Bearer lent-token",
 		},
 		{
 			name: "chosen configuration names no account",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, _, _ string, _ *gcptest.FakeSecretManager) {
 				useGcloudConfigurations(t, "box", map[string]string{"box": "box@example.iam.gserviceaccount.com", "person": ""})
 				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "person")
 			},
@@ -405,22 +407,22 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 		},
 		{
 			name: "missing configuration",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, _, _ string, _ *gcptest.FakeSecretManager) {
 				t.Setenv("CLOUDSDK_ACTIVE_CONFIG_NAME", "missing")
 			},
 			code: 1, says: []string{"CLOUDSDK_ACTIVE_CONFIG_NAME names a gcloud configuration this machine does not hold (not printed; gcloud configurations here: box, person)"},
 		},
 		{
 			name: "active gcloud refresh fails",
-			use: func(t *testing.T, _, _ string, _ *fakeSecretManager) {
+			use: func(t *testing.T, _, _ string, _ *gcptest.FakeSecretManager) {
 				t.Setenv("STUB_GCLOUD_REFUSE_TOKEN", "1")
 			},
 			code: 1, says: []string{"the active gcloud account (gcloud configuration box)", "`gcloud auth print-access-token` failed for box@example.iam.gserviceaccount.com: exit status 1: run the same gcloud command yourself to see its message"},
 		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			metadata := startMetadataServer(t, "machine@example.iam.gserviceaccount.com")
 			dir := useGcloudConfigurations(t, "box", orderConfigurations)
@@ -435,7 +437,7 @@ func TestGCPSecretPresentButBrokenSourceStops(t *testing.T) {
 					t.Fatalf("stderr %q does not say %q", stderr, said)
 				}
 			}
-			got, calls := fake.calledUnder()
+			got, calls := fake.CalledUnder()
 			switch {
 			case row.onlyCall == "" && calls != 0:
 				t.Fatalf("Secret Manager saw %d calls under %q, want none", calls, got)
@@ -516,7 +518,7 @@ func startPartialMetadataServer(t *testing.T, token, email metadataAnswer) *meta
 // metadata client's own deadlines allow it (waits), less the time this process was held up
 // (requireOnTime).
 func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:542); it sets a package variable the package's other tests read (main.startFakeSecretManager, main.useGCPDialTo, main.replaceGCPDial, gcpClientDial set at secret_gcp_test.go:381); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at secret_gcp_order_test.go:545); it holds code to an upper bound on a measured time, which the load of the package's parallel tests could push past (main.requireOnTime, onTimeWithin at waits_test.go:239).
 	for _, row := range []struct {
 		name         string
 		token, email metadataAnswer
@@ -536,8 +538,8 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			[]string{"ask the metadata server for this machine's access token", "answered HTTP 500"}, "found no Google credential", ""},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			fake := newFakeSecretManager()
-			startFakeSecretManager(t, fake)
+			fake := gcptest.NewFakeSecretManager()
+			gcptest.UseFake(t, fake)
 			holdScratchTest(fake)
 			useGcloudConfigurations(t, "", nil)
 			t.Setenv("PATH", t.TempDir())
@@ -558,7 +560,7 @@ func TestGCPSecretMetadataSourceIsPresentWhenItYieldsAToken(t *testing.T) {
 			if row.saysNot != "" && strings.Contains(stderr, row.saysNot) {
 				t.Fatalf("stderr %q says %q", stderr, row.saysNot)
 			}
-			got, calls := fake.calledUnder()
+			got, calls := fake.CalledUnder()
 			switch {
 			case row.onlyCall == "" && calls != 0:
 				t.Fatalf("Secret Manager saw %d calls under %q, want none", calls, got)

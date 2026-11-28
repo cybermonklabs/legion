@@ -88,7 +88,7 @@ func gcpRig(t *testing.T) secretstoretest.StoreRig {
 		prefix  = project + "/secrets/agent-secrets-"
 		key     = "projects/example-project/locations/global/keyRings/agent-secrets/cryptoKeys/agent-secrets"
 	)
-	f := &gcptest.FakeSecretManager{Secrets: map[string]*gcptest.FakeSecret{}}
+	f := gcptest.NewFake(map[string]gcptest.Stored{})
 	numbers := map[string]int{}
 	return secretstoretest.StoreRig{
 		Store: gcp.New(gcptest.Start(t, f), key), Prefix: prefix, OffKey: true, Unfilled: true,
@@ -97,7 +97,7 @@ func gcpRig(t *testing.T) secretstoretest.StoreRig {
 			if fixture.Outside {
 				name = project + "/secrets/x" + prefix[len(project+"/secrets/"):] + fixture.Slug
 			}
-			s := &gcptest.FakeSecret{
+			s := gcptest.Stored{
 				Annotations: maps.Clone(fixture.Tags), ReplicationKey: key, VersionKey: key,
 				State: secretmanagerpb.SecretVersion_ENABLED, Value: []byte(fixture.Value),
 				NoVersion: fixture.Value == "",
@@ -113,11 +113,11 @@ func gcpRig(t *testing.T) secretstoretest.StoreRig {
 			}
 			f.Mu.Lock()
 			defer f.Mu.Unlock()
-			if held, ok := f.Secrets[name]; !ok || string(held.Value) != fixture.Value {
+			if held, ok := f.Secrets[name]; !ok || string(held.Value()) != fixture.Value {
 				numbers[name]++
 			}
 			s.Number = strconv.Itoa(numbers[name])
-			f.Secrets[name] = s
+			f.Secrets[name] = s.Secret(name)
 		},
 		Remove: func(_ *testing.T, slug string) {
 			f.Mu.Lock()

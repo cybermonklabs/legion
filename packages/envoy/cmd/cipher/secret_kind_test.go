@@ -26,237 +26,223 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp/gcptest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
-// TestSecretTypeAndMaxGrantOnAWS retags one secret through the types. Each retag to a type reads
-// the value and decodes it as that type, so the value that type decodes is stored first, as a
-// writer other than this client stores it (a retag between two types cannot be preceded by a
-// set, which decodes the value under the type the secret holds).
-func TestSecretTypeAndMaxGrantOnAWS(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal()
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
+// TestSecretTypeAndMaxGrantFromAGitHubApp retags one secret through the types. Each retag to a
+// type reads the value and decodes it as that type, so the value that type decodes is stored
+// first, as a writer other than this client stores it (a retag between two types cannot be
+// preceded by a set, which decodes the value under the type the secret holds).
+func TestSecretTypeAndMaxGrantFromAGitHubApp(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
 
-	stdout, stderr, code := runSecret("create", "APP_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "Acme-Org", "--requesters", "ada@example.com", "--max-grant", "1h")
-	if code != 0 {
-		t.Fatalf("create: exit %d, stderr %q", code, stderr)
-	}
-	tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
-	if tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagGitHubOwners] != "acme-org" {
-		t.Fatalf("create tags = %v, want type, github-owners as the broker reads them, and max-grant", tags)
-	}
-	if tags[policy.TagRequesters] != "ada@example.com" {
-		t.Fatalf("create tags = %v, want the requesters list", tags)
-	}
-	if tags[policy.TagRollbackGuard] != policy.RollbackGuardValue {
-		t.Fatalf("create tags = %v, want the rollback guard beside the type", tags)
-	}
-	if !strings.Contains(stdout, "broker: serving APP_KEY") {
-		t.Fatalf("create stdout %q does not name the broker result", stdout)
-	}
-
-	stdout, stderr, code = runSecret("show", "APP_KEY")
-	if code != 0 || !strings.Contains(stdout, "type: github-app") || !strings.Contains(stdout, "github_owners: acme-org") || !strings.Contains(stdout, "max_grant: 1h") {
-		t.Fatalf("show: exit %d stdout %q stderr %q; want type, github owners and max-grant", code, stdout, stderr)
-	}
-	if !strings.Contains(stdout, "requesters: ada@example.com") {
-		t.Fatalf("show: stdout %q does not name the requesters", stdout)
-	}
-	stdout, stderr, code = runSecret("list")
-	if code != 0 || !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "MAX_GRANT") || !strings.Contains(stdout, "github-app") || !strings.Contains(stdout, "1h") {
-		t.Fatalf("list: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
-	}
-	stdout, stderr, code = runSecret("list", "--json")
-	var listed []map[string]any
-	if code != 0 || json.Unmarshal([]byte(stdout), &listed) != nil || len(listed) != 1 {
-		t.Fatalf("list --json: exit %d stdout %q stderr %q; want one secret", code, stdout, stderr)
-	}
-	if got := listed[0]; got["type"] != policy.TypeGitHubApp || got["github_owners"] != "acme-org" || got["max_grant"] != "1h" {
-		t.Fatalf("list --json = %v; want type github-app, github_owners acme-org and max_grant 1h", got)
-	}
-
-	for _, secretType := range []string{policy.TypeGoogleLogin, policy.TypeGitHubApp, policy.TypeAzureLogin} {
-		if _, err := local.PutSecretValue(context.Background(), &secretsmanager.PutSecretValueInput{SecretId: aws.String(policytest.ID("APP_KEY")), SecretString: aws.String(policytest.TypeValue(secretType))}); err != nil {
-			t.Fatal(err)
-		}
-		_, stderr, code = runSecret("retag", "APP_KEY", "--type", secretType)
+		stdout, stderr, code := runSecret("create", "APP_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "Acme-Org", "--requesters", "ada@example.com", "--max-grant", "1h")
 		if code != 0 {
-			t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
+			t.Fatalf("create: exit %d, stderr %q", code, stderr)
 		}
-		tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
-		if tags[policy.TagType] != secretType || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || tags[policy.TagRollbackGuard] != policy.RollbackGuardValue {
-			t.Fatalf("retag %s tags = %v, want new type, the rollback guard and retained tags", secretType, tags)
+		tags := store.tags(t, "APP_KEY")
+		if tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagGitHubOwners] != "acme-org" {
+			t.Fatalf("create tags = %v, want type, github-owners as the broker reads them, and max-grant", tags)
 		}
-	}
-	_, stderr, code = runSecret("retag", "APP_KEY", "--type", "none")
-	if code != 0 {
-		t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
-	}
-	tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
-	if _, ok := tags[policy.TagType]; ok || tags[policy.TagMaxGrant] != "1h" {
-		t.Fatalf("retag none tags = %v, want removed type and retained max-grant", tags)
-	}
-	if _, ok := tags[policy.TagRollbackGuard]; ok {
-		t.Fatalf("retag none tags = %v, want the rollback guard removed with the type", tags)
-	}
+		if tags[policy.TagRequesters] != "ada@example.com" {
+			t.Fatalf("create tags = %v, want the requesters list", tags)
+		}
+		if tags[policy.TagRollbackGuard] != policy.RollbackGuardValue {
+			t.Fatalf("create tags = %v, want the rollback guard beside the type", tags)
+		}
+		if !strings.Contains(stdout, "broker: serving APP_KEY") {
+			t.Fatalf("create stdout %q does not name the broker result", stdout)
+		}
+
+		stdout, stderr, code = runSecret("show", "APP_KEY")
+		if code != 0 || !strings.Contains(stdout, "type: github-app") || !strings.Contains(stdout, "github_owners: acme-org") || !strings.Contains(stdout, "max_grant: 1h") {
+			t.Fatalf("show: exit %d stdout %q stderr %q; want type, github owners and max-grant", code, stdout, stderr)
+		}
+		if !strings.Contains(stdout, "requesters: ada@example.com") {
+			t.Fatalf("show: stdout %q does not name the requesters", stdout)
+		}
+		stdout, stderr, code = runSecret("list")
+		if code != 0 || !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "MAX_GRANT") || !strings.Contains(stdout, "github-app") || !strings.Contains(stdout, "1h") {
+			t.Fatalf("list: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
+		}
+		stdout, stderr, code = runSecret("list", "--json")
+		var listed []map[string]any
+		if code != 0 || json.Unmarshal([]byte(stdout), &listed) != nil || len(listed) != 1 {
+			t.Fatalf("list --json: exit %d stdout %q stderr %q; want one secret", code, stdout, stderr)
+		}
+		if got := listed[0]; got["type"] != policy.TypeGitHubApp || got["github_owners"] != "acme-org" || got["max_grant"] != "1h" {
+			t.Fatalf("list --json = %v; want type github-app, github_owners acme-org and max_grant 1h", got)
+		}
+
+		for _, secretType := range []string{policy.TypeGoogleLogin, policy.TypeGitHubApp, policy.TypeAzureLogin} {
+			store.setValue(t, "APP_KEY", policytest.TypeValue(secretType))
+			_, stderr, code = runSecret("retag", "APP_KEY", "--type", secretType)
+			if code != 0 {
+				t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
+			}
+			tags = store.tags(t, "APP_KEY")
+			if tags[policy.TagType] != secretType || tags[policy.TagMaxGrant] != "1h" || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent || tags[policy.TagRollbackGuard] != policy.RollbackGuardValue {
+				t.Fatalf("retag %s tags = %v, want new type, the rollback guard and retained tags", secretType, tags)
+			}
+		}
+		_, stderr, code = runSecret("retag", "APP_KEY", "--type", "none")
+		if code != 0 {
+			t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
+		}
+		tags = store.tags(t, "APP_KEY")
+		if _, ok := tags[policy.TagType]; ok || tags[policy.TagMaxGrant] != "1h" {
+			t.Fatalf("retag none tags = %v, want removed type and retained max-grant", tags)
+		}
+		if _, ok := tags[policy.TagRollbackGuard]; ok {
+			t.Fatalf("retag none tags = %v, want the rollback guard removed with the type", tags)
+		}
+	})
 }
 
-// TestSecretTypeAndMaxGrantOnGCP retags one secret through every type, each value stored before
-// the retag that decodes it, as TestSecretTypeAndMaxGrantOnAWS does.
-func TestSecretTypeAndMaxGrantOnGCP(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useGCPIdentity, gcpCredentialsFile set at secret_gcp_test.go:473).
-	fake := newFakeSecretManager()
-	startFakeSecretManager(t, fake)
-	useGCPIdentity(t, "authorized_user", "ada@example.com")
-	settings := gcpTestSettings()
-	startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-	useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
+// TestSecretTypeAndMaxGrantThroughEveryType retags one secret through every type, each value
+// stored before the retag that decodes it, as TestSecretTypeAndMaxGrantFromAGitHubApp does.
+func TestSecretTypeAndMaxGrantThroughEveryType(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
 
-	_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin, "--max-grant", "30m")
-	if code != 0 {
-		t.Fatalf("create: exit %d, stderr %q", code, stderr)
-	}
-	id := testGCPPrefix + "login-key"
-	fake.mu.Lock()
-	annotations := fake.secrets[id].secret.GetAnnotations()
-	fake.mu.Unlock()
-	if annotations[policy.TagType] != policy.TypeGoogleLogin || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagRollbackGuard] != policy.RollbackGuardValue {
-		t.Fatalf("create annotations = %v, want type, max-grant and the rollback guard", annotations)
-	}
-	if _, ok := annotations[policy.TagGitHubOwners]; ok {
-		t.Fatalf("create annotations = %v, want no github-owners on a google-login secret", annotations)
-	}
+		_, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin, "--max-grant", "30m")
+		if code != 0 {
+			t.Fatalf("create: exit %d, stderr %q", code, stderr)
+		}
+		annotations := store.tags(t, "LOGIN_KEY")
+		if annotations[policy.TagType] != policy.TypeGoogleLogin || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagRollbackGuard] != policy.RollbackGuardValue {
+			t.Fatalf("create annotations = %v, want type, max-grant and the rollback guard", annotations)
+		}
+		if _, ok := annotations[policy.TagGitHubOwners]; ok {
+			t.Fatalf("create annotations = %v, want no github-owners on a google-login secret", annotations)
+		}
 
-	stdout, stderr, code := runSecret("show", "LOGIN_KEY")
-	if code != 0 || !strings.Contains(stdout, "type: google-login") || !strings.Contains(stdout, "max_grant: 30m") {
-		t.Fatalf("show: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
-	}
-	stdout, stderr, code = runSecret("list")
-	if code != 0 || !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "MAX_GRANT") || !strings.Contains(stdout, "google-login") || !strings.Contains(stdout, "30m") {
-		t.Fatalf("list: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
-	}
-	for _, secretType := range policy.Types {
-		// The type's value as a new version, added as a writer other than this client adds one.
-		if _, err := fake.AddSecretVersion(context.Background(), &secretmanagerpb.AddSecretVersionRequest{Parent: id, Payload: &secretmanagerpb.SecretPayload{Data: []byte(policytest.TypeValue(secretType))}}); err != nil {
-			t.Fatal(err)
+		stdout, stderr, code := runSecret("show", "LOGIN_KEY")
+		if code != 0 || !strings.Contains(stdout, "type: google-login") || !strings.Contains(stdout, "max_grant: 30m") {
+			t.Fatalf("show: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
 		}
-		args := []string{"retag", "LOGIN_KEY", "--type", secretType}
-		if policy.TypeNeedsGitHubOwners(secretType) {
-			args = append(args, "--github-owners", "Ada  acme-org")
+		stdout, stderr, code = runSecret("list")
+		if code != 0 || !strings.Contains(stdout, "TYPE") || !strings.Contains(stdout, "MAX_GRANT") || !strings.Contains(stdout, "google-login") || !strings.Contains(stdout, "30m") {
+			t.Fatalf("list: exit %d stdout %q stderr %q; want type and max-grant", code, stdout, stderr)
 		}
-		wantTier := policy.TierAgent
-		switch secretType {
-		case policy.TypeGoogleServiceAccount:
-			// The type is served to the one person who owns the secret, and such a secret bounds
-			// its grants to an hour (policy.TagRules), so the retag names both, the max grant as
-			// the secret already holds it.
-			args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m")
-		case policy.TypeAnthropicFederation:
-			// The same, and the type is human tier alone (policy.ReasonTypeHumanTier).
-			args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m", "--tier", policy.TierHuman)
-			wantTier = policy.TierHuman
+		for _, secretType := range policy.Types {
+			// The type's value as a new version, added as a writer other than this client adds one.
+			store.setValue(t, "LOGIN_KEY", policytest.TypeValue(secretType))
+			args := []string{"retag", "LOGIN_KEY", "--type", secretType}
+			if policy.TypeNeedsGitHubOwners(secretType) {
+				args = append(args, "--github-owners", "Ada  acme-org")
+			}
+			wantTier := policy.TierAgent
+			switch secretType {
+			case policy.TypeGoogleServiceAccount:
+				// The type is served to the one person who owns the secret, and such a secret bounds
+				// its grants to an hour (policy.TagRules), so the retag names both, the max grant as
+				// the secret already holds it.
+				args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m")
+			case policy.TypeAnthropicFederation:
+				// The same, and the type is human tier alone (policy.ReasonTypeHumanTier).
+				args = append(args, "--requesters", "ada@example.com", "--max-grant", "30m", "--tier", policy.TierHuman)
+				wantTier = policy.TierHuman
+			}
+			if _, stderr, code = runSecret(args...); code != 0 {
+				t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
+			}
+			annotations = store.tags(t, "LOGIN_KEY")
+			if annotations[policy.TagType] != secretType || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagOwner] != "ada@example.com" || annotations[policy.TagTier] != wantTier {
+				t.Fatalf("retag %s annotations = %v, want new type and retained annotations", secretType, annotations)
+			}
 		}
-		if _, stderr, code = runSecret(args...); code != 0 {
-			t.Fatalf("retag %s: exit %d, stderr %q", secretType, code, stderr)
+		if got := store.tags(t, "LOGIN_KEY")[policy.TagGitHubOwners]; got != "acme-org ada" {
+			t.Errorf("github-owners after the round trip = %q, want the canonical space-separated list: acme-org ada", got)
 		}
-		fake.mu.Lock()
-		annotations = fake.secrets[id].secret.GetAnnotations()
-		fake.mu.Unlock()
-		if annotations[policy.TagType] != secretType || annotations[policy.TagMaxGrant] != "30m" || annotations[policy.TagOwner] != "ada@example.com" || annotations[policy.TagTier] != wantTier {
-			t.Fatalf("retag %s annotations = %v, want new type and retained annotations", secretType, annotations)
+		if _, stderr, code = runSecret("retag", "LOGIN_KEY", "--type", "none"); code != 0 {
+			t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
 		}
-	}
-	fake.mu.Lock()
-	if got := fake.secrets[id].secret.GetAnnotations()[policy.TagGitHubOwners]; got != "acme-org ada" {
-		t.Errorf("github-owners after the round trip = %q, want the canonical space-separated list: acme-org ada", got)
-	}
-	fake.mu.Unlock()
-	if _, stderr, code = runSecret("retag", "LOGIN_KEY", "--type", "none"); code != 0 {
-		t.Fatalf("retag none: exit %d, stderr %q", code, stderr)
-	}
-	fake.mu.Lock()
-	annotations = fake.secrets[id].secret.GetAnnotations()
-	fake.mu.Unlock()
-	if _, ok := annotations[policy.TagType]; ok || annotations[policy.TagMaxGrant] != "30m" {
-		t.Fatalf("retag none annotations = %v, want removed type and retained max-grant", annotations)
-	}
-	if _, ok := annotations[policy.TagRollbackGuard]; ok {
-		t.Fatalf("retag none annotations = %v, want the rollback guard removed with the type", annotations)
-	}
+		annotations = store.tags(t, "LOGIN_KEY")
+		if _, ok := annotations[policy.TagType]; ok || annotations[policy.TagMaxGrant] != "30m" {
+			t.Fatalf("retag none annotations = %v, want removed type and retained max-grant", annotations)
+		}
+		if _, ok := annotations[policy.TagRollbackGuard]; ok {
+			t.Fatalf("retag none annotations = %v, want the rollback guard removed with the type", annotations)
+		}
+	})
 }
 
 func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	useStdin(t, "stored-value")
-	for _, args := range [][]string{
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", "other"},
-		{"retag", "HELD_KEY", "--type", "other"},
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--max-grant", "soon"},
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--max-grant", "500ms"},
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp},
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "  "},
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin, "--github-owners", "ada"},
-		{"retag", "HELD_KEY", "--github-owners", "  "},
-		{"retag", "HELD_KEY", "--github-owners", "none", "--tier", "human"},
-	} {
-		_, stderr, code := runSecret(args...)
-		if code != exitUsageError {
-			t.Fatalf("%v: exit %d stderr %q; want usage error", args, code, stderr)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+		useStdin(t, "stored-value")
+		for _, args := range [][]string{
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", "other"},
+			{"retag", "HELD_KEY", "--type", "other"},
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--max-grant", "soon"},
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--max-grant", "500ms"},
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp},
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "  "},
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleLogin, "--github-owners", "ada"},
+			{"retag", "HELD_KEY", "--github-owners", "  "},
+			{"retag", "HELD_KEY", "--github-owners", "none", "--tier", "human"},
+		} {
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError {
+				t.Fatalf("%v: exit %d stderr %q; want usage error", args, code, stderr)
+			}
 		}
-	}
-	// The requesters list and the rules it brings with it, each refused before anything is
-	// written: the broker's own reading of the list (policy.ParseRequesters), and its cross-tag
-	// rules (policy.TagRules), named as the broker names them. The rows below the first three
-	// pin that the client's refusal names the rule that refused the write and not another that
-	// happens to be true beside it: the check reads the tags the write leaves, so --type none
-	// leaves a stored secret, and its arms follow policy.RequesterRule's fault, which weighs
-	// the requesters conditions most fundamental first, so a secret owned by shared is answered
-	// for its owner however its list and tier read, a list naming a service at agent tier is
-	// answered for the tier, and the same list at human tier for the person it leaves out.
-	const other = "jason@example.com"
-	for _, tc := range []struct {
-		want, absent string
-		args         []string
-	}{
-		{want: "spaces, not commas", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--requesters", "ada@example.com,builder", "--max-grant", "1h"}},
-		{want: "at least one person or service", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--requesters", "  ", "--max-grant", "1h"}},
-		{want: "lowercase sign-in email", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--requesters", "Ada@Example.com", "--max-grant", "1h"}},
-		{want: policy.ReasonRequestersNotOwner, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
-		{want: policy.ReasonRequestersNotOwner, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h"}},
-		// none removes the type tag, so what the write leaves is a stored secret, which is what
-		// the refusal says.
-		{want: "a stored secret holds none", absent: "a " + tagNone + " secret", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", tagNone, "--scopes", "bigquery"}},
-		// One list, two tiers. At agent tier the service is what TagRules refuses, so the client
-		// names the tier and not the person; at human tier the service is allowed and the person
-		// who is not the owner is what refuses, so the client names them and not the tier.
-		{want: "only at " + policy.TierHuman + " tier", absent: "once, not", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
-		{want: "name ada@example.com once, not", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
-		// The same list, pinned on the advice: a human-tier secret of this type may keep the
-		// registered services its list names, so the write offered puts the owner beside
-		// builder rather than dropping it.
-		{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
-		// A secret owned by shared can carry this type under no list and no tier, so that is
-		// what the refusal names, and not the service beside it.
-		{want: "is neither a person nor a group", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
-		// A human-tier list of services alone: the owner goes beside them, never in their place.
-		{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "me", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
-	} {
-		_, stderr, code := runSecret(tc.args...)
-		if code != exitUsageError || !strings.Contains(stderr, tc.want) {
-			t.Fatalf("%v: exit %d stderr %q; want a usage error naming %q", tc.args, code, stderr, tc.want)
+		// The requesters list and the rules it brings with it, each refused before anything is
+		// written: the broker's own reading of the list (policy.ParseRequesters), and its cross-tag
+		// rules (policy.TagRules), named as the broker names them. The rows below the first three
+		// pin that the client's refusal names the rule that refused the write and not another that
+		// happens to be true beside it: the check reads the tags the write leaves, so --type none
+		// leaves a stored secret, and its arms follow policy.RequesterRule's fault, which weighs
+		// the requesters conditions most fundamental first, so a secret owned by shared is answered
+		// for its owner however its list and tier read, a list naming a service at agent tier is
+		// answered for the tier, and the same list at human tier for the person it leaves out.
+		const other = "jason@example.com"
+		for _, tc := range []struct {
+			want, absent string
+			args         []string
+		}{
+			{want: "spaces, not commas", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--requesters", "ada@example.com,builder", "--max-grant", "1h"}},
+			{want: "at least one person or service", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--requesters", "  ", "--max-grant", "1h"}},
+			{want: "lowercase sign-in email", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--requesters", "Ada@Example.com", "--max-grant", "1h"}},
+			{want: policy.ReasonRequestersNotOwner, args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
+			{want: policy.ReasonRequestersNotOwner, args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h"}},
+			// none removes the type tag, so what the write leaves is a stored secret, which is what
+			// the refusal says.
+			{want: "a stored secret holds none", absent: "a " + tagNone + " secret", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", tagNone, "--scopes", "bigquery"}},
+			// One list, two tiers. At agent tier the service is what TagRules refuses, so the client
+			// names the tier and not the person; at human tier the service is allowed and the person
+			// who is not the owner is what refuses, so the client names them and not the tier.
+			{want: "only at " + policy.TierHuman + " tier", absent: "once, not", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
+			{want: "name ada@example.com once, not", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
+			// The same list, pinned on the advice: a human-tier secret of this type may keep the
+			// registered services its list names, so the write offered puts the owner beside
+			// builder rather than dropping it.
+			{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", other + " builder"}},
+			// A secret owned by shared can carry this type under no list and no tier, so that is
+			// what the refusal names, and not the service beside it.
+			{want: "is neither a person nor a group", absent: "only at " + policy.TierHuman + " tier", args: []string{"create", "NEW_KEY", "--owner", "shared", "--tier", "agent", "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
+			// A human-tier list of services alone: the owner goes beside them, never in their place.
+			{want: `--requesters "ada@example.com builder"`, args: []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", policy.TierHuman, "--type", policy.TypeGoogleServiceAccount, "--max-grant", "1h", "--requesters", "builder"}},
+		} {
+			_, stderr, code := runSecret(tc.args...)
+			if code != exitUsageError || !strings.Contains(stderr, tc.want) {
+				t.Fatalf("%v: exit %d stderr %q; want a usage error naming %q", tc.args, code, stderr, tc.want)
+			}
+			if tc.absent != "" && strings.Contains(stderr, tc.absent) {
+				t.Fatalf("%v: stderr %q names %q, which is not the rule that refused it", tc.args, stderr, tc.absent)
+			}
 		}
-		if tc.absent != "" && strings.Contains(stderr, tc.absent) {
-			t.Fatalf("%v: stderr %q names %q, which is not the rule that refused it", tc.args, stderr, tc.absent)
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("a refused create made NEW_KEY")
 		}
-	}
-	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-		t.Fatal("a refused create made NEW_KEY")
-	}
+	})
 }
 
 // TestSecretCreateRefusesBadAdminAndScopes: --admin takes the one word the broker reads as an
@@ -266,60 +252,58 @@ func TestSecretTypeFlagsRejectInvalidValues(t *testing.T) {
 // refused as that flag. Every one of them is refused before the sign-in is read, so a create
 // that names one writes nothing at all.
 func TestSecretCreateRefusesBadAdminAndScopes(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal()
-	startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	base := []string{"create", "NEW_KEY", "--owner", "me", "--tier", "human", "--max-grant", "1h", "--requesters", "ada@example.com"}
-	for _, tc := range []struct {
-		flag, value, want string
-	}{
-		// The refused value is not printed (valueNotPrinted): a flag's value is where a pasted
-		// credential lands.
-		{"--admin", "yes", "--admin is true (the value is not printed)"},
-		{"--admin", "none", "--admin is true (the value is not printed)"},
-		{"--scopes", "cloud-platform,bigquery", "--scopes: scopes separates its names with spaces, not commas"},
-		{"--scopes", "https://www.googleapis.com/auth/cloud-platform", "--scopes: scopes names the part of a Google scope"},
-		{"--scopes", "Cloud-Platform", "--scopes: scopes names the part of a Google scope"},
-	} {
-		useStdin(t, "stored-value")
-		args := append(slices.Clone(base), tc.flag, tc.value)
-		_, stderr, code := runSecret(args...)
-		if code != exitUsageError || !strings.Contains(stderr, tc.want) || strings.Contains(stderr, strconv.Quote(tc.value)) {
-			t.Errorf("%s %q: exit %d stderr %q; want a usage error naming %q", tc.flag, tc.value, code, stderr, tc.want)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		base := []string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "human", "--max-grant", "1h", "--requesters", "ada@example.com"}
+		for _, tc := range []struct {
+			flag, value, want string
+		}{
+			// The refused value is not printed (valueNotPrinted): a flag's value is where a pasted
+			// credential lands.
+			{"--admin", "yes", "--admin is true (the value is not printed)"},
+			{"--admin", "none", "--admin is true (the value is not printed)"},
+			{"--scopes", "cloud-platform,bigquery", "--scopes: scopes separates its names with spaces, not commas"},
+			{"--scopes", "https://www.googleapis.com/auth/cloud-platform", "--scopes: scopes names the part of a Google scope"},
+			{"--scopes", "Cloud-Platform", "--scopes: scopes names the part of a Google scope"},
+		} {
+			useStdin(t, "stored-value")
+			args := append(slices.Clone(base), tc.flag, tc.value)
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, tc.want) || strings.Contains(stderr, strconv.Quote(tc.value)) {
+				t.Errorf("%s %q: exit %d stderr %q; want a usage error naming %q", tc.flag, tc.value, code, stderr, tc.want)
+			}
 		}
-	}
-	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-		t.Fatal("a refused create made NEW_KEY")
-	}
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("a refused create made NEW_KEY")
+		}
+	})
 }
 
 // TestANoneBesideALoginIsRefusedOnCreateAndRetag: none removes github-owners only alone on retag,
 // so a list that names it beside a login, in any case, is refused before anything is read or
 // written, on create and on retag, rather than written as a login named none.
 func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	for _, owners := range []string{"none ada", "ada NONE", "None  acme-org"} {
-		useStdin(t, "stored-value")
-		_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owners)
-		if code != exitUsageError || !strings.Contains(stderr, "none names no GitHub account") {
-			t.Fatalf("create --github-owners %q: exit %d stderr %q; want a usage error naming none", owners, code, stderr)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, typeTaggedSecret("APP_KEY"))
+		for _, owners := range []string{"none ada", "ada NONE", "None  acme-org"} {
+			useStdin(t, "stored-value")
+			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owners)
+			if code != exitUsageError || !strings.Contains(stderr, "none names no GitHub account") {
+				t.Fatalf("create --github-owners %q: exit %d stderr %q; want a usage error naming none", owners, code, stderr)
+			}
+			_, stderr, code = runSecret("retag", "APP_KEY", "--github-owners", owners)
+			if code != exitUsageError || !strings.Contains(stderr, "given alone") {
+				t.Fatalf("retag --github-owners %q: exit %d stderr %q; want a usage error naming none alone", owners, code, stderr)
+			}
 		}
-		_, stderr, code = runSecret("retag", "APP_KEY", "--github-owners", owners)
-		if code != exitUsageError || !strings.Contains(stderr, "given alone") {
-			t.Fatalf("retag --github-owners %q: exit %d stderr %q; want a usage error naming none alone", owners, code, stderr)
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("a refused create made NEW_KEY")
 		}
-	}
-	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-		t.Fatal("a refused create made NEW_KEY")
-	}
-	if writes.tags != 0 || writes.untags != 0 || writes.describes != 0 {
-		t.Fatalf("refused commands made %d TagResource, %d UntagResource and %d DescribeSecret calls; want none", writes.tags, writes.untags, writes.describes)
-	}
+		if calls := store.calls(); calls != 0 {
+			t.Fatalf("refused commands made %d store calls; want none", calls)
+		}
+	})
 }
 
 // TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag: a github-app secret whose
@@ -327,103 +311,67 @@ func TestANoneBesideALoginIsRefusedOnCreateAndRetag(t *testing.T) {
 // github-owners-malformed, and a retag that leaves the tag as it is says so, not that owners are
 // missing, and writes nothing; naming the owners fixes it.
 func TestARetagOfASecretWhoseStoredOwnersAreMalformedNamesTheMalformedTag(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	commas := typeTaggedSecret(t, "APP_KEY")
-	commas.Tags[policy.TagGitHubOwners] = "acme-org,ada"
-	local := awstest.NewLocal(commas)
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	_, stderr, code := runSecret("retag", "APP_KEY", "--tier", "human")
-	if code != exitUsageError || !strings.Contains(stderr, policy.ReasonGitHubOwnersMalformed) || strings.Contains(stderr, policy.ReasonGitHubOwnersMissing) {
-		t.Fatalf("retag --tier human: exit %d stderr %q; want a usage error naming %s, not %s", code, stderr, policy.ReasonGitHubOwnersMalformed, policy.ReasonGitHubOwnersMissing)
-	}
-	if writes.tags != 0 {
-		t.Fatalf("the refused retag made %d TagResource calls, want none", writes.tags)
-	}
-	if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "acme-org ada"); code != 0 {
-		t.Fatalf("retag naming the owners: exit %d stderr %q", code, stderr)
-	}
-	if tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
-		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		commas := typeTaggedSecret("APP_KEY")
+		commas.Tags[policy.TagGitHubOwners] = "acme-org,ada"
+		putSecret(t, store, commas)
+		_, stderr, code := runSecret("retag", "APP_KEY", "--tier", "human")
+		if code != exitUsageError || !strings.Contains(stderr, policy.ReasonGitHubOwnersMalformed) || strings.Contains(stderr, policy.ReasonGitHubOwnersMissing) {
+			t.Fatalf("retag --tier human: exit %d stderr %q; want a usage error naming %s, not %s", code, stderr, policy.ReasonGitHubOwnersMalformed, policy.ReasonGitHubOwnersMissing)
+		}
+		if writes := store.tagWrites(); writes != 0 {
+			t.Fatalf("the refused retag made %d tag writes, want none", writes)
+		}
+		if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "acme-org ada"); code != 0 {
+			t.Fatalf("retag naming the owners: exit %d stderr %q", code, stderr)
+		}
+		if store.tagWrites() == 0 {
+			t.Fatal("control: the retag that landed counted no tag write, so a count of none says nothing")
+		}
+		if tags := store.tags(t, "APP_KEY"); tags[policy.TagGitHubOwners] != "acme-org ada" {
+			t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
+		}
+	})
 }
 
 // TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing: the github-owners rule
 // (policy.GitHubOwnersFor) holds on retag as on create, against the type and owners the secret
-// will hold once the write lands, on both stores, so a retag never writes a github-app secret the
+// will hold once the write lands, on each store, so a retag never writes a github-app secret the
 // broker then refuses as github-owners-missing.
 func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	refusals := [][]string{
-		{"retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp},
-		{"retag", "APP_KEY", "--github-owners", "none"},
-		{"retag", "PLAIN_KEY", "--github-owners", "ada"},
-	}
-	t.Run("aws", func(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		// PLAIN_KEY holds an App's value, which the retag to github-app below decodes.
-		local := awstest.NewLocal(awstest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)), typeTaggedSecret(t, "APP_KEY"))
-		startSecretBroker(t, servedBy(local))
-		writes := &countingTagWrites{Local: local}
-		useAWS(t, writes, testAccount, adaSignIn)
-		for _, args := range refusals {
+		putSecret(t, store, policytest.Secret("PLAIN_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGitHubApp)))
+		putSecret(t, store, typeTaggedSecret("APP_KEY"))
+		before := map[string]map[string]string{"PLAIN_KEY": store.tags(t, "PLAIN_KEY"), "APP_KEY": store.tags(t, "APP_KEY")}
+		for _, args := range [][]string{
+			{"retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp},
+			{"retag", "APP_KEY", "--github-owners", "none"},
+			{"retag", "PLAIN_KEY", "--github-owners", "ada"},
+		} {
 			_, stderr, code := runSecret(args...)
 			if code != exitUsageError || !strings.Contains(stderr, "github") {
 				t.Fatalf("%v: exit %d stderr %q; want a usage error naming the github-owners rule", args, code, stderr)
 			}
 		}
-		if writes.tags != 0 || writes.untags != 0 {
-			t.Fatalf("refused retags made %d TagResource and %d UntagResource calls, want none", writes.tags, writes.untags)
+		if writes := store.tagWrites(); writes != 0 {
+			t.Fatalf("refused retags made %d tag writes, want none", writes)
+		}
+		for name, tags := range before {
+			if after := store.tags(t, name); !maps.Equal(after, tags) {
+				t.Fatalf("tags of %s after refused retags = %v, want unchanged %v", name, after, tags)
+			}
 		}
 		if _, stderr, code := runSecret("retag", "PLAIN_KEY", "--type", policy.TypeGitHubApp, "--github-owners", "ada"); code != 0 {
 			t.Fatalf("retag to github-app with owners: exit %d stderr %q", code, stderr)
 		}
-		if tags := awsstore.TagMap(describe(t, local, "PLAIN_KEY").Tags); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "ada" {
+		if tags := store.tags(t, "PLAIN_KEY"); tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagGitHubOwners] != "ada" {
 			t.Fatalf("tags = %v, want github-app with owner ada", tags)
 		}
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--type", "none", "--github-owners", "none"); code != 0 {
 			t.Fatalf("removing the type and its owners together: exit %d stderr %q", code, stderr)
-		}
-	})
-	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
-		settings := gcpTestSettings()
-		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		for _, create := range []struct {
-			args  []string
-			value string
-		}{
-			{[]string{"create", "PLAIN_KEY", "--owner", "me", "--tier", "agent"}, "stored-value"},
-			{[]string{"create", "APP_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org ada"}, policytest.TypeValue(policy.TypeGitHubApp)},
-		} {
-			useStdin(t, create.value)
-			if _, stderr, code := runSecret(create.args...); code != 0 {
-				t.Fatalf("%v: exit %d stderr %q", create.args, code, stderr)
-			}
-		}
-		annotations := func() map[string]map[string]string {
-			fake.mu.Lock()
-			defer fake.mu.Unlock()
-			held := map[string]map[string]string{}
-			for id, secret := range fake.secrets {
-				held[id] = maps.Clone(secret.secret.GetAnnotations())
-			}
-			return held
-		}
-		before := annotations()
-		for _, args := range refusals {
-			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, "github") {
-				t.Fatalf("%v: exit %d stderr %q; want a usage error naming the github-owners rule", args, code, stderr)
-			}
-		}
-		after := annotations()
-		for id := range before {
-			if !maps.Equal(after[id], before[id]) {
-				t.Fatalf("annotations of %s after refused retags = %v, want unchanged %v", id, after[id], before[id])
-			}
 		}
 	})
 }
@@ -436,59 +384,58 @@ func TestARetagThatLeavesAGitHubAppSecretWithoutOwnersWritesNothing(t *testing.T
 // a secret that already holds that type. The list is written as the broker reads it, and
 // --requesters none removes it.
 func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	// LISTED_KEY holds a service account, which the retag to that type below decodes.
-	listed := awstest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
-	listed.Tags[policy.TagRequesters] = "ada@example.com"
-	listed.Tags[policy.TagMaxGrant] = "1h"
-	local := awstest.NewLocal(listed)
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	for _, tc := range []struct {
-		want string
-		args []string
-	}{
-		{policy.ReasonRequestersNotOwner, []string{"retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "builder"}},
-		{policy.ReasonRequestersNotOwner, []string{"retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--owner", policy.OwnerShared}},
-	} {
-		_, stderr, code := runSecret(tc.args...)
-		if code != exitUsageError || !strings.Contains(stderr, tc.want) {
-			t.Fatalf("%v: exit %d stderr %q; want a usage error naming %q", tc.args, code, stderr, tc.want)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		// LISTED_KEY holds a service account, which the retag to that type below decodes.
+		listed := policytest.Secret("LISTED_KEY", "ada@example.com", policy.TierAgent, policytest.TypeValue(policy.TypeGoogleServiceAccount))
+		listed.Tags[policy.TagRequesters] = "ada@example.com"
+		listed.Tags[policy.TagMaxGrant] = "1h"
+		putSecret(t, store, listed)
+		for _, tc := range []struct {
+			want string
+			args []string
+		}{
+			{policy.ReasonRequestersNotOwner, []string{"retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "builder"}},
+			{policy.ReasonRequestersNotOwner, []string{"retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--owner", policy.OwnerShared}},
+		} {
+			_, stderr, code := runSecret(tc.args...)
+			if code != exitUsageError || !strings.Contains(stderr, tc.want) {
+				t.Fatalf("%v: exit %d stderr %q; want a usage error naming %q", tc.args, code, stderr, tc.want)
+			}
 		}
-	}
-	if writes.tags != 0 || writes.untags != 0 {
-		t.Fatalf("refused retags made %d TagResource and %d UntagResource calls, want none", writes.tags, writes.untags)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "Ada@example.com"); code != exitUsageError || !strings.Contains(stderr, "lowercase sign-in email") {
-		t.Fatalf("retag with an uppercase email: exit %d stderr %q; want a usage error naming the lowercase form", code, stderr)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "ada@example.com"); code != 0 {
-		t.Fatalf("retag to a service-account secret its owner may ask for: exit %d stderr %q", code, stderr)
-	}
-	tags := awsstore.TagMap(describe(t, local, "LISTED_KEY").Tags)
-	if tags[policy.TagType] != policy.TypeGoogleServiceAccount || tags[policy.TagRequesters] != "ada@example.com" || tags[policy.TagMaxGrant] != "1h" {
-		t.Fatalf("tags = %v, want the service-account type beside its owner's list and the hour", tags)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--requesters", "none"); code != exitUsageError || !strings.Contains(stderr, policy.ReasonRequestersNotOwner) {
-		t.Fatalf("removing the list of a service-account secret: exit %d stderr %q; want a usage error naming %s", code, stderr, policy.ReasonRequestersNotOwner)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", "none"); code != 0 {
-		t.Fatalf("retag --type none: exit %d stderr %q", code, stderr)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--requesters", "none"); code != 0 {
-		t.Fatalf("retag --requesters none: exit %d stderr %q", code, stderr)
-	}
-	tags = awsstore.TagMap(describe(t, local, "LISTED_KEY").Tags)
-	if _, listed := tags[policy.TagRequesters]; listed {
-		t.Fatalf("tags = %v, want no requesters", tags)
-	}
-	if tags[policy.TagMaxGrant] != "1h" || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
-		t.Fatalf("tags = %v, want the max grant, owner and tier kept", tags)
-	}
-	if _, stderr, code := runSecret("retag", "LISTED_KEY", "--max-grant", "2h"); code != 0 {
-		t.Fatalf("retag --max-grant 2h once no one is listed: exit %d stderr %q", code, stderr)
-	}
+		if writes := store.tagWrites(); writes != 0 {
+			t.Fatalf("refused retags made %d tag writes, want none", writes)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "Ada@example.com"); code != exitUsageError || !strings.Contains(stderr, "lowercase sign-in email") {
+			t.Fatalf("retag with an uppercase email: exit %d stderr %q; want a usage error naming the lowercase form", code, stderr)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", policy.TypeGoogleServiceAccount, "--requesters", "ada@example.com"); code != 0 {
+			t.Fatalf("retag to a service-account secret its owner may ask for: exit %d stderr %q", code, stderr)
+		}
+		tags := store.tags(t, "LISTED_KEY")
+		if tags[policy.TagType] != policy.TypeGoogleServiceAccount || tags[policy.TagRequesters] != "ada@example.com" || tags[policy.TagMaxGrant] != "1h" {
+			t.Fatalf("tags = %v, want the service-account type beside its owner's list and the hour", tags)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--requesters", "none"); code != exitUsageError || !strings.Contains(stderr, policy.ReasonRequestersNotOwner) {
+			t.Fatalf("removing the list of a service-account secret: exit %d stderr %q; want a usage error naming %s", code, stderr, policy.ReasonRequestersNotOwner)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--type", "none"); code != 0 {
+			t.Fatalf("retag --type none: exit %d stderr %q", code, stderr)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--requesters", "none"); code != 0 {
+			t.Fatalf("retag --requesters none: exit %d stderr %q", code, stderr)
+		}
+		tags = store.tags(t, "LISTED_KEY")
+		if _, listed := tags[policy.TagRequesters]; listed {
+			t.Fatalf("tags = %v, want no requesters", tags)
+		}
+		if tags[policy.TagMaxGrant] != "1h" || tags[policy.TagOwner] != "ada@example.com" || tags[policy.TagTier] != policy.TierAgent {
+			t.Fatalf("tags = %v, want the max grant, owner and tier kept", tags)
+		}
+		if _, stderr, code := runSecret("retag", "LISTED_KEY", "--max-grant", "2h"); code != 0 {
+			t.Fatalf("retag --max-grant 2h once no one is listed: exit %d stderr %q", code, stderr)
+		}
+	})
 }
 
 // groupOwner is the owner tag of a secret a Google group owns, as the broker reads it
@@ -496,12 +443,12 @@ func TestARetagThatLeavesASecretUnservableToItsRequestersWritesNothing(t *testin
 const groupOwner = "group:approvers@example.com"
 
 // TestSecretCreateWritesTheGroupForm: --owner and --requesters take a group as group: and its
-// lowercase email, the form the broker reads, so on both stores create writes a group-owned
+// lowercase email, the form the broker reads, so on each store create writes a group-owned
 // google-service-account secret whose owner tag is the group and whose requesters tag is the
 // list as given: the group once, beside a registered service, which a human-tier secret of that
 // type may list (policy.RequesterRule).
 func TestSecretCreateWritesTheGroupForm(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.onEachStore, main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	const requesters = "builder " + groupOwner
 	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
 		useStdin(t, policytest.TypeValue(policy.TypeGoogleServiceAccount))
@@ -523,32 +470,30 @@ func TestSecretCreateWritesTheGroupForm(t *testing.T) {
 // before anything is written, naming --requesters and the write that fixes it: the owner group,
 // beside the registered services the list already names. Control: that write lands.
 func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	held := awstest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount))
-	local := awstest.NewLocal(held)
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	for _, tc := range []struct{ requesters, want string }{
-		{"ada@example.com", `name group:approvers@example.com once and no person, not "ada@example.com": write --requesters "group:approvers@example.com"`},
-		{"ada@example.com " + groupOwner, `write --requesters "group:approvers@example.com"`},
-		{"ada@example.com builder", `not "ada@example.com builder": write --requesters "group:approvers@example.com builder"`},
-		{"group:others@example.com", `write --requesters "group:approvers@example.com"`},
-	} {
-		_, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", tc.requesters)
-		if code != exitUsageError || !strings.Contains(stderr, tc.want) || !strings.Contains(stderr, policy.ReasonRequestersNotOwner) {
-			t.Fatalf("retag --requesters %q: exit %d stderr %q; want %d naming %q and %s", tc.requesters, code, stderr, exitUsageError, tc.want, policy.ReasonRequestersNotOwner)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.TypeSecret("GROUP_KEY", groupOwner, policy.TierHuman, policy.TypeGoogleServiceAccount, policytest.TypeValue(policy.TypeGoogleServiceAccount)))
+		for _, tc := range []struct{ requesters, want string }{
+			{"ada@example.com", `name group:approvers@example.com once and no person, not "ada@example.com": write --requesters "group:approvers@example.com"`},
+			{"ada@example.com " + groupOwner, `write --requesters "group:approvers@example.com"`},
+			{"ada@example.com builder", `not "ada@example.com builder": write --requesters "group:approvers@example.com builder"`},
+			{"group:others@example.com", `write --requesters "group:approvers@example.com"`},
+		} {
+			_, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", tc.requesters)
+			if code != exitUsageError || !strings.Contains(stderr, tc.want) || !strings.Contains(stderr, policy.ReasonRequestersNotOwner) {
+				t.Fatalf("retag --requesters %q: exit %d stderr %q; want %d naming %q and %s", tc.requesters, code, stderr, exitUsageError, tc.want, policy.ReasonRequestersNotOwner)
+			}
 		}
-	}
-	if writes.tags != 0 || writes.untags != 0 {
-		t.Fatalf("refused retags made %d TagResource and %d UntagResource calls, want none", writes.tags, writes.untags)
-	}
-	if _, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", groupOwner+" builder"); code != 0 {
-		t.Fatalf("retag to the write the refusal names: exit %d stderr %q", code, stderr)
-	}
-	if tags := awsstore.TagMap(describe(t, local, "GROUP_KEY").Tags); tags[policy.TagRequesters] != "builder "+groupOwner || tags[policy.TagOwner] != groupOwner {
-		t.Fatalf("tags = %v, want the group beside builder and the group owner kept", tags)
-	}
+		if writes := store.tagWrites(); writes != 0 {
+			t.Fatalf("refused retags made %d tag writes, want none", writes)
+		}
+		if _, stderr, code := runSecret("retag", "GROUP_KEY", "--requesters", groupOwner+" builder"); code != 0 {
+			t.Fatalf("retag to the write the refusal names: exit %d stderr %q", code, stderr)
+		}
+		if tags := store.tags(t, "GROUP_KEY"); tags[policy.TagRequesters] != "builder "+groupOwner || tags[policy.TagOwner] != groupOwner {
+			t.Fatalf("tags = %v, want the group beside builder and the group owner kept", tags)
+		}
+	})
 }
 
 // TestOwnerGroupWithAnUppercaseAddressIsAUsageError: a group owner is group: and the group's
@@ -557,114 +502,88 @@ func TestRetagRefusesAGroupOwnedServiceAccountSecretWithAPersonRequester(t *test
 // usage error naming the lowercase form and no part of the value, before anything is read or
 // written.
 func TestOwnerGroupWithAnUppercaseAddressIsAUsageError(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(awstest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	const says = "--owner group:EMAIL names a group by its lowercase email"
-	for _, owner := range []string{"group:Approvers@example.com", "GROUP:approvers@example.com"} {
-		for _, args := range [][]string{
-			{"create", "NEW_KEY", "--owner", owner, "--tier", policy.TierAgent},
-			{"retag", "HELD_KEY", "--owner", owner},
-		} {
-			useStdin(t, "stored-value")
-			_, stderr, code := runSecret(args...)
-			if code != exitUsageError || !strings.Contains(stderr, says) || !strings.Contains(stderr, valueNotPrinted) {
-				t.Fatalf("%v: exit %d stderr %q; want %d naming %q", args, code, stderr, exitUsageError, says)
-			}
-			if strings.Contains(strings.ToLower(stderr), "approvers") {
-				t.Fatalf("%v: stderr %q prints the value", args, stderr)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, policytest.Secret("HELD_KEY", "ada@example.com", policy.TierAgent, "value"))
+		const says = "--owner group:EMAIL names a group by its lowercase email"
+		for _, owner := range []string{"group:Approvers@example.com", "GROUP:approvers@example.com"} {
+			for _, args := range [][]string{
+				{"create", "NEW_KEY", "--owner", owner, "--tier", policy.TierAgent},
+				{"retag", "HELD_KEY", "--owner", owner},
+			} {
+				useStdin(t, "stored-value")
+				_, stderr, code := runSecret(args...)
+				if code != exitUsageError || !strings.Contains(stderr, says) || !strings.Contains(stderr, valueNotPrinted) {
+					t.Fatalf("%v: exit %d stderr %q; want %d naming %q", args, code, stderr, exitUsageError, says)
+				}
+				if strings.Contains(strings.ToLower(stderr), "approvers") {
+					t.Fatalf("%v: stderr %q prints the value", args, stderr)
+				}
 			}
 		}
-	}
-	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-		t.Fatal("a refused create made NEW_KEY")
-	}
-	if writes.tags != 0 || writes.untags != 0 || writes.describes != 0 {
-		t.Fatalf("refused commands made %d TagResource, %d UntagResource and %d DescribeSecret calls; want none", writes.tags, writes.untags, writes.describes)
-	}
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("a refused create made NEW_KEY")
+		}
+		if calls := store.calls(); calls != 0 {
+			t.Fatalf("refused commands made %d store calls; want none", calls)
+		}
+	})
 }
 
-// TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused: on AWS, whose tag values take a
-// space and no comma, a list of several accounts is written as the broker reads it, lowercased,
-// sorted and single-spaced; a comma anywhere is refused before create or retag writes anything,
-// naming the space-separated form.
+// TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused: a list of several accounts is
+// written as the broker reads it, lowercased, sorted and single-spaced, a form every store's tag
+// values take (AWS's take a space and no comma); a comma anywhere is refused before create or
+// retag writes anything, naming the space-separated form.
 func TestAGitHubOwnersListIsWrittenSpaceSeparatedAndACommaIsRefused(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
-	startSecretBroker(t, servedBy(local))
-	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
-	useStdin(t, "stored-value")
-	for _, args := range [][]string{
-		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org,ada"},
-		{"retag", "APP_KEY", "--github-owners", "acme-org, ada"},
-	} {
-		_, stderr, code := runSecret(args...)
-		if code != exitUsageError || !strings.Contains(stderr, "spaces, not commas") || !strings.Contains(stderr, `"<login> <login>"`) {
-			t.Fatalf("%v: exit %d stderr %q; want a usage error naming the space-separated form", args, code, stderr)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, typeTaggedSecret("APP_KEY"))
+		useStdin(t, "stored-value")
+		for _, args := range [][]string{
+			{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "acme-org,ada"},
+			{"retag", "APP_KEY", "--github-owners", "acme-org, ada"},
+		} {
+			_, stderr, code := runSecret(args...)
+			if code != exitUsageError || !strings.Contains(stderr, "spaces, not commas") || !strings.Contains(stderr, `"<login> <login>"`) {
+				t.Fatalf("%v: exit %d stderr %q; want a usage error naming the space-separated form", args, code, stderr)
+			}
 		}
-	}
-	if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-		t.Fatal("the refused create made NEW_KEY")
-	}
-	if writes.tags != 0 {
-		t.Fatalf("the refused retag made %d TagResource calls, want none", writes.tags)
-	}
-	if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "Widgets-Org  ada acme-org"); code != 0 {
-		t.Fatalf("retag to three owners: exit %d stderr %q", code, stderr)
-	}
-	if tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
-		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada widgets-org")
-	}
-	useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
-	if _, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "ada acme-org"); code != 0 {
-		t.Fatalf("create with two owners: exit %d stderr %q", code, stderr)
-	}
-	if tags := awsstore.TagMap(describe(t, local, "NEW_KEY").Tags); tags[policy.TagGitHubOwners] != "acme-org ada" {
-		t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
-	}
+		if store.has(t, "NEW_KEY") {
+			t.Fatal("the refused create made NEW_KEY")
+		}
+		if writes := store.tagWrites(); writes != 0 {
+			t.Fatalf("the refused retag made %d tag writes, want none", writes)
+		}
+		if _, stderr, code := runSecret("retag", "APP_KEY", "--github-owners", "Widgets-Org  ada acme-org"); code != 0 {
+			t.Fatalf("retag to three owners: exit %d stderr %q", code, stderr)
+		}
+		if tags := store.tags(t, "APP_KEY"); tags[policy.TagGitHubOwners] != "acme-org ada widgets-org" {
+			t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada widgets-org")
+		}
+		useStdin(t, policytest.TypeValue(policy.TypeGitHubApp))
+		if _, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", "ada acme-org"); code != 0 {
+			t.Fatalf("create with two owners: exit %d stderr %q", code, stderr)
+		}
+		if tags := store.tags(t, "NEW_KEY"); tags[policy.TagGitHubOwners] != "acme-org ada" {
+			t.Fatalf("tags = %v, want github-owners %q", tags, "acme-org ada")
+		}
+	})
 }
 
 // TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing: on create, `--github-owners none` (in
 // any case) names no GitHub account. It is not the removal it is on retag, and the github-app
 // secret it would write has no github-owners tag. Such a create is refused with a usage error
-// before anything is written, on both stores, as a create without --github-owners is.
+// before anything is written, on each store, as a create without --github-owners is.
 func TestACreateThatNamesNoneAsItsGitHubOwnersWritesNothing(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	owners := []string{"none", "None", "NONE"}
-	t.Run("aws", func(t *testing.T) {
-		local := awstest.NewLocal()
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
-		for _, owner := range owners {
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		for _, owner := range []string{"none", "None", "NONE"} {
 			useStdin(t, "stored-value")
-			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owner)
+			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owner)
 			if code != exitUsageError {
 				t.Fatalf("create --github-owners %q: exit %d stderr %q; want a usage error", owner, code, stderr)
 			}
-			if _, err := local.DescribeSecret(context.Background(), &secretsmanager.DescribeSecretInput{SecretId: aws.String(policytest.ID("NEW_KEY"))}); err == nil {
-				t.Fatalf("create --github-owners %q wrote NEW_KEY", owner)
-			}
-		}
-	})
-	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
-		settings := gcpTestSettings()
-		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		for _, owner := range owners {
-			useStdin(t, "stored-value")
-			_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGitHubApp, "--github-owners", owner)
-			if code != exitUsageError {
-				t.Fatalf("create --github-owners %q: exit %d stderr %q; want a usage error", owner, code, stderr)
-			}
-			fake.mu.Lock()
-			_, written := fake.secrets[testGCPPrefix+"new-key"]
-			fake.mu.Unlock()
-			if written {
+			if store.has(t, "NEW_KEY") {
 				t.Fatalf("create --github-owners %q wrote NEW_KEY", owner)
 			}
 		}
@@ -698,24 +617,28 @@ func (c *countingTagWrites) UntagResource(ctx context.Context, in *secretsmanage
 }
 
 // typeTaggedSecret is a github-app secret name holding an App's value, with a max grant of an hour.
-func typeTaggedSecret(t *testing.T, name string) awstest.LocalSecret {
-	t.Helper()
-	secret := awstest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
+func typeTaggedSecret(name string) memory.Secret {
+	secret := policytest.TypeSecret(name, "ada@example.com", policy.TierAgent, policy.TypeGitHubApp, policytest.TypeValue(policy.TypeGitHubApp))
 	secret.Tags[policy.TagMaxGrant] = "1h"
 	return secret
+}
+
+// awsSecret is s, a policytest fixture, as Secrets Manager holds it, on the agent-secrets key.
+func awsSecret(s memory.Secret) awstest.LocalSecret {
+	return awstest.LocalSecret{Name: s.Name, KmsKeyID: awstest.KeyARN, Tags: s.Tags, Value: s.Value}
 }
 
 // TestSecretRetagRemovalIsOneCallThatChangesNothingElse: on AWS a tag removal is its own
 // UntagResource and nothing else, so IAM refusing it leaves every tag as it was, and a retag that
 // both removes and sets tags is refused before any read or write, since it would take two calls.
 // Each retag reads the secret's tags once, to build the tags it will leave and check them, and a
-// write that lands reads them once more, to find a concurrent writer's (awsBackend.raceCheck).
+// write that lands reads them once more, to find a concurrent writer's (the AWS writer's readBack).
 func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
+	local := awstest.NewLocal(awsSecret(typeTaggedSecret("APP_KEY")))
 	startSecretBroker(t, servedBy(local))
 	writes := &countingTagWrites{Local: local}
-	useAWS(t, writes, testAccount, adaSignIn)
+	awstest.Use(t, writes, testAccount, adaSignIn)
 
 	for _, args := range [][]string{
 		{"retag", "APP_KEY", "--type", "none", "--tier", "human"},
@@ -767,82 +690,50 @@ func TestSecretRetagRemovalIsOneCallThatChangesNothingElse(t *testing.T) {
 // TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid: a removal sends no owner or
 // tier, so the cloud refusing one on a shared secret does not print the owner-and-tier hint.
 func TestSecretRefusedRemovalOnASharedSecretSaysOnlyWhatTheCloudSaid(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	shared := typeTaggedSecret(t, "SHARED_APP_KEY")
+	// Not parallel: it sets environment variables of the whole process (awstest.Use, t.Setenv at use.go:35).
+	shared := awsSecret(typeTaggedSecret("SHARED_APP_KEY"))
 	shared.Tags[policy.TagOwner] = policy.OwnerShared
 	local := awstest.NewLocal(shared)
 	startSecretBroker(t, servedBy(local))
-	useAWS(t, &countingTagWrites{Local: local, refuseUntag: true}, testAccount, adaSignIn)
+	awstest.Use(t, &countingTagWrites{Local: local, refuseUntag: true}, testAccount, adaSignIn)
 	_, stderr, code := runSecret("retag", "SHARED_APP_KEY", "--type", "none")
 	if code != 1 || !strings.Contains(stderr, "UntagResource") || strings.Contains(stderr, "administrator") {
 		t.Fatalf("refused removal on a shared secret: exit %d stderr %q; want 1 with the cloud's refusal alone", code, stderr)
 	}
 }
 
-// TestSecretRetagSetsAndRemovesMaxGrant: retag --max-grant sets the tag on both backends and keeps
-// type, and --max-grant none removes it and keeps type.
+// TestSecretRetagSetsAndRemovesMaxGrant: retag --max-grant sets the tag on each store and keeps
+// type, a retag that both removes and sets tags is refused before anything is written, and
+// --max-grant none removes the tag and keeps type.
 func TestSecretRetagSetsAndRemovesMaxGrant(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.useGCPIdentity, main.userinfoOf, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
-	t.Run("aws", func(t *testing.T) {
-		local := awstest.NewLocal(typeTaggedSecret(t, "APP_KEY"))
-		startSecretBroker(t, servedBy(local))
-		useAWS(t, local, testAccount, adaSignIn)
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
+	onEachStore(t, func(t *testing.T, store typeStore, _ *secretBroker) {
+		putSecret(t, store, typeTaggedSecret("APP_KEY"))
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "2h"); code != 0 {
 			t.Fatalf("retag --max-grant 2h: exit %d, stderr %q", code, stderr)
 		}
-		tags := awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
+		tags := store.tags(t, "APP_KEY")
 		if tags[policy.TagMaxGrant] != "2h" || tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagOwner] != "ada@example.com" {
 			t.Fatalf("tags = %v, want max-grant 2h beside the kept type and owner", tags)
+		}
+		before := store.tags(t, "APP_KEY")
+		if _, stderr, code := runSecret("retag", "APP_KEY", "--type", "none", "--tier", "human"); code != exitUsageError || !strings.Contains(stderr, "two retags") {
+			t.Fatalf("mixed retag: exit %d stderr %q; want a usage error naming two retags", code, stderr)
+		}
+		if got := store.tags(t, "APP_KEY"); !maps.Equal(got, before) {
+			t.Fatalf("tags after a refused mix = %v, want unchanged %v", got, before)
 		}
 		if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", "none"); code != 0 {
 			t.Fatalf("retag --max-grant none: exit %d, stderr %q", code, stderr)
 		}
-		tags = awsstore.TagMap(describe(t, local, "APP_KEY").Tags)
-		if _, ok := tags[policy.TagMaxGrant]; ok || tags[policy.TagType] != policy.TypeGitHubApp {
-			t.Fatalf("tags = %v, want no max-grant and the type kept", tags)
+		tags = store.tags(t, "APP_KEY")
+		if _, ok := tags[policy.TagMaxGrant]; ok || tags[policy.TagType] != policy.TypeGitHubApp || tags[policy.TagTier] != policy.TierAgent {
+			t.Fatalf("tags = %v, want no max-grant and the type and tier kept", tags)
 		}
 		for _, value := range []string{"soon", "500ms"} {
 			if _, stderr, code := runSecret("retag", "APP_KEY", "--max-grant", value); code != exitUsageError {
 				t.Fatalf("retag --max-grant %s: exit %d stderr %q; want usage error", value, code, stderr)
 			}
-		}
-	})
-	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
-		settings := gcpTestSettings()
-		startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		useStdin(t, policytest.TypeValue(policy.TypeGoogleLogin))
-		if _, stderr, code := runSecret("create", "LOGIN_KEY", "--owner", "me", "--tier", "agent", "--type", policy.TypeGoogleLogin); code != 0 {
-			t.Fatalf("create: exit %d, stderr %q", code, stderr)
-		}
-		id := testGCPPrefix + "login-key"
-		annotations := func() map[string]string {
-			fake.mu.Lock()
-			defer fake.mu.Unlock()
-			return fake.secrets[id].secret.GetAnnotations()
-		}
-		if _, stderr, code := runSecret("retag", "LOGIN_KEY", "--max-grant", "45m"); code != 0 {
-			t.Fatalf("retag --max-grant 45m: exit %d, stderr %q", code, stderr)
-		}
-		if got := annotations(); got[policy.TagMaxGrant] != "45m" || got[policy.TagType] != policy.TypeGoogleLogin || got[policy.TagOwner] != "ada@example.com" {
-			t.Fatalf("annotations = %v, want max-grant 45m beside the kept type and owner", got)
-		}
-		before := annotations()
-		if _, stderr, code := runSecret("retag", "LOGIN_KEY", "--type", "none", "--tier", "human"); code != exitUsageError || !strings.Contains(stderr, "two retags") {
-			t.Fatalf("mixed retag: exit %d stderr %q; want a usage error naming two retags", code, stderr)
-		}
-		if got := annotations(); !maps.Equal(got, before) {
-			t.Fatalf("annotations after a refused mix = %v, want unchanged %v", got, before)
-		}
-		if _, stderr, code := runSecret("retag", "LOGIN_KEY", "--max-grant", "none"); code != 0 {
-			t.Fatalf("retag --max-grant none: exit %d, stderr %q", code, stderr)
-		}
-		if got := annotations(); got[policy.TagType] != policy.TypeGoogleLogin || got[policy.TagTier] != policy.TierAgent {
-			t.Fatalf("annotations = %v, want type and tier kept", got)
-		} else if _, ok := got[policy.TagMaxGrant]; ok {
-			t.Fatalf("annotations = %v, want no max-grant", got)
 		}
 	})
 }
@@ -1013,7 +904,8 @@ func typeArgs(secretType string) []string {
 }
 
 // typeStore is a store the secret forms write, as these tests set it up and read it back: Secrets
-// Manager (a awstest.Local behind useAWS) or Secret Manager (a fakeSecretManager).
+// Manager (a awstest.Local behind awstest.Use), Secret Manager (a gcptest.FakeSecretManager) or
+// the memory store (a memory secrets file, memoryTypeStore).
 type typeStore interface {
 	// put holds the secret name with tags and value, as a writer other than this client stores it.
 	put(t *testing.T, name string, tags map[string]string, value string)
@@ -1028,32 +920,108 @@ type typeStore interface {
 	valueReads() int
 	// readPermissions are the permissions the client names for this store's value read.
 	readPermissions() []string
-	// calls is how many calls the client has made of the store so far, refused ones included.
+	// calls is how many calls the client has made of the store so far, refused ones included;
+	// tagWrites is how many of them were tag writes (loseTagWriteAnswer names what one is).
 	calls() int
+	tagWrites() int
 	// refuseTagReads refuses every read of a secret's tags from now on, as access denied: IAM
 	// grants the writes and not the read. Its refusal never writes the permission the client
 	// must name, so a client that names none fails tagReadPermission's test.
 	refuseTagReads()
 	// tagReadPermission is the permission the client names for this store's tag read.
 	tagReadPermission() string
+	// storeName is the store as the secret forms' lines name it (source.storeName) for the
+	// settings the rig's broker answers.
+	storeName() string
+	// madeBeforeValue is whether a create on the store makes the secret before it reads the value
+	// (secretstore.Create.MadeBeforeValue): GCP's makes it empty, says by when the value must come,
+	// and discards it, asking the broker to reread, where no value comes.
+	madeBeforeValue() bool
+	// loseTagWriteAnswer makes the nth tag write from now on (1 for the next) apply and then lose
+	// its answer, as a connection that drops after the store acted; refuseTagWrite makes it refused
+	// as access denied, a definite refusal, so the store did not act. A tag write is a TagResource
+	// or an UntagResource on AWS, an UpdateSecret on GCP, and a tag write of the memory store's.
+	loseTagWriteAnswer(n int)
+	refuseTagWrite(n int)
+	// retag is another writer's tag write of the secret name: it sets set and removes remove,
+	// keeping every other tag, as a second retag of the same secret does; setValue is another
+	// writer's new value of it, keeping its tags.
+	retag(t *testing.T, name string, set map[string]string, remove ...string)
+	setValue(t *testing.T, name, value string)
+	// afterEachWrite runs f each time a value or tag write of the client's has landed, before the
+	// store answers it, so f is another writer whose write lands between the client's and its
+	// read-back: on AWS after CreateSecret, PutSecretValue and TagResource, on GCP after
+	// AddSecretVersion and UpdateSecret, on the memory store after a create, set or tag write.
+	afterEachWrite(f func())
 }
 
-// onEachStore runs test on each store the secret forms write, signed in as ada@example.com, with
-// the fake broker answering each reread from what that store holds.
-func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *secretBroker)) {
-	t.Run("aws", func(t *testing.T) {
+// ownerTier is a secret's owner and tier tags, as policytest.Secret tags one; a test adds the
+// others it needs.
+func ownerTier(owner, tier string) map[string]string {
+	return map[string]string{policy.TagOwner: owner, policy.TagTier: tier}
+}
+
+// putSecret holds s, a policytest fixture under policytest.Prefix, in store, as a writer other
+// than this client stores it.
+func putSecret(t *testing.T, store typeStore, s memory.Secret) {
+	t.Helper()
+	store.put(t, policy.DisplayName(policytest.Prefix, s.Name), s.Tags, s.Value)
+}
+
+// answerAs makes the broker answer each signed reread from now on with answer, in place of what
+// its store holds.
+func (b *secretBroker) answerAs(answer func(name string) Reread) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.answer = answer
+}
+
+// storeRig is one store the secret forms write, set up for a test: the store (typeStore), the
+// settings a broker on it answers, and how that broker answers a reread from what the store holds.
+type storeRig struct {
+	store    typeStore
+	settings Settings
+	answer   func(name string) Reread
+}
+
+// storeRigs sets up each store's rig for the rest of t, signed in as ada@example.com where the
+// store signs anyone in, by its registry ID.
+var storeRigs = map[string]func(t *testing.T) storeRig{
+	"aws": func(t *testing.T) storeRig {
 		reads := &valueReads{Local: awstest.NewLocal()}
-		broker := startSecretBroker(t, servedBy(reads.Local))
-		useAWS(t, reads, testAccount, adaSignIn)
-		test(t, awsTypeStore{reads}, broker)
-	})
-	t.Run("gcp", func(t *testing.T) {
-		fake := newFakeSecretManager()
-		startFakeSecretManager(t, fake)
-		useGCPIdentity(t, "authorized_user", "ada@example.com")
+		awstest.Use(t, reads, testAccount, adaSignIn)
+		return storeRig{store: awsTypeStore{reads}, settings: awsTestSettings(), answer: servedBy(reads.Local)}
+	},
+	"gcp": func(t *testing.T) storeRig {
+		fake := gcptest.NewFakeSecretManager()
+		gcptest.UseFake(t, fake)
+		gcptest.UseIdentity(t, "authorized_user", "ada@example.com")
 		settings := gcpTestSettings()
-		broker := startSecretBrokerWith(t, settings, gcpServedBy(fake, settings))
-		test(t, gcpTypeStore{fake}, broker)
+		return storeRig{store: gcpTypeStore{fake}, settings: settings, answer: gcpServedBy(fake, settings)}
+	},
+	"memory": func(t *testing.T) storeRig {
+		store := newMemoryTypeStore(t)
+		return storeRig{store: store, settings: memorySettings(store.rig.path), answer: memoryServedBy(store.rig.path)}
+	},
+}
+
+// onEachStoreRig runs test on each store the registry holds (backends.All), named by its ID, with
+// that store's rig (storeRigs). A store the registry holds that has no rig fails t.
+func onEachStoreRig(t *testing.T, test func(t *testing.T, rig storeRig)) {
+	for _, b := range backends.All() {
+		open, ok := storeRigs[b.ID()]
+		if !ok {
+			t.Fatalf("the registry holds the store %s, which storeRigs has no rig for", b.ID())
+		}
+		t.Run(b.ID(), func(t *testing.T) { test(t, open(t)) })
+	}
+}
+
+// onEachStore runs test on each store the registry holds (onEachStoreRig), with the fake broker
+// answering GET /v1/settings as a broker on that store, and each reread from what it holds.
+func onEachStore(t *testing.T, test func(t *testing.T, store typeStore, broker *secretBroker)) {
+	onEachStoreRig(t, func(t *testing.T, rig storeRig) {
+		test(t, rig.store, startSecretBrokerWith(t, rig.settings, rig.answer))
 	})
 }
 
@@ -1066,7 +1034,19 @@ type valueReads struct {
 	reads          int
 	refuse         error
 	refuseDescribe error
-	all            atomic.Int32
+	// tagWrites counts the tag writes made; loseTagAt and refuseTagAt are the one whose answer is
+	// lost and the one refused (loseTagWriteAnswer, refuseTagWrite), 0 for none.
+	tagWrites, loseTagAt, refuseTagAt int
+	// afterWrite runs once a CreateSecret, PutSecretValue or TagResource has landed (afterEachWrite).
+	afterWrite func()
+	all        atomic.Int32
+}
+
+// landed runs afterWrite, where one is set, after a write that err says landed.
+func (v *valueReads) landed(err error) {
+	if err == nil && v.afterWrite != nil {
+		v.afterWrite()
+	}
 }
 
 func (v *valueReads) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
@@ -1093,22 +1073,58 @@ func (v *valueReads) DescribeSecret(ctx context.Context, in *secretsmanager.Desc
 
 func (v *valueReads) CreateSecret(ctx context.Context, in *secretsmanager.CreateSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.CreateSecretOutput, error) {
 	v.all.Add(1)
-	return v.Local.CreateSecret(ctx, in, o...)
+	out, err := v.Local.CreateSecret(ctx, in, o...)
+	v.landed(err)
+	return out, err
 }
 
 func (v *valueReads) PutSecretValue(ctx context.Context, in *secretsmanager.PutSecretValueInput, o ...func(*secretsmanager.Options)) (*secretsmanager.PutSecretValueOutput, error) {
 	v.all.Add(1)
-	return v.Local.PutSecretValue(ctx, in, o...)
+	out, err := v.Local.PutSecretValue(ctx, in, o...)
+	v.landed(err)
+	return out, err
+}
+
+// tagWrite counts one tag write and makes it as loseTagAt and refuseTagAt say: write applies it.
+func (v *valueReads) tagWrite(write func() error) error {
+	v.tagWrites++
+	if v.tagWrites == v.refuseTagAt {
+		return &smithy.GenericAPIError{Code: "AccessDeniedException", Message: accessDenied}
+	}
+	if err := write(); err != nil {
+		return err
+	}
+	if v.tagWrites == v.loseTagAt {
+		return lostAnswer
+	}
+	return nil
 }
 
 func (v *valueReads) TagResource(ctx context.Context, in *secretsmanager.TagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.TagResourceOutput, error) {
 	v.all.Add(1)
-	return v.Local.TagResource(ctx, in, o...)
+	var out *secretsmanager.TagResourceOutput
+	err := v.tagWrite(func() (err error) {
+		out, err = v.Local.TagResource(ctx, in, o...)
+		v.landed(err)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (v *valueReads) UntagResource(ctx context.Context, in *secretsmanager.UntagResourceInput, o ...func(*secretsmanager.Options)) (*secretsmanager.UntagResourceOutput, error) {
 	v.all.Add(1)
-	return v.Local.UntagResource(ctx, in, o...)
+	var out *secretsmanager.UntagResourceOutput
+	err := v.tagWrite(func() (err error) {
+		out, err = v.Local.UntagResource(ctx, in, o...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (v *valueReads) DeleteSecret(ctx context.Context, in *secretsmanager.DeleteSecretInput, o ...func(*secretsmanager.Options)) (*secretsmanager.DeleteSecretOutput, error) {
@@ -1155,6 +1171,8 @@ func (s awsTypeStore) readPermissions() []string {
 
 func (s awsTypeStore) calls() int { return int(s.sm.all.Load()) }
 
+func (s awsTypeStore) tagWrites() int { return s.sm.tagWrites }
+
 func (s awsTypeStore) refuseTagReads() {
 	// The refusal says only that the call was refused: the permission the client must name is
 	// the client's to write, so a client that names none has nothing to copy it from.
@@ -1163,8 +1181,42 @@ func (s awsTypeStore) refuseTagReads() {
 
 func (s awsTypeStore) tagReadPermission() string { return "secretsmanager:DescribeSecret" }
 
+func (s awsTypeStore) storeName() string {
+	return "AWS Secrets Manager account " + testAccount + " in us-east-1"
+}
+
+func (s awsTypeStore) madeBeforeValue() bool { return false }
+
+func (s awsTypeStore) retag(t *testing.T, name string, set map[string]string, remove ...string) {
+	t.Helper()
+	id := aws.String(policytest.ID(name))
+	if len(set) > 0 {
+		if _, err := s.sm.Local.TagResource(context.Background(), &secretsmanager.TagResourceInput{SecretId: id, Tags: awsstore.TagList(set)}); err != nil {
+			t.Fatalf("the other writer's retag of %s: %v", name, err)
+		}
+	}
+	if len(remove) > 0 {
+		if _, err := s.sm.Local.UntagResource(context.Background(), &secretsmanager.UntagResourceInput{SecretId: id, TagKeys: remove}); err != nil {
+			t.Fatalf("the other writer's retag of %s: %v", name, err)
+		}
+	}
+}
+
+func (s awsTypeStore) afterEachWrite(f func()) { s.sm.afterWrite = f }
+
+func (s awsTypeStore) setValue(t *testing.T, name, value string) {
+	t.Helper()
+	if _, err := s.sm.Local.PutSecretValue(context.Background(), &secretsmanager.PutSecretValueInput{SecretId: aws.String(policytest.ID(name)), SecretString: aws.String(value)}); err != nil {
+		t.Fatalf("the other writer's value of %s: %v", name, err)
+	}
+}
+
+func (s awsTypeStore) loseTagWriteAnswer(n int) { s.sm.loseTagAt = s.sm.tagWrites + n }
+
+func (s awsTypeStore) refuseTagWrite(n int) { s.sm.refuseTagAt = s.sm.tagWrites + n }
+
 // gcpTypeStore is Secret Manager as typeStore: a fakeSecretManager.
-type gcpTypeStore struct{ fake *fakeSecretManager }
+type gcpTypeStore struct{ fake *gcptest.FakeSecretManager }
 
 // id is the resource name of the secret a session asks for as name.
 func (s gcpTypeStore) id(t *testing.T, name string) string {
@@ -1178,75 +1230,159 @@ func (s gcpTypeStore) id(t *testing.T, name string) string {
 
 func (s gcpTypeStore) put(t *testing.T, name string, tags map[string]string, value string) {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.secrets[id] = &fakeSecret{
-		secret:      &secretmanagerpb.Secret{Name: id, Annotations: maps.Clone(tags), Etag: "1"},
-		versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
-		payloads:    [][]byte{[]byte(value)},
-		etagCounter: 1,
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.Secrets[id] = &gcptest.FakeSecret{
+		Secret:      &secretmanagerpb.Secret{Name: id, Annotations: maps.Clone(tags), Etag: "1"},
+		Versions:    []*secretmanagerpb.SecretVersion{{Name: id + "/versions/1", State: secretmanagerpb.SecretVersion_ENABLED}},
+		Payloads:    [][]byte{[]byte(value)},
+		EtagCounter: 1,
 	}
 }
 
 func (s gcpTypeStore) has(t *testing.T, name string) bool {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	_, ok := s.fake.secrets[id]
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	_, ok := s.fake.Secrets[id]
 	return ok
 }
 
 func (s gcpTypeStore) value(t *testing.T, name string) string {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	entry, ok := s.fake.secrets[id]
-	if !ok || len(entry.payloads) == 0 {
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	entry, ok := s.fake.Secrets[id]
+	if !ok || len(entry.Payloads) == 0 {
 		t.Fatalf("Secret Manager holds no value of %s", id)
 	}
-	return string(entry.payloads[len(entry.payloads)-1])
+	return string(entry.Payloads[len(entry.Payloads)-1])
 }
 
 func (s gcpTypeStore) tags(t *testing.T, name string) map[string]string {
 	id := s.id(t, name)
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	entry, ok := s.fake.secrets[id]
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	entry, ok := s.fake.Secrets[id]
 	if !ok {
 		t.Fatalf("Secret Manager holds no %s", id)
 	}
-	return maps.Clone(entry.secret.GetAnnotations())
+	return maps.Clone(entry.Secret.GetAnnotations())
 }
 
 func (s gcpTypeStore) refuseValueReads(denied bool) {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.refuseAccess = codes.FailedPrecondition
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.RefuseAccess = codes.FailedPrecondition
 	if denied {
-		s.fake.refuseAccess = codes.PermissionDenied
+		s.fake.RefuseAccess = codes.PermissionDenied
 	}
 }
 
 func (s gcpTypeStore) valueReads() int {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	return s.fake.accesses
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	return s.fake.Accesses
 }
 
 func (s gcpTypeStore) calls() int {
-	_, calls := s.fake.calledUnder()
+	_, calls := s.fake.CalledUnder()
 	return calls
+}
+
+func (s gcpTypeStore) tagWrites() int {
+	return strings.Count(strings.Join(s.fake.Called(), " ")+" ", "UpdateSecret ")
 }
 
 func (s gcpTypeStore) readPermissions() []string { return []string{"secretmanager.versions.access"} }
 
 func (s gcpTypeStore) refuseTagReads() {
-	s.fake.mu.Lock()
-	defer s.fake.mu.Unlock()
-	s.fake.refuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	s.fake.RefuseMethods = map[string]codes.Code{"GetSecret": codes.PermissionDenied}
+}
+
+func (s gcpTypeStore) retag(t *testing.T, name string, set map[string]string, remove ...string) {
+	t.Helper()
+	id := s.id(t, name)
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	entry, ok := s.fake.Secrets[id]
+	if !ok {
+		t.Fatalf("the other writer's retag: Secret Manager holds no %s", id)
+	}
+	annotations := maps.Clone(entry.Secret.GetAnnotations())
+	if annotations == nil {
+		annotations = map[string]string{}
+	}
+	maps.Copy(annotations, set)
+	for _, key := range remove {
+		delete(annotations, key)
+	}
+	entry.Secret.Annotations = annotations
+	entry.EtagCounter++
+	entry.Secret.Etag = strconv.Itoa(entry.EtagCounter)
+}
+
+func (s gcpTypeStore) setValue(t *testing.T, name, value string) {
+	t.Helper()
+	if _, err := s.fake.AddSecretVersion(context.Background(), &secretmanagerpb.AddSecretVersionRequest{Parent: s.id(t, name), Payload: &secretmanagerpb.SecretPayload{Data: []byte(value)}}); err != nil {
+		t.Fatalf("the other writer's value of %s: %v", name, err)
+	}
+}
+
+func (s gcpTypeStore) afterEachWrite(f func()) {
+	s.fake.AfterCall = func(method string) {
+		if method == "AddSecretVersion" || method == "UpdateSecret" {
+			f()
+		}
+	}
 }
 
 func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets.get" }
+
+func (s gcpTypeStore) madeBeforeValue() bool { return true }
+
+func (s gcpTypeStore) storeName() string { return "GCP Secret Manager project " + testGCPProject }
+
+// tagWriteHook makes the nth UpdateSecret from now on answer code: as refused before the fake
+// acts (refuse), or once it has applied the call. The fake reads what a call answers before it
+// runs BeforeCall, so a call's BeforeCall arms the next call.
+func (s gcpTypeStore) tagWriteHook(n int, code codes.Code, refuse bool) {
+	s.fake.Mu.Lock()
+	defer s.fake.Mu.Unlock()
+	arm := func(on bool) {
+		table := &s.fake.AnswerAfter
+		if refuse {
+			table = &s.fake.RefuseMethods
+		}
+		if *table == nil {
+			*table = map[string]codes.Code{}
+		}
+		if on {
+			(*table)["UpdateSecret"] = code
+		} else {
+			delete(*table, "UpdateSecret")
+		}
+	}
+	if n == 1 {
+		arm(true)
+	}
+	calls := 0
+	s.fake.BeforeCall = func(method string) {
+		if method != "UpdateSecret" {
+			return
+		}
+		calls++
+		s.fake.Mu.Lock()
+		defer s.fake.Mu.Unlock()
+		arm(calls == n-1)
+	}
+}
+
+func (s gcpTypeStore) loseTagWriteAnswer(n int) { s.tagWriteHook(n, codes.Unavailable, false) }
+
+func (s gcpTypeStore) refuseTagWrite(n int) { s.tagWriteHook(n, codes.PermissionDenied, true) }
 
 // TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses: on both stores, for each of
 // the four types, create, set and retag refuse each value that type's minter refuses, and leave
@@ -1258,7 +1394,7 @@ func (s gcpTypeStore) tagReadPermission() string { return "secretmanager.secrets
 // Secret Manager: that makes the secret before it reads the value and deletes it on the refusal,
 // then asks the broker to reread the name once, which the broker answers absent.
 func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:385).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
 		for _, row := range refusedTypeValues(t) {
 			t.Run(row.secretType+"/"+row.name, func(t *testing.T) {
@@ -1281,7 +1417,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 					// rereads is the names the form asks the broker to reread.
 					rereads []string
 				}{
-					{append([]string{"create", "NEW_KEY", "--owner", "me", "--tier", "agent", "--type", row.secretType}, typeArgs(row.secretType)...), func() bool { return store.has(t, "NEW_KEY") }, nil},
+					{append([]string{"create", "NEW_KEY", "--owner", "ada@example.com", "--tier", "agent", "--type", row.secretType}, typeArgs(row.secretType)...), func() bool { return store.has(t, "NEW_KEY") }, nil},
 					{[]string{"set", "HELD_KEY"}, func() bool { return store.value(t, "HELD_KEY") != policytest.TypeValue(row.secretType) }, nil},
 					{append([]string{"retag", "PLAIN_KEY", "--type", row.secretType}, typeArgs(row.secretType)...), func() bool { return !maps.Equal(store.tags(t, "PLAIN_KEY"), plain) }, nil},
 				} {
@@ -1322,7 +1458,7 @@ func TestSecretCreateSetAndRetagRefuseEveryValueTheTypesMinterRefuses(t *testing
 // stderr saying the value was not checked, naming the permissions the read needs and saying the
 // broker reports such a secret unservable.
 func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:293); it signals the test process or changes its signal handling (main.mintRefusal, (*GoogleServiceAccount).Mint, (gcloudToken).Token, main.runGcloud, main.runRecorded, main.watchSignalsWhileGcloudRuns, signal.Notify at secret_gcp.go:558); it sets a package variable the package's other tests read (main.onEachStore, main.useAWS, awsClients set at secret_test.go:375).
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311).
 	noAppID := appValue(t, map[string]string{"private_key": appKeyPEM(t)})
 	says := mintRefusal(t, policy.TypeGitHubApp, noAppID)
 	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
@@ -1401,19 +1537,19 @@ func TestSecretRetagReadsTheValueOnlyWhenItChangesTheType(t *testing.T) {
 // names no type it mints (type-unknown) and serves no value of it, so set refuses to store one,
 // exiting 2 and naming that reason, before it reads the value.
 func TestSecretSetRefusesASecretWhoseTypeTagNamesNoType(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:751).
-	local := awstest.NewLocal(awstest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
-	broker := startSecretBroker(t, servedBy(local))
-	useAWS(t, local, testAccount, adaSignIn)
-	refuseValueReads(t)
-	_, stderr, code := runSecret("set", "ODD_KEY")
-	if code != exitUsageError || !strings.Contains(stderr, `type tag "other"`) || !strings.Contains(stderr, policy.ReasonTypeUnknown) {
-		t.Fatalf("set of a secret whose type tag is other: exit %d stderr %q; want %d naming %s", code, stderr, exitUsageError, policy.ReasonTypeUnknown)
-	}
-	if got := valueOf(t, local, "ODD_KEY"); got != "v1" {
-		t.Fatalf("the refused set stored %q", got)
-	}
-	if rereads, _ := broker.recorded(); len(rereads) != 0 {
-		t.Fatalf("rereads = %v after a refused set; want none", rereads)
-	}
+	// Not parallel: it sets environment variables of the whole process (main.onEachStore, main.startSecretBrokerWith, t.Setenv at secret_test.go:311); it sets a package variable the package's other tests read (main.refuseValueReads, secretStdin set at secret_gcp_test.go:108).
+	onEachStore(t, func(t *testing.T, store typeStore, broker *secretBroker) {
+		putSecret(t, store, policytest.TypeSecret("ODD_KEY", "ada@example.com", policy.TierAgent, "other", "v1"))
+		refuseValueReads(t)
+		_, stderr, code := runSecret("set", "ODD_KEY")
+		if code != exitUsageError || !strings.Contains(stderr, `type tag "other"`) || !strings.Contains(stderr, policy.ReasonTypeUnknown) {
+			t.Fatalf("set of a secret whose type tag is other: exit %d stderr %q; want %d naming %s", code, stderr, exitUsageError, policy.ReasonTypeUnknown)
+		}
+		if got := store.value(t, "ODD_KEY"); got != "v1" {
+			t.Fatalf("the refused set stored %q", got)
+		}
+		if rereads, _ := broker.recorded(); len(rereads) != 0 {
+			t.Fatalf("rereads = %v after a refused set; want none", rereads)
+		}
+	})
 }
