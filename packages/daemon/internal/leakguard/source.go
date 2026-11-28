@@ -56,7 +56,7 @@ type Source struct {
 	// in the words a cause sentence takes after RefusalPrefix (Cause): the daemon, which mints
 	// through its GitHub App and tells a mint GitHub refused from a narrowing it refused, writes
 	// that sentence, so this package imports nothing of the App's. The refusal wraps the error
-	// (Get), so the daemon reads the App's own failure from it with errors.Is and errors.As.
+	// (Get), so a caller can read the App's own failure from it with errors.Is and errors.As.
 	Token func(context.Context) (string, error)
 	// API is GitHub's REST root; empty is https://api.github.com.
 	API string
@@ -153,7 +153,8 @@ func refused(sentence string, under error) error {
 	return &readRefusal{sentence: sentence, under: under}
 }
 
-// troubled is the refusal refused makes, of a read GitHub's trouble ended (TransientRead).
+// troubled is a refusal as refused makes one, marked transient: a read GitHub's trouble ended
+// (TransientRead).
 func troubled(sentence string, under error) error {
 	return &readRefusal{sentence: sentence, under: under, transient: true}
 }
@@ -245,14 +246,19 @@ func (s *Source) read(ctx context.Context, tag string, bound time.Duration) (Ser
 	}
 	// A body that stops arriving (the connection reset or cut short while it streams) is the
 	// transport failing, GitHub's trouble as a failed request is; a body that arrives whole and
-	// does not pack is GitHub's answer.
+	// does not pack is GitHub's answer. Each is said as the tarball's own failure, and a read whose
+	// context ended as readFailure says it.
 	in := &bodyRead{r: response.Body}
 	body, manifest, err := PackTarballManifest(in)
 	if err != nil {
-		if ctx.Err() != nil || in.err != nil {
+		if ctx.Err() != nil {
 			return Served{}, s.readFailure(ctx, tag, bound, err)
 		}
-		return Served{}, refused(Cause(fmt.Sprintf("the tarball of %s at %s %s", s.Repository, tag, err), nil), err)
+		cause := Cause(fmt.Sprintf("the tarball of %s at %s %s", s.Repository, tag, err), nil)
+		if in.err != nil {
+			return Served{}, troubled(cause, err)
+		}
+		return Served{}, refused(cause, err)
 	}
 	frames, err := shimwire.SplitLeakCheck(tag, body)
 	if err != nil {

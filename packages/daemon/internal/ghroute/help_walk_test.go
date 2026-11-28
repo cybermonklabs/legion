@@ -4,13 +4,14 @@ package ghroute
 
 import (
 	"flag"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 )
 
 // ghHelpWalkDir holds, for each gh release `legion gh` has run against, the help of every command
@@ -21,7 +22,7 @@ import (
 var ghHelpWalkDir = filepath.Join("..", "..", "cmd", "legion", "testdata", "gh-help-walk")
 
 // captureGhHelpWalk turns TestCaptureGhHelpWalk on. It is a flag of the test binary and not a
-// variable, so that no run of this package's tests writes the directory unasked.
+// variable, since TestMain clears every variable but the few fixtureenv keeps.
 var captureGhHelpWalk = flag.Bool("capture-gh-help-walk", false, "save the help of every command of the gh LEGION_GH_PATH names")
 
 // TestCaptureGhHelpWalk saves the help of every command of the gh LEGION_GH_PATH names into
@@ -107,10 +108,9 @@ func ghHelpWalkFile(path []string) string {
 	return strings.Join(path, "_") + ".txt"
 }
 
-// savedGhHelpOf answers gh's help of path from the saved walk of the release version, as
-// savedGhHelp answers from ghHelpDir: a path it has no file for prints the help of the nearest
-// parent it has, and one with no such parent at all is an error. The directory is made absolute
-// first, so a test that changes its working directory still reads it.
+// savedGhHelpOf answers gh's help of path from the saved walk of the release version as the real
+// gh does (ghroutetest.SavedHelp), as savedGhHelp answers from ghHelpDir. The directory is made
+// absolute first, so a test that changes its working directory still reads it.
 func savedGhHelpOf(t *testing.T, version string) func([]string) (string, error) {
 	t.Helper()
 	dir, err := filepath.Abs(filepath.Join(ghHelpWalkDir, version))
@@ -120,18 +120,7 @@ func savedGhHelpOf(t *testing.T, version string) func([]string) (string, error) 
 	if _, err := os.Stat(filepath.Join(dir, "VERSION")); err != nil {
 		t.Fatalf("no saved help of gh %s: %v", version, err)
 	}
-	return func(path []string) (string, error) {
-		if len(path) == 0 {
-			data, err := os.ReadFile(filepath.Join(dir, "gh.txt"))
-			return string(data), err
-		}
-		for p := path; len(p) > 0; p = p[:len(p)-1] {
-			if data, err := os.ReadFile(filepath.Join(dir, ghHelpWalkFile(p))); err == nil {
-				return string(data), nil
-			}
-		}
-		return "", fmt.Errorf("unknown command %q for \"gh\"", path[0])
-	}
+	return ghroutetest.SavedHelp(dir)
 }
 
 // ghHelpSection is every line of text's section named name (`FLAGS`, `HELP TOPICS`), its heading

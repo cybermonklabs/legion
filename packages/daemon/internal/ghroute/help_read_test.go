@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"testing"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -60,7 +61,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		dir := t.TempDir()
 		gh, ghPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid")
 		const ghSeconds = "86398"
-		if err := os.WriteFile(gh, []byte("#!/bin/sh\n"+ghroutetest.HoldsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n"+ghroutetest.HoldsStandIn(ghPid, ghSeconds)), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		ghroutetest.KillRecordedHelper(t, ghPid, ghSeconds)
@@ -79,7 +80,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 	t.Run("a timeout that passed before gh started is said as the timeout", func(t *testing.T) {
 		dir := t.TempDir()
 		gh, ran := filepath.Join(dir, "gh"), filepath.Join(dir, "ran")
-		if err := os.WriteFile(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte("#!/bin/sh\n: >'"+ran+"'\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		timeout := helpTimeout
@@ -99,7 +100,7 @@ func TestAHelpReadThatTimesOutStopsWhatGhStarted(t *testing.T) {
 		gh, ghPid, helperPid := filepath.Join(dir, "gh"), filepath.Join(dir, "gh.pid"), filepath.Join(dir, "helper.pid")
 		const ghSeconds, helperSeconds = "86400", "86399"
 		script := "#!/bin/sh\nsleep " + helperSeconds + " </dev/null >/dev/null 2>&1 &\necho $! >" + shellprefix.Literal(helperPid) + "\n" + ghroutetest.HoldsStandIn(ghPid, ghSeconds)
-		if err := os.WriteFile(gh, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(gh, []byte(script), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		ghroutetest.KillRecordedHelper(t, helperPid, helperSeconds)

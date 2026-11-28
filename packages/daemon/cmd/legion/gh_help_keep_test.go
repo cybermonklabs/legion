@@ -88,11 +88,16 @@ func readHelps(t *testing.T, gh string, env map[string]string) []string {
 // by a new keep of the same state, which reads from the kept copies and from help only for a path
 // whose help help refused, which is never kept. Each must give the target, the refusal text and
 // the files sent that help gives directly. This package's own resolver calls run through it (the
-// rename pair's routing rows, the guard rig's reads), and so does every row ghroute's tests hold
-// TargetOf to that reads no git remote: ghroutetest's resolver tables
-// (TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp) and its read-rule lists
-// (TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp). The rows that read the working
-// directory's remotes stay beside the resolver: the keep reads no remote.
+// rename pair's routing rows, the guard rig's reads), and so does every row of ghroutetest's
+// tables of the rows internal/ghroute's tests hold TargetOf to: its read-rule lists and GraphQL
+// queries (TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp) and its resolver tables
+// (TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp). The rest of internal/ghroute's tests'
+// rows are resolved there alone: those that read the working directory's remotes, since this
+// package cannot build a ghroute.Remote, whose fields are unexported; the rows of its
+// TestGhTargetOfRefusesAnUploadTheGuardDoesNotRead and
+// TestGhTargetOfRefusesRecursionAndUnreadCloneFlags; and its canary rows
+// (ghroutetest.CanaryRows), which this package's TestNoRefusalPathPrintsACanary runs as `legion
+// gh` itself.
 func ghTargetOfKept(t *testing.T, argv []string, env map[string]string, help func([]string) (string, error), remotes func() ([]ghroute.Remote, error), dirFor func(owner, name string) (string, error)) (ghroute.Target, error) {
 	t.Helper()
 	want, wantErr := ghroute.TargetOf(argv, env, help, remotes, dirFor)
@@ -136,37 +141,45 @@ func errorText(err error) string {
 }
 
 // Every call internal/ghroute's read-rule rows resolve over ghroutetest's lists (its
-// TestGhWritesNothingReadsTheLeafAndTheMethod and TestGhReadLeafCallsCoverEveryReadLeaf) is
-// decided through a keep as gh's own help decides it (ghTargetOfKept): the calls that write
-// nothing, each read leaf's call among them, the guarded calls and leaf spellings, and every gh
-// api cross product of a guarded option or endpoint. Those rows live beside the resolver, which
-// cannot reach this package's keep.
+// TestGhWritesNothingReadsTheLeafAndTheMethod and TestGhReadLeafCallsCoverEveryReadLeaf), and
+// every row of its TestGhGraphQLQueryRead (ghroutetest.GraphQLQueryCalls), is decided through a
+// keep as gh's own help decides it (ghTargetOfKept): the calls that write nothing, each read
+// leaf's call among them, the guarded calls and leaf spellings, every gh api cross product of a
+// guarded option or endpoint, and the GraphQL calls, those graphQLQueryRead admits and those it
+// does not. Those rows live beside the resolver, which cannot reach this package's keep.
 func TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp(t *testing.T) {
 	t.Parallel()
 	calls := slices.Concat(
 		ghroutetest.ReadCalls(),
 		ghroutetest.GuardedCalls,
 		ghroutetest.GuardedLeafSpellings,
-		ghroutetest.APICalls(ghroutetest.APIGuardedSpellings, ghroutetest.APIReadEndpoints),
-		ghroutetest.APICalls(ghroutetest.APIReadSpellings, ghroutetest.APIGuardedEndpoints),
-		ghroutetest.APICalls(ghroutetest.APIGuardedSpellings, ghroutetest.APIGuardedEndpoints),
-		ghroutetest.GuardedAPICalls(),
+		ghroutetest.GuardedAPICrossProducts(),
 	)
 	for _, argv := range calls {
 		if _, err := ghTargetOfKept(t, argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories); err != nil {
 			t.Errorf("ghroute.TargetOf(%q) = %v", argv, err)
 		}
 	}
+	for _, tc := range ghroutetest.GraphQLQueryCalls {
+		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+	}
+	t.Logf("%d read-rule calls and %d GraphQL calls ran through the keep", len(calls), len(ghroutetest.GraphQLQueryCalls))
 }
 
-// Every row of ghroutetest's resolver tables, the ones ghroute's TestGhTargetOfFailsClosed,
-// TestGhTargetOfNamesTheOneRepositoryEverySelectorNames, TestGhTargetOfRefusalsSayHowToNameTheRepository
-// and TestGhTargetOfReadsTheFilesTheCallWouldSend hold TargetOf to, is decided through a keep as
-// gh's own help decides it (ghTargetOfKept), as main's #4394 ran those tables: the target, the
-// refusal text and the files sent alike, a help gh refuses among them (an unknown command, a gh
-// alias's help), which is never kept and is read from gh again. Each row is read under its own
-// edits of gh's saved help, and the rows of a -h before the command's name, as main's #4472 ran
-// them, under gh 2.98.0's help of every command, saved whole (ghroutetest.HBeforeTheCommandCalls).
+// Every row of ghroutetest's resolver tables is decided through a keep as gh's own help decides
+// it (ghTargetOfKept): the target, the refusal text and the files sent alike, a help gh refuses
+// among them (an unknown command, a gh alias's help), which is never kept and is read from gh
+// again. The tables hold the rows internal/ghroute's tests hold TargetOf to that read no git
+// remote: TestGhTargetOfFailsClosed's (ghroutetest.FailsClosedCalls; the rows of a -h before the
+// command's name, under gh 2.98.0's help of every command, saved whole,
+// ghroutetest.HBeforeTheCommandCalls; and ghroutetest.RoutedCalls, routed by ghroute.DirFor over
+// the bundle ghroutetest.WriteRoutedBundle writes), and the rows of its
+// TestGhTargetOfNamesTheOneRepositoryEverySelectorNames, TestGhTargetOfRefusalsSayHowToNameTheRepository,
+// TestGhTargetOfReadsTheFilesTheCallWouldSend, TestGhTargetOfRoutesEverySelectorKindOfARead
+// (ghroutetest.SelectorKindReads, each naming octocat and naming sjawhar, under the help of every
+// release ghroutetest.SelectorKindReleases names, a leaf that release's help does not list
+// among them), TestTargetOfNamesTheLeafCommand and TestLegionGhPrintsNoTokenOfASelectorOrAMarker.
+// Each row is read under its own edits of gh's saved help where it names any.
 func TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp(t *testing.T) {
 	t.Parallel()
 	rows := 0
@@ -192,6 +205,35 @@ func TestGhHelpKeepDecidesTheResolverTablesAsGhsOwnHelp(t *testing.T) {
 		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
 		rows++
 	}
+	root := ghroutetest.WriteRoutedBundle(t)
+	routed := func(owner, name string) (string, error) { return ghroute.DirFor(root, owner, name) }
+	routedCalls := ghroutetest.RoutedCalls(root)
+	for _, tc := range routedCalls {
+		ghTargetOfKept(t, tc.Argv, tc.Env, savedGhHelp, noGitRepository, routed)
+		rows++
+	}
+	selectorKinds := 0
+	for _, version := range ghroutetest.SelectorKindReleases {
+		help := savedGhHelpOf(t, version)
+		for _, r := range ghroutetest.SelectorKindReads {
+			for _, owner := range []string{"octocat", "sjawhar"} {
+				argv, env := r.Of(owner)
+				ghTargetOfKept(t, argv, env, help, noGitRepository, ghroutetest.ServesAcmeAndSjawhar)
+				selectorKinds++
+			}
+		}
+	}
+	rows += selectorKinds
+	for _, tc := range ghroutetest.LeafCommandCalls {
+		ghTargetOfKept(t, tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		rows++
+	}
+	for _, tc := range ghroutetest.PrintedSelectorCalls {
+		ghTargetOfKept(t, tc.Argv, tc.Env, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		rows++
+	}
+	t.Logf("%d rows ran through the keep: %d of ghroutetest.RoutedCalls, %d of %d SelectorKindReads at %d releases with two owners, %d of LeafCommandCalls, %d of PrintedSelectorCalls",
+		rows, len(routedCalls), selectorKinds, len(ghroutetest.SelectorKindReads), len(ghroutetest.SelectorKindReleases), len(ghroutetest.LeafCommandCalls), len(ghroutetest.PrintedSelectorCalls))
 	if rows < 150 {
 		t.Errorf("%d rows ran through the keep, want the tables' whole, at least 150", rows)
 	}

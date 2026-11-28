@@ -14,13 +14,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/ghconfig"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/ghroute/ghroutetest"
-	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
@@ -321,6 +318,10 @@ func ghReferenceUsages(t *testing.T) []ghReferenceUsage {
 // help. The rows below read the working directory's, or a bundle on disk.
 func TestGhTargetOfFailsClosed(t *testing.T) {
 	t.Parallel()
+	// A remote URL a CI checkout writes, a made-up token as its user info, built from its parts so
+	// that no source line holds a URL with a credential. No row's refusal holds a part of it (its
+	// user or its password) or a remote's ssh login.
+	const remoteToken = "x-access-token:madeUpRemoteToken0123"
 	walked := ghroutetest.HBeforeTheCommandCalls
 	for _, table := range []struct {
 		calls []ghroutetest.TargetCall
@@ -335,6 +336,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 			case tc.Err != "":
 				if err == nil || !strings.Contains(err.Error(), tc.Err) {
 					t.Errorf("TargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.Argv, tc.Env, target, err, tc.Err)
+				} else if user, password, _ := strings.Cut(remoteToken, ":"); strings.Contains(err.Error(), user) || strings.Contains(err.Error(), password) {
+					t.Errorf("TargetOf(%q, %v): the refusal %q holds part of the remote's token", tc.Argv, tc.Env, err)
+				} else if strings.Contains(err.Error(), "git@") {
+					t.Errorf("TargetOf(%q, %v): the refusal %q holds a remote's ssh login", tc.Argv, tc.Env, err)
 				}
 			case err != nil || target.Owner != tc.Owner:
 				t.Errorf("TargetOf(%q, %v) = %+v, %v; want the owner %q", tc.Argv, tc.Env, target, err, tc.Owner)
@@ -356,9 +361,6 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	// The marked fork checkout of dispatch://INFRA-3399: acme's fork, whose upstream is sjawhar's
 	// and whose origin carries gh's default marker, followed by more lines.
 	forkUpstream := Remote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}
-	// A remote URL a CI checkout writes, a made-up token as its user info, built from its parts so
-	// that no source line holds a URL with a credential.
-	const remoteToken = "x-access-token:madeUpRemoteToken0123"
 	withToken := func(remote string) string { return strings.Replace(remote, "://", "://"+remoteToken+"@", 1) }
 	tokenUpstream := Remote{name: "upstream", url: withToken("https://github.com/sjawhar/legion.git")}
 	originBase := markerLine("remote.origin.gh-resolved base")
@@ -527,47 +529,41 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		}
 	}
 
-	// R4 of dispatch://INFRA-3399, against a bundle written as the daemon writes one
-	// (ghconfig.WriteBundle) and routed by DirFor: directories for acme and sjawhar and none for
-	// any other owner, which DirFor answers with a bare OwnerNotServedError; and two configured
-	// renames, octocat/moved -> sjawhar/moved, whose `to` owner has a directory, and sjawhar/gone
-	// -> nobody/gone, whose `to` owner has none, which it refuses naming the pair around that
-	// error. The pane is acme's over that bundle (bundlePane). A call that writes nothing, whose
-	// every item is an owner with no directory and whose working directory's remotes name no
-	// github.com repository for it, runs with GH_CONFIG_DIR's directory: in a working directory
-	// that is no git repository, and in a checkout whose remotes the reader reads for no call
-	// naming its repository, acme's clone and the marked fork checkout. Every other call gets the
-	// routing and the refusal it gets with no fallback (selectors.dir): a write, a GraphQL
-	// mutation, a read beside an owner the bundle serves, a read with no GH_CONFIG_DIR, a read
-	// whose remotes were read for it (whether or not the remote's entry was kept), and a read of a
-	// pair's repository.
-	root := filepath.Join(t.TempDir(), "gh")
-	expires := time.Now().Add(time.Hour)
-	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
-		Default: "acme",
-		Dirs: map[string]ghconfig.Rendered{
-			"acme":    ghconfig.Render("ghs_acme_write", "implement", expires),
-			"sjawhar": ghconfig.Render("ghs_sjawhar_write", "implement", expires),
-		},
-		Pairs: []ghrepo.Rename{ghrepo.MustRename("octocat/moved", "sjawhar/moved"), ghrepo.MustRename("sjawhar/gone", "nobody/gone")},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	bundlePane := map[string]string{"GH_CONFIG_DIR": ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR": root}
+	// R4 of dispatch://INFRA-3399, against a bundle written as the daemon writes one and routed by
+	// DirFor (ghroutetest.WriteRoutedBundle says what it holds), in acme's pane over that bundle
+	// (ghroutetest.RoutedPane). A call that writes nothing, whose every item is an owner with no
+	// directory and whose working directory's remotes name no github.com repository for it, runs
+	// with GH_CONFIG_DIR's directory: in a working directory that is no git repository, and in a
+	// checkout whose remotes the reader reads for no call naming its repository, acme's clone and
+	// the marked fork checkout. Every other call gets the routing and the refusal it gets with no
+	// fallback (selectors.dir): a write, a GraphQL mutation, a read beside an owner the bundle
+	// serves, a read with no GH_CONFIG_DIR, a read whose remotes were read for it (whether or not
+	// the remote's entry was kept), and a read of a pair's repository. The rows read in a working
+	// directory that is no git repository are ghroutetest.RoutedCalls, which `legion gh`'s tests
+	// also resolve through its keep of gh's help; the rows below read the working directory's.
+	root := ghroutetest.WriteRoutedBundle(t)
 	routed := func(owner, name string) (string, error) { return DirFor(root, owner, name) }
-	const unserved = `the role's GitHub App is not installed on "octocat"`
+	for _, tc := range ghroutetest.RoutedCalls(root) {
+		target, err := TargetOf(tc.Argv, tc.Env, savedGhHelp, noGitRepository, routed)
+		switch {
+		case tc.Err != "":
+			if err == nil || !strings.Contains(err.Error(), tc.Err) {
+				t.Errorf("TargetOf(%q, %v) = %+v, %v; want a refusal containing %q", tc.Argv, tc.Env, target, err, tc.Err)
+			}
+		case err != nil || target.Dir != tc.Dir:
+			t.Errorf("TargetOf(%q, %v) = %+v, %v; want the directory %q", tc.Argv, tc.Env, target, err, tc.Dir)
+		}
+	}
+	bundlePane := ghroutetest.RoutedPane(root)
+	const unserved = ghroutetest.OctocatNotServed
 	octocatClone := Remote{name: "origin", url: "https://github.com/octocat/hello.git"}
 	for _, tc := range []struct {
 		argv    []string
 		env     map[string]string
-		remotes func() ([]Remote, error) // a working directory that is no git repository when nil
-		dir     string                   // the directory the command runs with, where it is not refused
-		err     string                   // a refusal containing this
+		remotes func() ([]Remote, error)
+		dir     string // the directory the command runs with, where it is not refused
+		err     string // a refusal containing this
 	}{
-		// Reads naming two owners with no directory, by a search query's qualifiers and by a
-		// GraphQL query's variables.
-		{argv: []string{"search", "issues", "owner:octocat", "org:hubot"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
-		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=hubot", "-f", "query=query($owner:String!,$org:String!){a:repositoryOwner(login:$owner){login} b:organization(login:$org){login}}"}, env: bundlePane, dir: bundlePane["GH_CONFIG_DIR"]},
 		// Reads naming octocat/hello, by an argument, -R, gh api's endpoint and a GraphQL query's
 		// variables, in acme's clone and in the marked fork checkout: the reader reads no remote
 		// for a call naming its repository, so the checkout's remotes name none for it.
@@ -582,13 +578,6 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// A read for which gh reads the working directory's remotes and finds none on github.com
 		// still runs with GH_CONFIG_DIR's directory: only a github.com remote read for it counts.
 		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(Remote{name: "origin", url: "https://gitlab.example.com/acme/widgets.git"}), dir: bundlePane["GH_CONFIG_DIR"]},
-		// A read where no GH_CONFIG_DIR names the directory a command naming no owner runs with.
-		{argv: []string{"repo", "view", "octocat/hello", "--json", "name"}, err: unserved},
-		// A write naming an owner with no directory, and a GraphQL mutation naming one.
-		{argv: []string{"issue", "create", "-R", "octocat/hello", "--title", "t", "--body", "b"}, env: bundlePane, err: unserved},
-		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`}, env: bundlePane, err: unserved},
-		// A read naming an owner with no directory beside one the bundle serves.
-		{argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query={viewer{login}}"}, env: bundlePane, err: unserved},
 		// Reads for which gh takes a repository from the working directory's remotes: an owner
 		// named by a GraphQL query's variable beside a {repo} gh fills from the remote; a URL gh's
 		// pr finder reads as a branch of the command's own repository, where the remote is acme's,
@@ -598,17 +587,8 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(acmeClone), err: unserved},
 		{argv: []string{"pr", "view", "https://github.com/octocat/hello/tree/main", "--json", "number"}, env: bundlePane, remotes: remotes(octocatClone), err: unserved},
 		{argv: []string{"api", "repos/octocat/hello/pulls?head={owner}:x"}, env: bundlePane, remotes: remotes(octocatClone), err: unserved},
-		// The repository a configured rename pair moves: refused naming the pair where its `to`
-		// owner has no directory, though its `from` owner has one, and served from the `to`
-		// owner's directory where that owner has one, though its `from` owner has none.
-		{argv: []string{"repo", "view", "sjawhar/gone", "--json", "name"}, env: bundlePane, err: "the configured rename sjawhar/gone -> nobody/gone"},
-		{argv: []string{"repo", "view", "octocat/moved", "--json", "name"}, env: bundlePane, dir: ghconfig.Dir(root, "sjawhar")},
 	} {
-		listed := tc.remotes
-		if listed == nil {
-			listed = noGitRepository
-		}
-		target, err := TargetOf(tc.argv, tc.env, savedGhHelp, listed, routed)
+		target, err := TargetOf(tc.argv, tc.env, savedGhHelp, tc.remotes, routed)
 		switch {
 		case tc.err != "":
 			if err == nil || !strings.Contains(err.Error(), tc.err) {
@@ -687,93 +667,17 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 // apiRESTEndpoint admits a relative path alone, and a search endpoint's q given as a field,
 // since apiReadOptions holds neither -f nor -F, and gh sends a call with a field as a POST
 // (gh api's help: "adding request parameters will automatically switch the request method to
-// `POST`").
+// `POST`"). The rows are ghroutetest.SelectorKindReads, which `legion gh`'s tests also resolve
+// through its keep of gh's help, at each release this reads and with each owner.
 func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
 	t.Parallel()
-	// The pane of the issue owner acme, whose bundle under /owners serves acme and sjawhar and
-	// holds no directory for octocat, which dirFor answers as DirFor answers an owner it holds
-	// none for: a bare OwnerNotServedError, wrapping nothing.
-	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
-	dirFor := func(owner, _ string) (string, error) {
-		if owner == "acme" || owner == "sjawhar" {
-			return ghconfig.Dir("/owners", owner), nil
-		}
-		return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: "/owners"}
-	}
-	const refusal = `the role's GitHub App is not installed on "octocat"`
-	// Each row is octocat's read, with the leaf whose path it is typed with and the kind it reads
-	// octocat through: an argument's or an option's as the help's kinds are named below, or, for a
-	// member no help lists, what it is. GH_REPO, where the row sets it, joins the pane's
-	// environment. The read naming sjawhar is the same row with sjawhar in octocat's place.
-	// refused marks a member the selector reader counts that is no read writesNothing admits.
-	type read struct {
-		leaf, kind string
-		argv       []string
-		env        map[string]string
-		refused    bool
-	}
-	const viaRepo = "option --repo (repository)"
-	reads := []read{
-		{leaf: "pr view", kind: "argument url", argv: []string{"pr", "view", "https://github.com/octocat/hello/pull/1", "--json", "number"}},
-		{leaf: "pr view", kind: viaRepo, argv: []string{"pr", "view", "1", "-R", "octocat/hello", "--json", "number"}},
-		{leaf: "pr list", kind: viaRepo, argv: []string{"pr", "list", "-R", "octocat/hello"}},
-		{leaf: "pr diff", kind: "argument url", argv: []string{"pr", "diff", "https://github.com/octocat/hello/pull/1"}},
-		{leaf: "pr diff", kind: viaRepo, argv: []string{"pr", "diff", "1", "-R", "octocat/hello"}},
-		{leaf: "pr checks", kind: "argument url", argv: []string{"pr", "checks", "https://github.com/octocat/hello/pull/1"}},
-		{leaf: "pr checks", kind: viaRepo, argv: []string{"pr", "checks", "1", "-R", "octocat/hello"}},
-		{leaf: "pr status", kind: viaRepo, argv: []string{"pr", "status", "-R", "octocat/hello"}},
-		{leaf: "run view", kind: viaRepo, argv: []string{"run", "view", "1", "-R", "octocat/hello"}},
-		{leaf: "run list", kind: viaRepo, argv: []string{"run", "list", "-R", "octocat/hello"}},
-		{leaf: "run watch", kind: viaRepo, argv: []string{"run", "watch", "1", "-R", "octocat/hello"}},
-		{leaf: "issue view", kind: "argument url", argv: []string{"issue", "view", "https://github.com/octocat/hello/issues/1", "--json", "number"}},
-		{leaf: "issue view", kind: viaRepo, argv: []string{"issue", "view", "1", "-R", "octocat/hello"}},
-		{leaf: "issue list", kind: viaRepo, argv: []string{"issue", "list", "-R", "octocat/hello"}},
-		{leaf: "issue status", kind: viaRepo, argv: []string{"issue", "status", "-R", "octocat/hello"}},
-		{leaf: "repo view", kind: "argument repository", argv: []string{"repo", "view", "octocat/hello", "--json", "name"}},
-		{leaf: "repo list", kind: "argument owner", argv: []string{"repo", "list", "octocat", "--json", "name"}},
-		{leaf: "release view", kind: viaRepo, argv: []string{"release", "view", "v1", "-R", "octocat/hello"}},
-		{leaf: "release list", kind: viaRepo, argv: []string{"release", "list", "-R", "octocat/hello"}},
-		{leaf: "workflow view", kind: viaRepo, argv: []string{"workflow", "view", "ci.yml", "-R", "octocat/hello"}},
-		{leaf: "workflow list", kind: viaRepo, argv: []string{"workflow", "list", "-R", "octocat/hello"}},
-		{leaf: "label list", kind: viaRepo, argv: []string{"label", "list", "-R", "octocat/hello"}},
-		{leaf: "cache list", kind: viaRepo, argv: []string{"cache", "list", "-R", "octocat/hello"}},
-		{leaf: "search code", kind: viaRepo, argv: []string{"search", "code", "hello", "--repo", "octocat/hello"}},
-		{leaf: "search code", kind: "option --owner (owner)", argv: []string{"search", "code", "hello", "--owner", "octocat"}},
-		{leaf: "search commits", kind: viaRepo, argv: []string{"search", "commits", "fix", "--repo", "octocat/hello"}},
-		{leaf: "search commits", kind: "option --owner (owner)", argv: []string{"search", "commits", "fix", "--owner", "octocat"}},
-		{leaf: "search issues", kind: viaRepo, argv: []string{"search", "issues", "bug", "--repo", "octocat/hello"}},
-		{leaf: "search issues", kind: "option --owner (owner)", argv: []string{"search", "issues", "bug", "--owner", "octocat"}},
-		{leaf: "search issues", kind: "option --project (owner/name)", argv: []string{"search", "issues", "--project", "octocat/1", "--json", "number"}},
-		{leaf: "search prs", kind: viaRepo, argv: []string{"search", "prs", "fix", "--repo", "octocat/hello"}},
-		{leaf: "search prs", kind: "option --owner (owner)", argv: []string{"search", "prs", "fix", "--owner", "octocat"}},
-		{leaf: "search prs", kind: "option --project (owner/name)", argv: []string{"search", "prs", "--project", "octocat/1", "--json", "number"}},
-		{leaf: "search repos", kind: "option --owner (owner)", argv: []string{"search", "repos", "--owner", "octocat", "--json", "name"}},
-		// gh api's endpoint forms, the GraphQL variables naming an owner and GH_REPO, which no
-		// help lists.
-		{leaf: "api", kind: "endpoint repos/<owner>/<repo>/…", argv: []string{"api", "repos/octocat/hello/pulls"}},
-		{leaf: "api", kind: "endpoint repos/<owner>/<repo>", argv: []string{"api", "repos/octocat/hello"}},
-		{leaf: "api", kind: "endpoint orgs/<owner>", argv: []string{"api", "orgs/octocat"}},
-		{leaf: "api", kind: "endpoint users/<owner>", argv: []string{"api", "users/octocat"}},
-		{leaf: "api", kind: "GraphQL variable owner", argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "query=query($owner: String!) { repositoryOwner(login: $owner) { login } }"}},
-		{leaf: "api", kind: "GraphQL variable org", argv: []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org: String!) { organization(login: $org) { login } }"}},
-		{leaf: "api", kind: "GraphQL variable organization", argv: []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization: String!) { organization(login: $organization) { login } }"}},
-		{leaf: "api", kind: "GraphQL variable login", argv: []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login: String!) { user(login: $login) { login } }"}},
-		{leaf: "pr list", kind: "GH_REPO", argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "octocat/hello"}},
-		// The two members that are no read: octocat's gets the OwnerNotServedError refusal.
-		{leaf: "api", kind: "endpoint https://api.github.com/…", argv: []string{"api", "https://api.github.com/repos/octocat/hello"}, refused: true},
-		{leaf: "api", kind: "a search endpoint's q field", argv: []string{"api", "search/issues", "-f", "q=repo:octocat/hello"}, refused: true},
-	}
-	// A search query's qualifiers naming an owner, as the query words of every search leaf, and
-	// as the q of gh api's search endpoint.
-	for _, qualifier := range []string{"repo:octocat/hello", "owner:octocat", "user:octocat", "org:octocat"} {
-		for _, leaf := range []string{"search code", "search commits", "search issues", "search prs", "search repos"} {
-			reads = append(reads, read{leaf: leaf, kind: "argument query", argv: append(strings.Fields(leaf), qualifier)})
-		}
-		reads = append(reads, read{leaf: "api", kind: "endpoint search/<kind>?q=…", argv: []string{"api", "search/issues?q=" + qualifier}})
-	}
+	// Each row is octocat's read in acme's pane, whose bundle serves acme and sjawhar and holds no
+	// directory for octocat (ghroutetest.SelectorKindRead), and the read naming sjawhar is the same
+	// row with sjawhar in octocat's place.
+	const refusal = ghroutetest.OctocatNotServed
 	covered := map[[2]string]bool{}
-	for _, r := range reads {
-		covered[[2]string{r.leaf, r.kind}] = true
+	for _, r := range ghroutetest.SelectorKindReads {
+		covered[[2]string{r.Leaf, r.Kind}] = true
 	}
 	// The kinds no read leaf carries are out of R4's reach, since every leaf whose help gives one
 	// is outside readLeaves, and so writes as writesNothing reads it: a repository the command
@@ -785,7 +689,7 @@ func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
 	// octocat through one, and a read leaf or option that gives one fails here, to be given rows
 	// and R4 a reading of it.
 	outOfReach := map[string]bool{"org-repositories": true, "url": true, "host": true}
-	for _, version := range []string{"2.98.0", "2.104.0"} {
+	for _, version := range ghroutetest.SelectorKindReleases {
 		t.Run(version, func(t *testing.T) {
 			help := savedGhHelpOf(t, version)
 			// lists says whether this release's help lists path: whether its parent's help
@@ -839,38 +743,31 @@ func TestGhTargetOfRoutesEverySelectorKindOfARead(t *testing.T) {
 				}
 			}
 			rows := 0
-			for _, r := range reads {
-				if !lists(strings.Fields(r.leaf)) {
+			for _, r := range ghroutetest.SelectorKindReads {
+				if !lists(strings.Fields(r.Leaf)) {
 					continue
 				}
 				rows++
-				name := "gh " + strings.Join(r.argv, " ")
-				if repo := r.env["GH_REPO"]; repo != "" {
+				name := "gh " + strings.Join(r.Argv, " ")
+				if repo := r.Env["GH_REPO"]; repo != "" {
 					name = "GH_REPO=" + repo + " " + name
 				}
 				t.Run(name, func(t *testing.T) {
 					for _, owner := range []string{"octocat", "sjawhar"} {
 						t.Run(owner, func(t *testing.T) {
-							argv := make([]string, len(r.argv))
-							for i, word := range r.argv {
-								argv[i] = strings.ReplaceAll(word, "octocat", owner)
-							}
-							env := maps.Clone(pane)
-							for key, value := range r.env {
-								env[key] = strings.ReplaceAll(value, "octocat", owner)
-							}
-							target, err := TargetOf(argv, env, help, noGitRepository, dirFor)
+							argv, env := r.Of(owner)
+							target, err := TargetOf(argv, env, help, noGitRepository, ghroutetest.ServesAcmeAndSjawhar)
 							switch {
 							case owner == "sjawhar":
 								if err != nil || target.Dir != ghconfig.Dir("/owners", "sjawhar") {
 									t.Errorf("TargetOf(%q, %v) at gh %s = %+v, %v; want sjawhar's directory", argv, env, version, target, err)
 								}
-							case r.refused:
+							case r.Refused:
 								if err == nil || !strings.Contains(err.Error(), refusal) {
 									t.Errorf("TargetOf(%q, %v) at gh %s = %+v, %v; want main's refusal, %q", argv, env, version, target, err, refusal)
 								}
-							case err != nil || target.Dir != pane["GH_CONFIG_DIR"]:
-								t.Errorf("TargetOf(%q, %v) at gh %s = %+v, %v; want GH_CONFIG_DIR's directory, %s", argv, env, version, target, err, pane["GH_CONFIG_DIR"])
+							case err != nil || target.Dir != ghroutetest.SelectorKindPane["GH_CONFIG_DIR"]:
+								t.Errorf("TargetOf(%q, %v) at gh %s = %+v, %v; want GH_CONFIG_DIR's directory, %s", argv, env, version, target, err, ghroutetest.SelectorKindPane["GH_CONFIG_DIR"])
 							}
 						})
 					}
@@ -899,23 +796,14 @@ func TestGhTargetOfRefusalsSayHowToNameTheRepository(t *testing.T) {
 
 // TargetOf names the leaf a command runs as gh's own help names it, a cobra alias read as its
 // command, and none for a command that runs no leaf or only prints its help: a leaf's --help, gh's
-// own help, its version, a group alone.
+// own help, its version, a group alone. The rows are ghroutetest.LeafCommandCalls, which `legion
+// gh`'s tests also resolve through its keep of gh's help.
 func TestTargetOfNamesTheLeafCommand(t *testing.T) {
 	t.Parallel()
-	for _, tc := range []struct {
-		argv []string
-		want []string
-	}{
-		{[]string{"pr", "ls", "-R", "sjawhar/legion"}, []string{"pr", "list"}},
-		{[]string{"-R", "sjawhar/legion", "pr", "view", "1", "--help"}, nil},
-		{[]string{"api", "repos/sjawhar/legion"}, []string{"api"}},
-		{[]string{"pr"}, nil},
-		{[]string{"--version"}, nil},
-		{[]string{"help", "pr", "view"}, nil},
-	} {
-		target, err := TargetOf(tc.argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
-		if err != nil || !slices.Equal(target.Command, tc.want) {
-			t.Errorf("TargetOf(%q) = %+v, %v; want the command %q", tc.argv, target, err, tc.want)
+	for _, tc := range ghroutetest.LeafCommandCalls {
+		target, err := TargetOf(tc.Argv, nil, savedGhHelp, noGitRepository, ghroutetest.OwnersOwnDirectories)
+		if err != nil || !slices.Equal(target.Command, tc.Command) {
+			t.Errorf("TargetOf(%q) = %+v, %v; want the command %q", tc.Argv, target, err, tc.Command)
 		}
 	}
 }

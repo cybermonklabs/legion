@@ -770,10 +770,10 @@ remote is copied from a template built once per default branch; the template its
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
-writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
-with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
-or an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/ghroute`, `internal/intake`, `internal/runtime/sandbox`,
+`internal/workspace`), a test writes a file it or its program then executes (a stand-in git, gh,
+jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile` (`execfile.Write`,
+`execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for

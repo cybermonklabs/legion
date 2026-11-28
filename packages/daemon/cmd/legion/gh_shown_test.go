@@ -15,10 +15,10 @@ import (
 )
 
 // ghCanaryRows are the rows of every refusal path of this package's gh*.go (ghOwnSource), each
-// one call with ghroutetest.Canary in its slots, keyed as ghroutetest.ShownPaths keys a call of
-// ghroute.Shown: the function that makes it and the source of the place it names the value by.
-// internal/ghroute's paths have rows of their own, which its test of this name holds to its
-// source: ghroutetest.CanaryRows.
+// one call with ghroutetest.Canary in its slots, keyed as ghroutetest.RequireCanaryRows keys a
+// call of ghroute.Shown: the function that makes it and the source of the place it names the
+// value by. internal/ghroute's paths have rows of their own, which internal/ghroute's
+// TestNoRefusalPathPrintsACanary holds to its source: ghroutetest.CanaryRows.
 var ghCanaryRows = map[string][]ghroutetest.CanaryRun{
 	`withGitHubUseHTTPPath: "a value that is not printed"`: {
 		{Run: func() error {
@@ -35,13 +35,13 @@ var ghCanaryRows = map[string][]ghroutetest.CanaryRun{
 const ghOwnSource = "gh*.go"
 
 // Every refusal path of legion gh's own gh*.go that puts a value a person gave it into a refusal
-// — every call of ghroute.Shown that source holds (ghroutetest.ShownPaths) — has rows in
-// ghCanaryRows, and every row's path is one the source holds: a new path fails this until it
-// joins the table. Each row puts ghroutetest.Canary in every slot of its call and reaches its
-// path, which names the value by its place (the row's Names), and its refusal printed as legion gh
-// prints it (ghroute.PrintRefusal) holds no part of the canary. A source holding no path at all is
-// refused: the table would test nothing. ghroutetest.RequireCanaryRows makes this check, as it
-// does for internal/ghroute's paths by its own test of this name; here every row of
+// — every call of ghroute.Shown that source holds, as ghroutetest.RequireCanaryRows reads them —
+// has rows in ghCanaryRows, and every row's path is one the source holds: a new path fails this
+// until it joins the table. Each row puts ghroutetest.Canary in every slot of its call and
+// reaches its path, which names the value by its place (the row's Names), and its refusal printed
+// as legion gh prints it (ghroute.PrintRefusal) holds no part of the canary. A source holding no
+// path at all is refused: the table would test nothing. ghroutetest.RequireCanaryRows makes this
+// check, as it does for internal/ghroute's paths by its own test of this name; here every row of
 // ghroutetest.CanaryRows, a ghroute.TargetOf call, is also run as `legion gh` itself, as a pane
 // runs it, with the saved help's stand-in gh, whose own output the help read never prints, and
 // must exit 2 with the canary on neither stdout nor stderr and stderr naming the row's words.

@@ -2,16 +2,23 @@ package ghroutetest
 
 import (
 	"fmt"
+	"maps"
+	"path/filepath"
 	"strings"
+	"testing"
+	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghconfig"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
-// The resolver tables ghroute's TargetOf tests read (route_test.go), every row of which `legion
-// gh`'s tests also resolve through its keep of gh's help (cmd/legion's ghTargetOfKept), as main's
-// #4394 did: a keep that keeps each help it reads, and then a keep that reads the copies, must
-// decide each row as gh's own help does, the refusal text included. A row that needs the working
-// directory's git remotes stays beside the resolver, since the keep never reads them.
+// The resolver tables ghroute's TargetOf tests read (route_test.go, printed_test.go), every row
+// of which `legion gh`'s tests also resolve through its keep of gh's help (cmd/legion's
+// ghTargetOfKept): a keep that keeps each help it reads, and then a keep that reads the copies,
+// must decide each row as gh's own help does, the refusal text included. A row that reads the
+// working directory's git remotes stays beside the resolver: cmd/legion cannot build the
+// ghroute.Remote values it needs, whose fields are unexported.
 
 // NoGitRepository is the git remotes of a working directory that is no git repository: none. R is
 // ghroute.Remote, which this package cannot name (it imports ghroute not at all), so a caller
@@ -39,14 +46,14 @@ func EditedHelp(saved func([]string) (string, error), edits map[string][2]string
 // gh this was read from does; and of a gh whose pr view lists an option a later gh might add,
 // naming a repository.
 var (
-	WithAnExtensionAndANestedAlias = map[string][2]string{
+	withAnExtensionAndANestedAlias = map[string][2]string{
 		"":   {"ALIAS COMMANDS\n", "EXTENSION COMMANDS\n  hello:         Extension hello\n\nALIAS COMMANDS\n"},
 		"pr": {"\nFLAGS\n", "\nALIAS COMMANDS\n  pv2:           Alias for \"pr view -R sjawhar/legion\"\n\nFLAGS\n"},
 	}
 	SpellingItsURLOtherwise = map[string][2]string{
 		"pr view": {"<url>", "<URL>"},
 	}
-	WithARepositoryOption = map[string][2]string{
+	withARepositoryOption = map[string][2]string{
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
 	}
 )
@@ -100,9 +107,9 @@ var FailsClosedCalls = []TargetCall{
 	// --version is gh's alone; before anything, gh reads the next word as a command, an
 	// alias's or an extension's among them.
 	{Argv: []string{"--version"}},
-	{Argv: []string{"--version", "hello"}, Edits: WithAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
+	{Argv: []string{"--version", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
 	{Argv: []string{"--version", "co"}, Err: `"--version" comes before the command's name`},
-	{Argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, Edits: WithAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
+	{Argv: []string{"-R", "sjawhar/legion", "--version", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"--version" comes before the command's name`},
 	{Argv: []string{"--help", "--version"}, Err: `"--version" comes before the command's name`},
 	// A first word gh's own help does not list, whose help gh may answer by installing an
 	// extension, and the commands that run another program on gh's token.
@@ -119,7 +126,7 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"pr", "comment", "1", "--body", "https://github.com/sjawhar/legion/pull/2", "-R", "acme/widgets"}, Owner: "acme"},
 	{Argv: []string{"pr", "comment", "1", "--body", "https://example.com/sjawhar/legion", "-R", "acme/widgets"}, Owner: "acme"},
 	{Argv: []string{"repo", "edit", "acme/widgets", "--homepage", "https://github.com/sjawhar/legion"}, Owner: "acme"},
-	{Argv: []string{"pr", "view", "1", "--mirror", "sjawhar/legion", "-R", "acme/widgets"}, Edits: WithARepositoryOption, Err: "names a repository, an owner, a team or a URL in a way this does not know"},
+	{Argv: []string{"pr", "view", "1", "--mirror", "sjawhar/legion", "-R", "acme/widgets"}, Edits: withARepositoryOption, Err: "names a repository, an owner, a team or a URL in a way this does not know"},
 	// gh api's placeholders as gh reads them, the colon form too, in a typed field's value.
 	{Argv: []string{"api", "graphql", "-F", "o=:owner", "-F", "r=:repo", "-f", "query=q"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"api", "repos/:owner/:repo/pulls"}, Env: map[string]string{"GH_REPO": "sjawhar/legion"}, Owner: "sjawhar"},
@@ -175,9 +182,9 @@ var FailsClosedCalls = []TargetCall{
 	// token itself, are refused before their help is read, at any depth, and so is the Copilot
 	// CLI gh runs.
 	{Argv: []string{"co", "https://github.com/sjawhar/legion/pull/1"}, Err: `"co" is a gh alias`},
-	{Argv: []string{"pr", "pv2", "1"}, Edits: WithAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
-	{Argv: []string{"hello", "-R", "sjawhar/legion"}, Edits: WithAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
-	{Argv: []string{"pr", "view", "1", "-R", "sjawhar/legion"}, Edits: WithAnExtensionAndANestedAlias, Owner: "sjawhar"},
+	{Argv: []string{"pr", "pv2", "1"}, Edits: withAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
+	{Argv: []string{"hello", "-R", "sjawhar/legion"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
+	{Argv: []string{"pr", "view", "1", "-R", "sjawhar/legion"}, Edits: withAnExtensionAndANestedAlias, Owner: "sjawhar"},
 	{Argv: []string{"pr", "ls", "-R", "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"copilot"}, Err: "`gh copilot` runs another program"},
 	// A search query names its owner in plain qualifiers, one to an argument, or not at all.
@@ -213,9 +220,9 @@ var FailsClosedCalls = []TargetCall{
 	{Argv: []string{"help", "pr", "view"}},
 	{Argv: []string{"help", "environment"}},
 	{Argv: []string{"help", "co"}, Err: `"co" is a gh alias`},
-	{Argv: []string{"help", "hello"}, Edits: WithAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
-	{Argv: []string{"help", "pr", "pv2"}, Edits: WithAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
-	{Argv: []string{"-R", "acme/widgets", "help", "hello"}, Edits: WithAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
+	{Argv: []string{"help", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
+	{Argv: []string{"help", "pr", "pv2"}, Edits: withAnExtensionAndANestedAlias, Err: `"pv2" is a gh alias`},
+	{Argv: []string{"-R", "acme/widgets", "help", "hello"}, Edits: withAnExtensionAndANestedAlias, Err: `"hello" is a gh extension`},
 	{Argv: []string{"help", "--bogus", "hello"}, Err: "an option given to gh help is refused: `gh help` takes only the names of commands"},
 	{Argv: []string{"issue", "edit", "1", "2", "--title", "x", "-R", "sjawhar/legion"}, Owner: "sjawhar"},
 	{Argv: []string{"issue", "edit", "https://github.com/sjawhar/legion/issues/1", "https://github.com/sjawhar/legion/issues/2", "--title", "x"}, Owner: "sjawhar"},
@@ -315,10 +322,10 @@ type WalkedCalls struct {
 const hBeforeTheCommand = `"-h" comes before the command's name, and only -R/--repo and --help may (gh can take the word after such a -h as its value`
 
 // HBeforeTheCommandCalls are the rows of ghroute's TestGhTargetOfFailsClosed with a -h before
-// the command's name, main's #4472: each is refused but as the whole argv (the walk's -h case
-// says why); `gh pr --help` is the way to ask. The rows read gh 2.98.0's help of every command,
-// saved whole, which holds `gh status`, so the words of a -h row are gh's commands and the row is
-// refused for its -h alone.
+// the command's name: each is refused but as the whole argv (the walk's -h case says why); `gh pr
+// --help` is the way to ask. The rows read gh 2.98.0's help of every command, saved whole, which
+// holds `gh status`, so the words of a -h row are gh's commands and the row is refused for its -h
+// alone.
 var HBeforeTheCommandCalls = WalkedCalls{Version: "2.98.0", Calls: []TargetCall{
 	{Argv: []string{"-h", "status", "config", "set", "-h", "github.com", "editor", "x"}, Err: hBeforeTheCommand},
 	{Argv: []string{"-h", "status", "auth", "logout", "-h", "github.com"}, Err: hBeforeTheCommand},
@@ -389,11 +396,11 @@ var RefusalAdvice = map[string]string{
 	"api search/issues?q=(repo:a/b)": "name it in the endpoint",
 }
 
-// SentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
-// its exported methods Names and UsesStdin (SentNames, SentUsesStdin), the two ghroute's
+// sentBy is the leakguard.GhSent that steps build, each in turn, on the zero value: calls of
+// its exported methods Names and UsesStdin (sentNames, sentUsesStdin), the two ghroute's
 // sentFiles builds its answer with. Its fields of standard input are leakguard's own and no
 // literal here can set them, so an answer to compare whole is built so.
-func SentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
+func sentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
 	sent := &leakguard.GhSent{}
 	for _, step := range steps {
 		step(sent)
@@ -401,20 +408,20 @@ func SentBy(steps ...func(*leakguard.GhSent)) *leakguard.GhSent {
 	return sent
 }
 
-// SentNames is the step of SentBy that names path as option's value (leakguard.GhSent.Names).
-func SentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
+// sentNames is the step of sentBy that names path as option's value (leakguard.GhSent.Names).
+func sentNames(option, path, field string, use leakguard.StdinUse) func(*leakguard.GhSent) {
 	return func(sent *leakguard.GhSent) { sent.Names(option, path, field, use) }
 }
 
-// SentUsesStdin is the step of SentBy that names standard input with use alone
+// sentUsesStdin is the step of sentBy that names standard input with use alone
 // (leakguard.GhSent.UsesStdin).
-func SentUsesStdin(use leakguard.StdinUse) func(*leakguard.GhSent) {
+func sentUsesStdin(use leakguard.StdinUse) func(*leakguard.GhSent) {
 	return func(sent *leakguard.GhSent) { sent.UsesStdin(use) }
 }
 
 // SentFileCall is one row of ghroute's TestGhTargetOfReadsTheFilesTheCallWouldSend: a call and
 // what TargetOf reads it would send to GitHub beside its argv (ghroute.Target.Sent), the parse's
-// whole answer, built by the calls sentFiles makes for it (SentBy).
+// whole answer, built by the calls sentFiles makes for it (sentBy).
 type SentFileCall struct {
 	Name string
 	Argv []string
@@ -433,117 +440,367 @@ var SentFileCalls = []SentFileCall{
 	{
 		Name: "a short cluster whose last letter is the option",
 		Argv: []string{"pr", "create", "-R", "acme/widgets", "-dF", "body.md"},
-		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
+		Want: sentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a short option with its value attached by an equals sign",
 		Argv: []string{"pr", "create", "-R", "acme/widgets", "-F=body.md"},
-		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
+		Want: sentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a separate --body-file",
 		Argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "body.md"},
-		Want: SentBy(SentNames("--body-file", "body.md", "", leakguard.StdinText)),
+		Want: sentBy(sentNames("--body-file", "body.md", "", leakguard.StdinText)),
 	},
 	{
 		Name: "gh api's field read from a file",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "--method", "PATCH", "-F", "body=@body.md"},
-		Want: SentBy(SentNames("--field", "body.md", "body", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 	},
 	{
 		Name: "gh api's request body",
 		Argv: []string{"api", "repos/acme/widgets/pulls", "--input", "request.json"},
-		Want: SentBy(SentNames("--input", "request.json", "", leakguard.StdinRequestBody)),
+		Want: sentBy(sentNames("--input", "request.json", "", leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "a raw field, which sends its value literally",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-f", "body=@body.md"},
-		Want: SentBy(),
+		Want: sentBy(),
 	},
 	{
 		Name: "a field given a literal value",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=text"},
-		Want: SentBy(),
+		Want: sentBy(),
 	},
 	{
 		Name: "a body option whose value is standard input",
 		Argv: []string{"pr", "comment", "1", "-R", "acme/widgets", "--body-file", "-"},
-		Want: SentBy(SentNames("--body-file", "-", "", leakguard.StdinText)),
+		Want: sentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a short option whose value is standard input",
 		Argv: []string{"pr", "create", "-R", "acme/widgets", "-F", "-"},
-		Want: SentBy(SentNames("--body-file", "-", "", leakguard.StdinText)),
+		Want: sentBy(sentNames("--body-file", "-", "", leakguard.StdinText)),
 	},
 	{
 		Name: "a field read from standard input",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@-"},
-		Want: SentBy(SentNames("--field", "-", "body", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "-", "body", leakguard.StdinField)),
 	},
 	{
 		Name: "a GraphQL query read from standard input",
 		Argv: []string{"api", "graphql", "-F", "query=@-"},
-		Want: SentBy(SentNames("--field", "-", "query", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "-", "query", leakguard.StdinField)),
 	},
 	{
 		// The options are read in the order their names sort, so the field before --input.
 		Name: "a GraphQL query read from standard input beside a request body on it",
 		Argv: []string{"api", "graphql", "--input", "-", "-F", "query=@-"},
-		Want: SentBy(SentNames("--field", "-", "query", leakguard.StdinField),
-			SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		Want: sentBy(sentNames("--field", "-", "query", leakguard.StdinField),
+			sentNames("--input", "-", "", leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "gh workflow run's field read from standard input",
 		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "-F", "notes=@-"},
-		Want: SentBy(SentNames("--field", "-", "notes", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "-", "notes", leakguard.StdinField)),
 	},
 	{
 		Name: "gh api's request body on standard input",
 		Argv: []string{"api", "repos/acme/widgets/pulls", "--input", "-"},
-		Want: SentBy(SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		Want: sentBy(sentNames("--input", "-", "", leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "gh workflow run's inputs as JSON on standard input",
 		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json"},
-		Want: SentBy(SentUsesStdin(leakguard.StdinRequestBody)),
+		Want: sentBy(sentUsesStdin(leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "gh workflow run's --json=true, which sends standard input as its inputs",
 		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json=true"},
-		Want: SentBy(SentUsesStdin(leakguard.StdinRequestBody)),
+		Want: sentBy(sentUsesStdin(leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "gh workflow run's --json whose last value is false",
 		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "--json=false"},
-		Want: SentBy(),
+		Want: sentBy(),
 	},
 	{
 		Name: "gh workflow run's --json beside a field read from standard input",
 		Argv: []string{"workflow", "run", "ci.yaml", "-R", "acme/widgets", "--json", "-F", "notes=@-"},
-		Want: SentBy(SentNames("--field", "-", "notes", leakguard.StdinField),
-			SentUsesStdin(leakguard.StdinRequestBody)),
+		Want: sentBy(sentNames("--field", "-", "notes", leakguard.StdinField),
+			sentUsesStdin(leakguard.StdinRequestBody)),
 	},
 	{
 		Name: "another command's --json, which names the fields to print",
 		Argv: []string{"pr", "list", "-R", "acme/widgets", "--json", "number"},
-		Want: SentBy(),
+		Want: sentBy(),
 	},
 	{
 		Name: "two fields read from standard input",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "title=@-", "-F", "body=@-"},
-		Want: SentBy(SentNames("--field", "-", "title", leakguard.StdinField),
-			SentNames("--field", "-", "body", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "-", "title", leakguard.StdinField),
+			sentNames("--field", "-", "body", leakguard.StdinField)),
 	},
 	{
 		Name: "two different options naming standard input",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "--input", "-", "-F", "body=@-"},
-		Want: SentBy(SentNames("--field", "-", "body", leakguard.StdinField),
-			SentNames("--input", "-", "", leakguard.StdinRequestBody)),
+		Want: sentBy(sentNames("--field", "-", "body", leakguard.StdinField),
+			sentNames("--input", "-", "", leakguard.StdinRequestBody)),
 	},
 	{
 		// Named once, by the option whose name sorts first.
 		Name: "the same file named twice",
 		Argv: []string{"api", "repos/acme/widgets/pulls/1", "-F", "body=@body.md", "--input", "body.md"},
-		Want: SentBy(SentNames("--field", "body.md", "body", leakguard.StdinField)),
+		Want: sentBy(sentNames("--field", "body.md", "body", leakguard.StdinField)),
 	},
 }
+
+// OctocatNotServed is the refusal of a call routed to octocat, an owner neither
+// WriteRoutedBundle's bundle nor ServesAcmeAndSjawhar holds a directory for.
+const OctocatNotServed = `the role's GitHub App is not installed on "octocat"`
+
+// WriteRoutedBundle writes a bundle under a directory of t's as the daemon writes one
+// (ghconfig.WriteBundle), for a call routed over it by ghroute.DirFor, and answers its root:
+// directories for acme and sjawhar and none for any other owner, which DirFor answers with a bare
+// OwnerNotServedError; and two configured renames, octocat/moved -> sjawhar/moved, whose `to`
+// owner has a directory, and sjawhar/gone -> nobody/gone, whose `to` owner has none, which DirFor
+// refuses naming the pair around that error.
+func WriteRoutedBundle(t testing.TB) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "gh")
+	expires := time.Now().Add(time.Hour)
+	if _, err := ghconfig.WriteBundle(root, ghconfig.Bundle{
+		Default: "acme",
+		Dirs: map[string]ghconfig.Rendered{
+			"acme":    ghconfig.Render("ghs_acme_write", "implement", expires),
+			"sjawhar": ghconfig.Render("ghs_sjawhar_write", "implement", expires),
+		},
+		Pairs: []ghrepo.Rename{ghrepo.MustRename("octocat/moved", "sjawhar/moved"), ghrepo.MustRename("sjawhar/gone", "nobody/gone")},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// RoutedPane is the pane of the issue owner acme over the bundle at root (WriteRoutedBundle).
+func RoutedPane(root string) map[string]string {
+	return map[string]string{"GH_CONFIG_DIR": ghconfig.Dir(root, "acme"), "LEGION_GH_OWNERS_DIR": root}
+}
+
+// RoutedCall is one row of ghroute's TestGhTargetOfFailsClosed over the bundle WriteRoutedBundle
+// writes, read in a working directory that is no git repository: a call and its environment, and
+// the directory it runs with, or a refusal containing Err.
+type RoutedCall struct {
+	Argv []string
+	Env  map[string]string
+	Dir  string // the directory the command runs with, where it is not refused
+	Err  string // a refusal containing this
+}
+
+// RoutedCalls are the bundle table's rows that read no git remote, over the bundle at root: reads
+// naming only owners the bundle holds no directory for, which run with GH_CONFIG_DIR's directory,
+// and the calls that get the routing and the refusal they get with no fallback.
+func RoutedCalls(root string) []RoutedCall {
+	pane := RoutedPane(root)
+	return []RoutedCall{
+		// Reads naming two owners with no directory, by a search query's qualifiers and by a
+		// GraphQL query's variables.
+		{Argv: []string{"search", "issues", "owner:octocat", "org:hubot"}, Env: pane, Dir: pane["GH_CONFIG_DIR"]},
+		{Argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=hubot", "-f", "query=query($owner:String!,$org:String!){a:repositoryOwner(login:$owner){login} b:organization(login:$org){login}}"}, Env: pane, Dir: pane["GH_CONFIG_DIR"]},
+		// A read where no GH_CONFIG_DIR names the directory a command naming no owner runs with.
+		{Argv: []string{"repo", "view", "octocat/hello", "--json", "name"}, Err: OctocatNotServed},
+		// A write naming an owner with no directory, and a GraphQL mutation naming one.
+		{Argv: []string{"issue", "create", "-R", "octocat/hello", "--title", "t", "--body", "b"}, Env: pane, Err: OctocatNotServed},
+		{Argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`}, Env: pane, Err: OctocatNotServed},
+		// A read naming an owner with no directory beside one the bundle serves.
+		{Argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "org=sjawhar", "-f", "query={viewer{login}}"}, Env: pane, Err: OctocatNotServed},
+		// The repository a configured rename pair moves: refused naming the pair where its `to`
+		// owner has no directory, though its `from` owner has one, and served from the `to`
+		// owner's directory where that owner has one, though its `from` owner has none.
+		{Argv: []string{"repo", "view", "sjawhar/gone", "--json", "name"}, Env: pane, Err: "the configured rename sjawhar/gone -> nobody/gone"},
+		{Argv: []string{"repo", "view", "octocat/moved", "--json", "name"}, Env: pane, Dir: ghconfig.Dir(root, "sjawhar")},
+	}
+}
+
+// SelectorKindPane is the pane of the issue owner acme whose bundle under /owners serves acme and
+// sjawhar and holds no directory for octocat (ServesAcmeAndSjawhar): the environment every
+// SelectorKindRead is read in.
+var SelectorKindPane = map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
+
+// ServesAcmeAndSjawhar is the routing of SelectorKindPane's bundle: acme's and sjawhar's
+// directories under /owners, and for any other owner what ghroute.DirFor answers an owner it
+// holds no directory for, a bare OwnerNotServedError, wrapping nothing.
+func ServesAcmeAndSjawhar(owner, _ string) (string, error) {
+	if owner == "acme" || owner == "sjawhar" {
+		return ghconfig.Dir("/owners", owner), nil
+	}
+	return "", &leakguard.OwnerNotServedError{Owner: owner, OwnersDir: "/owners"}
+}
+
+// SelectorKindReleases are the gh releases every SelectorKindRead is read under, by the help of
+// every command each prints, saved whole (cmd/legion's testdata/gh-help-walk/<release>).
+var SelectorKindReleases = []string{"2.98.0", "2.104.0"}
+
+// SelectorKindRead is one row of ghroute's TestGhTargetOfRoutesEverySelectorKindOfARead:
+// octocat's read, with the leaf whose path it is typed with and the kind it reads octocat through:
+// an argument's or an option's as the help's kinds are named, or, for a member no help lists, what
+// it is. GH_REPO, where the row sets it, joins SelectorKindPane's environment (Of). Refused marks a
+// member the selector reader counts that is no read writesNothing admits.
+type SelectorKindRead struct {
+	Leaf, Kind string
+	Argv       []string
+	Env        map[string]string
+	Refused    bool
+}
+
+// Of is the row's read with owner in octocat's place: its argv, and SelectorKindPane's
+// environment with the row's own joined to it.
+func (r SelectorKindRead) Of(owner string) (argv []string, env map[string]string) {
+	argv = make([]string, len(r.Argv))
+	for i, word := range r.Argv {
+		argv[i] = strings.ReplaceAll(word, "octocat", owner)
+	}
+	env = maps.Clone(SelectorKindPane)
+	for key, value := range r.Env {
+		env[key] = strings.ReplaceAll(value, "octocat", owner)
+	}
+	return argv, env
+}
+
+// SelectorKindReads are the selector-kind table's rows: octocat's read through each kind of
+// argument and option a read leaf's help gives, then through the members no help lists: gh api's
+// endpoint forms, the GraphQL variables naming an owner, GH_REPO, the two members that are no
+// read, and a search query's qualifiers.
+var SelectorKindReads = func() []SelectorKindRead {
+	const viaRepo = "option --repo (repository)"
+	reads := []SelectorKindRead{
+		{Leaf: "pr view", Kind: "argument url", Argv: []string{"pr", "view", "https://github.com/octocat/hello/pull/1", "--json", "number"}},
+		{Leaf: "pr view", Kind: viaRepo, Argv: []string{"pr", "view", "1", "-R", "octocat/hello", "--json", "number"}},
+		{Leaf: "pr list", Kind: viaRepo, Argv: []string{"pr", "list", "-R", "octocat/hello"}},
+		{Leaf: "pr diff", Kind: "argument url", Argv: []string{"pr", "diff", "https://github.com/octocat/hello/pull/1"}},
+		{Leaf: "pr diff", Kind: viaRepo, Argv: []string{"pr", "diff", "1", "-R", "octocat/hello"}},
+		{Leaf: "pr checks", Kind: "argument url", Argv: []string{"pr", "checks", "https://github.com/octocat/hello/pull/1"}},
+		{Leaf: "pr checks", Kind: viaRepo, Argv: []string{"pr", "checks", "1", "-R", "octocat/hello"}},
+		{Leaf: "pr status", Kind: viaRepo, Argv: []string{"pr", "status", "-R", "octocat/hello"}},
+		{Leaf: "run view", Kind: viaRepo, Argv: []string{"run", "view", "1", "-R", "octocat/hello"}},
+		{Leaf: "run list", Kind: viaRepo, Argv: []string{"run", "list", "-R", "octocat/hello"}},
+		{Leaf: "run watch", Kind: viaRepo, Argv: []string{"run", "watch", "1", "-R", "octocat/hello"}},
+		{Leaf: "issue view", Kind: "argument url", Argv: []string{"issue", "view", "https://github.com/octocat/hello/issues/1", "--json", "number"}},
+		{Leaf: "issue view", Kind: viaRepo, Argv: []string{"issue", "view", "1", "-R", "octocat/hello"}},
+		{Leaf: "issue list", Kind: viaRepo, Argv: []string{"issue", "list", "-R", "octocat/hello"}},
+		{Leaf: "issue status", Kind: viaRepo, Argv: []string{"issue", "status", "-R", "octocat/hello"}},
+		{Leaf: "repo view", Kind: "argument repository", Argv: []string{"repo", "view", "octocat/hello", "--json", "name"}},
+		{Leaf: "repo list", Kind: "argument owner", Argv: []string{"repo", "list", "octocat", "--json", "name"}},
+		{Leaf: "release view", Kind: viaRepo, Argv: []string{"release", "view", "v1", "-R", "octocat/hello"}},
+		{Leaf: "release list", Kind: viaRepo, Argv: []string{"release", "list", "-R", "octocat/hello"}},
+		{Leaf: "workflow view", Kind: viaRepo, Argv: []string{"workflow", "view", "ci.yml", "-R", "octocat/hello"}},
+		{Leaf: "workflow list", Kind: viaRepo, Argv: []string{"workflow", "list", "-R", "octocat/hello"}},
+		{Leaf: "label list", Kind: viaRepo, Argv: []string{"label", "list", "-R", "octocat/hello"}},
+		{Leaf: "cache list", Kind: viaRepo, Argv: []string{"cache", "list", "-R", "octocat/hello"}},
+		{Leaf: "search code", Kind: viaRepo, Argv: []string{"search", "code", "hello", "--repo", "octocat/hello"}},
+		{Leaf: "search code", Kind: "option --owner (owner)", Argv: []string{"search", "code", "hello", "--owner", "octocat"}},
+		{Leaf: "search commits", Kind: viaRepo, Argv: []string{"search", "commits", "fix", "--repo", "octocat/hello"}},
+		{Leaf: "search commits", Kind: "option --owner (owner)", Argv: []string{"search", "commits", "fix", "--owner", "octocat"}},
+		{Leaf: "search issues", Kind: viaRepo, Argv: []string{"search", "issues", "bug", "--repo", "octocat/hello"}},
+		{Leaf: "search issues", Kind: "option --owner (owner)", Argv: []string{"search", "issues", "bug", "--owner", "octocat"}},
+		{Leaf: "search issues", Kind: "option --project (owner/name)", Argv: []string{"search", "issues", "--project", "octocat/1", "--json", "number"}},
+		{Leaf: "search prs", Kind: viaRepo, Argv: []string{"search", "prs", "fix", "--repo", "octocat/hello"}},
+		{Leaf: "search prs", Kind: "option --owner (owner)", Argv: []string{"search", "prs", "fix", "--owner", "octocat"}},
+		{Leaf: "search prs", Kind: "option --project (owner/name)", Argv: []string{"search", "prs", "--project", "octocat/1", "--json", "number"}},
+		{Leaf: "search repos", Kind: "option --owner (owner)", Argv: []string{"search", "repos", "--owner", "octocat", "--json", "name"}},
+		// gh api's endpoint forms, the GraphQL variables naming an owner and GH_REPO, which no
+		// help lists.
+		{Leaf: "api", Kind: "endpoint repos/<owner>/<repo>/…", Argv: []string{"api", "repos/octocat/hello/pulls"}},
+		{Leaf: "api", Kind: "endpoint repos/<owner>/<repo>", Argv: []string{"api", "repos/octocat/hello"}},
+		{Leaf: "api", Kind: "endpoint orgs/<owner>", Argv: []string{"api", "orgs/octocat"}},
+		{Leaf: "api", Kind: "endpoint users/<owner>", Argv: []string{"api", "users/octocat"}},
+		{Leaf: "api", Kind: "GraphQL variable owner", Argv: []string{"api", "graphql", "-f", "owner=octocat", "-f", "query=query($owner: String!) { repositoryOwner(login: $owner) { login } }"}},
+		{Leaf: "api", Kind: "GraphQL variable org", Argv: []string{"api", "graphql", "-f", "org=octocat", "-f", "query=query($org: String!) { organization(login: $org) { login } }"}},
+		{Leaf: "api", Kind: "GraphQL variable organization", Argv: []string{"api", "graphql", "-f", "organization=octocat", "-f", "query=query($organization: String!) { organization(login: $organization) { login } }"}},
+		{Leaf: "api", Kind: "GraphQL variable login", Argv: []string{"api", "graphql", "-f", "login=octocat", "-f", "query=query($login: String!) { user(login: $login) { login } }"}},
+		{Leaf: "pr list", Kind: "GH_REPO", Argv: []string{"pr", "list"}, Env: map[string]string{"GH_REPO": "octocat/hello"}},
+		// The two members that are no read: octocat's gets the OwnerNotServedError refusal.
+		{Leaf: "api", Kind: "endpoint https://api.github.com/…", Argv: []string{"api", "https://api.github.com/repos/octocat/hello"}, Refused: true},
+		{Leaf: "api", Kind: "a search endpoint's q field", Argv: []string{"api", "search/issues", "-f", "q=repo:octocat/hello"}, Refused: true},
+	}
+	// A search query's qualifiers naming an owner, as the query words of every search leaf, and
+	// as the q of gh api's search endpoint.
+	for _, qualifier := range []string{"repo:octocat/hello", "owner:octocat", "user:octocat", "org:octocat"} {
+		for _, leaf := range []string{"search code", "search commits", "search issues", "search prs", "search repos"} {
+			reads = append(reads, SelectorKindRead{Leaf: leaf, Kind: "argument query", Argv: append(strings.Fields(leaf), qualifier)})
+		}
+		reads = append(reads, SelectorKindRead{Leaf: "api", Kind: "endpoint search/<kind>?q=…", Argv: []string{"api", "search/issues?q=" + qualifier}})
+	}
+	return reads
+}()
+
+// LeafCommandCall is one row of ghroute's TestTargetOfNamesTheLeafCommand: a call, and the leaf
+// TargetOf names it runs (ghroute.Target.Command), nil for none.
+type LeafCommandCall struct {
+	Argv, Command []string
+}
+
+// LeafCommandCalls are the leaf table's rows: a cobra alias, read as its command, and gh api, each
+// naming its leaf; and a leaf's --help, a group alone, gh's version and `gh help` of a leaf, which
+// run none.
+var LeafCommandCalls = []LeafCommandCall{
+	{[]string{"pr", "ls", "-R", "sjawhar/legion"}, []string{"pr", "list"}},
+	{[]string{"-R", "sjawhar/legion", "pr", "view", "1", "--help"}, nil},
+	{[]string{"api", "repos/sjawhar/legion"}, []string{"api"}},
+	{[]string{"pr"}, nil},
+	{[]string{"--version"}, nil},
+	{[]string{"help", "pr", "view"}, nil},
+}
+
+// MadeUpToken is the made-up token PrintedSelectorCalls write where a person or a CI checkout
+// could, of which no refusal `legion gh` prints of them may hold any part.
+const MadeUpToken = "zqtoken0123"
+
+// PrintedSelectorCall is one row of ghroute's TestLegionGhPrintsNoTokenOfASelectorOrAMarker that
+// reads no git remote: a call in acme's pane whose -R or GH_REPO value holds MadeUpToken, and the
+// words the refusal `legion gh` prints of it must hold (Names).
+type PrintedSelectorCall struct {
+	Argv  []string
+	Env   map[string]string
+	Names string
+}
+
+// PrintedSelectorCalls are the printed table's rows that read no git remote, keyed by each row's
+// name: a URL with a user name or a password, on github.com or another host, and on another host
+// with a token in its path, each named by its kind alone; and each value with no scheme, which
+// the URL rule cannot read, as -R and as GH_REPO.
+var PrintedSelectorCalls = func() map[string]PrintedSelectorCall {
+	at := "@"
+	pane := map[string]string{"GH_CONFIG_DIR": "/owners/acme", "LEGION_GH_OWNERS_DIR": "/owners"}
+	with := func(extra map[string]string) map[string]string {
+		env := maps.Clone(pane)
+		maps.Copy(env, extra)
+		return env
+	}
+	tokenURL := func(host string) string {
+		return "https://x-access-token:" + MadeUpToken + at + host + "/acme/widgets"
+	}
+	const kindWords = "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none"
+	schemeless := map[string]string{
+		"a user name and a token":             "x-access-token:" + MadeUpToken + at + "ghe.example.com/acme/widgets",
+		"a token as the user":                 MadeUpToken + at + "ghe.example.com/acme/widgets",
+		"a token in the query":                "ghe.example.com/acme/widgets?t=" + MadeUpToken,
+		"a token in the fragment":             "ghe.example.com/acme/widgets#" + MadeUpToken,
+		"a user and password on www.github":   "x-access-token:" + MadeUpToken + at + "www.github.com/acme/widgets",
+		"a user and password on github.com":   "x-access-token:" + MadeUpToken + at + "github.com/acme/widgets",
+		"an scp-like token":                   MadeUpToken + at + "github.com:acme/widgets",
+		"a space before the @, with a scheme": "https://x-access-token:zq tok0123" + at + "github.com/acme/widgets",
+	}
+	calls := map[string]PrintedSelectorCall{
+		"GH_REPO with user info":      {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": tokenURL("ghe.example.com")}), "the GH_REPO value holds a user name or a password"},
+		"-R with user info":           {[]string{"pr", "list", "-R", tokenURL("ghe.example.com")}, with(nil), "a -R value holds a user name or a password"},
+		"-R with user info on github": {[]string{"pr", "list", "-R", tokenURL("github.com")}, with(nil), "a -R value holds a user name or a password"},
+		"-R on another host":          {[]string{"pr", "list", "-R", "https://ghe.example.com/" + MadeUpToken + "/widgets"}, with(nil), "a -R value names another host than github.com"},
+		"GH_REPO on another host":     {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": "ghe.example.com/" + MadeUpToken + "/widgets"}), "the GH_REPO value names another host than github.com"},
+	}
+	for shape, value := range schemeless {
+		calls["-R, "+shape] = PrintedSelectorCall{[]string{"pr", "list", "-R", value}, with(nil), "a -R value " + kindWords}
+		calls["GH_REPO, "+shape] = PrintedSelectorCall{[]string{"pr", "list"}, with(map[string]string{"GH_REPO": value}), "the GH_REPO value " + kindWords}
+	}
+	return calls
+}()

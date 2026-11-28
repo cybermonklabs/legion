@@ -51,12 +51,12 @@ type GhRequest struct {
 	Sent *GhSent
 	// WritesNothing is a call its caller found sends no text into any repository: a read, which
 	// `legion gh` admits only by a grammar of the words the call is typed with, one the shared
-	// check reads as a read too (internal/ghroute's Target.WritesNothing holds the rule). Where
-	// the resolved check is the one that rule was proven against (ProvenCheck), the guard runs
-	// the shared check, which refuses a credential in every call it reads as a read, and skips
-	// what only a write needs: the destination's visibility read and the private-name pass, which
-	// protect the text a write leaves in a public repository. Under any other check the call gets
-	// the whole guard.
+	// check reads as a read too (internal/ghroute's writesNothing holds the rule;
+	// Target.WritesNothing carries its answer). Where the resolved check is the one that rule was
+	// proven against (ProvenCheck), the guard runs the shared check, which refuses a credential
+	// in every call it reads as a read, and skips what only a write needs: the destination's
+	// visibility read and the private-name pass, which protect the text a write leaves in a
+	// public repository. Under any other check the call gets the whole guard.
 	WritesNothing bool
 	// ProvenCheck is the sha256, in hex, of the shared check's public_leak_check.py that the
 	// caller's rule for WritesNothing was proven against. `legion gh` hands the digest compiled

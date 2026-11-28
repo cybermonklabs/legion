@@ -81,9 +81,9 @@ func markerShown(value string) string {
 // which a CI checkout writes) printed whole. An ssh URL's user name alone (`ssh://git@host/…`, the
 // scp-like `git@host:…`) prints as the mark too, its host with it: the rule cannot tell an SSH
 // login from a token written as the user (`<token>@gh-work:owner/repo`), and every command's
-// stderr passes the URL rule (newRoot) whatever this writes. A local path, with no ":", "@", "?"
-// or "#", prints as written: it holds no scheme, user info, query or fragment. Anything else gh's
-// parser reads as no URL with a host prints as redact.URLNotPrinted.
+// stderr passes the URL rule (cmd/legion's newRoot) whatever this writes. A local path, with no
+// ":", "@", "?" or "#", prints as written: it holds no scheme, user info, query or fragment.
+// Anything else gh's parser reads as no URL with a host prints as redact.URLNotPrinted.
 func remoteShown(raw string) string {
 	if !strings.ContainsAny(raw, ":@?#") {
 		return raw
@@ -237,11 +237,11 @@ var gitRemoteLine = regexp.MustCompile(`^([^\t]+)\t([^\t\n\f\r ]+) \((fetch|push
 var ghRemoteLine = regexp.MustCompile(`(.+)\s+(.+)\s+\((push|fetch)\)`)
 
 // ReadGitRemotes is the working directory's git remotes as gh reads them, with git itself run
-// under env, the environment gh runs with (`legion gh`'s cmd/legion ghChildEnviron), so it reads
-// the repository, the remotes and the configuration gh's own git reads, and no GIT_DIR, global
-// file or url.<base>.insteadOf of the caller's that gh's git never sees: every fetch and push URL
-// `git remote -v` prints, each with its kind, a partial clone's fetch line included (git prints
-// the remote's filter after it, `(fetch) [blob:none]`), and every gh-resolved line `git config
+// under env, the environment gh runs with (cmd/legion's ghChildEnviron), so it reads the
+// repository, the remotes and the configuration gh's own git reads, and no GIT_DIR, global file
+// or url.<base>.insteadOf of the caller's that gh's git never sees: every fetch and push URL `git
+// remote -v` prints, each with its kind, a partial clone's fetch line included (git prints the
+// remote's filter after it, `(fetch) [blob:none]`), and every gh-resolved line `git config
 // --get-regexp` prints (markerLine); none for a directory that is no git repository, or where no
 // git runs, since gh then reads none either. A URL line is read only when it has git's shape
 // (gitRemoteLine, a filter on a fetch line alone) and gh's own reading of it (ghRemoteLine) names
@@ -313,7 +313,7 @@ func gitLines(ctx context.Context, env []string, args ...string) ([]string, erro
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...)
 	procgroup.Configure(cmd)
-	cmd.Env = append(slices.Clone(env), "LC_ALL=C")
+	cmd.Env = append(env[:len(env):len(env)], "LC_ALL=C")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	err := cmd.Run()

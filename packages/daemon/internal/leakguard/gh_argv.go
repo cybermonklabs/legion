@@ -583,10 +583,10 @@ func (argv *ghArgv) readOther(args []string) {
 //
 // Finding the values is each reader's own work — which options a call names, and the `<path>` of
 // a field's `<name>=@<path>` — and the two read some calls apart: `gh pr create -dF <path>` is
-// `--draft --body-file <path>` to cmd/legion, which reads the leaf's help, and no file to this
-// package's reader, which cannot tell it from `gh gist create`'s `--desc F` (readOther). What a
-// call whose caller handed its parse sends is that parse's alone (GhRequest.Sent), so this
-// package's reading decides it only where no caller parsed the call.
+// `--draft --body-file <path>` to internal/ghroute (TargetOf, sentFiles), which reads the leaf's
+// help, and no file to this package's reader, which cannot tell it from `gh gist create`'s
+// `--desc F` (readOther). What a call whose caller handed its parse sends is that parse's alone
+// (GhRequest.Sent), so this package's reading decides it only where no caller parsed the call.
 //
 // The zero GhSent has named nothing, which is the parse of a call that sends nothing beside its
 // argv.
@@ -708,7 +708,7 @@ const jsonInputsOption = "--json"
 //     name says what its value is in every command that carries it, while a positional's
 //     meaning is the leaf's — a local file in `gist create`, a name inside the gist in `gist
 //     edit <id> <filename>`, a number in `pr comment <number>` — and this reads argv with no gh
-//     to ask, as cmd/legion's own reader asks gh's help. Half a copy would read as cover where
+//     to ask, as internal/ghroute's TargetOf asks gh's help. Half a copy would read as cover where
 //     there is none: `gist edit --add <path>` publishes a file too, and its short `-a` is
 //     `--all` in other commands, so it cannot be added to the table above. What these files
 //     keep is the shared check, which reads every argument of the call, and the spec's own line

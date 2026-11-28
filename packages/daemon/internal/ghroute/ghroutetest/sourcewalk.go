@@ -27,7 +27,7 @@ type SourceCall struct {
 var shownCallees = []string{"Shown", "ghroute.Shown"}
 
 // SourceCalls is every call in the non-test files glob matches, in each function's body. It is
-// the one walk every package's refusal paths (ShownPaths) and formatting places (FormatSites)
+// the one walk every package's refusal paths (shownPaths) and formatting places (FormatSites)
 // read, so a file or a receiver form one of them reaches the other reaches too. A glob matching no
 // non-test file is refused: the walk would have read nothing.
 func SourceCalls(t *testing.T, glob string) []SourceCall {
@@ -92,14 +92,14 @@ func SourceCalls(t *testing.T, glob string) []SourceCall {
 	return calls
 }
 
-// ShownPaths is every call of ghroute.Shown in the non-test files glob matches (SourceCalls), the
+// shownPaths is every call of ghroute.Shown in the non-test files glob matches (SourceCalls), the
 // refusal paths that put a value a person gave into a refusal, each keyed by the function that
 // makes it (a method by its receiver's type) and the source of its place argument (a literal, or
 // a variable such as repositoryTarget's kind), with the file and line it stands at. It is read
 // from the source, so a call added to the code is a path here without anyone listing it. A place
 // two calls of one function share would key both as one, and is refused; so is a source holding
 // no call at all, since rows held to it would test nothing.
-func ShownPaths(t *testing.T, glob string) map[string]string {
+func shownPaths(t *testing.T, glob string) map[string]string {
 	t.Helper()
 	paths := map[string]string{}
 	for _, c := range SourceCalls(t, glob) {

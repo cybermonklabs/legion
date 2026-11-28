@@ -194,10 +194,11 @@ type sharedRun struct {
 
 // remove removes the private copy, where there is one. Every entry point defers it as soon as
 // sharedCheck answers, so the copy goes whatever the check answered: cleared, refused, a setup
-// failure, or a run the caller's bound stopped. A copy a killed process leaves is in the role's
-// own private directory, which the role's launcher clears before it starts the role's next
-// generation (internal/launcher's writeFiles). The role can write that directory, so removal
-// follows no link and waits on no fifo (rolefile.RemoveTree).
+// failure, or a run the caller's bound stopped. A copy a killed process leaves stays where it was
+// made (privateCopy): in the role's own private directory, which the role's launcher clears before
+// it starts the role's next generation (internal/launcher's writeFiles), under /tmp where that
+// directory is not there, or under the caller's Options.PrivateCopyBase. The copy's own user can
+// write each of those, so removal follows no link and waits on no fifo (rolefile.RemoveTree).
 func (r sharedRun) remove() {
 	if r.dir != "" {
 		_ = rolefile.RemoveTree(r.dir)
@@ -215,11 +216,11 @@ func (r sharedRun) remove() {
 // of its four files (readHeldCheck: the launcher script, the program, the must-pass lines and the
 // README beside it) must be CheckerVar, or the answer is the setup failure whyOtherCheck, naming
 // both digests. The write then runs those very bytes, written into a copy only this role can reach
-// (privateCopy, under the role's private directory or the caller's Options.PrivateCopyBase), and
-// never the directory they were read from: a pod's install is on the issue's
-// scratch, which every role of the pod can write, since they all run as one user, so a file
-// replaced there between the read and the run would otherwise be the check that judges the write.
-// So a role runs every write under the one check its deployment named, whatever
+// (privateCopy, under the role's private directory, /tmp where that is not there, or the caller's
+// Options.PrivateCopyBase), and never the directory they were read from: a pod's install is on
+// the issue's scratch, which every role of the pod can write, since they all run as one user, so
+// a file replaced there between the read and the run would otherwise be the check that judges the
+// write. So a role runs every write under the one check its deployment named, whatever
 // PUBLIC_LEAK_CHECK, PATH or the pointer file found, and a launcher script edited beside an
 // unchanged program is another check.
 //
@@ -247,7 +248,7 @@ func (g *Guard) sharedCheck(what string) (sharedRun, error) {
 		return sharedRun{}, &SetupFailure{What: what, Why: whyOtherCheck,
 			Err: fmt.Errorf("%s=%s, and the check at %s has the manifest digest %s", CheckerVar, checker, shownText(check), held.digest)}
 	}
-	dir, err := held.privateCopy(g.copyBase, g.copyFallback)
+	dir, err := held.privateCopy(g.privateBase, g.privateFallback)
 	if err != nil {
 		return sharedRun{}, &SetupFailure{What: what, Why: "the shared public leak check could not be copied where only this role can reach it",
 			Err: fmt.Errorf("the check at %s, of the manifest digest %s=%s: %w", shownText(check), CheckerVar, checker, err)}

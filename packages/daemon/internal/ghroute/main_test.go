@@ -15,15 +15,16 @@ import (
 
 // ghrouteTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel as its first statement but those that change
-// something the whole process shares or hold code to a wall-clock bound that tests beside them
+// something the whole process shares, rewrite a fixture tests beside them read
+// (TestCaptureGhHelpWalk's saved help), or hold code to a wall-clock bound that tests beside them
 // could use up (each says which in a `Not parallel:` comment on its first line); those run first,
 // one at a time. TestEveryTestCallsParallelOrSaysWhyNot fails a test that does neither. The tests
-// wait more than they compute — on the git and the stand-in gh scripts they start — as they did
-// in cmd/legion, whose tests these were and which runs 8 at once (cmdTestParallelism), and go
-// test's default of GOMAXPROCS would run hundreds at once on a dev box. A -parallel on the command
-// line still wins only because TestMain sets this default before testwait.BinaryDeadline parses
-// the command line (flag.Parse): the set must stay above that call, or this default would replace
-// a -parallel the command line names.
+// wait more than they compute — on the git and the stand-in gh scripts they start — so they run 8
+// at once, as cmd/legion's cmdTestParallelism does, where go test's default of GOMAXPROCS would
+// run hundreds at once on a dev box. A -parallel on the command line still wins only because
+// TestMain sets this default before testwait.BinaryDeadline parses the command line
+// (flag.Parse): the set must stay above that call, or this default would replace a -parallel the
+// command line names.
 const ghrouteTestParallelism = 8
 
 // TestMain first takes out of the test process every variable that could lead a git to a

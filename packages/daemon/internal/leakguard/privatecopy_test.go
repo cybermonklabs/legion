@@ -390,8 +390,9 @@ func TestACheckUnderTheDigestRunsFromAPrivateCopyThatIsGoneAfter(t *testing.T) {
 // role's private directory is there and cannot be written: the daemon's own container, run from
 // the worker image, holds that directory root-owned and empty, with nothing bound over it. The
 // package's constant cannot be pointed elsewhere, so the row stands for it by setting the guard's
-// own copyBase and copyFallback, which New fills from the constant, to a 0555 directory of its own
-// after New; with no Options.PrivateCopyBase the same guard is refused for the copy it cannot make.
+// own privateBase and privateFallback, which New fills from the constant, to a 0555 directory of
+// its own after New; with no Options.PrivateCopyBase the same guard is refused for the copy it
+// cannot make.
 func TestACallersPrivateCopyBaseIsWhereTheCopyIsMade(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root writes a 0555 directory, so it cannot stand for one the daemon's user cannot write")
@@ -408,7 +409,7 @@ func TestACallersPrivateCopyBaseIsWhereTheCopyIsMade(t *testing.T) {
 		env := append(fixtureenv.Isolated(t.TempDir()), CheckVar+"="+check, CheckerVar+"="+digest, "LEAK_CHECK_RECORD="+record)
 		g := New(Options{Visibility: answers(Private, nil), Env: env, PrivateCopyBase: base})
 		if base == "" {
-			g.copyBase, g.copyFallback = unwritable, unwritable
+			g.privateBase, g.privateFallback = unwritable, unwritable
 		}
 		return g
 	}
@@ -421,8 +422,8 @@ func TestACallersPrivateCopyBaseIsWhereTheCopyIsMade(t *testing.T) {
 		check, digest := swapInstall(t, recordingLauncher, passes)
 		record := filepath.Join(t.TempDir(), "record")
 		g := guard(t, check, digest, record, mine)
-		if g.copyBase != mine || g.copyFallback != mine {
-			t.Fatalf("New made the copy's base %s and its fallback %s, want %s for both", g.copyBase, g.copyFallback, mine)
+		if g.privateBase != mine || g.privateFallback != mine {
+			t.Fatalf("New made the copy's base %s and its fallback %s, want %s for both", g.privateBase, g.privateFallback, mine)
 		}
 		if err := text(g); err != nil {
 			t.Fatalf("the write under the caller's directory = %v, want it cleared", err)

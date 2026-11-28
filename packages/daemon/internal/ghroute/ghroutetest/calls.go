@@ -37,10 +37,10 @@ var ReadLeafCalls = map[string][]string{
 	"cache list":     {"cache", "list", "-R", "acme/widgets"},
 }
 
-// ReadLeafSpellings are reads ReadLeafCalls does not spell, each in its leaf's grammar (ghroute's
+// readLeafSpellings are reads ReadLeafCalls does not spell, each in its leaf's grammar (ghroute's
 // readLeaves): a -w that is no --web (`run list`'s is --workflow), the JSON options with a
 // filter, a leaf's switches among its options that take a value, and a search's filters.
-var ReadLeafSpellings = [][]string{
+var readLeafSpellings = [][]string{
 	{"run", "list", "-R", "acme/widgets", "-w", "ci.yaml"},
 	{"pr", "view", "1", "--repo", "acme/widgets", "--json", "title,body", "-q", ".title"},
 	{"pr", "checks", "1", "-R", "acme/widgets", "--watch", "-i", "5", "--fail-fast"},
@@ -140,14 +140,14 @@ func APICalls(options [][]string, endpoints []string) [][]string {
 }
 
 // ReadCalls are the calls that write nothing which the tests run: ReadLeafCalls in the order of
-// their leaves, ReadLeafSpellings, and every gh api read of APIReadSpellings and
+// their leaves, readLeafSpellings, and every gh api read of APIReadSpellings and
 // APIReadEndpoints.
 func ReadCalls() [][]string {
 	var calls [][]string
 	for _, leaf := range slices.Sorted(maps.Keys(ReadLeafCalls)) {
 		calls = append(calls, ReadLeafCalls[leaf])
 	}
-	calls = append(calls, ReadLeafSpellings...)
+	calls = append(calls, readLeafSpellings...)
 	return append(calls, APICalls(APIReadSpellings, APIReadEndpoints)...)
 }
 
@@ -165,6 +165,20 @@ func GuardedAPICalls() [][]string {
 		calls = append(calls, []string{"api", endpoint})
 	}
 	return calls
+}
+
+// GuardedAPICrossProducts are the gh api calls with a guarded option or a guarded endpoint that
+// ghroute's TestGhWritesNothingReadsTheLeafAndTheMethod holds to writing and cmd/legion's
+// TestGhHelpKeepDecidesTheReadRulesCallsAsGhsOwnHelp decides through its keep: APICalls' cross
+// products of APIGuardedSpellings with APIReadEndpoints, of APIReadSpellings with
+// APIGuardedEndpoints and of APIGuardedSpellings with APIGuardedEndpoints, and GuardedAPICalls.
+func GuardedAPICrossProducts() [][]string {
+	return slices.Concat(
+		APICalls(APIGuardedSpellings, APIReadEndpoints),
+		APICalls(APIReadSpellings, APIGuardedEndpoints),
+		APICalls(APIGuardedSpellings, APIGuardedEndpoints),
+		GuardedAPICalls(),
+	)
 }
 
 // GuardedCalls are calls of commands other than gh api that the guard still reads whole: the
@@ -197,3 +211,117 @@ var GuardedCalls = [][]string{
 	{"pr", "ls", "-R", "acme/widgets"},
 	{"-R", "acme/widgets", "pr", "view", "1"},
 }
+
+// GraphQLQueryCall is one row of ghroute's TestGhGraphQLQueryRead: a gh api call, and whether
+// ghroute's graphQLQueryRead admits it as a query of GitHub's GraphQL API that writes nothing.
+type GraphQLQueryCall struct {
+	Argv []string
+	Read bool
+}
+
+// GraphQLQueryCalls are the GraphQL table's rows: the queries graphQLQueryRead admits, then the
+// calls it does not, each group under a comment saying what it holds.
+var GraphQLQueryCalls = func() []GraphQLQueryCall {
+	graphql := func(words ...string) []string { return append([]string{"api", "graphql"}, words...) }
+	const viewer = "query={viewer{login}}"
+	const paged = "query=query($endCursor:String){viewer{repositories(first:1,after:$endCursor){nodes{name}pageInfo{hasNextPage endCursor}}}}"
+	return []GraphQLQueryCall{
+		// A fragment; the shorthand query; and three documents whose block string opens on a run
+		// of quotes, its `"""` followed by a backslash and four quotes, by a backslash and five, or
+		// by three more quotes, which lexers may close at different quotes: each holds neither
+		// word, so it is a read whatever a lexer makes of its quotes.
+		{graphql("-f", "query=query{...f} fragment f on Query{viewer{login}}"), true},
+		{graphql("-f", viewer), true},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} query M{c}`), true},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} query M{c}`), true},
+		// The twins of two refused documents below, each holding neither word: a repository's
+		// nameWithOwner read in place of its viewerSubscription, and the review's document with a
+		// query in place of its mutation.
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){nameWithOwner}}"), true},
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} query M{viewer{login}} # """`), true},
+		// A variable typed beside the raw query, and each option and switch, by each spelling.
+		{graphql("-F", "owner=octocat", "-f", "query=query($owner:String!){repositoryOwner(login:$owner){login}}"), true},
+		{graphql("-F", "name=hello", "-f", viewer), true},
+		{graphql("-H", "Accept: application/json", "-f", viewer), true},
+		{graphql("-f", viewer, "-q", ".data"), true},
+		{graphql("-f", viewer, "-t", "{{.data}}"), true},
+		{graphql("--paginate", "-f", paged), true},
+		{graphql("--paginate", "--slurp", "-f", paged), true},
+		{graphql("--raw-field", viewer), true},
+		{graphql("--field", "name=hello", "-f", viewer), true},
+		{graphql("--header", "Accept: application/json", "-f", viewer), true},
+		{graphql("-f", viewer, "--jq", ".data"), true},
+		{graphql("-f", viewer, "--template", "{{.data}}"), true},
+		// A document naming `mutation` or `subscription` as an operation, a field or an argument.
+		{graphql("-f", `query=mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
+		{graphql("-f", "query=subscription{x}"), false},
+		{graphql("-f", `query=query{viewer{login}} mutation{addStar(input:{starrableId:"x"}){clientMutationId}}`), false},
+		{graphql("-f", "query=query{mutation}"), false},
+		{graphql("-f", "query=query{a(subscription:1){b}}"), false},
+		// The word anywhere refuses, where GraphQL reads no name too: in a comment, a string and a
+		// block string, one holding an escaped `\"""` among them; inside a longer name; and in any
+		// case.
+		{graphql("-f", "query=query{viewer{login}} # mutation{addStar}"), false},
+		{graphql("-f", "owner=octocat", "-f", "query=query{viewer{login}} # mutation"), false},
+		{graphql("-f", "query=# mutation\r\nquery{viewer{login}}"), false},
+		{graphql("-f", `query=query{a(x:"mutation{b} \" # \\")}`), false},
+		{graphql("-f", "owner=octocat", "-f", `query=query{search(query:"subscription",type:REPOSITORY,first:1){repositoryCount}}`), false},
+		{graphql("-f", `query=query{a(x:"""mutation{b}""")}`), false},
+		{graphql("-f", "query=query{a(x:\"\"\"line\nmutation{b} \\\"\"\" still the string\"\"\")}"), false},
+		{graphql("-f", "owner=octocat", "-f", "name=hello", "-f", "query=query($owner:String!,$name:String!){repository(owner:$owner,name:$name){viewerSubscription}}"), false},
+		{graphql("-f", "query=query{a} MUTATION{b}"), false},
+		{graphql("-f", "query=query{a} Subscription{b}"), false},
+		// A mutation after a run of quotes: the review's document, whose block string GitHub's
+		// lexer closes at the backslash and four quotes and a lexer written to the GraphQL
+		// specification runs on to the comment's `"""`, and the three documents above with a
+		// mutation in place of their second query.
+		{graphql("-f", "owner=octocat", "-f", "operationName=M", "-f", "id=x", "-f", `query=query Q{nodes(ids:["""\"""" "]){id}} mutation M($id:ID!){addStar(input:{starrableId:$id}){clientMutationId}} # """`), false},
+		{graphql("-f", `query=query Q{a(x:"""\"""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""\""""" "){b}} mutation M{c}`), false},
+		{graphql("-f", `query=query Q{a(x:"""""" "){b}} mutation M{c}`), false},
+		// A mutation a lexer could take for a comment's text where it reads comments and strings
+		// otherwise than GraphQL: after a `#` in a string, after a comment a lone `\r` ends, and
+		// after a comment holding a quote.
+		{graphql("-f", `query=query{a(x:"#")} mutation{b}`), false},
+		{graphql("-f", "query=query{a} #\rmutation{b}"), false},
+		{graphql("-f", "query=query{a} # \"\nmutation{b}"), false},
+		// Not exactly one raw `query` field, or another field gh reads as the query.
+		{graphql("-f", viewer, "-f", viewer), false},
+		{graphql("-f", "owner=octocat"), false},
+		{graphql("-f", viewer, "-f", "query[]=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "query[x]=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "query]x=mutation{b}"), false},
+		{graphql("-f", viewer, "-f", "[query]=mutation{b}"), false},
+		// A query gh fills placeholders in after this read it, or reads from a file; and a
+		// typed value read from a file or standard input.
+		{graphql("-F", viewer), false},
+		{graphql("-F", "query={branch}{viewer{login}}"), false},
+		{graphql("-F", "query=:branch{viewer{login}}"), false},
+		{graphql("-F", "query={repo}{viewer{login}}"), false},
+		{graphql("--field", viewer), false},
+		{graphql("-F", "query=@f"), false},
+		{graphql("-f", viewer, "-F", "x=@f"), false},
+		{graphql("-f", viewer, "-F", "x=@-"), false},
+		// An option that sends another body, method or host, or names a method override or the
+		// body's length; a value joined to its option; `--`; a value missing.
+		{graphql("-f", viewer, "--input", "f"), false},
+		{graphql("-f", viewer, "-X", "GET"), false},
+		{graphql("-f", viewer, "--method", "GET"), false},
+		{graphql("-f", viewer, "--hostname", "github.com"), false},
+		{graphql("-f", viewer, "-H", "X-HTTP-Method-Override: DELETE"), false},
+		{graphql("-f", viewer, "-H", " x-http-method : DELETE"), false},
+		{graphql("-f", viewer, "-H", "Content-Length: 0"), false},
+		{graphql("-fquery={viewer{login}}"), false},
+		{graphql("--raw-field=query={viewer{login}}"), false},
+		{graphql("--", "-f", viewer), false},
+		{graphql("-f", viewer, "-q"), false},
+		// Another endpoint, a word before `api graphql`, and a field with no `=`.
+		{[]string{"api", "/graphql", "-f", viewer}, false},
+		{[]string{"api", "graphql/", "-f", viewer}, false},
+		{[]string{"api", "GraphQL", "-f", viewer}, false},
+		{[]string{"-R", "acme/widgets", "api", "graphql", "-f", viewer}, false},
+		{[]string{"x", "api", "graphql", "-f", viewer}, false},
+		{graphql("-f", viewer, "-f", "owner"), false},
+	}
+}()

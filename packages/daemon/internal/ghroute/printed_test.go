@@ -13,8 +13,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/redact"
 )
 
-// madeUpGhToken is the made-up token these rows write where a person or a CI checkout could.
-const madeUpGhToken = "zqtoken0123"
+// madeUpGhToken is the made-up token these rows write where a person or a CI checkout could, the
+// one ghroutetest.PrintedSelectorCalls write.
+const madeUpGhToken = ghroutetest.MadeUpToken
 
 // ghPrinted is err as `legion gh` writes it to stderr (PrintRefusal).
 func ghPrinted(err error) string {
@@ -39,6 +40,8 @@ func ghPrinted(err error) string {
 // a remote names, never reaches it; a remote with a token in its path and no "@", where the URL
 // rule finds no user info, is named by its git name alone; and a marker naming acme/widgets with a
 // token after it, beside an upstream of another owner, prints none of it in the two-owner refusal.
+// The rows that read no git remote are ghroutetest.PrintedSelectorCalls, which `legion gh`'s
+// tests also resolve through its keep of gh's help.
 func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 	t.Parallel()
 	at := "@"
@@ -62,17 +65,6 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 				markerLine("remote.origin.gh-resolved " + value)}, nil
 		}
 	}
-	const kindWords = "holds an \"@\", a \":\", a \"?\" or a \"#\" where a GitHub repository's name holds none"
-	schemeless := map[string]string{
-		"a user name and a token":             "x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets",
-		"a token as the user":                 madeUpGhToken + at + "ghe.example.com/acme/widgets",
-		"a token in the query":                "ghe.example.com/acme/widgets?t=" + madeUpGhToken,
-		"a token in the fragment":             "ghe.example.com/acme/widgets#" + madeUpGhToken,
-		"a user and password on www.github":   "x-access-token:" + madeUpGhToken + at + "www.github.com/acme/widgets",
-		"a user and password on github.com":   "x-access-token:" + madeUpGhToken + at + "github.com/acme/widgets",
-		"an scp-like token":                   madeUpGhToken + at + "github.com:acme/widgets",
-		"a space before the @, with a scheme": "https://x-access-token:zq tok0123" + at + "github.com/acme/widgets",
-	}
 	// A marker value markerShown does not print is named by the rule's own words for a URL not
 	// printed (redact.URLNotPrinted), read from the rule, never written out here.
 	markerNotPrinted := "remote.origin.gh-resolved " + redact.URLNotPrinted
@@ -83,12 +75,7 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 		names   string
 	}
 	rows := map[string]row{
-		"GH_REPO with user info":      {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": tokenURL("ghe.example.com")}), noGitRepository, "the GH_REPO value holds a user name or a password"},
-		"-R with user info":           {[]string{"pr", "list", "-R", tokenURL("ghe.example.com")}, with(nil), noGitRepository, "a -R value holds a user name or a password"},
-		"-R with user info on github": {[]string{"pr", "list", "-R", tokenURL("github.com")}, with(nil), noGitRepository, "a -R value holds a user name or a password"},
-		"-R on another host":          {[]string{"pr", "list", "-R", "https://ghe.example.com/" + madeUpGhToken + "/widgets"}, with(nil), noGitRepository, "a -R value names another host than github.com"},
-		"GH_REPO on another host":     {[]string{"pr", "list"}, with(map[string]string{"GH_REPO": "ghe.example.com/" + madeUpGhToken + "/widgets"}), noGitRepository, "the GH_REPO value names another host than github.com"},
-		"a gh-resolved marker's URL":  {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), markerNotPrinted},
+		"a gh-resolved marker's URL": {[]string{"pr", "list"}, with(nil), marker(tokenURL("ghe.example.com")), markerNotPrinted},
 		"an scp-form marker": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com:acme/widgets"),
 			markerNotPrinted},
 		"a marker with no scheme": {[]string{"pr", "list"}, with(nil), marker("x-access-token:" + madeUpGhToken + at + "ghe.example.com/acme/widgets"),
@@ -97,6 +84,9 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 			markerNotPrinted},
 		"a marker with a token in the query": {[]string{"pr", "list"}, with(nil), marker("ghe.example.com/acme/widgets?t=" + madeUpGhToken),
 			markerNotPrinted},
+	}
+	for name, call := range ghroutetest.PrintedSelectorCalls {
+		rows[name] = row{call.Argv, call.Env, noGitRepository, call.Names}
 	}
 	beside := func(origin string) func() ([]Remote, error) {
 		return func() ([]Remote, error) {
@@ -118,10 +108,6 @@ func TestLegionGhPrintsNoTokenOfASelectorOrAMarker(t *testing.T) {
 		func() ([]Remote, error) {
 			return []Remote{markerLine("remote.origin.gh-resolved github.com/acme/widgets/" + madeUpGhToken), {name: "upstream", url: "https://github.com/other/app"}}, nil
 		}, "acme (the working directory's " + markerNotPrinted + " naming acme/widgets)"}
-	for shape, value := range schemeless {
-		rows["-R, "+shape] = row{[]string{"pr", "list", "-R", value}, with(nil), noGitRepository, "a -R value " + kindWords}
-		rows["GH_REPO, "+shape] = row{[]string{"pr", "list"}, with(map[string]string{"GH_REPO": value}), noGitRepository, "the GH_REPO value " + kindWords}
-	}
 	for name, tc := range rows {
 		t.Run(name, func(t *testing.T) {
 			_, err := TargetOf(tc.argv, tc.env, savedGhHelp, tc.remotes, ghroutetest.OwnersOwnDirectories)

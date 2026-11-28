@@ -27,7 +27,7 @@ type CanaryRow struct {
 }
 
 // CanaryRows are the rows of every refusal path of internal/ghroute that ghroute.TargetOf
-// reaches, keyed as ShownPaths keys a call of ghroute.Shown in ghroute's own source: the function
+// reaches, keyed as shownPaths keys a call of ghroute.Shown in ghroute's own source: the function
 // that makes it (a method by its receiver's type) and the source of the place it names the value
 // by. ghroute's TestNoRefusalPathPrintsACanary holds this table to its source and prints each
 // row's refusal as legion gh prints it (ghroute.PrintRefusal), through RequireCanaryRows;
@@ -132,17 +132,17 @@ type CanaryRun struct {
 }
 
 // RequireCanaryRows fails t unless every refusal path of the non-test files glob matches
-// (ShownPaths) has rows in rows, the table named table, and every path rows names is one the
+// (shownPaths) has rows in rows, the table named table, and every path rows names is one the
 // source holds: a new path fails this until it joins the table, and so does a function holding
 // one that is renamed, under its new name. Each row runs as a subtest of t named by its path and
 // its index (`<path>/<i>`) and must make a refusal that, printed as legion gh prints it
 // (printRefusal), holds no part of Canary and says the row's Names. It returns how many paths the
-// source holds and how many rows ran. A source holding no path at all is refused (ShownPaths): the
+// source holds and how many rows ran. A source holding no path at all is refused (shownPaths): the
 // table would test nothing. ghroute's TestNoRefusalPathPrintsACanary and cmd/legion's test of
 // that name each hold their own source to their own rows through this one check.
 func RequireCanaryRows(t *testing.T, glob string, rows map[string][]CanaryRun, printRefusal func(error) string, table string) (pathCount, rowCount int) {
 	t.Helper()
-	paths := ShownPaths(t, glob)
+	paths := shownPaths(t, glob)
 	for _, key := range slices.Sorted(maps.Keys(paths)) {
 		if len(rows[key]) == 0 {
 			t.Errorf("the refusal path %s (%s) has no row in %s: give a new path its rows there", key, paths[key], table)

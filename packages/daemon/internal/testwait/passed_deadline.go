@@ -8,7 +8,8 @@ import (
 // PassedDeadline is a context whose deadline a test passes by hand, once what it waits for has
 // happened: Done closes, and Err answers context.DeadlineExceeded, from Pass on. A context derived
 // from it ends then with that error, as one whose deadline passed does. internal/ghroute's help
-// read test and cmd/legion's probe-image test both stop a child process this way.
+// read test, and cmd/legion's probe-image test and the git reads that never answer in its
+// gh_gitconfig_test.go, each stop a child process this way.
 type PassedDeadline struct {
 	context.Context
 	done chan struct{}

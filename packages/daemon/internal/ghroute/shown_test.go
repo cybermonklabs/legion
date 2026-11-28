@@ -7,13 +7,13 @@ import (
 )
 
 // Every refusal path of this package that puts a value a person gave into a refusal — every call
-// of Shown its non-test files hold (ghroutetest.ShownPaths) — has rows in ghroutetest.CanaryRows,
-// and every row's path is one the source holds: a new path fails this until it joins the table,
-// and so does a function holding one that is renamed, under its new name. Each row puts
-// ghroutetest.Canary in every slot of its call and reaches its path, which names the value by its
-// place (the row's Names), and the refusal TargetOf answers it with, read under savedGhHelp with
-// no git remotes and printed as `legion gh` prints it (PrintRefusal), holds no part of the canary.
-// A source holding no path at all is refused: the table would test nothing.
+// of Shown its non-test files hold, as ghroutetest.RequireCanaryRows reads them — has rows in
+// ghroutetest.CanaryRows, and every row's path is one the source holds: a new path fails this
+// until it joins the table, and so does a function holding one that is renamed, under its new
+// name. Each row puts ghroutetest.Canary in every slot of its call and reaches its path, which
+// names the value by its place (the row's Names), and the refusal TargetOf answers it with, read
+// under savedGhHelp with no git remotes and printed as `legion gh` prints it (PrintRefusal), holds
+// no part of the canary. A source holding no path at all is refused: the table would test nothing.
 // ghroutetest.RequireCanaryRows makes this check, as it does for cmd/legion's test of this name,
 // which also runs every CanaryRows row as `legion gh` itself.
 func TestNoRefusalPathPrintsACanary(t *testing.T) {

@@ -668,9 +668,9 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 		row{issueWorkspace, []string{"GIT_DIR=" + filepath.Join(otherClone, ".git")}, []string{"pr", "view", "1", "--json", "title"}, "acme", ""},
 		// An explicit submodule recursion, which no configuration turns off, is refused by name:
 		// `pr checkout --recurse-submodules` runs `git submodule update --init --recursive`. A
-		// clone's git flags are judged against an allowlist (ghroute.TargetOf): a flag that sets the
-		// clone's configuration, in full or abbreviated, its hooks, its submodules or where its
-		// objects come from is refused and sends nothing; the flags a fixture clone of
+		// clone's git flags are judged against an allowlist (ghroute's cloneGitFlagTakes): a flag
+		// that sets the clone's configuration, in full or abbreviated, its hooks, its submodules or
+		// where its objects come from is refused and sends nothing; the flags a fixture clone of
 		// scripts/e2e passes reach GitHub with the owner's token.
 		row{issueWorkspace, nil, []string{"pr", "checkout", "1", "--recurse-submodules"}, "", `"--recurse-submodules" runs`},
 		row{home, nil, []string{"repo", "clone", "acme/widgets", "--", "--config", "http.https://github.com/.sslVerify=false"}, "", "hands a git flag after -- to git clone"},

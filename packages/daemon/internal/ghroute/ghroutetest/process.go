@@ -13,8 +13,8 @@ import (
 
 // HelperRunning says whether pid is still a row's helper: a process whose command line is `sleep
 // <seconds>`, read from /proc so a pid the kernel has since given to another process does not
-// count. ghroute's help-read timeout row and `legion gh`'s signal rows hold their work with such a
-// helper.
+// count. ghroute's help-read rows and the signal, git-read and fork-read rows of cmd/legion hold
+// their work with such a helper.
 func HelperRunning(pid int, seconds string) bool {
 	raw, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "cmdline"))
 	if err != nil {

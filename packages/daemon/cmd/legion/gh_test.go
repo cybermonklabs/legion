@@ -259,7 +259,7 @@ func TestLegionGhExecsTheRealGhWithTheOwnersDirectory(t *testing.T) {
 		{[]string{"pr", "create", "-R", "other/thing", "--fill"}, `the role's GitHub App is not installed on "other"`},
 		{[]string{"api", "-X", "POST", "repos/Other/thing/issues", "-f", "title=t"}, `the role's GitHub App is not installed on "other"`},
 		// An absolute `gh api` endpoint that is not GitHub's own https://api.github.com/…: the
-		// real gh would send the bundle's token over the scheme it names.
+		// real gh would send the bundle's token to the host, or over the scheme, it names.
 		{[]string{"api", "http://api.github.com/repos/sjawhar/legion"}, "is no https URL"},
 		{[]string{"api", "https://ghe.example.com/api/v3/repos/sjawhar/legion"}, "another host than api.github.com"},
 		{[]string{"pr", "view", "1", "--bogus"}, "an option the command's help does not list is given to `gh pr view`"},

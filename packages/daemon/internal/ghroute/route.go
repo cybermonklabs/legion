@@ -105,10 +105,10 @@ var sentFileOptions = map[string]leakguard.StdinUse{
 // input is: `gh api --input -` makes it the request body, a `--field <name>=@-` the value of
 // a field, and each other option text GitHub stores as it stands. `gh workflow run --json`, where
 // its last value is true (ghArgs.booleans), names it too (leakguard.GhSent.UsesStdin): gh reads
-// the run's inputs from it as one JSON object (testdata/gh-help/workflow_run.txt), and GitHub
-// keeps each input apart, so it is a JSON request body, read one string at a time. Only the
-// command path says so, since `--json` takes the names of fields to print in every other gh
-// command. (leakguard.GhSent.UsesStdin says what two options naming it with different uses
+// the run's inputs from it as one JSON object (cmd/legion's testdata/gh-help/workflow_run.txt),
+// and GitHub keeps each input apart, so it is a JSON request body, read one string at a time.
+// Only the command path says so, since `--json` takes the names of fields to print in every other
+// gh command. (leakguard.GhSent.UsesStdin says what two options naming it with different uses
 // answer.) The options are read in the order their names sort, since a parse holds each option's
 // values together and not the argv's order across options, and a report that named two files
 // must name them the same way twice.
@@ -608,14 +608,14 @@ func init() {
 // which is stopped whole when the read outlives helpTimeout or ctx ends (procgroup.Configure): a
 // stop that killed gh alone would leave whatever gh started running, reparented and unwaited for.
 // That group is not the terminal's, so none of the terminal's signals reach it, and ctx is how
-// they do: `legion gh`'s, which main cancels on a SIGINT or a SIGTERM and hangupCancels on a
-// SIGHUP. A timeout or an end of ctx that came before gh started, which exec then never starts, is
-// said as such, and never as an answer of gh's. gh's error output is not printed: it can quote
-// the command's words, which the walk names by their place where gh's help lists none of them
-// (ghWalk.named). It runs under leakguard.RunByRealGhVar, so a gh that leads back to `legion gh`
-// is refused there, and that refusal, which `legion gh` wrote itself and which names only
-// LEGION_GH_PATH, is the one text of gh's error output read back (ReentryRefusal): the read fails
-// with it when the output holds it whole.
+// they do: `legion gh`'s, which cmd/legion's main cancels on a SIGINT or a SIGTERM and
+// cmd/legion's hangupCancels on a SIGHUP. A timeout or an end of ctx that came before gh started,
+// which exec then never starts, is said as such, and never as an answer of gh's. gh's error
+// output is not printed: it can quote the command's words, which the walk names by their place
+// where gh's help lists none of them (ghWalk.named). It runs under leakguard.RunByRealGhVar, so a
+// gh that leads back to `legion gh` is refused there, and that refusal, which `legion gh` wrote
+// itself and which names only LEGION_GH_PATH, is the one text of gh's error output read back
+// (ReentryRefusal): the read fails with it when the output holds it whole.
 func ReadHelp(ctx context.Context, gh string, env, path []string) (string, error) {
 	bound := programbound.Of(&helpTimeout)
 	ctx, cancel := context.WithTimeout(ctx, bound)
