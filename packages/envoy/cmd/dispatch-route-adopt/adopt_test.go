@@ -80,8 +80,13 @@ func (r *scratchRepo) git(args ...string) string {
 
 // run runs a command in the repository and answers its combined output and error.
 func (r *scratchRepo) run(name string, args ...string) (string, error) {
+	return runIn(r.root, name, args...)
+}
+
+// runIn runs a command in dir and answers its combined output and error.
+func runIn(dir, name string, args ...string) (string, error) {
 	command := exec.Command(name, args...)
-	command.Dir = r.root
+	command.Dir = dir
 	output, err := command.CombinedOutput()
 	return string(output), err
 }
@@ -1078,9 +1083,7 @@ func (r *scratchRepo) runNamed(message, tool string) {
 		if !strings.HasPrefix(match[1], tool+" ") {
 			continue
 		}
-		command := exec.Command("sh", "-c", match[1])
-		command.Dir = elsewhere
-		if output, err := command.CombinedOutput(); err != nil {
+		if output, err := runIn(elsewhere, "sh", "-c", match[1]); err != nil {
 			r.t.Fatalf("%s, which the message names, run from outside the repository: %v: %s", match[1], err, output)
 		}
 		ran++

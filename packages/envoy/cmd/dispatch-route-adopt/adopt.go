@@ -28,9 +28,9 @@ var oldNames = regexp.MustCompile(`\b(writeClasses|idRoutes|routeScopes|readScop
 // adoptReport is what one run did and what it leaves for the person.
 type adoptReport struct {
 	newSide, oldSide, base string
-	// oldName and newName are oldSide and newSide without their commits, as the report's lines
-	// name the side that added, changed or removed a route: "the branch" and the revision merged,
-	// either of which can be the side that holds the old layout.
+	// oldName and newName name the side that added, changed or removed a route in the report's
+	// lines: "the branch" and the revision merged, either of which can be the side that holds the
+	// old layout. oldSide and newSide are oldName and newName with their commits.
 	oldName, newName string
 
 	written, updated, merged, removed []string
@@ -138,16 +138,14 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 	case !hereOld && !thereOld:
 		return nil, fmt.Errorf("the branch and %s both hold the route files already: there is nothing to adopt, and nothing is merged", into)
 	case hereOld:
-		report.oldSide, report.newSide = "the branch "+here[:12], into+" "+there[:12]
 		report.oldName, report.newName = "the branch", into
 		oldRev, newRev = here, there
-		hereSide, thereSide = report.oldSide, report.newSide
 	default:
-		report.oldSide, report.newSide = into+" "+there[:12], "the branch "+here[:12]
 		report.oldName, report.newName = into, "the branch"
 		oldRev, newRev = there, here
-		hereSide, thereSide = report.newSide, report.oldSide
 	}
+	report.oldSide, report.newSide = report.oldName+" "+oldRev[:12], report.newName+" "+newRev[:12]
+	hereSide, thereSide = "the branch "+here[:12], into+" "+there[:12]
 	base, err := repo.line("merge-base", here, there)
 	if err != nil {
 		return nil, fmt.Errorf("the branch and %s share no merge base, so there is no old layout to split their routes from, and nothing is merged (%w)", into, err)
@@ -213,18 +211,18 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 		}
 		write := routeWrite{name: name, content: branchContent}
 		switch {
-		case !inBase: // the branch added it
+		case !inBase: // the old-layout side added it
 			switch {
 			case !inTree:
 				report.written = append(report.written, name)
 			case bytes.Equal(current, branchContent):
-				continue // main added the same route, so the merge holds it already
+				continue // the new side added the same route, so the merge holds it already
 			default:
 				if write, err = merge(name, current, nil, branchContent); err != nil {
 					return nil, err
 				}
 			}
-		case !inBranch: // the branch removed it
+		case !inBranch: // the old-layout side removed it
 			switch {
 			case !inTree:
 			case bytes.Equal(current, baseContent):
@@ -234,7 +232,7 @@ func adopt(repo gitRepo, into string) (*adoptReport, error) {
 				report.decide = append(report.decide, fmt.Sprintf("%s removes the route of %s, which %s has changed since the merge base: delete it or keep %s's", report.oldName, path.Join(apiDir, name), report.newName, report.newName))
 			}
 			continue
-		default: // the branch changed it
+		default: // the old-layout side changed it
 			switch {
 			case !inTree:
 				report.decide = append(report.decide, fmt.Sprintf("%s removed the route of %s, which %s changes: %s's version is not written", report.newName, path.Join(apiDir, name), report.oldName, report.oldName))
@@ -327,30 +325,30 @@ func writeTheMerge(repo gitRepo, writes []routeWrite, remove []string) error {
 // route files took over - the rows of routes() and the side maps' entries - as a diff from the
 // merge base, and empty where that side changed nothing else of it. side is how the report names
 // that side: the branch, or the revision merged.
-func sharedCodeChange(repo gitRepo, name string, base, branch tree, side string) (string, error) {
+func sharedCodeChange(repo gitRepo, name string, base, old tree, side string) (string, error) {
 	baseContent, err := base.read(name)
 	if err != nil {
 		return "", err
 	}
-	branchContent, err := branch.read(name)
+	oldContent, err := old.read(name)
 	if err != nil {
 		return "", err
 	}
-	if bytes.Equal(baseContent, branchContent) {
+	if bytes.Equal(baseContent, oldContent) {
 		return "", nil
 	}
 	baseShared, err := sharedCode(name, baseContent)
 	if err != nil {
 		return "", fmt.Errorf("read the merge base's %s: %w", name, err)
 	}
-	branchShared, err := sharedCode(name, branchContent)
+	oldShared, err := sharedCode(name, oldContent)
 	if err != nil {
 		return "", fmt.Errorf("read %s's %s: %w", side, name, err)
 	}
-	if baseShared == branchShared {
+	if baseShared == oldShared {
 		return "", nil
 	}
-	diff, err := repo.diffText(baseShared, branchShared)
+	diff, err := repo.diffText(baseShared, oldShared)
 	if err != nil {
 		return "", err
 	}
